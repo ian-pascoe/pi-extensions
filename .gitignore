@@ -5,3 +5,4 @@ coverage
 *.tgz
 .pack-check
 .git-install-check
+.pi/npm
