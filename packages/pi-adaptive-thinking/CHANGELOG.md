@@ -1,5 +1,11 @@
 # pi-adaptive-thinking
 
+## 0.1.2
+
+### Patch Changes
+
+- 1c87f4a: Migrate the extension to the shared source-TypeScript monorepo package contract.
+
 ## 0.1.1
 
 ### Patch Changes
