@@ -1,0 +1,38 @@
+{
+  "name": "@ian-pascoe/pi-extensions",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Ian Pascoe's Pi Extensions",
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "type": "module",
+  "scripts": {
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "lint:staged": "lint-staged",
+    "prepare": "husky",
+    "test": "turbo test",
+    "typecheck": "tsc --noEmit && turbo typecheck",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.3.0",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "turbo": "^2.10.9",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "packageManager": "pnpm@11.21.0"
+}

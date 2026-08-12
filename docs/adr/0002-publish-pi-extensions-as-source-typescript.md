@@ -1,0 +1,3 @@
+# Publish Pi extensions as source TypeScript
+
+Pi extension packages publish their `src` directories and point `pi.extensions` directly to `./src/index.ts`; they do not generate or publish `dist`, `main`, `types`, or `exports` artifacts. Package TypeScript uses NodeNext semantics with explicit `.js` specifiers for local imports, while Pi-provided modules remain wildcard peer dependencies. The previous Rolldown and declaration builds added release complexity without serving Pi's runtime, which loads TypeScript extensions directly; a future reusable library may still build JavaScript when it needs a conventional Node import contract.

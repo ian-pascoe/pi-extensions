@@ -1,0 +1,3 @@
+# Preserve existing package names and scope new packages
+
+The published packages retain their existing unscoped names, `pi-adaptive-thinking` and `pi-byterover`, to avoid breaking current installs. New packages use `@ian-pascoe/pi-minimal-subagents`, `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and `@ian-pascoe/pi-git-status-widget`: `pi-minimal-subagents` is already owned by another publisher, while the npm organization provides a clean namespace whose ownership is independent of a personal account handle. This deliberately favors compatibility for existing users and consistent organization ownership for new packages over uniform naming across all six packages.
