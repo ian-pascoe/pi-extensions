@@ -1,15 +1,15 @@
-import {
-  DEFAULT_MAX_SUBAGENT_DEPTH,
-  stripThinkingSuffix,
-} from "./minimal-subagents-capabilities.js";
+import { DEFAULT_MAX_SUBAGENT_DEPTH, THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
 
 const MODEL_ROLE_NAME_MAX_LENGTH = 64;
 const MODEL_ROLE_HINT_MAX_LENGTH = 500;
+
+type ModelRoleThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /** Describes one user-authored advisory model role shown to subagent callers. */
 export interface MinimalSubagentsModelRole {
   name: string;
   model: string;
+  thinkingLevel?: ModelRoleThinkingLevel;
   hint?: string;
 }
 
@@ -89,6 +89,39 @@ function mergeModelRoleEntries(
   return entries;
 }
 
+interface ResolvedModelRoleReference {
+  model: string;
+  thinkingLevel?: ModelRoleThinkingLevel;
+}
+
+function resolveThinkingLevelSuffix(suffix: string): ModelRoleThinkingLevel | undefined {
+  return THINKING_LEVELS.find((thinkingLevel) => thinkingLevel === suffix);
+}
+
+function resolveModelRoleReference(
+  model: string,
+  eligibleModels: ReadonlySet<string>,
+  path: string,
+  warnings: string[],
+): ResolvedModelRoleReference | undefined {
+  if (eligibleModels.has(model)) return { model };
+
+  const separatorIndex = model.lastIndexOf(":");
+  if (separatorIndex >= 0) {
+    const prefix = model.slice(0, separatorIndex);
+    const suffix = model.slice(separatorIndex + 1);
+    if (eligibleModels.has(prefix)) {
+      const thinkingLevel = resolveThinkingLevelSuffix(suffix);
+      if (thinkingLevel !== undefined) return { model: prefix, thinkingLevel };
+      warnings.push(`${path}: unknown thinking level suffix: ${suffix}`);
+      return undefined;
+    }
+  }
+
+  warnings.push(`${path}: model is not eligible: ${model}`);
+  return undefined;
+}
+
 function parseModelRoles(
   entries: ReadonlyMap<string, ScopedSettingValue>,
   eligibleModelIds: readonly string[],
@@ -125,16 +158,8 @@ function parseModelRoles(
       warnings.push(`${path}: model must be a non-empty trimmed string`);
       continue;
     }
-    if (stripThinkingSuffix(model) !== model) {
-      warnings.push(
-        `${path}: thinking level suffixes are not allowed; choose thinking_level per spawn`,
-      );
-      continue;
-    }
-    if (!eligibleModels.has(model)) {
-      warnings.push(`${path}: model is not eligible: ${model}`);
-      continue;
-    }
+    const resolvedModel = resolveModelRoleReference(model, eligibleModels, path, warnings);
+    if (resolvedModel === undefined) continue;
 
     const hint = isRecord(value) ? value.hint : undefined;
     if (
@@ -148,7 +173,14 @@ function parseModelRoles(
       warnings.push(`${path}.hint: expected trimmed single-line text up to 500 characters`);
       continue;
     }
-    roles.push({ name, model, ...(hint === undefined ? {} : { hint }) });
+    roles.push({
+      name,
+      model: resolvedModel.model,
+      ...(resolvedModel.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: resolvedModel.thinkingLevel }),
+      ...(hint === undefined ? {} : { hint }),
+    });
   }
   return roles;
 }
