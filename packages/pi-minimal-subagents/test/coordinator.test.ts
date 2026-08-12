@@ -6,6 +6,7 @@ import type {
   CoordinatorDependencies,
   PersistedAgent,
   RuntimeCreationRequest,
+  RuntimeProfile,
   RuntimeTurnOutcome,
 } from "../src/minimal-subagents-types.js";
 
@@ -38,7 +39,13 @@ function persistedAgent(
   };
 }
 
-function childRuntime(outcome: RuntimeTurnOutcome = { status: "completed", output: "done" }) {
+function childRuntime(
+  outcome: RuntimeTurnOutcome = { status: "completed", output: "done" },
+  runtimeProfile: RuntimeProfile | undefined = {
+    model: "provider/model",
+    thinking_level: "medium",
+  },
+) {
   return {
     sessionFile: "/sessions/runtime.jsonl",
     sessionId: "runtime-session",
@@ -48,6 +55,7 @@ function childRuntime(outcome: RuntimeTurnOutcome = { status: "completed", outpu
     steerCoordinatorMessage: vi.fn<() => Promise<void>>(async () => undefined),
     abort: vi.fn<() => Promise<void>>(async () => undefined),
     dispose: vi.fn(),
+    getRuntimeProfile: vi.fn<() => RuntimeProfile | undefined>(() => runtimeProfile),
     snapshotCommittedMessages: vi.fn(() => []),
     hasDeliveryEvidence: vi.fn(() => false),
     getUsage: vi.fn(() => undefined),
@@ -173,6 +181,98 @@ describe("minimal subagents coordinator", () => {
     expect(() => coordinator.status("other", "worker")).toThrow(
       "Minimal subagents unknown agent: other",
     );
+  });
+
+  it("reports the live Runtime Profile while preserving the Launch Contract and nested defaults", async () => {
+    const runtime = childRuntime();
+    const { coordinator } = coordinatorFixture(runtime);
+    await coordinator.spawn("root", { task: "Inspect", agent_id: "worker" }, caller);
+    await coordinator.wait("root", "worker", 1_000);
+    runtime.getRuntimeProfile.mockReturnValue({
+      model: "live/provider/model:variant",
+      thinking_level: "high",
+    });
+
+    expect(coordinator.status("root")).toMatchObject({
+      agents: [
+        {
+          agent_id: "worker",
+          model: "live/provider/model:variant",
+          thinking_level: "high",
+        },
+      ],
+    });
+    expect(coordinator.inspectStatus()).toMatchObject({
+      agents: [
+        {
+          agent_id: "worker",
+          model: "live/provider/model:variant",
+          thinking_level: "high",
+        },
+      ],
+    });
+    expect(coordinator.status("root", "worker")).toMatchObject({
+      agent: {
+        model: "live/provider/model:variant",
+        thinking_level: "high",
+        launch_contract: {
+          model: "provider/model",
+          thinking_level: "medium",
+        },
+      },
+    });
+    expect(coordinator.inspectStatus("worker")).toMatchObject({
+      agent: {
+        model: "live/provider/model:variant",
+        thinking_level: "high",
+        launch_contract: {
+          model: "provider/model",
+          thinking_level: "medium",
+        },
+      },
+    });
+    runtime.getRuntimeProfile.mockReturnValue(undefined);
+    expect(coordinator.status("root", "worker")).toMatchObject({
+      agent: { model: "provider/model", thinking_level: "medium" },
+    });
+    expect(coordinator.snapshotChildCaller("worker", "nested-entry")).toMatchObject({
+      model: "provider/model",
+      thinkingLevel: "medium",
+      spawnEntryId: "nested-entry",
+    });
+  });
+
+  it("falls back to the Launch Contract before initialization and for unavailable agents", async () => {
+    let resolveRuntime!: (runtime: ChildAgentRuntime) => void;
+    const runtimeInitialization = new Promise<ChildAgentRuntime>((resolve) => {
+      resolveRuntime = resolve;
+    });
+    const pending = coordinatorFixture();
+    pending.sessions.createRuntime.mockReturnValue(runtimeInitialization);
+    await pending.coordinator.spawn("root", { task: "Wait", agent_id: "pending" }, caller);
+    const beforeInitialization = pending.coordinator.status("root");
+    resolveRuntime(childRuntime());
+    await pending.coordinator.wait("root", "pending", 1_000);
+    expect(beforeInitialization).toMatchObject({
+      agents: [{ model: "provider/model", thinking_level: "medium" }],
+    });
+
+    const unavailable = coordinatorFixture();
+    unavailable.sessions.resolveRestorationMissingDependencies.mockResolvedValue([
+      "provider/model",
+    ]);
+    await unavailable.coordinator.restore({
+      agents: [persistedAgent("missing", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    expect(unavailable.coordinator.inspectStatus("missing")).toMatchObject({
+      agent: {
+        availability: "unavailable",
+        model: "provider/model",
+        thinking_level: "medium",
+      },
+    });
   });
 
   it("supports abortable waits and recursive cancellation/deletion authorization", async () => {

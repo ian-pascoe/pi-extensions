@@ -22,6 +22,12 @@ export type AgentAvailability = "available" | "unavailable";
 /** Classifies active and terminal persistent subagent turn outcomes. */
 export type TurnStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
 
+/** Describes the canonical model and resolved thinking level currently used by a Child Agent. */
+export interface RuntimeProfile {
+  model: string;
+  thinking_level: ThinkingLevel;
+}
+
 /** Defines the validated launch contract accepted by the subagent tool. */
 export interface SpawnParameters {
   task: string;
@@ -59,16 +65,14 @@ export interface AgentMessageResult {
   error?: string;
 }
 
-/** Provides bounded hierarchy and usage data for one persistent agent. */
-export interface AgentSummary {
+/** Provides bounded hierarchy, usage, and best-known Runtime Profile data for one persistent agent. */
+export interface AgentSummary extends RuntimeProfile {
   agent_id: string;
   parent_id: string;
   state: AgentState;
   availability: AgentAvailability;
   active_turn_id?: string;
   latest_turn?: Pick<TurnResult, "turn_id" | "status">;
-  model: string;
-  thinking_level: ThinkingLevel;
   tools: string[];
   elapsed_ms?: number;
   latest_activity?: string;
@@ -125,11 +129,9 @@ export interface DeleteResult {
 }
 
 /** Persists immutable context, model, thinking, and ordinary-tool launch choices. */
-export interface LaunchContract {
+export interface LaunchContract extends RuntimeProfile {
   session_context: SessionContextMode;
   project_context: ProjectContextMode;
-  model: string;
-  thinking_level: ThinkingLevel;
   tools: ToolSelection | undefined;
   ordinary_tools: string[];
   delegation?: DelegationMode;
@@ -184,6 +186,8 @@ export interface ChildAgentRuntime {
   steerCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
+  /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
+  getRuntimeProfile(): RuntimeProfile | undefined;
   snapshotCommittedMessages(): AgentMessage[];
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean;
   getUsage(): Usage | undefined;

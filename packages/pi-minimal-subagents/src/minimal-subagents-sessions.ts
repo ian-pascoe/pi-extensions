@@ -37,6 +37,7 @@ import type {
   PersistedSessionIdentity,
   ProjectContextMode,
   RuntimeCreationRequest,
+  RuntimeProfile,
   RuntimeTurnOutcome,
 } from "./minimal-subagents-types.js";
 
@@ -327,6 +328,15 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
   dispose(): void {
     this.unsubscribe();
     this.session.dispose();
+  }
+
+  getRuntimeProfile(): RuntimeProfile | undefined {
+    const model = this.session.model;
+    if (!model) return undefined;
+    return {
+      model: `${model.provider}/${model.id}`,
+      thinking_level: this.session.thinkingLevel,
+    };
   }
 
   snapshotCommittedMessages(): AgentMessage[] {
