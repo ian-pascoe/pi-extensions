@@ -4,8 +4,6 @@ import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import type {
   AgentToolResult,
-  BeforeAgentStartEvent,
-  BeforeAgentStartEventResult,
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -21,7 +19,6 @@ type NotifyType = "info" | "warning" | "error";
 
 type RuntimeState = {
   config: AdaptiveThinkingConfig;
-  currentLevel?: PiThinkingLevel;
   persistedLevel?: PiThinkingLevel;
   temporaryResetLevel?: PiThinkingLevel;
   lastToolCallWasReasoningTool?: boolean;
@@ -48,9 +45,29 @@ const ToolParameters = Type.Object(
 
 type ToolParameters = Static<typeof ToolParameters>;
 
+const StatusToolParameters = Type.Object({}, { additionalProperties: false });
+
+type ThinkingLevelStatus = {
+  currentLevel: PiThinkingLevel | "unknown";
+  supportedLevels: PiThinkingLevel[];
+};
+
 const textResult = (text: string): AgentToolResult<undefined> => ({
   content: [{ type: "text", text }],
   details: undefined,
+});
+
+const thinkingLevelStatusResult = (
+  currentLevel: PiThinkingLevel | "unknown",
+  supportedLevels: PiThinkingLevel[],
+): AgentToolResult<ThinkingLevelStatus> => ({
+  content: [
+    {
+      type: "text",
+      text: `Current thinking level: ${currentLevel}. Supported thinking levels: ${supportedLevels.join(", ")}.`,
+    },
+  ],
+  details: { currentLevel, supportedLevels },
 });
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -156,30 +173,6 @@ const notify = (
   ctx.ui.notify(message, type);
 };
 
-const appendSystemPromptBlock = (systemPrompt: string, block: string) => {
-  const trimmedBlock = block.trim();
-  if (!trimmedBlock) return systemPrompt;
-  if (!systemPrompt.trim()) return trimmedBlock;
-  return `${systemPrompt.trimEnd()}\n\n${trimmedBlock}`;
-};
-
-const formatGuidance = (
-  config: AdaptiveThinkingConfig,
-  currentLevel: string | undefined,
-  validLevels: string[],
-) => {
-  return (
-    config.systemPrompt.trim() +
-    " " +
-    (currentLevel ? `Current thinking level: ${currentLevel}. ` : "") +
-    `Valid thinking levels for this session: ${validLevels.join(", ")}. ` +
-    `To change the thinking level, use the \`${config.toolName}\` tool with one of the valid levels. ` +
-    "Only call it when the task complexity justifies changing levels. " +
-    `Do not call ${config.toolName} if the current thinking level already matches the target level. ` +
-    `Do not call ${config.toolName} twice in a row; reassess only after new evidence from other tool calls or user input.`
-  );
-};
-
 export default function adaptiveThinking(pi: ExtensionAPI) {
   let runtime: RuntimeState | undefined;
   let runtimeHandlersRegistered = false;
@@ -187,11 +180,6 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
   const registerRuntimeHandlers = () => {
     if (runtimeHandlersRegistered) return;
     runtimeHandlersRegistered = true;
-
-    pi.on("thinking_level_select", async (event) => {
-      if (!runtime) return;
-      if (isThinkingLevel(event.level)) runtime.currentLevel = event.level;
-    });
 
     pi.on("tool_call", async (event) => {
       const state = runtime;
@@ -208,36 +196,12 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
       }
     });
 
-    pi.on("before_agent_start", async (event, ctx) => beforeAgentStart(event, ctx));
-
     pi.on("agent_end", async (_event, ctx) => {
       await resetTemporaryLevel(ctx);
       if (!runtime) return;
       runtime.lastToolCallWasReasoningTool = false;
       runtime.reasoningToolCallBackToBackById.clear();
     });
-  };
-
-  const beforeAgentStart = async (
-    event: BeforeAgentStartEvent,
-    ctx: ExtensionContext,
-  ): Promise<BeforeAgentStartEventResult> => {
-    const state = runtime;
-    if (!state) return { systemPrompt: event.systemPrompt };
-
-    state.lastToolCallWasReasoningTool = false;
-    state.reasoningToolCallBackToBackById.clear();
-
-    const currentLevel = state.currentLevel ?? pi.getThinkingLevel();
-    if (isThinkingLevel(currentLevel)) state.currentLevel = currentLevel;
-
-    const validLevels = resolveSupportedThinkingLevels(ctx.model);
-    return {
-      systemPrompt: appendSystemPromptBlock(
-        event.systemPrompt,
-        formatGuidance(state.config, state.currentLevel, validLevels),
-      ),
-    };
   };
 
   const resetTemporaryLevel = async (ctx: ExtensionContext) => {
@@ -247,7 +211,6 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
 
     try {
       withSessionOnlyThinkingLevelChange(() => pi.setThinkingLevel(resetLevel));
-      state.currentLevel = resetLevel;
       delete state.temporaryResetLevel;
     } catch (error) {
       notify(ctx, "error", `Failed to reset thinking level: ${errorMessage(error)}`, state.config);
@@ -268,9 +231,16 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
       return;
     }
 
-    const initialLevel = pi.getThinkingLevel();
     runtime = { config, reasoningToolCallBackToBackById: new Map() };
-    if (isThinkingLevel(initialLevel)) runtime.currentLevel = initialLevel;
+
+    if (configResult.usedDeprecatedSystemPrompt) {
+      notify(
+        ctx,
+        "warning",
+        "Adaptive Thinking configuration: systemPrompt is deprecated; rename it to guidance.",
+        config,
+      );
+    }
 
     pi.registerTool({
       name: config.toolName,
@@ -278,7 +248,10 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
       description: config.toolDescription,
       promptSnippet: "Set the current Pi thinking level.",
       promptGuidelines: [
+        config.guidance,
         `Use ${config.toolName} to change the thinking level when task complexity justifies a different level.`,
+        `Use ${config.statusToolName} only when the current or supported thinking levels are uncertain; do not poll it routinely.`,
+        `Do not call ${config.toolName} twice in a row; reassess only after new evidence from other tool calls or user input.`,
       ],
       parameters: ToolParameters,
       execute: async (toolCallId, params: ToolParameters, _signal, _onUpdate, ctx) => {
@@ -294,7 +267,7 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
         }
 
         const persist = params.persist ?? false;
-        const currentLevel = state.currentLevel ?? pi.getThinkingLevel();
+        const currentLevel = pi.getThinkingLevel();
         if (currentLevel === level) {
           return textResult(`Thinking level is already ${level}; no change made.`);
         }
@@ -308,13 +281,18 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
         const resetLevel =
           state.persistedLevel ?? (isThinkingLevel(currentLevel) ? currentLevel : undefined);
 
+        if (!persist && !resetLevel) {
+          return textResult(
+            "Cannot apply a temporary thinking level because the Session Baseline is unknown.",
+          );
+        }
+
         try {
           withSessionOnlyThinkingLevelChange(() => pi.setThinkingLevel(level));
         } catch (error) {
           return textResult(`Failed to set thinking level: ${errorMessage(error)}`);
         }
 
-        state.currentLevel = level;
         if (persist) {
           state.persistedLevel = level;
           delete state.temporaryResetLevel;
@@ -325,6 +303,24 @@ export default function adaptiveThinking(pi: ExtensionAPI) {
         }
 
         return textResult(`Thinking level set to ${level}`);
+      },
+    });
+
+    pi.registerTool({
+      name: config.statusToolName,
+      label: "Get Thinking Level",
+      description: "Get the current and supported Pi thinking levels",
+      promptSnippet: "Inspect the current and supported Pi thinking levels.",
+      promptGuidelines: [
+        `Use ${config.statusToolName} only when thinking-level state is uncertain; do not poll it routinely.`,
+      ],
+      parameters: StatusToolParameters,
+      execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
+        const currentLevel = pi.getThinkingLevel();
+        return thinkingLevelStatusResult(
+          isThinkingLevel(currentLevel) ? currentLevel : "unknown",
+          resolveSupportedThinkingLevels(ctx.model),
+        );
       },
     });
 
