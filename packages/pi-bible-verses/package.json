@@ -1,0 +1,49 @@
+{
+  "name": "@ian-pascoe/pi-bible-verses",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Offline Bible passages for Pi working messages",
+  "keywords": [
+    "bible",
+    "pi",
+    "pi-extension",
+    "pi-package",
+    "working-message"
+  ],
+  "homepage": "https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-bible-verses#readme",
+  "bugs": {
+    "url": "https://github.com/ian-pascoe/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
+    "directory": "packages/pi-bible-verses"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
