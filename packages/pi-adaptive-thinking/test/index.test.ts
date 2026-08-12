@@ -28,7 +28,7 @@ const createPi = () => {
     return result;
   };
 
-  return { pi, tools, emit };
+  return { pi, tools, emit, handlers };
 };
 
 const createCtx = (overrides: Partial<any> = {}) => ({
@@ -40,31 +40,104 @@ const createCtx = (overrides: Partial<any> = {}) => ({
 });
 
 describe("adaptiveThinking extension", () => {
-  test("registers the default tool and injects prompt guidance", async () => {
-    const { pi, tools, emit } = createPi();
+  test("registers static thinking tools without a system prompt handler", async () => {
+    const { pi, tools, emit, handlers } = createPi();
     adaptiveThinking(pi as never);
 
     await emit("session_start", { reason: "startup" }, createCtx());
 
     expect(tools[0].name).toBe("set_thinking_level");
+    expect(tools[1].name).toBe("get_thinking_level");
+    expect(handlers.has("before_agent_start")).toBe(false);
+    expect(tools[0].promptGuidelines).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("manage thinking level actively"),
+        expect.stringContaining("get_thinking_level"),
+      ]),
+    );
+    expect(JSON.stringify(tools)).not.toContain("Current thinking level");
+    expect(JSON.stringify(tools)).not.toContain("Valid thinking levels");
+  });
 
-    const result = await emit(
-      "before_agent_start",
-      { prompt: "hello", systemPrompt: "Base prompt" },
+  test("reports native current and model-supported thinking levels", async () => {
+    const { pi, tools, emit } = createPi();
+    vi.mocked(pi.getThinkingLevel).mockReturnValue("high");
+    adaptiveThinking(pi as never);
+    await emit("session_start", { reason: "startup" }, createCtx());
+
+    const statusTool = tools.find((tool) => tool.name === "get_thinking_level");
+    const result = await statusTool.execute("status-call", {}, undefined, undefined, createCtx());
+
+    expect(result.content[0].text).toBe(
+      "Current thinking level: high. Supported thinking levels: off, minimal, low, medium, high, xhigh, max.",
+    );
+    expect(result.details).toEqual({
+      currentLevel: "high",
+      supportedLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    });
+  });
+
+  test("reports an unknown native current level without coercing it", async () => {
+    const { pi, tools, emit } = createPi();
+    vi.mocked(pi.getThinkingLevel).mockReturnValue("turbo" as never);
+    adaptiveThinking(pi as never);
+    await emit("session_start", { reason: "startup" }, createCtx());
+
+    const statusTool = tools.find((tool) => tool.name === "get_thinking_level");
+    const result = await statusTool.execute("status-call", {}, undefined, undefined, createCtx());
+
+    expect(result.details.currentLevel).toBe("unknown");
+  });
+
+  test("keeps tool metadata stable across runtime state changes", async () => {
+    const { pi, tools, emit } = createPi();
+    adaptiveThinking(pi as never);
+    await emit("session_start", { reason: "startup" }, createCtx());
+    const registeredMetadata = JSON.stringify(tools);
+
+    await tools[1].execute("status", {}, undefined, undefined, createCtx());
+    await emit(
+      "tool_call",
+      { toolName: "set_thinking_level", toolCallId: "setter", input: {} },
       createCtx(),
     );
+    await tools[0].execute(
+      "setter",
+      { level: "high", persist: false },
+      undefined,
+      undefined,
+      createCtx(),
+    );
+    await emit("thinking_level_select", { level: "low", previousLevel: "high" }, createCtx());
+    await emit("model_select", { model: { id: "other-model" } }, createCtx());
+    await emit("agent_end", {}, createCtx());
 
-    expect(result.systemPrompt).toContain("Base prompt");
-    expect(result.systemPrompt).toContain("manage thinking level actively");
-    expect(result.systemPrompt).toContain("Current thinking level: medium");
-    expect(result.systemPrompt).toContain(
-      "Valid thinking levels for this session: off, minimal, low, medium, high, xhigh, max",
+    expect(JSON.stringify(tools)).toBe(registeredMetadata);
+  });
+
+  test("deprecated systemPrompt config warns without entering model context", async () => {
+    const project = join(tmpdir(), `pi-adaptive-thinking-config-${Date.now()}`);
+    mkdirSync(join(project, ".pi"), { recursive: true });
+    writeFileSync(
+      join(project, ".pi", "adaptive-thinking.json"),
+      JSON.stringify({ systemPrompt: "Legacy static guidance" }),
     );
-    expect(result.systemPrompt).toContain("set_thinking_level");
-    expect(result.systemPrompt).toContain(
-      "Do not call set_thinking_level if the current thinking level already matches the target level",
-    );
-    expect(result.systemPrompt).toContain("Do not call set_thinking_level twice in a row");
+
+    try {
+      const { pi, tools, emit, handlers } = createPi();
+      const ctx = createCtx({ cwd: project });
+      adaptiveThinking(pi as never);
+      await emit("session_start", { reason: "startup" }, ctx);
+
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        "Adaptive Thinking configuration: systemPrompt is deprecated; rename it to guidance.",
+        "warning",
+      );
+      expect(handlers.has("before_agent_start")).toBe(false);
+      expect(tools[0].promptGuidelines).toContain("Legacy static guidance");
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   });
 
   test("same-level tool call is a no-op", async () => {
@@ -81,6 +154,44 @@ describe("adaptiveThinking extension", () => {
     );
 
     expect(result.content[0].text).toBe("Thinking level is already medium; no change made.");
+    expect(pi.setThinkingLevel).not.toHaveBeenCalled();
+  });
+
+  test("setter uses native thinking level as its source of truth", async () => {
+    const { pi, tools, emit } = createPi();
+    adaptiveThinking(pi as never);
+    await emit("session_start", { reason: "startup" }, createCtx());
+    vi.mocked(pi.getThinkingLevel).mockReturnValue("high");
+
+    const result = await tools[0].execute(
+      "tool-call",
+      { level: "high", persist: false },
+      undefined,
+      undefined,
+      createCtx(),
+    );
+
+    expect(result.content[0].text).toBe("Thinking level is already high; no change made.");
+    expect(pi.setThinkingLevel).not.toHaveBeenCalled();
+  });
+
+  test("temporary change fails when the Session Baseline is unknown", async () => {
+    const { pi, tools, emit } = createPi();
+    vi.mocked(pi.getThinkingLevel).mockReturnValue("turbo" as never);
+    adaptiveThinking(pi as never);
+    await emit("session_start", { reason: "startup" }, createCtx());
+
+    const result = await tools[0].execute(
+      "tool-call",
+      { level: "high", persist: false },
+      undefined,
+      undefined,
+      createCtx(),
+    );
+
+    expect(result.content[0].text).toBe(
+      "Cannot apply a temporary thinking level because the Session Baseline is unknown.",
+    );
     expect(pi.setThinkingLevel).not.toHaveBeenCalled();
   });
 
@@ -120,6 +231,34 @@ describe("adaptiveThinking extension", () => {
       "Thinking level change skipped because the previous tool call was also set_thinking_level. Reassess after another tool call or new user input.",
     );
     expect(pi.setThinkingLevel).not.toHaveBeenCalled();
+  });
+
+  test("status inspection allows a following thinking-level change", async () => {
+    const { pi, tools, emit } = createPi();
+    adaptiveThinking(pi as never);
+    await emit("session_start", { reason: "startup" }, createCtx());
+
+    await emit(
+      "tool_call",
+      { toolName: "get_thinking_level", toolCallId: "status", input: {} },
+      createCtx(),
+    );
+    await tools[1].execute("status", {}, undefined, undefined, createCtx());
+    await emit(
+      "tool_call",
+      { toolName: "set_thinking_level", toolCallId: "setter", input: {} },
+      createCtx(),
+    );
+    const result = await tools[0].execute(
+      "setter",
+      { level: "high", persist: true },
+      undefined,
+      undefined,
+      createCtx(),
+    );
+
+    expect(result.content[0].text).toBe("Thinking level set to high");
+    expect(pi.setThinkingLevel).toHaveBeenCalledWith("high");
   });
 
   test("back-to-back state is tracked per tool call", async () => {
@@ -335,11 +474,11 @@ describe("adaptiveThinking extension", () => {
     }
   });
 
-  test("thinking_level_select updates cached current level", async () => {
+  test("native manual selection becomes the temporary Session Baseline", async () => {
     const { pi, tools, emit } = createPi();
     adaptiveThinking(pi as never);
     await emit("session_start", { reason: "startup" }, createCtx());
-    await emit("thinking_level_select", { level: "low", previousLevel: "medium" }, createCtx());
+    vi.mocked(pi.getThinkingLevel).mockReturnValue("low");
 
     await tools[0].execute(
       "tool-call",
@@ -353,11 +492,11 @@ describe("adaptiveThinking extension", () => {
     expect(pi.setThinkingLevel).toHaveBeenLastCalledWith("low");
   });
 
-  test("retains a Pi max selection as the temporary reset baseline", async () => {
+  test("retains native max selection as the temporary Session Baseline", async () => {
     const { pi, tools, emit } = createPi();
     adaptiveThinking(pi as never);
     await emit("session_start", { reason: "startup" }, createCtx());
-    await emit("thinking_level_select", { level: "max", previousLevel: "medium" }, createCtx());
+    vi.mocked(pi.getThinkingLevel).mockReturnValue("max");
 
     await tools[0].execute(
       "tool-call",

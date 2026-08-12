@@ -38,6 +38,20 @@ describe("loadConfig", () => {
     });
   });
 
+  test("reports use of the deprecated systemPrompt alias", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-adaptive-thinking-"));
+    const { cwd, homeDir } = await makeDirs(root);
+    const projectPath = join(cwd, ".pi", "adaptive-thinking.json");
+    await writeFile(projectPath, JSON.stringify({ systemPrompt: "Legacy guidance" }));
+
+    await expect(loadConfig({ cwd, homeDir })).resolves.toEqual({
+      success: true,
+      source: projectPath,
+      config: { ...configDefaults, guidance: "Legacy guidance" },
+      usedDeprecatedSystemPrompt: true,
+    });
+  });
+
   test("project config takes precedence over global config", async () => {
     const root = await mkdtemp(join(tmpdir(), "pi-adaptive-thinking-"));
     const { cwd, homeDir } = await makeDirs(root);

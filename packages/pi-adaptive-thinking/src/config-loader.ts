@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parseConfig, type AdaptiveThinkingConfig } from "./config.js";
+import { parseConfig, usesDeprecatedSystemPrompt, type AdaptiveThinkingConfig } from "./config.js";
 
 export type { AdaptiveThinkingConfig } from "./config.js";
 
@@ -11,7 +11,12 @@ export type LoadConfigOptions = {
 };
 
 export type LoadConfigResult =
-  | { success: true; config: AdaptiveThinkingConfig; source?: string }
+  | {
+      success: true;
+      config: AdaptiveThinkingConfig;
+      source?: string;
+      usedDeprecatedSystemPrompt?: true;
+    }
   | { success: false; source: string; error: Error };
 
 const hasCode = (error: unknown, code: string) => {
@@ -45,7 +50,13 @@ export const loadConfig = async ({
     }
 
     try {
-      return { success: true, source, config: parseConfig(JSON.parse(raw)) };
+      const input: unknown = JSON.parse(raw);
+      return {
+        success: true,
+        source,
+        config: parseConfig(input),
+        ...(usesDeprecatedSystemPrompt(input) ? { usedDeprecatedSystemPrompt: true as const } : {}),
+      };
     } catch (error) {
       return invalidConfig(source, error);
     }
