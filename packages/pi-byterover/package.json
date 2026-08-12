@@ -1,0 +1,58 @@
+{
+  "name": "pi-byterover",
+  "version": "0.2.4",
+  "private": false,
+  "description": "Pi extension that recalls and persists ByteRover memory.",
+  "keywords": [
+    "byterover",
+    "memory",
+    "pi",
+    "pi-extension",
+    "pi-package"
+  ],
+  "homepage": "https://github.com/ian-pascoe/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/ian-pascoe/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
+    "directory": "packages/pi-byterover"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@byterover/brv-bridge": "^1.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "byterover-cli": "3.16.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

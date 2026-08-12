@@ -1,0 +1,57 @@
+{
+  "name": "pi-adaptive-thinking",
+  "version": "0.1.1",
+  "private": false,
+  "description": "Pi extension for adaptive reasoning-effort control",
+  "keywords": [
+    "adaptive-thinking",
+    "pi",
+    "pi-extension",
+    "pi-package",
+    "thinking"
+  ],
+  "homepage": "https://github.com/ian-pascoe/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/ian-pascoe/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
+    "directory": "packages/pi-adaptive-thinking"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "proper-lockfile": "^4.1.2"
+  },
+  "devDependencies": {
+    "@types/proper-lockfile": "4.1.4"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

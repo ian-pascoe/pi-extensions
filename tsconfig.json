@@ -1,10 +1,10 @@
 {
   "compilerOptions": {
-    "module": "esnext",
+    "module": "NodeNext",
     "target": "esnext",
     "lib": ["esnext"],
     "types": ["@types/node"],
-    "moduleResolution": "bundler",
+    "moduleResolution": "NodeNext",
     "jsx": "preserve",
     "noEmit": true,
     "strict": true,
@@ -16,5 +16,6 @@
     "moduleDetection": "force",
     "skipLibCheck": true
   },
-  "exclude": ["node_modules", "./packages"]
+  "include": ["scripts/**/*.mjs", "test/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "packages"]
 }

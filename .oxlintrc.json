@@ -9,6 +9,20 @@
     "correctness": "error"
   },
   "rules": {},
+  "overrides": [
+    {
+      "files": ["packages/pi-tps-tracker/src/index.ts"],
+      "rules": {
+        "typescript/no-base-to-string": "off"
+      }
+    },
+    {
+      "files": ["**/*.test.ts"],
+      "rules": {
+        "typescript/unbound-method": "off"
+      }
+    }
+  ],
   "env": {
     "builtin": true
   }
