@@ -4,3 +4,4 @@ allowBuilds:
   "@google/genai": true
   esbuild: true
   protobufjs: true
+  tesseract.js: true
