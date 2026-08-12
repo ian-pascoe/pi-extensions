@@ -1,6 +1,9 @@
 {
   "packages": [
-    "..",
+    {
+      "source": "..",
+      "extensions": ["-packages/pi-byterover/src/index.ts"]
+    },
     {
       "source": "npm:pi-adaptive-thinking",
       "autoload": false,
