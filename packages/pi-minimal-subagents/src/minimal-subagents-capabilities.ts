@@ -16,8 +16,6 @@ export const COORDINATOR_TOOL_NAMES = [
 
 const READ_TOOL_BUNDLE = ["read", "grep", "find", "ls"];
 const MODIFY_TOOL_BUNDLE = [...READ_TOOL_BUNDLE, "bash", "edit", "write"];
-const THINKING_SUFFIX_PATTERN = /:(?:off|minimal|low|medium|high|xhigh|max)$/;
-
 interface ModelReference {
   provider: string;
   id: string;
@@ -26,11 +24,6 @@ interface ModelReference {
 interface ScopedModelReference {
   model: ModelReference;
   thinkingLevel?: string;
-}
-
-/** Remove a recognized Pi thinking suffix without changing model IDs containing other colons. */
-export function stripThinkingSuffix(modelPattern: string): string {
-  return modelPattern.replace(THINKING_SUFFIX_PATTERN, "");
 }
 
 /** Build the authenticated runtime model enum from Pi's already-resolved model scope. */
@@ -47,7 +40,7 @@ export function buildEligibleModelIds(input: {
   const result: string[] = [];
 
   for (const model of source) {
-    const canonicalId = stripThinkingSuffix(`${model.provider}/${model.id}`);
+    const canonicalId = `${model.provider}/${model.id}`;
     if (!seen.has(canonicalId)) {
       seen.add(canonicalId);
       result.push(canonicalId);

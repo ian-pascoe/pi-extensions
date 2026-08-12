@@ -40,12 +40,13 @@ function buildModelRolePromptGuidelines(
   modelRoles: readonly MinimalSubagentsModelRole[],
 ): string[] | undefined {
   if (modelRoles.length === 0) return undefined;
-  const roleLines = modelRoles.map(
-    (role) => `  - ${role.name} → ${role.model}${role.hint ? ` — ${role.hint}` : ""}`,
-  );
+  const roleLines = modelRoles.map((role) => {
+    const thinkingGuidance = role.thinkingLevel ? `, thinking_level=${role.thinkingLevel}` : "";
+    return `  - ${role.name} → model=${role.model}${thinkingGuidance}${role.hint ? ` — ${role.hint}` : ""}`;
+  });
   return [
     ["Configured model roles are guidance, not constraints:", ...roleLines].join("\n"),
-    "Choose a model based on the task. Choose thinking_level independently.",
+    "Choose a model based on the task. A listed thinking_level is a preference, not a constraint. Callers choose thinking_level independently for roles without one.",
   ];
 }
 

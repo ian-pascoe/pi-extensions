@@ -45,15 +45,15 @@ Project values override global values. Run `/reload` after editing either file.
 `minimalSubagents.modelRoles` gives the parent agent advisory names for
 eligible models. The extension defines no roles itself, performs no task
 classification, and does not route launches. The parent still passes the
-ordinary `model` argument and chooses `thinking_level` independently.
+ordinary `model` and `thinking_level` arguments separately.
 
 ```json
 {
   "minimalSubagents": {
     "modelRoles": {
-      "budget": "opencode-go/glm-5.2",
+      "budget": "opencode-go/glm-5.2:low",
       "design": {
-        "model": "opencode-go/kimi-k3",
+        "model": "opencode-go/kimi-k3:high",
         "hint": "UI design, visual critique, and frontend polish"
       }
     }
@@ -61,10 +61,18 @@ ordinary `model` argument and chooses `thinking_level` independently.
 }
 ```
 
+A recognized final suffix (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+or `max`) is a preferred `thinking_level`, not part of the canonical model
+passed to `subagent`. Unsuffixed roles leave thinking selection independent.
 Role names and hints are trimmed, single-line text. Names may be up to 64
 characters and hints up to 500 characters. Models use canonical
 `provider/model` IDs and must be available under the effective `enabledModels`
-scope. Thinking-level suffixes such as `:xhigh` are invalid here.
+scope. The resolver matches the complete authored model ID first, so real
+colon-bearing IDs—including IDs ending in `:high`—remain exact model IDs;
+only an otherwise-unmatched recognized final suffix is treated as a thinking
+preference. A thinking level pinned in `enabledModels` neither supplies nor
+constrains a role preference, and normal spawn-time model-capability clamping
+still applies.
 
 Global and project roles merge by name in settings order. Expanded role
 objects merge by field; a project string replaces the whole global entry. A

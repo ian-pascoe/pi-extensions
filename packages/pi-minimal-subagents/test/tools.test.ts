@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
 import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import { createCoordinatorToolDefinitions } from "../src/minimal-subagents-tools.js";
 
-function toolOptions(callerId: string, allowFanoutTools?: boolean) {
+function toolOptions(
+  callerId: string,
+  allowFanoutTools?: boolean,
+  modelRoles: readonly MinimalSubagentsModelRole[] = [],
+) {
   return {
     coordinator: {
       spawn: vi.fn(),
@@ -15,6 +20,7 @@ function toolOptions(callerId: string, allowFanoutTools?: boolean) {
     },
     callerId,
     allowFanoutTools,
+    modelRoles,
     schemas: createCoordinatorToolSchemas(["provider/model"]),
     captureCaller: vi.fn(),
   };
@@ -44,5 +50,41 @@ describe("minimal subagents coordinator tools", () => {
         ({ name }) => name,
       ),
     ).toEqual(["agent_message", "subagent_wait", "subagent_status"]);
+  });
+
+  it("guides callers with separate advisory model and thinking_level arguments", () => {
+    const subagentTool = createCoordinatorToolDefinitions(
+      toolOptions("root", true, [
+        { name: "budget", model: "opencode-go/glm-5.2", thinkingLevel: "low" },
+        {
+          name: "design",
+          model: "opencode-go/kimi-k3",
+          thinkingLevel: "high",
+          hint: "UI design, visual critique, and frontend polish",
+        },
+        { name: "general", model: "provider/model" },
+      ]) as never,
+    ).find(({ name }) => name === "subagent");
+    const promptGuidelines = subagentTool?.promptGuidelines?.join("\n") ?? "";
+
+    expect(promptGuidelines).toContain("budget → model=opencode-go/glm-5.2, thinking_level=low");
+    expect(promptGuidelines).toContain(
+      "design → model=opencode-go/kimi-k3, thinking_level=high — UI design, visual critique, and frontend polish",
+    );
+    expect(promptGuidelines).toContain("general → model=provider/model");
+    expect(promptGuidelines).not.toContain("opencode-go/glm-5.2:low");
+    expect(promptGuidelines).not.toContain("opencode-go/kimi-k3:high");
+    expect(promptGuidelines).toContain("A listed thinking_level is a preference, not a constraint");
+    expect(promptGuidelines).toContain(
+      "Callers choose thinking_level independently for roles without one.",
+    );
+  });
+
+  it("adds no role-specific prompt guidance for an empty role list", () => {
+    const subagentTool = createCoordinatorToolDefinitions(
+      toolOptions("root", true, []) as never,
+    ).find(({ name }) => name === "subagent");
+
+    expect(subagentTool?.promptGuidelines).toBeUndefined();
   });
 });

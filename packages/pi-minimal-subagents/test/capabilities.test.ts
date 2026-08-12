@@ -5,23 +5,23 @@ import {
   excludeCoordinatorTools,
   getSubagentDepth,
   resolveOrdinaryToolSelection,
-  stripThinkingSuffix,
 } from "../src/minimal-subagents-capabilities.js";
 
 describe("minimal subagent capabilities", () => {
-  it("derives unique eligible models from the configured scope and removes thinking suffixes", () => {
-    expect(stripThinkingSuffix("openai/gpt:xhigh")).toBe("openai/gpt");
-    expect(stripThinkingSuffix("provider/model:preview")).toBe("provider/model:preview");
+  it("preserves canonical model IDs while deduplicating configured scope entries in source order", () => {
     expect(
       buildEligibleModelIds({
         availableModels: [{ provider: "fallback", id: "model" }],
         scopedModels: [
-          { model: { provider: "openai", id: "gpt:xhigh" } },
-          { model: { provider: "openai", id: "gpt:xhigh" } },
+          { model: { provider: "openai", id: "gpt" }, thinkingLevel: "xhigh" },
+          { model: { provider: "ollama", id: "llama3.1:8b" } },
+          { model: { provider: "openai", id: "real:high" } },
+          { model: { provider: "openai", id: "gpt" }, thinkingLevel: "low" },
+          { model: { provider: "ollama", id: "llama3.1:8b" } },
         ],
         scopeConfigured: true,
       }),
-    ).toEqual(["openai/gpt"]);
+    ).toEqual(["openai/gpt", "ollama/llama3.1:8b", "openai/real:high"]);
   });
 
   it("enforces exact tool availability and the inherited capability ceiling", () => {

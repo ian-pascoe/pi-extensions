@@ -14,7 +14,8 @@ describe("minimal subagents configuration", () => {
           maxSubagentDepth: 4,
           modelRoles: {
             deleted: "provider/global",
-            design: { model: "provider/global", hint: "Global hint" },
+            budget: { model: "provider/global:low", hint: "Global budget hint" },
+            design: { model: "provider/global:low", hint: "Global hint" },
           },
         },
       },
@@ -23,7 +24,8 @@ describe("minimal subagents configuration", () => {
           maxSubagentDepth: 1,
           modelRoles: {
             deleted: null,
-            design: { model: "provider/project" },
+            budget: "provider/project:high",
+            design: { model: "provider/project:high" },
           },
         },
       },
@@ -32,7 +34,15 @@ describe("minimal subagents configuration", () => {
 
     expect(result).toEqual({
       maxSubagentDepth: 1,
-      modelRoles: [{ name: "design", model: "provider/project", hint: "Global hint" }],
+      modelRoles: [
+        { name: "budget", model: "provider/project", thinkingLevel: "high" },
+        {
+          name: "design",
+          model: "provider/project",
+          thinkingLevel: "high",
+          hint: "Global hint",
+        },
+      ],
       warnings: [],
     });
   });
@@ -44,8 +54,8 @@ describe("minimal subagents configuration", () => {
         minimalSubagents: {
           maxSubagentDepth: 0,
           modelRoles: {
-            suffix: "provider/global:high",
-            missing: "provider/missing",
+            unknownSuffix: "provider/global:turbo",
+            missing: "provider/missing:high",
             valid: "provider/global",
           },
         },
@@ -56,9 +66,74 @@ describe("minimal subagents configuration", () => {
     expect(result.modelRoles).toEqual([{ name: "valid", model: "provider/global" }]);
     expect(result.warnings).toEqual([
       "project minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
-      "project minimalSubagents.modelRoles.suffix: thinking level suffixes are not allowed; choose thinking_level per spawn",
-      "project minimalSubagents.modelRoles.missing: model is not eligible: provider/missing",
+      "project minimalSubagents.modelRoles.unknownSuffix: unknown thinking level suffix: turbo",
+      "project minimalSubagents.modelRoles.missing: model is not eligible: provider/missing:high",
     ]);
+  });
+
+  it("resolves all thinking levels in shorthand and expanded role forms", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: {
+        minimalSubagents: {
+          modelRoles: {
+            shorthandOff: "provider/shorthand:off",
+            shorthandLow: "provider/shorthand:low",
+            shorthandMedium: "provider/shorthand:medium",
+            shorthandMax: "provider/shorthand:max",
+            expandedMinimal: { model: "provider/expanded:minimal" },
+            expandedHigh: { model: "provider/expanded:high", hint: "Use for visual polish" },
+            expandedXhigh: { model: "provider/expanded:xhigh" },
+          },
+        },
+      },
+      projectSettings: {},
+      eligibleModelIds: ["provider/shorthand", "provider/expanded"],
+    });
+
+    expect(result).toEqual({
+      maxSubagentDepth: 2,
+      modelRoles: [
+        { name: "shorthandOff", model: "provider/shorthand", thinkingLevel: "off" },
+        { name: "shorthandLow", model: "provider/shorthand", thinkingLevel: "low" },
+        { name: "shorthandMedium", model: "provider/shorthand", thinkingLevel: "medium" },
+        { name: "shorthandMax", model: "provider/shorthand", thinkingLevel: "max" },
+        { name: "expandedMinimal", model: "provider/expanded", thinkingLevel: "minimal" },
+        {
+          name: "expandedHigh",
+          model: "provider/expanded",
+          thinkingLevel: "high",
+          hint: "Use for visual polish",
+        },
+        { name: "expandedXhigh", model: "provider/expanded", thinkingLevel: "xhigh" },
+      ],
+      warnings: [],
+    });
+  });
+
+  it("prefers exact eligible model IDs before interpreting a thinking suffix", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: {
+        minimalSubagents: {
+          modelRoles: {
+            exactHigh: "provider/real:high",
+            exactOther: { model: "provider/real:8b", hint: "Exact model" },
+            preferred: "provider/base:high",
+          },
+        },
+      },
+      projectSettings: {},
+      eligibleModelIds: ["provider/base", "provider/real:8b", "provider/real:high"],
+    });
+
+    expect(result).toEqual({
+      maxSubagentDepth: 2,
+      modelRoles: [
+        { name: "exactHigh", model: "provider/real:high" },
+        { name: "exactOther", model: "provider/real:8b", hint: "Exact model" },
+        { name: "preferred", model: "provider/base", thinkingLevel: "high" },
+      ],
+      warnings: [],
+    });
   });
 
   it("reads the trust-aware settings layers and lets project null restore defaults", () => {
