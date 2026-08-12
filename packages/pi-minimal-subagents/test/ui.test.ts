@@ -51,12 +51,102 @@ describe("minimal subagents UI", () => {
     expect(view.recentCount).toBe(3);
     expect(view.rows.find(({ agentId }) => agentId === "parent")).toMatchObject({
       structural: true,
+      runtimeProfile: { model: "provider/model", thinking_level: "medium" },
     });
     expect(view.rows.find(({ agentId }) => agentId === "parent.running")).toMatchObject({
       structural: false,
       status: "running",
     });
     expect(view.rows.some(({ agentId }) => agentId === "failed")).toBe(true);
+  });
+
+  it("renders the status, duration, Runtime Profile, and task in the agreed order", () => {
+    const lines = renderMinimalSubagentsWidgetLines(
+      {
+        runningCount: 1,
+        retainedCount: 1,
+        recentCount: 0,
+        overflowCount: 0,
+        rows: [
+          {
+            agentId: "worker",
+            depth: 1,
+            status: "running",
+            elapsedMs: 12_000,
+            runtimeProfile: {
+              model: "provider/model:variant",
+              thinking_level: "high",
+            },
+            task: "inspect the runtime",
+            structural: false,
+          },
+        ],
+      },
+      120,
+      { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    );
+    expect(lines[1]).toBe(
+      "  ╰─ ◉ worker  ·  running 12s  ·  provider/model:variant:high  ·  inspect the runtime",
+    );
+  });
+
+  it("degrades task, model detail, and duration before truncating the row", () => {
+    const baseView = (width: number) =>
+      renderMinimalSubagentsWidgetLines(
+        {
+          runningCount: 1,
+          retainedCount: 1,
+          recentCount: 0,
+          overflowCount: 0,
+          rows: [
+            {
+              agentId: "worker",
+              depth: 1,
+              status: "running",
+              elapsedMs: 12_000,
+              runtimeProfile: {
+                model: "provider/model:variant",
+                thinking_level: "high",
+              },
+              task: "inspect the runtime",
+              structural: false,
+            },
+          ],
+        },
+        width,
+        { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+      )[1]!;
+
+    expect(baseView(80)).toBe("  ╰─ ◉ worker  ·  running 12s  ·  provider/model:variant:high");
+    expect(baseView(55)).toBe("  ╰─ ◉ worker  ·  running 12s  ·  provider/model:…:high");
+    expect(baseView(39)).toBe("  ╰─ ◉ worker  ·  running  ·  pro…:high");
+    const lastResort = baseView(20);
+    expect(visibleWidth(lastResort)).toBeLessThanOrEqual(20);
+    expect(lastResort).not.toContain("inspect");
+  });
+
+  it("omits stale duration while retaining the Runtime Profile for unavailable rows", () => {
+    const lines = renderMinimalSubagentsWidgetLines(
+      {
+        runningCount: 0,
+        retainedCount: 1,
+        recentCount: 1,
+        overflowCount: 0,
+        rows: [
+          {
+            agentId: "missing",
+            depth: 0,
+            status: "unavailable",
+            elapsedMs: 12_000,
+            runtimeProfile: { model: "provider/model", thinking_level: "medium" },
+            structural: false,
+          },
+        ],
+      },
+      100,
+      { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+    );
+    expect(lines[1]).toBe("  ! missing  ·  unavailable  ·  provider/model:medium");
   });
 
   it("renders every line within terminal width", () => {
@@ -71,6 +161,7 @@ describe("minimal subagents UI", () => {
             agentId: "very-long-agent-identifier",
             depth: 1,
             status: "running",
+            runtimeProfile: { model: "provider/model", thinking_level: "medium" },
             task: "a deliberately long task description",
             structural: false,
           },

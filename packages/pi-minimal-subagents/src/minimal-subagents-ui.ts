@@ -1,13 +1,24 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import {
+  sliceByColumn,
+  truncateToWidth,
+  visibleWidth,
+  type Component,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import {
   formatSubagentDuration,
   renderSubagentStatusLabel,
   renderSubagentStatusSymbol,
 } from "./minimal-subagents-rendering.js";
-import type { AgentSummary, HierarchyStatusResult, TurnStatus } from "./minimal-subagents-types.js";
+import type {
+  AgentSummary,
+  HierarchyStatusResult,
+  RuntimeProfile,
+  TurnStatus,
+} from "./minimal-subagents-types.js";
 
 const MINIMAL_SUBAGENTS_UI_KEY = "minimal-subagents";
 const MINIMAL_SUBAGENTS_RECENT_LIMIT = 3;
@@ -20,6 +31,7 @@ export interface MinimalSubagentsWidgetRow {
   depth: number;
   status: TurnStatus | "idle" | "unavailable";
   elapsedMs?: number;
+  runtimeProfile: RuntimeProfile;
   task?: string;
   structural: boolean;
 }
@@ -122,6 +134,10 @@ export function buildMinimalSubagentsWidgetView(
         depth: item.depth,
         status: agentTerminalStatus(item.agent),
         elapsedMs: item.agent.elapsed_ms,
+        runtimeProfile: {
+          model: item.agent.model,
+          thinking_level: item.agent.thinking_level,
+        },
         task: structural ? undefined : item.agent.task,
         structural,
       };
@@ -135,6 +151,187 @@ export function buildMinimalSubagentsWidgetView(
   };
 }
 
+const MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT = "  ·  ";
+const MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS = "…";
+
+interface MinimalSubagentsWidgetRowParts {
+  identity: string;
+  status: string;
+  profile: string;
+  task?: string;
+}
+
+function joinMinimalSubagentsWidgetRow(
+  parts: MinimalSubagentsWidgetRowParts,
+  separator: string,
+): string {
+  return [parts.identity, parts.status, parts.profile, parts.task]
+    .filter((part): part is string => part !== undefined)
+    .join(separator);
+}
+
+function formatMinimalSubagentsRuntimeProfile(
+  profile: RuntimeProfile,
+  maxWidth?: number,
+): string | undefined {
+  const suffix = `:${profile.thinking_level}`;
+  const fullProfile = `${profile.model}${suffix}`;
+  if (maxWidth === undefined || visibleWidth(fullProfile) <= maxWidth) return fullProfile;
+
+  const shortestProfile = `${MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS}${suffix}`;
+  if (maxWidth < visibleWidth(shortestProfile)) return undefined;
+  const modelWidth = maxWidth - visibleWidth(suffix);
+  const prefix = sliceByColumn(
+    profile.model,
+    0,
+    Math.max(0, modelWidth - visibleWidth(MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS)),
+    true,
+  );
+  return `${prefix}${MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS}${suffix}`;
+}
+
+function renderMinimalSubagentsWidgetRowParts(
+  row: MinimalSubagentsWidgetRow,
+  task: string | undefined,
+  duration: string | undefined,
+  profile: string,
+  theme: Theme,
+): MinimalSubagentsWidgetRowParts {
+  const branch = row.depth > 0 ? `${"  ".repeat(row.depth)}╰─ ` : "  ";
+  const styledBranch = theme.fg("borderMuted", branch);
+  const agentId = row.structural ? theme.fg("muted", row.agentId) : theme.bold(row.agentId);
+  const identity = `${styledBranch}${renderSubagentStatusSymbol(theme, row.status)} ${agentId}`;
+  const status = `${renderSubagentStatusLabel(theme, row.status)}${
+    duration ? ` ${theme.fg("muted", duration)}` : ""
+  }`;
+  return {
+    identity,
+    status,
+    profile: theme.fg("muted", profile),
+    task: task ? theme.fg("muted", task) : undefined,
+  };
+}
+
+function minimalSubagentsWidgetRowFits(
+  parts: MinimalSubagentsWidgetRowParts,
+  separator: string,
+  width: number,
+): boolean {
+  return visibleWidth(joinMinimalSubagentsWidgetRow(parts, separator)) <= width;
+}
+
+function minimalSubagentsWidgetProfileBudget(
+  row: MinimalSubagentsWidgetRow,
+  task: string | undefined,
+  duration: string | undefined,
+  separator: string,
+  theme: Theme,
+  width: number,
+): number {
+  const fixedParts = renderMinimalSubagentsWidgetRowParts(row, task, duration, "", theme);
+  return width - visibleWidth(joinMinimalSubagentsWidgetRow(fixedParts, separator));
+}
+
+function renderMinimalSubagentsWidgetRow(
+  row: MinimalSubagentsWidgetRow,
+  width: number,
+  theme: Theme,
+): string {
+  const separator = theme.fg("dim", MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT);
+  const task = row.task?.replace(/\s+/g, " ").trim() || undefined;
+  const duration = row.status === "unavailable" ? undefined : formatSubagentDuration(row.elapsedMs);
+  const fullProfile = formatMinimalSubagentsRuntimeProfile(row.runtimeProfile);
+  if (!fullProfile) return "";
+
+  const completeParts = renderMinimalSubagentsWidgetRowParts(
+    row,
+    task,
+    duration,
+    fullProfile,
+    theme,
+  );
+  if (minimalSubagentsWidgetRowFits(completeParts, separator, width)) {
+    return joinMinimalSubagentsWidgetRow(completeParts, separator);
+  }
+
+  const partsWithoutTask = renderMinimalSubagentsWidgetRowParts(
+    row,
+    undefined,
+    duration,
+    fullProfile,
+    theme,
+  );
+  if (minimalSubagentsWidgetRowFits(partsWithoutTask, separator, width)) {
+    return joinMinimalSubagentsWidgetRow(partsWithoutTask, separator);
+  }
+
+  const profileBudget = minimalSubagentsWidgetProfileBudget(
+    row,
+    undefined,
+    duration,
+    separator,
+    theme,
+    width,
+  );
+  const shortenedProfile = formatMinimalSubagentsRuntimeProfile(row.runtimeProfile, profileBudget);
+  if (shortenedProfile) {
+    const shortenedParts = renderMinimalSubagentsWidgetRowParts(
+      row,
+      undefined,
+      duration,
+      shortenedProfile,
+      theme,
+    );
+    if (minimalSubagentsWidgetRowFits(shortenedParts, separator, width)) {
+      return joinMinimalSubagentsWidgetRow(shortenedParts, separator);
+    }
+  }
+
+  if (duration) {
+    const noDurationBudget = minimalSubagentsWidgetProfileBudget(
+      row,
+      undefined,
+      undefined,
+      separator,
+      theme,
+      width,
+    );
+    const noDurationProfile = formatMinimalSubagentsRuntimeProfile(
+      row.runtimeProfile,
+      noDurationBudget,
+    );
+    if (noDurationProfile) {
+      const noDurationParts = renderMinimalSubagentsWidgetRowParts(
+        row,
+        undefined,
+        undefined,
+        noDurationProfile,
+        theme,
+      );
+      if (minimalSubagentsWidgetRowFits(noDurationParts, separator, width)) {
+        return joinMinimalSubagentsWidgetRow(noDurationParts, separator);
+      }
+    }
+  }
+
+  const shortestProfile = formatMinimalSubagentsRuntimeProfile(
+    row.runtimeProfile,
+    visibleWidth(`${MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS}:${row.runtimeProfile.thinking_level}`),
+  )!;
+  const lastResortParts = renderMinimalSubagentsWidgetRowParts(
+    row,
+    undefined,
+    undefined,
+    shortestProfile,
+    theme,
+  );
+  return truncateToWidth(
+    joinMinimalSubagentsWidgetRow(lastResortParts, separator),
+    width,
+    MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS,
+  );
+}
+
 /** Render a responsive widget snapshot with ANSI-safe terminal-width truncation. */
 export function renderMinimalSubagentsWidgetLines(
   view: MinimalSubagentsWidgetView,
@@ -142,7 +339,7 @@ export function renderMinimalSubagentsWidgetLines(
   theme: Theme,
 ): string[] {
   if (width <= 0) return [];
-  const separator = theme.fg("dim", "  ·  ");
+  const separator = theme.fg("dim", MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT);
   const activity =
     view.runningCount > 0
       ? theme.fg("accent", `${view.runningCount} running`)
@@ -159,27 +356,18 @@ export function renderMinimalSubagentsWidgetLines(
         .filter((part): part is string => Boolean(part))
         .join(separator),
       width,
-      "…",
+      MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS,
     ),
   ];
-  for (const row of view.rows) {
-    const duration = formatSubagentDuration(row.elapsedMs);
-    const task = row.task?.replace(/\s+/g, " ").trim();
-    const branch =
-      row.depth > 0
-        ? theme.fg("borderMuted", `${"  ".repeat(row.depth)}╰─ `)
-        : theme.fg("borderMuted", "  ");
-    const agentId = row.structural ? theme.fg("muted", row.agentId) : theme.bold(row.agentId);
-    const parts = [
-      `${branch}${renderSubagentStatusSymbol(theme, row.status)} ${agentId}`,
-      row.structural ? undefined : renderSubagentStatusLabel(theme, row.status),
-      task ? theme.fg("muted", task) : undefined,
-      duration ? theme.fg("muted", duration) : undefined,
-    ].filter((part): part is string => Boolean(part));
-    lines.push(truncateToWidth(parts.join(separator), width, "…"));
-  }
+  for (const row of view.rows) lines.push(renderMinimalSubagentsWidgetRow(row, width, theme));
   if (view.overflowCount > 0) {
-    lines.push(truncateToWidth(theme.fg("dim", `  …  +${view.overflowCount} more`), width, "…"));
+    lines.push(
+      truncateToWidth(
+        theme.fg("dim", `  …  +${view.overflowCount} more`),
+        width,
+        MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS,
+      ),
+    );
   }
   return lines;
 }

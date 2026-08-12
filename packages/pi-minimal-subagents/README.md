@@ -127,3 +127,10 @@ falls back to unlinking its session file. Each Child Agent has a persistent
 JSONL session. Append-only Root Agent Registry entries retain hierarchy and
 Delivery Evidence across reloads. Forking cancels and drains active work, then
 clones child session leaves so the fork receives an independent hierarchy.
+
+## Status and TUI
+
+Visible Child Agent rows show the canonical `provider/model:thinking` Runtime
+Profile. Status uses the live Runtime Profile while a runtime exists and falls
+back to the immutable Launch Contract otherwise. Live changes are observational:
+they do not rewrite persistence or change nested spawn defaults.
