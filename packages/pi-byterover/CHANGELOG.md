@@ -1,5 +1,11 @@
 # pi-byterover
 
+## 0.2.5
+
+### Patch Changes
+
+- 1c87f4a: Migrate the extension to the shared source-TypeScript monorepo package contract.
+
 ## 0.2.4
 
 ### Patch Changes
