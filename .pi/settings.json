@@ -10,31 +10,6 @@
         "-packages/pi-git-status-widget/src/index.ts",
         "-packages/pi-byterover/src/index.ts"
       ]
-    },
-    {
-      "source": "npm:pi-adaptive-thinking",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-minimal-subagents",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-bible-verses",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-tps-tracker",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-git-status-widget",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
     }
   ]
 }
