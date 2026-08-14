@@ -52,18 +52,17 @@ function childRuntime(
     isRunning: false,
     runPrompt: vi.fn(async () => outcome),
     runMessage: vi.fn(async () => outcome),
-    steerCoordinatorMessage: vi.fn<() => Promise<void>>(async () => undefined),
+    queueCoordinatorMessage: vi.fn<() => Promise<void>>(async () => undefined),
     abort: vi.fn<() => Promise<void>>(async () => undefined),
     dispose: vi.fn(),
     getRuntimeProfile: vi.fn<() => RuntimeProfile | undefined>(() => runtimeProfile),
     snapshotCommittedMessages: vi.fn(() => []),
     hasDeliveryEvidence: vi.fn(() => false),
     getUsage: vi.fn(() => undefined),
-    cloneSession: vi.fn(async () => ({ sessionFile: "/clone.jsonl", sessionId: "clone" })),
   } satisfies ChildAgentRuntime;
 }
 
-function coordinatorFixture(runtime = childRuntime()) {
+function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs = 0) {
   const registryEvents: unknown[] = [];
   const sessions = {
     createIdentity: vi.fn<(agent: PersistedAgent) => { sessionFile: string; sessionId: string }>(
@@ -95,7 +94,7 @@ function coordinatorFixture(runtime = childRuntime()) {
     trashSessionFile: vi.fn<(sessionFile: string) => Promise<void>>(async () => undefined),
   };
   const root = {
-    steerCoordinatorMessage: vi.fn(async (): Promise<void> => undefined),
+    queueCoordinatorMessage: vi.fn(async (): Promise<void> => undefined),
     hasDeliveryEvidence: vi.fn(() => false),
   };
   const notify = vi.fn();
@@ -108,7 +107,7 @@ function coordinatorFixture(runtime = childRuntime()) {
     root,
     notify,
     maxSubagentDepth: 2,
-    automaticDeliveryGraceMs: 0,
+    automaticDeliveryGraceMs,
     now: () => new Date("2026-01-01T00:00:00.000Z"),
   } as unknown as CoordinatorDependencies;
   return {
@@ -355,11 +354,17 @@ describe("minimal subagents coordinator", () => {
         { message: "Need action" },
         "child:turn-message",
       ),
-    ).resolves.toEqual({ agent_id: "root", delivered: true });
-    expect(explicit.root.steerCoordinatorMessage).toHaveBeenCalledWith(
+    ).resolves.toMatchObject({
+      agent_id: "root",
+      message_id: expect.any(String),
+      disposition: "queued",
+    });
+    expect(explicit.root.queueCoordinatorMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         customType: "minimal-subagents.message",
-        content: "Need action",
+        content: expect.stringContaining(
+          "[Subagent message | agent=child | turn=child:turn-message]",
+        ),
         details: expect.objectContaining({ source_turn_id: "child:turn-message" }),
       }),
     );
@@ -371,8 +376,8 @@ describe("minimal subagents coordinator", () => {
       caller,
     );
     await automatic.coordinator.waitForSettledOperations();
-    expect(automatic.root.steerCoordinatorMessage).toHaveBeenCalledOnce();
-    expect(automatic.root.steerCoordinatorMessage).toHaveBeenCalledWith(
+    expect(automatic.root.queueCoordinatorMessage).toHaveBeenCalledOnce();
+    expect(automatic.root.queueCoordinatorMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         customType: "minimal-subagents.result",
         details: expect.objectContaining({ source_turn_id: spawned.turn_id }),
@@ -381,7 +386,7 @@ describe("minimal subagents coordinator", () => {
     automatic.root.hasDeliveryEvidence.mockReturnValue(true);
     await automatic.coordinator.reconcileDeliveries(true);
     await automatic.coordinator.reconcileDeliveries(true);
-    expect(automatic.root.steerCoordinatorMessage).toHaveBeenCalledOnce();
+    expect(automatic.root.queueCoordinatorMessage).toHaveBeenCalledOnce();
     expect(
       automatic.registryEvents.filter(
         (event) =>
@@ -389,6 +394,133 @@ describe("minimal subagents coordinator", () => {
           (event as { source_turn_id?: string }).source_turn_id === spawned.turn_id,
       ),
     ).toHaveLength(1);
+  });
+
+  it("returns a direct child message through an active wait before the terminal result", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator, root } = coordinatorFixture(runtime);
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Ask for context", agent_id: "worker" },
+      caller,
+    );
+    const terminalOrMessage = coordinator.wait("root", "worker", 1_000);
+
+    await expect(
+      coordinator.sendAgentMessage(
+        "worker",
+        { message: "Please provide the session paths" },
+        spawned.turn_id,
+      ),
+    ).resolves.toMatchObject({
+      agent_id: "root",
+      disposition: "delivered-via-wait",
+      message_id: expect.any(String),
+    });
+    await expect(terminalOrMessage).resolves.toMatchObject({
+      event: "message",
+      agent_id: "worker",
+      turn_id: spawned.turn_id,
+      message: "Please provide the session paths",
+    });
+    expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
+
+    const terminal = coordinator.wait("root", "worker", 1_000);
+    finishPrompt({ status: "completed", output: "Reviewed the sessions" });
+    await expect(terminal).resolves.toMatchObject({
+      event: "turn",
+      status: "completed",
+      output: "Reviewed the sessions",
+    });
+    expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
+  });
+
+  it("lets a wait claim a queued direct-parent message sent just before it", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator, root } = coordinatorFixture(runtime, 20);
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Ask for context", agent_id: "worker" },
+      caller,
+    );
+    await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
+
+    await expect(
+      coordinator.sendAgentMessage(
+        "worker",
+        { message: "Please provide the session paths" },
+        spawned.turn_id,
+      ),
+    ).resolves.toMatchObject({ disposition: "queued" });
+    await expect(
+      coordinator.sendAgentMessage(
+        "worker",
+        { message: "Also report the relevant timestamps" },
+        spawned.turn_id,
+      ),
+    ).resolves.toMatchObject({ disposition: "queued" });
+    expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
+
+    const message = await coordinator.wait("root", "worker", 1_000);
+    expect(message).toMatchObject({
+      event: "message",
+      agent_id: "worker",
+      turn_id: spawned.turn_id,
+      message: "Please provide the session paths",
+    });
+    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      event: "message",
+      message: "Also report the relevant timestamps",
+    });
+
+    const terminal = coordinator.wait("root", "worker", 1_000);
+    finishPrompt({ status: "completed", output: "Reviewed the sessions" });
+    await expect(terminal).resolves.toMatchObject({ event: "turn", status: "completed" });
+    await coordinator.waitForSettledOperations();
+    expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
+  });
+
+  it("reserves automatic result delivery before later recipient messages", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator, root } = coordinatorFixture(runtime, 10);
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Complete", agent_id: "worker" },
+      caller,
+    );
+    await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
+
+    finishPrompt({ status: "completed", output: "terminal result" });
+    await vi.waitFor(() => expect(coordinator.snapshot().deliveries).toHaveLength(1));
+    await coordinator.sendAgentMessage(
+      "worker",
+      { message: "message after the turn" },
+      "worker:next-turn",
+    );
+    await coordinator.waitForSettledOperations();
+
+    const queuedMessages = root.queueCoordinatorMessage.mock.calls.map(
+      (call) => (call as unknown as [{ customType: string; content: string }])[0],
+    );
+    expect(queuedMessages.map((message) => message.customType)).toEqual([
+      "minimal-subagents.result",
+      "minimal-subagents.message",
+    ]);
+    expect(queuedMessages[0]).toMatchObject({
+      content: expect.stringContaining(`turn=${spawned.turn_id}`),
+    });
   });
 
   it("recursively deletes descendants post-order and durably tombstones every deleted ID", async () => {

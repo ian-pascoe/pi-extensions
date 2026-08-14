@@ -27,6 +27,19 @@ function toolOptions(
 }
 
 describe("minimal subagents coordinator tools", () => {
+  it("explains that named tool profiles and exact tool arrays are different", () => {
+    const schema = createCoordinatorToolSchemas(["provider/model"]);
+    const tools = schema.subagent.properties?.tools as {
+      description?: string;
+      anyOf?: Array<{ description?: string }>;
+    };
+    expect(tools.description).toContain('Use the string preset "read"');
+    expect(tools.description).toContain("An array grants exactly those named tools");
+    expect(
+      tools.anyOf?.some((branch) => branch.description?.includes("Exact ordinary tool names")),
+    ).toBe(true);
+  });
+
   it("gives root and explicit fanout callers all six coordinator tools", () => {
     const expected = [
       "subagent",

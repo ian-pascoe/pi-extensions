@@ -31,6 +31,7 @@ describe("minimal subagent capabilities", () => {
       availableTools: ["read", "grep", "find", "ls", "write"],
     };
     expect(resolveOrdinaryToolSelection("read", context)).toEqual(["read", "grep", "find", "ls"]);
+    expect(resolveOrdinaryToolSelection(["read"], context)).toEqual(["read"]);
     expect(() => resolveOrdinaryToolSelection(["missing"], context)).toThrow(
       "Minimal subagents tool resolution: unavailable tool: missing",
     );

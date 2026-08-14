@@ -8,11 +8,13 @@ vi.mock("node:child_process", () => ({
 }));
 import {
   buildDepthBoundSubagentPrompt,
+  captureChildTurnOutcome,
   createChildResourceLoaderOptions,
   createPersistentChildIdentity,
   findDeliveryEvidence,
   PiAgentSessionFactory,
 } from "../src/minimal-subagents-sessions.js";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { PersistedAgent } from "../src/minimal-subagents-types.js";
 
 const temporaryDirectories: string[] = [];
@@ -55,6 +57,36 @@ function persistedAgent(): PersistedAgent {
 }
 
 describe("minimal subagent sessions", () => {
+  it("retains a finalized assistant response when compaction replaces session context", async () => {
+    type Listener = (event: unknown) => void;
+    const listeners = new Set<Listener>();
+    const session = {
+      messages: [] as unknown[],
+      subscribe(listener: Listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    const outcome = await captureChildTurnOutcome(
+      session as never,
+      async () => {
+        const assistant = {
+          role: "assistant",
+          content: [{ type: "text", text: "completed before compaction" }],
+          stopReason: "stop",
+          timestamp: 1,
+        };
+        for (const listener of listeners) listener({ type: "message_end", message: assistant });
+        session.messages = [{ role: "compactionSummary", summary: "replacement" }];
+      },
+      () => false,
+    );
+    expect(outcome).toMatchObject({
+      status: "completed",
+      output: "completed before compaction",
+    });
+  });
+
   it("force-flushes persistent child identity before any model response", () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-session-"));
     temporaryDirectories.push(directory);
@@ -69,6 +101,53 @@ describe("minimal subagent sessions", () => {
     expect(contents).toContain('"customType":"minimal-subagents.identity"');
     expect(contents).toContain('"canonical_agent_id":"child"');
     expect(contents).toContain('"content":"hello"');
+  });
+
+  it("clones a child into a distinct session without mutating the source", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-fork-"));
+    temporaryDirectories.push(directory);
+    const source = SessionManager.create(directory, directory);
+    source.appendSessionInfo("source child");
+    source.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "source task" }],
+      timestamp: 1,
+    } as never);
+    source.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "source answer" }],
+      stopReason: "stop",
+      timestamp: 2,
+    } as never);
+    const sourceFile = source.getSessionFile();
+    if (!sourceFile) throw new Error("source session was not persisted");
+    const sourceBefore = readFileSync(sourceFile, "utf8");
+    const agent = persistedAgent();
+    agent.session_file = sourceFile;
+    agent.session_id = source.getSessionId();
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [],
+      eligibleModelIds: [],
+      modelScopeRestricted: false,
+      availableToolNames: [],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+
+    const clone = await factory.cloneSession(agent);
+    const cloneSession = SessionManager.open(clone.sessionFile, directory, directory);
+    expect(clone.sessionId).not.toBe(source.getSessionId());
+    expect(cloneSession.getSessionId()).toBe(clone.sessionId);
+    expect(readFileSync(sourceFile, "utf8")).toBe(sourceBefore);
+    expect(readFileSync(sourceFile, "utf8")).not.toContain("minimal-subagents.fork-clone");
+    expect(readFileSync(clone.sessionFile, "utf8")).toContain(
+      '"customType":"minimal-subagents.fork-clone"',
+    );
   });
 
   it("filters the exact coordinator entrypoint and extensions missing selected tools", () => {
@@ -150,6 +229,22 @@ describe("minimal subagent sessions", () => {
         [{ type: "message", message: { role: "toolResult", toolName: "subagent_wait", details } }],
         "child",
         "other",
+      ),
+    ).toBe(false);
+    expect(
+      findDeliveryEvidence(
+        [
+          {
+            type: "message",
+            message: {
+              role: "toolResult",
+              toolName: "subagent_wait",
+              details: { ...details, event: "message" },
+            },
+          },
+        ],
+        "child",
+        "turn",
       ),
     ).toBe(false);
   });

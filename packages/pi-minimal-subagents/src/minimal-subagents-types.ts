@@ -58,12 +58,27 @@ export interface TurnResult {
   elapsed_ms?: number;
 }
 
-/** Reports delivery of one direct message to an authorized adjacent agent. */
+/** Reports whether one direct message was handed to a wait, queued, or failed. */
+export type AgentMessageDisposition = "delivered-via-wait" | "queued" | "failed";
+
 export interface AgentMessageResult {
   agent_id: string;
-  delivered: boolean;
+  message_id: string;
+  disposition: AgentMessageDisposition;
   error?: string;
 }
+
+/** Reports one coordination message returned before the source turn settles. */
+export interface WaitMessageResult {
+  event: "message";
+  agent_id: string;
+  turn_id: string;
+  message_id: string;
+  message: string;
+}
+
+/** Reports one terminal child turn returned by subagent_wait. */
+export type WaitResult = WaitMessageResult | ({ event: "turn" } & TurnResult);
 
 /** Provides bounded hierarchy, usage, and best-known Runtime Profile data for one persistent agent. */
 export interface AgentSummary extends RuntimeProfile {
@@ -164,6 +179,7 @@ export interface CoordinatorMessage {
     source_agent_id: string;
     destination_agent_id?: string;
     source_turn_id: string;
+    message_id: string;
     status?: TurnStatus;
     elapsed_ms?: number;
     usage?: Usage;
@@ -182,8 +198,8 @@ export interface ChildAgentRuntime {
     callerThinkingLevel: ThinkingLevel,
   ): Promise<RuntimeTurnOutcome>;
   runMessage(message: CoordinatorMessage): Promise<RuntimeTurnOutcome>;
-  /** Steer one typed coordinator message into the child session. */
-  steerCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
+  /** Queue one typed coordinator message into the child session. */
+  queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
   /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
@@ -191,7 +207,6 @@ export interface ChildAgentRuntime {
   snapshotCommittedMessages(): AgentMessage[];
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean;
   getUsage(): Usage | undefined;
-  cloneSession(): Promise<{ sessionFile: string; sessionId: string }>;
 }
 
 /** Identifies one writable child JSONL session owned by a coordinator root. */
@@ -221,8 +236,8 @@ export interface AgentSessionFactory {
 
 /** Abstracts root message delivery and durable delivery-evidence lookup. */
 export interface RootConversationEndpoint {
-  /** Steer one typed coordinator message into the root conversation. */
-  steerCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
+  /** Queue one typed coordinator message into the root conversation. */
+  queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean;
 }
 

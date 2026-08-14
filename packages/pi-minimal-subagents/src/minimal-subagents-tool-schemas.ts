@@ -6,10 +6,20 @@ const SessionContextSchema = StringEnum(["inherit", "compact", "omit"] as const)
 const ProjectContextSchema = StringEnum(["inherit", "omit"] as const);
 const DelegationSchema = StringEnum(["none", "fanout"] as const);
 const ThinkingLevelSchema = StringEnum(THINKING_LEVELS);
-const ToolSelectionSchema = Type.Union([
-  StringEnum(["none", "read", "modify"] as const),
-  Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
-]);
+const ToolSelectionSchema = Type.Union(
+  [
+    StringEnum(["none", "read", "modify"] as const),
+    Type.Array(Type.String({ minLength: 1 }), {
+      uniqueItems: true,
+      description:
+        "Exact ordinary tool names. Arrays are not bundle names; use the string preset `read` or `modify` for bundled capabilities.",
+    }),
+  ],
+  {
+    description:
+      'Use the string preset "read" for read, grep, find, and ls; use "modify" for the read bundle plus bash, edit, and write. An array grants exactly those named tools.',
+  },
+);
 const FRIENDLY_AGENT_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
 const CANONICAL_AGENT_ID_PATTERN =
   "^(?:root\\.)?[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:\\.[A-Za-z0-9][A-Za-z0-9_-]{0,63})*$";

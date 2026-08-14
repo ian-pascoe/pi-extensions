@@ -68,7 +68,7 @@ function createRootConversationEndpoint(
   context: ExtensionContext,
 ): RootConversationEndpoint {
   return {
-    async steerCoordinatorMessage(message) {
+    async queueCoordinatorMessage(message) {
       pi.sendMessage(
         {
           customType: message.customType,

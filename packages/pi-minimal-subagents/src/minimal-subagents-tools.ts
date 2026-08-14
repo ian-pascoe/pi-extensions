@@ -152,7 +152,7 @@ export function createCoordinatorToolDefinitions(
     name: "agent_message",
     label: "Agent Message",
     description:
-      "Send one mid-turn coordination message to a direct parent, direct sibling, or direct child when the recipient must act before the caller's turn finishes.",
+      "Send one mid-turn coordination message to a direct parent, direct sibling, or direct child. The result says whether it was delivered through an active wait, queued for the recipient, or failed.",
     promptSnippet: "Coordinate required mid-turn action with one adjacent agent",
     parameters: options.schemas.agent_message,
     async execute(toolCallId, parameters) {
@@ -175,7 +175,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's exact active turn, or return its latest settled turn immediately. Timeout never cancels the child.",
+      "Wait for one direct child's exact active turn, or return its latest settled turn immediately. A Wait Event containing a Coordination Message may arrive first as event=message; call again for the terminal turn result. Timeout never cancels the child.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     async execute(_toolCallId, parameters, signal, onUpdate) {

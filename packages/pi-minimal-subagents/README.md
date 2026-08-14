@@ -130,6 +130,21 @@ children: `subagent`, `agent_message`, `subagent_wait`, `subagent_status`,
 only the three adjacent-coordination tools: `agent_message`, `subagent_wait`,
 and `subagent_status`.
 
+The `subagent` `tools` argument distinguishes capability presets from exact
+lists: `"read"` grants `read`, `grep`, `find`, and `ls`; `"modify"` adds
+`bash`, `edit`, and `write`; an array such as `["read"]` grants exactly the
+named tool and does not expand a preset. Use the string preset when a child
+needs the complete read-only discovery bundle.
+
+`agent_message` reports whether a message was delivered through an active
+parent wait, queued for the recipient, or failed. `subagent_wait` can return an
+intermediate Wait Event containing a Coordination Message before the child turn
+settles; call it again for the terminal turn result. Automatic results reserve
+their recipient queue slot before the delivery grace period, so an earlier
+turn's result cannot be overtaken by a later message. Delivered messages
+include the source agent and turn identity in the model-visible envelope and in
+persisted details.
+
 Deleting a child first uses the optional `trash` command when available and
 falls back to unlinking its session file. Each Child Agent has a persistent
 JSONL session. Append-only Root Agent Registry entries retain hierarchy and

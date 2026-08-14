@@ -17,6 +17,7 @@ import {
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import { stripCoordinatorMessageEnvelope } from "./minimal-subagents-message-envelope.js";
 export type CoordinatorToolName =
   | "subagent"
   | "agent_message"
@@ -45,6 +46,9 @@ const SUBAGENT_STATUS_PRESENTATION: Record<string, { symbol: string; color: Them
   unavailable: { symbol: "!", color: "warning" },
   idle: { symbol: "○", color: "dim" },
   delivered: { symbol: "→", color: "accent" },
+  "delivered-via-wait": { symbol: "→", color: "accent" },
+  queued: { symbol: "↗", color: "accent" },
+  message: { symbol: "→", color: "accent" },
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -68,15 +72,17 @@ function asNumber(value: unknown): number | undefined {
 }
 
 function coordinatorMessageText(content: unknown): string {
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return stripCoordinatorMessageEnvelope(content);
   if (!Array.isArray(content)) return "";
-  return content
-    .map((item) => {
-      const block = asRecord(item);
-      return block?.type === "text" ? (asString(block.text) ?? "") : "";
-    })
-    .filter(Boolean)
-    .join("\n");
+  return stripCoordinatorMessageEnvelope(
+    content
+      .map((item) => {
+        const block = asRecord(item);
+        return block?.type === "text" ? (asString(block.text) ?? "") : "";
+      })
+      .filter(Boolean)
+      .join("\n"),
+  );
 }
 
 function toolResultText(result: AgentToolResult<unknown>): string {
@@ -296,15 +302,15 @@ function renderMessageResult(
   const agentId = asString(details.agent_id) ?? asString(args.agent_id) ?? "parent";
   const historicalBehavior = asString(details.behavior) ?? asString(args.behavior);
   const metrics = historicalBehavior ? [historicalBehavior] : [];
-  const delivered = details.delivered === true;
-  const summary = delivered
-    ? renderSubagentSummary(theme, "delivered", agentId, metrics)
-    : renderSubagentSummary(theme, "failed", agentId, metrics);
+  const disposition =
+    asString(details.disposition) ?? (details.delivered === true ? "delivered" : "failed");
+  const summary = renderSubagentSummary(theme, disposition, agentId, metrics);
   if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
   appendSection(container, theme, "Message", asString(args.message) ?? "(message unavailable)");
   appendSection(container, theme, "Recipient", agentId);
+  appendSection(container, theme, "Disposition", disposition);
   const error = asString(details.error);
   if (error) appendSection(container, theme, "Error", error);
   return container;
@@ -317,7 +323,12 @@ function renderWaitResult(
   args: Record<string, unknown>,
 ): Component {
   const agentId = asString(details.agent_id) ?? asString(args.agent_id) ?? "agent";
-  const status = options.isPartial ? "waiting" : (asString(details.status) ?? "completed");
+  const event = asString(details.event);
+  const status = options.isPartial
+    ? "waiting"
+    : event === "message"
+      ? "message"
+      : (asString(details.status) ?? "completed");
   const duration = formatSubagentDuration(asNumber(details.elapsed_ms));
   const usage = asRecord(details.usage) as Usage | undefined;
   const tokens = formatSubagentTokenCount(usage?.totalTokens);
@@ -331,6 +342,18 @@ function renderWaitResult(
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
   container.addChild(renderLabelValue(theme, "Turn", asString(details.turn_id) ?? "unknown"));
+  if (event === "message") {
+    appendSection(
+      container,
+      theme,
+      "Message",
+      asString(details.message) ?? "(message unavailable)",
+    );
+    container.addChild(
+      renderLabelValue(theme, "Message ID", asString(details.message_id) ?? "unknown"),
+    );
+    return container;
+  }
   const output = asString(details.output) ?? "";
   if (status === "completed") {
     appendSection(
@@ -611,9 +634,19 @@ const COORDINATOR_DETAIL_VALIDATORS: Record<
     asString(details.turn_id) !== undefined &&
     asString(details.status) !== undefined,
   agent_message: (details) =>
-    asString(details.agent_id) !== undefined && typeof details.delivered === "boolean",
-  subagent_wait: (details) =>
-    asString(details.agent_id) !== undefined && asString(details.status) !== undefined,
+    asString(details.agent_id) !== undefined &&
+    (asString(details.disposition) !== undefined || typeof details.delivered === "boolean"),
+  subagent_wait: (details) => {
+    if (asString(details.event) === "message") {
+      return (
+        asString(details.agent_id) !== undefined &&
+        asString(details.turn_id) !== undefined &&
+        asString(details.message_id) !== undefined &&
+        asString(details.message) !== undefined
+      );
+    }
+    return asString(details.agent_id) !== undefined && asString(details.status) !== undefined;
+  },
   subagent_status: (details) =>
     Array.isArray(details.agents) || asRecord(details.agent) !== undefined,
   subagent_cancel: (details) =>
@@ -682,10 +715,12 @@ function renderCoordinatorMessage(
   const source = asString(details?.source_agent_id) ?? "unknown";
   const destination = asString(details?.destination_agent_id) ?? "recipient";
   const status = asString(details?.status);
+  const sourceTurn = asString(details?.source_turn_id);
   const route = `${theme.fg("accent", theme.bold(source))} ${theme.fg("dim", "→")} ${theme.fg("accent", theme.bold(destination))}`;
   const heading = [
     `${theme.fg(symbol === "✓" ? "success" : "accent", symbol)} ${theme.bold(label)}`,
     route,
+    sourceTurn ? theme.fg("dim", `turn ${sourceTurn}`) : undefined,
     status ? renderSubagentStatusLabel(theme, status) : undefined,
   ]
     .filter((part): part is string => Boolean(part))

@@ -16,6 +16,7 @@ import {
   SessionManager,
   SettingsManager,
   sessionEntryToContextMessages,
+  type AgentSessionEvent,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -227,7 +228,12 @@ export function findDeliveryEvidence(
           ? candidate.message.details
           : undefined;
     if (!details || typeof details !== "object") return false;
-    const key = details as { source_agent_id?: string; source_turn_id?: string };
+    const key = details as {
+      event?: string;
+      source_agent_id?: string;
+      source_turn_id?: string;
+    };
+    if (candidate.type === "message" && key.event === "message") return false;
     return key.source_agent_id === sourceAgentId && key.source_turn_id === sourceTurnId;
   });
 }
@@ -246,6 +252,77 @@ function assistantText(message: AgentMessage | undefined): string {
     .filter((content) => content.type === "text")
     .map((content) => content.text)
     .join("\n");
+}
+
+/** Collects finalized turn messages without relying on mutable post-compaction session state. */
+export class ChildTurnOutcomeCollector {
+  private readonly messages: AgentMessage[] = [];
+  private readonly unsubscribe: () => void;
+
+  constructor(session: Pick<AgentSession, "subscribe">) {
+    this.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+      if (event.type === "message_end") this.messages.push(event.message);
+    });
+  }
+
+  dispose(): void {
+    this.unsubscribe();
+  }
+
+  toOutcome(aborted: boolean): RuntimeTurnOutcome {
+    const finalAssistant = [...this.messages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    if (!finalAssistant || finalAssistant.role !== "assistant") {
+      return {
+        status: aborted ? "cancelled" : "failed",
+        output: "",
+        error: "No terminal assistant response",
+      };
+    }
+    if (finalAssistant.stopReason === "aborted") {
+      return {
+        status: "cancelled",
+        output: assistantText(finalAssistant),
+        error: finalAssistant.errorMessage,
+        usage: sumUsage(this.messages),
+      };
+    }
+    if (finalAssistant.stopReason === "error") {
+      return {
+        status: "failed",
+        output: assistantText(finalAssistant),
+        error: finalAssistant.errorMessage ?? "Provider request failed",
+        usage: sumUsage(this.messages),
+      };
+    }
+    return {
+      status: "completed",
+      output: assistantText(finalAssistant),
+      usage: sumUsage(this.messages),
+    };
+  }
+}
+
+/** Run one child operation while retaining its finalized outcome across compaction. */
+export async function captureChildTurnOutcome(
+  session: Pick<AgentSession, "subscribe">,
+  operation: () => Promise<void>,
+  isAborted: () => boolean,
+): Promise<RuntimeTurnOutcome> {
+  const collector = new ChildTurnOutcomeCollector(session);
+  try {
+    await operation();
+    return collector.toOutcome(isAborted());
+  } catch (error) {
+    return {
+      status: isAborted() ? "cancelled" : "failed",
+      output: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    collector.dispose();
+  }
 }
 
 class PiChildAgentRuntime implements ChildAgentRuntime {
@@ -308,7 +385,7 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     );
   }
 
-  async steerCoordinatorMessage(message: CoordinatorMessage): Promise<void> {
+  async queueCoordinatorMessage(message: CoordinatorMessage): Promise<void> {
     await this.session.sendCustomMessage(
       {
         customType: message.customType,
@@ -355,59 +432,9 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     return sumUsage(this.session.messages);
   }
 
-  async cloneSession(): Promise<{ sessionFile: string; sessionId: string }> {
-    const leafId = this.session.sessionManager.getLeafId();
-    if (!leafId)
-      throw new Error(`Minimal subagents fork clone: ${this.sessionId} has no child leaf`);
-    const sessionFile = this.session.sessionManager.createBranchedSession(leafId);
-    if (!sessionFile)
-      throw new Error(`Minimal subagents fork clone: ${this.sessionId} is not persistent`);
-    return { sessionFile, sessionId: this.session.sessionManager.getSessionId() };
-  }
-
   private async captureTurn(operation: () => Promise<void>): Promise<RuntimeTurnOutcome> {
-    const messageStart = this.session.messages.length;
     this.aborted = false;
-    try {
-      await operation();
-    } catch (error) {
-      return {
-        status: this.aborted ? "cancelled" : "failed",
-        output: "",
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-    const turnMessages = this.session.messages.slice(messageStart);
-    const finalAssistant = [...turnMessages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    if (!finalAssistant || finalAssistant.role !== "assistant") {
-      return {
-        status: this.aborted ? "cancelled" : "failed",
-        output: "",
-        error: "No terminal assistant response",
-      };
-    }
-    if (finalAssistant.stopReason === "aborted") {
-      return {
-        status: "cancelled",
-        output: assistantText(finalAssistant),
-        error: finalAssistant.errorMessage,
-      };
-    }
-    if (finalAssistant.stopReason === "error") {
-      return {
-        status: "failed",
-        output: assistantText(finalAssistant),
-        error: finalAssistant.errorMessage ?? "Provider request failed",
-        usage: sumUsage(turnMessages),
-      };
-    }
-    return {
-      status: "completed",
-      output: assistantText(finalAssistant),
-      usage: sumUsage(turnMessages),
-    };
+    return captureChildTurnOutcome(this.session, operation, () => this.aborted);
   }
 
   private async compactImportedContext(
@@ -546,12 +573,13 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     const sessionFile = source.createBranchedSession(leafId);
     if (!sessionFile)
       throw new Error(`Minimal subagents fork clone: ${agent.agent_id} is not persistent`);
-    source.appendCustomEntry("minimal-subagents.fork-clone", {
+    const clone = SessionManager.open(sessionFile, this.options.sessionDir, this.options.cwd);
+    clone.appendCustomEntry("minimal-subagents.fork-clone", {
       source_agent_id: agent.agent_id,
       source_session_id: agent.session_id,
     });
     if (!existsSync(sessionFile)) {
-      const lines = [source.getHeader(), ...source.getEntries()]
+      const lines = [clone.getHeader(), ...clone.getEntries()]
         .filter((entry) => entry !== null)
         .map((entry) => JSON.stringify(entry))
         .join("\n");
@@ -560,7 +588,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     if (!existsSync(sessionFile)) {
       throw new Error(`Minimal subagents fork clone: clone was not flushed for ${agent.agent_id}`);
     }
-    return { sessionFile, sessionId: source.getSessionId() };
+    return { sessionFile, sessionId: clone.getSessionId() };
   }
 
   async trashSessionFile(sessionFile: string): Promise<void> {
