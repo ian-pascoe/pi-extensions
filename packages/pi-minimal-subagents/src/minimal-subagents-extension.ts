@@ -84,6 +84,7 @@ function createRootConversationEndpoint(
     },
     hasDeliveryEvidence: (sourceAgentId, sourceTurnId) =>
       findDeliveryEvidence(context.sessionManager.getEntries(), sourceAgentId, sourceTurnId),
+    isIdle: () => context.isIdle(),
   };
 }
 
@@ -262,6 +263,12 @@ export default function minimalSubagentsExtension(pi: ExtensionAPI) {
       await coordinator.reconcileDeliveries();
       uiController?.refresh();
     }
+  });
+
+  pi.on("agent_settled", async () => {
+    if (!coordinator) return;
+    coordinator.markRecipientIdle("root");
+    uiController?.refresh();
   });
 
   pi.on("session_shutdown", async (event, context) => {

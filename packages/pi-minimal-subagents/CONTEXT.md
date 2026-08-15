@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Provide persistent, capability-bounded nested agents whose hierarchy and delivery state survive Pi session lifecycle changes.
+Provide persistent, capability-bounded nested agents whose hierarchy and terminal-result delivery state survive Pi session lifecycle changes.
 
 ## Glossary
 
@@ -20,9 +20,16 @@ Provide persistent, capability-bounded nested agents whose hierarchy and deliver
 An active direct-parent wait is the first delivery path for a child
 Coordination Message. Consuming a message wakes that wait without also
 enqueueing a duplicate Pi steer message; the parent calls `subagent_wait`
-again to observe the same source turn's terminal result. If no matching wait is
-active, the message enters the recipient queue. Automatic terminal results
-reserve that queue before their grace period, preserving source-turn order.
+again to observe the same source turn's terminal result. A successful message
+wait claims the complete source turn, keeping later Coordination Messages
+available to subsequent waits. Returning the terminal Wait Event claims the
+terminal delivery and suppresses its automatic Pi message. Without a wait
+claim, Coordination Messages and automatic results use the ordered recipient
+queue. Automatic fallback does not enter an active recipient conversation;
+each deferred item retains its recipient-queue reservation until the recipient
+settles or a wait claims it, preserving ordering across source turns. Held
+reservations remain coordinator-owned pending work and drain before reload or
+fork disposal.
 
 Child turn outcomes are collected from finalized session events rather than a
 slice of mutable in-memory context, so compaction cannot erase a response that

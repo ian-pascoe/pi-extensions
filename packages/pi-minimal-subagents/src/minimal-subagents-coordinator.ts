@@ -63,6 +63,11 @@ interface PendingParentMessage {
   cancelGrace?: () => void;
 }
 
+interface CancelableWait {
+  promise: Promise<void>;
+  cancel: () => void;
+}
+
 function agentDeliveryKey(agentId: string, turnId: string): string {
   return `${agentId}\u0000${turnId}`;
 }
@@ -86,6 +91,10 @@ function terminalWaitResult(result: TurnResult): WaitResult {
   return { event: "turn", ...structuredClone(result) };
 }
 
+function automaticDeliveryShouldStop(delivery: PersistedDelivery): boolean {
+  return delivery.settled || delivery.path === "wait";
+}
+
 /** One root-owned coordinator for persistent nested Pi child sessions. */
 export class MinimalSubagentsCoordinator {
   private readonly agents = new Map<string, PersistedAgent>();
@@ -97,7 +106,11 @@ export class MinimalSubagentsCoordinator {
   private readonly deliveries = new Map<string, PersistedDelivery>();
   private readonly waiters = new Map<string, Set<TurnWaiter>>();
   private readonly pendingParentMessages = new Map<string, PendingParentMessage[]>();
+  private readonly waitClaimedTurns = new Set<string>();
   private readonly recipientQueues = new Map<string, Promise<unknown>>();
+  private readonly recipientIdleWaiters = new Map<string, Set<() => void>>();
+  private readonly automaticDeliveryKeys = new Set<string>();
+  private readonly automaticDeliveryClaimWaiters = new Map<string, Set<() => void>>();
   private readonly backgroundOperations = new Set<Promise<void>>();
   private acceptingOperations = true;
   private shutdownPromise?: Promise<void>;
@@ -292,7 +305,7 @@ export class MinimalSubagentsCoordinator {
     }
   }
 
-  /** Wait for the exact active turn captured at invocation, or return the latest idle result. */
+  /** Wait for one exact turn and claim its message/result delivery from automatic fallback. */
   wait(
     callerId: string,
     agentId: string,
@@ -310,7 +323,10 @@ export class MinimalSubagentsCoordinator {
     const key = agentDeliveryKey(agentId, turnId);
     const pendingMessage = this.claimPendingParentMessage(callerId, agentId, turnId);
     if (pendingMessage) return Promise.resolve(pendingMessage);
-    if (!agent.active_turn_id) return Promise.resolve(terminalWaitResult(agent.latest_result!));
+    if (!agent.active_turn_id) {
+      this.claimTerminalDelivery(callerId, agent.latest_result!);
+      return Promise.resolve(terminalWaitResult(agent.latest_result!));
+    }
 
     return new Promise<WaitResult>((resolve, reject) => {
       const waiter: TurnWaiter = { callerId, resolve, reject, abortSignal: signal };
@@ -481,6 +497,10 @@ export class MinimalSubagentsCoordinator {
     this.deliveries.clear();
     this.waiters.clear();
     this.pendingParentMessages.clear();
+    this.waitClaimedTurns.clear();
+    this.recipientIdleWaiters.clear();
+    this.automaticDeliveryKeys.clear();
+    this.automaticDeliveryClaimWaiters.clear();
     this.acceptingOperations = true;
     this.shutdownPromise = undefined;
 
@@ -585,14 +605,19 @@ export class MinimalSubagentsCoordinator {
     }
   }
 
+  /** Release ordered automatic deliveries after one recipient conversation becomes idle. */
+  markRecipientIdle(agentId: string): void {
+    const waiters = this.recipientIdleWaiters.get(agentId);
+    this.recipientIdleWaiters.delete(agentId);
+    for (const resolve of waiters ?? []) resolve();
+  }
+
   /** Clone complete child leaves for root fork ownership without ever sharing source session paths. */
   async prepareFork(sourceRootSessionFile: string): Promise<ForkSnapshot> {
-    this.acceptingOperations = false;
     const activeRootChildren = this.childrenOf("root");
     for (const child of activeRootChildren) await this.cancelDuringShutdown(child.agent_id);
-    await Promise.allSettled(this.runtimeInitializations.values());
-    await Promise.allSettled(this.backgroundOperations);
-    await Promise.allSettled(this.recipientQueues.values());
+    await this.waitForSettledOperations();
+    this.acceptingOperations = false;
     const forkAgents: PersistedAgent[] = [];
     const failedSubtrees = new Set<string>();
 
@@ -639,6 +664,7 @@ export class MinimalSubagentsCoordinator {
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.acceptingOperations = false;
+    this.releaseAllRecipientIdleWaiters();
     this.shutdownPromise = this.finishShutdown();
     return this.shutdownPromise;
   }
@@ -811,16 +837,18 @@ export class MinimalSubagentsCoordinator {
     const directParentWaited = [...(turnWaiters ?? [])].some(
       (waiter) => waiter.callerId === agent.parent_id,
     );
+    const parentClaimedTurn = directParentWaited || this.waitClaimedTurns.has(waiterKey);
     for (const waiter of turnWaiters ?? []) {
       this.removeWaiter(waiterKey, waiter);
       waiter.resolve(terminalWaitResult(result));
     }
+    if (directParentWaited) this.waitClaimedTurns.delete(waiterKey);
     if (result.status === "completed") {
       const delivery: PersistedDelivery = {
         source_agent_id: agent.agent_id,
         source_turn_id: turnId,
         destination_agent_id: agent.parent_id,
-        path: directParentWaited ? "wait" : "message",
+        path: parentClaimedTurn ? "wait" : "message",
         settled: false,
         result: structuredClone(result),
       };
@@ -830,7 +858,7 @@ export class MinimalSubagentsCoordinator {
           delivery,
         }),
       );
-      if (!directParentWaited) {
+      if (!parentClaimedTurn) {
         this.trackBackgroundOperation(this.deliverAutomaticResult(result, delivery));
       }
       this.dependencies.notify?.({
@@ -845,17 +873,33 @@ export class MinimalSubagentsCoordinator {
         message: `${agent.agent_id} failed: ${result.error ?? "unknown error"}`,
       });
     }
+    this.markRecipientIdle(agent.agent_id);
   }
 
   private async deliverAutomaticResult(
     result: TurnResult,
     delivery: PersistedDelivery,
   ): Promise<void> {
+    const deliveryKey = agentDeliveryKey(delivery.source_agent_id, delivery.source_turn_id);
+    if (this.automaticDeliveryKeys.has(deliveryKey)) return;
+    this.automaticDeliveryKeys.add(deliveryKey);
     const graceMs = this.deliveryGraceMs();
     try {
       await this.enqueueRecipientDelivery(delivery.destination_agent_id, async () => {
         if (graceMs > 0) await new Promise((resolve) => setTimeout(resolve, graceMs));
-        if (delivery.settled) return;
+        if (automaticDeliveryShouldStop(delivery)) return;
+        if (this.hasDeliveryEvidence(delivery)) {
+          this.settleDelivery(delivery);
+          return;
+        }
+        if (!this.isRecipientIdle(delivery.destination_agent_id)) {
+          const idleWait = this.createRecipientIdleWait(delivery.destination_agent_id);
+          const claimWait = this.createAutomaticDeliveryClaimWait(deliveryKey);
+          await Promise.race([idleWait.promise, claimWait.promise]);
+          idleWait.cancel();
+          claimWait.cancel();
+        }
+        if (automaticDeliveryShouldStop(delivery)) return;
         if (this.hasDeliveryEvidence(delivery)) {
           this.settleDelivery(delivery);
           return;
@@ -884,6 +928,8 @@ export class MinimalSubagentsCoordinator {
           error: delivery.error,
         }),
       );
+    } finally {
+      this.automaticDeliveryKeys.delete(deliveryKey);
     }
   }
 
@@ -1203,6 +1249,7 @@ export class MinimalSubagentsCoordinator {
       (candidate) => candidate.callerId === destinationAgentId,
     );
     if (!waiter) return false;
+    this.waitClaimedTurns.add(key);
     this.removeWaiter(key, waiter);
     waiter.resolve({
       event: "message",
@@ -1227,6 +1274,11 @@ export class MinimalSubagentsCoordinator {
     if (index === undefined || index < 0 || !pendingMessages) return undefined;
     const pending = pendingMessages[index];
     if (!pending) return undefined;
+    this.waitClaimedTurns.add(key);
+    const sourceResult = this.agents.get(sourceAgentId)?.latest_result;
+    if (sourceResult?.turn_id === sourceTurnId) {
+      this.setTerminalDeliveryPathToWait(callerId, sourceResult);
+    }
     pending.claimed = true;
     pending.cancelGrace?.();
     pending.releaseClaim();
@@ -1258,6 +1310,8 @@ export class MinimalSubagentsCoordinator {
     pendingMessages.push(pending);
     this.pendingParentMessages.set(key, pendingMessages);
 
+    if (this.waitClaimedTurns.has(key)) return;
+
     const operation = this.enqueueRecipientDelivery(targetId, async () => {
       const graceMs = this.deliveryGraceMs();
       const gracePromise = new Promise<void>((resolve) => {
@@ -1274,7 +1328,13 @@ export class MinimalSubagentsCoordinator {
       await Promise.race([pending.claimPromise, gracePromise]);
       pending.cancelGrace?.();
       pending.cancelGrace = undefined;
-      if (pending.claimed) return;
+      if (pending.claimed || this.waitClaimedTurns.has(key)) return;
+      if (!this.isRecipientIdle(targetId)) {
+        const idleWait = this.createRecipientIdleWait(targetId);
+        await Promise.race([pending.claimPromise, idleWait.promise]);
+        idleWait.cancel();
+      }
+      if (pending.claimed || this.waitClaimedTurns.has(key)) return;
       this.removePendingParentMessage(key, pending);
       await this.deliverToRecipient(targetId, message);
     });
@@ -1296,6 +1356,82 @@ export class MinimalSubagentsCoordinator {
     const index = pendingMessages.indexOf(pending);
     if (index >= 0) pendingMessages.splice(index, 1);
     if (pendingMessages.length === 0) this.pendingParentMessages.delete(key);
+  }
+
+  private claimTerminalDelivery(callerId: string, result: TurnResult): void {
+    const key = agentDeliveryKey(result.agent_id, result.turn_id);
+    this.waitClaimedTurns.delete(key);
+    this.setTerminalDeliveryPathToWait(callerId, result);
+  }
+
+  private setTerminalDeliveryPathToWait(callerId: string, result: TurnResult): void {
+    const key = agentDeliveryKey(result.agent_id, result.turn_id);
+    const delivery = this.deliveries.get(key);
+    if (!delivery || delivery.destination_agent_id !== callerId || delivery.path === "wait") return;
+    delivery.path = "wait";
+    this.releaseAutomaticDeliveryClaimWaiters(key);
+    this.dependencies.registry.append(
+      createRegistryEvent(this.dependencies.registry.rootSessionId, "delivery-pending", {
+        delivery,
+      }),
+    );
+  }
+
+  private isRecipientIdle(agentId: string): boolean {
+    if (agentId === "root") return this.dependencies.root.isIdle();
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.active_turn_id) return false;
+    return !this.runtimes.get(agentId)?.isRunning;
+  }
+
+  private createRecipientIdleWait(agentId: string): CancelableWait {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiters = this.recipientIdleWaiters.get(agentId) ?? new Set();
+    waiters.add(release);
+    this.recipientIdleWaiters.set(agentId, waiters);
+    return {
+      promise,
+      cancel: () => {
+        const currentWaiters = this.recipientIdleWaiters.get(agentId);
+        currentWaiters?.delete(release);
+        if (currentWaiters?.size === 0) this.recipientIdleWaiters.delete(agentId);
+      },
+    };
+  }
+
+  private createAutomaticDeliveryClaimWait(deliveryKey: string): CancelableWait {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const waiters = this.automaticDeliveryClaimWaiters.get(deliveryKey) ?? new Set();
+    waiters.add(release);
+    this.automaticDeliveryClaimWaiters.set(deliveryKey, waiters);
+    return {
+      promise,
+      cancel: () => {
+        const currentWaiters = this.automaticDeliveryClaimWaiters.get(deliveryKey);
+        currentWaiters?.delete(release);
+        if (currentWaiters?.size === 0) this.automaticDeliveryClaimWaiters.delete(deliveryKey);
+      },
+    };
+  }
+
+  private releaseAutomaticDeliveryClaimWaiters(deliveryKey: string): void {
+    const waiters = this.automaticDeliveryClaimWaiters.get(deliveryKey);
+    this.automaticDeliveryClaimWaiters.delete(deliveryKey);
+    for (const resolve of waiters ?? []) resolve();
+  }
+
+  private releaseAllRecipientIdleWaiters(): void {
+    const allWaiters = [...this.recipientIdleWaiters.values()];
+    this.recipientIdleWaiters.clear();
+    for (const waiters of allWaiters) {
+      for (const resolve of waiters) resolve();
+    }
   }
 
   private async cancelDuringShutdown(agentId: string): Promise<void> {

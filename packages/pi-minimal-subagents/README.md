@@ -139,11 +139,15 @@ needs the complete read-only discovery bundle.
 `agent_message` reports whether a message was delivered through an active
 parent wait, queued for the recipient, or failed. `subagent_wait` can return an
 intermediate Wait Event containing a Coordination Message before the child turn
-settles; call it again for the terminal turn result. Automatic results reserve
-their recipient queue slot before the delivery grace period, so an earlier
-turn's result cannot be overtaken by a later message. Delivered messages
-include the source agent and turn identity in the model-visible envelope and in
-persisted details.
+settles; call it again for the terminal turn result. Once a wait returns an
+intermediate message, that wait path owns the rest of the source turn: later
+messages remain claimable by subsequent waits, and the terminal wait result
+suppresses duplicate automatic delivery. Automatic results reserve their
+recipient queue slot before the delivery grace period when no wait owns the
+turn, but they do not enter Pi while the recipient is active. Once the
+recipient settles, each deferred item resumes from its original queue position,
+preserving ordering across turns. Delivered messages include the source agent
+and turn identity in the model-visible envelope and in persisted details.
 
 Deleting a child first uses the optional `trash` command when available and
 falls back to unlinking its session file. Each Child Agent has a persistent

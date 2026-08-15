@@ -31,6 +31,6 @@ describe("minimal subagents shutdown", () => {
         idle = true;
       },
     });
-    expect(calls).toEqual(["children", "root", "children", "shutdown"]);
+    expect(calls).toEqual(["root", "children", "shutdown"]);
   });
 });

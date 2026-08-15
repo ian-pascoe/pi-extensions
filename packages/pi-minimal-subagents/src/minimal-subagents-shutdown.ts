@@ -21,9 +21,9 @@ export async function shutdownMinimalSubagentsSession(
   }
 
   while (true) {
+    if (!rootIdleGate.isRootIdle()) await rootIdleGate.waitForRootIdle();
     await coordinator.waitForSettledOperations();
     if (rootIdleGate.isRootIdle()) break;
-    await rootIdleGate.waitForRootIdle();
   }
   await coordinator.shutdownAfterSettling();
 }

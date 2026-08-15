@@ -49,6 +49,7 @@ vi.mock("../src/minimal-subagents-coordinator.js", () => ({
     }));
     scheduleDeliveryReconciliation = vi.fn();
     reconcileDeliveries = vi.fn(async () => undefined);
+    markRecipientIdle = vi.fn();
     waitForSettledOperations = vi.fn(async () => undefined);
     shutdownAfterSettling = vi.fn(async () => undefined);
     shutdown = vi.fn(async () => undefined);
@@ -179,6 +180,7 @@ describe("minimal subagents extension lifecycle", () => {
       "session_start",
       "session_before_fork",
       "message_end",
+      "agent_settled",
       "session_shutdown",
     ]);
     await handlers.get("session_start")!({ reason: "startup" }, context);
@@ -199,6 +201,8 @@ describe("minimal subagents extension lifecycle", () => {
     await handlers.get("message_end")!({ message: { role: "custom" } });
     await handlers.get("message_end")!({ message: { role: "user" } });
     expect(coordinator.reconcileDeliveries).toHaveBeenCalledTimes(2);
+    await handlers.get("agent_settled")!({});
+    expect(coordinator.markRecipientIdle).toHaveBeenCalledWith("root");
     await handlers.get("session_shutdown")!({ reason: "exit" }, context);
     expect(testDoubles.shutdownSession).toHaveBeenCalledOnce();
     expect(testDoubles.uiInstances[0]!.dispose).toHaveBeenCalledOnce();
