@@ -4,6 +4,7 @@ import type {
   CallerSnapshot,
   ChildAgentRuntime,
   CoordinatorDependencies,
+  CoordinatorMessage,
   PersistedAgent,
   RuntimeCreationRequest,
   RuntimeProfile,
@@ -23,6 +24,7 @@ function persistedAgent(
     spawn_entry_id: "entry",
     session_file: `/sessions/${agentId}.jsonl`,
     session_id: `session-${agentId}`,
+    session_leaf_id: `leaf-${agentId}`,
     launch_contract: {
       session_context: "inherit",
       project_context: "inherit",
@@ -49,15 +51,20 @@ function childRuntime(
   return {
     sessionFile: "/sessions/runtime.jsonl",
     sessionId: "runtime-session",
+    sessionLeafId: "runtime-leaf",
     isRunning: false,
     runPrompt: vi.fn(async () => outcome),
     runMessage: vi.fn(async () => outcome),
-    queueCoordinatorMessage: vi.fn<() => Promise<void>>(async () => undefined),
+    queueCoordinatorMessage: vi.fn<(message: CoordinatorMessage) => Promise<void>>(
+      async () => undefined,
+    ),
     abort: vi.fn<() => Promise<void>>(async () => undefined),
     dispose: vi.fn(),
     getRuntimeProfile: vi.fn<() => RuntimeProfile | undefined>(() => runtimeProfile),
     snapshotCommittedMessages: vi.fn(() => []),
-    hasDeliveryEvidence: vi.fn(() => false),
+    hasDeliveryEvidence: vi.fn<
+      (sourceAgentId: string, sourceTurnId: string, deliveryId?: string) => boolean
+    >(() => false),
     getUsage: vi.fn(() => undefined),
   } satisfies ChildAgentRuntime;
 }
@@ -65,12 +72,17 @@ function childRuntime(
 function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs = 0) {
   const registryEvents: unknown[] = [];
   const sessions = {
-    createIdentity: vi.fn<(agent: PersistedAgent) => { sessionFile: string; sessionId: string }>(
-      (agent) => ({
-        sessionFile: `/sessions/${agent.agent_id}.jsonl`,
-        sessionId: `session-${agent.agent_id}`,
-      }),
-    ),
+    createIdentity: vi.fn<
+      (agent: PersistedAgent) => {
+        sessionFile: string;
+        sessionId: string;
+        sessionLeafId: string;
+      }
+    >((agent) => ({
+      sessionFile: `/sessions/${agent.agent_id}.jsonl`,
+      sessionId: `session-${agent.agent_id}`,
+      sessionLeafId: `leaf-${agent.agent_id}`,
+    })),
     createRuntime: vi.fn<(request: RuntimeCreationRequest) => Promise<ChildAgentRuntime>>(
       async () => runtime,
     ),
@@ -86,16 +98,21 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
     resolveThinkingLevel: vi.fn((_model: string, thinking: string) => thinking),
     modelSupportsImages: vi.fn(() => true),
     cloneSession: vi.fn<
-      (agent: PersistedAgent) => Promise<{ sessionFile: string; sessionId: string }>
+      (
+        agent: PersistedAgent,
+      ) => Promise<{ sessionFile: string; sessionId: string; sessionLeafId: string }>
     >(async (agent) => ({
       sessionFile: `/fork/${agent.agent_id}.jsonl`,
       sessionId: `fork-${agent.agent_id}`,
+      sessionLeafId: `fork-leaf-${agent.agent_id}`,
     })),
-    trashSessionFile: vi.fn<(sessionFile: string) => Promise<void>>(async () => undefined),
+    trashSession: vi.fn<(agent: PersistedAgent) => Promise<void>>(async () => undefined),
   };
   const root = {
     queueCoordinatorMessage: vi.fn(async (): Promise<void> => undefined),
-    hasDeliveryEvidence: vi.fn(() => false),
+    hasDeliveryEvidence: vi.fn<
+      (sourceAgentId: string, sourceTurnId: string, deliveryId?: string) => boolean
+    >(() => false),
     isIdle: vi.fn(() => true),
   };
   const notify = vi.fn();
@@ -139,6 +156,7 @@ describe("minimal subagents coordinator", () => {
       return {
         sessionFile: `/sessions/${agent.agent_id}.jsonl`,
         sessionId: `session-${agent.agent_id}`,
+        sessionLeafId: `leaf-${agent.agent_id}`,
       };
     });
     sessions.createRuntime.mockImplementation(async () => {
@@ -164,6 +182,20 @@ describe("minimal subagents coordinator", () => {
     ).rejects.toThrow("identity disk full");
     expect(failedFixture.sessions.createRuntime).not.toHaveBeenCalled();
     expect(failedFixture.coordinator.snapshot().agents).toEqual([]);
+
+    const leaflessFixture = coordinatorFixture();
+    leaflessFixture.sessions.createIdentity.mockReturnValue({
+      sessionFile: "/sessions/leafless.jsonl",
+      sessionId: "session-leafless",
+    } as never);
+    await expect(
+      leaflessFixture.coordinator.spawn(
+        "root",
+        { task: "Require a selected leaf", agent_id: "leafless" },
+        caller,
+      ),
+    ).rejects.toThrow("no selected session leaf for leafless");
+    expect(leaflessFixture.registryEvents).toEqual([]);
   });
 
   it("persists an authorized spawn and lets the direct parent wait for its exact turn", async () => {
@@ -296,7 +328,38 @@ describe("minimal subagents coordinator", () => {
     expect((await coordinator.delete("root", "worker", true)).deleted_agent_ids).toEqual([
       "worker",
     ]);
-    expect(sessions.trashSessionFile).toHaveBeenCalledWith("/sessions/worker.jsonl");
+    expect(sessions.trashSession).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: "worker", session_file: "/sessions/worker.jsonl" }),
+    );
+  });
+
+  it("rejects a concurrent duplicate wait from the same caller for one turn", async () => {
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
+    const { coordinator } = coordinatorFixture(runtime);
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Wait once", agent_id: "worker" },
+      caller,
+    );
+    await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
+    const abortController = new AbortController();
+    const firstWait = coordinator.wait(
+      "root",
+      "worker",
+      undefined,
+      abortController.signal,
+      spawned.turn_id,
+    );
+
+    await expect(
+      coordinator.wait("root", "worker", undefined, undefined, spawned.turn_id),
+    ).rejects.toThrow(
+      `Minimal subagents duplicate wait: root is already waiting for ${spawned.turn_id}`,
+    );
+    abortController.abort();
+    await expect(firstWait).rejects.toThrow("Minimal subagents wait cancelled for worker");
+    await coordinator.cancel("root", "worker");
   });
 
   it("times out one waiter without cancelling the child turn", async () => {
@@ -340,6 +403,45 @@ describe("minimal subagents coordinator", () => {
     await expect(
       denied.coordinator.spawn("ordinary", { task: "Not authorized", agent_id: "child" }, caller),
     ).rejects.toThrow("Minimal subagents delegation denied");
+  });
+
+  it("does not re-mark a Coordination Message after synchronous evidence settlement", async () => {
+    const runtime = childRuntime();
+    Object.defineProperty(runtime, "isRunning", { value: true });
+    const fixture = coordinatorFixture(runtime);
+    await fixture.coordinator.restore({
+      agents: [persistedAgent("source", "root"), persistedAgent("sibling", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    let deliveredId: string | undefined;
+    runtime.queueCoordinatorMessage.mockImplementation(async (message) => {
+      deliveredId = message.details.delivery_id;
+      await fixture.coordinator.reconcileDeliveries();
+    });
+    runtime.hasDeliveryEvidence.mockImplementation(
+      (_sourceAgentId, _sourceTurnId, deliveryId) => deliveryId === deliveredId,
+    );
+
+    await fixture.coordinator.sendAgentMessage(
+      "source",
+      { agent_id: "sibling", message: "settle synchronously" },
+      "source:turn",
+    );
+
+    expect(fixture.coordinator.snapshot().coordination_deliveries).toEqual([]);
+    const handedDeliveryIds = Reflect.get(fixture.coordinator, "waitHandedDeliveryIds");
+    expect(handedDeliveryIds).toBeInstanceOf(Set);
+    expect(handedDeliveryIds.size).toBe(0);
+    expect(fixture.registryEvents).toContainEqual(
+      expect.objectContaining({
+        version: 2,
+        event: "agent-message-recorded",
+        recorded_at: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await fixture.coordinator.reconcileDeliveries(true);
+    expect(runtime.queueCoordinatorMessage).toHaveBeenCalledOnce();
   });
 
   it("delivers explicit and automatic messages once after durable evidence appears", async () => {
@@ -530,6 +632,159 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
   });
 
+  it("rejects old waiters and abandons old runtime completion on branch restore", async () => {
+    let finishOldPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const oldRuntime = childRuntime();
+    Object.defineProperty(oldRuntime, "isRunning", { value: true });
+    oldRuntime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishOldPrompt = resolve)),
+    );
+    const fixture = coordinatorFixture(oldRuntime, 5);
+    await fixture.coordinator.spawn(
+      "root",
+      { task: "Run on abandoned branch", agent_id: "worker" },
+      caller,
+    );
+    await vi.waitFor(() => expect(oldRuntime.runPrompt).toHaveBeenCalledOnce());
+    const oldWait = fixture.coordinator.wait("root", "worker", 1_000);
+
+    await fixture.coordinator.restore({ agents: [], tombstones: [], deliveries: [] });
+    await expect(oldWait).rejects.toThrow("session branch changed");
+    expect(oldRuntime.abort).toHaveBeenCalledOnce();
+    finishOldPrompt({ status: "completed", output: "must not leak" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(fixture.coordinator.snapshot().agents).toEqual([]);
+    expect(fixture.root.queueCoordinatorMessage).not.toHaveBeenCalled();
+  });
+
+  it("persists eviction of only the oldest wait-only terminal result after 20 per source", async () => {
+    let finishMessage!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runMessage.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishMessage = resolve)),
+    );
+    const fixture = coordinatorFixture(runtime);
+    await fixture.coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+
+    for (let index = 1; index <= 21; index++) {
+      await fixture.coordinator.sendAgentMessage(
+        "root",
+        { agent_id: "worker", message: `request ${index}` },
+        `root:turn-${index}`,
+      );
+      await vi.waitFor(() => expect(runtime.runMessage).toHaveBeenCalledTimes(index));
+      const status = fixture.coordinator.inspectStatus("worker");
+      const activeTurnId = "agent" in status ? status.agent.active_turn_id : undefined;
+      if (!activeTurnId) throw new Error("worker turn did not start");
+      const wait = fixture.coordinator.wait("root", "worker", 1_000, undefined, activeTurnId);
+      finishMessage({ status: "completed", output: `result ${index}` });
+      await wait;
+    }
+
+    const snapshot = fixture.coordinator.snapshot();
+    expect(snapshot.deliveries).toHaveLength(20);
+    expect(snapshot.coordination_deliveries).toHaveLength(21);
+    expect(snapshot.deliveries.map((delivery) => delivery.result?.output)).not.toContain(
+      "result 1",
+    );
+    expect(fixture.registryEvents).toContainEqual(
+      expect.objectContaining({
+        version: 2,
+        event: "delivery-pruned",
+        source_agent_id: "worker",
+        reason: "retention-limit",
+      }),
+    );
+  });
+
+  it("restores later wait-owned messages and the terminal result in sequence", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const source = coordinatorFixture(runtime, 200);
+    const spawned = await source.coordinator.spawn(
+      "root",
+      { task: "Report through reload", agent_id: "worker" },
+      caller,
+    );
+    const firstWait = source.coordinator.wait("root", "worker", 1_000);
+    await source.coordinator.sendAgentMessage("worker", { message: "progress 1" }, spawned.turn_id);
+    const first = await firstWait;
+    expect(first).toMatchObject({ event: "message", message: "progress 1" });
+    source.root.hasDeliveryEvidence.mockImplementation(
+      (_agentId: string, _turnId: string, deliveryId?: string) =>
+        deliveryId === (first as { delivery_id?: string }).delivery_id,
+    );
+    await source.coordinator.reconcileDeliveries();
+    await source.coordinator.sendAgentMessage("worker", { message: "progress 2" }, spawned.turn_id);
+    finishPrompt({ status: "completed", output: "complete after reload" });
+    await vi.waitFor(() =>
+      expect(source.coordinator.inspectStatus("worker")).toMatchObject({
+        agent: { state: "idle" },
+      }),
+    );
+
+    const restored = coordinatorFixture(childRuntime(), 200);
+    await restored.coordinator.restore(source.coordinator.snapshot());
+    await expect(restored.coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      event: "message",
+      message: "progress 2",
+    });
+    await expect(restored.coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      event: "turn",
+      output: "complete after reload",
+    });
+    expect(restored.root.queueCoordinatorMessage).not.toHaveBeenCalled();
+  });
+
+  it("selects the oldest retained turn by default and supports an exact turn ID", async () => {
+    const fixture = coordinatorFixture(childRuntime(), 200);
+    const agent = persistedAgent("worker", "root");
+    agent.latest_result = {
+      agent_id: "worker",
+      turn_id: "worker:newer",
+      status: "completed",
+      output: "newer result",
+    };
+    await fixture.coordinator.restore({
+      agents: [agent],
+      tombstones: [],
+      deliveries: [
+        {
+          source_agent_id: "worker",
+          source_turn_id: "worker:older",
+          destination_agent_id: "root",
+          path: "wait",
+          settled: false,
+          sequence: 1,
+          result: {
+            agent_id: "worker",
+            turn_id: "worker:older",
+            status: "completed",
+            output: "older result",
+          },
+        },
+      ],
+      wait_claimed_turns: ["worker\u0000worker:older"],
+      next_delivery_sequence: 2,
+    });
+
+    await expect(fixture.coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      turn_id: "worker:older",
+      output: "older result",
+    });
+    await expect(
+      fixture.coordinator.wait("root", "worker", 1_000, undefined, "worker:newer"),
+    ).resolves.toMatchObject({ turn_id: "worker:newer", output: "newer result" });
+  });
+
   it("lets an idle terminal wait claim and suppress scheduled automatic delivery", async () => {
     const { coordinator, root } = coordinatorFixture(childRuntime(), 200);
     const spawned = await coordinator.spawn(
@@ -620,6 +875,26 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
   });
 
+  it("ignores a stale idle advisory until the recipient is actually idle", async () => {
+    const { coordinator, root } = coordinatorFixture(childRuntime(), 5);
+    root.isIdle.mockReturnValue(false);
+    await coordinator.spawn(
+      "root",
+      { task: "Complete while root remains active", agent_id: "worker" },
+      caller,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    coordinator.markRecipientIdle("root");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
+
+    root.isIdle.mockReturnValue(true);
+    coordinator.markRecipientIdle("root");
+    await coordinator.waitForSettledOperations();
+    expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
+  });
+
   it("releases unclaimed coordination messages before the automatic terminal result", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
@@ -688,6 +963,100 @@ describe("minimal subagents coordinator", () => {
     });
   });
 
+  it("does not deadlock shutdown on a delivery waiting for recipient idle", async () => {
+    const { coordinator, root } = coordinatorFixture(childRuntime(), 5);
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    root.isIdle.mockReturnValue(false);
+    await coordinator.sendAgentMessage(
+      "worker",
+      { message: "persist before shutdown" },
+      "worker:shutdown",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await expect(coordinator.shutdown()).resolves.toBeUndefined();
+    expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
+    expect(coordinator.snapshot().coordination_deliveries).toHaveLength(1);
+  });
+
+  it("prunes pending delivery state when deleting its agent subtree", async () => {
+    const { coordinator } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [
+        {
+          source_agent_id: "worker",
+          source_turn_id: "worker:pending",
+          destination_agent_id: "root",
+          path: "wait",
+          settled: false,
+          sequence: 2,
+          result: {
+            agent_id: "worker",
+            turn_id: "worker:pending",
+            status: "completed",
+            output: "pending",
+          },
+        },
+      ],
+      coordination_deliveries: [
+        {
+          delivery_id: "message:pending",
+          sequence: 1,
+          destination_agent_id: "root",
+          path: "wait",
+          settled: false,
+          message: {
+            customType: "minimal-subagents.message",
+            content: "pending message",
+            details: {
+              source_agent_id: "worker",
+              destination_agent_id: "root",
+              source_turn_id: "worker:pending",
+              message_id: "pending",
+              delivery_id: "message:pending",
+            },
+          },
+        },
+      ],
+      wait_claimed_turns: ["worker\u0000worker:pending"],
+      next_delivery_sequence: 3,
+    });
+
+    await coordinator.delete("root", "worker");
+    expect(coordinator.snapshot()).toMatchObject({
+      deliveries: [],
+      coordination_deliveries: [],
+      wait_claimed_turns: [],
+    });
+  });
+
+  it("prunes recent-message projections sourced from a deleted subtree", async () => {
+    const { coordinator } = coordinatorFixture();
+    const deleted = persistedAgent("deleted", "root");
+    const observer = persistedAgent("observer", "root");
+    observer.recent_messages = [
+      { source_agent_id: "deleted", turn_id: "deleted:old", content: "remove" },
+      { source_agent_id: "root", turn_id: "root:kept", content: "keep" },
+    ];
+    await coordinator.restore({
+      agents: [deleted, observer],
+      tombstones: [],
+      deliveries: [],
+    });
+
+    await coordinator.delete("root", "deleted");
+
+    expect(coordinator.snapshot().agents).toMatchObject([
+      { agent_id: "observer", recent_messages: [{ content: "keep" }] },
+    ]);
+  });
+
   it("recursively deletes descendants post-order and durably tombstones every deleted ID", async () => {
     const { coordinator, sessions } = coordinatorFixture();
     await coordinator.restore({
@@ -698,7 +1067,7 @@ describe("minimal subagents coordinator", () => {
     const result = await coordinator.delete("root", "team", true);
     expect(result.deleted_agent_ids).toEqual(["team.worker", "team"]);
     expect(result.tombstoned_agent_ids).toEqual(["team.worker", "team"]);
-    expect(sessions.trashSessionFile.mock.calls.map(([sessionFile]) => sessionFile)).toEqual([
+    expect(sessions.trashSession.mock.calls.map(([agent]) => agent.session_file)).toEqual([
       "/sessions/team.worker.jsonl",
       "/sessions/team.jsonl",
     ]);
@@ -758,6 +1127,32 @@ describe("minimal subagents coordinator", () => {
     );
   });
 
+  it("isolates restoration dependency discovery failures per agent", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    sessions.resolveRestorationMissingDependencies.mockImplementation(
+      async (agent: PersistedAgent) => {
+        if (agent.agent_id === "broken") throw new Error("discovery exploded");
+        return [];
+      },
+    );
+
+    await coordinator.restore({
+      agents: [persistedAgent("broken", "root"), persistedAgent("healthy", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+
+    expect(coordinator.inspectStatus("broken")).toMatchObject({
+      agent: { availability: "unavailable", unavailable_reason: "discovery exploded" },
+    });
+    expect(coordinator.inspectStatus("healthy")).toMatchObject({
+      agent: { availability: "available" },
+    });
+    expect(sessions.restoreRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ agent_id: "healthy" }),
+    );
+  });
+
   it("prepares a fork by cancelling active root work and cloning its session", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
@@ -777,6 +1172,9 @@ describe("minimal subagents coordinator", () => {
       session_file: "/fork/worker.jsonl",
       session_id: "fork-worker",
       active_turn_id: undefined,
+    });
+    await expect(coordinator.cancel("root", "worker")).resolves.toMatchObject({
+      affected_agent_ids: ["worker"],
     });
   });
 
@@ -818,7 +1216,11 @@ describe("minimal subagents coordinator", () => {
     });
     sessions.cloneSession.mockImplementation(async (agent: PersistedAgent) => {
       if (agent.agent_id === "parent") throw new Error("disk full");
-      return { sessionFile: `/fork/${agent.agent_id}.jsonl`, sessionId: `fork-${agent.agent_id}` };
+      return {
+        sessionFile: `/fork/${agent.agent_id}.jsonl`,
+        sessionId: `fork-${agent.agent_id}`,
+        sessionLeafId: `fork-leaf-${agent.agent_id}`,
+      };
     });
     const snapshot = await coordinator.prepareFork("/root/source.jsonl");
     expect(sessions.cloneSession).toHaveBeenCalledTimes(1);

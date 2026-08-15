@@ -74,6 +74,7 @@ export interface WaitMessageResult {
   agent_id: string;
   turn_id: string;
   message_id: string;
+  delivery_id?: string;
   message: string;
 }
 
@@ -180,6 +181,7 @@ export interface CoordinatorMessage {
     destination_agent_id?: string;
     source_turn_id: string;
     message_id: string;
+    delivery_id?: string;
     status?: TurnStatus;
     elapsed_ms?: number;
     usage?: Usage;
@@ -190,6 +192,7 @@ export interface CoordinatorMessage {
 export interface ChildAgentRuntime {
   readonly sessionFile: string;
   readonly sessionId: string;
+  readonly sessionLeafId: string | undefined;
   readonly isRunning: boolean;
   runPrompt(
     task: string,
@@ -205,7 +208,7 @@ export interface ChildAgentRuntime {
   /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
   getRuntimeProfile(): RuntimeProfile | undefined;
   snapshotCommittedMessages(): AgentMessage[];
-  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean;
+  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
   getUsage(): Usage | undefined;
 }
 
@@ -213,6 +216,7 @@ export interface ChildAgentRuntime {
 export interface PersistedSessionIdentity {
   sessionFile: string;
   sessionId: string;
+  sessionLeafId?: string;
 }
 
 /** Combines a persisted agent record with first-launch imported context. */
@@ -230,15 +234,26 @@ export interface AgentSessionFactory {
   resolveRestorationMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveThinkingLevel(modelId: string, requested: ThinkingLevel): ThinkingLevel;
   modelSupportsImages(modelId: string): boolean;
+  /** Clone a child leaf owned by the active source root during confirmed shutdown. */
   cloneSession(agent: PersistedAgent): Promise<PersistedSessionIdentity>;
-  trashSessionFile(sessionFile: string): Promise<void>;
+  /** Clone a source-owned leaf recovered from a proven destination branch. */
+  cloneForkSourceSession(
+    agent: PersistedAgent,
+    sourceRootSessionId: string,
+  ): Promise<PersistedSessionIdentity>;
+  /** Append and verify destination-root ownership for one fork clone. */
+  adoptForkSessionOwnership(
+    agent: PersistedAgent,
+    sourceRootSessionId: string,
+  ): Promise<PersistedSessionIdentity>;
+  trashSession(agent: PersistedAgent): Promise<void>;
 }
 
 /** Abstracts root message delivery and durable delivery-evidence lookup. */
 export interface RootConversationEndpoint {
   /** Queue one typed coordinator message into the root conversation. */
   queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
-  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean;
+  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
   /** Report whether automatic delivery can start a new root turn without racing an active wait. */
   isIdle(): boolean;
 }
@@ -254,6 +269,7 @@ export interface PersistedAgent {
   spawn_entry_id: string;
   session_file?: string;
   session_id?: string;
+  session_leaf_id?: string;
   clone_error?: string;
   launch_contract: LaunchContract;
   capability_ceiling: string[];
@@ -277,26 +293,44 @@ export interface PersistedDelivery {
   destination_agent_id: string;
   path: DeliveryPath;
   settled: boolean;
+  sequence?: number;
   result?: TurnResult;
   error?: string;
 }
 
-/** Checkpoints all live agents, deletion tombstones, and delivery records for one root. */
+/** Stores one durable Coordination Message until destination evidence settles it. */
+export interface PersistedCoordinationDelivery {
+  delivery_id: string;
+  sequence: number;
+  destination_agent_id: string;
+  path: DeliveryPath;
+  settled: boolean;
+  message: CoordinatorMessage;
+  error?: string;
+}
+
+/** Checkpoints live agents, tombstones, and only pending delivery-ledger items for one root. */
 export interface RegistrySnapshot {
   agents: PersistedAgent[];
   tombstones: string[];
   deliveries: PersistedDelivery[];
+  coordination_deliveries?: PersistedCoordinationDelivery[];
+  wait_claimed_turns?: string[];
+  next_delivery_sequence?: number;
 }
 
 /** Clones a registry snapshot while recording the source root session file. */
 export interface ForkSnapshot extends RegistrySnapshot {
+  /** Canonical Pi root session file from which the selected fork branch originated. */
   source_root_session_file: string;
+  /** Root identity that every cloned Child Session provenance record must match. */
+  source_root_session_id: string;
 }
 
 /** Appends root-owned registry events to the active root conversation branch. */
 export interface RegistryWriter {
   readonly rootSessionId: string;
-  append(event: import("./minimal-subagents-registry.js").RegistryEventV1): void;
+  append(event: import("./minimal-subagents-registry.js").RegistryEventV2): void;
 }
 
 /** Describes concise lifecycle notices surfaced through Pi UI notifications. */

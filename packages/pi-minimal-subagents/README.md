@@ -133,27 +133,61 @@ and `subagent_status`.
 The `subagent` `tools` argument distinguishes capability presets from exact
 lists: `"read"` grants `read`, `grep`, `find`, and `ls`; `"modify"` adds
 `bash`, `edit`, and `write`; an array such as `["read"]` grants exactly the
-named tool and does not expand a preset. Use the string preset when a child
-needs the complete read-only discovery bundle.
+named ordinary tool and does not expand a preset. Coordinator tools are
+injected separately according to delegation and must not appear in `tools`;
+misuse returns an actionable error. Use the string preset when a child needs
+the complete read-only discovery bundle.
 
 `agent_message` reports whether a message was delivered through an active
 parent wait, queued for the recipient, or failed. `subagent_wait` can return an
 intermediate Wait Event containing a Coordination Message before the child turn
-settles; call it again for the terminal turn result. Once a wait returns an
-intermediate message, that wait path owns the rest of the source turn: later
-messages remain claimable by subsequent waits, and the terminal wait result
-suppresses duplicate automatic delivery. Automatic results reserve their
-recipient queue slot before the delivery grace period when no wait owns the
-turn, but they do not enter Pi while the recipient is active. Once the
-recipient settles, each deferred item resumes from its original queue position,
-preserving ordering across turns. Delivered messages include the source agent
-and turn identity in the model-visible envelope and in persisted details.
+settles; call it again for the terminal turn result. Pass optional `turn_id` to
+address an older retained turn exactly. Without it, waits select the oldest
+observable claimed or pending turn before the active/latest turn. A caller may
+have only one outstanding wait for the same source turn; a concurrent duplicate
+is rejected instead of competing for one Wait Event.
 
-Deleting a child first uses the optional `trash` command when available and
-falls back to unlinking its session file. Each Child Agent has a persistent
-JSONL session. Append-only Root Agent Registry entries retain hierarchy and
-Delivery Evidence across reloads. Forking cancels and drains active work, then
-clones child session leaves so the fork receives an independent hierarchy.
+The persisted Delivery Ledger records Coordination Messages, terminal results,
+globally increasing sequence, and wait ownership before delivery. Existing
+items retain their sequence; gaps from skipped malformed records are valid.
+Claims can name only active, latest, or retained turns. Once a wait returns an
+intermediate message, that wait path owns the rest of the source turn across
+reloads, forks, and newer turns. Automatic fallback retains its ordered queue
+reservation, treats idle notifications as advisory, and rechecks actual
+recipient idleness before injecting a message. Destination-session Delivery
+Evidence settles and compacts ledger items, preventing duplicate delivery and
+unbounded checkpoint growth. The pure Delivery Ledger state machine retains at
+most 20 pending wait-only terminal results per source agent; Coordination
+Messages are not removed by that terminal-retention limit. Delivered messages
+include stable delivery, source-agent, and source-turn identities in persisted
+details.
+
+Deleting a child first verifies its session header and persistent identity,
+then uses the optional `trash` command when available and falls back to
+unlinking its session file. Deletion prunes pending delivery state and retained
+recent-message projections sourced from the complete deleted subtree. Restore
+and clone perform the same ownership check and reopen the recorded child-session
+leaf.
+
+Registry replay and Delivery Evidence are scoped to the Root Agent's active
+session-tree branch. Registry writes use V2 records with complete field,
+identity, sequence, hierarchy, adjacency, destination, ordinary-tool ceiling,
+and coordinator-tool exclusion validation. Every available V2 agent has a
+selected leaf; only unavailable recovery placeholders may omit it. Valid V1
+records and checkpoints migrate during replay; invalid owned records are
+skipped with semantic diagnostic codes rather than disabling the extension.
+Persisted message activity carries an explicit `recorded_at` from the
+coordinator clock.
+
+`/tree` abandons old process-local work and restores the selected branch. Fork
+preparation is read-only; only confirmed fork shutdown interrupts work and
+clones the selected branch, so another extension can cancel a fork without
+freezing coordinator tools. Each clone records a new generation-specific
+identity/provenance pair, and the destination appends ownership for that clone's
+current session ID rather than reusing inherited ownership. If a
+process-local fork handoff is lost, recovery reads only the destination's
+selected branch and proceeds only when its canonical `parentSession` proves the
+source file; it never substitutes the source session's newer head.
 
 ## Status and TUI
 

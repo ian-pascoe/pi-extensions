@@ -175,7 +175,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's exact active turn, or return its latest settled turn immediately. A Wait Event containing a Coordination Message may arrive first as event=message; call again for the terminal turn result. A successful wait claims that turn so later messages and its terminal result return through wait without duplicate automatic delivery. Timeout never cancels the child.",
+      "Wait for one direct child's oldest observable turn, or select an exact retained turn_id. A Wait Event containing a Coordination Message may arrive first as event=message; call again for the terminal turn result. A successful wait durably claims that turn so later messages and its terminal result return through wait without duplicate automatic delivery. Timeout never cancels the child.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     async execute(_toolCallId, parameters, signal, onUpdate) {
@@ -199,6 +199,7 @@ export function createCoordinatorToolDefinitions(
             parameters.agent_id,
             parameters.timeout_ms,
             signal,
+            parameters.turn_id,
           );
           return {
             ...structuredToolResult(result),

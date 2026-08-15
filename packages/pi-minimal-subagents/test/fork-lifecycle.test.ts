@@ -2,7 +2,11 @@ import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { rememberForkSnapshot, takeForkSnapshot } from "../src/minimal-subagents-fork-lifecycle.js";
+import {
+  isForkDestinationForSource,
+  rememberForkSnapshot,
+  takeForkSnapshot,
+} from "../src/minimal-subagents-fork-lifecycle.js";
 import type { ForkSnapshot } from "../src/minimal-subagents-types.js";
 
 const temporaryDirectories: string[] = [];
@@ -11,6 +15,21 @@ afterEach(() => {
 });
 
 describe("minimal subagents fork snapshot lifecycle", () => {
+  it("proves destination selection only through the canonical parentSession link", () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-fork-proof-"));
+    temporaryDirectories.push(directory);
+    const source = join(directory, "source.jsonl");
+    const alias = join(directory, "source-alias.jsonl");
+    writeFileSync(source, "{}\n");
+    symlinkSync(source, alias);
+
+    expect(isForkDestinationForSource({ parentSession: alias }, source)).toBe(true);
+    expect(isForkDestinationForSource({}, source)).toBe(false);
+    expect(isForkDestinationForSource({ parentSession: join(directory, "other") }, source)).toBe(
+      false,
+    );
+  });
+
   it("uses canonical paths, clones snapshots, and consumes each snapshot once", () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-fork-"));
     temporaryDirectories.push(directory);
@@ -20,6 +39,7 @@ describe("minimal subagents fork snapshot lifecycle", () => {
     symlinkSync(sessionFile, alias);
     const snapshot: ForkSnapshot = {
       source_root_session_file: alias,
+      source_root_session_id: "source-root",
       agents: [],
       tombstones: ["deleted"],
       deliveries: [],
@@ -28,6 +48,7 @@ describe("minimal subagents fork snapshot lifecycle", () => {
     rememberForkSnapshot(snapshot);
     snapshot.tombstones.push("mutated");
     const consumed = takeForkSnapshot(realpathSync(sessionFile));
+    expect(consumed?.source_root_session_file).toBe(realpathSync(sessionFile));
     expect(consumed?.tombstones).toEqual(["deleted"]);
     consumed?.tombstones.push("local");
     expect(takeForkSnapshot(sessionFile)).toBeUndefined();

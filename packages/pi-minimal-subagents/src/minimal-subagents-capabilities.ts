@@ -73,6 +73,13 @@ export function resolveOrdinaryToolSelection(
             ? MODIFY_TOOL_BUNDLE
             : selection;
   const uniqueRequested = [...new Set(requested)];
+  const coordinatorTools = new Set<string>(COORDINATOR_TOOL_NAMES);
+  const requestedCoordinatorTools = uniqueRequested.filter((name) => coordinatorTools.has(name));
+  if (requestedCoordinatorTools.length > 0) {
+    throw new Error(
+      `Minimal subagents ordinary tool selection: coordinator tools are injected separately and must not appear in tools: ${requestedCoordinatorTools.join(", ")}`,
+    );
+  }
   const available = new Set(context.availableTools);
   const ceiling = new Set(context.capabilityCeiling);
   const missing = uniqueRequested.filter((name) => !available.has(name));

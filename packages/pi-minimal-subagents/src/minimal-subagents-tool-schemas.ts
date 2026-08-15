@@ -12,12 +12,12 @@ const ToolSelectionSchema = Type.Union(
     Type.Array(Type.String({ minLength: 1 }), {
       uniqueItems: true,
       description:
-        "Exact ordinary tool names. Arrays are not bundle names; use the string preset `read` or `modify` for bundled capabilities.",
+        "Exact ordinary tool names. Coordinator tools are injected separately and must not appear here. Arrays are not bundle names; use the string preset `read` or `modify` for bundled capabilities.",
     }),
   ],
   {
     description:
-      'Use the string preset "read" for read, grep, find, and ls; use "modify" for the read bundle plus bash, edit, and write. An array grants exactly those named tools.',
+      'Use the string preset "read" for read, grep, find, and ls; use "modify" for the read bundle plus bash, edit, and write. An array grants exactly those named tools (ordinary tools only); coordinator tools are injected separately.',
   },
 );
 const FRIENDLY_AGENT_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
@@ -59,6 +59,9 @@ export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
     }),
     subagent_wait: Type.Object({
       agent_id: canonicalAgentIdSchema("Direct child canonical agent ID"),
+      turn_id: Type.Optional(
+        Type.String({ minLength: 1, description: "Exact retained child turn ID" }),
+      ),
       timeout_ms: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
     subagent_status: Type.Object({

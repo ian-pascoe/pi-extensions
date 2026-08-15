@@ -65,6 +65,37 @@ describe("minimal subagents coordinator tools", () => {
     ).toEqual(["agent_message", "subagent_wait", "subagent_status"]);
   });
 
+  it("forwards an exact retained turn ID through subagent_wait", async () => {
+    const options = toolOptions("root", true);
+    options.coordinator.wait.mockResolvedValue({
+      event: "turn",
+      agent_id: "child",
+      turn_id: "child:older",
+      status: "completed",
+      output: "older",
+    });
+    const waitTool = createCoordinatorToolDefinitions(options as never).find(
+      ({ name }) => name === "subagent_wait",
+    )!;
+    const signal = new AbortController().signal;
+
+    await waitTool.execute(
+      "call",
+      { agent_id: "child", turn_id: "child:older", timeout_ms: 50 },
+      signal,
+      undefined,
+      {} as never,
+    );
+
+    expect(options.coordinator.wait).toHaveBeenCalledWith(
+      "root",
+      "child",
+      50,
+      signal,
+      "child:older",
+    );
+  });
+
   it("guides callers with separate advisory model and thinking_level arguments", () => {
     const subagentTool = createCoordinatorToolDefinitions(
       toolOptions("root", true, [

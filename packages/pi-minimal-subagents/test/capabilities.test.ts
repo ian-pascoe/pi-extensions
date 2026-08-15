@@ -38,6 +38,9 @@ describe("minimal subagent capabilities", () => {
     expect(() => resolveOrdinaryToolSelection(["write"], context)).toThrow(
       "Minimal subagents capability ceiling exceeded: write",
     );
+    expect(() => resolveOrdinaryToolSelection(["read", "agent_message"], context)).toThrow(
+      "Minimal subagents ordinary tool selection: coordinator tools are injected separately and must not appear in tools: agent_message",
+    );
   });
 
   it("bounds fanout by hierarchy depth and strips all coordinator tools", () => {

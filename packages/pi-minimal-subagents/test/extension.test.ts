@@ -13,6 +13,20 @@ const testDoubles = vi.hoisted(() => ({
     } => ({ agents: [], tombstones: [], deliveries: [] }),
   ),
   sessionManagerOpen: vi.fn(),
+  cloneForkSourceSession: vi.fn(
+    async (agent: { agent_id?: string; session_file?: string; session_id?: string }) => ({
+      sessionFile: agent.session_file,
+      sessionId: agent.session_id,
+      sessionLeafId: `leaf-${agent.agent_id ?? "agent"}`,
+    }),
+  ),
+  adoptForkSessionOwnership: vi.fn(
+    async (agent: { session_file?: string; session_id?: string; session_leaf_id?: string }) => ({
+      sessionFile: agent.session_file,
+      sessionId: agent.session_id,
+      sessionLeafId: agent.session_leaf_id ?? "owned-leaf",
+    }),
+  ),
   shutdownSession: vi.fn(async () => undefined),
   uiInstances: [] as Array<{
     refresh: ReturnType<typeof vi.fn>;
@@ -43,6 +57,7 @@ vi.mock("../src/minimal-subagents-coordinator.js", () => ({
     snapshotChildCaller = vi.fn();
     prepareFork = vi.fn(async (sourceRootSessionFile: string) => ({
       source_root_session_file: sourceRootSessionFile,
+      source_root_session_id: "root-session",
       agents: [],
       tombstones: ["forked"],
       deliveries: [],
@@ -69,6 +84,9 @@ vi.mock("../src/minimal-subagents-config.js", () => ({
 }));
 
 vi.mock("../src/minimal-subagents-fork-lifecycle.js", () => ({
+  isForkDestinationForSource: vi.fn(
+    (header: { parentSession?: string }, source: string) => header.parentSession === source,
+  ),
   rememberForkSnapshot: testDoubles.rememberForkSnapshot,
   takeForkSnapshot: testDoubles.takeForkSnapshot,
 }));
@@ -81,7 +99,10 @@ vi.mock("../src/minimal-subagents-registry.js", () => ({
 
 vi.mock("../src/minimal-subagents-sessions.js", () => ({
   findDeliveryEvidence: vi.fn(() => false),
-  PiAgentSessionFactory: class {},
+  PiAgentSessionFactory: class {
+    cloneForkSourceSession = testDoubles.cloneForkSourceSession;
+    adoptForkSessionOwnership = testDoubles.adoptForkSessionOwnership;
+  },
 }));
 
 vi.mock("../src/minimal-subagents-shutdown.js", () => ({
@@ -134,10 +155,14 @@ function extensionFixture() {
     appendEntry: vi.fn(),
     sendMessage: vi.fn(),
   };
+  const branchEntries: unknown[] = [];
   const sessionManager = {
     getSessionId: () => "root-session",
     getSessionDir: () => "/sessions",
-    getEntries: () => [],
+    getHeader: vi.fn(() => ({ parentSession: "/sessions/old.jsonl" })),
+    getEntries: () => [{ type: "custom", customType: "abandoned-branch" }],
+    getBranch: () => branchEntries,
+    getEntry: (entryId: string) => ({ id: entryId, parentId: "selected-parent" }),
     getLeafId: () => "root-leaf",
     getSessionFile: () => "/sessions/root.jsonl",
   };
@@ -150,11 +175,11 @@ function extensionFixture() {
     modelRegistry: { getAvailable: () => [{ provider: "provider", id: "model" }] },
     sessionManager,
     isProjectTrusted: () => true,
-    isIdle: () => true,
+    isIdle: vi.fn(() => true),
     ui: { notify: vi.fn(), setStatus: vi.fn(), setWidget: vi.fn() },
   };
   minimalSubagentsExtension(pi as never);
-  return { context, handlers, pi, registeredTools, renderers };
+  return { branchEntries, context, handlers, pi, registeredTools, renderers };
 }
 
 beforeEach(() => {
@@ -169,7 +194,12 @@ beforeEach(() => {
     deliveries: [],
   });
   testDoubles.shutdownSession.mockClear();
-  testDoubles.sessionManagerOpen.mockReset();
+  testDoubles.cloneForkSourceSession.mockClear();
+  testDoubles.adoptForkSessionOwnership.mockClear();
+  testDoubles.sessionManagerOpen.mockReset().mockReturnValue({
+    getSessionId: () => "old-root",
+    getBranch: () => [],
+  });
 });
 
 describe("minimal subagents extension lifecycle", () => {
@@ -179,6 +209,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect([...handlers.keys()]).toEqual([
       "session_start",
       "session_before_fork",
+      "session_tree",
       "message_end",
       "agent_settled",
       "session_shutdown",
@@ -193,19 +224,49 @@ describe("minimal subagents extension lifecycle", () => {
       "subagent_delete",
     ]);
     const coordinator = testDoubles.coordinatorInstances[0]!;
-    await handlers.get("session_before_fork")!({}, context);
-    expect(testDoubles.rememberForkSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ source_root_session_file: "/sessions/root.jsonl" }),
+    await handlers.get("session_before_fork")!(
+      { entryId: "selected-entry", position: "before" },
+      context,
     );
+    expect(testDoubles.rememberForkSnapshot).not.toHaveBeenCalled();
+    expect(coordinator.prepareFork).not.toHaveBeenCalled();
     await handlers.get("message_end")!({ message: { role: "toolResult" } });
     await handlers.get("message_end")!({ message: { role: "custom" } });
     await handlers.get("message_end")!({ message: { role: "user" } });
     expect(coordinator.reconcileDeliveries).toHaveBeenCalledTimes(2);
-    await handlers.get("agent_settled")!({});
+    await handlers.get("agent_settled")!({}, context);
     expect(coordinator.markRecipientIdle).toHaveBeenCalledWith("root");
-    await handlers.get("session_shutdown")!({ reason: "exit" }, context);
+    await handlers.get("session_shutdown")!({ reason: "fork" }, context);
+    expect(testDoubles.rememberForkSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ source_root_session_file: "/sessions/root.jsonl" }),
+    );
     expect(testDoubles.shutdownSession).toHaveBeenCalledOnce();
     expect(testDoubles.uiInstances[0]!.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("replays only the active branch and restores again after tree navigation", async () => {
+    const { branchEntries, context, handlers } = extensionFixture();
+    branchEntries.push({ type: "custom", customType: "active-branch" });
+    await handlers.get("session_start")!({ reason: "startup" }, context);
+    expect(testDoubles.replayRegistryEntries).toHaveBeenCalledWith(
+      branchEntries,
+      "root-session",
+      expect.any(Function),
+    );
+
+    branchEntries.push({ type: "custom", customType: "new-tree-leaf" });
+    await handlers.get("session_tree")!({}, context);
+    const coordinator = testDoubles.coordinatorInstances[0]!;
+    expect(coordinator.restore).toHaveBeenCalledTimes(2);
+    expect(coordinator.writeCheckpoint).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not release delivery latches for a stale settled event", async () => {
+    const { context, handlers } = extensionFixture();
+    await handlers.get("session_start")!({ reason: "startup" }, context);
+    context.isIdle.mockReturnValue(false);
+    await handlers.get("agent_settled")!({}, context);
+    expect(testDoubles.coordinatorInstances[0]!.markRecipientIdle).not.toHaveBeenCalled();
   });
 
   it("awaits and surfaces session restoration failures before registering tools", async () => {
@@ -221,6 +282,7 @@ describe("minimal subagents extension lifecycle", () => {
   it("consumes a stored fork snapshot without replaying or cloning the old root", async () => {
     const stored = {
       source_root_session_file: "/sessions/old.jsonl",
+      source_root_session_id: "old-root",
       agents: [],
       tombstones: ["stored"],
       deliveries: [],
@@ -234,15 +296,16 @@ describe("minimal subagents extension lifecycle", () => {
     const coordinator = testDoubles.coordinatorInstances[0]!;
     expect(coordinator.restore).toHaveBeenCalledWith(stored);
     expect(coordinator.prepareFork).not.toHaveBeenCalled();
-    expect(testDoubles.sessionManagerOpen).not.toHaveBeenCalled();
+    expect(testDoubles.sessionManagerOpen).toHaveBeenCalledWith("/sessions/old.jsonl");
   });
 
-  it("replays and clones the previous root when no stored fork snapshot exists", async () => {
+  it("replays the proven destination branch and clones its recorded child positions after process loss", async () => {
     const replayed = { agents: [], tombstones: ["replayed"], deliveries: [] };
     testDoubles.replayRegistryEntries.mockReturnValue(replayed);
+    const readSourceHead = vi.fn(() => [{ type: "custom", customType: "unselected-source-head" }]);
     testDoubles.sessionManagerOpen.mockReturnValue({
       getSessionId: () => "old-root",
-      getEntries: () => [{ type: "custom" }],
+      getBranch: readSourceHead,
     });
     const { context, handlers } = extensionFixture();
     await handlers.get("session_start")!(
@@ -250,11 +313,44 @@ describe("minimal subagents extension lifecycle", () => {
       context,
     );
     const coordinator = testDoubles.coordinatorInstances[0]!;
-    expect(coordinator.restore).toHaveBeenNthCalledWith(1, replayed);
-    expect(coordinator.prepareFork).toHaveBeenCalledWith("/sessions/old.jsonl");
-    expect(coordinator.restore).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ tombstones: ["forked"] }),
+    expect(testDoubles.replayRegistryEntries).toHaveBeenCalledWith(
+      context.sessionManager.getBranch(),
+      "old-root",
+      expect.any(Function),
+    );
+    expect(coordinator.prepareFork).not.toHaveBeenCalled();
+    expect(readSourceHead).not.toHaveBeenCalled();
+    expect(coordinator.restore).toHaveBeenCalledOnce();
+    expect(coordinator.restore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tombstones: ["replayed"],
+        source_root_session_id: "old-root",
+      }),
+    );
+  });
+
+  it("fails safe without replaying the source head when fork branch provenance is unprovable", async () => {
+    const { context, handlers } = extensionFixture();
+    context.sessionManager.getHeader.mockReturnValue({
+      parentSession: "/sessions/unrelated.jsonl",
+    });
+
+    await handlers.get("session_start")!(
+      { reason: "fork", previousSessionFile: "/sessions/old.jsonl" },
+      context,
+    );
+
+    const coordinator = testDoubles.coordinatorInstances[0]!;
+    expect(testDoubles.replayRegistryEntries).not.toHaveBeenCalled();
+    expect(coordinator.prepareFork).not.toHaveBeenCalled();
+    expect(coordinator.restore).toHaveBeenCalledWith({
+      agents: [],
+      tombstones: [],
+      deliveries: [],
+    });
+    expect(context.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("selected branch could not be proven"),
+      "warning",
     );
   });
 });

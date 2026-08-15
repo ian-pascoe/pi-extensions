@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ForkSnapshot } from "./minimal-subagents-types.js";
 
-const FORK_SNAPSHOT_SYMBOL = Symbol.for("minimal-subagents.pending-fork-snapshots.v1");
+const FORK_SNAPSHOT_SYMBOL = Symbol.for("minimal-subagents.pending-fork-snapshots.v2");
 
 type GlobalWithForkSnapshots = typeof globalThis & {
   [FORK_SNAPSHOT_SYMBOL]?: Map<string, ForkSnapshot>;
@@ -19,12 +19,24 @@ function canonicalSessionFile(sessionFile: string): string {
   return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
 }
 
+/** Prove a process-loss fork destination was derived from the expected canonical source file. */
+export function isForkDestinationForSource(
+  destinationHeader: { parentSession?: string } | null,
+  previousSessionFile: string,
+): boolean {
+  return (
+    destinationHeader?.parentSession !== undefined &&
+    canonicalSessionFile(destinationHeader.parentSession) ===
+      canonicalSessionFile(previousSessionFile)
+  );
+}
+
 /** Retain a complete pre-fork hierarchy across Pi extension-instance replacement. */
 export function rememberForkSnapshot(snapshot: ForkSnapshot): void {
-  forkSnapshotStore().set(
-    canonicalSessionFile(snapshot.source_root_session_file),
-    structuredClone(snapshot),
-  );
+  const canonicalSourceFile = canonicalSessionFile(snapshot.source_root_session_file);
+  const retained = structuredClone(snapshot);
+  retained.source_root_session_file = canonicalSourceFile;
+  forkSnapshotStore().set(canonicalSourceFile, retained);
 }
 
 /** Consume the pre-fork hierarchy once when the destination root session starts. */

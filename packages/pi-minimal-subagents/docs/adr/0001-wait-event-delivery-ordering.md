@@ -1,27 +1,9 @@
-# Deliver coordination messages through wait events before Pi queues
+# Deliver Coordination Messages through ordered Wait Events
 
-`subagent_wait` is the synchronization seam between a parent and an active
-direct child. When that child sends a Coordination Message to its direct
-parent, an active wait resolves with an intermediate Wait Event whose payload
-has `event: "message"`. The message is not also sent through Pi's steer queue.
-The parent must call `subagent_wait` again to receive the source turn's
-terminal Wait Event with `event: "turn"`. Returning an intermediate message
-claims wait delivery for the complete source turn, so later messages cannot
-expire into Pi's steer queue while the parent is still following that turn.
-Returning the terminal Wait Event also claims terminal delivery and suppresses
-the automatic result message.
+`subagent_wait` is the synchronization seam between a parent and a direct Child Agent. When that child sends a Coordination Message to its direct parent, an active wait resolves with an intermediate `event: "message"` Wait Event. The message is not also sent through Pi's steer queue. The parent calls `subagent_wait` again for later messages and the terminal `event: "turn"` result.
 
-Messages on turns that have not been claimed by a successful wait use the
-recipient queue. Automatic terminal results reserve their queue position before
-the delivery grace period, which prevents a later turn's message from
-overtaking an earlier result. Fallback delivery pauses while the recipient
-conversation is active, keeping that active turn available as a wait-claim
-window. Each deferred item retains its original recipient-queue reservation
-until the recipient settles or a wait claims it, preserving ordering across
-source turns. Held reservations count as coordinator-owned pending work and
-drain before reload or fork disposal. Tool results report queue acceptance as
-`queued`; only the wait handoff is reported as `delivered-via-wait`.
+A successful message wait durably claims the complete source turn in the Delivery Ledger. The claim, pending messages, terminal result, and global delivery sequence survive reloads, forks, and newer child turns. Optional `turn_id` addresses one retained turn exactly; default selection prioritizes the oldest claimed or otherwise observable turn. A timeout or cancellation removes only that waiter. A second concurrent wait from the same caller for that source turn is rejected rather than racing the first waiter.
 
-This keeps the conversation plane ordered while preserving Pi's asynchronous
-message API. Delivery evidence remains keyed to terminal source agent and turn
-identities, so an intermediate wait message cannot settle a terminal result.
+Turns without a wait claim use automatic fallback. Every item persists before `agent_message` reports `queued`, reserves its recipient-queue position by sequence, and remains pending until destination-session Delivery Evidence exists. Idle notifications are advisory. After every notification, and immediately before delivery, the coordinator rechecks that the recipient is actually idle. A stale `agent_settled` event therefore cannot inject into another extension's active turn.
+
+Stable delivery IDs make replay idempotent. Wait tool-result evidence and typed custom-message evidence settle exact items. The process-local handed marker is installed before queue delivery, so synchronous evidence settlement removes it without a post-settlement leak. Settled items are removed from live checkpoints; deleting an agent subtree prunes associated pending items. Wait-only terminal history is bounded to 20 items per source without pruning Coordination Messages. Tool results report queue acceptance as `queued`; only a wait handoff is `delivered-via-wait`.
