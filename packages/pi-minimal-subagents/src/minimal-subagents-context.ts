@@ -11,11 +11,17 @@ export function snapshotCommittedContext(
   return structuredClone(committed);
 }
 
+/** Carries the selected caller messages and whether child preparation should compact them. */
+export interface ImportedSubagentContext {
+  messages: AgentMessage[];
+  compact: boolean;
+}
+
 /** Select the imported message snapshot and defer expensive compact preparation to the child turn. */
 export function assembleImportedContext(
   mode: SessionContextMode,
   committedMessages: AgentMessage[],
-): { messages: AgentMessage[]; compact: boolean } {
+): ImportedSubagentContext {
   if (mode === "omit") return { messages: [], compact: false };
   return { messages: committedMessages, compact: mode === "compact" };
 }

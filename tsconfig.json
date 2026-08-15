@@ -5,6 +5,7 @@
     "lib": ["esnext"],
     "types": ["@types/node"],
     "moduleResolution": "NodeNext",
+    "allowJs": true,
     "jsx": "preserve",
     "noEmit": true,
     "strict": true,

@@ -17,8 +17,11 @@ import {
   SettingsManager,
   sessionEntryToContextMessages,
   type AgentSessionEvent,
+  type SessionEntry,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { Static, TSchema } from "typebox";
+import { Value } from "typebox/value";
 import {
   buildSubagentSystemPrompt,
   snapshotCommittedContext,
@@ -33,6 +36,15 @@ import {
   FORK_CLONE_ENTRY_TYPE,
   FORK_OWNERSHIP_ENTRY_TYPE,
 } from "./minimal-subagents-registry.js";
+import {
+  ChildSessionIdentityRecordSchema,
+  DeliveryEvidenceDetailsSchema,
+  ForkCloneProvenanceRecordSchema,
+  ForkOwnershipRecordSchema,
+  type ChildSessionIdentityRecord,
+  type ForkCloneProvenanceRecord,
+  type ForkOwnershipRecord,
+} from "./minimal-subagents-session-wire.js";
 import { addMinimalSubagentsUsage } from "./minimal-subagents-usage.js";
 import type {
   AgentSessionFactory,
@@ -74,6 +86,19 @@ interface ChildResourceLoaderOptionsInput {
   settingsManager?: SettingsManager;
 }
 
+/** Moves one verified child session file to trash and reports command unavailability. */
+export interface SessionFileTrashCapability {
+  moveSessionFile(sessionFile: string): Promise<Error | undefined>;
+}
+
+const execFileSessionTrashCapability: SessionFileTrashCapability = {
+  moveSessionFile: (sessionFile) =>
+    new Promise((resolvePromise) => {
+      const trashArguments = sessionFile.startsWith("-") ? ["--", sessionFile] : [sessionFile];
+      execFile("trash", trashArguments, (cause) => resolvePromise(cause ?? undefined));
+    }),
+};
+
 /** Configures root ownership, model scope, child resources, and coordinator tool injection for Pi sessions. */
 export interface PiAgentSessionFactoryOptions {
   cwd: string;
@@ -87,6 +112,7 @@ export interface PiAgentSessionFactoryOptions {
   availableToolNames: readonly string[];
   projectTrusted: boolean;
   maxSubagentDepth?: number;
+  sessionFileTrash?: SessionFileTrashCapability;
   getCoordinatorTools: (callerId: string) => ToolDefinition[];
   onChildSessionActivity?: () => void;
 }
@@ -172,80 +198,15 @@ export function createPersistentChildIdentity(
   };
 }
 
-interface ChildSessionIdentityRecord {
-  version: 1;
-  original_root_session_id: string;
-  canonical_agent_id: string;
-  direct_parent_id: string;
-  created_at: string;
-}
-
-interface ForkCloneProvenanceRecord {
-  version: 1;
-  source_root_session_id: string;
-  source_agent_id: string;
-  source_session_id: string;
-}
-
-interface ForkOwnershipRecord extends ForkCloneProvenanceRecord {
-  destination_root_session_id: string;
-  clone_session_id: string;
-  direct_parent_id: string;
-}
-
-function parseChildSessionIdentity(value: unknown): ChildSessionIdentityRecord | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  // SAFETY: This read-only partial projection asserts no field values; every field is refined below.
-  const candidate = value as Partial<ChildSessionIdentityRecord>;
-  return candidate.version === 1 &&
-    typeof candidate.original_root_session_id === "string" &&
-    typeof candidate.canonical_agent_id === "string" &&
-    typeof candidate.direct_parent_id === "string" &&
-    typeof candidate.created_at === "string"
-    ? // SAFETY: All ChildSessionIdentityRecord fields were refined above.
-      (candidate as ChildSessionIdentityRecord)
-    : undefined;
-}
-
-function parseForkCloneProvenance(value: unknown): ForkCloneProvenanceRecord | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  // SAFETY: This read-only partial projection asserts no field values; every field is refined below.
-  const candidate = value as Partial<ForkCloneProvenanceRecord>;
-  return candidate.version === 1 &&
-    typeof candidate.source_root_session_id === "string" &&
-    typeof candidate.source_agent_id === "string" &&
-    typeof candidate.source_session_id === "string"
-    ? // SAFETY: All ForkCloneProvenanceRecord fields were refined above.
-      (candidate as ForkCloneProvenanceRecord)
-    : undefined;
-}
-
-function parseForkOwnership(value: unknown): ForkOwnershipRecord | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  // SAFETY: This read-only partial projection asserts no field values; every field is refined below.
-  const candidate = value as Partial<ForkOwnershipRecord>;
-  return candidate.version === 1 &&
-    typeof candidate.source_root_session_id === "string" &&
-    typeof candidate.source_agent_id === "string" &&
-    typeof candidate.source_session_id === "string" &&
-    typeof candidate.destination_root_session_id === "string" &&
-    typeof candidate.clone_session_id === "string" &&
-    typeof candidate.direct_parent_id === "string"
-    ? // SAFETY: All ForkOwnershipRecord fields were refined above.
-      (candidate as ForkOwnershipRecord)
-    : undefined;
-}
-
-function findLatestChildSessionRecord<T>(
+function findLatestChildSessionRecord<TRecordSchema extends TSchema>(
   entries: ReturnType<SessionManager["getBranch"]>,
   customType: string,
-  parse: (value: unknown) => T | undefined,
-): T | undefined {
+  schema: TRecordSchema,
+): Static<TRecordSchema> | undefined {
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
     if (!entry || entry.type !== "custom" || entry.customType !== customType) continue;
-    const parsed = parse(entry.data);
-    if (parsed) return parsed;
+    if (Value.Check(schema, entry.data)) return entry.data;
   }
   return undefined;
 }
@@ -262,8 +223,8 @@ function findLatestForkGeneration(
     ) {
       continue;
     }
-    const provenance = parseForkCloneProvenance(provenanceEntry.data);
-    if (!provenance) continue;
+    if (!Value.Check(ForkCloneProvenanceRecordSchema, provenanceEntry.data)) continue;
+    const provenance = provenanceEntry.data;
     for (let identityIndex = provenanceIndex - 1; identityIndex >= 0; identityIndex--) {
       const identityEntry = entries[identityIndex];
       if (
@@ -273,8 +234,9 @@ function findLatestForkGeneration(
       ) {
         continue;
       }
-      const identity = parseChildSessionIdentity(identityEntry.data);
-      if (identity) return { identity, provenance };
+      if (Value.Check(ChildSessionIdentityRecordSchema, identityEntry.data)) {
+        return { identity: identityEntry.data, provenance };
+      }
     }
     return undefined;
   }
@@ -289,8 +251,12 @@ function findCurrentForkOwnership(
     const entry = entries[index];
     if (!entry || entry.type !== "custom" || entry.customType !== FORK_OWNERSHIP_ENTRY_TYPE)
       continue;
-    const ownership = parseForkOwnership(entry.data);
-    if (ownership?.clone_session_id === cloneSessionId) return ownership;
+    if (
+      Value.Check(ForkOwnershipRecordSchema, entry.data) &&
+      entry.data.clone_session_id === cloneSessionId
+    ) {
+      return entry.data;
+    }
   }
   return undefined;
 }
@@ -331,7 +297,7 @@ export function verifyChildSessionIdentity(
     findLatestChildSessionRecord(
       identityBranch,
       CHILD_IDENTITY_ENTRY_TYPE,
-      parseChildSessionIdentity,
+      ChildSessionIdentityRecordSchema,
     );
   if (!identity) {
     throw new Error(`Minimal subagents session identity missing for ${agent.agent_id}`);
@@ -412,48 +378,44 @@ export function createChildResourceLoaderOptions(
 
 /** Find durable keyed evidence for exactly-once wait or custom-result delivery. */
 export function findDeliveryEvidence(
-  entries: readonly unknown[],
+  entries: readonly SessionEntry[],
   sourceAgentId: string,
   sourceTurnId: string,
   deliveryId?: string,
 ): boolean {
   return entries.some((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    // SAFETY: This partial projection reads optional evidence fields only after the object check.
-    const candidate = entry as {
-      type?: string;
-      customType?: string;
-      details?: unknown;
-      message?: { role?: string; toolName?: string; details?: unknown };
-    };
-    const details =
-      candidate.type === "custom_message" &&
-      (candidate.customType === "minimal-subagents.result" ||
-        (deliveryId !== undefined && candidate.customType === "minimal-subagents.message"))
-        ? candidate.details
-        : candidate.type === "message" &&
-            candidate.message?.role === "toolResult" &&
-            candidate.message.toolName === "subagent_wait"
-          ? candidate.message.details
-          : undefined;
-    if (!details || typeof details !== "object") return false;
-    // SAFETY: This partial projection reads optional evidence keys only after the object check.
-    const key = details as {
-      event?: string;
-      source_agent_id?: string;
-      source_turn_id?: string;
-      delivery_id?: string;
-      message_id?: string;
-    };
+    let details: SessionEntry extends infer TEntry
+      ? TEntry extends { details?: infer TDetails }
+        ? TDetails
+        : undefined
+      : undefined;
+    let waitToolResult = false;
+    if (
+      entry.type === "custom_message" &&
+      (entry.customType === "minimal-subagents.result" ||
+        (deliveryId !== undefined && entry.customType === "minimal-subagents.message"))
+    ) {
+      details = entry.details;
+    } else if (
+      entry.type === "message" &&
+      entry.message.role === "toolResult" &&
+      entry.message.toolName === "subagent_wait"
+    ) {
+      details = entry.message.details;
+      waitToolResult = true;
+    } else {
+      return false;
+    }
+    if (!Value.Check(DeliveryEvidenceDetailsSchema, details)) return false;
     if (deliveryId !== undefined) {
       return (
-        key.source_agent_id === sourceAgentId &&
-        key.source_turn_id === sourceTurnId &&
-        (key.delivery_id === deliveryId || key.message_id === deliveryId)
+        details.source_agent_id === sourceAgentId &&
+        details.source_turn_id === sourceTurnId &&
+        (details.delivery_id === deliveryId || details.message_id === deliveryId)
       );
     }
-    if (candidate.type === "message" && key.event === "message") return false;
-    return key.source_agent_id === sourceAgentId && key.source_turn_id === sourceTurnId;
+    if (waitToolResult && details.event === "message") return false;
+    return details.source_agent_id === sourceAgentId && details.source_turn_id === sourceTurnId;
   });
 }
 
@@ -700,7 +662,7 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
       auth.auth.headers
         ? Object.fromEntries(
             Object.entries(auth.auth.headers).filter(
-              (entry): entry is [string, string] => typeof entry[1] === "string",
+              (entry): entry is [string, string] => entry[1] !== null,
             ),
           )
         : undefined,
@@ -734,6 +696,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
   private readonly eligibleModelIds: Set<string>;
   private readonly availableToolNames: Set<string>;
   private readonly discoveredToolNames = new Map<string, Promise<Set<string>>>();
+  private readonly sessionFileTrash: SessionFileTrashCapability;
 
   constructor(private readonly options: PiAgentSessionFactoryOptions) {
     this.modelById = new Map(
@@ -741,6 +704,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     );
     this.eligibleModelIds = new Set(options.eligibleModelIds);
     this.availableToolNames = new Set(options.availableToolNames);
+    this.sessionFileTrash = options.sessionFileTrash ?? execFileSessionTrashCapability;
   }
 
   createIdentity(
@@ -818,7 +782,11 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     const generation = findLatestForkGeneration(branch);
     const identity =
       generation?.identity ??
-      findLatestChildSessionRecord(branch, CHILD_IDENTITY_ENTRY_TYPE, parseChildSessionIdentity);
+      findLatestChildSessionRecord(
+        branch,
+        CHILD_IDENTITY_ENTRY_TYPE,
+        ChildSessionIdentityRecordSchema,
+      );
     if (
       !identity ||
       identity.original_root_session_id !== sourceRootSessionId ||
@@ -871,10 +839,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       this.options.cwd,
     );
     verifyChildSessionIdentity(sessionManager, agent, this.options.rootSessionId);
-    const trashError = await new Promise<Error | undefined>((resolvePromise) => {
-      const trashArguments = sessionFile.startsWith("-") ? ["--", sessionFile] : [sessionFile];
-      execFile("trash", trashArguments, (error) => resolvePromise(error ?? undefined));
-    });
+    const trashError = await this.sessionFileTrash.moveSessionFile(sessionFile);
     if (!trashError || !existsSync(sessionFile)) return;
 
     try {

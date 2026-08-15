@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parseConfig, usesDeprecatedSystemPrompt, type AdaptiveThinkingConfig } from "./config.js";
+import {
+  parseAdaptiveThinkingConfig,
+  type AdaptiveThinkingConfig,
+  type ParsedAdaptiveThinkingConfig,
+} from "./config.js";
 
 export type { AdaptiveThinkingConfig } from "./config.js";
 
@@ -19,17 +23,23 @@ export type LoadConfigResult =
     }
   | { success: false; source: string; error: Error };
 
-const hasCode = (error: unknown, code: string) => {
-  return typeof error === "object" && error !== null && "code" in error && error.code === code;
-};
+const hasErrorCode = (cause: NodeJS.ErrnoException, code: string) =>
+  Object.hasOwn(cause, "code") && cause.code === code;
 
-const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
-
-const invalidConfig = (source: string, error: unknown): LoadConfigResult => ({
+const invalidConfig = (source: string, cause: Error): LoadConfigResult => ({
   success: false,
   source,
-  error: new Error(`Invalid Adaptive Thinking configuration in ${source}: ${errorMessage(error)}`),
+  error: new Error(`Invalid Adaptive Thinking configuration in ${source}: ${cause.message}`, {
+    cause,
+  }),
 });
+
+const readAdaptiveThinkingConfig = async (
+  source: string,
+): Promise<ParsedAdaptiveThinkingConfig> => {
+  const raw = await readFile(source, "utf8");
+  return parseAdaptiveThinkingConfig(JSON.parse(raw));
+};
 
 export const loadConfig = async ({
   cwd,
@@ -41,26 +51,26 @@ export const loadConfig = async ({
   ];
 
   for (const source of candidates) {
-    let raw: string;
+    let parsedConfig: ParsedAdaptiveThinkingConfig;
     try {
-      raw = await readFile(source, "utf8");
-    } catch (error) {
-      if (hasCode(error, "ENOENT")) continue;
+      parsedConfig = await readAdaptiveThinkingConfig(source);
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      const fileSystemError: NodeJS.ErrnoException = error;
+      if (hasErrorCode(fileSystemError, "ENOENT")) continue;
       return invalidConfig(source, error);
     }
 
-    try {
-      const input: unknown = JSON.parse(raw);
-      return {
-        success: true,
-        source,
-        config: parseConfig(input),
-        ...(usesDeprecatedSystemPrompt(input) ? { usedDeprecatedSystemPrompt: true as const } : {}),
-      };
-    } catch (error) {
-      return invalidConfig(source, error);
+    const result: Extract<LoadConfigResult, { success: true }> = {
+      success: true,
+      source,
+      config: parsedConfig.config,
+    };
+    if (parsedConfig.usedDeprecatedSystemPrompt) {
+      result.usedDeprecatedSystemPrompt = true;
     }
+    return result;
   }
 
-  return { success: true, config: parseConfig(undefined) };
+  return { success: true, config: parseAdaptiveThinkingConfig(undefined).config };
 };

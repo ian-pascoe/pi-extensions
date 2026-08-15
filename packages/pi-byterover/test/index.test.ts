@@ -1,38 +1,29 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  BeforeAgentStartEvent,
-  ExtensionAPI,
-  ExtensionContext,
-  ExtensionHandler,
-  SessionStartEvent,
-  ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { BrvBridgeConfig, BrvLogger, PersistResult } from "@byterover/brv-bridge";
+import type { JsonValue } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import byterover, {
+import {
   buildManualToolGuidance,
   byteroverContextGuardNote,
+  createByteRoverExtension,
   formatInjectedRecallContext,
-} from "../src/index.js";
-
-type Handler = ExtensionHandler<unknown, unknown>;
-type BranchEntry = {
-  type: "message";
-  id: string;
-  message: {
-    role: "user" | "assistant";
-    content: string | Array<{ type: string; text?: string }>;
-  };
-};
+  type ByteRoverExtensionHost,
+  type ByteRoverRuntimeContext,
+} from "../src/byterover-lifecycle.js";
+import {
+  createBrvBridgeConfig,
+  type ByteRoverBridge,
+  type ByteRoverBridgeFactory,
+} from "../src/byterover-bridge.js";
 
 type Harness = {
   cwd: string;
-  pi: ExtensionAPI;
-  handlers: Map<string, Array<Handler>>;
-  tools: Map<string, ToolDefinition>;
-  ctx: ExtensionContext;
-  branch: Array<unknown>;
+  host: RecordingExtensionHost;
+  ctx: RecordingRuntimeContext;
+  branch: SessionEntry[];
 };
 
 describe("formatInjectedRecallContext", () => {
@@ -63,56 +54,72 @@ describe("formatInjectedRecallContext", () => {
   });
 });
 
-const bridgeInstances = vi.hoisted(
-  () =>
-    [] as Array<{
-      config: Record<string, unknown>;
-      ready: ReturnType<typeof vi.fn>;
-      recall: ReturnType<typeof vi.fn>;
-      search: ReturnType<typeof vi.fn>;
-      persist: ReturnType<typeof vi.fn>;
-    }>,
-);
+type RecordingBridge = ByteRoverBridge & {
+  config: BrvBridgeConfig;
+  ready: ReturnType<typeof vi.fn>;
+  recall: ReturnType<typeof vi.fn>;
+  search: ReturnType<typeof vi.fn>;
+  persist: ReturnType<typeof vi.fn>;
+};
 
-vi.mock("@byterover/brv-bridge", () => {
-  class MockBrvBridge {
-    config: Record<string, unknown>;
-    ready = vi.fn(async () => true);
-    recall = vi.fn(async () => ({ content: "remembered context" }));
-    search = vi.fn(async () => ({
-      results: [],
-      totalFound: 0,
-      message: "No matches",
-    }));
-    persist = vi.fn(async () => ({ status: "completed", message: "ok" }));
+const bridgeInstances: RecordingBridge[] = [];
 
-    constructor(config: Record<string, unknown>) {
-      this.config = config;
-      bridgeInstances.push(this);
-    }
-  }
-
-  return { BrvBridge: vi.fn(MockBrvBridge) };
-});
+const recordingBridgeFactory = (
+  config: BrvBridgeConfig,
+  defaultCwd: string,
+  logger: BrvLogger,
+): ByteRoverBridgeFactory => {
+  return (override) => {
+    const bridgeConfig = createBrvBridgeConfig(config, defaultCwd, logger, override);
+    const bridge: RecordingBridge = {
+      config: bridgeConfig,
+      ready: vi.fn(async () => true),
+      recall: vi.fn(async () => ({ content: "remembered context" })),
+      search: vi.fn(async () => ({ results: [], totalFound: 0, message: "No matches" })),
+      persist: vi.fn(async (): Promise<PersistResult> => ({ status: "completed", message: "ok" })),
+    };
+    bridgeInstances.push(bridge);
+    return bridge;
+  };
+};
 
 const tempDirs: Array<string> = [];
 
-const messageEntry = (
-  id: string,
-  role: "user" | "assistant",
-  content: BranchEntry["message"]["content"],
-): BranchEntry => ({
+const messageEntry = (id: string, content: string): SessionEntry => ({
   type: "message",
   id,
-  message: { role, content },
+  parentId: null,
+  timestamp: "2026-08-15T00:00:00.000Z",
+  message: { role: "user", content, timestamp: 1 },
 });
 
-const textResult = (result: { content: Array<{ type: string; text?: string }> }) =>
-  result.content[0]?.text;
+const assistantEntry = (id: string, content: string): SessionEntry => ({
+  type: "message",
+  id,
+  parentId: null,
+  timestamp: "2026-08-15T00:00:00.000Z",
+  message: {
+    role: "assistant",
+    content: [{ type: "text", text: content }],
+    api: "openai-completions",
+    provider: "openai",
+    model: "gpt-test",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 1,
+  },
+});
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
+  let reject!: (reason?: Error) => void;
   const promise = new Promise<T>((promiseResolve, promiseReject) => {
     resolve = promiseResolve;
     reject = promiseReject;
@@ -120,47 +127,62 @@ const deferred = <T>() => {
   return { promise, resolve, reject };
 };
 
-const createFakePi = () => {
-  const handlers = new Map<string, Array<Handler>>();
-  const tools = new Map<string, ToolDefinition>();
-  const pi = {
-    on: vi.fn((event: string, handler: Handler) => {
-      const eventHandlers = handlers.get(event) ?? [];
-      eventHandlers.push(handler);
-      handlers.set(event, eventHandlers);
-    }),
-    registerTool: vi.fn((tool: ToolDefinition) => {
-      tools.set(tool.name, tool);
-    }),
-  } as unknown as ExtensionAPI;
+class RecordingRuntimeContext implements ByteRoverRuntimeContext {
+  readonly hasUI = true;
+  readonly notifications: { message: string; type: "info" | "warning" | "error" }[] = [];
+  readonly sessionManager: ByteRoverRuntimeContext["sessionManager"];
+  readonly ui: ByteRoverRuntimeContext["ui"] = {
+    notify: (message, type) => this.notifications.push({ message, type }),
+  };
 
-  return { pi, handlers, tools };
-};
+  constructor(
+    readonly cwd: string,
+    branch: SessionEntry[],
+    sessionFile: string | undefined = join(cwd, ".pi", "agent", "sessions", "session.jsonl"),
+  ) {
+    this.sessionManager = {
+      getBranch: () => branch,
+      getSessionFile: () => sessionFile,
+    };
+  }
+}
 
-const createContext = (
-  cwd: string,
-  branch: Array<unknown>,
-  sessionFile: string | undefined = join(cwd, ".pi", "agent", "sessions", "session.jsonl"),
-) =>
-  ({
-    cwd,
-    hasUI: true,
-    ui: { notify: vi.fn() },
-    sessionManager: {
-      getBranch: vi.fn(() => branch),
-      getSessionFile: vi.fn(() => sessionFile),
-    },
-    isIdle: vi.fn(() => true),
-    signal: undefined,
-    abort: vi.fn(),
-    hasPendingMessages: vi.fn(() => false),
-    shutdown: vi.fn(),
-    getContextUsage: vi.fn(() => undefined),
-    compact: vi.fn(),
-    getSystemPrompt: vi.fn(() => "base system prompt"),
-  }) as unknown as ExtensionContext;
+class RecordingExtensionHost implements ByteRoverExtensionHost {
+  agentEnd: Parameters<ByteRoverExtensionHost["onAgentEnd"]>[0] | undefined;
+  beforeAgentStart: Parameters<ByteRoverExtensionHost["onBeforeAgentStart"]>[0] | undefined;
+  context: Parameters<ByteRoverExtensionHost["onContext"]>[0] | undefined;
+  sessionBeforeCompact: Parameters<ByteRoverExtensionHost["onSessionBeforeCompact"]>[0] | undefined;
+  sessionStart: Parameters<ByteRoverExtensionHost["onSessionStart"]>[0] | undefined;
+  readonly tools = new Set<string>();
 
-const writeConfig = async (cwd: string, config: Record<string, unknown>) => {
+  onAgentEnd(handler: Parameters<ByteRoverExtensionHost["onAgentEnd"]>[0]) {
+    this.agentEnd = handler;
+  }
+  onBeforeAgentStart(handler: Parameters<ByteRoverExtensionHost["onBeforeAgentStart"]>[0]) {
+    this.beforeAgentStart = handler;
+  }
+  onContext(handler: Parameters<ByteRoverExtensionHost["onContext"]>[0]) {
+    this.context = handler;
+  }
+  onSessionBeforeCompact(handler: Parameters<ByteRoverExtensionHost["onSessionBeforeCompact"]>[0]) {
+    this.sessionBeforeCompact = handler;
+  }
+  onSessionStart(handler: Parameters<ByteRoverExtensionHost["onSessionStart"]>[0]) {
+    this.sessionStart = handler;
+  }
+  registerTool<TParams extends import("typebox").TSchema, TDetails, TState>(
+    tool: import("@earendil-works/pi-coding-agent").ToolDefinition<TParams, TDetails, TState>,
+  ) {
+    this.tools.add(tool.name);
+  }
+}
+
+function requireHandler<T>(handler: T | undefined): T {
+  if (handler === undefined) throw new Error("Expected registered ByteRover lifecycle handler");
+  return handler;
+}
+
+const writeConfig = async (cwd: string, config: JsonValue) => {
   await mkdir(join(cwd, ".pi"), { recursive: true });
   await writeFile(join(cwd, ".pi", "byterover.json"), JSON.stringify(config), "utf8");
 };
@@ -170,36 +192,26 @@ const setup = async ({
   branch = [],
   sessionFile,
 }: {
-  config?: Record<string, unknown>;
-  branch?: Array<unknown>;
+  config?: JsonValue;
+  branch?: SessionEntry[];
   sessionFile?: string;
 } = {}): Promise<Harness> => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-byterover-index-"));
   tempDirs.push(cwd);
   await writeConfig(cwd, config);
 
-  const { pi, handlers, tools } = createFakePi();
-  byterover(pi);
-  const ctx = createContext(cwd, branch, sessionFile);
-  const sessionStart = getHandler(handlers, "session_start");
-  await sessionStart({ type: "session_start", reason: "startup" } satisfies SessionStartEvent, ctx);
+  const host = new RecordingExtensionHost();
+  createByteRoverExtension(host, recordingBridgeFactory);
+  const ctx = new RecordingRuntimeContext(cwd, branch, sessionFile);
+  await requireHandler(host.sessionStart)(ctx);
 
-  return { cwd, pi, handlers, tools, ctx, branch };
+  return { cwd, host, ctx, branch };
 };
 
-const getHandler = (handlers: Map<string, Array<Handler>>, event: string) => {
-  const handler = handlers.get(event)?.[0];
-  expect(handler).toBeDefined();
-  return handler!;
-};
-
-const beforeAgentEvent = (systemPrompt = "base prompt") =>
-  ({
-    type: "before_agent_start",
-    prompt: "user prompt",
-    systemPrompt,
-    systemPromptOptions: {},
-  }) as BeforeAgentStartEvent;
+const beforeAgentEvent = (systemPrompt = "base prompt") => ({
+  prompt: "user prompt",
+  systemPrompt,
+});
 
 describe("byterover Pi extension", () => {
   beforeEach(() => {
@@ -241,12 +253,9 @@ describe("byterover Pi extension", () => {
 
   test("suppresses bridge logger output from process console streams", async () => {
     await setup();
-    const logger = bridgeInstances[0]?.config.logger as {
-      debug?: (message: string) => void;
-      info: (message: string) => void;
-      warn: (message: string) => void;
-      error: (message: string) => void;
-    };
+    const logger = bridgeInstances[0]?.config.logger;
+    expect(logger).toBeDefined();
+    if (logger === undefined) throw new Error("Expected recording bridge logger");
 
     logger.debug?.("exit 0 (stdout=0 chars, stderr=0 chars)");
     logger.info("bridge info");
@@ -260,15 +269,15 @@ describe("byterover Pi extension", () => {
   });
 
   test("quiet suppresses user-facing ByteRover failure notifications", async () => {
-    const { handlers, ctx } = await setup({ config: { quiet: true } });
+    const { host, ctx } = await setup({ config: { quiet: true } });
     const bridge = bridgeInstances[0]!;
     bridge.recall.mockRejectedValue(new Error("recall exploded"));
-    const beforeAgentStart = getHandler(handlers, "before_agent_start");
+    const beforeAgentStart = requireHandler(host.beforeAgentStart);
 
     const result = await beforeAgentStart(beforeAgentEvent(), ctx);
 
     expect(result).toMatchObject({ systemPrompt: expect.stringContaining("base prompt") });
-    expect(ctx.ui.notify).not.toHaveBeenCalled();
+    expect(ctx.notifications).toEqual([]);
     expect(console.error).not.toHaveBeenCalled();
   });
 
@@ -276,14 +285,26 @@ describe("byterover Pi extension", () => {
     const harness = await setup({ config: { enabled: false } });
 
     expect(bridgeInstances).toHaveLength(0);
-    expect(harness.tools.size).toBe(0);
-    expect([...harness.handlers.keys()]).toEqual(["session_start"]);
+    expect(harness.host.tools.size).toBe(0);
+    expect(harness.host.beforeAgentStart).toBeUndefined();
+    expect(harness.host.context).toBeUndefined();
+    expect(harness.host.agentEnd).toBeUndefined();
+    expect(harness.host.sessionBeforeCompact).toBeUndefined();
   });
 
   test("manual tools are registered by default", async () => {
-    const { tools } = await setup();
+    const { host } = await setup();
 
-    expect([...tools.keys()].sort()).toEqual(["brv_persist", "brv_recall", "brv_search"]);
+    expect([...host.tools].sort()).toEqual(["brv_persist", "brv_recall", "brv_search"]);
+  });
+
+  test("registers each runtime lifecycle operation after a successful session start", async () => {
+    const { host } = await setup();
+
+    expect(host.beforeAgentStart).toBeDefined();
+    expect(host.context).toBeDefined();
+    expect(host.agentEnd).toBeDefined();
+    expect(host.sessionBeforeCompact).toBeDefined();
   });
 
   test("gitignore is bootstrapped with pi markers", async () => {
@@ -298,16 +319,15 @@ describe("byterover Pi extension", () => {
   });
 
   test("before_agent_start starts recall and context injects returned memory", async () => {
-    const { handlers, ctx } = await setup({
-      branch: [messageEntry("u1", "user", "previous question")],
+    const { host, ctx } = await setup({
+      branch: [messageEntry("u1", "previous question")],
     });
-    const beforeAgentStart = getHandler(handlers, "before_agent_start");
-    const context = getHandler(handlers, "context");
+    const beforeAgentStart = requireHandler(host.beforeAgentStart);
+    const context = requireHandler(host.context);
 
     const result = await beforeAgentStart(beforeAgentEvent(), ctx);
     const contextResult = await context(
       {
-        type: "context",
         messages: [{ role: "user", content: "user prompt", timestamp: 1 }],
       },
       ctx,
@@ -316,7 +336,7 @@ describe("byterover Pi extension", () => {
     expect(bridgeInstances[0]?.recall).toHaveBeenCalledTimes(1);
     expect(bridgeInstances[0]?.recall.mock.calls[0]?.[0]).toContain("[user]: previous question");
     expect(bridgeInstances[0]?.recall.mock.calls[0]?.[0]).toContain("[user]: user prompt");
-    expect((result as { systemPrompt: string }).systemPrompt).not.toContain("<byterover-context>");
+    expect(result.systemPrompt).not.toContain("<byterover-context>");
     expect(contextResult).toMatchObject({
       messages: expect.arrayContaining([
         expect.objectContaining({
@@ -333,13 +353,13 @@ describe("byterover Pi extension", () => {
   });
 
   test("guidance is appended when manual tools are enabled", async () => {
-    const { handlers, ctx } = await setup({
-      branch: [messageEntry("u1", "user", "latest question")],
+    const { host, ctx } = await setup({
+      branch: [messageEntry("u1", "latest question")],
     });
-    const beforeAgentStart = getHandler(handlers, "before_agent_start");
+    const beforeAgentStart = requireHandler(host.beforeAgentStart);
 
     const result = await beforeAgentStart(beforeAgentEvent("base"), ctx);
-    const systemPrompt = (result as { systemPrompt: string }).systemPrompt;
+    const systemPrompt = result.systemPrompt;
 
     expect(systemPrompt).toContain(
       buildManualToolGuidance({ autoRecall: true, autoPersist: true }),
@@ -348,11 +368,11 @@ describe("byterover Pi extension", () => {
   });
 
   test("autoRecall disabled skips recall but still appends guidance", async () => {
-    const { handlers, ctx } = await setup({
+    const { host, ctx } = await setup({
       config: { autoRecall: false },
-      branch: [messageEntry("u1", "user", "latest question")],
+      branch: [messageEntry("u1", "latest question")],
     });
-    const beforeAgentStart = getHandler(handlers, "before_agent_start");
+    const beforeAgentStart = requireHandler(host.beforeAgentStart);
 
     const result = await beforeAgentStart(beforeAgentEvent("base"), ctx);
 
@@ -360,103 +380,38 @@ describe("byterover Pi extension", () => {
     expect(result).toMatchObject({
       systemPrompt: expect.stringContaining("Automatic recall is disabled"),
     });
-    expect((result as { systemPrompt: string }).systemPrompt).not.toContain("<byterover-context>");
+    expect(result.systemPrompt).not.toContain("<byterover-context>");
   });
 
-  test("manual recall/search/persist work through registered tools", async () => {
-    const { tools, ctx } = await setup();
-    const bridge = bridgeInstances[0]!;
-    bridge.recall.mockResolvedValue({
-      content: '**Summary**: facts for "manual query": details',
-    });
-    bridge.search.mockResolvedValue({
-      totalFound: 1,
-      message: "ok",
-      results: [
-        {
-          title: "Manual tools",
-          path: "memory/tools.md",
-          score: 0.9,
-          excerpt: "Manual tools expose ByteRover memory.",
-          relatedPaths: ["memory/events.md"],
-        },
-      ],
-    });
-    bridge.persist.mockResolvedValue({ status: "queued", message: "task-1" });
-
-    const recall = await tools
-      .get("brv_recall")
-      ?.execute("recall-1", { query: "manual query" }, undefined, undefined, ctx);
-    const search = await tools
-      .get("brv_search")
-      ?.execute(
-        "search-1",
-        { query: "manual tools", limit: 5, scope: "memory" },
-        undefined,
-        undefined,
-        ctx,
-      );
-    const persist = await tools
-      .get("brv_persist")
-      ?.execute(
-        "persist-1",
-        { context: "Use pnpm for this repository." },
-        undefined,
-        undefined,
-        ctx,
-      );
-
-    expect(bridge.recall).toHaveBeenCalledWith("manual query", {
-      cwd: ctx.cwd,
-    });
-    expect(textResult(recall as never)).toBe("**Summary**: facts: details");
-    expect(bridge.search).toHaveBeenCalledWith("manual tools", {
-      cwd: ctx.cwd,
-      limit: 5,
-      scope: "memory",
-    });
-    expect(textResult(search as never)).toContain("memory/tools.md");
-    expect(bridge.persist).toHaveBeenCalledWith("Use pnpm for this repository.", {
-      cwd: ctx.cwd,
-      detach: true,
-    });
-    expect(textResult(persist as never)).toBe("ByteRover persist queued: task-1");
-  });
-
-  test("persist is not blocked by bridge.ready false for manual brv_persist and auto agent_end", async () => {
-    const { handlers, tools, ctx } = await setup({
-      branch: [messageEntry("u1", "user", "durable decision")],
+  test("auto curation persists even when the bridge is not ready for recall", async () => {
+    const { host, ctx } = await setup({
+      branch: [messageEntry("u1", "durable decision")],
     });
     const bridge = bridgeInstances[0]!;
     bridge.ready.mockResolvedValue(false);
-    const agentEnd = getHandler(handlers, "agent_end");
 
-    const manualResult = await tools
-      .get("brv_persist")
-      ?.execute("persist-1", { context: "manual memory" }, undefined, undefined, ctx);
-    await agentEnd({ type: "agent_end", messages: [] }, ctx);
+    await requireHandler(host.agentEnd)(ctx);
 
-    expect(textResult(manualResult as never)).toBe("ByteRover persist completed: ok");
-    expect(bridge.persist).toHaveBeenCalledTimes(2);
+    expect(bridge.persist).toHaveBeenCalledTimes(1);
     expect(bridge.ready).not.toHaveBeenCalled();
-    expect(bridge.persist.mock.calls[1]?.[0]).toContain(
+    expect(bridge.persist.mock.calls[0]?.[0]).toContain(
       "Conversation:\n\n---\n[user]: durable decision",
     );
   });
 
   test("agent_end curation persists latest turn once and dedupes repeated same turn", async () => {
-    const { handlers, ctx } = await setup({
+    const { host, ctx } = await setup({
       branch: [
-        messageEntry("u1", "user", "old question"),
-        messageEntry("a1", "assistant", "old answer"),
-        messageEntry("u2", "user", "persist this decision"),
-        messageEntry("a2", "assistant", "decision persisted"),
+        messageEntry("u1", "old question"),
+        assistantEntry("a1", "old answer"),
+        messageEntry("u2", "persist this decision"),
+        assistantEntry("a2", "decision persisted"),
       ],
     });
-    const agentEnd = getHandler(handlers, "agent_end");
+    const agentEnd = requireHandler(host.agentEnd);
 
-    await agentEnd({ type: "agent_end", messages: [] }, ctx);
-    await agentEnd({ type: "agent_end", messages: [] }, ctx);
+    await agentEnd(ctx);
+    await agentEnd(ctx);
 
     expect(bridgeInstances[0]?.persist).toHaveBeenCalledTimes(1);
     expect(bridgeInstances[0]?.persist.mock.calls[0]?.[0]).toContain(
@@ -468,14 +423,14 @@ describe("byterover Pi extension", () => {
 
   test("agent_end curation does not block handler completion", async () => {
     const pendingPersist = deferred<{ status: "completed"; message: string }>();
-    const { handlers, ctx } = await setup({
-      branch: [messageEntry("u1", "user", "persist without blocking send")],
+    const { host, ctx } = await setup({
+      branch: [messageEntry("u1", "persist without blocking send")],
     });
     const bridge = bridgeInstances[0]!;
     bridge.persist.mockReturnValueOnce(pendingPersist.promise);
-    const agentEnd = getHandler(handlers, "agent_end");
+    const agentEnd = requireHandler(host.agentEnd);
 
-    await expect(agentEnd({ type: "agent_end", messages: [] }, ctx)).resolves.toBeUndefined();
+    await expect(agentEnd(ctx)).resolves.toBeUndefined();
     expect(bridge.persist).toHaveBeenCalledTimes(1);
 
     pendingPersist.resolve({ status: "completed", message: "ok" });
@@ -485,21 +440,21 @@ describe("byterover Pi extension", () => {
   test("stale curation completion does not overwrite newer dedupe state", async () => {
     const oldPersist = deferred<{ status: "completed"; message: string }>();
     const newPersist = deferred<{ status: "completed"; message: string }>();
-    const { handlers, ctx, branch } = await setup({
-      branch: [messageEntry("u1", "user", "old decision")],
+    const { host, ctx, branch } = await setup({
+      branch: [messageEntry("u1", "old decision")],
     });
     const bridge = bridgeInstances[0]!;
     bridge.persist
       .mockReturnValueOnce(oldPersist.promise)
       .mockReturnValueOnce(newPersist.promise)
       .mockResolvedValue({ status: "completed", message: "ok" });
-    const agentEnd = getHandler(handlers, "agent_end");
+    const agentEnd = requireHandler(host.agentEnd);
 
-    const oldCuration = agentEnd({ type: "agent_end", messages: [] }, ctx);
+    const oldCuration = agentEnd(ctx);
     await vi.waitFor(() => expect(bridge.persist).toHaveBeenCalledTimes(1));
 
-    branch.splice(0, branch.length, messageEntry("u2", "user", "new decision"));
-    const newCuration = agentEnd({ type: "agent_end", messages: [] }, ctx);
+    branch.splice(0, branch.length, messageEntry("u2", "new decision"));
+    const newCuration = agentEnd(ctx);
     await vi.waitFor(() => expect(bridge.persist).toHaveBeenCalledTimes(2));
 
     newPersist.resolve({ status: "completed", message: "ok" });
@@ -507,7 +462,7 @@ describe("byterover Pi extension", () => {
     oldPersist.resolve({ status: "completed", message: "ok" });
     await oldCuration;
 
-    await agentEnd({ type: "agent_end", messages: [] }, ctx);
+    await agentEnd(ctx);
 
     expect(bridge.persist).toHaveBeenCalledTimes(2);
     expect(bridge.persist.mock.calls[0]?.[0]).toContain("[user]: old decision");
@@ -515,40 +470,42 @@ describe("byterover Pi extension", () => {
   });
 
   test("session_before_compact curation persists latest turn", async () => {
-    const { handlers, ctx } = await setup({
-      branch: [messageEntry("u1", "user", "compact this memory")],
+    const { host, ctx } = await setup({
+      branch: [messageEntry("u1", "compact this memory")],
     });
-    const beforeCompact = getHandler(handlers, "session_before_compact");
+    const beforeCompact = requireHandler(host.sessionBeforeCompact);
 
-    await beforeCompact({ type: "session_before_compact" }, ctx);
+    await beforeCompact(ctx);
 
     expect(bridgeInstances[0]?.persist).toHaveBeenCalledTimes(1);
     expect(bridgeInstances[0]?.persist.mock.calls[0]?.[0]).toContain("[user]: compact this memory");
   });
 
   test("autoPersist disabled skips curation", async () => {
-    const { handlers, ctx } = await setup({
+    const { host, ctx } = await setup({
       config: { autoPersist: false },
-      branch: [messageEntry("u1", "user", "do not persist")],
+      branch: [messageEntry("u1", "do not persist")],
     });
-    const agentEnd = getHandler(handlers, "agent_end");
-    const beforeCompact = getHandler(handlers, "session_before_compact");
+    const agentEnd = requireHandler(host.agentEnd);
+    const beforeCompact = requireHandler(host.sessionBeforeCompact);
 
-    await agentEnd({ type: "agent_end", messages: [] }, ctx);
-    await beforeCompact({ type: "session_before_compact" }, ctx);
+    await agentEnd(ctx);
+    await beforeCompact(ctx);
 
     expect(bridgeInstances[0]?.persist).not.toHaveBeenCalled();
   });
 
   test("invalid config notifies and creates no bridge without console output", async () => {
-    const { ctx, handlers, tools } = await setup({
+    const { ctx, host } = await setup({
       config: { recallTimeoutMs: "slow" },
     });
 
     expect(bridgeInstances).toHaveLength(0);
-    expect(tools.size).toBe(0);
-    expect([...handlers.keys()]).toEqual(["session_start"]);
-    expect(ctx.ui.notify).toHaveBeenCalledWith("Invalid ByteRover configuration", "error");
+    expect(host.tools.size).toBe(0);
+    expect(host.beforeAgentStart).toBeUndefined();
+    expect(ctx.notifications).toEqual([
+      { message: "Invalid ByteRover configuration", type: "error" },
+    ]);
     expect(console.error).not.toHaveBeenCalled();
   });
 });

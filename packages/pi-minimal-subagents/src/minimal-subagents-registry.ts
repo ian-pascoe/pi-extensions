@@ -1,4 +1,6 @@
-import { COORDINATOR_TOOL_NAMES, THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
+import type { JsonValue } from "@earendil-works/pi-ai";
+import { Value } from "typebox/value";
+import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
 import {
   createDeliveryLedger,
   deliveryLedgerSnapshot,
@@ -14,6 +16,33 @@ import {
   releaseEmptyDeliveryLedgerTurn,
   type DeliveryLedger,
 } from "./minimal-subagents-delivery-ledger.js";
+import {
+  RegistryAgentCreatedEventWireSchema,
+  RegistryAgentDeletedEventWireSchema,
+  RegistryCheckpointEventWireSchema,
+  RegistryCoordinationPendingEventWireSchema,
+  RegistryCoordinationSettledEventWireSchema,
+  RegistryDeliveryPendingEventWireSchema,
+  RegistryDeliveryPrunedEventWireSchema,
+  RegistryDeliverySettledEventWireSchema,
+  RegistryDeliveryTurnEventWireSchema,
+  RegistryEnvelopeWireSchema,
+  RegistryEventDiscriminantWireSchema,
+  RegistryJsonValueWireSchema,
+  RegistryLooseEnvelopeWireSchema,
+  RegistryMessageRecordedEventWireSchema,
+  RegistryRootProbeWireSchema,
+  RegistryTurnSettledEventWireSchema,
+  RegistryTurnStartedEventWireSchema,
+  type RegistryAgentWire,
+  type RegistryCoordinationDeliveryWire,
+  type RegistryCoordinatorMessageWire,
+  type RegistryLaunchContractWire,
+  type RegistryRecentMessageWire,
+  type RegistrySnapshotWire,
+  type RegistryTerminalDeliveryWire,
+  type RegistryTurnResultWire,
+} from "./minimal-subagents-registry-wire.js";
 import type {
   CoordinatorMessage,
   LaunchContract,
@@ -93,43 +122,117 @@ export interface RegistryReplayDiagnostic {
   message: string;
 }
 
-function addRegistryV2Envelope(
-  rootSessionId: string,
-  timestamp: string,
-  data: RegistryEventData,
-): RegistryEventV2 {
-  // SAFETY: RegistryEventData is a checked discriminated union; TypeScript cannot preserve its member after an object spread intersection.
-  return {
-    version: 2,
-    root_session_id: rootSessionId,
-    timestamp,
-    ...data,
-  } as unknown as RegistryEventV2;
-}
+type RegistryEventFactoryArguments = {
+  [TEvent in RegistryEventData["event"]]: [
+    event: TEvent,
+    data: Omit<Extract<RegistryEventData, { event: TEvent }>, "event">,
+    timestamp?: string,
+  ];
+}[RegistryEventData["event"]];
 
 /** Add an explicit Registry V2 root-ownership envelope to one append-only event. */
-export function createRegistryEvent<TEvent extends RegistryEventData["event"]>(
+export function createRegistryEvent<TArguments extends RegistryEventFactoryArguments>(
   rootSessionId: string,
-  event: TEvent,
-  data: Omit<Extract<RegistryEventData, { event: TEvent }>, "event">,
-  timestamp = new Date().toISOString(),
-): RegistryEventBaseV2 & Extract<RegistryEventData, { event: TEvent }> {
-  // SAFETY: The generic event discriminant selects the corresponding RegistryEventData member.
-  const eventData = { event, ...data } as unknown as RegistryEventData;
-  if (eventData.event === "checkpoint") {
-    const ledger = deliveryLedgerSnapshot(
-      createDeliveryLedger({
-        deliveries: eventData.snapshot.deliveries,
-        coordination_deliveries: eventData.snapshot.coordination_deliveries,
-        wait_claimed_turns: eventData.snapshot.wait_claimed_turns,
-        next_delivery_sequence: eventData.snapshot.next_delivery_sequence,
-      }),
-    );
-    eventData.snapshot = { ...structuredClone(eventData.snapshot), ...ledger };
+  ...args: TArguments
+): RegistryEventBaseV2 & Extract<RegistryEventData, { event: TArguments[0] }>;
+export function createRegistryEvent(
+  rootSessionId: string,
+  ...[event, data, suppliedTimestamp]: RegistryEventFactoryArguments
+): RegistryEventV2 {
+  const timestamp = suppliedTimestamp ?? new Date().toISOString();
+  const envelope = { version: 2 as const, root_session_id: rootSessionId, timestamp };
+  switch (event) {
+    case "checkpoint": {
+      const ledger = deliveryLedgerSnapshot(
+        createDeliveryLedger({
+          deliveries: data.snapshot.deliveries,
+          coordination_deliveries: data.snapshot.coordination_deliveries,
+          wait_claimed_turns: data.snapshot.wait_claimed_turns,
+          next_delivery_sequence: data.snapshot.next_delivery_sequence,
+        }),
+      );
+      return {
+        ...envelope,
+        event,
+        snapshot: { ...structuredClone(data.snapshot), ...ledger },
+      };
+    }
+    case "agent-created":
+      return { ...envelope, event, agent: data.agent };
+    case "turn-started":
+      return {
+        ...envelope,
+        event,
+        agent_id: data.agent_id,
+        turn_id: data.turn_id,
+        started_at: data.started_at,
+      };
+    case "turn-settled": {
+      const result: RegistryEventV2 & { event: "turn-settled" } = {
+        ...envelope,
+        event,
+        result: data.result,
+      };
+      if (data.settled_at !== undefined) result.settled_at = data.settled_at;
+      if (data.session_leaf_id !== undefined) result.session_leaf_id = data.session_leaf_id;
+      return result;
+    }
+    case "delivery-pending":
+      return { ...envelope, event, delivery: data.delivery };
+    case "delivery-settled": {
+      const result: RegistryEventV2 & { event: "delivery-settled" } = {
+        ...envelope,
+        event,
+        source_agent_id: data.source_agent_id,
+        source_turn_id: data.source_turn_id,
+      };
+      if (data.error !== undefined) result.error = data.error;
+      return result;
+    }
+    case "delivery-pruned":
+      return {
+        ...envelope,
+        event,
+        source_agent_id: data.source_agent_id,
+        source_turn_id: data.source_turn_id,
+        reason: data.reason,
+      };
+    case "coordination-delivery-pending":
+      return { ...envelope, event, delivery: data.delivery };
+    case "coordination-delivery-settled": {
+      const result: RegistryEventV2 & { event: "coordination-delivery-settled" } = {
+        ...envelope,
+        event,
+        delivery_id: data.delivery_id,
+      };
+      if (data.error !== undefined) result.error = data.error;
+      return result;
+    }
+    case "delivery-turn-claimed":
+      return {
+        ...envelope,
+        event,
+        source_agent_id: data.source_agent_id,
+        source_turn_id: data.source_turn_id,
+      };
+    case "delivery-turn-released":
+      return {
+        ...envelope,
+        event,
+        source_agent_id: data.source_agent_id,
+        source_turn_id: data.source_turn_id,
+      };
+    case "agent-message-recorded":
+      return {
+        ...envelope,
+        event,
+        agent_id: data.agent_id,
+        message: data.message,
+        recorded_at: data.recorded_at,
+      };
+    case "agent-deleted":
+      return { ...envelope, event, agent_ids: data.agent_ids };
   }
-  // SAFETY: addRegistryV2Envelope preserves the generic event member supplied by this factory.
-  return addRegistryV2Envelope(rootSessionId, timestamp, eventData) as RegistryEventBaseV2 &
-    Extract<RegistryEventData, { event: TEvent }>;
 }
 
 interface RegistryEntryLike {
@@ -138,39 +241,17 @@ interface RegistryEntryLike {
   data?: unknown;
 }
 
-type UnknownRecord = Record<string, unknown>;
-
-interface ParsedRegistryEvent {
-  event?: RegistryEventV2;
-  foreignRoot: boolean;
-  code?: RegistryReplayDiagnosticCode;
-  message?: string;
-}
+type ParsedRegistryEvent =
+  | { kind: "event"; event: RegistryEventV2 }
+  | { kind: "foreign-root" }
+  | { kind: "invalid"; code: RegistryReplayDiagnosticCode; message: string };
 
 const FRIENDLY_AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const CANONICAL_AGENT_ID_PATTERN =
   /^(?:root\.)?[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:\.[A-Za-z0-9][A-Za-z0-9_-]{0,63})*$/;
-const THINKING_LEVEL_SET = new Set<string>(THINKING_LEVELS);
-const TURN_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
+const COORDINATOR_TOOL_NAME_SET = new Set<string>(COORDINATOR_TOOL_NAMES);
 
-function isRecord(value: unknown): value is UnknownRecord {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-function isOptionalString(value: unknown): boolean {
-  return value === undefined || typeof value === "string";
-}
-
-function isOptionalNonEmptyString(value: unknown): boolean {
-  return value === undefined || isNonEmptyString(value);
-}
-
-function isCanonicalModelId(value: unknown): value is string {
-  if (typeof value !== "string") return false;
+function isCanonicalModelId(value: string): boolean {
   const separatorIndex = value.indexOf("/");
   return separatorIndex > 0 && separatorIndex < value.length - 1;
 }
@@ -179,226 +260,221 @@ function isOwnedTurnId(sourceAgentId: string, turnId: string): boolean {
   return turnId.startsWith(`${sourceAgentId}:`) && !turnId.includes("\u0000");
 }
 
-function isIsoTimestamp(value: unknown): value is string {
-  if (typeof value !== "string") return false;
+function isIsoTimestamp(value: string): boolean {
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-function isUniqueNonEmptyStringArray(value: unknown): value is string[] {
-  return (
-    Array.isArray(value) &&
-    value.every(isNonEmptyString) &&
-    // SAFETY: every array element was refined to a non-empty string immediately above.
-    new Set(value as string[]).size === value.length
-  );
+function isUniqueNonEmptyStringArray(value: readonly string[]): boolean {
+  return value.every((item) => item.length > 0) && new Set(value).size === value.length;
 }
 
-function isFiniteNonnegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+function isSafeSequence(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1 && value < Number.MAX_SAFE_INTEGER;
 }
 
-function isSafeSequence(value: unknown): value is number {
-  return (
-    Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) < Number.MAX_SAFE_INTEGER
-  );
+function cloneRegistryTurnResult(value: RegistryTurnResultWire): TurnResult {
+  const result: TurnResult = {
+    agent_id: value.agent_id,
+    turn_id: value.turn_id,
+    status: value.status,
+    output: value.output,
+  };
+  if (value.error !== undefined) result.error = value.error;
+  if (value.usage !== undefined) result.usage = structuredClone(value.usage);
+  if (value.elapsed_ms !== undefined) result.elapsed_ms = value.elapsed_ms;
+  return result;
 }
 
-function isUsage(value: unknown): boolean {
-  if (!isRecord(value) || !isRecord(value.cost)) return false;
-  return (
-    [value.input, value.output, value.cacheRead, value.cacheWrite, value.totalTokens].every(
-      isFiniteNonnegativeNumber,
-    ) &&
-    (value.cacheWrite1h === undefined || isFiniteNonnegativeNumber(value.cacheWrite1h)) &&
-    (value.reasoning === undefined || isFiniteNonnegativeNumber(value.reasoning)) &&
-    [
-      value.cost.input,
-      value.cost.output,
-      value.cost.cacheRead,
-      value.cost.cacheWrite,
-      value.cost.total,
-    ].every(isFiniteNonnegativeNumber)
-  );
+function cloneRegistryRecentMessage(value: RegistryRecentMessageWire): RecentAgentMessage {
+  return {
+    source_agent_id: value.source_agent_id,
+    turn_id: value.turn_id,
+    content: value.content,
+  };
 }
-
-function isRecentAgentMessage(value: unknown): value is RecentAgentMessage {
-  return (
-    isRecord(value) &&
-    isNonEmptyString(value.source_agent_id) &&
-    isNonEmptyString(value.turn_id) &&
-    typeof value.content === "string"
-  );
-}
-
-function isTurnResult(value: unknown): value is TurnResult {
-  return (
-    isRecord(value) &&
-    isNonEmptyString(value.agent_id) &&
-    isNonEmptyString(value.turn_id) &&
-    TURN_STATUSES.has(String(value.status)) &&
-    typeof value.output === "string" &&
-    isOptionalString(value.error) &&
-    (value.usage === undefined || isUsage(value.usage)) &&
-    (value.elapsed_ms === undefined || isFiniteNonnegativeNumber(value.elapsed_ms))
-  );
-}
-
-const COORDINATOR_TOOL_NAME_SET = new Set<string>(COORDINATOR_TOOL_NAMES);
 
 function excludesCoordinatorToolNames(toolNames: readonly string[]): boolean {
   return toolNames.every((toolName) => !COORDINATOR_TOOL_NAME_SET.has(toolName));
 }
 
-function isToolSelection(value: unknown): boolean {
-  return (
-    value === undefined ||
-    value === "none" ||
-    value === "read" ||
-    value === "modify" ||
-    (isUniqueNonEmptyStringArray(value) && excludesCoordinatorToolNames(value))
-  );
-}
-
-function isLaunchContract(value: unknown): value is LaunchContract {
-  return (
-    isRecord(value) &&
-    ["inherit", "compact", "omit"].includes(String(value.session_context)) &&
-    ["inherit", "omit"].includes(String(value.project_context)) &&
-    isCanonicalModelId(value.model) &&
-    THINKING_LEVEL_SET.has(String(value.thinking_level)) &&
-    isToolSelection(value.tools) &&
-    isUniqueNonEmptyStringArray(value.ordinary_tools) &&
-    excludesCoordinatorToolNames(value.ordinary_tools) &&
-    (value.delegation === undefined || value.delegation === "none" || value.delegation === "fanout")
-  );
-}
-
-function isPersistedAgent(value: unknown, version: 1 | 2): value is PersistedAgent {
+function parseRegistryLaunchContract(
+  value: RegistryLaunchContractWire,
+): LaunchContract | undefined {
   if (
-    !isRecord(value) ||
-    !isNonEmptyString(value.agent_id) ||
+    !isCanonicalModelId(value.model) ||
+    !isUniqueNonEmptyStringArray(value.ordinary_tools) ||
+    !excludesCoordinatorToolNames(value.ordinary_tools) ||
+    (Array.isArray(value.tools) &&
+      (!isUniqueNonEmptyStringArray(value.tools) || !excludesCoordinatorToolNames(value.tools)))
+  ) {
+    return undefined;
+  }
+  const launchContract: LaunchContract = {
+    session_context: value.session_context,
+    project_context: value.project_context,
+    model: value.model,
+    thinking_level: value.thinking_level,
+    tools: value.tools === undefined ? undefined : structuredClone(value.tools),
+    ordinary_tools: [...value.ordinary_tools],
+  };
+  if (value.delegation !== undefined) launchContract.delegation = value.delegation;
+  return launchContract;
+}
+
+function parseRegistryAgent(value: RegistryAgentWire, version: 1 | 2): PersistedAgent | undefined {
+  const launchContract = parseRegistryLaunchContract(value.launch_contract);
+  if (
     value.agent_id === "root" ||
     !CANONICAL_AGENT_ID_PATTERN.test(value.agent_id) ||
-    !isNonEmptyString(value.friendly_id) ||
     value.friendly_id === "root" ||
     value.friendly_id === "parent" ||
     !FRIENDLY_AGENT_ID_PATTERN.test(value.friendly_id) ||
-    !isNonEmptyString(value.parent_id) ||
     !isIsoTimestamp(value.created_at) ||
-    !isNonEmptyString(value.spawn_entry_id) ||
-    !isLaunchContract(value.launch_contract) ||
+    launchContract === undefined ||
     !isUniqueNonEmptyStringArray(value.capability_ceiling) ||
-    (value.availability !== "available" && value.availability !== "unavailable") ||
     !isUniqueNonEmptyStringArray(value.missing_dependencies) ||
-    !Array.isArray(value.recent_messages) ||
-    !value.recent_messages.every(isRecentAgentMessage)
-  ) {
-    return false;
-  }
-  if (
-    !isOptionalString(value.task) ||
     (value.latest_activity_at !== undefined && !isIsoTimestamp(value.latest_activity_at)) ||
-    !isOptionalNonEmptyString(value.session_file) ||
-    !isOptionalNonEmptyString(value.session_id) ||
-    !isOptionalNonEmptyString(value.session_leaf_id) ||
-    !isOptionalNonEmptyString(value.clone_error) ||
-    !isOptionalNonEmptyString(value.active_turn_id) ||
-    (value.active_turn_started_at !== undefined && !isIsoTimestamp(value.active_turn_started_at)) ||
-    (value.latest_result !== undefined && !isTurnResult(value.latest_result)) ||
-    !isOptionalNonEmptyString(value.unavailable_reason) ||
-    (value.deleted !== undefined && typeof value.deleted !== "boolean")
+    (value.active_turn_started_at !== undefined && !isIsoTimestamp(value.active_turn_started_at))
   ) {
-    return false;
+    return undefined;
   }
-  if ((value.active_turn_id === undefined) !== (value.active_turn_started_at === undefined))
-    return false;
-  if ((value.session_file === undefined) !== (value.session_id === undefined)) return false;
+  if ((value.active_turn_id === undefined) !== (value.active_turn_started_at === undefined)) {
+    return undefined;
+  }
+  if ((value.session_file === undefined) !== (value.session_id === undefined)) return undefined;
   if (version === 2) {
-    if (value.session_leaf_id !== undefined && value.session_id === undefined) return false;
-    if (value.session_id !== undefined && value.session_leaf_id === undefined) return false;
+    if (value.session_leaf_id !== undefined && value.session_id === undefined) return undefined;
+    if (value.session_id !== undefined && value.session_leaf_id === undefined) return undefined;
   }
-  if (value.clone_error !== undefined && value.availability !== "unavailable") return false;
-  if (!excludesCoordinatorToolNames(value.capability_ceiling)) return false;
+  if (value.clone_error !== undefined && value.availability !== "unavailable") return undefined;
+  if (!excludesCoordinatorToolNames(value.capability_ceiling)) return undefined;
   const capabilityCeiling = new Set(value.capability_ceiling);
   if (
-    value.launch_contract.ordinary_tools.length !== capabilityCeiling.size ||
-    value.launch_contract.ordinary_tools.some((toolName) => !capabilityCeiling.has(toolName))
-  )
-    return false;
-  if (
-    typeof value.active_turn_id === "string" &&
-    !isOwnedTurnId(value.agent_id, value.active_turn_id)
-  )
-    return false;
+    launchContract.ordinary_tools.length !== capabilityCeiling.size ||
+    launchContract.ordinary_tools.some((toolName) => !capabilityCeiling.has(toolName))
+  ) {
+    return undefined;
+  }
+  if (value.active_turn_id !== undefined && !isOwnedTurnId(value.agent_id, value.active_turn_id)) {
+    return undefined;
+  }
   const expectedAgentId =
     value.parent_id === "root"
       ? [value.friendly_id, `root.${value.friendly_id}`]
       : [`${value.parent_id}.${value.friendly_id}`];
-  if (!expectedAgentId.includes(value.agent_id)) return false;
+  if (!expectedAgentId.includes(value.agent_id)) return undefined;
   if (
     value.latest_result !== undefined &&
     (value.latest_result.agent_id !== value.agent_id ||
       !isOwnedTurnId(value.agent_id, value.latest_result.turn_id) ||
       value.latest_result.turn_id === value.active_turn_id)
   ) {
-    return false;
+    return undefined;
   }
-  return true;
-}
 
-function isPersistedDelivery(value: unknown, version: 1 | 2): value is PersistedDelivery {
-  if (
-    !isRecord(value) ||
-    !isNonEmptyString(value.source_agent_id) ||
-    !isNonEmptyString(value.source_turn_id) ||
-    !isNonEmptyString(value.destination_agent_id) ||
-    (value.path !== "wait" && value.path !== "message") ||
-    typeof value.settled !== "boolean" ||
-    (value.error !== undefined && typeof value.error !== "string") ||
-    (value.result !== undefined && !isTurnResult(value.result))
-  ) {
-    return false;
+  const agent: PersistedAgent = {
+    agent_id: value.agent_id,
+    friendly_id: value.friendly_id,
+    parent_id: value.parent_id,
+    created_at: value.created_at,
+    spawn_entry_id: value.spawn_entry_id,
+    launch_contract: launchContract,
+    capability_ceiling: [...value.capability_ceiling],
+    availability: value.availability,
+    missing_dependencies: [...value.missing_dependencies],
+    recent_messages: value.recent_messages.map(cloneRegistryRecentMessage),
+  };
+  if (value.task !== undefined) agent.task = value.task;
+  if (value.latest_activity_at !== undefined) agent.latest_activity_at = value.latest_activity_at;
+  if (value.session_file !== undefined) agent.session_file = value.session_file;
+  if (value.session_id !== undefined) agent.session_id = value.session_id;
+  if (value.session_leaf_id !== undefined) agent.session_leaf_id = value.session_leaf_id;
+  if (value.clone_error !== undefined) agent.clone_error = value.clone_error;
+  if (value.active_turn_id !== undefined) agent.active_turn_id = value.active_turn_id;
+  if (value.active_turn_started_at !== undefined) {
+    agent.active_turn_started_at = value.active_turn_started_at;
   }
-  if (
-    version === 2 &&
-    (!isSafeSequence(value.sequence) || value.result === undefined || value.settled !== false)
-  )
-    return false;
-  return value.sequence === undefined || isSafeSequence(value.sequence);
+  if (value.latest_result !== undefined) {
+    agent.latest_result = cloneRegistryTurnResult(value.latest_result);
+  }
+  if (value.unavailable_reason !== undefined) agent.unavailable_reason = value.unavailable_reason;
+  if (value.deleted !== undefined) agent.deleted = value.deleted;
+  return agent;
 }
 
-function isCoordinatorMessage(value: unknown): value is CoordinatorMessage {
-  if (!isRecord(value) || !isRecord(value.details)) return false;
-  return (
-    value.customType === "minimal-subagents.message" &&
-    typeof value.content === "string" &&
-    isNonEmptyString(value.details.source_agent_id) &&
-    isNonEmptyString(value.details.destination_agent_id) &&
-    isNonEmptyString(value.details.source_turn_id) &&
-    isNonEmptyString(value.details.message_id) &&
-    isNonEmptyString(value.details.delivery_id) &&
-    value.details.status === undefined &&
-    value.details.elapsed_ms === undefined &&
-    value.details.usage === undefined
-  );
-}
-
-function isCoordinationDelivery(
-  value: unknown,
+function parseRegistryTerminalDelivery(
+  value: RegistryTerminalDeliveryWire,
   version: 1 | 2,
-): value is PersistedCoordinationDelivery {
-  return (
-    isRecord(value) &&
-    isNonEmptyString(value.delivery_id) &&
-    isSafeSequence(value.sequence) &&
-    isNonEmptyString(value.destination_agent_id) &&
-    (value.path === "wait" || value.path === "message") &&
-    typeof value.settled === "boolean" &&
-    (value.error === undefined || typeof value.error === "string") &&
-    isCoordinatorMessage(value.message) &&
-    (version === 1 || value.settled === false)
-  );
+): PersistedDelivery | undefined {
+  if (
+    (version === 2 &&
+      (value.sequence === undefined || value.result === undefined || value.settled !== false)) ||
+    (value.sequence !== undefined && !isSafeSequence(value.sequence))
+  ) {
+    return undefined;
+  }
+  const delivery: PersistedDelivery = {
+    source_agent_id: value.source_agent_id,
+    source_turn_id: value.source_turn_id,
+    destination_agent_id: value.destination_agent_id,
+    path: value.path,
+    settled: value.settled,
+  };
+  if (value.sequence !== undefined) delivery.sequence = value.sequence;
+  if (value.result !== undefined) delivery.result = cloneRegistryTurnResult(value.result);
+  if (value.error !== undefined) delivery.error = value.error;
+  return delivery;
+}
+
+function parseRegistryCoordinatorMessage(
+  value: RegistryCoordinatorMessageWire,
+): CoordinatorMessage | undefined {
+  if (
+    value.customType !== "minimal-subagents.message" ||
+    value.details.destination_agent_id === undefined ||
+    value.details.delivery_id === undefined ||
+    value.details.status !== undefined ||
+    value.details.elapsed_ms !== undefined ||
+    value.details.usage !== undefined
+  ) {
+    return undefined;
+  }
+  return {
+    customType: "minimal-subagents.message",
+    content: value.content,
+    details: {
+      source_agent_id: value.details.source_agent_id,
+      destination_agent_id: value.details.destination_agent_id,
+      source_turn_id: value.details.source_turn_id,
+      message_id: value.details.message_id,
+      delivery_id: value.details.delivery_id,
+    },
+  };
+}
+
+function parseRegistryCoordinationDelivery(
+  value: RegistryCoordinationDeliveryWire,
+  version: 1 | 2,
+): PersistedCoordinationDelivery | undefined {
+  const message = parseRegistryCoordinatorMessage(value.message);
+  if (
+    !isSafeSequence(value.sequence) ||
+    message === undefined ||
+    (version === 2 && value.settled)
+  ) {
+    return undefined;
+  }
+  const delivery: PersistedCoordinationDelivery = {
+    delivery_id: value.delivery_id,
+    sequence: value.sequence,
+    destination_agent_id: value.destination_agent_id,
+    path: value.path,
+    settled: value.settled,
+    message,
+  };
+  if (value.error !== undefined) delivery.error = value.error;
+  return delivery;
 }
 
 function hasValidAgentHierarchy(agents: readonly PersistedAgent[]): boolean {
@@ -493,104 +569,144 @@ function isObservableSourceTurn(
   );
 }
 
+type RegistrySnapshotValidationResult =
+  | { kind: "valid"; snapshot: RegistrySnapshot }
+  | {
+      kind: "invalid";
+      code: RegistryReplayDiagnosticCode;
+      message: string;
+    };
+
+function invalidRegistrySnapshot(
+  code: RegistryReplayDiagnosticCode,
+  message: string,
+): RegistrySnapshotValidationResult {
+  return { kind: "invalid", code, message };
+}
+
 function validateRegistrySnapshot(
-  value: unknown,
+  value: RegistrySnapshotWire,
   version: 1 | 2,
-): { snapshot?: RegistrySnapshot; code?: RegistryReplayDiagnosticCode; message?: string } {
-  if (!isRecord(value))
-    return { code: "invalid-checkpoint", message: "snapshot must be an object" };
-  if (
-    !Array.isArray(value.agents) ||
-    !value.agents.every((agent) => isPersistedAgent(agent, version))
-  )
-    return { code: "invalid-checkpoint", message: "snapshot agents are incomplete or invalid" };
-  // SAFETY: every agents element was fully parsed by isPersistedAgent above.
-  const agents = value.agents as PersistedAgent[];
-  if (!hasValidAgentHierarchy(agents))
-    return { code: "invalid-agent-hierarchy", message: "snapshot agent hierarchy is invalid" };
-  if (!isUniqueNonEmptyStringArray(value.tombstones))
-    return { code: "invalid-checkpoint", message: "snapshot tombstones must be unique agent IDs" };
-  // SAFETY: isUniqueNonEmptyStringArray parsed every tombstone above.
-  const tombstones = value.tombstones as string[];
+): RegistrySnapshotValidationResult {
+  const agents: PersistedAgent[] = [];
+  for (const wireAgent of value.agents) {
+    const agent = parseRegistryAgent(wireAgent, version);
+    if (agent === undefined) {
+      return invalidRegistrySnapshot(
+        "invalid-checkpoint",
+        "snapshot agents are incomplete or invalid",
+      );
+    }
+    agents.push(agent);
+  }
+  if (!hasValidAgentHierarchy(agents)) {
+    return invalidRegistrySnapshot(
+      "invalid-agent-hierarchy",
+      "snapshot agent hierarchy is invalid",
+    );
+  }
+  if (!isUniqueNonEmptyStringArray(value.tombstones)) {
+    return invalidRegistrySnapshot(
+      "invalid-checkpoint",
+      "snapshot tombstones must be unique agent IDs",
+    );
+  }
+  const tombstones = [...value.tombstones];
   if (
     tombstones.some((agentId) => agentId === "root" || !CANONICAL_AGENT_ID_PATTERN.test(agentId))
   ) {
-    return { code: "invalid-agent-hierarchy", message: "tombstone agent ID is not canonical" };
+    return invalidRegistrySnapshot(
+      "invalid-agent-hierarchy",
+      "tombstone agent ID is not canonical",
+    );
   }
   if (agents.some((agent) => agent.deleted === true)) {
-    return { code: "invalid-agent-hierarchy", message: "live snapshot agents cannot be deleted" };
+    return invalidRegistrySnapshot(
+      "invalid-agent-hierarchy",
+      "live snapshot agents cannot be deleted",
+    );
   }
   const agentIds = new Set(agents.map((agent) => agent.agent_id));
-  if (tombstones.some((agentId) => agentIds.has(agentId)))
-    return { code: "invalid-agent-hierarchy", message: "live agents cannot also be tombstoned" };
-  if (
-    !Array.isArray(value.deliveries) ||
-    !value.deliveries.every((delivery) => isPersistedDelivery(delivery, version))
-  ) {
-    return { code: "invalid-checkpoint", message: "snapshot terminal deliveries are invalid" };
+  if (tombstones.some((agentId) => agentIds.has(agentId))) {
+    return invalidRegistrySnapshot(
+      "invalid-agent-hierarchy",
+      "live agents cannot also be tombstoned",
+    );
+  }
+
+  const deliveries: PersistedDelivery[] = [];
+  for (const wireDelivery of value.deliveries) {
+    const delivery = parseRegistryTerminalDelivery(wireDelivery, version);
+    if (delivery === undefined) {
+      return invalidRegistrySnapshot(
+        "invalid-checkpoint",
+        "snapshot terminal deliveries are invalid",
+      );
+    }
+    deliveries.push(delivery);
   }
   if (version === 2 && value.coordination_deliveries === undefined) {
-    return {
-      code: "invalid-checkpoint",
-      message: "Registry V2 checkpoint must include coordination_deliveries",
-    };
+    return invalidRegistrySnapshot(
+      "invalid-checkpoint",
+      "Registry V2 checkpoint must include coordination_deliveries",
+    );
   }
-  if (
-    value.coordination_deliveries !== undefined &&
-    (!Array.isArray(value.coordination_deliveries) ||
-      !value.coordination_deliveries.every((delivery) => isCoordinationDelivery(delivery, version)))
-  ) {
-    return { code: "invalid-checkpoint", message: "snapshot Coordination Messages are invalid" };
+  const coordinationDeliveries: PersistedCoordinationDelivery[] = [];
+  for (const wireDelivery of value.coordination_deliveries ?? []) {
+    const delivery = parseRegistryCoordinationDelivery(wireDelivery, version);
+    if (delivery === undefined) {
+      return invalidRegistrySnapshot(
+        "invalid-checkpoint",
+        "snapshot Coordination Messages are invalid",
+      );
+    }
+    coordinationDeliveries.push(delivery);
   }
   if (version === 2 && value.wait_claimed_turns === undefined) {
-    return {
-      code: "invalid-checkpoint",
-      message: "Registry V2 checkpoint must include wait_claimed_turns",
-    };
+    return invalidRegistrySnapshot(
+      "invalid-checkpoint",
+      "Registry V2 checkpoint must include wait_claimed_turns",
+    );
   }
+  const waitClaimedTurns = value.wait_claimed_turns ?? [];
   if (
-    value.wait_claimed_turns !== undefined &&
-    (!isUniqueNonEmptyStringArray(value.wait_claimed_turns) ||
-      value.wait_claimed_turns.some(
-        (key) => key.indexOf("\u0000") <= 0 || key.indexOf("\u0000") !== key.lastIndexOf("\u0000"),
-      ))
+    !isUniqueNonEmptyStringArray(waitClaimedTurns) ||
+    waitClaimedTurns.some(
+      (key) => key.indexOf("\u0000") <= 0 || key.indexOf("\u0000") !== key.lastIndexOf("\u0000"),
+    )
   ) {
-    return { code: "invalid-checkpoint", message: "snapshot wait claims are invalid" };
+    return invalidRegistrySnapshot("invalid-checkpoint", "snapshot wait claims are invalid");
   }
   if (version === 2 && value.next_delivery_sequence === undefined) {
-    return {
-      code: "invalid-delivery-sequence",
-      message: "Registry V2 checkpoint must include next_delivery_sequence",
-    };
+    return invalidRegistrySnapshot(
+      "invalid-delivery-sequence",
+      "Registry V2 checkpoint must include next_delivery_sequence",
+    );
   }
   if (value.next_delivery_sequence !== undefined && !isSafeSequence(value.next_delivery_sequence)) {
-    return {
-      code: "invalid-delivery-sequence",
-      message: "next_delivery_sequence must be a positive safe integer",
-    };
+    return invalidRegistrySnapshot(
+      "invalid-delivery-sequence",
+      "next_delivery_sequence must be a positive safe integer",
+    );
   }
 
   const agentsById = new Map(agents.map((agent) => [agent.agent_id, agent]));
-  // SAFETY: every terminal and Coordination Message item passed its version-aware parser above.
-  const deliveries = value.deliveries as PersistedDelivery[];
-  const coordinationDeliveries = (value.coordination_deliveries ??
-    []) as PersistedCoordinationDelivery[];
   for (const agent of agents) {
     if (version === 2 && agent.recent_messages.length > 20) {
-      return {
-        code: "invalid-checkpoint",
-        message: "agent recent_messages exceeds the 20-item projection limit",
-      };
+      return invalidRegistrySnapshot(
+        "invalid-checkpoint",
+        "agent recent_messages exceeds the 20-item projection limit",
+      );
     }
     for (const message of agent.recent_messages) {
       if (
         !isOwnedTurnId(message.source_agent_id, message.turn_id) ||
         !areAdjacentAgents(message.source_agent_id, agent.agent_id, agentsById)
       ) {
-        return {
-          code: "invalid-delivery-adjacency",
-          message: "recent message endpoints and source turn must identify adjacent agents",
-        };
+        return invalidRegistrySnapshot(
+          "invalid-delivery-adjacency",
+          "recent message endpoints and source turn must identify adjacent agents",
+        );
       }
     }
   }
@@ -598,17 +714,17 @@ function validateRegistrySnapshot(
     (delivery) => `${delivery.source_agent_id}\u0000${delivery.source_turn_id}`,
   );
   if (new Set(terminalDeliveryKeys).size !== terminalDeliveryKeys.length) {
-    return {
-      code: "invalid-delivery-identity",
-      message: "terminal delivery source-turn identities must be unique",
-    };
+    return invalidRegistrySnapshot(
+      "invalid-delivery-identity",
+      "terminal delivery source-turn identities must be unique",
+    );
   }
   const coordinationDeliveryIds = coordinationDeliveries.map((delivery) => delivery.delivery_id);
   if (new Set(coordinationDeliveryIds).size !== coordinationDeliveryIds.length) {
-    return {
-      code: "invalid-delivery-identity",
-      message: "Coordination Message delivery IDs must be unique",
-    };
+    return invalidRegistrySnapshot(
+      "invalid-delivery-identity",
+      "Coordination Message delivery IDs must be unique",
+    );
   }
   const waitTerminalCounts = new Map<string, number>();
   for (const delivery of deliveries) {
@@ -616,43 +732,47 @@ function validateRegistrySnapshot(
       const count = (waitTerminalCounts.get(delivery.source_agent_id) ?? 0) + 1;
       waitTerminalCounts.set(delivery.source_agent_id, count);
       if (version === 2 && count > WAIT_TERMINAL_RETENTION_LIMIT) {
-        return {
-          code: "invalid-checkpoint",
-          message: `wait-only terminal retention exceeds ${WAIT_TERMINAL_RETENTION_LIMIT} items for one source agent`,
-        };
+        return invalidRegistrySnapshot(
+          "invalid-checkpoint",
+          `wait-only terminal retention exceeds ${WAIT_TERMINAL_RETENTION_LIMIT} items for one source agent`,
+        );
       }
     }
     const identityError = validateDeliveryIdentity(delivery, version);
-    if (identityError) return { code: "invalid-delivery-identity", message: identityError };
+    if (identityError) return invalidRegistrySnapshot("invalid-delivery-identity", identityError);
     if (!isOwnedTurnId(delivery.source_agent_id, delivery.source_turn_id)) {
-      return {
-        code: "invalid-delivery-identity",
-        message: "terminal source_turn_id must belong to source_agent_id",
-      };
+      return invalidRegistrySnapshot(
+        "invalid-delivery-identity",
+        "terminal source_turn_id must belong to source_agent_id",
+      );
     }
     const source = agentsById.get(delivery.source_agent_id);
-    if (!source)
-      return { code: "invalid-event-reference", message: "terminal delivery source is not live" };
+    if (!source) {
+      return invalidRegistrySnapshot(
+        "invalid-event-reference",
+        "terminal delivery source is not live",
+      );
+    }
     if (source.parent_id !== delivery.destination_agent_id) {
-      return {
-        code: "invalid-delivery-adjacency",
-        message: "terminal delivery destination must be the source agent direct parent",
-      };
+      return invalidRegistrySnapshot(
+        "invalid-delivery-adjacency",
+        "terminal delivery destination must be the source agent direct parent",
+      );
     }
   }
   for (const delivery of coordinationDeliveries) {
     const identityError = validateCoordinationIdentity(delivery);
-    if (identityError) return { code: "invalid-delivery-identity", message: identityError };
+    if (identityError) return invalidRegistrySnapshot("invalid-delivery-identity", identityError);
     if (
       !isOwnedTurnId(
         delivery.message.details.source_agent_id,
         delivery.message.details.source_turn_id,
       )
     ) {
-      return {
-        code: "invalid-delivery-identity",
-        message: "Coordination Message source_turn_id must belong to source_agent_id",
-      };
+      return invalidRegistrySnapshot(
+        "invalid-delivery-identity",
+        "Coordination Message source_turn_id must belong to source_agent_id",
+      );
     }
     if (
       !areAdjacentAgents(
@@ -661,10 +781,10 @@ function validateRegistrySnapshot(
         agentsById,
       )
     ) {
-      return {
-        code: "invalid-delivery-adjacency",
-        message: "Coordination Message endpoints must be adjacent live agents",
-      };
+      return invalidRegistrySnapshot(
+        "invalid-delivery-adjacency",
+        "Coordination Message endpoints must be adjacent live agents",
+      );
     }
   }
   const sequences = [
@@ -673,19 +793,22 @@ function validateRegistrySnapshot(
     ),
     ...coordinationDeliveries.map((delivery) => delivery.sequence),
   ];
-  if (new Set(sequences).size !== sequences.length)
-    return { code: "invalid-delivery-sequence", message: "delivery sequences must be unique" };
+  if (new Set(sequences).size !== sequences.length) {
+    return invalidRegistrySnapshot(
+      "invalid-delivery-sequence",
+      "delivery sequences must be unique",
+    );
+  }
   if (
     value.next_delivery_sequence !== undefined &&
     sequences.some((sequence) => sequence >= Number(value.next_delivery_sequence))
   ) {
-    return {
-      code: "invalid-delivery-sequence",
-      message: "next_delivery_sequence must be greater than every retained sequence",
-    };
+    return invalidRegistrySnapshot(
+      "invalid-delivery-sequence",
+      "next_delivery_sequence must be greater than every retained sequence",
+    );
   }
-  // SAFETY: wait_claimed_turns was parsed as a unique non-empty string array above.
-  for (const key of (value.wait_claimed_turns ?? []) as string[]) {
+  for (const key of waitClaimedTurns) {
     const separatorIndex = key.indexOf("\u0000");
     const sourceAgentId = key.slice(0, separatorIndex);
     const sourceTurnId = key.slice(separatorIndex + 1);
@@ -695,20 +818,28 @@ function validateRegistrySnapshot(
       !isOwnedTurnId(sourceAgentId, sourceTurnId) ||
       !isObservableSourceTurn(sourceAgent, sourceTurnId, deliveries, coordinationDeliveries)
     ) {
-      return {
-        code: "invalid-event-reference",
-        message: "wait claim must reference an active, latest, or retained source turn",
-      };
+      return invalidRegistrySnapshot(
+        "invalid-event-reference",
+        "wait claim must reference an active, latest, or retained source turn",
+      );
     }
   }
 
-  // SAFETY: Every RegistrySnapshot field and cross-field invariant was checked above.
-  const snapshot = structuredClone(value) as unknown as RegistrySnapshot;
   if (version === 1) {
-    for (const agent of snapshot.agents) {
+    for (const agent of agents) {
       if (!agent.session_id) agent.session_leaf_id = undefined;
       agent.recent_messages = agent.recent_messages.slice(-20);
     }
+  }
+  const snapshot: RegistrySnapshot = { agents, tombstones, deliveries };
+  if (coordinationDeliveries.length > 0 || value.coordination_deliveries !== undefined) {
+    snapshot.coordination_deliveries = coordinationDeliveries;
+  }
+  if (waitClaimedTurns.length > 0 || value.wait_claimed_turns !== undefined) {
+    snapshot.wait_claimed_turns = [...waitClaimedTurns];
+  }
+  if (value.next_delivery_sequence !== undefined) {
+    snapshot.next_delivery_sequence = value.next_delivery_sequence;
   }
   const normalizedLedger = deliveryLedgerSnapshot(
     createDeliveryLedger({
@@ -722,22 +853,30 @@ function validateRegistrySnapshot(
   snapshot.coordination_deliveries = normalizedLedger.coordination_deliveries;
   snapshot.wait_claimed_turns = normalizedLedger.wait_claimed_turns;
   snapshot.next_delivery_sequence = normalizedLedger.next_delivery_sequence;
-  return { snapshot };
+  return { kind: "valid", snapshot };
 }
 
 function invalidParsedEvent(
   code: RegistryReplayDiagnosticCode,
   message: string,
 ): ParsedRegistryEvent {
-  return { foreignRoot: false, code, message };
+  return { kind: "invalid", code, message };
 }
 
-function parseRegistryEventRecord(value: unknown, rootSessionId: string): ParsedRegistryEvent {
-  if (!isRecord(value)) return invalidParsedEvent("invalid-envelope", "record must be an object");
-  if (typeof value.root_session_id === "string" && value.root_session_id !== rootSessionId) {
-    return { foreignRoot: true };
+function validParsedEvent(event: RegistryEventV2): ParsedRegistryEvent {
+  return { kind: "event", event };
+}
+
+type RegistryParseInput = JsonValue | RegistryEventV2;
+
+function parseRegistryEventRecord(
+  value: RegistryParseInput,
+  rootSessionId: string,
+): ParsedRegistryEvent {
+  if (Value.Check(RegistryRootProbeWireSchema, value) && value.root_session_id !== rootSessionId) {
+    return { kind: "foreign-root" };
   }
-  if (!isNonEmptyString(value.root_session_id) || !isIsoTimestamp(value.timestamp)) {
+  if (!Value.Check(RegistryLooseEnvelopeWireSchema, value) || !isIsoTimestamp(value.timestamp)) {
     return invalidParsedEvent(
       "invalid-envelope",
       "root_session_id and timestamp must be valid strings",
@@ -746,160 +885,230 @@ function parseRegistryEventRecord(value: unknown, rootSessionId: string): Parsed
   if (value.version !== 1 && value.version !== 2) {
     return invalidParsedEvent("unsupported-version", "Registry version must be 1 or 2");
   }
-  if (typeof value.event !== "string")
+  if (!Value.Check(RegistryEventDiscriminantWireSchema, value)) {
     return invalidParsedEvent("invalid-event-fields", "event discriminant must be a string");
+  }
+  if (!Value.Check(RegistryEnvelopeWireSchema, value)) {
+    return invalidParsedEvent("invalid-envelope", "Registry envelope is invalid");
+  }
   const version = value.version;
-  let data: RegistryEventData;
+  const timestamp = value.timestamp;
   switch (value.event) {
     case "checkpoint": {
-      const parsed = validateRegistrySnapshot(value.snapshot, version);
-      if (!parsed.snapshot)
-        return invalidParsedEvent(
-          parsed.code ?? "invalid-checkpoint",
-          parsed.message ?? "invalid snapshot",
-        );
-      data = { event: "checkpoint", snapshot: parsed.snapshot };
-      break;
-    }
-    case "agent-created":
-      if (
-        !isPersistedAgent(value.agent, version) ||
-        (version === 2 && value.agent.recent_messages.length > 20)
-      )
-        return invalidParsedEvent("invalid-event-fields", "agent-created agent is incomplete");
-      data = { event: "agent-created", agent: structuredClone(value.agent) };
-      if (version === 1) {
-        if (!data.agent.session_id) data.agent.session_leaf_id = undefined;
-        data.agent.recent_messages = data.agent.recent_messages.slice(-20);
+      if (!Value.Check(RegistryCheckpointEventWireSchema, value)) {
+        return invalidParsedEvent("invalid-checkpoint", "snapshot must be an object");
       }
-      break;
+      const parsed = validateRegistrySnapshot(value.snapshot, version);
+      if (parsed.kind === "invalid") return invalidParsedEvent(parsed.code, parsed.message);
+      return validParsedEvent(
+        createRegistryEvent(rootSessionId, "checkpoint", { snapshot: parsed.snapshot }, timestamp),
+      );
+    }
+    case "agent-created": {
+      if (!Value.Check(RegistryAgentCreatedEventWireSchema, value)) {
+        return invalidParsedEvent("invalid-event-fields", "agent-created agent is incomplete");
+      }
+      const agent = parseRegistryAgent(value.agent, version);
+      if (agent === undefined || (version === 2 && agent.recent_messages.length > 20)) {
+        return invalidParsedEvent("invalid-event-fields", "agent-created agent is incomplete");
+      }
+      if (version === 1) {
+        if (!agent.session_id) agent.session_leaf_id = undefined;
+        agent.recent_messages = agent.recent_messages.slice(-20);
+      }
+      return validParsedEvent(
+        createRegistryEvent(rootSessionId, "agent-created", { agent }, timestamp),
+      );
+    }
     case "turn-started":
       if (
-        !isNonEmptyString(value.agent_id) ||
-        !isNonEmptyString(value.turn_id) ||
+        !Value.Check(RegistryTurnStartedEventWireSchema, value) ||
         !isOwnedTurnId(value.agent_id, value.turn_id) ||
         !isIsoTimestamp(value.started_at)
       ) {
         return invalidParsedEvent("invalid-event-fields", "turn-started fields are invalid");
       }
-      data = {
-        event: "turn-started",
-        agent_id: value.agent_id,
-        turn_id: value.turn_id,
-        started_at: value.started_at,
-      };
-      break;
-    case "turn-settled":
+      return validParsedEvent(
+        createRegistryEvent(
+          rootSessionId,
+          "turn-started",
+          {
+            agent_id: value.agent_id,
+            turn_id: value.turn_id,
+            started_at: value.started_at,
+          },
+          timestamp,
+        ),
+      );
+    case "turn-settled": {
       if (
-        !isTurnResult(value.result) ||
+        !Value.Check(RegistryTurnSettledEventWireSchema, value) ||
         !isOwnedTurnId(value.result.agent_id, value.result.turn_id) ||
-        (value.settled_at !== undefined && !isIsoTimestamp(value.settled_at)) ||
-        !isOptionalNonEmptyString(value.session_leaf_id)
+        (value.settled_at !== undefined && !isIsoTimestamp(value.settled_at))
       ) {
         return invalidParsedEvent("invalid-event-fields", "turn-settled fields are invalid");
       }
-      data = { event: "turn-settled", result: structuredClone(value.result) };
-      if (typeof value.settled_at === "string") data.settled_at = value.settled_at;
-      if (typeof value.session_leaf_id === "string") data.session_leaf_id = value.session_leaf_id;
-      break;
-    case "delivery-pending": {
-      if (!isPersistedDelivery(value.delivery, version))
-        return invalidParsedEvent("invalid-event-fields", "terminal delivery fields are invalid");
-      const identityError = validateDeliveryIdentity(value.delivery, version);
-      if (identityError) return invalidParsedEvent("invalid-delivery-identity", identityError);
-      data = { event: "delivery-pending", delivery: structuredClone(value.delivery) };
-      break;
+      const data: Omit<Extract<RegistryEventData, { event: "turn-settled" }>, "event"> = {
+        result: cloneRegistryTurnResult(value.result),
+      };
+      if (value.settled_at !== undefined) data.settled_at = value.settled_at;
+      if (value.session_leaf_id !== undefined) data.session_leaf_id = value.session_leaf_id;
+      return validParsedEvent(createRegistryEvent(rootSessionId, "turn-settled", data, timestamp));
     }
-    case "delivery-settled":
+    case "delivery-pending": {
+      if (!Value.Check(RegistryDeliveryPendingEventWireSchema, value)) {
+        return invalidParsedEvent("invalid-event-fields", "terminal delivery fields are invalid");
+      }
+      const delivery = parseRegistryTerminalDelivery(value.delivery, version);
+      if (delivery === undefined) {
+        return invalidParsedEvent("invalid-event-fields", "terminal delivery fields are invalid");
+      }
+      const identityError = validateDeliveryIdentity(delivery, version);
+      if (identityError !== undefined) {
+        return invalidParsedEvent("invalid-delivery-identity", identityError);
+      }
+      return validParsedEvent(
+        createRegistryEvent(rootSessionId, "delivery-pending", { delivery }, timestamp),
+      );
+    }
+    case "delivery-settled": {
       if (
-        !isNonEmptyString(value.source_agent_id) ||
-        !isNonEmptyString(value.source_turn_id) ||
-        !isOwnedTurnId(value.source_agent_id, value.source_turn_id) ||
-        !isOptionalString(value.error)
+        !Value.Check(RegistryDeliverySettledEventWireSchema, value) ||
+        !isOwnedTurnId(value.source_agent_id, value.source_turn_id)
       ) {
         return invalidParsedEvent("invalid-event-fields", "delivery-settled fields are invalid");
       }
-      data = {
-        event: "delivery-settled",
+      const data: Omit<Extract<RegistryEventData, { event: "delivery-settled" }>, "event"> = {
         source_agent_id: value.source_agent_id,
         source_turn_id: value.source_turn_id,
       };
-      if (typeof value.error === "string") data.error = value.error;
-      break;
+      if (value.error !== undefined) data.error = value.error;
+      return validParsedEvent(
+        createRegistryEvent(rootSessionId, "delivery-settled", data, timestamp),
+      );
+    }
     case "delivery-pruned":
       if (
         version !== 2 ||
-        !isNonEmptyString(value.source_agent_id) ||
-        !isNonEmptyString(value.source_turn_id) ||
-        !isOwnedTurnId(value.source_agent_id, value.source_turn_id) ||
-        value.reason !== "retention-limit"
+        !Value.Check(RegistryDeliveryPrunedEventWireSchema, value) ||
+        !isOwnedTurnId(value.source_agent_id, value.source_turn_id)
       ) {
         return invalidParsedEvent("invalid-event-fields", "delivery-pruned fields are invalid");
       }
-      data = {
-        event: "delivery-pruned",
-        source_agent_id: value.source_agent_id,
-        source_turn_id: value.source_turn_id,
-        reason: "retention-limit",
-      };
-      break;
+      return validParsedEvent(
+        createRegistryEvent(
+          rootSessionId,
+          "delivery-pruned",
+          {
+            source_agent_id: value.source_agent_id,
+            source_turn_id: value.source_turn_id,
+            reason: "retention-limit",
+          },
+          timestamp,
+        ),
+      );
     case "coordination-delivery-pending": {
-      if (!isCoordinationDelivery(value.delivery, version))
+      if (!Value.Check(RegistryCoordinationPendingEventWireSchema, value)) {
         return invalidParsedEvent(
           "invalid-event-fields",
           "Coordination Message delivery fields are invalid",
         );
-      const identityError = validateCoordinationIdentity(value.delivery);
-      if (identityError) return invalidParsedEvent("invalid-delivery-identity", identityError);
-      data = {
-        event: "coordination-delivery-pending",
-        delivery: structuredClone(value.delivery),
-      };
-      break;
+      }
+      const delivery = parseRegistryCoordinationDelivery(value.delivery, version);
+      if (delivery === undefined) {
+        return invalidParsedEvent(
+          "invalid-event-fields",
+          "Coordination Message delivery fields are invalid",
+        );
+      }
+      const identityError = validateCoordinationIdentity(delivery);
+      if (identityError !== undefined) {
+        return invalidParsedEvent("invalid-delivery-identity", identityError);
+      }
+      return validParsedEvent(
+        createRegistryEvent(
+          rootSessionId,
+          "coordination-delivery-pending",
+          { delivery },
+          timestamp,
+        ),
+      );
     }
-    case "coordination-delivery-settled":
-      if (!isNonEmptyString(value.delivery_id) || !isOptionalString(value.error)) {
+    case "coordination-delivery-settled": {
+      if (!Value.Check(RegistryCoordinationSettledEventWireSchema, value)) {
         return invalidParsedEvent(
           "invalid-event-fields",
           "coordination-delivery-settled fields are invalid",
         );
       }
-      data = { event: "coordination-delivery-settled", delivery_id: value.delivery_id };
-      if (typeof value.error === "string") data.error = value.error;
-      break;
+      const data: Omit<
+        Extract<RegistryEventData, { event: "coordination-delivery-settled" }>,
+        "event"
+      > = { delivery_id: value.delivery_id };
+      if (value.error !== undefined) data.error = value.error;
+      return validParsedEvent(
+        createRegistryEvent(rootSessionId, "coordination-delivery-settled", data, timestamp),
+      );
+    }
     case "delivery-turn-claimed":
     case "delivery-turn-released":
       if (
-        !isNonEmptyString(value.source_agent_id) ||
-        !isNonEmptyString(value.source_turn_id) ||
+        !Value.Check(RegistryDeliveryTurnEventWireSchema, value) ||
         !isOwnedTurnId(value.source_agent_id, value.source_turn_id)
       ) {
         return invalidParsedEvent("invalid-event-fields", `${value.event} fields are invalid`);
       }
-      data = {
-        event: value.event,
-        source_agent_id: value.source_agent_id,
-        source_turn_id: value.source_turn_id,
-      };
-      break;
+      if (value.event === "delivery-turn-claimed") {
+        return validParsedEvent(
+          createRegistryEvent(
+            rootSessionId,
+            "delivery-turn-claimed",
+            {
+              source_agent_id: value.source_agent_id,
+              source_turn_id: value.source_turn_id,
+            },
+            timestamp,
+          ),
+        );
+      }
+      return validParsedEvent(
+        createRegistryEvent(
+          rootSessionId,
+          "delivery-turn-released",
+          {
+            source_agent_id: value.source_agent_id,
+            source_turn_id: value.source_turn_id,
+          },
+          timestamp,
+        ),
+      );
     case "agent-message-recorded":
       if (
-        !isNonEmptyString(value.agent_id) ||
-        !isRecentAgentMessage(value.message) ||
+        !Value.Check(RegistryMessageRecordedEventWireSchema, value) ||
         !isOwnedTurnId(value.message.source_agent_id, value.message.turn_id) ||
-        (version === 2 && !isIsoTimestamp(value.recorded_at))
+        (version === 2 && (value.recorded_at === undefined || !isIsoTimestamp(value.recorded_at)))
       ) {
         return invalidParsedEvent("invalid-event-fields", "agent activity fields are invalid");
       }
-      data = {
-        event: "agent-message-recorded",
-        agent_id: value.agent_id,
-        message: structuredClone(value.message),
-        recorded_at: version === 1 ? value.timestamp : String(value.recorded_at),
-      };
-      break;
+      const recordedAt = version === 1 ? timestamp : value.recorded_at;
+      if (recordedAt === undefined) {
+        return invalidParsedEvent("invalid-event-fields", "agent activity fields are invalid");
+      }
+      return validParsedEvent(
+        createRegistryEvent(
+          rootSessionId,
+          "agent-message-recorded",
+          {
+            agent_id: value.agent_id,
+            message: cloneRegistryRecentMessage(value.message),
+            recorded_at: recordedAt,
+          },
+          timestamp,
+        ),
+      );
     case "agent-deleted":
       if (
+        !Value.Check(RegistryAgentDeletedEventWireSchema, value) ||
         !isUniqueNonEmptyStringArray(value.agent_ids) ||
         value.agent_ids.length === 0 ||
         value.agent_ids.some(
@@ -911,23 +1120,26 @@ function parseRegistryEventRecord(value: unknown, rootSessionId: string): Parsed
           "agent-deleted IDs must be unique canonical non-root agent IDs",
         );
       }
-      data = { event: "agent-deleted", agent_ids: [...value.agent_ids] };
-      break;
+      return validParsedEvent(
+        createRegistryEvent(
+          rootSessionId,
+          "agent-deleted",
+          { agent_ids: [...value.agent_ids] },
+          timestamp,
+        ),
+      );
     default:
       return invalidParsedEvent("invalid-event-fields", `unknown Registry event: ${value.event}`);
   }
-  return {
-    foreignRoot: false,
-    event: addRegistryV2Envelope(rootSessionId, value.timestamp, data),
-  };
 }
 
 /** Parse one V1 or V2 Registry payload into the current V2 representation without throwing. */
 export function parseRegistryEvent(
-  value: unknown,
+  value: RegistryParseInput,
   rootSessionId: string,
 ): RegistryEventV2 | undefined {
-  return parseRegistryEventRecord(value, rootSessionId).event;
+  const parsed = parseRegistryEventRecord(value, rootSessionId);
+  return parsed.kind === "event" ? parsed.event : undefined;
 }
 
 function reportDiagnostic(
@@ -1003,16 +1215,17 @@ export function replayRegistryEntries(
   const diagnostics: RegistryReplayDiagnostic[] = [];
   entries.forEach((entry, entryIndex) => {
     if (entry.type !== "custom" || entry.customType !== REGISTRY_ENTRY_TYPE) return;
+    if (!Value.Check(RegistryJsonValueWireSchema, entry.data)) {
+      reportDiagnostic(diagnostics, entryIndex, "invalid-envelope", "record must be JSON");
+      return;
+    }
     const parsed = parseRegistryEventRecord(entry.data, rootSessionId);
-    if (parsed.foreignRoot) return;
-    if (parsed.event) parsedEvents.push({ entryIndex, event: parsed.event });
-    else
-      reportDiagnostic(
-        diagnostics,
-        entryIndex,
-        parsed.code ?? "invalid-event-fields",
-        parsed.message ?? "invalid Registry record",
-      );
+    if (parsed.kind === "foreign-root") return;
+    if (parsed.kind === "event") {
+      parsedEvents.push({ entryIndex, event: parsed.event });
+    } else {
+      reportDiagnostic(diagnostics, entryIndex, parsed.code, parsed.message);
+    }
   });
 
   let checkpointIndex = -1;

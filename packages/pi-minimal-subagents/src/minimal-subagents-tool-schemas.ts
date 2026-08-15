@@ -1,5 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type, type TSchema } from "typebox";
+import { Type } from "typebox";
 import { THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
 
 const SessionContextSchema = StringEnum(["inherit", "compact", "omit"] as const);
@@ -30,8 +30,9 @@ function canonicalAgentIdSchema(description?: string) {
 
 /** Build all six strict TypeBox schemas, including the refreshed runtime model enum. */
 export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
-  const explicitModelSchema: TSchema =
-    modelIds.length > 0 ? StringEnum(modelIds as [string, ...string[]]) : Type.Never();
+  const [firstModelId, ...remainingModelIds] = modelIds;
+  const explicitModelSchema =
+    firstModelId === undefined ? Type.Never() : StringEnum([firstModelId, ...remainingModelIds]);
   return {
     subagent: Type.Object({
       task: Type.String({ minLength: 1, description: "Task for the persistent child agent" }),

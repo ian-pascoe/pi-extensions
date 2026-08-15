@@ -1,331 +1,436 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  AgentEndEvent,
+  AgentStartEvent,
+  MessageEndEvent,
+  MessageStartEvent,
+  MessageUpdateEvent,
+} from "@earendil-works/pi-coding-agent";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { describe, expect, it } from "vitest";
+import {
+  createTiktokenTokenizedOutputCounterLoader,
+  type TokenizedOutputCounter,
+  type TokenizedOutputCounterLoader,
+  registerTpsTracker,
+  type TpsTrackerContext,
+  type TpsTrackerLifecycleHost,
+  type TiktokenRuntime,
+  type TiktokenRuntimeLoader,
+  type TrackerClock,
+} from "../src/tps-tracker-core.js";
 
-type ExtensionHandler = (event: any, context: any) => Promise<unknown>;
+class RecordingLifecycleHost implements TpsTrackerLifecycleHost {
+  agentStart: Parameters<TpsTrackerLifecycleHost["onAgentStart"]>[0] | undefined;
+  messageStart: Parameters<TpsTrackerLifecycleHost["onMessageStart"]>[0] | undefined;
+  messageUpdate: Parameters<TpsTrackerLifecycleHost["onMessageUpdate"]>[0] | undefined;
+  messageEnd: Parameters<TpsTrackerLifecycleHost["onMessageEnd"]>[0] | undefined;
+  agentEnd: Parameters<TpsTrackerLifecycleHost["onAgentEnd"]>[0] | undefined;
 
-function createRecordingPi() {
-  const handlers = new Map<string, ExtensionHandler>();
+  onAgentStart(handler: Parameters<TpsTrackerLifecycleHost["onAgentStart"]>[0]) {
+    this.agentStart = handler;
+  }
+  onMessageStart(handler: Parameters<TpsTrackerLifecycleHost["onMessageStart"]>[0]) {
+    this.messageStart = handler;
+  }
+  onMessageUpdate(handler: Parameters<TpsTrackerLifecycleHost["onMessageUpdate"]>[0]) {
+    this.messageUpdate = handler;
+  }
+  onMessageEnd(handler: Parameters<TpsTrackerLifecycleHost["onMessageEnd"]>[0]) {
+    this.messageEnd = handler;
+  }
+  onAgentEnd(handler: Parameters<TpsTrackerLifecycleHost["onAgentEnd"]>[0]) {
+    this.agentEnd = handler;
+  }
+}
+
+class RecordingTrackerContext implements TpsTrackerContext {
+  modelId: string | undefined;
+  readonly statuses: string[] = [];
+  readonly notifications: string[] = [];
+
+  constructor(modelId = "test-model") {
+    this.modelId = modelId;
+  }
+  render(_color: "accent" | "dim" | "success", text: string) {
+    return text;
+  }
+  notify(message: string) {
+    this.notifications.push(message);
+  }
+  setStatus(_key: string, text: string) {
+    this.statuses.push(text);
+  }
+}
+
+class RecordingClock implements TrackerClock {
+  constructor(private currentTime = 100) {}
+  now() {
+    return this.currentTime;
+  }
+  advance(milliseconds: number) {
+    this.currentTime += milliseconds;
+  }
+}
+
+class RecordingTokenCounterLoader implements TokenizedOutputCounterLoader {
+  readonly requestedModelIds: (string | undefined)[] = [];
+  constructor(private readonly counter: TokenizedOutputCounter | null) {}
+  async loadTokenizedOutputCounter(modelId: string | undefined) {
+    this.requestedModelIds.push(modelId);
+    return this.counter;
+  }
+}
+
+function assistantMessage(output = 0): AssistantMessage {
   return {
-    handlers,
-    pi: {
-      on(event: string, handler: ExtensionHandler) {
-        handlers.set(event, handler);
-      },
+    role: "assistant",
+    content: [],
+    api: "test",
+    provider: "test",
+    model: "test-model",
+    usage: {
+      input: 0,
+      output,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: output,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
+    stopReason: "stop",
+    timestamp: 0,
   };
 }
 
-function createContext(modelId = "test-model") {
-  const status = vi.fn();
-  const notify = vi.fn();
+function messageStartEvent(): MessageStartEvent {
+  return { type: "message_start", message: assistantMessage() };
+}
+
+function messageUpdateEvent(delta: string, output = 0): MessageUpdateEvent {
+  const message = assistantMessage(output);
   return {
-    context: {
-      model: { id: modelId },
-      ui: {
-        theme: { fg: (_color: string, text: string) => text },
-        setStatus: status,
-        notify,
-      },
-    },
-    status,
-    notify,
+    type: "message_update",
+    message,
+    assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta, partial: message },
   };
 }
 
-async function loadTpsTracker(tiktokenFactory: () => Record<string, unknown>) {
-  vi.resetModules();
-  vi.doMock("tiktoken", tiktokenFactory);
-  return (await import("../src/index.js")).default;
+function messageEndEvent(output = 0): MessageEndEvent {
+  return { type: "message_end", message: assistantMessage(output) };
+}
+
+function requireHandler<T>(handler: T | undefined): T {
+  if (handler === undefined) throw new Error("Expected registered TPS lifecycle handler");
+  return handler;
 }
 
 describe("TPS Tracker extension", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-08-12T00:00:00.000Z"));
+  it("prefers Official Output Count and resets totals for each agent run", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext();
+    const clock = new RecordingClock();
+    registerTpsTracker(host, new RecordingTokenCounterLoader(null), clock);
+
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("first", 12), context);
+    clock.advance(1_000);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("second", 12), context);
+    await requireHandler(host.messageEnd)(messageEndEvent(12), context);
+    await requireHandler(host.agentEnd)(
+      { type: "agent_end", messages: [] } satisfies AgentEndEvent,
+      context,
+    );
+
+    expect(context.statuses).toContain("12 tok/s (12 tok / 1.0s)");
+    expect(context.notifications).toContain("✓ 12 tok/s  12 tokens in 1.0s streaming");
+
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+    await requireHandler(host.agentEnd)(
+      { type: "agent_end", messages: [] } satisfies AgentEndEvent,
+      context,
+    );
+    expect(context.notifications).toContain("• N/A  0 tokens in 0.0s streaming");
   });
 
-  afterEach(() => {
-    vi.doUnmock("tiktoken");
-    vi.useRealTimers();
+  it("uses a model-keyed Tokenized Output Count when provider usage is absent", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext("model-a");
+    const clock = new RecordingClock();
+    const loader = new RecordingTokenCounterLoader({ countOutputTokens: () => 3 });
+    registerTpsTracker(host, loader, clock);
+
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("abcdef"), context);
+    await requireHandler(host.messageEnd)(messageEndEvent(), context);
+    await requireHandler(host.agentEnd)(
+      { type: "agent_end", messages: [] } satisfies AgentEndEvent,
+      context,
+    );
+
+    expect(loader.requestedModelIds).toEqual(["model-a"]);
+    expect(context.notifications).toContain("• N/A  3 tokens in 0.0s streaming");
   });
 
-  it("prefers official provider output usage and resets totals for the next agent run", async () => {
-    const extension = await loadTpsTracker(() => ({
-      get_encoding: () => ({ encode_ordinary: (text: string) => Array(text.length).fill(0) }),
-      encoding_for_model: () => ({ encode_ordinary: (text: string) => Array(text.length).fill(0) }),
-    }));
-    const recording = createRecordingPi();
-    const { context, notify, status } = createContext();
-    extension(recording.pi as never);
+  it("uses Estimated Output Count when the tokenizer is unavailable", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext();
+    const clock = new RecordingClock();
+    registerTpsTracker(host, new RecordingTokenCounterLoader(null), clock);
 
-    await recording.handlers.get("agent_start")!({}, context);
-    await recording.handlers.get("message_start")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("message_update")!(
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("abcdefgh"), context);
+    await requireHandler(host.messageEnd)(messageEndEvent(), context);
+    await requireHandler(host.agentEnd)(
+      { type: "agent_end", messages: [] } satisfies AgentEndEvent,
+      context,
+    );
+
+    expect(context.notifications).toContain("• N/A  2 tokens in 0.0s streaming");
+  });
+
+  it("counts all output delta variants and ignores non-output update events", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext();
+    const clock = new RecordingClock();
+    const inputs: string[] = [];
+    registerTpsTracker(
+      host,
+      new RecordingTokenCounterLoader({
+        countOutputTokens: (text) => {
+          inputs.push(text);
+          return text.length;
+        },
+      }),
+      clock,
+    );
+    const message = assistantMessage();
+
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    await requireHandler(host.messageUpdate)(
       {
-        message: { role: "assistant", usage: { output: 12 } },
-        assistantMessageEvent: { type: "text_delta", delta: "first" },
+        type: "message_update",
+        message,
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "text",
+          partial: message,
+        },
       },
       context,
     );
-    await vi.advanceTimersByTimeAsync(1_000);
-    await recording.handlers.get("message_update")!(
+    clock.advance(1_000);
+    await requireHandler(host.messageUpdate)(
       {
-        message: { role: "assistant", usage: { output: 12 } },
-        assistantMessageEvent: { type: "text_delta", delta: "second" },
+        type: "message_update",
+        message,
+        assistantMessageEvent: {
+          type: "thinking_delta",
+          contentIndex: 0,
+          delta: "think",
+          partial: message,
+        },
       },
       context,
     );
-    await recording.handlers.get("message_end")!(
-      { message: { role: "assistant", usage: { output: 12 } } },
-      context,
-    );
-    await recording.handlers.get("agent_end")!({}, context);
-
-    expect(status).toHaveBeenCalledWith("tps", expect.stringContaining("12 tok/s"));
-    expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining("12 tokens in 1.0s streaming"),
-      "info",
-    );
-
-    await recording.handlers.get("agent_start")!({}, context);
-    await recording.handlers.get("agent_end")!({}, context);
-    expect(notify).toHaveBeenLastCalledWith(
-      expect.stringContaining("0 tokens in 0.0s streaming"),
-      "info",
-    );
-  });
-
-  it("registers the tracker lifecycle and starts each agent run in a waiting state", async () => {
-    const encodingForModel = vi.fn(() => ({ encode_ordinary: () => [1] }));
-    const extension = await loadTpsTracker(() => ({
-      get_encoding: vi.fn(() => ({ encode_ordinary: () => [1] })),
-      encoding_for_model: encodingForModel,
-    }));
-    const recording = createRecordingPi();
-    const { context, status } = createContext("waiting-model");
-    extension(recording.pi as never);
-
-    expect([...recording.handlers.keys()]).toEqual([
-      "agent_start",
-      "message_start",
-      "message_update",
-      "message_end",
-      "agent_end",
-    ]);
-
-    await recording.handlers.get("agent_start")!({}, context);
-    await vi.dynamicImportSettled();
-
-    expect(status).toHaveBeenCalledWith("tps", "⏱ waiting for output...");
-    expect(encodingForModel).toHaveBeenCalledWith("waiting-model");
-  });
-
-  it("counts assistant text, thinking, and tool-call deltas but ignores other updates", async () => {
-    const encodeOrdinary = vi.fn((text: string) => Array.from({ length: text.length }));
-    const extension = await loadTpsTracker(() => ({
-      get_encoding: vi.fn(() => ({ encode_ordinary: encodeOrdinary })),
-      encoding_for_model: vi.fn(() => ({ encode_ordinary: encodeOrdinary })),
-    }));
-    const recording = createRecordingPi();
-    const { context, notify, status } = createContext();
-    extension(recording.pi as never);
-
-    await recording.handlers.get("agent_start")!({}, context);
-    await vi.dynamicImportSettled();
-    await recording.handlers.get("message_start")!({ message: { role: "assistant" } }, context);
-    await vi.advanceTimersByTimeAsync(1_000);
-    for (const [type, delta] of [
-      ["text_delta", "text"],
-      ["thinking_delta", "think"],
-      ["toolcall_delta", "tool"],
-    ]) {
-      await recording.handlers.get("message_update")!(
-        { message: { role: "assistant" }, assistantMessageEvent: { type, delta } },
-        context,
-      );
-      await vi.advanceTimersByTimeAsync(1_000);
-    }
-    await recording.handlers.get("message_update")!(
+    clock.advance(1_000);
+    await requireHandler(host.messageUpdate)(
       {
-        message: { role: "user" },
-        assistantMessageEvent: { type: "text_delta", delta: "ignored" },
+        type: "message_update",
+        message,
+        assistantMessageEvent: {
+          type: "toolcall_delta",
+          contentIndex: 0,
+          delta: "tool",
+          partial: message,
+        },
       },
       context,
     );
-    await recording.handlers.get("message_update")!(
+    await requireHandler(host.messageEnd)(messageEndEvent(), context);
+
+    await requireHandler(host.messageUpdate)(
       {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "tool_result", delta: "ignored" },
+        type: "message_update",
+        message: { role: "user", content: "ignored", timestamp: 0 },
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "ignored",
+          partial: message,
+        },
       },
       context,
     );
-    await recording.handlers.get("message_end")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("agent_end")!({}, context);
-
-    expect(encodeOrdinary).toHaveBeenLastCalledWith("textthinktool");
-    expect(status).toHaveBeenCalledTimes(4);
-    expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining("13 tokens in 2.0s streaming"),
-      "info",
+    await requireHandler(host.messageUpdate)(
+      {
+        type: "message_update",
+        message,
+        assistantMessageEvent: { type: "text_start", contentIndex: 0, partial: message },
+      },
+      context,
     );
+
+    expect(inputs).toContain("textthinktool");
+    expect(inputs).not.toContain("textthinktoolignored");
   });
 
-  it("uses a model-keyed tokenizer when provider usage is absent", async () => {
-    const encodingForModel = vi.fn(() => ({ encode_ordinary: () => [1, 2, 3] }));
-    const extension = await loadTpsTracker(() => ({
-      get_encoding: vi.fn(() => ({ encode_ordinary: () => [1] })),
-      encoding_for_model: encodingForModel,
-    }));
-    const recording = createRecordingPi();
-    const { context, notify } = createContext("model-a");
-    extension(recording.pi as never);
+  it("registers all lifecycle handlers and begins each agent run in a waiting state", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext("waiting-model");
+    const loader = new RecordingTokenCounterLoader({ countOutputTokens: () => 1 });
+    registerTpsTracker(host, loader, new RecordingClock());
 
-    await recording.handlers.get("agent_start")!({}, context);
+    expect(host.agentStart).toBeDefined();
+    expect(host.messageStart).toBeDefined();
+    expect(host.messageUpdate).toBeDefined();
+    expect(host.messageEnd).toBeDefined();
+    expect(host.agentEnd).toBeDefined();
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+
+    expect(context.statuses).toEqual(["⏱ waiting for output..."]);
+    expect(loader.requestedModelIds).toEqual(["waiting-model"]);
+  });
+
+  it("caches a Tokenized Output Count per model and reloads when the model changes", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext("model-a");
+    const loader = new RecordingTokenCounterLoader({ countOutputTokens: () => 1 });
+    registerTpsTracker(host, loader, new RecordingClock());
+
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
     await Promise.resolve();
-    await recording.handlers.get("message_start")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "text_delta", delta: "abcdef" },
-      },
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
       context,
     );
-    await recording.handlers.get("message_end")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("agent_end")!({}, context);
+    context.modelId = "model-b";
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
 
-    expect(encodingForModel).toHaveBeenCalledWith("model-a");
-    expect(notify).toHaveBeenCalledWith(expect.stringContaining("3 tokens"), "info");
+    expect(loader.requestedModelIds).toEqual(["model-a", "model-b"]);
   });
 
-  it("resets tokenizer input per message and aggregates message tokens and stream time", async () => {
-    const encodeOrdinary = vi.fn((text: string) => Array.from({ length: text.length }));
-    const extension = await loadTpsTracker(() => ({
-      get_encoding: vi.fn(() => ({ encode_ordinary: encodeOrdinary })),
-      encoding_for_model: vi.fn(() => ({ encode_ordinary: encodeOrdinary })),
-    }));
-    const recording = createRecordingPi();
-    const { context, notify } = createContext();
-    extension(recording.pi as never);
+  it("throttles Tokenized Output Count status calculation for 250 milliseconds", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext();
+    const clock = new RecordingClock();
+    const inputs: string[] = [];
+    registerTpsTracker(
+      host,
+      new RecordingTokenCounterLoader({
+        countOutputTokens: (text) => {
+          inputs.push(text);
+          return text.length;
+        },
+      }),
+      clock,
+    );
 
-    await recording.handlers.get("agent_start")!({}, context);
-    await vi.dynamicImportSettled();
-    await recording.handlers.get("message_start")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "text_delta", delta: "fir" },
-      },
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
       context,
     );
-    await vi.advanceTimersByTimeAsync(1_000);
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "text_delta", delta: "st" },
-      },
-      context,
-    );
-    await recording.handlers.get("message_end")!({ message: { role: "assistant" } }, context);
-    const callsAfterFirstMessage = encodeOrdinary.mock.calls.length;
+    await Promise.resolve();
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    clock.advance(1_000);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("first"), context);
+    clock.advance(100);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("second"), context);
+    clock.advance(250);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("third"), context);
 
-    await recording.handlers.get("message_start")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "text_delta", delta: "se" },
-      },
-      context,
-    );
-    await vi.advanceTimersByTimeAsync(2_000);
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "text_delta", delta: "cond" },
-      },
-      context,
-    );
-    await recording.handlers.get("message_end")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("agent_end")!({}, context);
-
-    const secondMessageInputs = encodeOrdinary.mock.calls
-      .slice(callsAfterFirstMessage)
-      .map(([text]) => text);
-    expect(secondMessageInputs).toContain("second");
-    expect(secondMessageInputs.every((text) => !text.includes("first"))).toBe(true);
-    expect(notify).toHaveBeenCalledWith(
-      expect.stringContaining("11 tokens in 3.0s streaming"),
-      "info",
-    );
+    expect(inputs).toEqual(["first", "firstsecondthird"]);
   });
 
-  it("reuses an encoder for one model and loads a new encoder for another model", async () => {
-    const encodingForModel = vi.fn(() => ({ encode_ordinary: () => [1] }));
-    const extension = await loadTpsTracker(() => ({
-      get_encoding: vi.fn(() => ({ encode_ordinary: () => [1] })),
-      encoding_for_model: encodingForModel,
-    }));
-    const recording = createRecordingPi();
-    const first = createContext("model-a");
-    const second = createContext("model-b");
-    extension(recording.pi as never);
+  it("resets tokenized message text while aggregating multiple messages", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext();
+    const clock = new RecordingClock();
+    const inputs: string[] = [];
+    registerTpsTracker(
+      host,
+      new RecordingTokenCounterLoader({
+        countOutputTokens: (text) => {
+          inputs.push(text);
+          return text.length;
+        },
+      }),
+      clock,
+    );
 
-    await recording.handlers.get("agent_start")!({}, first.context);
-    await vi.dynamicImportSettled();
-    await recording.handlers.get("agent_start")!({}, first.context);
-    await vi.dynamicImportSettled();
-    await recording.handlers.get("agent_start")!({}, second.context);
-    await vi.dynamicImportSettled();
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+    await Promise.resolve();
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("first"), context);
+    clock.advance(1_000);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("!"), context);
+    await requireHandler(host.messageEnd)(messageEndEvent(), context);
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("second"), context);
+    clock.advance(2_000);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("!"), context);
+    await requireHandler(host.messageEnd)(messageEndEvent(), context);
+    await requireHandler(host.agentEnd)(
+      { type: "agent_end", messages: [] } satisfies AgentEndEvent,
+      context,
+    );
 
-    expect(encodingForModel.mock.calls).toEqual([["model-a"], ["model-b"]]);
+    expect(inputs).toContain("second!");
+    expect(
+      inputs.filter((text) => text.includes("second")).every((text) => !text.includes("first")),
+    ).toBe(true);
+    expect(context.notifications).toContain("✓ 4 tok/s  13 tokens in 3.0s streaming");
   });
 
-  it("falls back to four characters per token when the optional tokenizer cannot load", async () => {
-    const extension = await loadTpsTracker(() => {
-      throw new Error("optional tiktoken unavailable");
-    });
-    const recording = createRecordingPi();
-    const { context, notify } = createContext();
-    extension(recording.pi as never);
-
-    await recording.handlers.get("agent_start")!({}, context);
-    await recording.handlers.get("message_start")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "thinking_delta", delta: "abcdefgh" },
+  it("uses o200k_base when a model has no recognized tiktoken encoding", async () => {
+    const selectedEncodings: string[] = [];
+    const runtime: TiktokenRuntime = {
+      findModelEncoding: () => undefined,
+      getEncoding: (encoding) => {
+        selectedEncodings.push(encoding);
+        return { countOutputTokens: (text) => text.length };
       },
-      context,
-    );
-    await recording.handlers.get("message_end")!({ message: { role: "assistant" } }, context);
-    await recording.handlers.get("agent_end")!({}, context);
+    };
+    const runtimeLoader: TiktokenRuntimeLoader = {
+      loadTiktokenRuntime: async () => runtime,
+    };
 
-    expect(notify).toHaveBeenCalledWith(expect.stringContaining("2 tokens"), "info");
-  });
+    const counter =
+      await createTiktokenTokenizedOutputCounterLoader(runtimeLoader).loadTokenizedOutputCounter(
+        "unknown-pi-model",
+      );
 
-  it("ignores non-assistant and non-output updates", async () => {
-    const extension = await loadTpsTracker(() => ({
-      get_encoding: () => ({ encode_ordinary: () => [] }),
-      encoding_for_model: () => ({ encode_ordinary: () => [] }),
-    }));
-    const recording = createRecordingPi();
-    const { context, status } = createContext();
-    extension(recording.pi as never);
-
-    await recording.handlers.get("agent_start")!({}, context);
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "user" },
-        assistantMessageEvent: { type: "text_delta", delta: "ignored" },
-      },
-      context,
-    );
-    await recording.handlers.get("message_update")!(
-      {
-        message: { role: "assistant" },
-        assistantMessageEvent: { type: "tool_result", delta: "ignored" },
-      },
-      context,
-    );
-
-    expect(status).toHaveBeenCalledTimes(1);
+    expect(counter?.countOutputTokens("abc")).toBe(3);
+    expect(selectedEncodings).toEqual(["o200k_base"]);
   });
 });

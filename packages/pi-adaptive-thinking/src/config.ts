@@ -1,3 +1,4 @@
+import type { JsonValue } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { Parse } from "typebox/value";
 
@@ -25,48 +26,58 @@ export const configDefaults: AdaptiveThinkingConfig = {
   guidance: defaultGuidance,
 };
 
-const ConfigInputSchema = Type.Object(
-  {
-    enabled: Type.Boolean(),
-    quiet: Type.Boolean(),
-    toolName: Type.String({ minLength: 1 }),
-    toolDescription: Type.String({ minLength: 1 }),
-    statusToolName: Type.String({ minLength: 1 }),
-    guidance: Type.Optional(Type.String({ minLength: 1 })),
-    systemPrompt: Type.Optional(Type.String({ minLength: 1 })),
-  },
+const ConfigValueSchema = Type.Object({
+  enabled: Type.Boolean(),
+  quiet: Type.Boolean(),
+  toolName: Type.String({ minLength: 1 }),
+  toolDescription: Type.String({ minLength: 1 }),
+  statusToolName: Type.String({ minLength: 1 }),
+  guidance: Type.String({ minLength: 1 }),
+});
+
+const ConfigOverridesSchema = Type.Partial(
+  Type.Intersect([
+    ConfigValueSchema,
+    Type.Object({ systemPrompt: Type.Optional(Type.String({ minLength: 1 })) }),
+  ]),
   { additionalProperties: false },
 );
 
-const hasOwnProperty = (input: unknown, property: string) =>
-  typeof input === "object" &&
-  input !== null &&
-  Object.prototype.hasOwnProperty.call(input, property);
+/** Parsed configuration and metadata retained from the configuration ingress boundary. */
+export type ParsedAdaptiveThinkingConfig = {
+  config: AdaptiveThinkingConfig;
+  usedDeprecatedSystemPrompt: boolean;
+};
 
-/** Returns whether raw configuration uses the deprecated system prompt alias. */
-export const usesDeprecatedSystemPrompt = (input: unknown) => hasOwnProperty(input, "systemPrompt");
-
-/** Parses configuration and normalizes legacy system prompt guidance. */
-export const parseConfig = (input: unknown): AdaptiveThinkingConfig => {
-  const usesGuidance = hasOwnProperty(input, "guidance");
-  const usesSystemPrompt = usesDeprecatedSystemPrompt(input);
+/** Parses optional configuration values and normalizes the deprecated system prompt alias. */
+export const parseAdaptiveThinkingConfig = (
+  input: JsonValue | undefined,
+): ParsedAdaptiveThinkingConfig => {
+  const overrides = input === undefined ? {} : Parse(ConfigOverridesSchema, input);
+  const usesGuidance = overrides.guidance !== undefined;
+  const usesSystemPrompt = overrides.systemPrompt !== undefined;
   if (usesGuidance && usesSystemPrompt) {
     throw new Error(
       "Adaptive Thinking configuration cannot contain both guidance and systemPrompt",
     );
   }
 
-  const rawInput = input as Record<string, unknown> | undefined;
-  const merged = {
-    ...configDefaults,
-    ...rawInput,
-    guidance: usesSystemPrompt ? rawInput?.systemPrompt : (rawInput?.guidance ?? defaultGuidance),
+  const guidance = overrides.guidance ?? overrides.systemPrompt ?? configDefaults.guidance;
+  const config: AdaptiveThinkingConfig = {
+    enabled: overrides.enabled ?? configDefaults.enabled,
+    quiet: overrides.quiet ?? configDefaults.quiet,
+    toolName: overrides.toolName ?? configDefaults.toolName,
+    toolDescription: overrides.toolDescription ?? configDefaults.toolDescription,
+    statusToolName: overrides.statusToolName ?? configDefaults.statusToolName,
+    guidance,
   };
-  delete (merged as Record<string, unknown>).systemPrompt;
-
-  const config = Parse(ConfigInputSchema, merged) as AdaptiveThinkingConfig;
   if (config.toolName === config.statusToolName) {
     throw new Error("Adaptive Thinking toolName and statusToolName must be different");
   }
-  return config;
+
+  return { config, usedDeprecatedSystemPrompt: usesSystemPrompt };
 };
+
+/** Parses configuration at the public configuration seam. */
+export const parseConfig = (input: JsonValue | undefined): AdaptiveThinkingConfig =>
+  parseAdaptiveThinkingConfig(input).config;

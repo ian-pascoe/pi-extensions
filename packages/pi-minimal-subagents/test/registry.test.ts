@@ -1,3 +1,5 @@
+import type { JsonValue } from "@earendil-works/pi-ai";
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
 import {
@@ -5,6 +7,7 @@ import {
   parseRegistryEvent,
   REGISTRY_ENTRY_TYPE,
   replayRegistryEntries,
+  type RegistryReplayDiagnostic,
 } from "../src/minimal-subagents-registry.js";
 import type { PersistedAgent, PersistedDelivery } from "../src/minimal-subagents-types.js";
 
@@ -40,7 +43,7 @@ const completedResult = (agentId: string, turnId: string) => ({
   output: "done",
 });
 
-const customEntry = (data: unknown) => ({
+const customEntry = <TData>(data: TData) => ({
   type: "custom",
   customType: REGISTRY_ENTRY_TYPE,
   data,
@@ -216,30 +219,93 @@ describe("minimal subagents registry", () => {
     });
   });
 
-  it("parses every persisted optional and constrained field instead of accepting poisoned values", () => {
-    const baseEvent = createRegistryEvent("root", "checkpoint", {
-      snapshot: { agents: [persistedAgent()], tombstones: [], deliveries: [] },
-    });
-    const poisoners: Array<(event: typeof baseEvent) => void> = [
-      (event) => Reflect.set(event.snapshot.agents[0]!.launch_contract, "thinking_level", "turbo"),
-      (event) => Reflect.set(event.snapshot.agents[0]!, "task", 42),
-      (event) => Reflect.set(event.snapshot.agents[0]!.launch_contract, "tools", 42),
-      (event) => Reflect.set(event.snapshot.agents[0]!, "active_turn_id", "child:orphan"),
-      (event) => Reflect.set(event.snapshot.agents[0]!, "session_leaf_id", undefined),
-      (event) =>
-        Reflect.set(event.snapshot.agents[0]!, "latest_result", {
-          agent_id: "other",
-          turn_id: "other:turn",
-          status: "completed",
-          output: "wrong",
-          usage: { input: Number.NaN },
-        }),
-    ];
+  it("parses every persisted optional and constrained field instead of accepting malformed wire data", () => {
+    const agent = persistedAgent();
+    const wireEvents: JsonValue[] = JSON.parse(
+      JSON.stringify([
+        {
+          version: 2,
+          root_session_id: "root",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "checkpoint",
+          snapshot: {
+            agents: [
+              {
+                ...agent,
+                launch_contract: { ...agent.launch_contract, thinking_level: "turbo" },
+              },
+            ],
+            tombstones: [],
+            deliveries: [],
+          },
+        },
+        {
+          version: 2,
+          root_session_id: "root",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "checkpoint",
+          snapshot: { agents: [{ ...agent, task: 42 }], tombstones: [], deliveries: [] },
+        },
+        {
+          version: 2,
+          root_session_id: "root",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "checkpoint",
+          snapshot: {
+            agents: [{ ...agent, launch_contract: { ...agent.launch_contract, tools: 42 } }],
+            tombstones: [],
+            deliveries: [],
+          },
+        },
+        {
+          version: 2,
+          root_session_id: "root",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "checkpoint",
+          snapshot: {
+            agents: [{ ...agent, active_turn_id: "child:orphan" }],
+            tombstones: [],
+            deliveries: [],
+          },
+        },
+        {
+          version: 2,
+          root_session_id: "root",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "checkpoint",
+          snapshot: {
+            agents: [{ ...agent, session_leaf_id: undefined }],
+            tombstones: [],
+            deliveries: [],
+          },
+        },
+        {
+          version: 2,
+          root_session_id: "root",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "checkpoint",
+          snapshot: {
+            agents: [
+              {
+                ...agent,
+                latest_result: {
+                  agent_id: "other",
+                  turn_id: "other:turn",
+                  status: "completed",
+                  output: "wrong",
+                  usage: { input: Number.NaN },
+                },
+              },
+            ],
+            tombstones: [],
+            deliveries: [],
+          },
+        },
+      ]),
+    );
 
-    for (const poison of poisoners) {
-      const event = structuredClone(baseEvent);
-      poison(event);
-      expect(parseRegistryEvent(event, "root")).toBeUndefined();
+    for (const wireEvent of wireEvents) {
+      expect(parseRegistryEvent(wireEvent, "root")).toBeUndefined();
     }
   });
 
@@ -319,8 +385,29 @@ describe("minimal subagents registry", () => {
   });
 
   it("rejects incomplete persisted fields and reports semantic diagnostic codes", () => {
-    const invalidThinking = persistedAgent();
-    invalidThinking.launch_contract.thinking_level = "turbo" as never;
+    const validAgent = persistedAgent();
+    const invalidThinkingCheckpoint = {
+      version: 2,
+      root_session_id: "root",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: "checkpoint",
+      snapshot: {
+        agents: [
+          {
+            ...validAgent,
+            launch_contract: {
+              ...validAgent.launch_contract,
+              thinking_level: "turbo",
+            },
+          },
+        ],
+        tombstones: [],
+        deliveries: [],
+        coordination_deliveries: [],
+        wait_claimed_turns: [],
+        next_delivery_sequence: 1,
+      },
+    };
     const wrongDelivery: PersistedDelivery = {
       source_agent_id: "child",
       source_turn_id: "child:turn-1",
@@ -336,11 +423,7 @@ describe("minimal subagents registry", () => {
       },
     };
     const entries = [
-      customEntry(
-        createRegistryEvent("root", "checkpoint", {
-          snapshot: { agents: [invalidThinking], tombstones: [], deliveries: [] },
-        }),
-      ),
+      customEntry(invalidThinkingCheckpoint),
       customEntry({
         version: 2,
         root_session_id: "root",
@@ -654,7 +737,7 @@ describe("minimal subagents registry", () => {
       { agent_id: "team.peer", recent_messages: [] },
     ]);
 
-    let diagnostics: unknown[] = [];
+    let diagnostics: RegistryReplayDiagnostic[] = [];
     const roundTripped = replayRegistryEntries(
       [customEntry(createRegistryEvent("root", "checkpoint", { snapshot: replayed }))],
       "root",
@@ -775,6 +858,16 @@ describe("minimal subagents registry", () => {
       },
     });
     expect(parseRegistryEvent(orphanClaim, "root")).toBeUndefined();
+  });
+
+  it("never throws while parsing arbitrary JSON values", () => {
+    fc.assert(
+      fc.property(fc.jsonValue(), (value) => {
+        const serializedValue: JsonValue = JSON.parse(JSON.stringify(value));
+        expect(() => parseRegistryEvent(serializedValue, "root")).not.toThrow();
+      }),
+      { numRuns: 1_000 },
+    );
   });
 
   it("replays settlement and message activity projections", () => {

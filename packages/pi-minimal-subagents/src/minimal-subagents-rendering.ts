@@ -3,6 +3,8 @@ import {
   getMarkdownTheme,
   keyHint,
   type AgentToolResult,
+  type MessageRenderer,
+  type MessageRenderOptions,
   type Theme,
   type ThemeColor,
   type ToolRenderResultOptions,
@@ -17,26 +19,55 @@ import {
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import {
+  parseCoordinatorMessageDetails,
+  parseCoordinatorToolCall,
+  parseCoordinatorToolResult,
+  type CancelRenderDetails,
+  type CoordinatorMessageRenderDetails,
+  type CoordinatorToolCallInput,
+  type CoordinatorToolName,
+  type DeleteRenderDetails,
+  type ManagementCallArguments,
+  type MessageCallArguments,
+  type MessageRenderDetails,
+  type RenderStatusAgent,
+  type SpawnCallArguments,
+  type SpawnRenderDetails,
+  type StatusCallArguments,
+  type StatusRenderDetails,
+  type WaitCallArguments,
+  type WaitRenderDetails,
+} from "./minimal-subagents-render-contract.js";
 import { stripCoordinatorMessageEnvelope } from "./minimal-subagents-message-envelope.js";
-export type CoordinatorToolName =
-  | "subagent"
-  | "agent_message"
-  | "subagent_wait"
-  | "subagent_status"
-  | "subagent_cancel"
-  | "subagent_delete";
 
-interface RenderableCoordinatorMessage {
-  content: unknown;
-  details?: unknown;
-}
+export type { CoordinatorToolName } from "./minimal-subagents-render-contract.js";
 
-interface CoordinatorMessageRenderOptions {
-  expanded: boolean;
-  outputPad: number;
-}
+/** Theme operations used by Minimal Subagents transcript renderers. */
+export type MinimalSubagentsRenderTheme = Pick<Theme, "fg" | "bg" | "bold">;
 
-const SUBAGENT_STATUS_PRESENTATION: Record<string, { symbol: string; color: ThemeColor }> = {
+/** Theme operation shared by transcript and widget status renderers. */
+export type MinimalSubagentsStatusTheme = Pick<Theme, "fg">;
+
+type RenderableCoordinatorMessage = Pick<Parameters<MessageRenderer>[0], "content" | "details">;
+
+type SubagentPresentationStatus =
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted"
+  | "unavailable"
+  | "idle"
+  | "delivered"
+  | "delivered-via-wait"
+  | "queued"
+  | "message";
+
+type SubagentStatusPresentation = { readonly symbol: string; readonly color: ThemeColor };
+
+const SUBAGENT_STATUS_PRESENTATION = {
   running: { symbol: "◉", color: "accent" },
   waiting: { symbol: "◌", color: "accent" },
   completed: { symbol: "✓", color: "success" },
@@ -49,37 +80,13 @@ const SUBAGENT_STATUS_PRESENTATION: Record<string, { symbol: string; color: Them
   "delivered-via-wait": { symbol: "→", color: "accent" },
   queued: { symbol: "↗", color: "accent" },
   message: { symbol: "→", color: "accent" },
-};
+} satisfies { readonly [Status in SubagentPresentationStatus]: SubagentStatusPresentation };
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function asStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
-function asNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function coordinatorMessageText(content: unknown): string {
-  if (typeof content === "string") return stripCoordinatorMessageEnvelope(content);
-  if (!Array.isArray(content)) return "";
+function coordinatorMessageText(content: RenderableCoordinatorMessage["content"]): string {
+  if (!Array.isArray(content)) return stripCoordinatorMessageEnvelope(content);
   return stripCoordinatorMessageEnvelope(
     content
-      .map((item) => {
-        const block = asRecord(item);
-        return block?.type === "text" ? (asString(block.text) ?? "") : "";
-      })
+      .map((item) => (item.type === "text" ? item.text : ""))
       .filter(Boolean)
       .join("\n"),
   );
@@ -90,24 +97,37 @@ function toolResultText(result: AgentToolResult<unknown>): string {
   return text?.type === "text" ? text.text : "";
 }
 
+function subagentStatusPresentation(status: string): SubagentStatusPresentation {
+  for (const [knownStatus, presentation] of Object.entries(SUBAGENT_STATUS_PRESENTATION)) {
+    if (knownStatus === status) return presentation;
+  }
+  return SUBAGENT_STATUS_PRESENTATION.idle;
+}
+
 /** Render the shared semantic symbol and color for one subagent status. */
-export function renderSubagentStatusSymbol(theme: Theme, status: string): string {
-  const presentation = SUBAGENT_STATUS_PRESENTATION[status] ?? SUBAGENT_STATUS_PRESENTATION.idle!;
+export function renderSubagentStatusSymbol(
+  theme: MinimalSubagentsStatusTheme,
+  status: string,
+): string {
+  const presentation = subagentStatusPresentation(status);
   return theme.fg(presentation.color, presentation.symbol);
 }
 
 /** Render a subagent status label with the same semantic color as its symbol. */
-export function renderSubagentStatusLabel(theme: Theme, status: string): string {
-  const presentation = SUBAGENT_STATUS_PRESENTATION[status] ?? SUBAGENT_STATUS_PRESENTATION.idle!;
+export function renderSubagentStatusLabel(
+  theme: MinimalSubagentsStatusTheme,
+  status: string,
+): string {
+  const presentation = subagentStatusPresentation(status);
   return theme.fg(presentation.color, status);
 }
 
-function renderSubagentSeparator(theme: Theme): string {
+function renderSubagentSeparator(theme: MinimalSubagentsRenderTheme): string {
   return theme.fg("dim", "  ·  ");
 }
 
 function renderSubagentSummary(
-  theme: Theme,
+  theme: MinimalSubagentsRenderTheme,
   status: string,
   agentId: string,
   metrics: readonly string[] = [],
@@ -120,32 +140,49 @@ function renderSubagentSummary(
   ].join(renderSubagentSeparator(theme));
 }
 
-function renderLabelValue(theme: Theme, label: string, value: unknown): Text {
-  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  return new Text(`${theme.fg("muted", `${label}:`)} ${text ?? ""}`, 0, 0);
+function renderLabelValue(theme: MinimalSubagentsRenderTheme, label: string, value: string): Text {
+  return new Text(`${theme.fg("muted", `${label}:`)} ${value}`, 0, 0);
 }
 
-function appendSection(
+function appendSectionHeading(
   container: Container,
-  theme: Theme,
+  theme: MinimalSubagentsRenderTheme,
   label: string,
-  content: string | Component,
 ): void {
   container.addChild(new Spacer(1));
   container.addChild(new Text(theme.fg("muted", theme.bold(label)), 0, 0));
-  container.addChild(typeof content === "string" ? new Text(content, 0, 0) : content);
+}
+
+function appendTextSection(
+  container: Container,
+  theme: MinimalSubagentsRenderTheme,
+  label: string,
+  content: string,
+): void {
+  appendSectionHeading(container, theme, label);
+  container.addChild(new Text(content, 0, 0));
+}
+
+function appendComponentSection(
+  container: Container,
+  theme: MinimalSubagentsRenderTheme,
+  label: string,
+  content: Component,
+): void {
+  appendSectionHeading(container, theme, label);
+  container.addChild(content);
 }
 
 function renderFallbackToolResult(
   result: AgentToolResult<unknown>,
-  theme: Theme,
+  theme: MinimalSubagentsRenderTheme,
   isError: boolean,
 ): Component {
   const content = toolResultText(result) || "(no output)";
   return new Text(isError ? theme.fg("error", content) : content, 0, 0);
 }
 
-function collapsedExpansionHint(theme: Theme): string {
+function collapsedExpansionHint(theme: MinimalSubagentsRenderTheme): string {
   return theme.fg("dim", `  ·  ${keyHint("app.tools.expand", "to expand")}`);
 }
 
@@ -171,8 +208,8 @@ export function formatSubagentTokenCount(tokens: number | undefined): string | u
 }
 
 /** Collapse multiline task or message text into one terminal-friendly preview. */
-export function formatSubagentPreview(content: string, maxWidth = 72): string {
-  const singleLine = content.replace(/\s+/g, " ").trim();
+export function formatSubagentPreview(content: string | undefined, maxWidth = 72): string {
+  const singleLine = (content ?? "").replace(/\s+/g, " ").trim();
   const boundedWidth = Math.max(1, maxWidth);
   if (visibleWidth(singleLine) <= boundedWidth) return singleLine;
   if (boundedWidth === 1) return "…";
@@ -185,83 +222,106 @@ function currentSubagentPreviewWidth(reservedWidth: number): number {
 
 /** Format complete Pi usage metrics for expanded subagent output. */
 export function formatSubagentUsage(usage: Usage | undefined): string | undefined {
-  const usageRecord = asRecord(usage);
-  if (!usageRecord) return undefined;
+  if (usage === undefined) return undefined;
   const values = [
-    `input ${formatSubagentTokenCount(asNumber(usageRecord.input)) ?? "0"}`,
-    `output ${formatSubagentTokenCount(asNumber(usageRecord.output)) ?? "0"}`,
-    `cache read ${formatSubagentTokenCount(asNumber(usageRecord.cacheRead)) ?? "0"}`,
-    `cache write ${formatSubagentTokenCount(asNumber(usageRecord.cacheWrite)) ?? "0"}`,
-    `total ${formatSubagentTokenCount(asNumber(usageRecord.totalTokens)) ?? "0"}`,
+    `input ${formatSubagentTokenCount(usage.input) ?? "0"}`,
+    `output ${formatSubagentTokenCount(usage.output) ?? "0"}`,
+    `cache read ${formatSubagentTokenCount(usage.cacheRead) ?? "0"}`,
+    `cache write ${formatSubagentTokenCount(usage.cacheWrite) ?? "0"}`,
+    `total ${formatSubagentTokenCount(usage.totalTokens) ?? "0"}`,
   ];
-  const totalCost = asNumber(asRecord(usageRecord.cost)?.total);
-  if (totalCost !== undefined && totalCost > 0) values.push(`cost $${totalCost.toFixed(4)}`);
+  if (usage.cost.total > 0) values.push(`cost $${usage.cost.total.toFixed(4)}`);
   return values.join(" · ");
 }
 
-type CoordinatorToolCallRenderer = (args: Record<string, unknown>, theme: Theme) => Component;
-
-function coordinatorToolCallTitle(theme: Theme, label: string): string {
+function coordinatorToolCallTitle(theme: MinimalSubagentsRenderTheme, label: string): string {
   return theme.fg("toolTitle", theme.bold(label));
 }
 
-function coordinatorToolCallPreview(theme: Theme, value: unknown): string {
-  return typeof value === "string" && value.length > 0
+function coordinatorToolCallPreview(
+  theme: MinimalSubagentsRenderTheme,
+  value: string | undefined,
+): string {
+  return value && value.length > 0
     ? ` · ${theme.fg("dim", `“${formatSubagentPreview(value, currentSubagentPreviewWidth(36))}”`)}`
     : "";
 }
 
 function renderManagementToolCall(
   label: string,
-  args: Record<string, unknown>,
-  theme: Theme,
+  args: ManagementCallArguments,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
   return new Text(
-    `${coordinatorToolCallTitle(theme, label)} ${theme.fg("accent", asString(args.agent_id) ?? "agent")} ${theme.fg("dim", args.recursive === false ? "· target only" : "· recursive")}`,
+    `${coordinatorToolCallTitle(theme, label)} ${theme.fg("accent", args.agent_id ?? "agent")} ${theme.fg("dim", args.recursive === false ? "· target only" : "· recursive")}`,
     0,
     0,
   );
 }
 
-const COORDINATOR_TOOL_CALL_RENDERERS: Record<CoordinatorToolName, CoordinatorToolCallRenderer> = {
+type CoordinatorToolCallRenderers = {
+  readonly subagent: (args: SpawnCallArguments, theme: MinimalSubagentsRenderTheme) => Component;
+  readonly agent_message: (
+    args: MessageCallArguments,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+  readonly subagent_wait: (
+    args: WaitCallArguments,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+  readonly subagent_status: (
+    args: StatusCallArguments,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+  readonly subagent_cancel: (
+    args: ManagementCallArguments,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+  readonly subagent_delete: (
+    args: ManagementCallArguments,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+};
+
+const COORDINATOR_TOOL_CALL_RENDERERS = {
   subagent: (args, theme) =>
     new Text(
-      `${coordinatorToolCallTitle(theme, "Subagent")} ${theme.fg("accent", asString(args.agent_id) ?? "generated")}${coordinatorToolCallPreview(theme, args.task)}`,
+      `${coordinatorToolCallTitle(theme, "Subagent")} ${theme.fg("accent", args.agent_id ?? "generated")}${coordinatorToolCallPreview(theme, args.task)}`,
       0,
       0,
     ),
   agent_message: (args, theme) =>
     new Text(
-      `${coordinatorToolCallTitle(theme, "Message")} ${theme.fg("accent", asString(args.agent_id) ?? "parent")}${coordinatorToolCallPreview(theme, args.message)}`,
+      `${coordinatorToolCallTitle(theme, "Message")} ${theme.fg("accent", args.agent_id ?? "parent")}${coordinatorToolCallPreview(theme, args.message)}`,
       0,
       0,
     ),
   subagent_wait: (args, theme) =>
     new Text(
-      `${coordinatorToolCallTitle(theme, "Wait")} ${theme.fg("accent", asString(args.agent_id) ?? "agent")}`,
+      `${coordinatorToolCallTitle(theme, "Wait")} ${theme.fg("accent", args.agent_id ?? "agent")}`,
       0,
       0,
     ),
   subagent_status: (args, theme) =>
     new Text(
-      `${coordinatorToolCallTitle(theme, "Status")} ${theme.fg("accent", asString(args.agent_id) ?? "children")}`,
+      `${coordinatorToolCallTitle(theme, "Status")} ${theme.fg("accent", args.agent_id ?? "children")}`,
       0,
       0,
     ),
   subagent_cancel: (args, theme) => renderManagementToolCall("Cancel", args, theme),
   subagent_delete: (args, theme) => renderManagementToolCall("Delete", args, theme),
-};
+} satisfies CoordinatorToolCallRenderers;
 
 function renderSpawnResult(
-  details: Record<string, unknown>,
+  details: SpawnRenderDetails,
   options: ToolRenderResultOptions,
-  theme: Theme,
-  args: Record<string, unknown>,
+  theme: MinimalSubagentsRenderTheme,
+  args: SpawnCallArguments,
 ): Component {
-  const agentId = asString(details.agent_id) ?? "subagent";
-  const status = asString(details.status) ?? "running";
-  const agent = asRecord(details.agent);
-  const launchContract = asRecord(agent?.launch_contract);
+  const agentId = details.agent_id;
+  const status = details.status;
+  const agent = details.agent;
+  const launchContract = agent?.launch_contract;
   if (!options.expanded) {
     return new Text(
       `${renderSubagentSummary(theme, status, agentId)}${collapsedExpansionHint(theme)}`,
@@ -271,69 +331,72 @@ function renderSpawnResult(
   }
   const container = new Container();
   container.addChild(new Text(renderSubagentSummary(theme, status, agentId), 0, 0));
-  container.addChild(renderLabelValue(theme, "Turn", asString(details.turn_id) ?? "unknown"));
-  appendSection(container, theme, "Task", asString(args.task) ?? "(task unavailable)");
-  const resolvedModel = asString(launchContract?.model) ?? asString(args.model);
-  const resolvedThinking =
-    asString(launchContract?.thinking_level) ?? asString(args.thinking_level);
+  container.addChild(renderLabelValue(theme, "Turn", details.turn_id));
+  appendTextSection(container, theme, "Task", args.task ?? "(task unavailable)");
+  const resolvedModel = launchContract?.model ?? args.model;
+  const resolvedThinking = launchContract?.thinking_level ?? args.thinking_level;
   const launch = [
-    `delegation ${asString(launchContract?.delegation) ?? asString(args.delegation) ?? "none"}`,
-    `session context ${asString(launchContract?.session_context) ?? asString(args.session_context) ?? "inherit"}`,
-    `project context ${asString(launchContract?.project_context) ?? asString(args.project_context) ?? "inherit"}`,
+    `delegation ${launchContract?.delegation ?? args.delegation ?? "none"}`,
+    `session context ${launchContract?.session_context ?? args.session_context ?? "inherit"}`,
+    `project context ${launchContract?.project_context ?? args.project_context ?? "inherit"}`,
     resolvedModel ? `model ${resolvedModel}` : undefined,
     resolvedThinking ? `thinking ${resolvedThinking}` : undefined,
-  ].filter(Boolean);
-  appendSection(container, theme, "Launch", launch.join(" · "));
-  appendSection(
+  ].filter((value): value is string => value !== undefined);
+  appendTextSection(container, theme, "Launch", launch.join(" · "));
+  appendTextSection(
     container,
     theme,
     "Resolved tools",
-    asStringArray(launchContract?.ordinary_tools ?? agent?.tools).join(", ") || "none",
+    (launchContract?.ordinary_tools ?? agent?.tools ?? []).join(", ") || "none",
   );
   return container;
 }
 
+function messageDisposition(details: MessageRenderDetails): string {
+  return "disposition" in details
+    ? details.disposition
+    : details.delivered
+      ? "delivered"
+      : "failed";
+}
+
 function renderMessageResult(
-  details: Record<string, unknown>,
+  details: MessageRenderDetails,
   options: ToolRenderResultOptions,
-  theme: Theme,
-  args: Record<string, unknown>,
+  theme: MinimalSubagentsRenderTheme,
+  args: MessageCallArguments,
 ): Component {
-  const agentId = asString(details.agent_id) ?? asString(args.agent_id) ?? "parent";
-  const historicalBehavior = asString(details.behavior) ?? asString(args.behavior);
+  const agentId = details.agent_id ?? args.agent_id ?? "parent";
+  const historicalBehavior = details.behavior ?? args.behavior;
   const metrics = historicalBehavior ? [historicalBehavior] : [];
-  const disposition =
-    asString(details.disposition) ?? (details.delivered === true ? "delivered" : "failed");
+  const disposition = messageDisposition(details);
   const summary = renderSubagentSummary(theme, disposition, agentId, metrics);
   if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
-  appendSection(container, theme, "Message", asString(args.message) ?? "(message unavailable)");
-  appendSection(container, theme, "Recipient", agentId);
-  appendSection(container, theme, "Disposition", disposition);
-  const error = asString(details.error);
-  if (error) appendSection(container, theme, "Error", error);
+  appendTextSection(container, theme, "Message", args.message ?? "(message unavailable)");
+  appendTextSection(container, theme, "Recipient", agentId);
+  appendTextSection(container, theme, "Disposition", disposition);
+  if (details.error) appendTextSection(container, theme, "Error", details.error);
   return container;
 }
 
 function renderWaitResult(
-  details: Record<string, unknown>,
+  details: WaitRenderDetails,
   options: ToolRenderResultOptions,
-  theme: Theme,
-  args: Record<string, unknown>,
+  theme: MinimalSubagentsRenderTheme,
+  args: WaitCallArguments,
 ): Component {
-  const agentId = asString(details.agent_id) ?? asString(args.agent_id) ?? "agent";
-  const event = asString(details.event);
+  const agentId = details.agent_id ?? args.agent_id ?? "agent";
   const status = options.isPartial
     ? "waiting"
-    : event === "message"
+    : details.event === "message"
       ? "message"
-      : (asString(details.status) ?? "completed");
-  const duration = formatSubagentDuration(asNumber(details.elapsed_ms));
-  const usage = asRecord(details.usage) as Usage | undefined;
-  const tokens = formatSubagentTokenCount(usage?.totalTokens);
+      : details.status;
+  const duration = formatSubagentDuration(details.elapsed_ms);
+  const tokens = formatSubagentTokenCount(details.usage?.totalTokens);
   const metrics = [duration, tokens ? `${tokens} tokens` : undefined].filter(
-    (metric): metric is string => Boolean(metric),
+    (metric): metric is string => metric !== undefined,
   );
   const summary = renderSubagentSummary(theme, status, agentId, metrics);
   if (options.isPartial || !options.expanded) {
@@ -341,332 +404,329 @@ function renderWaitResult(
   }
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
-  container.addChild(renderLabelValue(theme, "Turn", asString(details.turn_id) ?? "unknown"));
-  if (event === "message") {
-    appendSection(
-      container,
-      theme,
-      "Message",
-      asString(details.message) ?? "(message unavailable)",
-    );
-    container.addChild(
-      renderLabelValue(theme, "Message ID", asString(details.message_id) ?? "unknown"),
-    );
+  container.addChild(renderLabelValue(theme, "Turn", details.turn_id ?? "unknown"));
+  if (details.event === "message") {
+    appendTextSection(container, theme, "Message", details.message);
+    container.addChild(renderLabelValue(theme, "Message ID", details.message_id));
     return container;
   }
-  const output = asString(details.output) ?? "";
+  const output = details.output ?? "";
   if (status === "completed") {
-    appendSection(
-      container,
-      theme,
-      "Output",
-      output.length > 0 ? new Markdown(output, 0, 0, getMarkdownTheme()) : "(no output)",
-    );
+    if (output.length > 0) {
+      appendComponentSection(
+        container,
+        theme,
+        "Output",
+        new Markdown(output, 0, 0, getMarkdownTheme()),
+      );
+    } else {
+      appendTextSection(container, theme, "Output", "(no output)");
+    }
   } else {
-    appendSection(
-      container,
-      theme,
-      "Error",
-      (asString(details.error) ?? output) || "(no error detail)",
-    );
-    appendSection(container, theme, "Diagnostics", JSON.stringify(details, null, 2));
+    appendTextSection(container, theme, "Error", details.error ?? (output || "(no error detail)"));
+    appendTextSection(container, theme, "Diagnostics", JSON.stringify(details, null, 2));
   }
-  const usageText = formatSubagentUsage(usage);
-  if (usageText) appendSection(container, theme, "Usage", usageText);
+  const usageText = formatSubagentUsage(details.usage);
+  if (usageText) appendTextSection(container, theme, "Usage", usageText);
   return container;
 }
 
-function countDirectStatusAgents(agents: unknown[]): { children: number; running: number } {
-  let children = 0;
-  let running = 0;
-  for (const item of agents) {
-    const agent = asRecord(item);
-    if (!agent) continue;
-    children++;
-    if (agent.state === "running") running++;
-  }
-  return { children, running };
+interface DirectStatusCounts {
+  children: number;
+  running: number;
 }
 
-function renderDirectStatusRows(agents: unknown[], theme: Theme): string[] {
-  const rows: string[] = [];
-  for (const item of agents) {
-    const agent = asRecord(item);
-    if (!agent) continue;
-    const availability = asString(agent.availability) ?? "available";
-    const latestTurn = asRecord(agent.latest_turn);
-    const status =
-      availability === "unavailable"
-        ? "unavailable"
-        : asString(agent.state) === "running"
-          ? "running"
-          : (asString(latestTurn?.status) ?? "idle");
-    const duration = formatSubagentDuration(asNumber(agent.elapsed_ms));
-    const childCount = asNumber(agent.child_count) ?? 0;
-    const metrics = [duration, childCount > 0 ? `${childCount} children` : undefined].filter(
-      (metric): metric is string => Boolean(metric),
-    );
-    rows.push(renderSubagentSummary(theme, status, asString(agent.agent_id) ?? "unknown", metrics));
+function countDirectStatusAgents(agents: readonly RenderStatusAgent[]): DirectStatusCounts {
+  let running = 0;
+  for (const agent of agents) {
+    if (agent.state === "running") running++;
   }
-  return rows;
+  return { children: agents.length, running };
+}
+
+function statusAgentPresentation(agent: RenderStatusAgent): string {
+  if (agent.availability === "unavailable") return "unavailable";
+  if (agent.state === "running") return "running";
+  return agent.latest_turn?.status ?? "idle";
+}
+
+function renderDirectStatusRows(
+  agents: readonly RenderStatusAgent[],
+  theme: MinimalSubagentsRenderTheme,
+): string[] {
+  return agents.map((agent) => {
+    const duration = formatSubagentDuration(agent.elapsed_ms);
+    const childCount = agent.child_count ?? 0;
+    const metrics = [duration, childCount > 0 ? `${childCount} children` : undefined].filter(
+      (metric): metric is string => metric !== undefined,
+    );
+    return renderSubagentSummary(
+      theme,
+      statusAgentPresentation(agent),
+      agent.agent_id ?? "unknown",
+      metrics,
+    );
+  });
+}
+
+type StatusLabelValue = { readonly label: string; readonly value: string | undefined };
+
+function renderDetailedStatusAgent(
+  agent: RenderStatusAgent,
+  options: ToolRenderResultOptions,
+  theme: MinimalSubagentsRenderTheme,
+): Component {
+  const availability = agent.availability ?? "available";
+  const status = statusAgentPresentation(agent);
+  const id = agent.agent_id ?? "agent";
+  const childCount = agent.child_count ?? 0;
+  const duration = formatSubagentDuration(agent.elapsed_ms);
+  const metrics = [duration, `${childCount} children`].filter(
+    (metric): metric is string => metric !== undefined,
+  );
+  const summary = renderSubagentSummary(theme, status, id, metrics);
+  if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
+  const container = new Container();
+  container.addChild(new Text(summary, 0, 0));
+  const labels = [
+    { label: "Parent", value: agent.parent_id },
+    { label: "Availability", value: availability },
+    { label: "Turn", value: agent.active_turn_id ?? agent.latest_turn?.turn_id },
+    { label: "Duration", value: duration },
+    { label: "Model", value: agent.model },
+    { label: "Thinking", value: agent.thinking_level },
+    { label: "Session", value: agent.session_file },
+    { label: "Spawn entry", value: agent.spawn_entry_id },
+  ] satisfies readonly StatusLabelValue[];
+  for (const { label, value } of labels) {
+    if (value !== undefined) container.addChild(renderLabelValue(theme, label, value));
+  }
+  if (agent.task) appendTextSection(container, theme, "Task", agent.task);
+  const launchContract = agent.launch_contract;
+  if (launchContract) {
+    const launchValues = [
+      `session context ${launchContract.session_context ?? "inherit"}`,
+      `project context ${launchContract.project_context ?? "inherit"}`,
+      `model ${launchContract.model ?? agent.model ?? "unknown"}`,
+      `thinking ${launchContract.thinking_level ?? agent.thinking_level ?? "unknown"}`,
+      `delegation ${launchContract.delegation ?? "none"}`,
+    ];
+    appendTextSection(container, theme, "Launch contract", launchValues.join(" · "));
+  }
+  appendTextSection(container, theme, "Tools", (agent.tools ?? []).join(", ") || "none");
+  appendTextSection(
+    container,
+    theme,
+    "Capability ceiling",
+    (agent.capability_ceiling ?? []).join(", ") || "none",
+  );
+  const missing = agent.missing_dependencies ?? [];
+  if (missing.length > 0) {
+    appendTextSection(container, theme, "Missing dependencies", missing.join("\n"));
+  }
+  if (agent.unavailable_reason) {
+    appendTextSection(container, theme, "Unavailable reason", agent.unavailable_reason);
+  }
+  const recentMessages = agent.recent_messages ?? [];
+  if (recentMessages.length > 0) {
+    appendTextSection(
+      container,
+      theme,
+      "Recent messages",
+      recentMessages
+        .map((message) => `${message.source_agent_id ?? "unknown"}: ${message.content ?? ""}`)
+        .join("\n"),
+    );
+  }
+  const latestResult = agent.latest_result;
+  if (latestResult) {
+    const output = latestResult.output ?? "";
+    if (latestResult.status === "completed" && output) {
+      appendComponentSection(
+        container,
+        theme,
+        "Latest result",
+        new Markdown(output, 0, 0, getMarkdownTheme()),
+      );
+    } else {
+      appendTextSection(
+        container,
+        theme,
+        "Latest result",
+        output || JSON.stringify(latestResult, null, 2),
+      );
+    }
+  }
+  const usageText = formatSubagentUsage(agent.usage);
+  if (usageText) appendTextSection(container, theme, "Usage", usageText);
+  return container;
 }
 
 function renderStatusResult(
-  details: Record<string, unknown>,
+  details: StatusRenderDetails,
   options: ToolRenderResultOptions,
-  theme: Theme,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
-  const agents = Array.isArray(details.agents) ? details.agents : undefined;
-  if (agents) {
-    const counts = countDirectStatusAgents(agents);
+  if ("agents" in details) {
+    const counts = countDirectStatusAgents(details.agents);
     const summary = [
       theme.fg("muted", `${counts.children} children`),
       theme.fg(counts.running > 0 ? "accent" : "dim", `${counts.running} running`),
     ].join(renderSubagentSeparator(theme));
     if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
     return new Text(
-      `${summary}\n${renderDirectStatusRows(agents, theme).join("\n") || theme.fg("dim", "(no agents)")}`,
+      `${summary}\n${renderDirectStatusRows(details.agents, theme).join("\n") || theme.fg("dim", "(no agents)")}`,
       0,
       0,
     );
   }
-  const agent = asRecord(details.agent);
-  if (!agent) {
-    return new Text(
-      [theme.fg("muted", "0 children"), theme.fg("dim", "0 running")].join(
-        renderSubagentSeparator(theme),
-      ),
-      0,
-      0,
-    );
-  }
-  const availability = asString(agent.availability) ?? "available";
-  const latestTurn = asRecord(agent.latest_turn);
-  const status =
-    availability === "unavailable"
-      ? "unavailable"
-      : asString(agent.state) === "running"
-        ? "running"
-        : (asString(latestTurn?.status) ?? "idle");
-  const id = asString(agent.agent_id) ?? "agent";
-  const childCount = asNumber(agent.child_count) ?? 0;
-  const duration = formatSubagentDuration(asNumber(agent.elapsed_ms));
-  const summary = renderSubagentSummary(
-    theme,
-    status,
-    id,
-    [duration, `${childCount} children`].filter((metric): metric is string => Boolean(metric)),
-  );
-  if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
-  const container = new Container();
-  container.addChild(new Text(summary, 0, 0));
-  for (const [label, value] of [
-    ["Parent", agent.parent_id],
-    ["Availability", availability],
-    ["Turn", agent.active_turn_id ?? asRecord(agent.latest_turn)?.turn_id],
-    ["Duration", duration],
-    ["Model", agent.model],
-    ["Thinking", agent.thinking_level],
-    ["Session", agent.session_file],
-    ["Spawn entry", agent.spawn_entry_id],
-  ] as const) {
-    if (value !== undefined) container.addChild(renderLabelValue(theme, label, value));
-  }
-  if (asString(agent.task)) appendSection(container, theme, "Task", String(agent.task));
-  const launchContract = asRecord(agent.launch_contract);
-  if (launchContract) {
-    const launchValues = [
-      `session context ${asString(launchContract.session_context) ?? "inherit"}`,
-      `project context ${asString(launchContract.project_context) ?? "inherit"}`,
-      `model ${asString(launchContract.model) ?? asString(agent.model) ?? "unknown"}`,
-      `thinking ${asString(launchContract.thinking_level) ?? asString(agent.thinking_level) ?? "unknown"}`,
-      `delegation ${asString(launchContract.delegation) ?? "none"}`,
-    ];
-    appendSection(container, theme, "Launch contract", launchValues.join(" · "));
-  }
-  appendSection(container, theme, "Tools", asStringArray(agent.tools).join(", ") || "none");
-  appendSection(
-    container,
-    theme,
-    "Capability ceiling",
-    asStringArray(agent.capability_ceiling).join(", ") || "none",
-  );
-  const missing = asStringArray(agent.missing_dependencies);
-  if (missing.length > 0)
-    appendSection(container, theme, "Missing dependencies", missing.join("\n"));
-  if (asString(agent.unavailable_reason)) {
-    appendSection(container, theme, "Unavailable reason", String(agent.unavailable_reason));
-  }
-  const recentMessages = Array.isArray(agent.recent_messages)
-    ? agent.recent_messages
-        .map(asRecord)
-        .filter((item): item is Record<string, unknown> => Boolean(item))
-    : [];
-  if (recentMessages.length > 0) {
-    appendSection(
-      container,
-      theme,
-      "Recent messages",
-      recentMessages
-        .map(
-          (message) =>
-            `${asString(message.source_agent_id) ?? "unknown"}: ${asString(message.content) ?? ""}`,
-        )
-        .join("\n"),
-    );
-  }
-  const latestResult = asRecord(agent.latest_result);
-  if (latestResult) {
-    const output = asString(latestResult.output) ?? "";
-    appendSection(
-      container,
-      theme,
-      "Latest result",
-      asString(latestResult.status) === "completed" && output
-        ? new Markdown(output, 0, 0, getMarkdownTheme())
-        : output || JSON.stringify(latestResult, null, 2),
-    );
-  }
-  const usageText = formatSubagentUsage(asRecord(agent.usage) as Usage | undefined);
-  if (usageText) appendSection(container, theme, "Usage", usageText);
-  return container;
+  return renderDetailedStatusAgent(details.agent, options, theme);
 }
 
 function renderCancelResult(
-  details: Record<string, unknown>,
+  details: CancelRenderDetails,
   options: ToolRenderResultOptions,
-  theme: Theme,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
-  const id = asString(details.agent_id) ?? "agent";
-  const turns = asStringArray(details.cancelled_turn_ids);
+  const turns = details.cancelled_turn_ids;
   const summary =
     turns.length > 0
-      ? renderSubagentSummary(theme, "cancelled", id, [`${turns.length} turns cancelled`])
-      : renderSubagentSummary(theme, "completed", id, ["no active turns"]);
+      ? renderSubagentSummary(theme, "cancelled", details.agent_id, [
+          `${turns.length} turns cancelled`,
+        ])
+      : renderSubagentSummary(theme, "completed", details.agent_id, ["no active turns"]);
   if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
-  container.addChild(renderLabelValue(theme, "Requested target", id));
+  container.addChild(renderLabelValue(theme, "Requested target", details.agent_id));
   container.addChild(
-    renderLabelValue(theme, "Mode", details.recursive === false ? "target only" : "recursive"),
+    renderLabelValue(theme, "Mode", details.recursive ? "recursive" : "target only"),
   );
-  appendSection(
+  appendTextSection(
     container,
     theme,
     "Affected agents",
-    asStringArray(details.affected_agent_ids).join("\n") || "(none)",
+    details.affected_agent_ids.join("\n") || "(none)",
   );
-  appendSection(container, theme, "Cancelled turns", turns.join("\n") || "(none)");
+  appendTextSection(container, theme, "Cancelled turns", turns.join("\n") || "(none)");
   return container;
 }
 
 function renderDeleteResult(
-  details: Record<string, unknown>,
+  details: DeleteRenderDetails,
   options: ToolRenderResultOptions,
-  theme: Theme,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
-  const id = asString(details.agent_id) ?? "agent";
-  const deleted = asStringArray(details.deleted_agent_ids);
-  const tombstoned = asStringArray(details.tombstoned_agent_ids);
-  const failures = Array.isArray(details.failures) ? details.failures : [];
-  const status = failures.length > 0 ? "failed" : "completed";
-  const summary = renderSubagentSummary(
-    theme,
-    status,
-    id,
-    [
-      `${deleted.length} agents deleted`,
-      `${tombstoned.length} tombstoned`,
-      failures.length > 0 ? `${failures.length} failed` : undefined,
-    ].filter((metric): metric is string => Boolean(metric)),
-  );
+  const status = details.failures.length > 0 ? "failed" : "completed";
+  const metrics = [
+    `${details.deleted_agent_ids.length} agents deleted`,
+    `${details.tombstoned_agent_ids.length} tombstoned`,
+    details.failures.length > 0 ? `${details.failures.length} failed` : undefined,
+  ].filter((metric): metric is string => metric !== undefined);
+  const summary = renderSubagentSummary(theme, status, details.agent_id, metrics);
   if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
-  container.addChild(renderLabelValue(theme, "Requested target", id));
+  container.addChild(renderLabelValue(theme, "Requested target", details.agent_id));
   container.addChild(
-    renderLabelValue(theme, "Mode", details.recursive === false ? "target only" : "recursive"),
+    renderLabelValue(theme, "Mode", details.recursive ? "recursive" : "target only"),
   );
-  appendSection(container, theme, "Deleted agents", deleted.join("\n") || "(none)");
-  appendSection(container, theme, "Tombstones", tombstoned.join("\n") || "(none)");
-  appendSection(
+  appendTextSection(
+    container,
+    theme,
+    "Deleted agents",
+    details.deleted_agent_ids.join("\n") || "(none)",
+  );
+  appendTextSection(
+    container,
+    theme,
+    "Tombstones",
+    details.tombstoned_agent_ids.join("\n") || "(none)",
+  );
+  appendTextSection(
     container,
     theme,
     "Trashed sessions",
-    asStringArray(details.trashed_session_files).join("\n") || "(none)",
+    details.trashed_session_files.join("\n") || "(none)",
   );
-  if (failures.length > 0) {
-    appendSection(
+  if (details.failures.length > 0) {
+    appendTextSection(
       container,
       theme,
       "Failures",
-      theme.fg("error", JSON.stringify(failures, null, 2)),
+      theme.fg("error", JSON.stringify(details.failures, null, 2)),
     );
   }
   return container;
 }
 
-type CoordinatorToolResultRenderer = (
-  details: Record<string, unknown>,
-  options: ToolRenderResultOptions,
-  theme: Theme,
-  args: Record<string, unknown>,
-) => Component;
+type CoordinatorToolResultRenderers = {
+  readonly subagent: (
+    details: SpawnRenderDetails,
+    options: ToolRenderResultOptions,
+    theme: MinimalSubagentsRenderTheme,
+    args: SpawnCallArguments,
+  ) => Component;
+  readonly agent_message: (
+    details: MessageRenderDetails,
+    options: ToolRenderResultOptions,
+    theme: MinimalSubagentsRenderTheme,
+    args: MessageCallArguments,
+  ) => Component;
+  readonly subagent_wait: (
+    details: WaitRenderDetails,
+    options: ToolRenderResultOptions,
+    theme: MinimalSubagentsRenderTheme,
+    args: WaitCallArguments,
+  ) => Component;
+  readonly subagent_status: (
+    details: StatusRenderDetails,
+    options: ToolRenderResultOptions,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+  readonly subagent_cancel: (
+    details: CancelRenderDetails,
+    options: ToolRenderResultOptions,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+  readonly subagent_delete: (
+    details: DeleteRenderDetails,
+    options: ToolRenderResultOptions,
+    theme: MinimalSubagentsRenderTheme,
+  ) => Component;
+};
 
-const COORDINATOR_TOOL_RESULT_RENDERERS: Record<
-  CoordinatorToolName,
-  CoordinatorToolResultRenderer
-> = {
+const COORDINATOR_TOOL_RESULT_RENDERERS = {
   subagent: renderSpawnResult,
   agent_message: renderMessageResult,
   subagent_wait: renderWaitResult,
-  subagent_status: (details, options, theme) => renderStatusResult(details, options, theme),
-  subagent_cancel: (details, options, theme) => renderCancelResult(details, options, theme),
-  subagent_delete: (details, options, theme) => renderDeleteResult(details, options, theme),
-};
-
-const COORDINATOR_DETAIL_VALIDATORS: Record<
-  CoordinatorToolName,
-  (details: Record<string, unknown>) => boolean
-> = {
-  subagent: (details) =>
-    asString(details.agent_id) !== undefined &&
-    asString(details.turn_id) !== undefined &&
-    asString(details.status) !== undefined,
-  agent_message: (details) =>
-    asString(details.agent_id) !== undefined &&
-    (asString(details.disposition) !== undefined || typeof details.delivered === "boolean"),
-  subagent_wait: (details) => {
-    if (asString(details.event) === "message") {
-      return (
-        asString(details.agent_id) !== undefined &&
-        asString(details.turn_id) !== undefined &&
-        asString(details.message_id) !== undefined &&
-        asString(details.message) !== undefined
-      );
-    }
-    return asString(details.agent_id) !== undefined && asString(details.status) !== undefined;
-  },
-  subagent_status: (details) =>
-    Array.isArray(details.agents) || asRecord(details.agent) !== undefined,
-  subagent_cancel: (details) =>
-    asString(details.agent_id) !== undefined &&
-    Array.isArray(details.affected_agent_ids) &&
-    Array.isArray(details.cancelled_turn_ids),
-  subagent_delete: (details) =>
-    asString(details.agent_id) !== undefined &&
-    Array.isArray(details.deleted_agent_ids) &&
-    Array.isArray(details.tombstoned_agent_ids) &&
-    Array.isArray(details.failures),
-};
+  subagent_status: renderStatusResult,
+  subagent_cancel: renderCancelResult,
+  subagent_delete: renderDeleteResult,
+} satisfies CoordinatorToolResultRenderers;
 
 /** Render one of the six coordinator tool calls with a shared native Pi grammar. */
 export function renderCoordinatorToolCall(
   toolName: CoordinatorToolName,
-  args: Record<string, unknown>,
-  theme: Theme,
+  args: CoordinatorToolCallInput,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
-  return COORDINATOR_TOOL_CALL_RENDERERS[toolName](args, theme);
+  const parsed = parseCoordinatorToolCall(toolName, args);
+  if (parsed === undefined) return new Text(coordinatorToolCallTitle(theme, toolName), 0, 0);
+  switch (parsed.toolName) {
+    case "subagent":
+      return COORDINATOR_TOOL_CALL_RENDERERS.subagent(parsed.args, theme);
+    case "agent_message":
+      return COORDINATOR_TOOL_CALL_RENDERERS.agent_message(parsed.args, theme);
+    case "subagent_wait":
+      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_wait(parsed.args, theme);
+    case "subagent_status":
+      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_status(parsed.args, theme);
+    case "subagent_cancel":
+      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_cancel(parsed.args, theme);
+    case "subagent_delete":
+      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_delete(parsed.args, theme);
+  }
 }
 
 /** Render one coordinator tool result in native collapsed, expanded, or partial mode. */
@@ -674,22 +734,61 @@ export function renderCoordinatorToolResult(
   toolName: CoordinatorToolName,
   result: AgentToolResult<unknown>,
   options: ToolRenderResultOptions,
-  theme: Theme,
-  args: Record<string, unknown>,
+  theme: MinimalSubagentsRenderTheme,
+  args: CoordinatorToolCallInput,
   isError = false,
 ): Component {
-  const details = asRecord(result.details);
-  if (!details || !COORDINATOR_DETAIL_VALIDATORS[toolName](details)) {
-    return renderFallbackToolResult(result, theme, isError);
+  const parsedResult = parseCoordinatorToolResult(toolName, result.details);
+  if (parsedResult === undefined) return renderFallbackToolResult(result, theme, isError);
+  const parsedCall = parseCoordinatorToolCall(toolName, args);
+  switch (parsedResult.toolName) {
+    case "subagent":
+      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent(
+        parsedResult.details,
+        options,
+        theme,
+        parsedCall?.toolName === "subagent" ? parsedCall.args : {},
+      );
+    case "agent_message":
+      return COORDINATOR_TOOL_RESULT_RENDERERS.agent_message(
+        parsedResult.details,
+        options,
+        theme,
+        parsedCall?.toolName === "agent_message" ? parsedCall.args : {},
+      );
+    case "subagent_wait":
+      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_wait(
+        parsedResult.details,
+        options,
+        theme,
+        parsedCall?.toolName === "subagent_wait" ? parsedCall.args : {},
+      );
+    case "subagent_status":
+      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_status(
+        parsedResult.details,
+        options,
+        theme,
+      );
+    case "subagent_cancel":
+      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_cancel(
+        parsedResult.details,
+        options,
+        theme,
+      );
+    case "subagent_delete":
+      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_delete(
+        parsedResult.details,
+        options,
+        theme,
+      );
   }
-  return COORDINATOR_TOOL_RESULT_RENDERERS[toolName](details, options, theme, args);
 }
 
 /** Render explicit agent messages with compact source/destination metadata. */
 export function renderMinimalSubagentsMessage(
   message: RenderableCoordinatorMessage,
-  options: CoordinatorMessageRenderOptions,
-  theme: Theme,
+  options: MessageRenderOptions,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
   return renderCoordinatorMessage("Agent message", "→", message, options, theme);
 }
@@ -697,33 +796,42 @@ export function renderMinimalSubagentsMessage(
 /** Render automatic successful agent results with expandable Markdown output. */
 export function renderMinimalSubagentsResult(
   message: RenderableCoordinatorMessage,
-  options: CoordinatorMessageRenderOptions,
-  theme: Theme,
+  options: MessageRenderOptions,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
   return renderCoordinatorMessage("Agent result", "✓", message, options, theme);
+}
+
+function messageSource(details: CoordinatorMessageRenderDetails | undefined): string {
+  return details?.source_agent_id ?? details?.agent_id ?? "unknown";
+}
+
+function messageSourceTurn(
+  details: CoordinatorMessageRenderDetails | undefined,
+): string | undefined {
+  return details?.source_turn_id ?? details?.turn_id;
 }
 
 function renderCoordinatorMessage(
   label: string,
   symbol: string,
   message: RenderableCoordinatorMessage,
-  options: CoordinatorMessageRenderOptions,
-  theme: Theme,
+  options: MessageRenderOptions,
+  theme: MinimalSubagentsRenderTheme,
 ): Component {
-  const details = asRecord(message.details);
+  const details = parseCoordinatorMessageDetails(message.details);
   const content = coordinatorMessageText(message.content);
-  const source = asString(details?.source_agent_id) ?? "unknown";
-  const destination = asString(details?.destination_agent_id) ?? "recipient";
-  const status = asString(details?.status);
-  const sourceTurn = asString(details?.source_turn_id);
+  const source = messageSource(details);
+  const destination = details?.destination_agent_id ?? "recipient";
+  const sourceTurn = messageSourceTurn(details);
   const route = `${theme.fg("accent", theme.bold(source))} ${theme.fg("dim", "→")} ${theme.fg("accent", theme.bold(destination))}`;
   const heading = [
     `${theme.fg(symbol === "✓" ? "success" : "accent", symbol)} ${theme.bold(label)}`,
     route,
     sourceTurn ? theme.fg("dim", `turn ${sourceTurn}`) : undefined,
-    status ? renderSubagentStatusLabel(theme, status) : undefined,
+    details?.status ? renderSubagentStatusLabel(theme, details.status) : undefined,
   ]
-    .filter((part): part is string => Boolean(part))
+    .filter((part): part is string => part !== undefined)
     .join(renderSubagentSeparator(theme));
   const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
   if (!options.expanded) {
@@ -738,15 +846,13 @@ function renderCoordinatorMessage(
   }
   const container = new Container();
   container.addChild(new Text(heading, 0, 0));
-  if (asString(details?.source_turn_id)) {
-    container.addChild(renderLabelValue(theme, "Source turn", details?.source_turn_id));
-  }
-  const duration = formatSubagentDuration(asNumber(details?.elapsed_ms));
+  if (sourceTurn) container.addChild(renderLabelValue(theme, "Source turn", sourceTurn));
+  const duration = formatSubagentDuration(details?.elapsed_ms);
   if (duration) container.addChild(renderLabelValue(theme, "Duration", duration));
   container.addChild(new Spacer(1));
   container.addChild(new Markdown(content, 0, 0, getMarkdownTheme()));
-  const usageText = formatSubagentUsage(asRecord(details?.usage) as Usage | undefined);
-  if (usageText) appendSection(container, theme, "Usage", usageText);
+  const usageText = formatSubagentUsage(details?.usage);
+  if (usageText) appendTextSection(container, theme, "Usage", usageText);
   box.addChild(container);
   return box;
 }

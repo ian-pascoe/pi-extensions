@@ -1,11 +1,23 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const execFileMock = vi.hoisted(() => vi.fn());
-vi.mock("node:child_process", () => ({
-  execFile: execFileMock,
-}));
+import type {
+  AssistantMessage,
+  ToolResultMessage,
+  Usage,
+  UserMessage,
+} from "@earendil-works/pi-ai";
+import {
+  AgentSession,
+  createExtensionRuntime,
+  SessionManager,
+  type Extension,
+  type LoadExtensionsResult,
+  type RegisteredTool,
+  type SessionEntry,
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildDepthBoundSubagentPrompt,
   captureChildTurnOutcome,
@@ -14,22 +26,85 @@ import {
   findDeliveryEvidence,
   PiAgentSessionFactory,
   verifyChildSessionIdentity,
+  type SessionFileTrashCapability,
 } from "../src/minimal-subagents-sessions.js";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { PersistedAgent } from "../src/minimal-subagents-types.js";
 
 const temporaryDirectories: string[] = [];
-beforeEach(() => {
-  execFileMock
-    .mockReset()
-    .mockImplementation(
-      (
-        _command: string,
-        _arguments: string[],
-        callback: (error: NodeJS.ErrnoException | null) => void,
-      ) => callback(Object.assign(new Error("trash unavailable"), { code: "ENOENT" })),
-    );
-});
+const ZERO_USAGE: Usage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function userMessage(text: string, timestamp: number): UserMessage {
+  return { role: "user", content: text, timestamp };
+}
+
+function assistantMessage(text: string, timestamp: number): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-completions",
+    provider: "openai",
+    model: "model",
+    usage: ZERO_USAGE,
+    stopReason: "stop",
+    timestamp,
+  };
+}
+
+function customMessageEntry<TDetails>(customType: string, details: TDetails): SessionEntry {
+  return {
+    type: "custom_message",
+    id: `custom-${customType}`,
+    parentId: null,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    customType,
+    content: "evidence",
+    details,
+    display: false,
+  };
+}
+
+function toolResultEntry<TDetails>(toolName: string, details: TDetails): SessionEntry {
+  const message: ToolResultMessage<TDetails> = {
+    role: "toolResult",
+    toolCallId: "call-1",
+    toolName,
+    content: [{ type: "text", text: "result" }],
+    details,
+    isError: false,
+    timestamp: 1,
+  };
+  return {
+    type: "message",
+    id: "tool-result",
+    parentId: null,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message,
+  };
+}
+
+const unavailableSessionFileTrash: SessionFileTrashCapability = {
+  async moveSessionFile() {
+    return Object.assign(new Error("trash unavailable"), { code: "ENOENT" });
+  },
+};
+
+class RecordingSuccessfulSessionFileTrash implements SessionFileTrashCapability {
+  readonly sessionFiles: string[] = [];
+
+  async moveSessionFile(sessionFile: string): Promise<undefined> {
+    this.sessionFiles.push(sessionFile);
+    rmSync(sessionFile);
+    return undefined;
+  }
+}
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true });
 });
@@ -57,28 +132,56 @@ function persistedAgent(): PersistedAgent {
   };
 }
 
+function loadedExtension(resolvedPath: string, toolNames: readonly string[]): Extension {
+  const sourceInfo: Extension["sourceInfo"] = {
+    path: resolvedPath,
+    source: resolvedPath,
+    scope: "temporary",
+    origin: "top-level",
+  };
+  const tools = new Map<string, RegisteredTool>();
+  for (const toolName of toolNames) {
+    tools.set(toolName, {
+      sourceInfo,
+      definition: {
+        name: toolName,
+        label: toolName,
+        description: "test tool",
+        parameters: Type.Object({}),
+        async execute() {
+          return { content: [{ type: "text", text: "ok" }], details: {} };
+        },
+      },
+    });
+  }
+  return {
+    path: resolvedPath,
+    resolvedPath,
+    sourceInfo,
+    handlers: new Map(),
+    tools,
+    messageRenderers: new Map(),
+    commands: new Map(),
+    flags: new Map(),
+    shortcuts: new Map(),
+  };
+}
+
 describe("minimal subagent sessions", () => {
   it("retains a finalized assistant response when compaction replaces session context", async () => {
-    type Listener = (event: unknown) => void;
+    type Listener = Parameters<AgentSession["subscribe"]>[0];
     const listeners = new Set<Listener>();
-    const session = {
-      messages: [] as unknown[],
-      subscribe(listener: Listener) {
+    const session: Pick<AgentSession, "subscribe"> = {
+      subscribe(listener) {
         listeners.add(listener);
         return () => listeners.delete(listener);
       },
     };
     const outcome = await captureChildTurnOutcome(
-      session as never,
+      session,
       async () => {
-        const assistant = {
-          role: "assistant",
-          content: [{ type: "text", text: "completed before compaction" }],
-          stopReason: "stop",
-          timestamp: 1,
-        };
+        const assistant = assistantMessage("completed before compaction", 1);
         for (const listener of listeners) listener({ type: "message_end", message: assistant });
-        session.messages = [{ role: "compactionSummary", summary: "replacement" }];
       },
       () => false,
     );
@@ -93,7 +196,7 @@ describe("minimal subagent sessions", () => {
     temporaryDirectories.push(directory);
     const identity = createPersistentChildIdentity({
       agent: persistedAgent(),
-      importedMessages: [{ role: "user", content: "hello", timestamp: 1 }] as never[],
+      importedMessages: [userMessage("hello", 1)],
       cwd: directory,
       sessionDir: directory,
       rootSessionId: "root-session",
@@ -197,17 +300,8 @@ describe("minimal subagent sessions", () => {
     });
     const source = SessionManager.open(identity.sessionFile, directory, directory);
     source.appendSessionInfo("source child");
-    source.appendMessage({
-      role: "user",
-      content: [{ type: "text", text: "source task" }],
-      timestamp: 1,
-    } as never);
-    source.appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "source answer" }],
-      stopReason: "stop",
-      timestamp: 2,
-    } as never);
+    source.appendMessage(userMessage("source task", 1));
+    source.appendMessage(assistantMessage("source answer", 2));
     const selectedLeafId = source.getLeafId();
     source.appendCustomEntry("wrong-branch-tail", { should_not_clone: true });
     const sourceFile = source.getSessionFile();
@@ -257,17 +351,8 @@ describe("minimal subagent sessions", () => {
     agent.session_id = sourceIdentity.sessionId;
     agent.session_leaf_id = sourceIdentity.sessionLeafId;
     const sourceSession = SessionManager.open(sourceIdentity.sessionFile, directory, directory);
-    sourceSession.appendMessage({
-      role: "user",
-      content: [{ type: "text", text: "generation A task" }],
-      timestamp: 1,
-    } as never);
-    sourceSession.appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "generation A answer" }],
-      stopReason: "stop",
-      timestamp: 2,
-    } as never);
+    sourceSession.appendMessage(userMessage("generation A task", 1));
+    sourceSession.appendMessage(assistantMessage("generation A answer", 2));
     agent.session_leaf_id = sourceSession.getLeafId() ?? undefined;
     const sourceFactory = new PiAgentSessionFactory({
       cwd: directory,
@@ -322,17 +407,8 @@ describe("minimal subagent sessions", () => {
     expect(readFileSync(adopted.sessionFile, "utf8")).toContain(
       '"destination_root_session_id":"destination-root"',
     );
-    adoptedSession.appendMessage({
-      role: "user",
-      content: [{ type: "text", text: "generation B task" }],
-      timestamp: 3,
-    } as never);
-    adoptedSession.appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "generation B answer" }],
-      stopReason: "stop",
-      timestamp: 4,
-    } as never);
+    adoptedSession.appendMessage(userMessage("generation B task", 3));
+    adoptedSession.appendMessage(assistantMessage("generation B answer", 4));
     forkedAgent.session_leaf_id = adoptedSession.getLeafId() ?? undefined;
 
     const secondClone = await destinationFactory.cloneSession(forkedAgent);
@@ -365,17 +441,8 @@ describe("minimal subagent sessions", () => {
       directory,
       directory,
     );
-    secondAdoptedSession.appendMessage({
-      role: "user",
-      content: [{ type: "text", text: "generation C task" }],
-      timestamp: 5,
-    } as never);
-    secondAdoptedSession.appendMessage({
-      role: "assistant",
-      content: [{ type: "text", text: "generation C answer" }],
-      stopReason: "stop",
-      timestamp: 6,
-    } as never);
+    secondAdoptedSession.appendMessage(userMessage("generation C task", 5));
+    secondAdoptedSession.appendMessage(assistantMessage("generation C answer", 6));
     secondForkAgent.session_leaf_id = secondAdoptedSession.getLeafId() ?? undefined;
     expect(() =>
       verifyChildSessionIdentity(secondAdoptedSession, secondForkAgent, "next-destination-root"),
@@ -408,17 +475,19 @@ describe("minimal subagent sessions", () => {
       systemPromptBlock: "child prompt",
       ordinaryToolNames: ["custom_read"],
     });
-    const result = options.extensionsOverride?.({
+    const loadResult: LoadExtensionsResult = {
       extensions: [
-        { resolvedPath: coordinatorEntrypoint, tools: new Map([["custom_read", {}]]) },
-        { resolvedPath: join(directory, "selected.ts"), tools: new Map([["custom_read", {}]]) },
-        { resolvedPath: join(directory, "irrelevant.ts"), tools: new Map([["other", {}]]) },
+        loadedExtension(coordinatorEntrypoint, ["custom_read"]),
+        loadedExtension(join(directory, "selected.ts"), ["custom_read"]),
+        loadedExtension(join(directory, "irrelevant.ts"), ["other"]),
       ],
       errors: [
         { path: coordinatorEntrypoint, error: "recursive" },
         { path: join(directory, "broken.ts"), error: "broken" },
       ],
-    } as never);
+      runtime: createExtensionRuntime(),
+    };
+    const result = options.extensionsOverride?.(loadResult);
     expect(result?.extensions.map((extension) => extension.resolvedPath)).toEqual([
       join(directory, "selected.ts"),
     ]);
@@ -465,37 +534,23 @@ describe("minimal subagent sessions", () => {
     const details = { source_agent_id: "child", source_turn_id: "turn" };
     expect(
       findDeliveryEvidence(
-        [{ type: "custom_message", customType: "minimal-subagents.result", details }],
+        [customMessageEntry("minimal-subagents.result", details)],
         "child",
         "turn",
       ),
     ).toBe(true);
     expect(
-      findDeliveryEvidence(
-        [{ type: "message", message: { role: "toolResult", toolName: "subagent_wait", details } }],
-        "child",
-        "other",
-      ),
+      findDeliveryEvidence([toolResultEntry("subagent_wait", details)], "child", "other"),
     ).toBe(false);
-    const coordinationEvidence = {
-      type: "custom_message",
-      customType: "minimal-subagents.message",
-      details: { ...details, delivery_id: "message:1" },
-    };
+    const coordinationEvidence = customMessageEntry("minimal-subagents.message", {
+      ...details,
+      delivery_id: "message:1",
+    });
     expect(findDeliveryEvidence([coordinationEvidence], "child", "turn", "message:1")).toBe(true);
     expect(findDeliveryEvidence([coordinationEvidence], "child", "turn")).toBe(false);
     expect(
       findDeliveryEvidence(
-        [
-          {
-            type: "message",
-            message: {
-              role: "toolResult",
-              toolName: "subagent_wait",
-              details: { ...details, event: "message" },
-            },
-          },
-        ],
+        [toolResultEntry("subagent_wait", { ...details, event: "message" })],
         "child",
         "turn",
       ),
@@ -536,6 +591,7 @@ describe("minimal subagent sessions", () => {
       modelScopeRestricted: false,
       availableToolNames: [],
       projectTrusted: true,
+      sessionFileTrash: unavailableSessionFileTrash,
       getCoordinatorTools: () => [],
     });
     await factory.trashSession(agent);
@@ -556,16 +612,7 @@ describe("minimal subagent sessions", () => {
     agent.session_file = identity.sessionFile;
     agent.session_id = identity.sessionId;
     agent.session_leaf_id = identity.sessionLeafId;
-    execFileMock.mockImplementation(
-      (
-        _command: string,
-        arguments_: string[],
-        callback: (error: NodeJS.ErrnoException | null) => void,
-      ) => {
-        rmSync(arguments_.at(-1)!);
-        callback(null);
-      },
-    );
+    const sessionFileTrash = new RecordingSuccessfulSessionFileTrash();
     const factory = new PiAgentSessionFactory({
       cwd: directory,
       agentDir: directory,
@@ -577,14 +624,11 @@ describe("minimal subagent sessions", () => {
       modelScopeRestricted: false,
       availableToolNames: [],
       projectTrusted: true,
+      sessionFileTrash,
       getCoordinatorTools: () => [],
     });
     await factory.trashSession(agent);
-    expect(execFileMock).toHaveBeenCalledWith(
-      "trash",
-      [identity.sessionFile],
-      expect.any(Function),
-    );
+    expect(sessionFileTrash.sessionFiles).toEqual([identity.sessionFile]);
     expect(existsSync(identity.sessionFile)).toBe(false);
   });
 

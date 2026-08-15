@@ -1,10 +1,87 @@
+import type {
+  InputEvent,
+  SessionShutdownEvent,
+  SessionStartEvent,
+  ThemeColor,
+  ToolExecutionEndEvent,
+} from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import {
+  registerGitStatusWidget,
+  type GitStatusWidgetContext,
+  type GitStatusWidgetLifecycleHost,
+  type GitStatusWidgetRefreshLoop,
+  type GitStatusWidgetRefreshScheduler,
+} from "../src/git-status-widget-lifecycle.js";
 
-type ExtensionHandler = (event: unknown, context: unknown) => Promise<unknown>;
+class RecordingGitStatusWidgetLifecycleHost implements GitStatusWidgetLifecycleHost {
+  sessionStart: Parameters<GitStatusWidgetLifecycleHost["onSessionStart"]>[0] | undefined;
+  input: Parameters<GitStatusWidgetLifecycleHost["onInput"]>[0] | undefined;
+  toolExecutionEnd: Parameters<GitStatusWidgetLifecycleHost["onToolExecutionEnd"]>[0] | undefined;
+  sessionShutdown: Parameters<GitStatusWidgetLifecycleHost["onSessionShutdown"]>[0] | undefined;
+
+  onSessionStart(handler: Parameters<GitStatusWidgetLifecycleHost["onSessionStart"]>[0]) {
+    this.sessionStart = handler;
+  }
+  onInput(handler: Parameters<GitStatusWidgetLifecycleHost["onInput"]>[0]) {
+    this.input = handler;
+  }
+  onToolExecutionEnd(handler: Parameters<GitStatusWidgetLifecycleHost["onToolExecutionEnd"]>[0]) {
+    this.toolExecutionEnd = handler;
+  }
+  onSessionShutdown(handler: Parameters<GitStatusWidgetLifecycleHost["onSessionShutdown"]>[0]) {
+    this.sessionShutdown = handler;
+  }
+}
+
+class RecordingRefreshLoop implements GitStatusWidgetRefreshLoop {
+  disposed = false;
+  dispose() {
+    this.disposed = true;
+  }
+}
+
+class RecordingRefreshScheduler implements GitStatusWidgetRefreshScheduler {
+  readonly intervals: number[] = [];
+  readonly loops: RecordingRefreshLoop[] = [];
+  scheduleRefresh(_callback: () => void, intervalMs: number) {
+    this.intervals.push(intervalMs);
+    const loop = new RecordingRefreshLoop();
+    this.loops.push(loop);
+    return loop;
+  }
+}
+
+class RecordingWidgetContext implements GitStatusWidgetContext {
+  readonly widgetUpdates: (string[] | undefined)[] = [];
+  constructor(
+    readonly cwd: string,
+    readonly hasUI = true,
+  ) {}
+  render(_color: ThemeColor, text: string) {
+    return text;
+  }
+  setWidget(id: string, lines: string[] | undefined) {
+    if (id !== "git-status-widget") throw new Error(`Unexpected widget: ${id}`);
+    this.widgetUpdates.push(lines);
+  }
+  latestWidgetText() {
+    const latestLines = this.widgetUpdates.at(-1);
+    if (!latestLines) throw new Error("Expected Git Status Widget output");
+    return latestLines[0] ?? "";
+  }
+}
+
+type FakeGitConfiguration = {
+  mode?: string;
+  branch?: string;
+  head?: string;
+  status?: string;
+};
 
 const temporaryDirectories: string[] = [];
 const originalEnvironment = {
@@ -15,31 +92,10 @@ const originalEnvironment = {
   GIT_WIDGET_STATUS: process.env.GIT_WIDGET_STATUS,
 };
 
-function createRecordingPi() {
-  const handlers = new Map<string, ExtensionHandler>();
-  return {
-    handlers,
-    pi: {
-      on(event: string, handler: ExtensionHandler) {
-        handlers.set(event, handler);
-      },
-    },
-  };
-}
-
-function createWidgetContext(cwd: string, hasUI = true) {
-  const setWidget = vi.fn();
-  return {
-    context: {
-      cwd,
-      hasUI,
-      ui: {
-        theme: { fg: (_color: string, text: string) => text },
-        setWidget,
-      },
-    },
-    setWidget,
-  };
+function requireHandler<T>(handler: T | undefined): T {
+  if (handler === undefined)
+    throw new Error("Expected registered Git Status Widget lifecycle handler");
+  return handler;
 }
 
 async function createTemporaryDirectory(prefix: string) {
@@ -74,7 +130,7 @@ async function createFakeGitDirectory() {
   return directory;
 }
 
-function configureFakeGit(fakeBin: string, values: Record<string, string>) {
+function configureFakeGit(fakeBin: string, values: FakeGitConfiguration) {
   process.env.PATH = `${fakeBin}:${originalEnvironment.PATH ?? ""}`;
   process.env.GIT_WIDGET_MODE = values.mode ?? "";
   process.env.GIT_WIDGET_BRANCH = values.branch ?? "main";
@@ -83,21 +139,28 @@ function configureFakeGit(fakeBin: string, values: Record<string, string>) {
 }
 
 function restoreEnvironment() {
-  for (const [name, value] of Object.entries(originalEnvironment)) {
+  const environmentEntries = Object.entries(originalEnvironment);
+  for (const [name, value] of environmentEntries) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
 }
 
-function latestWidgetText(setWidget: ReturnType<typeof vi.fn>) {
-  const latestCall = setWidget.mock.lastCall;
-  expect(latestCall?.[0]).toBe("git-status-widget");
-  expect(latestCall?.[1]).toHaveLength(1);
-  return latestCall?.[1]?.[0] as string;
-}
+const sessionStartEvent = { type: "session_start", reason: "startup" } satisfies SessionStartEvent;
+const inputEvent = { type: "input", text: "refresh", source: "interactive" } satisfies InputEvent;
+const toolExecutionEndEvent = {
+  type: "tool_execution_end",
+  toolCallId: "tool-1",
+  toolName: "read",
+  result: {},
+  isError: false,
+} satisfies ToolExecutionEndEvent;
+const sessionShutdownEvent = {
+  type: "session_shutdown",
+  reason: "quit",
+} satisfies SessionShutdownEvent;
 
 afterEach(async () => {
-  vi.restoreAllMocks();
   vi.useRealTimers();
   restoreEnvironment();
   await Promise.all(
@@ -108,7 +171,7 @@ afterEach(async () => {
 });
 
 describe("Git Status Widget extension", () => {
-  test("registers its lifecycle, renders porcelain-v2 counts, and refreshes after input and tools", async () => {
+  test("renders porcelain-v2 counts and refreshes after input and tools", async () => {
     const fakeBin = await createFakeGitDirectory();
     configureFakeGit(fakeBin, {
       status: [
@@ -121,113 +184,80 @@ describe("Git Status Widget extension", () => {
         "1 D. N... 100644 100644 100644 deadbeef deadbeef index-deleted.ts",
       ].join("\n"),
     });
-    vi.resetModules();
-    const extension = (await import("../src/index.js")).default;
-    const recording = createRecordingPi();
-    const { context, setWidget } = createWidgetContext(
+    const host = new RecordingGitStatusWidgetLifecycleHost();
+    const context = new RecordingWidgetContext(
       await createTemporaryDirectory("pi-git-status-widget-cwd-"),
     );
-    extension(recording.pi as never);
+    registerGitStatusWidget(host);
 
-    expect([...recording.handlers.keys()]).toEqual([
-      "session_start",
-      "input",
-      "tool_execution_end",
-      "session_shutdown",
-    ]);
-
-    await recording.handlers.get("session_start")!({}, context);
-    expect(latestWidgetText(setWidget)).toContain("main");
-    expect(latestWidgetText(setWidget)).toContain("⇡2");
-    expect(latestWidgetText(setWidget)).toContain("⇣3");
-    expect(latestWidgetText(setWidget)).toContain("1");
-    expect(latestWidgetText(setWidget)).toContain("?1");
-    expect(latestWidgetText(setWidget)).toContain("2");
-
-    const inputResult = await recording.handlers.get("input")!({}, context);
-    expect(inputResult).toEqual({ action: "continue" });
-    await recording.handlers.get("tool_execution_end")!({}, context);
-    expect(setWidget).toHaveBeenCalledTimes(3);
-    await recording.handlers.get("session_shutdown")!({}, context);
-    expect(setWidget).toHaveBeenLastCalledWith("git-status-widget", undefined);
+    await requireHandler(host.sessionStart)(sessionStartEvent, context);
+    expect(context.latestWidgetText()).toContain("main");
+    expect(context.latestWidgetText()).toContain("⇡2");
+    expect(context.latestWidgetText()).toContain("⇣3");
+    expect(context.latestWidgetText()).toContain("1");
+    expect(context.latestWidgetText()).toContain("?1");
+    expect(context.latestWidgetText()).toContain("2");
+    expect(await requireHandler(host.input)(inputEvent, context)).toEqual({ action: "continue" });
+    await requireHandler(host.toolExecutionEnd)(toolExecutionEndEvent, context);
+    expect(context.widgetUpdates).toHaveLength(3);
+    await requireHandler(host.sessionShutdown)(sessionShutdownEvent, context);
+    expect(context.widgetUpdates.at(-1)).toBeUndefined();
   });
 
-  test("renders detached and clean worktrees, and hides failures or non-worktrees", async () => {
+  test("renders detached clean worktrees and hides failures", async () => {
     const fakeBin = await createFakeGitDirectory();
-    configureFakeGit(fakeBin, {
-      branch: "",
-      head: "deadbee",
-      status: "# branch.head (detached)",
-    });
-    vi.resetModules();
-    const extension = (await import("../src/index.js")).default;
-    const recording = createRecordingPi();
-    const { context, setWidget } = createWidgetContext(
+    configureFakeGit(fakeBin, { branch: "", head: "deadbee", status: "# branch.head (detached)" });
+    const host = new RecordingGitStatusWidgetLifecycleHost();
+    const context = new RecordingWidgetContext(
       await createTemporaryDirectory("pi-git-status-widget-cwd-"),
     );
-    extension(recording.pi as never);
-
-    await recording.handlers.get("session_start")!({}, context);
-    expect(latestWidgetText(setWidget)).toContain("detached@deadbee");
-    expect(latestWidgetText(setWidget)).toContain("");
-
+    registerGitStatusWidget(host);
+    await requireHandler(host.sessionStart)(sessionStartEvent, context);
+    expect(context.latestWidgetText()).toContain("detached@deadbee");
+    expect(context.latestWidgetText()).toContain("");
     process.env.GIT_WIDGET_MODE = "fail";
-    await recording.handlers.get("input")!({}, context);
-    expect(setWidget).toHaveBeenLastCalledWith("git-status-widget", undefined);
-    await recording.handlers.get("session_shutdown")!({}, context);
+    await requireHandler(host.input)(inputEvent, context);
+    expect(context.widgetUpdates.at(-1)).toBeUndefined();
   });
 
-  test("does not write widgets without a TUI while still preserving input control flow", async () => {
+  test("does not write widgets without a TUI while preserving input control flow", async () => {
     const fakeBin = await createFakeGitDirectory();
     configureFakeGit(fakeBin, {});
-    vi.resetModules();
-    const extension = (await import("../src/index.js")).default;
-    const recording = createRecordingPi();
-    const { context, setWidget } = createWidgetContext(
+    const host = new RecordingGitStatusWidgetLifecycleHost();
+    const context = new RecordingWidgetContext(
       await createTemporaryDirectory("pi-git-status-widget-cwd-"),
       false,
     );
-    extension(recording.pi as never);
-
-    await recording.handlers.get("session_start")!({}, context);
-    expect(await recording.handlers.get("input")!({}, context)).toEqual({ action: "continue" });
-    await recording.handlers.get("tool_execution_end")!({}, context);
-    await recording.handlers.get("session_shutdown")!({}, context);
-
-    expect(setWidget).not.toHaveBeenCalled();
+    registerGitStatusWidget(host);
+    await requireHandler(host.sessionStart)(sessionStartEvent, context);
+    expect(await requireHandler(host.input)(inputEvent, context)).toEqual({ action: "continue" });
+    await requireHandler(host.toolExecutionEnd)(toolExecutionEndEvent, context);
+    await requireHandler(host.sessionShutdown)(sessionShutdownEvent, context);
+    expect(context.widgetUpdates).toHaveLength(0);
   });
 
-  test("maintains one two-second poller across repeated starts and clears it on shutdown", async () => {
-    vi.useFakeTimers();
-    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
-    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+  test("replaces the previous Widget Refresh loop and disposes it during shutdown", async () => {
     const fakeBin = await createFakeGitDirectory();
     configureFakeGit(fakeBin, {});
-    vi.resetModules();
-    const extension = (await import("../src/index.js")).default;
-    const recording = createRecordingPi();
-    const { context, setWidget } = createWidgetContext(
+    const host = new RecordingGitStatusWidgetLifecycleHost();
+    const scheduler = new RecordingRefreshScheduler();
+    const context = new RecordingWidgetContext(
       await createTemporaryDirectory("pi-git-status-widget-cwd-"),
     );
-    extension(recording.pi as never);
+    registerGitStatusWidget(host, scheduler);
 
-    await recording.handlers.get("session_start")!({}, context);
-    await recording.handlers.get("session_start")!({}, context);
+    await requireHandler(host.sessionStart)(sessionStartEvent, context);
+    await requireHandler(host.sessionStart)(sessionStartEvent, context);
 
-    expect(setIntervalSpy).toHaveBeenCalledTimes(2);
-    expect(setIntervalSpy.mock.calls.map(([, milliseconds]) => milliseconds)).toEqual([
-      2_000, 2_000,
-    ]);
-    const firstInterval = setIntervalSpy.mock.results[0]?.value;
-    expect(clearIntervalSpy).toHaveBeenCalledWith(firstInterval);
-
-    await recording.handlers.get("session_shutdown")!({}, context);
-    const secondInterval = setIntervalSpy.mock.results[1]?.value;
-    expect(clearIntervalSpy).toHaveBeenLastCalledWith(secondInterval);
-    expect(setWidget).toHaveBeenLastCalledWith("git-status-widget", undefined);
+    expect(scheduler.intervals).toEqual([2_000, 2_000]);
+    expect(scheduler.loops[0]?.disposed).toBe(true);
+    expect(scheduler.loops[1]?.disposed).toBe(false);
+    await requireHandler(host.sessionShutdown)(sessionShutdownEvent, context);
+    expect(scheduler.loops[1]?.disposed).toBe(true);
+    expect(context.widgetUpdates.at(-1)).toBeUndefined();
   });
 
-  test("reads branch, modified, and untracked state from a temporary real Git repository", async () => {
+  test("reads Worktree Snapshot state from a temporary real Git repository", async () => {
     const repository = await createTemporaryDirectory("pi-git-status-widget-repository-");
     execFileSync("git", ["init", "--initial-branch=main"], { cwd: repository });
     execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repository });
@@ -237,17 +267,12 @@ describe("Git Status Widget extension", () => {
     execFileSync("git", ["commit", "-m", "initial"], { cwd: repository });
     await writeFile(join(repository, "tracked.txt"), "after\n");
     await writeFile(join(repository, "untracked.txt"), "untracked\n");
-
-    vi.resetModules();
-    const extension = (await import("../src/index.js")).default;
-    const recording = createRecordingPi();
-    const { context, setWidget } = createWidgetContext(repository);
-    extension(recording.pi as never);
-
-    await recording.handlers.get("session_start")!({}, context);
-    expect(latestWidgetText(setWidget)).toContain("main");
-    expect(latestWidgetText(setWidget)).toContain("?1");
-    expect(latestWidgetText(setWidget)).toContain("1");
-    await recording.handlers.get("session_shutdown")!({}, context);
+    const host = new RecordingGitStatusWidgetLifecycleHost();
+    const context = new RecordingWidgetContext(repository);
+    registerGitStatusWidget(host);
+    await requireHandler(host.sessionStart)(sessionStartEvent, context);
+    expect(context.latestWidgetText()).toContain("main");
+    expect(context.latestWidgetText()).toContain("?1");
+    expect(context.latestWidgetText()).toContain("1");
   });
 });

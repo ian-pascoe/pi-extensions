@@ -1309,14 +1309,14 @@ export class MinimalSubagentsCoordinator {
           this.settleTurn(target, turnId, terminalTurnResult(target.agent_id, turnId, outcome));
         }
       })
-      .catch((error: unknown) => {
+      .catch((cause) => {
         if (this.agents.get(target.agent_id) === target && target.active_turn_id === turnId) {
           this.settleTurn(target, turnId, {
             agent_id: target.agent_id,
             turn_id: turnId,
             status: "failed",
             output: "",
-            error: error instanceof Error ? error.message : String(error),
+            error: cause instanceof Error ? cause.message : String(cause),
           });
         }
       });
@@ -1505,8 +1505,7 @@ export class MinimalSubagentsCoordinator {
     return {
       ...summary,
       session_file: agent.session_file,
-      // SAFETY: LaunchContract is a plain serializable object; AgentDetail exposes a read-only diagnostic record shape.
-      launch_contract: structuredClone(agent.launch_contract) as unknown as Record<string, unknown>,
+      launch_contract: structuredClone(agent.launch_contract),
       capability_ceiling: [...agent.capability_ceiling],
       spawn_entry_id: agent.spawn_entry_id,
       recent_messages: structuredClone(agent.recent_messages),
@@ -1854,11 +1853,11 @@ export class MinimalSubagentsCoordinator {
         true,
       );
     });
-    void operation.catch((error: unknown) => {
+    void operation.catch((cause) => {
       this.removePendingParentMessage(key, pending);
       this.waitHandedDeliveryIds.delete(delivery.delivery_id);
       if (!this.isCoordinationDeliveryCurrent(delivery)) return;
-      const deliveryError = error instanceof Error ? error.message : String(error);
+      const deliveryError = cause instanceof Error ? cause.message : String(cause);
       this.deliveryLedger = setCoordinationDeliveryError(
         this.deliveryLedger,
         delivery.delivery_id,
@@ -1870,7 +1869,7 @@ export class MinimalSubagentsCoordinator {
         type: "failure",
         agentId: message.details.source_agent_id,
         message: `Could not queue message ${message.details.message_id}: ${
-          error instanceof Error ? error.message : String(error)
+          cause instanceof Error ? cause.message : String(cause)
         }`,
       });
     });

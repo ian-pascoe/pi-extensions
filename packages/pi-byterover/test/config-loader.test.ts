@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { JsonValue } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
 import { configDefaults } from "../src/config.js";
 import { loadConfig } from "../src/config-loader.js";
@@ -24,7 +25,7 @@ const withTempProjectAndHome = async (run: (cwd: string, homeDir: string) => Pro
   });
 };
 
-const writeJson = async (path: string, value: unknown) => {
+const writeJson = async (path: string, value: JsonValue) => {
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, JSON.stringify(value), "utf8");
 };

@@ -2,16 +2,14 @@ import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ForkSnapshot } from "./minimal-subagents-types.js";
 
-const FORK_SNAPSHOT_SYMBOL = Symbol.for("minimal-subagents.pending-fork-snapshots.v2");
-
-type GlobalWithForkSnapshots = typeof globalThis & {
-  [FORK_SNAPSHOT_SYMBOL]?: Map<string, ForkSnapshot>;
-};
+declare global {
+  // eslint-disable-next-line no-var -- A process-global handoff must be visible to replacement extension instances.
+  var minimalSubagentsForkSnapshots: Map<string, ForkSnapshot> | undefined;
+}
 
 function forkSnapshotStore(): Map<string, ForkSnapshot> {
-  const processGlobal = globalThis as GlobalWithForkSnapshots;
-  processGlobal[FORK_SNAPSHOT_SYMBOL] ??= new Map();
-  return processGlobal[FORK_SNAPSHOT_SYMBOL];
+  globalThis.minimalSubagentsForkSnapshots ??= new Map();
+  return globalThis.minimalSubagentsForkSnapshots;
 }
 
 function canonicalSessionFile(sessionFile: string): string {

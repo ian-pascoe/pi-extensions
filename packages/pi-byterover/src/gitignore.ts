@@ -7,10 +7,6 @@ import {
   brvGitignoreRules,
 } from "./config.js";
 
-const hasCode = (error: unknown, code: string) => {
-  return typeof error === "object" && error !== null && "code" in error && error.code === code;
-};
-
 const escapeRegExp = (value: string) => {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 };
@@ -77,8 +73,8 @@ export const ensureBrvGitignore = async (cwd: string) => {
     const normalized = normalizeBrvGitignore(existing);
     if (existing === normalized) return;
     await writeFile(gitignorePath, normalized, "utf8");
-  } catch (error) {
-    if (!hasCode(error, "ENOENT")) throw error;
+  } catch (cause) {
+    if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
     await writeFile(gitignorePath, brvGitignore, "utf8");
   }
 };

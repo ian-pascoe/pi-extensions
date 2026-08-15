@@ -108,7 +108,7 @@ export interface RecentAgentMessage {
 /** Extends summary status with launch, dependency, and recent-message diagnostics. */
 export interface AgentDetail extends AgentSummary {
   session_file?: string;
-  launch_contract: Record<string, unknown>;
+  launch_contract: LaunchContract;
   capability_ceiling: string[];
   spawn_entry_id: string;
   recent_messages: RecentAgentMessage[];

@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { BrvBridge } from "@byterover/brv-bridge";
 import { afterEach, describe, expect, test } from "vitest";
+import * as z from "zod/v4";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -32,13 +33,12 @@ describe("byterover-cli package smoke", () => {
     ]);
 
     const cliPackagePath = require.resolve("byterover-cli/package.json");
-    const cliPackage = JSON.parse(await readFile(cliPackagePath, "utf8")) as {
-      bin: { brv?: string };
-    };
+    const cliPackageSchema = z.object({ bin: z.object({ brv: z.string() }) });
+    const cliPackage = cliPackageSchema.parse(JSON.parse(await readFile(cliPackagePath, "utf8")));
     const cliBin = cliPackage.bin.brv;
     expect(cliBin).toBeTypeOf("string");
 
-    const cliEntrypoint = resolve(dirname(cliPackagePath), cliBin!);
+    const cliEntrypoint = resolve(dirname(cliPackagePath), cliBin);
     const isolatedEnvironment = {
       HOME: home,
       XDG_CONFIG_HOME: join(home, ".config"),

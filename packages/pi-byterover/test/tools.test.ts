@@ -1,59 +1,90 @@
-import type { BrvBridge, SearchResultItem } from "@byterover/brv-bridge";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { SearchResultItem } from "@byterover/brv-bridge";
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { describe, expect, test, vi } from "vitest";
+import type { ByteRoverBridge, ByteRoverBridgeFactory } from "../src/byterover-bridge.js";
 import { ConfigSchema } from "../src/config.js";
-import { formatSearchResults, registerManualTools } from "../src/tools.js";
+import {
+  type ByteRoverManualToolDefinition,
+  type ByteRoverManualToolHost,
+  formatSearchResults,
+  registerManualTools,
+} from "../src/tools.js";
 
-type MockBridge = Pick<BrvBridge, "ready" | "recall" | "search" | "persist">;
-
-const text = (result: { content: Array<{ type: "text"; text: string }> }) =>
-  result.content[0]?.text;
-
-const createMockBridge = (overrides: Partial<MockBridge> = {}) =>
-  ({
-    ready: vi.fn(async () => true),
-    recall: vi.fn(async () => ({ content: "remembered context" })),
-    search: vi.fn(async () => ({
-      results: [],
-      totalFound: 0,
-      message: "No matches",
-    })),
-    persist: vi.fn(async () => ({ status: "queued", message: "task-1" })),
-    ...overrides,
-  }) as MockBridge;
-
-const createRegistry = () => {
-  const tools = new Map<string, ToolDefinition>();
-  const pi = {
-    registerTool: vi.fn((tool: ToolDefinition) => {
-      tools.set(tool.name, tool);
-    }),
-  } as unknown as ExtensionAPI;
-
-  return { pi, tools };
+const text = <TDetails>(result: AgentToolResult<TDetails> | undefined) => {
+  const content = result?.content[0];
+  return content?.type === "text" ? content.text : undefined;
 };
 
-const createContext = (cwd = "/repo") => ({ cwd }) as ExtensionContext;
+class RecordingByteRoverBridge implements ByteRoverBridge {
+  readonly ready = vi.fn<ByteRoverBridge["ready"]>(async () => true);
+  readonly recall = vi.fn<ByteRoverBridge["recall"]>(async () => ({
+    content: "remembered context",
+  }));
+  readonly search = vi.fn<ByteRoverBridge["search"]>(async () => ({
+    results: [],
+    totalFound: 0,
+    message: "No matches",
+  }));
+  readonly persist = vi.fn<ByteRoverBridge["persist"]>(async () => ({
+    status: "queued",
+    message: "task-1",
+  }));
+}
 
-const register = (overrides: Partial<MockBridge> = {}) => {
-  const { pi, tools } = createRegistry();
-  const bridge = createMockBridge(overrides);
-  const overrideBridge = createMockBridge();
-  const createBridge = vi.fn(() => overrideBridge as BrvBridge);
+class RecordingManualToolHost implements ByteRoverManualToolHost {
+  readonly registeredToolNames: string[] = [];
+  private recallTool: Extract<ByteRoverManualToolDefinition, { name: "brv_recall" }> | undefined;
+  private searchTool: Extract<ByteRoverManualToolDefinition, { name: "brv_search" }> | undefined;
+  private persistTool: Extract<ByteRoverManualToolDefinition, { name: "brv_persist" }> | undefined;
+
+  registerTool(tool: ByteRoverManualToolDefinition): void {
+    this.registeredToolNames.push(tool.name);
+    switch (tool.name) {
+      case "brv_recall":
+        this.recallTool = tool;
+        return;
+      case "brv_search":
+        this.searchTool = tool;
+        return;
+      case "brv_persist":
+        this.persistTool = tool;
+        return;
+    }
+  }
+
+  get(name: "brv_recall"): Extract<ByteRoverManualToolDefinition, { name: "brv_recall" }>;
+  get(name: "brv_search"): Extract<ByteRoverManualToolDefinition, { name: "brv_search" }>;
+  get(name: "brv_persist"): Extract<ByteRoverManualToolDefinition, { name: "brv_persist" }>;
+  get(name: ByteRoverManualToolDefinition["name"]): ByteRoverManualToolDefinition {
+    const tool =
+      name === "brv_recall"
+        ? this.recallTool
+        : name === "brv_search"
+          ? this.searchTool
+          : this.persistTool;
+    if (tool === undefined) throw new Error(`Expected registered ByteRover tool: ${name}`);
+    return tool;
+  }
+}
+
+const createContext = (cwd = "/repo") => ({ cwd });
+
+const register = (configure?: (bridge: RecordingByteRoverBridge) => void) => {
+  const pi = new RecordingManualToolHost();
+  const bridge = new RecordingByteRoverBridge();
+  configure?.(bridge);
+  const overrideBridge = new RecordingByteRoverBridge();
+  const createBridge = vi.fn<ByteRoverBridgeFactory>(() => overrideBridge);
 
   registerManualTools({
     pi,
-    bridge: bridge as BrvBridge,
+    bridge,
     config: ConfigSchema.parse(undefined),
     createBridge,
   });
 
-  return { pi, tools, bridge, overrideBridge, createBridge };
+  return { pi, tools: pi, bridge, overrideBridge, createBridge };
 };
 
 describe("formatSearchResults", () => {
@@ -88,17 +119,17 @@ describe("formatSearchResults", () => {
 
 describe("registerManualTools", () => {
   test("registers recall, search, and persist tools", () => {
-    const { pi, tools } = register();
+    const { pi } = register();
 
-    expect(pi.registerTool).toHaveBeenCalledTimes(3);
-    expect([...tools.keys()].sort()).toEqual(["brv_persist", "brv_recall", "brv_search"]);
+    expect(pi.registeredToolNames).toHaveLength(3);
+    expect([...pi.registeredToolNames].sort()).toEqual(["brv_persist", "brv_recall", "brv_search"]);
   });
 
   test("schemas reject whitespace-only query, scope, and context", () => {
     const { tools } = register();
-    const recall = tools.get("brv_recall")!;
-    const search = tools.get("brv_search")!;
-    const persist = tools.get("brv_persist")!;
+    const recall = tools.get("brv_recall");
+    const search = tools.get("brv_search");
+    const persist = tools.get("brv_persist");
 
     expect(Value.Check(recall.parameters, { query: "auth" })).toBe(true);
     expect(Value.Check(recall.parameters, { query: "   " })).toBe(false);
@@ -110,7 +141,9 @@ describe("registerManualTools", () => {
   });
 
   test("recall checks readiness and returns a not ready message", async () => {
-    const { tools, bridge } = register({ ready: vi.fn(async () => false) });
+    const { tools, bridge } = register((recordingBridge) => {
+      recordingBridge.ready.mockResolvedValue(false);
+    });
     const recall = tools.get("brv_recall");
 
     const result = await recall?.execute(
@@ -121,7 +154,7 @@ describe("registerManualTools", () => {
       createContext(),
     );
 
-    expect(text(result as never)).toBe("ByteRover bridge is not ready.");
+    expect(text(result)).toBe("ByteRover bridge is not ready.");
     expect(bridge.ready).toHaveBeenCalledTimes(1);
     expect(bridge.recall).not.toHaveBeenCalled();
   });
@@ -150,7 +183,7 @@ describe("registerManualTools", () => {
       cwd: "/work",
       signal,
     });
-    expect(text(result as never)).toBe("**Summary**: facts:\nremembered context");
+    expect(text(result)).toBe("**Summary**: facts:\nremembered context");
   });
 
   test("search checks readiness and formats returned results", async () => {
@@ -184,12 +217,12 @@ describe("registerManualTools", () => {
       limit: 5,
       scope: "docs",
     });
-    expect(text(result as never)).toContain("Found 1 ByteRover result.");
+    expect(text(result)).toContain("Found 1 ByteRover result.");
   });
 
   test("persist does not check readiness and detaches writes", async () => {
-    const { tools, bridge, overrideBridge, createBridge } = register({
-      ready: vi.fn(async () => false),
+    const { tools, bridge, overrideBridge, createBridge } = register((recordingBridge) => {
+      recordingBridge.ready.mockResolvedValue(false);
     });
     vi.mocked(overrideBridge.persist).mockResolvedValue({
       status: "queued",
@@ -214,6 +247,6 @@ describe("registerManualTools", () => {
       cwd: "/work",
       detach: true,
     });
-    expect(text(result as never)).toBe("ByteRover persist queued: task-1");
+    expect(text(result)).toBe("ByteRover persist queued: task-1");
   });
 });

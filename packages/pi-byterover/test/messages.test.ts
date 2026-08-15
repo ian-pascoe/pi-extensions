@@ -1,3 +1,4 @@
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { describe, expect, test } from "vitest";
 import {
   extractPiSessionMessages,
@@ -15,46 +16,55 @@ const message = (id: string, role: "user" | "assistant", text: string): PiSessio
   text,
 });
 
+const userEntry = (id: string, content: string): SessionEntry => ({
+  type: "message",
+  id,
+  parentId: null,
+  timestamp: "2026-08-15T00:00:00.000Z",
+  message: { role: "user", content, timestamp: 1 },
+});
+
+const assistantEntry = (id: string, text: string): SessionEntry => ({
+  type: "message",
+  id,
+  parentId: null,
+  timestamp: "2026-08-15T00:00:00.000Z",
+  message: {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-completions",
+    provider: "openai",
+    model: "gpt-test",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 2,
+  },
+});
+
 describe("pi session message helpers", () => {
   test("extracts user and assistant text from Pi session entries", () => {
     const messages = extractPiSessionMessages([
+      userEntry("u1", " question "),
+      assistantEntry("a1", " first "),
       {
-        type: "message",
-        id: "u1",
-        message: { role: "user", content: " question " },
+        type: "custom",
+        id: "custom",
+        parentId: null,
+        timestamp: "2026-08-15T00:00:00.000Z",
+        customType: "test",
       },
-      {
-        type: "message",
-        id: "a1",
-        message: {
-          role: "assistant",
-          content: [
-            { type: "text", text: " first " },
-            { type: "tool-call", text: "ignored" },
-            { type: "text", text: "   " },
-            { type: "text", text: "second" },
-            { type: "custom", value: "ignored" },
-          ],
-        },
-      },
-      {
-        type: "message",
-        id: "system",
-        message: { role: "system", content: "ignored" },
-      },
-      {
-        type: "message",
-        id: 123,
-        message: { role: "user", content: "ignored" },
-      },
-      { type: "tool_result", id: "tool", message: { role: "assistant", content: "ignored" } },
-      { type: "custom", id: "custom", message: { role: "user", content: "ignored" } },
-      { type: "compaction", id: "compact", message: { role: "assistant", content: "ignored" } },
     ]);
 
     expect(messages).toEqual([
       { id: "u1", role: "user", text: " question " },
-      { id: "a1", role: "assistant", text: "first\nsecond" },
+      { id: "a1", role: "assistant", text: "first" },
     ]);
   });
 

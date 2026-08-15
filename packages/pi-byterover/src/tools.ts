@@ -1,24 +1,27 @@
-import type { BrvBridge, SearchResultItem } from "@byterover/brv-bridge";
-import type { AgentToolResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
+import type { RecallOptions, SearchOptions, SearchResultItem } from "@byterover/brv-bridge";
+import type {
+  AgentToolResult,
+  AgentToolUpdateCallback,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { type Static, type TSchema, Type } from "typebox";
+import type { ByteRoverBridge, ByteRoverBridgeFactory } from "./byterover-bridge.js";
 import type { ConfigSchema } from "./config.js";
 import { stripEchoedRecallQuery } from "./recall.js";
 
 type Config = ReturnType<typeof ConfigSchema.parse>;
 
-type BridgeOverride = {
-  cwd?: string;
-  searchTimeoutMs?: number;
-  recallTimeoutMs?: number;
-  persistTimeoutMs?: number;
+export type RegisterManualToolsInput = {
+  pi: ByteRoverManualToolHost;
+  bridge: ByteRoverBridge;
+  config: Config;
+  createBridge: ByteRoverBridgeFactory;
 };
 
-export type RegisterManualToolsInput = {
-  pi: ExtensionAPI;
-  bridge: BrvBridge;
-  config: Config;
-  createBridge: (override?: BridgeOverride) => BrvBridge;
-};
+/** Runtime context read by manually invoked ByteRover tools. */
+export interface ByteRoverManualToolContext {
+  cwd: string;
+}
 
 const RecallParameters = Type.Object(
   {
@@ -91,15 +94,40 @@ const PersistParameters = Type.Object(
 
 type PersistParameters = Static<typeof PersistParameters>;
 
+type ManualToolDefinition<TName extends string, TParams extends TSchema> = Omit<
+  ToolDefinition<TParams, undefined>,
+  "name" | "execute"
+> & {
+  name: TName;
+  execute(
+    toolCallId: string,
+    params: Static<TParams>,
+    signal: AbortSignal | undefined,
+    onUpdate: AgentToolUpdateCallback<undefined> | undefined,
+    context: ByteRoverManualToolContext,
+  ): Promise<AgentToolResult<undefined>>;
+};
+
+/** A ByteRover tool definition whose execution context exposes only the working directory. */
+export type ByteRoverManualToolDefinition =
+  | ManualToolDefinition<"brv_recall", typeof RecallParameters>
+  | ManualToolDefinition<"brv_search", typeof SearchParameters>
+  | ManualToolDefinition<"brv_persist", typeof PersistParameters>;
+
+/** Registers typed ByteRover manual tools with Pi or a faithful recording host. */
+export interface ByteRoverManualToolHost {
+  registerTool(tool: ByteRoverManualToolDefinition): void;
+}
+
 const textResult = (text: string): AgentToolResult<undefined> => ({
   content: [{ type: "text", text }],
   details: undefined,
 });
 
-const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const errorMessage = (error: Error) => error.message;
 
 export const formatSearchResults = (
-  results: Array<SearchResultItem>,
+  results: readonly SearchResultItem[],
   totalFound: number,
   message: string,
 ) => {
@@ -126,6 +154,7 @@ export const formatSearchResults = (
   return [header, ...lines].join("\n");
 };
 
+/** Registers the three public ByteRover manual-memory tools against the extension host. */
 export const registerManualTools = ({
   pi,
   bridge,
@@ -149,13 +178,13 @@ export const registerManualTools = ({
           params.timeoutMs === undefined
             ? bridge
             : createBridge({ cwd: ctx.cwd, recallTimeoutMs: params.timeoutMs });
-        const brvResult = await recallBridge.recall(query, {
-          cwd: ctx.cwd,
-          ...(signal === undefined ? {} : { signal }),
-        });
+        const recallOptions: RecallOptions = { cwd: ctx.cwd };
+        if (signal !== undefined) recallOptions.signal = signal;
+        const brvResult = await recallBridge.recall(query, recallOptions);
         const content = stripEchoedRecallQuery(brvResult.content, query);
         return textResult(content || "No relevant ByteRover context found.");
-      } catch (error) {
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
         return textResult(`ByteRover recall failed: ${errorMessage(error)}`);
       }
     },
@@ -172,11 +201,9 @@ export const registerManualTools = ({
       try {
         if (!(await bridge.ready())) return textResult("ByteRover bridge is not ready.");
 
-        const searchOptions = {
-          cwd: ctx.cwd,
-          ...(params.limit === undefined ? {} : { limit: params.limit }),
-          ...(params.scope === undefined ? {} : { scope: params.scope.trim() }),
-        };
+        const searchOptions: SearchOptions = { cwd: ctx.cwd };
+        if (params.limit !== undefined) searchOptions.limit = params.limit;
+        if (params.scope !== undefined) searchOptions.scope = params.scope.trim();
         const searchBridge =
           params.timeoutMs === undefined
             ? bridge
@@ -185,7 +212,8 @@ export const registerManualTools = ({
         return textResult(
           formatSearchResults(brvResult.results, brvResult.totalFound, brvResult.message),
         );
-      } catch (error) {
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
         return textResult(`ByteRover search failed: ${errorMessage(error)}`);
       }
     },
@@ -213,7 +241,8 @@ export const registerManualTools = ({
         });
         const suffix = brvResult.message ? `: ${brvResult.message}` : "";
         return textResult(`ByteRover persist ${brvResult.status}${suffix}`);
-      } catch (error) {
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
         return textResult(`ByteRover persist failed: ${errorMessage(error)}`);
       }
     },

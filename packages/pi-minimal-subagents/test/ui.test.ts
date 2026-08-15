@@ -4,6 +4,7 @@ import {
   buildMinimalSubagentsWidgetView,
   MinimalSubagentsUiController,
   renderMinimalSubagentsWidgetLines,
+  type MinimalSubagentsWidgetTheme,
 } from "../src/minimal-subagents-ui.js";
 import type { AgentSummary } from "../src/minimal-subagents-types.js";
 
@@ -20,6 +21,26 @@ function summary(agentId: string, overrides: Partial<AgentSummary> = {}): AgentS
     children: [],
     ...overrides,
   };
+}
+
+const passthroughTheme = {
+  fg: (_color, text) => text,
+  bold: (text) => text,
+} satisfies MinimalSubagentsWidgetTheme;
+
+function createUiContext(mode: "tui" | "rpc") {
+  const context = Object.create(null);
+  context.mode = mode;
+  context.ui = {
+    setWidget: vi.fn(),
+    setStatus: vi.fn(),
+    theme: passthroughTheme,
+  };
+  return context;
+}
+
+function createHierarchyStatus(agents: AgentSummary[]) {
+  return { root_id: "root" as const, agents };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -83,7 +104,7 @@ describe("minimal subagents UI", () => {
         ],
       },
       120,
-      { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+      passthroughTheme,
     );
     expect(lines[1]).toBe(
       "  ╰─ ◉ worker  ·  running 12s  ·  provider/model:variant:high  ·  inspect the runtime",
@@ -114,7 +135,7 @@ describe("minimal subagents UI", () => {
           ],
         },
         width,
-        { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+        passthroughTheme,
       )[1]!;
 
     expect(baseView(80)).toBe("  ╰─ ◉ worker  ·  running 12s  ·  provider/model:variant:high");
@@ -144,7 +165,7 @@ describe("minimal subagents UI", () => {
         ],
       },
       100,
-      { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+      passthroughTheme,
     );
     expect(lines[1]).toBe("  ! missing  ·  unavailable  ·  provider/model:medium");
   });
@@ -168,7 +189,7 @@ describe("minimal subagents UI", () => {
         ],
       },
       20,
-      { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never,
+      passthroughTheme,
     );
     expect(lines.length).toBe(3);
     expect(lines.every((line) => visibleWidth(line) <= 20)).toBe(true);
@@ -180,84 +201,60 @@ describe("minimal subagents UI", () => {
     const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
-    let status = { root_id: "root" as const, agents: [summary("worker", { state: "running" })] };
-    const setWidget = vi.fn();
-    const setStatus = vi.fn();
-    const controller = new MinimalSubagentsUiController(
-      { inspectStatus: () => status } as never,
-      {
-        mode: "tui",
-        ui: {
-          setWidget,
-          setStatus,
-          theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-        },
-      } as never,
-    );
+    let status = createHierarchyStatus([summary("worker", { state: "running" })]);
+    const context = createUiContext("tui");
+    const coordinator = Object.create(null);
+    coordinator.inspectStatus = () => status;
+    const controller = new MinimalSubagentsUiController(coordinator, context);
     controller.refresh();
     controller.refresh();
     expect(setIntervalSpy).toHaveBeenCalledOnce();
-    expect(setWidget).toHaveBeenCalledWith("minimal-subagents", expect.any(Function), {
+    expect(context.ui.setWidget).toHaveBeenCalledWith("minimal-subagents", expect.any(Function), {
       placement: "aboveEditor",
     });
-    status = {
-      root_id: "root",
-      agents: [
-        summary("worker", {
-          latest_turn: { turn_id: "turn", status: "completed" },
-          latest_activity_at: "2026-01-01T00:00:00.000Z",
-        }),
-      ],
-    };
+    status = createHierarchyStatus([
+      summary("worker", {
+        latest_turn: { turn_id: "turn", status: "completed" },
+        latest_activity_at: "2026-01-01T00:00:00.000Z",
+      }),
+    ]);
     controller.refresh();
     expect(clearIntervalSpy).toHaveBeenCalledOnce();
     expect(setTimeoutSpy).toHaveBeenCalledOnce();
     controller.dispose();
     expect(clearTimeoutSpy).toHaveBeenCalledOnce();
-    expect(setStatus).toHaveBeenLastCalledWith("minimal-subagents", undefined);
-    expect(setWidget).toHaveBeenLastCalledWith("minimal-subagents", undefined);
+    expect(context.ui.setStatus).toHaveBeenLastCalledWith("minimal-subagents", undefined);
+    expect(context.ui.setWidget).toHaveBeenLastCalledWith("minimal-subagents", undefined);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(setWidget).toHaveBeenCalledTimes(2);
+    expect(context.ui.setWidget).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the completed view visible only for the cooldown window", async () => {
     vi.useFakeTimers();
-    let status = { root_id: "root" as const, agents: [summary("worker", { state: "running" })] };
-    const setWidget = vi.fn();
-    const controller = new MinimalSubagentsUiController(
-      { inspectStatus: () => status } as never,
-      {
-        mode: "tui",
-        ui: {
-          setWidget,
-          setStatus: vi.fn(),
-          theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-        },
-      } as never,
-    );
+    let status = createHierarchyStatus([summary("worker", { state: "running" })]);
+    const context = createUiContext("tui");
+    const coordinator = Object.create(null);
+    coordinator.inspectStatus = () => status;
+    const controller = new MinimalSubagentsUiController(coordinator, context);
     controller.refresh();
-    status = {
-      root_id: "root",
-      agents: [
-        summary("worker", {
-          latest_turn: { turn_id: "turn", status: "completed" },
-          latest_activity_at: "2026-01-01T00:00:00.000Z",
-        }),
-      ],
-    };
+    status = createHierarchyStatus([
+      summary("worker", {
+        latest_turn: { turn_id: "turn", status: "completed" },
+        latest_activity_at: "2026-01-01T00:00:00.000Z",
+      }),
+    ]);
     controller.refresh();
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(setWidget).not.toHaveBeenLastCalledWith("minimal-subagents", undefined);
+    expect(context.ui.setWidget).not.toHaveBeenLastCalledWith("minimal-subagents", undefined);
     await vi.advanceTimersByTimeAsync(1);
-    expect(setWidget).toHaveBeenLastCalledWith("minimal-subagents", undefined);
+    expect(context.ui.setWidget).toHaveBeenLastCalledWith("minimal-subagents", undefined);
   });
 
   it("is inert outside TUI mode", () => {
     const inspectStatus = vi.fn();
-    const controller = new MinimalSubagentsUiController(
-      { inspectStatus } as never,
-      { mode: "rpc", ui: { setWidget: vi.fn(), setStatus: vi.fn() } } as never,
-    );
+    const coordinator = Object.create(null);
+    coordinator.inspectStatus = inspectStatus;
+    const controller = new MinimalSubagentsUiController(coordinator, createUiContext("rpc"));
     controller.refresh();
     controller.dispose();
     expect(inspectStatus).not.toHaveBeenCalled();

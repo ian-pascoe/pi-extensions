@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
+import type { RegistryEventV2 } from "../src/minimal-subagents-registry.js";
 import type {
+  AgentSessionFactory,
   CallerSnapshot,
   ChildAgentRuntime,
   CoordinatorDependencies,
   CoordinatorMessage,
   PersistedAgent,
+  RootConversationEndpoint,
   RuntimeCreationRequest,
   RuntimeProfile,
   RuntimeTurnOutcome,
@@ -70,15 +73,9 @@ function childRuntime(
 }
 
 function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs = 0) {
-  const registryEvents: unknown[] = [];
+  const registryEvents: RegistryEventV2[] = [];
   const sessions = {
-    createIdentity: vi.fn<
-      (agent: PersistedAgent) => {
-        sessionFile: string;
-        sessionId: string;
-        sessionLeafId: string;
-      }
-    >((agent) => ({
+    createIdentity: vi.fn<AgentSessionFactory["createIdentity"]>((agent) => ({
       sessionFile: `/sessions/${agent.agent_id}.jsonl`,
       sessionId: `session-${agent.agent_id}`,
       sessionLeafId: `leaf-${agent.agent_id}`,
@@ -95,31 +92,42 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
     resolveRestorationMissingDependencies: vi.fn<(agent: PersistedAgent) => Promise<string[]>>(
       async () => [],
     ),
-    resolveThinkingLevel: vi.fn((_model: string, thinking: string) => thinking),
+    resolveThinkingLevel: vi.fn(
+      (_model: string, thinking: CallerSnapshot["thinkingLevel"]) => thinking,
+    ),
     modelSupportsImages: vi.fn(() => true),
-    cloneSession: vi.fn<
-      (
-        agent: PersistedAgent,
-      ) => Promise<{ sessionFile: string; sessionId: string; sessionLeafId: string }>
-    >(async (agent) => ({
+    cloneSession: vi.fn(async (agent: PersistedAgent) => ({
+      sessionFile: `/fork/${agent.agent_id}.jsonl`,
+      sessionId: `fork-${agent.agent_id}`,
+      sessionLeafId: `fork-leaf-${agent.agent_id}`,
+    })),
+    cloneForkSourceSession: vi.fn(async (agent: PersistedAgent) => ({
+      sessionFile: `/fork/${agent.agent_id}.jsonl`,
+      sessionId: `fork-${agent.agent_id}`,
+      sessionLeafId: `fork-leaf-${agent.agent_id}`,
+    })),
+    adoptForkSessionOwnership: vi.fn(async (agent: PersistedAgent) => ({
       sessionFile: `/fork/${agent.agent_id}.jsonl`,
       sessionId: `fork-${agent.agent_id}`,
       sessionLeafId: `fork-leaf-${agent.agent_id}`,
     })),
     trashSession: vi.fn<(agent: PersistedAgent) => Promise<void>>(async () => undefined),
-  };
+  } satisfies AgentSessionFactory;
+  const queuedMessages: CoordinatorMessage[] = [];
   const root = {
-    queueCoordinatorMessage: vi.fn(async (): Promise<void> => undefined),
+    queueCoordinatorMessage: vi.fn(async (message: CoordinatorMessage): Promise<void> => {
+      queuedMessages.push(message);
+    }),
     hasDeliveryEvidence: vi.fn<
       (sourceAgentId: string, sourceTurnId: string, deliveryId?: string) => boolean
     >(() => false),
     isIdle: vi.fn(() => true),
-  };
+  } satisfies RootConversationEndpoint;
   const notify = vi.fn();
   const dependencies = {
     registry: {
       rootSessionId: "root-session",
-      append: (event: unknown) => registryEvents.push(event),
+      append: (event: RegistryEventV2) => registryEvents.push(event),
     },
     sessions,
     root,
@@ -127,13 +135,14 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
     maxSubagentDepth: 2,
     automaticDeliveryGraceMs,
     now: () => new Date("2026-01-01T00:00:00.000Z"),
-  } as unknown as CoordinatorDependencies;
+  } satisfies CoordinatorDependencies;
   return {
     coordinator: new MinimalSubagentsCoordinator(dependencies),
     notify,
     root,
     sessions,
     registryEvents,
+    queuedMessages,
   };
 }
 
@@ -187,7 +196,7 @@ describe("minimal subagents coordinator", () => {
     leaflessFixture.sessions.createIdentity.mockReturnValue({
       sessionFile: "/sessions/leafless.jsonl",
       sessionId: "session-leafless",
-    } as never);
+    });
     await expect(
       leaflessFixture.coordinator.spawn(
         "root",
@@ -430,9 +439,6 @@ describe("minimal subagents coordinator", () => {
     );
 
     expect(fixture.coordinator.snapshot().coordination_deliveries).toEqual([]);
-    const handedDeliveryIds = Reflect.get(fixture.coordinator, "waitHandedDeliveryIds");
-    expect(handedDeliveryIds).toBeInstanceOf(Set);
-    expect(handedDeliveryIds.size).toBe(0);
     expect(fixture.registryEvents).toContainEqual(
       expect.objectContaining({
         version: 2,
@@ -492,9 +498,7 @@ describe("minimal subagents coordinator", () => {
     expect(automatic.root.queueCoordinatorMessage).toHaveBeenCalledOnce();
     expect(
       automatic.registryEvents.filter(
-        (event) =>
-          (event as { event?: string; source_turn_id?: string }).event === "delivery-settled" &&
-          (event as { source_turn_id?: string }).source_turn_id === spawned.turn_id,
+        (event) => event.event === "delivery-settled" && event.source_turn_id === spawned.turn_id,
       ),
     ).toHaveLength(1);
   });
@@ -717,10 +721,10 @@ describe("minimal subagents coordinator", () => {
     const firstWait = source.coordinator.wait("root", "worker", 1_000);
     await source.coordinator.sendAgentMessage("worker", { message: "progress 1" }, spawned.turn_id);
     const first = await firstWait;
+    if (first.event !== "message") throw new Error("expected the first wait event to be a message");
     expect(first).toMatchObject({ event: "message", message: "progress 1" });
     source.root.hasDeliveryEvidence.mockImplementation(
-      (_agentId: string, _turnId: string, deliveryId?: string) =>
-        deliveryId === (first as { delivery_id?: string }).delivery_id,
+      (_agentId: string, _turnId: string, deliveryId?: string) => deliveryId === first.delivery_id,
     );
     await source.coordinator.reconcileDeliveries();
     await source.coordinator.sendAgentMessage("worker", { message: "progress 2" }, spawned.turn_id);
@@ -901,7 +905,7 @@ describe("minimal subagents coordinator", () => {
     runtime.runPrompt.mockImplementation(
       () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
     );
-    const { coordinator, root } = coordinatorFixture(runtime, 5);
+    const { coordinator, root, queuedMessages } = coordinatorFixture(runtime, 5);
     root.isIdle.mockReturnValue(false);
     const spawned = await coordinator.spawn(
       "root",
@@ -918,10 +922,10 @@ describe("minimal subagents coordinator", () => {
     coordinator.markRecipientIdle("root");
     await coordinator.waitForSettledOperations();
 
-    const deliveredTypes = root.queueCoordinatorMessage.mock.calls.map(
-      (call) => (call as unknown as [{ customType: string }])[0].customType,
-    );
-    expect(deliveredTypes).toEqual(["minimal-subagents.message", "minimal-subagents.result"]);
+    expect(queuedMessages.map((message) => message.customType)).toEqual([
+      "minimal-subagents.message",
+      "minimal-subagents.result",
+    ]);
   });
 
   it("reserves automatic result delivery before later recipient messages", async () => {
@@ -930,7 +934,7 @@ describe("minimal subagents coordinator", () => {
     runtime.runPrompt.mockImplementation(
       () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
     );
-    const { coordinator, root } = coordinatorFixture(runtime, 10);
+    const { coordinator, root, queuedMessages } = coordinatorFixture(runtime, 10);
     root.isIdle.mockReturnValue(false);
     const spawned = await coordinator.spawn(
       "root",
@@ -951,9 +955,6 @@ describe("minimal subagents coordinator", () => {
     coordinator.markRecipientIdle("root");
     await coordinator.waitForSettledOperations();
 
-    const queuedMessages = root.queueCoordinatorMessage.mock.calls.map(
-      (call) => (call as unknown as [{ customType: string; content: string }])[0],
-    );
     expect(queuedMessages.map((message) => message.customType)).toEqual([
       "minimal-subagents.result",
       "minimal-subagents.message",

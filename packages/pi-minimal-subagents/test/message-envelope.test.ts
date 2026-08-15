@@ -6,13 +6,14 @@ import {
 import {
   renderMinimalSubagentsMessage,
   renderMinimalSubagentsResult,
+  type MinimalSubagentsRenderTheme,
 } from "../src/minimal-subagents-rendering.js";
 
 const plainTheme = {
-  fg: (_color: string, text: string) => text,
-  bg: (_color: string, text: string) => text,
-  bold: (text: string) => text,
-};
+  fg: (_color, text) => text,
+  bg: (_color, text) => text,
+  bold: (text) => text,
+} satisfies MinimalSubagentsRenderTheme;
 
 describe("minimal subagents message envelope", () => {
   it("keeps source identity model-visible while removing the duplicate TUI prefix", () => {
@@ -46,13 +47,13 @@ describe("minimal subagents message envelope", () => {
       },
     });
     const options = { outputPad: 0, expanded: false };
-    const collapsed = renderMinimalSubagentsMessage(message, options, plainTheme as never)
+    const collapsed = renderMinimalSubagentsMessage(message, options, plainTheme)
       .render(200)
       .join("\n");
     const expanded = renderMinimalSubagentsResult(
       message,
       { ...options, expanded: true },
-      plainTheme as never,
+      plainTheme,
     )
       .render(200)
       .join("\n");

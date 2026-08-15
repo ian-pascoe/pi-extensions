@@ -1,10 +1,20 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { access, cp, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, cp, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import {
+  getNodeProcessErrorStderr,
+  hasNodeProcessErrorCode,
+  parseNodeProcessError,
+} from "./node-process-error.mjs";
+import {
+  readJsonDocument,
+  rootPiManifestSchema,
+  workspacePackageManifestSchema,
+} from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -45,9 +55,14 @@ async function runNpmProductionInstall(installDirectory) {
         },
       },
     );
-  } catch (error) {
-    const stderr = error && typeof error === "object" && "stderr" in error ? error.stderr : "";
-    throw new Error(`Git install check npm install failed:\n${String(stderr)}`, { cause: error });
+  } catch (cause) {
+    const processError = parseNodeProcessError(cause);
+    throw new Error(
+      `Git install check npm install failed:\n${getNodeProcessErrorStderr(processError)}`,
+      {
+        cause,
+      },
+    );
   }
 }
 
@@ -68,7 +83,11 @@ async function discoverWorkspaceDirectories(installDirectory) {
 async function assertWorkspaceRuntimeDependencies(installDirectory) {
   for (const workspaceDirectory of await discoverWorkspaceDirectories(installDirectory)) {
     const manifestPath = resolve(workspaceDirectory, "package.json");
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const manifest = await readJsonDocument(
+      manifestPath,
+      workspacePackageManifestSchema,
+      "workspace package manifest",
+    );
     for (const dependencyName of Object.keys(manifest.dependencies ?? {})) {
       try {
         await access(
@@ -100,20 +119,25 @@ async function assertWorkspaceRuntimeDependencies(installDirectory) {
   try {
     await access(resolve(installDirectory, "node_modules/byterover-cli/package.json"));
     throw new Error("Git install check failed: byterover-cli is present in the production install");
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Git install check failed:"))
-      throw error;
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
-      throw error;
+  } catch (cause) {
+    if (cause instanceof Error && cause.message.startsWith("Git install check failed:")) {
+      throw cause;
+    }
+    if (!hasNodeProcessErrorCode(parseNodeProcessError(cause), "ENOENT")) {
+      throw cause;
     }
   }
 }
 
 async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory) {
-  const manifest = JSON.parse(await readFile(resolve(installDirectory, "package.json"), "utf8"));
-  const configuredPaths = manifest.pi?.extensions;
+  const manifest = await readJsonDocument(
+    resolve(installDirectory, "package.json"),
+    rootPiManifestSchema,
+    "root package manifest",
+  );
+  const configuredPaths = manifest.pi.extensions;
   assertGitInstallCondition(
-    Array.isArray(configuredPaths) && configuredPaths.length === 6,
+    configuredPaths.length === 6,
     "temporary root manifest does not contain six extension paths",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>

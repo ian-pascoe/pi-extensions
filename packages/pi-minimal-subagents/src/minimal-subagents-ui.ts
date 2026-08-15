@@ -1,4 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+
+/** Theme operations used by the Minimal Subagents widget renderer. */
+export type MinimalSubagentsWidgetTheme = Pick<Theme, "fg" | "bold">;
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   sliceByColumn,
@@ -195,7 +198,7 @@ function renderMinimalSubagentsWidgetRowParts(
   task: string | undefined,
   duration: string | undefined,
   profile: string,
-  theme: Theme,
+  theme: MinimalSubagentsWidgetTheme,
 ): MinimalSubagentsWidgetRowParts {
   const branch = row.depth > 0 ? `${"  ".repeat(row.depth)}╰─ ` : "  ";
   const styledBranch = theme.fg("borderMuted", branch);
@@ -225,7 +228,7 @@ function minimalSubagentsWidgetProfileBudget(
   task: string | undefined,
   duration: string | undefined,
   separator: string,
-  theme: Theme,
+  theme: MinimalSubagentsWidgetTheme,
   width: number,
 ): number {
   const fixedParts = renderMinimalSubagentsWidgetRowParts(row, task, duration, "", theme);
@@ -235,7 +238,7 @@ function minimalSubagentsWidgetProfileBudget(
 function renderMinimalSubagentsWidgetRow(
   row: MinimalSubagentsWidgetRow,
   width: number,
-  theme: Theme,
+  theme: MinimalSubagentsWidgetTheme,
 ): string {
   const separator = theme.fg("dim", MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT);
   const task = row.task?.replace(/\s+/g, " ").trim() || undefined;
@@ -336,7 +339,7 @@ function renderMinimalSubagentsWidgetRow(
 export function renderMinimalSubagentsWidgetLines(
   view: MinimalSubagentsWidgetView,
   width: number,
-  theme: Theme,
+  theme: MinimalSubagentsWidgetTheme,
 ): string[] {
   if (width <= 0) return [];
   const separator = theme.fg("dim", MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT);
@@ -376,7 +379,7 @@ class MinimalSubagentsWidgetComponent implements Component {
   constructor(
     private view: MinimalSubagentsWidgetView,
     private readonly tui: TUI,
-    private readonly theme: Theme,
+    private readonly theme: MinimalSubagentsWidgetTheme,
   ) {}
 
   update(view: MinimalSubagentsWidgetView): void {

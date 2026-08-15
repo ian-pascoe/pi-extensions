@@ -1,7 +1,33 @@
+import type { JsonValue } from "@earendil-works/pi-ai";
+import type { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
 import { DEFAULT_MAX_SUBAGENT_DEPTH, THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
 
 const MODEL_ROLE_NAME_MAX_LENGTH = 64;
 const MODEL_ROLE_HINT_MAX_LENGTH = 500;
+
+const JsonValueSchema = Type.Unsafe<JsonValue>({});
+const SettingsDocumentSchema = Type.Object({
+  minimalSubagents: Type.Optional(JsonValueSchema),
+});
+const MinimalSubagentsSettingsSchema = Type.Object({
+  maxSubagentDepth: Type.Optional(JsonValueSchema),
+  modelRoles: Type.Optional(JsonValueSchema),
+});
+const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
+const PositiveSafeIntegerSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
+const MaxSubagentDepthSettingSchema = Type.Union([PositiveSafeIntegerSchema, Type.Null()]);
+const ShorthandModelRoleSchema = Type.String();
+const ExpandedModelRoleSchema = Type.Object(
+  {
+    model: Type.String(),
+    hint: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+const ModelRoleEntriesSchema = Type.Record(Type.String(), JsonValueSchema);
+const ModelRolesSettingSchema = Type.Union([ModelRoleEntriesSchema, Type.Null()]);
 
 type ModelRoleThinkingLevel = (typeof THINKING_LEVELS)[number];
 
@@ -20,71 +46,153 @@ export interface ResolvedMinimalSubagentsConfig {
   warnings: string[];
 }
 
+interface MinimalSubagentsSettingsDocument {
+  minimalSubagents?: JsonValue;
+}
+
 interface MinimalSubagentsConfigInput {
-  globalSettings: unknown;
-  projectSettings: unknown;
+  globalSettings: MinimalSubagentsSettingsDocument;
+  projectSettings: MinimalSubagentsSettingsDocument;
   eligibleModelIds: readonly string[];
 }
 
+type PiSettingsDocument = ReturnType<SettingsManager["getGlobalSettings"]>;
+type MinimalSubagentsSettingsDocumentInput = PiSettingsDocument | MinimalSubagentsSettingsDocument;
+
 interface MinimalSubagentsSettingsReader {
-  getGlobalSettings(): unknown;
-  getProjectSettings(): unknown;
+  getGlobalSettings(): MinimalSubagentsSettingsDocumentInput;
+  getProjectSettings(): MinimalSubagentsSettingsDocumentInput;
 }
 
 type SettingsScope = "global" | "project";
 
 interface ScopedSettingValue {
   scope: SettingsScope;
-  value: unknown;
+  value: ModelRoleWireValue;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+interface ParsedMinimalSubagentsSettings {
+  maxSubagentDepth?: MaxSubagentDepthWireValue;
+  modelRoles?: ModelRolesWireValue;
+}
+
+type MaxSubagentDepthWireValue =
+  | { kind: "depth"; value: number }
+  | { kind: "reset" }
+  | { kind: "invalid" };
+
+type ModelRoleWireValue =
+  | { kind: "delete" }
+  | { kind: "shorthand"; model: string }
+  | { kind: "expanded"; fields: Static<typeof ExpandedModelRoleSchema> }
+  | { kind: "malformed-expanded"; fields: Record<string, JsonValue> }
+  | { kind: "invalid" };
+
+type ModelRolesWireValue =
+  | { kind: "reset" }
+  | { kind: "entries"; entries: ReadonlyMap<string, ModelRoleWireValue> }
+  | { kind: "invalid" };
+
+function parseMaxSubagentDepthWireValue(value: JsonValue): MaxSubagentDepthWireValue {
+  if (!Value.Check(MaxSubagentDepthSettingSchema, value)) return { kind: "invalid" };
+  return value === null ? { kind: "reset" } : { kind: "depth", value };
+}
+
+function parseModelRoleWireValue(value: JsonValue): ModelRoleWireValue {
+  if (value === null) return { kind: "delete" };
+  if (Value.Check(ShorthandModelRoleSchema, value)) return { kind: "shorthand", model: value };
+  if (Value.Check(JsonObjectSchema, value)) {
+    return Value.Check(ExpandedModelRoleSchema, value)
+      ? { kind: "expanded", fields: value }
+      : { kind: "malformed-expanded", fields: value };
+  }
+  return { kind: "invalid" };
+}
+
+function isExpandedModelRoleWireValue(
+  value: ModelRoleWireValue,
+): value is Extract<ModelRoleWireValue, { kind: "expanded" | "malformed-expanded" }> {
+  return value.kind === "expanded" || value.kind === "malformed-expanded";
+}
+
+function parseModelRolesWireValue(value: JsonValue): ModelRolesWireValue {
+  if (!Value.Check(ModelRolesSettingSchema, value)) return { kind: "invalid" };
+  if (value === null) return { kind: "reset" };
+  return {
+    kind: "entries",
+    entries: new Map(
+      Object.entries(value).map(([name, roleValue]) => [name, parseModelRoleWireValue(roleValue)]),
+    ),
+  };
+}
+
+function parsePiSettingsDocument(
+  settings: MinimalSubagentsSettingsDocumentInput,
+): MinimalSubagentsSettingsDocument {
+  if (!Value.Check(SettingsDocumentSchema, settings)) return {};
+  const parsed: MinimalSubagentsSettingsDocument = {};
+  if (settings.minimalSubagents !== undefined) {
+    parsed.minimalSubagents = settings.minimalSubagents;
+  }
+  return parsed;
 }
 
 function readMinimalSubagentsSettings(
-  settings: unknown,
+  settings: MinimalSubagentsSettingsDocument,
   scope: SettingsScope,
   warnings: string[],
-): Record<string, unknown> {
-  if (!isRecord(settings) || settings.minimalSubagents === undefined) return {};
-  if (isRecord(settings.minimalSubagents)) return settings.minimalSubagents;
+): ParsedMinimalSubagentsSettings {
+  if (!Value.Check(SettingsDocumentSchema, settings)) return {};
+  const minimalSubagents = settings.minimalSubagents;
+  if (minimalSubagents === undefined) return {};
+  if (Value.Check(MinimalSubagentsSettingsSchema, minimalSubagents)) {
+    const parsed: ParsedMinimalSubagentsSettings = {};
+    if (minimalSubagents.maxSubagentDepth !== undefined) {
+      parsed.maxSubagentDepth = parseMaxSubagentDepthWireValue(minimalSubagents.maxSubagentDepth);
+    }
+    if (minimalSubagents.modelRoles !== undefined) {
+      parsed.modelRoles = parseModelRolesWireValue(minimalSubagents.modelRoles);
+    }
+    return parsed;
+  }
   warnings.push(`${scope} minimalSubagents: expected an object`);
   return {};
 }
 
 function mergeModelRoleEntries(
-  globalValue: unknown,
-  projectValue: unknown,
+  globalValue: ModelRolesWireValue | undefined,
+  projectValue: ModelRolesWireValue | undefined,
   warnings: string[],
 ): Map<string, ScopedSettingValue> {
   const entries = new Map<string, ScopedSettingValue>();
-  if (globalValue !== undefined) {
-    if (isRecord(globalValue)) {
-      for (const [name, value] of Object.entries(globalValue)) {
-        entries.set(name, { scope: "global", value });
-      }
-    } else if (globalValue !== null) {
-      warnings.push("global minimalSubagents.modelRoles: expected an object or null");
+  if (globalValue?.kind === "entries") {
+    for (const [name, value] of globalValue.entries) {
+      entries.set(name, { scope: "global", value });
     }
+  } else if (globalValue?.kind === "invalid") {
+    warnings.push("global minimalSubagents.modelRoles: expected an object or null");
   }
-  if (projectValue === null) return new Map();
+  if (projectValue?.kind === "reset") return new Map();
   if (projectValue === undefined) return entries;
-  if (!isRecord(projectValue)) {
+  if (projectValue.kind === "invalid") {
     warnings.push("project minimalSubagents.modelRoles: expected an object or null");
     return entries;
   }
+  if (projectValue.kind !== "entries") return entries;
 
-  for (const [name, value] of Object.entries(projectValue)) {
-    if (value === null) {
+  for (const [name, value] of projectValue.entries) {
+    if (value.kind === "delete") {
       entries.delete(name);
       continue;
     }
     const inherited = entries.get(name)?.value;
-    entries.set(name, {
-      scope: "project",
-      value: isRecord(inherited) && isRecord(value) ? { ...inherited, ...value } : value,
-    });
+    const mergedValue =
+      inherited !== undefined &&
+      isExpandedModelRoleWireValue(inherited) &&
+      isExpandedModelRoleWireValue(value)
+        ? parseModelRoleWireValue({ ...inherited.fields, ...value.fields })
+        : value;
+    entries.set(name, { scope: "project", value: mergedValue });
   }
   return entries;
 }
@@ -142,69 +250,78 @@ function parseModelRoles(
     }
 
     const value = entry.value;
-    if (isRecord(value)) {
-      const unknownFields = Object.keys(value).filter((key) => key !== "model" && key !== "hint");
-      if (unknownFields.length > 0) {
-        warnings.push(`${path}: unknown field: ${unknownFields.join(", ")}`);
+    const expandedRoleObject = isExpandedModelRoleWireValue(value) ? value.fields : undefined;
+    if (expandedRoleObject !== undefined) {
+      const invalidFields = Object.keys(expandedRoleObject).filter(
+        (key) => key !== "model" && key !== "hint",
+      );
+      if (invalidFields.length > 0) {
+        warnings.push(`${path}: unknown field: ${invalidFields.join(", ")}`);
         continue;
       }
-    } else if (typeof value !== "string") {
+    } else if (value.kind !== "shorthand") {
       warnings.push(`${path}: expected a model string or expanded role object`);
       continue;
     }
 
-    const model = typeof value === "string" ? value : value.model;
-    if (typeof model !== "string" || model.length === 0 || model !== model.trim()) {
+    const modelValue =
+      expandedRoleObject === undefined && value.kind === "shorthand"
+        ? value.model
+        : expandedRoleObject?.model;
+    if (
+      !Value.Check(ShorthandModelRoleSchema, modelValue) ||
+      modelValue.length === 0 ||
+      modelValue !== modelValue.trim()
+    ) {
       warnings.push(`${path}: model must be a non-empty trimmed string`);
       continue;
     }
-    const resolvedModel = resolveModelRoleReference(model, eligibleModels, path, warnings);
+    const resolvedModel = resolveModelRoleReference(modelValue, eligibleModels, path, warnings);
     if (resolvedModel === undefined) continue;
 
-    const hint = isRecord(value) ? value.hint : undefined;
+    const hintValue = expandedRoleObject?.hint;
     if (
-      hint !== undefined &&
-      (typeof hint !== "string" ||
-        hint.length === 0 ||
-        hint !== hint.trim() ||
-        /[\r\n]/.test(hint) ||
-        hint.length > MODEL_ROLE_HINT_MAX_LENGTH)
+      hintValue !== undefined &&
+      (!Value.Check(ShorthandModelRoleSchema, hintValue) ||
+        hintValue.length === 0 ||
+        hintValue !== hintValue.trim() ||
+        /[\r\n]/.test(hintValue) ||
+        hintValue.length > MODEL_ROLE_HINT_MAX_LENGTH)
     ) {
       warnings.push(`${path}.hint: expected trimmed single-line text up to 500 characters`);
       continue;
     }
-    roles.push({
+    const role: MinimalSubagentsModelRole = {
       name,
       model: resolvedModel.model,
-      ...(resolvedModel.thinkingLevel === undefined
-        ? {}
-        : { thinkingLevel: resolvedModel.thinkingLevel }),
-      ...(hint === undefined ? {} : { hint }),
-    });
+    };
+    if (resolvedModel.thinkingLevel !== undefined) {
+      role.thinkingLevel = resolvedModel.thinkingLevel;
+    }
+    if (hintValue !== undefined && Value.Check(ShorthandModelRoleSchema, hintValue)) {
+      role.hint = hintValue;
+    }
+    roles.push(role);
   }
   return roles;
 }
 
 function resolveMaxSubagentDepth(
-  globalValue: unknown,
-  projectValue: unknown,
+  globalValue: MaxSubagentDepthWireValue | undefined,
+  projectValue: MaxSubagentDepthWireValue | undefined,
   warnings: string[],
 ): number {
   let resolvedDepth = DEFAULT_MAX_SUBAGENT_DEPTH;
-  if (globalValue !== undefined && globalValue !== null) {
-    if (Number.isSafeInteger(globalValue) && Number(globalValue) > 0) {
-      resolvedDepth = Number(globalValue);
-    } else {
-      warnings.push(
-        "global minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
-      );
-    }
+  if (globalValue?.kind === "depth") {
+    resolvedDepth = globalValue.value;
+  } else if (globalValue?.kind === "invalid") {
+    warnings.push(
+      "global minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
+    );
   }
   if (projectValue === undefined) return resolvedDepth;
-  if (projectValue === null) return DEFAULT_MAX_SUBAGENT_DEPTH;
-  if (Number.isSafeInteger(projectValue) && Number(projectValue) > 0) {
-    return Number(projectValue);
-  }
+  if (projectValue.kind === "reset") return DEFAULT_MAX_SUBAGENT_DEPTH;
+  if (projectValue.kind === "depth") return projectValue.value;
   warnings.push(
     "project minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
   );
@@ -242,8 +359,8 @@ export function resolveMinimalSubagentsSettings(
   eligibleModelIds: readonly string[],
 ): ResolvedMinimalSubagentsConfig {
   return resolveMinimalSubagentsConfig({
-    globalSettings: settings.getGlobalSettings(),
-    projectSettings: settings.getProjectSettings(),
+    globalSettings: parsePiSettingsDocument(settings.getGlobalSettings()),
+    projectSettings: parsePiSettingsDocument(settings.getProjectSettings()),
     eligibleModelIds,
   });
 }

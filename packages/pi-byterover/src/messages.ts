@@ -1,42 +1,35 @@
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai";
+
 export type PiSessionMessage = { id: string; role: "user" | "assistant"; text: string };
 export type SessionMessage = PiSessionMessage;
 
-const isRecord = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null;
-};
-
-const isPiSessionMessageRole = (role: unknown): role is PiSessionMessage["role"] => {
-  return role === "user" || role === "assistant";
-};
-
-const extractTextContent = (content: unknown) => {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-
+const extractUserText = (content: string | (TextContent | ImageContent)[]) => {
+  if (!Array.isArray(content)) return content;
   return content
-    .flatMap((block) => {
-      if (!isRecord(block)) return [];
-      if (block.type !== "text") return [];
-      if (typeof block.text !== "string") return [];
-
-      const text = block.text.trim();
-      return text ? [text] : [];
-    })
+    .flatMap((block) => (block.type === "text" && block.text.trim() ? [block.text.trim()] : []))
     .join("\n");
 };
 
-export const extractPiSessionMessages = (entries: Array<unknown>): Array<PiSessionMessage> => {
-  return entries.flatMap((entry) => {
-    if (!isRecord(entry)) return [];
+const extractAssistantText = (content: (TextContent | ThinkingContent | ToolCall)[]) => {
+  return content
+    .flatMap((block) => (block.type === "text" && block.text.trim() ? [block.text.trim()] : []))
+    .join("\n");
+};
+
+/** Extracts user and assistant text from the Pi-owned session-entry protocol. */
+export const extractPiSessionMessages = (entries: readonly SessionEntry[]): PiSessionMessage[] => {
+  return entries.flatMap<PiSessionMessage>((entry) => {
     if (entry.type !== "message") return [];
-    if (typeof entry.id !== "string") return [];
-    if (!isRecord(entry.message)) return [];
-    if (!isPiSessionMessageRole(entry.message.role)) return [];
 
-    const text = extractTextContent(entry.message.content);
-    if (text === undefined) return [];
-
-    return [{ id: entry.id, role: entry.message.role, text }];
+    const { message } = entry;
+    if (message.role === "user") {
+      return [{ id: entry.id, role: message.role, text: extractUserText(message.content) }];
+    }
+    if (message.role === "assistant") {
+      return [{ id: entry.id, role: message.role, text: extractAssistantText(message.content) }];
+    }
+    return [];
   });
 };
 
@@ -46,16 +39,16 @@ export const formatMessage = (message: PiSessionMessage) => {
   return `[${message.role}]: ${text}`;
 };
 
-export const formatMessages = (messages: Array<PiSessionMessage>) => {
+export const formatMessages = (messages: readonly PiSessionMessage[]) => {
   return messages.map(formatMessage).filter(Boolean).join("\n\n");
 };
 
-export const turnKey = (messages: Array<PiSessionMessage>) => {
+export const turnKey = (messages: readonly PiSessionMessage[]) => {
   return messages.map((message) => message.id).join(":");
 };
 
-export const selectMessagesInTurn = (messages: Array<PiSessionMessage>) => {
-  const selected: Array<PiSessionMessage> = [];
+export const selectMessagesInTurn = (messages: readonly PiSessionMessage[]) => {
+  const selected: PiSessionMessage[] = [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!;
     selected.unshift(message);
@@ -65,10 +58,10 @@ export const selectMessagesInTurn = (messages: Array<PiSessionMessage>) => {
 };
 
 export const selectMessagesForRecall = (
-  messages: Array<PiSessionMessage>,
+  messages: readonly PiSessionMessage[],
   options: { maxRecallTurns: number; maxRecallChars: number },
 ) => {
-  const selected: Array<PiSessionMessage> = [];
+  const selected: PiSessionMessage[] = [];
   let userTurns = 0;
   let charCount = 0;
 
