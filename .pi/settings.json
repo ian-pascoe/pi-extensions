@@ -5,11 +5,11 @@
       "autoload": false,
       "extensions": [
         "-packages/pi-adaptive-thinking/src/index.ts",
-        "-packages/pi-bible-verses/src/index.ts",
+        "+packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
-        "-packages/pi-git-status-widget/src/index.ts",
+        "+packages/pi-git-status-widget/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
-        "-packages/pi-tps-tracker/src/index.ts"
+        "+packages/pi-tps-tracker/src/index.ts"
       ]
     },
     {
@@ -17,11 +17,11 @@
       "autoload": false,
       "extensions": [
         "-packages/pi-adaptive-thinking/src/index.ts",
-        "+packages/pi-bible-verses/src/index.ts",
+        "-packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
-        "+packages/pi-git-status-widget/src/index.ts",
+        "-packages/pi-git-status-widget/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
-        "+packages/pi-tps-tracker/src/index.ts"
+        "-packages/pi-tps-tracker/src/index.ts"
       ]
     }
   ]
