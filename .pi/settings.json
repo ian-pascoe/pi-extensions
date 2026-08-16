@@ -29,6 +29,31 @@
       ]
     }
   ],
+  "formatter": {
+    "formatters": {
+      "oxfmt": {
+        "command": "pnpm",
+        "args": ["exec", "oxfmt", "--no-error-on-unmatched-pattern", "$FILE"],
+        "files": {
+          "extensions": [
+            ".js",
+            ".mjs",
+            ".cjs",
+            ".jsx",
+            ".ts",
+            ".mts",
+            ".cts",
+            ".tsx",
+            ".json",
+            ".jsonc",
+            ".md",
+            ".yaml",
+            ".yml"
+          ]
+        }
+      }
+    }
+  },
   "lsp": {
     "servers": {
       "typescript": {
