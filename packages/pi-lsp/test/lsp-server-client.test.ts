@@ -217,6 +217,40 @@ describe("LspServerClient", () => {
     });
   });
 
+  test("ignores stale versioned pushes until diagnostics for the synchronized version arrive", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "fresh.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: {
+        FAKE_DIAGNOSTICS: "one",
+        FAKE_NO_PULL: "1",
+        FAKE_STALE_PUSH: "1",
+      },
+    });
+
+    const result = await client.documentDiagnostics(filePath, "typescript");
+    expect(result.status).toBe("fresh");
+    expect(result.diagnostics.map(({ message }) => message)).toEqual(["fresh diagnostic"]);
+  });
+
+  test("omits stale versioned pushes from cached workspace diagnostics", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "stale.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_NO_PULL: "1", FAKE_STALE_PUSH: "only" },
+    });
+
+    await client.synchronizeDocument(filePath, "typescript");
+    await client.request("fake/state", {});
+    await expect(client.workspaceDiagnostics()).resolves.toMatchObject({
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: new Map(),
+    });
+  });
+
   test("notifies the owner exactly once after an unexpected process exit", async () => {
     const directory = await createTemporaryDirectory();
     const failures: LspServerClientError[] = [];

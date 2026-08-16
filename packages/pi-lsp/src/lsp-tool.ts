@@ -48,6 +48,7 @@ import {
 import {
   convertLspCodePointPosition,
   convertLspProtocolPosition,
+  normalizeLspPositionEncoding,
   type LspCodePointPosition,
   type LspPositionEncoding,
 } from "./lsp-position-encoding.js";
@@ -77,7 +78,7 @@ import {
   createLspToolOutput as createBaseLspToolOutput,
   formatLspToolValue,
 } from "./lsp-tool-output.js";
-import type { LspWorkspaceEditStore } from "./lsp-workspace-edit.js";
+import { LspWorkspaceEditError, type LspWorkspaceEditStore } from "./lsp-workspace-edit.js";
 
 const ProtocolRecordSchema = Type.Record(Type.String(), Type.Any());
 const ProtocolStringSchema = Type.String();
@@ -229,17 +230,6 @@ function absoluteLspFilePath(filePath: string, context: ExtensionContext): strin
   return resolve(context.cwd, normalizeLspFilePath(filePath));
 }
 
-function negotiatedPositionEncoding(client: LspToolServerClient): LspPositionEncoding {
-  switch (client.positionEncoding) {
-    case PositionEncodingKind.UTF8:
-      return "utf-8";
-    case PositionEncodingKind.UTF32:
-      return "utf-32";
-    default:
-      return "utf-16";
-  }
-}
-
 async function prepareLspDocument(
   client: LspToolServerClient,
   route: LspServerRoute,
@@ -248,7 +238,7 @@ async function prepareLspDocument(
   return {
     client,
     document: await client.synchronizeDocument(filePath, route.language.languageId),
-    positionEncoding: negotiatedPositionEncoding(client),
+    positionEncoding: normalizeLspPositionEncoding(client.positionEncoding),
     route,
   };
 }
@@ -373,10 +363,11 @@ async function normalizeProtocolResult(
   const targetUriValue = Value.Check(ProtocolStringSchema, record.targetUri)
     ? record.targetUri
     : undefined;
-  const localText =
-    (uriValue === undefined ? undefined : await textForProtocolUri(uriValue)) ??
-    (targetUriValue === undefined ? undefined : await textForProtocolUri(targetUriValue)) ??
-    inheritedText;
+  const sourceText = inheritedText ?? prepared?.document.text;
+  const uriText = uriValue === undefined ? undefined : await textForProtocolUri(uriValue);
+  const targetText =
+    targetUriValue === undefined ? undefined : await textForProtocolUri(targetUriValue);
+  const localText = uriText ?? targetText ?? sourceText;
   const entries = await Promise.all(
     Object.entries(record).map(async ([key, entryValue]) => {
       if ((key === "uri" || key === "targetUri") && Value.Check(ProtocolStringSchema, entryValue)) {
@@ -387,7 +378,17 @@ async function normalizeProtocolResult(
       }
       return [
         key,
-        await normalizeProtocolResult(entryValue, prepared, localText, positionEncoding),
+        await normalizeProtocolResult(
+          entryValue,
+          prepared,
+          targetUriValue !== undefined && key === "originSelectionRange"
+            ? sourceText
+            : targetUriValue !== undefined &&
+                (key === "targetRange" || key === "targetSelectionRange")
+              ? targetText
+              : localText,
+          positionEncoding,
+        ),
       ] as const;
     }),
   );
@@ -424,6 +425,22 @@ async function resolveProtocolItems(
       record.items.map((item: LSPAny) => client.request<LSPAny>(method, item, signal)),
     ),
   };
+}
+
+async function resolveCodeActionItems(
+  client: LspToolServerClient,
+  actions: LSPAny,
+  signal: AbortSignal | undefined,
+): Promise<LSPAny> {
+  if (!Array.isArray(actions)) return actions;
+  return Promise.all(
+    actions.map((action) => {
+      const record = protocolRecord(action);
+      return record !== undefined && Value.Check(ProtocolStringSchema, record.command)
+        ? action
+        : client.request<LSPAny>(CodeActionResolveRequest.method, action, signal);
+    }),
+  );
 }
 
 function formattingOptions(
@@ -726,7 +743,7 @@ async function executeWorkspaceRead(
           await client.workspaceDiagnostics(signal),
           undefined,
           undefined,
-          negotiatedPositionEncoding(client),
+          normalizeLspPositionEncoding(client.positionEncoding),
         ),
     );
   }
@@ -752,7 +769,7 @@ async function executeWorkspaceRead(
         value,
         undefined,
         undefined,
-        negotiatedPositionEncoding(client),
+        normalizeLspPositionEncoding(client.positionEncoding),
       );
     },
   );
@@ -877,7 +894,7 @@ async function executeCodeActions(
     signal,
   );
   if (supportsResolveProvider(client.capabilities.codeActionProvider)) {
-    actions = await resolveProtocolItems(client, actions, CodeActionResolveRequest.method, signal);
+    actions = await resolveCodeActionItems(client, actions, signal);
   }
   const results: LSPAny[] = [];
   const previewRecords: LSPAny[] = [];
@@ -932,11 +949,33 @@ async function executeApplyPreview(
   ) {
     throw piLspError("Mutation Manifest changed after argument preparation");
   }
-  const result = await dependencies.workspaceEdits.applyPreview(
-    parameters.preview_id,
-    storeManifest,
-    signal,
-  );
+  let result;
+  try {
+    result = await dependencies.workspaceEdits.applyPreview(
+      parameters.preview_id,
+      storeManifest,
+      signal,
+    );
+  } catch (cause) {
+    if (
+      !(cause instanceof LspWorkspaceEditError) ||
+      cause.code !== "workspace_edit_recovery_failed"
+    ) {
+      throw cause;
+    }
+    return createLspToolOutput(
+      cause.message,
+      {
+        kind: "workspace_edit_apply",
+        preview_id: parameters.preview_id,
+        mutation_manifest: canonicalManifest,
+        changed_paths: [...cause.recoveryFailures].sort((left, right) => left.localeCompare(right)),
+        recovery_failure_paths: [...cause.recoveryFailures],
+        state: "partial_failure",
+      },
+      dependencies,
+    );
+  }
   const record = protocolRecord(result) ?? {};
   const movedFiles = Array.isArray(record.moved_files) ? record.moved_files : [];
   const changedPaths = [

@@ -39,13 +39,13 @@ function respondError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-function diagnostics() {
+function diagnostics(message = "fake diagnostic") {
   return process.env.FAKE_DIAGNOSTICS === "one"
     ? [
         {
           range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
           severity: 1,
-          message: "fake diagnostic",
+          message,
           source: "fake",
         },
       ]
@@ -146,6 +146,32 @@ async function handleRequest(message) {
 
 function publishDiagnostics(document) {
   if (process.env.FAKE_PUSH === "none") return;
+  if (process.env.FAKE_STALE_PUSH === "1" || process.env.FAKE_STALE_PUSH === "only") {
+    send({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: {
+        uri: document.uri,
+        version: document.version - 1,
+        diagnostics: diagnostics("stale diagnostic"),
+      },
+    });
+    if (process.env.FAKE_STALE_PUSH === "only") return;
+    setTimeout(
+      () =>
+        send({
+          jsonrpc: "2.0",
+          method: "textDocument/publishDiagnostics",
+          params: {
+            uri: document.uri,
+            version: document.version,
+            diagnostics: diagnostics("fresh diagnostic"),
+          },
+        }),
+      10,
+    );
+    return;
+  }
   send({
     jsonrpc: "2.0",
     method: "textDocument/publishDiagnostics",

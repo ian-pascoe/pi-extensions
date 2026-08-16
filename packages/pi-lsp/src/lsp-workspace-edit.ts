@@ -23,6 +23,10 @@ import type {
   WorkspaceEdit,
   LSPAny,
 } from "vscode-languageserver-protocol";
+import {
+  convertLspProtocolPosition,
+  normalizeLspPositionEncoding,
+} from "./lsp-position-encoding.js";
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -272,47 +276,35 @@ function encodeUtf8(text: string, bom: boolean): Buffer {
   return bom ? Buffer.concat([UTF8_BOM, contents]) : contents;
 }
 
-function encodedCharacterLength(character: string, encoding: PositionEncodingKind): number {
-  if (encoding === "utf-8") return Buffer.byteLength(character, "utf8");
-  if (encoding === "utf-32") return 1;
-  return character.length;
-}
-
 function textOffsetAtPosition(
   text: string,
   position: Position,
   encoding: PositionEncodingKind,
 ): number {
-  if (!Number.isSafeInteger(position.line) || !Number.isSafeInteger(position.character)) {
-    throw new LspWorkspaceEditError("invalid_position", "Workspace Edit position is not integral");
-  }
-  const lineStarts = [0];
-  for (let index = 0; index < text.length; index++) {
-    if (text[index] === "\n") lineStarts.push(index + 1);
-  }
-  const lineStart = lineStarts[position.line];
-  if (lineStart === undefined || position.line < 0 || position.character < 0) {
-    throw new LspWorkspaceEditError("invalid_position", "Workspace Edit position is outside text");
-  }
-  const lineEndCandidate = text.indexOf("\n", lineStart);
-  let lineEnd = lineEndCandidate === -1 ? text.length : lineEndCandidate;
-  if (lineEnd > lineStart && text[lineEnd - 1] === "\r") lineEnd--;
-  const line = text.slice(lineStart, lineEnd);
-  let encodedOffset = 0;
-  let utf16Offset = 0;
-  for (const character of line) {
-    if (encodedOffset === position.character) return lineStart + utf16Offset;
-    encodedOffset += encodedCharacterLength(character, encoding);
-    utf16Offset += character.length;
-    if (encodedOffset > position.character) {
-      throw new LspWorkspaceEditError(
-        "invalid_position",
-        "Workspace Edit position splits a Unicode character",
-      );
+  try {
+    const codePointPosition = convertLspProtocolPosition(
+      text,
+      position,
+      normalizeLspPositionEncoding(encoding),
+    );
+    const lineStarts = [0];
+    for (let index = 0; index < text.length; index++) {
+      if (text[index] === "\r" && text[index + 1] === "\n") index++;
+      if (text[index] === "\r" || text[index] === "\n") lineStarts.push(index + 1);
     }
+    const lineStart = lineStarts[position.line];
+    if (lineStart === undefined) throw new Error("line exceeds document length");
+    const lineEnd = lineStarts[position.line + 1] ?? text.length;
+    const line = text.slice(lineStart, lineEnd).replace(/\r?\n$|\r$/u, "");
+    const utf16Offset = Array.from(line)
+      .slice(0, codePointPosition.character - 1)
+      .join("").length;
+    return lineStart + utf16Offset;
+  } catch (cause) {
+    throw new LspWorkspaceEditError("invalid_position", "Workspace Edit position is invalid", [], {
+      cause,
+    });
   }
-  if (encodedOffset === position.character) return lineStart + utf16Offset;
-  throw new LspWorkspaceEditError("invalid_position", "Workspace Edit position exceeds line");
 }
 
 function applyTextEdits(
@@ -774,12 +766,19 @@ export class LspWorkspaceEditStore {
         }
         if (operation.destination_before.kind !== "missing") {
           await this.files.removePath(operation.destination_path);
+          rollback.push({
+            path: operation.destination_path,
+            snapshot: operation.destination_before,
+          });
         }
         await this.files.renamePath(operation.named_path, operation.destination_path);
-        rollback.push(
-          { path: operation.named_path, snapshot: operation.before },
-          { path: operation.destination_path, snapshot: operation.destination_before },
-        );
+        rollback.push({ path: operation.named_path, snapshot: operation.before });
+        if (operation.destination_before.kind === "missing") {
+          rollback.push({
+            path: operation.destination_path,
+            snapshot: operation.destination_before,
+          });
+        }
         movedFiles.push({ from: operation.named_path, to: operation.destination_path });
       }
     } catch (cause) {

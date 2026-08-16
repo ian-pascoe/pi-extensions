@@ -2,6 +2,8 @@ import { expect, test } from "vitest";
 import {
   convertLspCodePointPosition,
   convertLspProtocolPosition,
+  measureLspPositionCharacters,
+  normalizeLspPositionEncoding,
 } from "../src/lsp-position-encoding.js";
 
 test("converts one-based Unicode code-point positions to each negotiated LSP encoding", () => {
@@ -53,4 +55,16 @@ test("rejects non-integral, out-of-range, and split-character positions", () => 
   expect(() => convertLspProtocolPosition(text, { line: 0, character: 2 }, "utf-8")).toThrow(
     "Pi LSP: protocol position splits a Unicode character",
   );
+});
+
+test("normalizes negotiated encodings with the required UTF-16 fallback", () => {
+  expect(normalizeLspPositionEncoding("utf-8")).toBe("utf-8");
+  expect(normalizeLspPositionEncoding("utf-32")).toBe("utf-32");
+  expect(normalizeLspPositionEncoding(undefined)).toBe("utf-16");
+});
+
+test("measures text in each negotiated encoding", () => {
+  expect(measureLspPositionCharacters("a😀é", "utf-8")).toBe(7);
+  expect(measureLspPositionCharacters("a😀é", "utf-16")).toBe(4);
+  expect(measureLspPositionCharacters("a😀é", "utf-32")).toBe(3);
 });

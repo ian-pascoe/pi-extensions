@@ -17,6 +17,13 @@ export interface LspProtocolPosition {
   readonly character: number;
 }
 
+/** Normalize a server's negotiated position encoding, defaulting protocol omissions to UTF-16. */
+export function normalizeLspPositionEncoding(encoding: string | undefined): LspPositionEncoding {
+  if (encoding === "utf-8") return "utf-8";
+  if (encoding === "utf-32") return "utf-32";
+  return "utf-16";
+}
+
 function documentLines(documentText: string): readonly string[] {
   return documentText.split(/\r\n|[\n\r]/u);
 }
@@ -65,6 +72,13 @@ function encodedCharacterLength(character: string, encoding: LspPositionEncoding
     case "utf-32":
       return 1;
   }
+}
+
+/** Return the negotiated LSP character length of one line of document text. */
+export function measureLspPositionCharacters(text: string, encoding: LspPositionEncoding): number {
+  if (encoding === "utf-8") return Buffer.byteLength(text, "utf8");
+  if (encoding === "utf-32") return Array.from(text).length;
+  return text.length;
 }
 
 function protocolCharacterOffset(

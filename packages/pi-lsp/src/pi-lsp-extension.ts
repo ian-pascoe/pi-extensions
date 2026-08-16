@@ -21,7 +21,11 @@ import {
   type PostEditDiagnosticPath,
   type PostEditDiagnosticsRunner,
 } from "./lsp-post-edit-diagnostics.js";
-import { convertLspProtocolPosition, type LspPositionEncoding } from "./lsp-position-encoding.js";
+import {
+  convertLspProtocolPosition,
+  normalizeLspPositionEncoding,
+  type LspPositionEncoding,
+} from "./lsp-position-encoding.js";
 import { LspServerClient } from "./lsp-server-client.js";
 import { LspServerManager, normalizeLspFilePath } from "./lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "./lsp-session-files.js";
@@ -86,12 +90,6 @@ function branchLspToolResultDetails(
     }
   }
   return [...records.values()];
-}
-
-function negotiatedPositionEncoding(client: LspServerClient): LspPositionEncoding {
-  if (client.positionEncoding === PositionEncodingKind.UTF8) return "utf-8";
-  if (client.positionEncoding === PositionEncodingKind.UTF32) return "utf-32";
-  return "utf-16";
 }
 
 function normalizedDiagnosticOutcome(
@@ -165,7 +163,7 @@ class ManagerPostEditDiagnosticsRunner implements PostEditDiagnosticsRunner {
           const documentText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
             await readFile(filePath),
           );
-          const encoding = negotiatedPositionEncoding(client);
+          const encoding = normalizeLspPositionEncoding(client.positionEncoding);
           return diagnostics.diagnostics.map((diagnostic) =>
             normalizedDiagnosticOutcome(
               diagnostic,
@@ -191,7 +189,9 @@ async function appendSessionPostEditDiagnostics(
   event: ToolResultEvent,
   session: ActivePiLspSession,
   context: ExtensionContext,
-): Promise<{ readonly content: ToolResultEvent["content"] } | undefined> {
+): Promise<
+  { readonly content: ToolResultEvent["content"]; readonly isError?: boolean } | undefined
+> {
   const patch = await appendPiPostEditDiagnostics(
     event,
     new ManagerPostEditDiagnosticsRunner(session, context.signal),
@@ -211,7 +211,14 @@ async function appendSessionPostEditDiagnostics(
       text: `${truncation.content}\n\n[Pi LSP: diagnostics truncated; complete Result Spill: ${spillPath}]`,
     };
   }
-  return { content: [...event.content, appended] };
+  const partialApplyFailure =
+    event.toolName === "lsp" &&
+    Value.Check(LspToolResultDetailsSchema, event.details) &&
+    event.details.kind === "workspace_edit_apply" &&
+    event.details.state === "partial_failure";
+  return partialApplyFailure
+    ? { content: [...event.content, appended], isError: true }
+    : { content: [...event.content, appended] };
 }
 
 /** Own settings, tool registration, replay, diagnostics middleware, and resource shutdown for one extension instance. */
@@ -294,7 +301,11 @@ export class PiLspLifecycleController {
   private handleToolResult(
     event: ToolResultEvent,
     context: ExtensionContext,
-  ): Promise<{ readonly content: ToolResultEvent["content"] } | undefined> | undefined {
+  ):
+    | Promise<
+        { readonly content: ToolResultEvent["content"]; readonly isError?: boolean } | undefined
+      >
+    | undefined {
     const session = this.session;
     return session === undefined
       ? undefined

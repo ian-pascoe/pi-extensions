@@ -47,6 +47,11 @@ import {
   type WorkspaceDiagnosticReport,
   type WorkspaceEdit,
 } from "vscode-languageserver-protocol/node";
+import {
+  measureLspPositionCharacters,
+  normalizeLspPositionEncoding,
+  type LspPositionEncoding,
+} from "./lsp-position-encoding.js";
 
 const MAX_OPEN_DOCUMENTS = 100;
 const MAX_STDERR_BYTES = 1024 * 1024;
@@ -208,30 +213,13 @@ function serverWantsSave(capabilities: ServerCapabilities): boolean {
   );
 }
 
-function normalizePositionEncoding(capabilities: ServerCapabilities): PositionEncodingKind {
-  const encoding = capabilities.positionEncoding;
-  if (
-    encoding === PositionEncodingKind.UTF8 ||
-    encoding === PositionEncodingKind.UTF16 ||
-    encoding === PositionEncodingKind.UTF32
-  ) {
-    return encoding;
-  }
-  return PositionEncodingKind.UTF16;
-}
-
-function protocolLineEndPosition(text: string, encoding: PositionEncodingKind): Position {
+function protocolLineEndPosition(text: string, encoding: LspPositionEncoding): Position {
   const lines = text.split(/\r\n|\r|\n/);
   const lineText = lines.at(-1) ?? "";
-  let character: number;
-  if (encoding === PositionEncodingKind.UTF8) {
-    character = Buffer.byteLength(lineText, "utf8");
-  } else if (encoding === PositionEncodingKind.UTF32) {
-    character = Array.from(lineText).length;
-  } else {
-    character = lineText.length;
-  }
-  return { line: lines.length - 1, character };
+  return {
+    line: lines.length - 1,
+    character: measureLspPositionCharacters(lineText, encoding),
+  };
 }
 
 function configurationSectionValue(settings: LSPAny, section: string | undefined): LSPAny {
@@ -273,7 +261,7 @@ function timeoutError(options: LspServerClientOptions, operation: string): LspSe
 export class LspServerClient {
   private capabilitiesValue: ServerCapabilities = {};
   private serverInfoValue: InitializeResult["serverInfo"];
-  private positionEncodingValue: PositionEncodingKind = PositionEncodingKind.UTF16;
+  private positionEncodingValue: LspPositionEncoding = "utf-16";
   private textDocumentSyncKind: TextDocumentSyncKind = TextDocumentSyncKind.None;
   private readonly openDocuments = new Map<string, OpenDocumentState>();
   private readonly pushDiagnostics = new Map<string, PushDiagnosticsState>();
@@ -380,7 +368,7 @@ export class LspServerClient {
   }
 
   /** Position encoding negotiated with the server, defaulting to UTF-16. */
-  get positionEncoding(): PositionEncodingKind {
+  get positionEncoding(): LspPositionEncoding {
     return this.positionEncodingValue;
   }
 
@@ -655,7 +643,14 @@ export class LspServerClient {
         status: "fresh",
         source: "push_cache",
         diagnosticsByUri: new Map(
-          [...this.pushDiagnostics].map(([uri, state]) => [uri, state.diagnostics]),
+          [...this.pushDiagnostics]
+            .filter(([uri, state]) => {
+              const version = this.openDocuments.get(uri)?.version;
+              return (
+                state.version === undefined || version === undefined || state.version === version
+              );
+            })
+            .map(([uri, state]) => [uri, state.diagnostics]),
         ),
       };
     }
@@ -896,7 +891,7 @@ export class LspServerClient {
 
     this.capabilitiesValue = result.capabilities;
     this.serverInfoValue = result.serverInfo;
-    this.positionEncodingValue = normalizePositionEncoding(result.capabilities);
+    this.positionEncodingValue = normalizeLspPositionEncoding(result.capabilities.positionEncoding);
     this.textDocumentSyncKind = syncKindFromCapabilities(result.capabilities);
     await this.connection.sendNotification(InitializedNotification.type, {});
     await this.connection.sendNotification(DidChangeConfigurationNotification.type, {
@@ -963,36 +958,34 @@ export class LspServerClient {
     previousRevision: number,
     signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult> {
-    const current = this.pushDiagnostics.get(uri);
-    if (
-      current !== undefined &&
-      (current.revision > previousRevision || current.version === version)
-    ) {
-      return { status: "fresh", source: "push", diagnostics: current.diagnostics };
-    }
+    const deadline = Date.now() + this.options.timeouts.diagnosticsMs;
+    for (;;) {
+      const current = this.pushDiagnostics.get(uri);
+      if (
+        current !== undefined &&
+        current.revision > previousRevision &&
+        (current.version === undefined || current.version === version)
+      ) {
+        return { status: "fresh", source: "push", diagnostics: current.diagnostics };
+      }
 
-    let notifyWaiter: (() => void) | undefined;
-    const notification = new Promise<void>((resolveNotification) => {
-      notifyWaiter = resolveNotification;
-      const waiters = this.diagnosticWaiters.get(uri) ?? new Set();
-      waiters.add(resolveNotification);
-      this.diagnosticWaiters.set(uri, waiters);
-    });
-    try {
-      await this.raceBudget(
-        notification,
-        this.options.timeouts.diagnosticsMs,
-        "diagnostics",
-        signal,
-      );
-      const published = this.pushDiagnostics.get(uri);
-      if (published === undefined) throw timeoutError(this.options, "diagnostics");
-      return { status: "fresh", source: "push", diagnostics: published.diagnostics };
-    } finally {
-      if (notifyWaiter !== undefined) {
-        const waiters = this.diagnosticWaiters.get(uri);
-        waiters?.delete(notifyWaiter);
-        if (waiters?.size === 0) this.diagnosticWaiters.delete(uri);
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw timeoutError(this.options, "diagnostics");
+      let notifyWaiter: (() => void) | undefined;
+      const notification = new Promise<void>((resolveNotification) => {
+        notifyWaiter = resolveNotification;
+        const waiters = this.diagnosticWaiters.get(uri) ?? new Set();
+        waiters.add(resolveNotification);
+        this.diagnosticWaiters.set(uri, waiters);
+      });
+      try {
+        await this.raceBudget(notification, remainingMs, "diagnostics", signal);
+      } finally {
+        if (notifyWaiter !== undefined) {
+          const waiters = this.diagnosticWaiters.get(uri);
+          waiters?.delete(notifyWaiter);
+          if (waiters?.size === 0) this.diagnosticWaiters.delete(uri);
+        }
       }
     }
   }

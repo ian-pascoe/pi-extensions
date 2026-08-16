@@ -292,6 +292,32 @@ describe("Pi LSP extension lifecycle", () => {
     expect(augmented?.details).toBe(originalDetails);
     expect(augmented?.isError).toBe(false);
 
+    const partialApply = await harness.runner.emitToolResult({
+      type: "tool_result",
+      toolCallId: "partial-apply-call",
+      toolName: "lsp",
+      input: {
+        operation: "apply",
+        preview_id: "partial-preview",
+        mutation_manifest: [{ operation: "modify", path: filePath }],
+      },
+      content: [{ type: "text", text: "Rollback failed" }],
+      details: {
+        kind: "workspace_edit_apply",
+        preview_id: "partial-preview",
+        mutation_manifest: [{ operation: "modify", path: filePath }],
+        changed_paths: [filePath],
+        recovery_failure_paths: [filePath],
+        state: "partial_failure",
+      },
+      isError: false,
+    } satisfies ToolResultEvent);
+    expect(partialApply?.isError).toBe(true);
+    expect(partialApply?.content?.at(-1)).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("no configured server"),
+    });
+
     const changedFiles = Array.from(
       { length: 100 },
       (_, index) => `${index}-${"long-diagnostic-path-".repeat(30)}.ts`,

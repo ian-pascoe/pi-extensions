@@ -504,4 +504,40 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
       recoveryFailures: [first],
     });
   });
+
+  test("restores an overwritten rename destination when the rename itself fails", async () => {
+    const root = await makeTemporaryDirectory();
+    const source = resolve(root, "source.ts");
+    const destination = resolve(root, "destination.ts");
+    await writeFile(source, "source");
+    await writeFile(destination, "destination");
+    const store = new LspWorkspaceEditStore({
+      createPreviewId: () => "rename-failure",
+      fileOperations: {
+        ...nodeLspWorkspaceEditFileOperations,
+        async renamePath() {
+          throw new Error("injected rename failure");
+        },
+      },
+    });
+    const preview = await store.createPreview({
+      edit: {
+        documentChanges: [
+          {
+            kind: "rename",
+            oldUri: fileUri(source),
+            newUri: fileUri(destination),
+            options: { overwrite: true },
+          },
+        ],
+      },
+      serverId: "typescript",
+    });
+    await expectWorkspaceEditCode(
+      store.applyPreview(preview.preview_id, store.prepareMutationManifest(preview.preview_id)),
+      "workspace_edit_apply_failed",
+    );
+    expect(await readFile(source, "utf8")).toBe("source");
+    expect(await readFile(destination, "utf8")).toBe("destination");
+  });
 });

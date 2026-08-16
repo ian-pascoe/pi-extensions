@@ -31,7 +31,11 @@ import {
   type LspToolRegistrar,
   type LspToolServerClient,
 } from "../src/lsp-tool.js";
-import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
+import {
+  LspWorkspaceEditStore,
+  nodeLspWorkspaceEditFileOperations,
+  type LspWorkspaceEditFileOperations,
+} from "../src/lsp-workspace-edit.js";
 import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
@@ -231,9 +235,11 @@ describe("registered LSP tool", () => {
     fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [hierarchyItem]);
     fixture.client.responseByMethod.set("textDocument/prepareTypeHierarchy", [hierarchyItem]);
     fixture.client.responseByMethod.set("textDocument/codeAction", [
-      { title: "Run command", command: { title: "Run command", command: "example.run" } },
+      { title: "Run command", command: "example.run" },
       { title: "Apply edit", edit },
     ]);
+    fixture.client.capabilities.codeActionProvider = { resolveProvider: true };
+    fixture.client.responseByMethod.set("codeAction/resolve", { title: "Apply edit", edit });
     fixture.client.capabilities.documentLinkProvider = { resolveProvider: true };
     fixture.client.responseByMethod.set("textDocument/documentLink", [{ target: uri, data: 1 }]);
     fixture.client.responseByMethod.set("documentLink/resolve", [{ target: uri }]);
@@ -412,7 +418,7 @@ describe("registered LSP tool", () => {
       },
       {
         input: { operation: "code_actions", file_path: fixture.filePath, range: oneBasedRange() },
-        requests: ["textDocument/codeAction"],
+        requests: ["textDocument/codeAction", "codeAction/resolve"],
       },
     ];
 
@@ -503,6 +509,42 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("converts LocationLink source and target ranges against their own Unicode text", async () => {
+    const fixture = await createToolFixture();
+    const targetPath = resolve(fixture.context.cwd, "target.ts");
+    await writeFile(fixture.filePath, "😀source");
+    await writeFile(targetPath, "xx😀target");
+    fixture.client.responseByMethod.set("textDocument/hover", [
+      {
+        originSelectionRange: {
+          start: { line: 0, character: 2 },
+          end: { line: 0, character: 2 },
+        },
+        targetUri: pathToFileURL(targetPath).href,
+        targetRange: {
+          start: { line: 0, character: 4 },
+          end: { line: 0, character: 4 },
+        },
+        targetSelectionRange: {
+          start: { line: 0, character: 4 },
+          end: { line: 0, character: 4 },
+        },
+      },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain('"originSelectionRange":{"end":{"character":2');
+    expect(text).toContain('"targetRange":{"end":{"character":4');
+    expect(text).toContain('"targetSelectionRange":{"end":{"character":4');
+    await fixture.close();
+  });
+
   test("exposes a server-initiated workspace edit preview through the active result", async () => {
     const fixture = await createToolFixture();
     const preview = await fixture.dependencies.workspaceEdits.createPreview({
@@ -530,6 +572,64 @@ describe("registered LSP tool", () => {
     });
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(text).toContain(`Server Workspace Edit Preview: ${preview.preview_id}`);
+    await fixture.close();
+  });
+
+  test("returns partial-failure details when rollback leaves a changed file", async () => {
+    const fixture = await createToolFixture();
+    const secondFile = resolve(fixture.context.cwd, "second.ts");
+    await writeFile(secondFile, "second");
+    let replacements = 0;
+    const failingFiles: LspWorkspaceEditFileOperations = {
+      ...nodeLspWorkspaceEditFileOperations,
+      async replaceFile(path, contents, mode) {
+        replacements++;
+        if (replacements >= 2) throw new Error(`injected replacement failure ${replacements}`);
+        await nodeLspWorkspaceEditFileOperations.replaceFile(path, contents, mode);
+      },
+    };
+    const workspaceEdits = new LspWorkspaceEditStore({ fileOperations: failingFiles });
+    const registrar = new RecordingLspToolRegistrar();
+    registerLspTool(registrar, { ...fixture.dependencies, workspaceEdits });
+    const tool = registrar.tools[0];
+    if (tool === undefined) throw new Error("Expected registered LSP tool");
+    const preview = await workspaceEdits.createPreview({
+      edit: {
+        changes: {
+          [pathToFileURL(fixture.filePath).href]: [
+            {
+              newText: "changed",
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+            },
+          ],
+          [pathToFileURL(secondFile).href]: [
+            {
+              newText: "changed",
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+            },
+          ],
+        },
+      },
+      serverId: "typescript",
+    });
+    const prepared = tool.prepareArguments?.({
+      operation: "apply",
+      preview_id: preview.preview_id,
+    });
+    if (prepared === undefined) throw new Error("Expected prepared apply arguments");
+    const result = await tool.execute(
+      "partial-apply",
+      prepared,
+      undefined,
+      undefined,
+      fixture.context,
+    );
+    expect(result.details).toMatchObject({
+      kind: "workspace_edit_apply",
+      changed_paths: [fixture.filePath],
+      recovery_failure_paths: [fixture.filePath],
+      state: "partial_failure",
+    });
     await fixture.close();
   });
 
