@@ -56,7 +56,8 @@
       "./packages/pi-minimal-subagents/src/index.ts",
       "./packages/pi-bible-verses/src/index.ts",
       "./packages/pi-tps-tracker/src/index.ts",
-      "./packages/pi-git-status-widget/src/index.ts"
+      "./packages/pi-git-status-widget/src/index.ts",
+      "./packages/pi-lsp/src/index.ts"
     ]
   }
 }
