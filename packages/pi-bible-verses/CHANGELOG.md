@@ -1,0 +1,11 @@
+# @ian-pascoe/pi-bible-verses
+
+## 0.2.0
+
+### Minor Changes
+
+- 00e8819: Remove the undocumented `id`, `book`, and `verseCount` fields from Offline Verse Pool source records. Working Message behavior is unchanged.
+
+### Patch Changes
+
+- 00e8819: Refactor AI overengineering

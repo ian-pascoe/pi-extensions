@@ -1,6 +1,6 @@
 {
   "name": "pi-byterover",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": false,
   "description": "Pi extension that recalls and persists ByteRover memory.",
   "keywords": [
