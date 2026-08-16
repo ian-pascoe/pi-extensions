@@ -166,18 +166,80 @@ describe("resolveLspSettings", () => {
     delete process.env.PI_LSP_SETTINGS_INHERITED;
   });
 
-  test.each([
-    {
-      lsp: {
-        servers: {
-          typescript: {
-            ...typescriptServer("typescript-language-server"),
-            unknownServerField: true,
+  test("quarantines an invalid global server while preserving valid global servers", async () => {
+    const settingsManager = await createSettingsReader(
+      {
+        lsp: {
+          servers: {
+            invalid: { ...typescriptServer("invalid-lsp"), unknownServerField: true },
+            valid: typescriptServer("valid-lsp"),
           },
         },
       },
-    },
-    { lsp: { timeouts: { unknownTimeoutField: 1 } } },
+      {},
+      true,
+    );
+
+    const settings = resolveLspSettings(settingsManager);
+
+    expect(settings.enabled).toBe(true);
+    expect([...settings.servers.keys()]).toEqual(["valid"]);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("global lsp.servers.invalid.unknownServerField"),
+    ]);
+  });
+
+  test("quarantines an invalid project replacement instead of falling back to its global server", async () => {
+    const settingsManager = await createSettingsReader(
+      { lsp: { servers: { typescript: typescriptServer("global-lsp") } } },
+      {
+        lsp: {
+          servers: {
+            typescript: { ...typescriptServer("project-lsp"), unknownServerField: true },
+            javascript: typescriptServer("project-valid-lsp"),
+          },
+        },
+      },
+      true,
+    );
+
+    const settings = resolveLspSettings(settingsManager);
+
+    expect([...settings.servers]).toEqual([
+      ["javascript", expect.objectContaining({ command: "project-valid-lsp" })],
+    ]);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("project lsp.servers.typescript.unknownServerField"),
+    ]);
+  });
+
+  test("quarantines invalid timeout fields while retaining valid inherited and project values", async () => {
+    const settingsManager = await createSettingsReader(
+      { lsp: { timeouts: { diagnosticsMs: 100, initializeMs: 200, requestMs: 300 } } },
+      {
+        lsp: {
+          timeouts: { diagnosticsMs: "invalid", initializeMs: 400, unknownTimeoutField: true },
+        },
+      },
+      true,
+    );
+
+    const settings = resolveLspSettings(settingsManager);
+
+    expect(settings.enabled).toBe(true);
+    expect(settings.timeouts).toEqual({
+      diagnosticsMs: 100,
+      initializeMs: 400,
+      requestMs: 300,
+      shutdownMs: 5000,
+    });
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("project lsp.timeouts.diagnosticsMs"),
+      expect.stringContaining("project lsp.timeouts.unknownTimeoutField"),
+    ]);
+  });
+
+  test.each([
     {
       lsp: {
         servers: {
@@ -191,13 +253,17 @@ describe("resolveLspSettings", () => {
       },
     },
     { lsp: { unknownLspField: true } },
-  ])("reports strict unknown fields without enabling startup", async (globalSettings) => {
-    const settingsManager = await createSettingsReader(globalSettings, {}, true);
+  ])("reports strict unknown fields while retaining valid settings", async (globalSettings) => {
+    const settingsManager = await createSettingsReader(
+      { lsp: { servers: { valid: typescriptServer("valid-lsp") } } },
+      globalSettings,
+      true,
+    );
 
     const settings = resolveLspSettings(settingsManager);
 
-    expect(settings.enabled).toBe(false);
-    expect(settings.servers).toEqual(new Map());
-    expect(settings.warnings).toEqual([expect.stringContaining("global lsp")]);
+    expect(settings.enabled).toBe(true);
+    expect(settings.servers.get("valid")).toMatchObject({ command: "valid-lsp" });
+    expect(settings.warnings).toEqual([expect.stringContaining("project lsp")]);
   });
 });

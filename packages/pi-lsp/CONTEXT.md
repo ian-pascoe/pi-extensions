@@ -9,7 +9,7 @@
 - **Workspace Edit Preview** — a proposed set of language-server changes with the source versions needed to reject a stale application.
 - **Validated Workspace Edit** — a Workspace Edit Preview whose source versions and paths still match at application time. It is applied as one guarded batch with rollback on failure, not as a crash-atomic filesystem transaction.
 - **Result Spill** — the complete LSP operation output referenced when the model-visible result reaches Pi's standard output limit.
-- **Server Definition** — a configured language-server command, language mapping, workspace-root policy, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID.
+- **Server Definition** — a configured language-server command, language mapping, workspace-root policy, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID; an invalid project replacement shadows the global definition and is quarantined.
 - **Server Instance** — one running language-server process for a Server Definition and a detected workspace root.
 - **Mutation Manifest** — the exact file operations and absolute paths of a Validated Workspace Edit exposed to Pi's pre-execution tool hooks.
 

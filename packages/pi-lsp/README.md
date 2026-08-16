@@ -64,8 +64,9 @@ Global and project timeouts merge by field. A project server replaces the comple
 with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
 during initialization. `settings` is used for `workspace/didChangeConfiguration` and
 `workspace/configuration`. Environment strings override `process.env`; `null` removes a variable.
-A malformed layer or unknown field disables LSP startup and remains visible through `status`.
-Untrusted project settings are ignored.
+Invalid server definitions and timeout fields are quarantined individually and remain visible
+through `status`; unrelated valid settings continue to work. An invalid project server replacement
+still shadows the global definition. Untrusted project settings are ignored.
 
 Pi's `/reload` reloads configuration. Servers start on first use, live for one Pi session, and stay
 unavailable after a process or protocol failure until `restart` or `/reload`.

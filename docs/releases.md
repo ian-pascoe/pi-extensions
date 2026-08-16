@@ -10,7 +10,8 @@ This is the release procedure. Migration implementation publishes nothing.
   migration patch Changesets.
 - `@ian-pascoe/pi-minimal-subagents`,
   `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
-  `@ian-pascoe/pi-git-status-widget`, and `@ian-pascoe/pi-lsp` bootstrap
+  `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-formatter`, and
+  `@ian-pascoe/pi-lsp` bootstrap
   manually at `0.1.0`; do not add bootstrap Changesets.
 - Use `pnpm changeset` for releasable changes and inspect them with
   `pnpm changeset:status`. The workflow creates version PRs with
@@ -29,7 +30,7 @@ and the Git-install check. It must pass before a version PR or publish.
 
 ## Initial scoped-package bootstrap
 
-After approval and merge, a human publishes the five scoped packages at `0.1.0`
+After approval and merge, a human publishes the six scoped packages at `0.1.0`
 from each package directory:
 
 ```bash
@@ -38,13 +39,13 @@ npm publish --access public --provenance=false
 
 Publish only `@ian-pascoe/pi-minimal-subagents`,
 `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
-`@ian-pascoe/pi-git-status-widget`, and `@ian-pascoe/pi-lsp`. Verify each name,
-version, and tarball first. This is the one-time provenance exception; later
-releases use OIDC.
+`@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-formatter`, and
+`@ian-pascoe/pi-lsp`. Verify each name, version, and tarball first. This is the
+one-time provenance exception; later releases use OIDC.
 
 ## Trusted publishing and guarded automation
 
-Configure npm Trusted Publishing for all seven packages with repository
+Configure npm Trusted Publishing for all eight packages with repository
 `ian-pascoe/pi-extensions`, workflow `.github/workflows/release.yml`, and
 protected GitHub environment `npm`. Then set repository variable
 `NPM_PUBLISH_ENABLED=true`.

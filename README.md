@@ -17,6 +17,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-bible-verses`](packages/pi-bible-verses)           | Offline rotating verse working messages.                      | `pi install npm:@ian-pascoe/pi-bible-verses`      |
 | [`@ian-pascoe/pi-tps-tracker`](packages/pi-tps-tracker)             | Assistant output-token throughput.                            | `pi install npm:@ian-pascoe/pi-tps-tracker`       |
 | [`@ian-pascoe/pi-git-status-widget`](packages/pi-git-status-widget) | Refreshing Git worktree status.                               | `pi install npm:@ian-pascoe/pi-git-status-widget` |
+| [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                 | Configured automatic post-edit formatting.                    | `pi install npm:@ian-pascoe/pi-formatter`         |
 | [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                             | Configured language-server tools and post-edit diagnostics.   | `pi install npm:@ian-pascoe/pi-lsp`               |
 
 ## Install the collection from Git
@@ -51,6 +52,7 @@ packages/pi-minimal-subagents/src/index.ts
 packages/pi-bible-verses/src/index.ts
 packages/pi-tps-tracker/src/index.ts
 packages/pi-git-status-widget/src/index.ts
+packages/pi-formatter/src/index.ts
 packages/pi-lsp/src/index.ts
 ```
 
@@ -67,6 +69,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Minimal Subagents can use optional `trash`; deletion otherwise unlinks.
 - TPS Tracker can use optional `tiktoken`; absent official usage and tokenizer,
   it estimates four characters per token.
+- Pi Formatter requires separately installed formatter binaries.
 - Pi LSP requires separately installed language-server binaries. This repository
   uses the installed TypeScript 7 `tsc --lsp --stdio` server.
 
@@ -94,6 +97,7 @@ pnpm --filter @ian-pascoe/pi-minimal-subagents test
 pnpm --filter @ian-pascoe/pi-bible-verses test
 pnpm --filter @ian-pascoe/pi-tps-tracker test
 pnpm --filter @ian-pascoe/pi-git-status-widget test
+pnpm --filter @ian-pascoe/pi-formatter test
 pnpm --filter @ian-pascoe/pi-lsp test
 ```
 
