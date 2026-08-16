@@ -4,6 +4,7 @@
 
 - **LSP Diagnostic** — a source-code problem reported by a language server. This is distinct from Pi's resource-loading diagnostics.
 - **Post-edit Diagnostics** — LSP Diagnostics for affected files appended to a Supported Mutation Tool result, including a partial failure that changed files.
+- **Post-edit Diagnostics Entry** — a model-invisible session transcript summary of reportable Post-edit Diagnostic outcomes from one assistant tool batch. It complements, but does not duplicate in model context, the diagnostics appended to mutation results.
 - **Supported Mutation Tool** — a file-modifying Pi tool whose affected paths the extension can identify exactly. Native `edit`, native `write`, Codex-style `apply_patch`, and LSP preview application are the initial Supported Mutation Tools.
 - **Workspace Edit Preview** — a proposed set of language-server changes with the source versions needed to reject a stale application.
 - **Validated Workspace Edit** — a Workspace Edit Preview whose source versions and paths still match at application time. It is applied as one guarded batch with rollback on failure, not as a crash-atomic filesystem transaction.

@@ -19,8 +19,15 @@ import {
   appendPiPostEditDiagnostics,
   type PostEditDiagnosticOutcome,
   type PostEditDiagnosticPath,
+  type PostEditDiagnosticsResultPatch,
   type PostEditDiagnosticsRunner,
 } from "./lsp-post-edit-diagnostics.js";
+import {
+  createPostEditDiagnosticsEntryData,
+  POST_EDIT_DIAGNOSTICS_ENTRY_TYPE,
+  PostEditDiagnosticsEntryDataSchema,
+  renderPostEditDiagnosticsEntry,
+} from "./lsp-post-edit-diagnostics-rendering.js";
 import {
   convertLspProtocolPosition,
   normalizeLspPositionEncoding,
@@ -189,9 +196,7 @@ async function appendSessionPostEditDiagnostics(
   event: ToolResultEvent,
   session: ActivePiLspSession,
   context: ExtensionContext,
-): Promise<
-  { readonly content: ToolResultEvent["content"]; readonly isError?: boolean } | undefined
-> {
+): Promise<PostEditDiagnosticsResultPatch | undefined> {
   const patch = await appendPiPostEditDiagnostics(
     event,
     new ManagerPostEditDiagnosticsRunner(session, context.signal),
@@ -216,13 +221,16 @@ async function appendSessionPostEditDiagnostics(
     Value.Check(LspToolResultDetailsSchema, event.details) &&
     event.details.kind === "workspace_edit_apply" &&
     event.details.state === "partial_failure";
-  return partialApplyFailure
-    ? { content: [...event.content, appended], isError: true }
-    : { content: [...event.content, appended] };
+  return {
+    ...patch,
+    content: [...event.content, appended],
+    isError: partialApplyFailure || patch.isError,
+  };
 }
 
 /** Own settings, tool registration, replay, diagnostics middleware, and resource shutdown for one extension instance. */
 export class PiLspLifecycleController {
+  private readonly pendingPostEditDiagnosticOutcomes: PostEditDiagnosticOutcome[] = [];
   private session: ActivePiLspSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private toolRegistered = false;
@@ -233,15 +241,22 @@ export class PiLspLifecycleController {
     private readonly effects: PiLspLifecycleEffects,
   ) {}
 
-  /** Register exactly the session start, tool result, and session shutdown handlers owned by Pi LSP. */
+  /** Register Pi LSP lifecycle handlers and model-invisible diagnostics entry rendering. */
   register(): void {
+    this.pi.registerEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, (entry, { expanded }, theme) =>
+      Value.Check(PostEditDiagnosticsEntryDataSchema, entry.data)
+        ? renderPostEditDiagnosticsEntry(entry.data, expanded, theme)
+        : undefined,
+    );
     this.pi.on("session_start", (_event, context) => this.startSession(context));
     this.pi.on("tool_result", (event, context) => this.handleToolResult(event, context));
+    this.pi.on("turn_end", () => this.flushPostEditDiagnosticsEntry());
     this.pi.on("session_shutdown", () => this.shutdownSession());
   }
 
   private async startSession(context: ExtensionContext): Promise<void> {
     await this.shutdownSession();
+    this.pendingPostEditDiagnosticOutcomes.length = 0;
     const settingsManager = SettingsManager.create(context.cwd, this.effects.getAgentDirectory(), {
       projectTrusted: context.isProjectTrusted(),
     });
@@ -303,13 +318,29 @@ export class PiLspLifecycleController {
     context: ExtensionContext,
   ):
     | Promise<
-        { readonly content: ToolResultEvent["content"]; readonly isError?: boolean } | undefined
+        | {
+            readonly content: ToolResultEvent["content"];
+            readonly details: ToolResultEvent["details"];
+            readonly isError: boolean;
+          }
+        | undefined
       >
     | undefined {
     const session = this.session;
-    return session === undefined
-      ? undefined
-      : appendSessionPostEditDiagnostics(event, session, context);
+    if (session === undefined) return undefined;
+    return appendSessionPostEditDiagnostics(event, session, context).then((patch) => {
+      if (patch === undefined) return undefined;
+      this.pendingPostEditDiagnosticOutcomes.push(...patch.outcomes);
+      return { content: patch.content, details: patch.details, isError: patch.isError };
+    });
+  }
+
+  private flushPostEditDiagnosticsEntry(): void {
+    const session = this.session;
+    const outcomes = this.pendingPostEditDiagnosticOutcomes.splice(0);
+    if (session === undefined) return;
+    const entry = createPostEditDiagnosticsEntryData(session.cwd, outcomes);
+    if (entry !== undefined) this.pi.appendEntry(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, entry);
   }
 
   private async shutdownSession(): Promise<void> {
@@ -319,6 +350,7 @@ export class PiLspLifecycleController {
     }
     const session = this.session;
     this.session = undefined;
+    this.pendingPostEditDiagnosticOutcomes.length = 0;
     const shutdown = (async () => {
       try {
         await session.manager.shutdown();

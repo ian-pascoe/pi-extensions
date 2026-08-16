@@ -78,6 +78,7 @@ import {
   createLspToolOutput as createBaseLspToolOutput,
   formatLspToolValue,
 } from "./lsp-tool-output.js";
+import { renderLspToolCall, renderLspToolResult } from "./lsp-tool-rendering.js";
 import { LspWorkspaceEditError, type LspWorkspaceEditStore } from "./lsp-workspace-edit.js";
 
 const ProtocolRecordSchema = Type.Record(Type.String(), Type.Any());
@@ -1055,6 +1056,10 @@ export function createLspToolDefinition(
       "Use lsp read operations for semantic source navigation and diagnostics; use preview-producing lsp operations followed by lsp apply for language-server mutations.",
     ],
     parameters: LspToolParametersSchema,
+    renderCall: (argumentsValue, theme, context) =>
+      renderLspToolCall(argumentsValue, theme, context.expanded),
+    renderResult: (result, options, theme, context) =>
+      renderLspToolResult(result, options, theme, context.isError),
     prepareArguments(argumentsValue) {
       if (!Value.Check(ApplyPreviewArgumentsSchema, argumentsValue)) {
         return parseLspToolParameters(argumentsValue);

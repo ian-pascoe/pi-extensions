@@ -109,6 +109,11 @@ Workspace diagnostics use protocol workspace pull when available and cached push
 otherwise. They never crawl the project to open files. Non-file result URIs such as `jar:` remain
 readable.
 
+In Pi's interactive transcript, each LSP call stays compact until tool output is expanded. The
+collapsed row shows the operation, target, and outcome; the expanded row adds structured server or
+mutation details followed by the exact tool output. Rendering uses Pi's active theme and native
+tool-output expansion controls.
+
 ## Workspace Edit Preview and apply
 
 `rename`, formatting, and edit-bearing code actions return a persisted Workspace Edit Preview.
@@ -159,6 +164,11 @@ Changed, created, and renamed destination files are diagnosed; deleted files are
 recognized result gets an explicit outcome, including `no diagnostics`, `no configured server`,
 timeout, unavailable server, or an `apply_patch` adapter-version warning. Diagnostics preserve
 duplicates from independent servers and never change the original tool's success or error state.
+
+Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
+Post-edit Diagnostics Entry after the current tool batch. Clean results and files without a
+configured server stay silent in the transcript. This entry is excluded from model context; the
+model sees diagnostics only in the original mutation result.
 
 ## Limits and lifecycle
 

@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   DefaultResourceLoader,
   ExtensionRunner,
@@ -11,10 +12,13 @@ import {
   type SessionShutdownEvent,
   type SessionStartEvent,
   type ToolResultEvent,
+  type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
+import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
+import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -31,11 +35,14 @@ async function makeTemporaryDirectory(prefix: string): Promise<string> {
   return directory;
 }
 
-async function createExtensionHarness(projectTrusted: boolean): Promise<ExtensionHarness> {
+async function createExtensionHarness(
+  projectTrusted: boolean,
+  globalSettings: LspSettingsDocumentInput = {},
+): Promise<ExtensionHarness> {
   const cwd = await makeTemporaryDirectory("pi-lsp-extension-cwd-");
   const agentDirectory = await makeTemporaryDirectory("pi-lsp-extension-agent-");
   const sessionDirectory = await makeTemporaryDirectory("pi-lsp-extension-sessions-");
-  await writeFile(resolve(agentDirectory, "settings.json"), "{}\n");
+  await writeFile(resolve(agentDirectory, "settings.json"), JSON.stringify(globalSettings));
   await mkdir(resolve(cwd, ".pi"));
   await writeFile(
     resolve(cwd, ".pi/settings.json"),
@@ -128,6 +135,26 @@ async function shutdownExtension(harness: ExtensionHarness): Promise<void> {
     type: "session_shutdown",
     reason: "quit",
   } satisfies SessionShutdownEvent);
+}
+
+function completedAssistantMessage(): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: "Applied changes" }],
+    api: "openai-responses",
+    provider: "openai",
+    model: "test-model",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  };
 }
 
 async function piLspSessionDirectories(sessionDirectory: string): Promise<string[]> {
@@ -361,6 +388,79 @@ describe("Pi LSP extension lifecycle", () => {
     await startExtension(harness);
     expect(harness.notifications).toContainEqual(expect.stringContaining("project lsp"));
     expect(harness.runner.getAllRegisteredTools()).toHaveLength(1);
+    await shutdownExtension(harness);
+  });
+
+  test("appends one model-invisible diagnostics entry after a tool batch with findings", async () => {
+    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        timeouts: { diagnosticsMs: 1_000, initializeMs: 5_000, shutdownMs: 1_000 },
+        servers: {
+          fake: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            environment: { FAKE_DIAGNOSTICS: "one" },
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+        },
+      },
+    });
+    await startExtension(harness);
+    const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
+    await writeFile(filePath, "const value: string = 1;\n");
+
+    const originalDetails = { bytesWritten: 25 };
+    const augmented = await harness.runner.emitToolResult({
+      type: "tool_result",
+      toolCallId: "write-with-diagnostic",
+      toolName: "write",
+      input: { path: filePath, content: "const value: string = 1;\n" },
+      content: [{ type: "text", text: "Wrote source.ts" }],
+      details: originalDetails,
+      isError: false,
+    } satisfies ToolResultEvent);
+    expect(augmented?.details).toBe(originalDetails);
+    expect(augmented?.content?.at(-1)).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("fake diagnostic"),
+    });
+    expect(
+      harness.sessionManager
+        .getBranch()
+        .filter(
+          (entry) =>
+            entry.type === "custom" && entry.customType === POST_EDIT_DIAGNOSTICS_ENTRY_TYPE,
+        ),
+    ).toEqual([]);
+
+    await harness.runner.emit({
+      type: "turn_end",
+      turnIndex: 0,
+      message: completedAssistantMessage(),
+      toolResults: [],
+    } satisfies TurnEndEvent);
+
+    const entries = harness.sessionManager
+      .getBranch()
+      .filter(
+        (entry) => entry.type === "custom" && entry.customType === POST_EDIT_DIAGNOSTICS_ENTRY_TYPE,
+      );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      data: {
+        cwd: harness.sessionManager.getCwd(),
+        outcomes: [
+          {
+            kind: "diagnostic",
+            diagnostic: { serverId: "fake", path: filePath, message: "fake diagnostic" },
+          },
+        ],
+      },
+    });
+    expect(harness.runner.getEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE)).toBeTypeOf(
+      "function",
+    );
     await shutdownExtension(harness);
   });
 });

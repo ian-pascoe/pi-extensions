@@ -42,30 +42,60 @@ export interface PostEditDiagnosticPath {
   readonly path: string;
 }
 
+/** Runtime schema for one normalized LSP Diagnostic appended to a mutation result. */
+export const PostEditLspDiagnosticSchema = Type.Object(
+  {
+    serverId: Type.String({ minLength: 1 }),
+    path: Type.String({ minLength: 1 }),
+    line: Type.Integer({ minimum: 1 }),
+    character: Type.Integer({ minimum: 1 }),
+    severity: Type.Number(),
+    message: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
 /** A normalized LSP Diagnostic appended to a mutation result. */
-export interface PostEditLspDiagnostic {
-  /** Language server that produced this independent diagnostic. */
-  readonly serverId: string;
-  /** File path reported by the language server. */
-  readonly path: string;
-  /** One-based source line. */
-  readonly line: number;
-  /** One-based Unicode-code-point character. */
-  readonly character: number;
-  /** LSP DiagnosticSeverity value; lower values are more severe. */
-  readonly severity: number;
-  /** User-readable language-server diagnostic message. */
-  readonly message: string;
-}
+export type PostEditLspDiagnostic = Static<typeof PostEditLspDiagnosticSchema>;
+
+/** Runtime schema for reportable and intentionally silent Post-edit Diagnostic outcomes. */
+export const PostEditDiagnosticOutcomeSchema = Type.Union([
+  Type.Object(
+    { kind: Type.Literal("diagnostic"), diagnostic: PostEditLspDiagnosticSchema },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("no_diagnostics"), path: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("no_configured_server"), path: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("timeout"),
+      path: Type.String({ minLength: 1 }),
+      serverId: Type.Optional(Type.String({ minLength: 1 })),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("unavailable_server"),
+      path: Type.String({ minLength: 1 }),
+      serverId: Type.Optional(Type.String({ minLength: 1 })),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("warning"), message: Type.String() },
+    { additionalProperties: false },
+  ),
+]);
 
 /** An explicit outcome when fresh diagnostics cannot be represented as a diagnostic. */
-export type PostEditDiagnosticOutcome =
-  | { readonly kind: "diagnostic"; readonly diagnostic: PostEditLspDiagnostic }
-  | { readonly kind: "no_diagnostics"; readonly path: string }
-  | { readonly kind: "no_configured_server"; readonly path: string }
-  | { readonly kind: "timeout"; readonly path: string; readonly serverId?: string }
-  | { readonly kind: "unavailable_server"; readonly path: string; readonly serverId?: string }
-  | { readonly kind: "warning"; readonly message: string };
+export type PostEditDiagnosticOutcome = Static<typeof PostEditDiagnosticOutcomeSchema>;
 
 /** Runs fresh Post-edit Diagnostics for changed paths after a Supported Mutation Tool result. */
 export interface PostEditDiagnosticsRunner {
@@ -101,6 +131,8 @@ export interface PostEditDiagnosticsResultPatch {
   readonly isError: boolean;
   /** Original usage retained when Pi supplied it. */
   readonly usage?: ToolResultEvent["usage"];
+  /** Fresh outcomes retained for model-invisible transcript presentation. */
+  readonly outcomes: readonly PostEditDiagnosticOutcome[];
 }
 
 type ExtractedMutation = {
@@ -245,6 +277,7 @@ export async function appendPostEditDiagnostics(
     content: [...event.content, { type: "text", text: formatPostEditDiagnostics(outcomes) }],
     details: event.details,
     isError: event.isError,
+    outcomes,
   };
   return event.usage === undefined ? patch : { ...patch, usage: event.usage };
 }
