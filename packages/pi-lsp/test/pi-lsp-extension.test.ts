@@ -403,6 +403,12 @@ describe("Pi LSP extension lifecycle", () => {
             environment: { FAKE_DIAGNOSTICS: "one" },
             languages: [{ extensions: [".ts"], languageId: "typescript" }],
           },
+          formattingOnly: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            environment: { FAKE_NO_PULL: "1", FAKE_PUSH: "none" },
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
         },
       },
     });
@@ -424,6 +430,9 @@ describe("Pi LSP extension lifecycle", () => {
     expect(augmented?.content?.at(-1)).toMatchObject({
       type: "text",
       text: expect.stringContaining("fake diagnostic"),
+    });
+    expect(augmented?.content?.at(-1)).toMatchObject({
+      text: expect.not.stringContaining("formattingOnly"),
     });
     expect(
       harness.sessionManager

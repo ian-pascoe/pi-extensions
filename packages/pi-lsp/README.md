@@ -165,6 +165,8 @@ Changed, created, and renamed destination files are diagnosed; deleted files are
 recognized result gets an explicit outcome, including `no diagnostics`, `no configured server`,
 timeout, unavailable server, or an `apply_patch` adapter-version warning. Diagnostics preserve
 duplicates from independent servers and never change the original tool's success or error state.
+Only servers that advertise document diagnostics participate; formatting-only servers remain
+available for explicit LSP formatting operations without appearing in Post-edit Diagnostics.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. Clean results and files without a

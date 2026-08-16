@@ -14,7 +14,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { PositionEncodingKind, type Diagnostic } from "vscode-languageserver-protocol/node";
+import {
+  DocumentDiagnosticRequest,
+  PositionEncodingKind,
+  type Diagnostic,
+} from "vscode-languageserver-protocol/node";
 import {
   appendPiPostEditDiagnostics,
   type PostEditDiagnosticOutcome,
@@ -154,7 +158,7 @@ class ManagerPostEditDiagnosticsRunner implements PostEditDiagnosticsRunner {
       const result = await this.session.manager.runRead(
         filePath,
         undefined,
-        () => true,
+        (client) => client.hasCapability(DocumentDiagnosticRequest.method),
         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {
           const diagnostics = await client.documentDiagnostics(
             filePath,
@@ -185,7 +189,9 @@ class ManagerPostEditDiagnosticsRunner implements PostEditDiagnosticsRunner {
       const successfulOutcomes = result.successes.flatMap(({ value }) => value);
       outcomes.push(...successfulOutcomes);
       outcomes.push(
-        ...result.failures.map((failure) => failureDiagnosticOutcome(filePath, failure)),
+        ...result.failures.flatMap((failure) =>
+          failure.code === "no-capable-server" ? [] : [failureDiagnosticOutcome(filePath, failure)],
+        ),
       );
     }
     return outcomes;

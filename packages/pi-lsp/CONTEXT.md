@@ -27,4 +27,4 @@ When several Server Instances handle a read, successful results remain useful ev
 
 The extension does not own language-server installation, a built-in server catalog, formatting outside LSP, static parsing, or debugging. Those capabilities belong in separate additions only after demonstrated need.
 
-Post-edit Diagnostics apply whenever a Supported Mutation Tool reports affected files, including partial failures. A successful mutation remains successful when Post-edit Diagnostics are unavailable. Pi's standard output limit never discards LSP output; excess output remains available as a Result Spill.
+Post-edit Diagnostics apply whenever a Supported Mutation Tool reports affected files, including partial failures. Only Server Instances that advertise document diagnostics participate. A successful mutation remains successful when Post-edit Diagnostics are unavailable. Pi's standard output limit never discards LSP output; excess output remains available as a Result Spill.
