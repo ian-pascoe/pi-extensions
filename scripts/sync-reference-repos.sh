@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+unset $(git rev-parse --local-env-vars)
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 REPOS_DIR="$PROJECT_ROOT/.repos"
 
 mkdir -p "$REPOS_DIR"
