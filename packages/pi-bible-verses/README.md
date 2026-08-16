@@ -11,7 +11,7 @@ pi install npm:@ian-pascoe/pi-bible-verses
 pi -e ./src/index.ts
 ```
 
-The extension has no settings, network access, or external data loading. Its **Offline Verse Pool** is a static set of 291 passages. A process-scoped **Recent Passage Window** excludes the 20 most recently selected passage IDs, so a selected passage cannot repeat until it leaves that window.
+The extension has no settings, network access, or external data loading. Its **Offline Verse Pool** is a static set of 291 passages. A process-scoped **Recent Passage Window** excludes the 20 most recently selected passage objects, so a selected passage cannot repeat until it leaves that window.
 
 At turn start, the extension sets Pi's **Working Message** to:
 

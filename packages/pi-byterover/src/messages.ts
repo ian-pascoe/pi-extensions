@@ -2,7 +2,6 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai";
 
 export type PiSessionMessage = { id: string; role: "user" | "assistant"; text: string };
-export type SessionMessage = PiSessionMessage;
 
 const extractUserText = (content: string | (TextContent | ImageContent)[]) => {
   if (!Array.isArray(content)) return content;
@@ -48,13 +47,8 @@ export const turnKey = (messages: readonly PiSessionMessage[]) => {
 };
 
 export const selectMessagesInTurn = (messages: readonly PiSessionMessage[]) => {
-  const selected: PiSessionMessage[] = [];
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]!;
-    selected.unshift(message);
-    if (message.role === "user") break;
-  }
-  return selected;
+  const latestUserMessageIndex = messages.findLastIndex((message) => message.role === "user");
+  return messages.slice(latestUserMessageIndex === -1 ? 0 : latestUserMessageIndex);
 };
 
 export const selectMessagesForRecall = (

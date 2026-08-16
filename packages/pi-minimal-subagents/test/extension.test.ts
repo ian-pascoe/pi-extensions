@@ -39,7 +39,6 @@ import type {
   PersistedAgent,
   PersistedSessionIdentity,
   RegistrySnapshot,
-  RuntimeCreationRequest,
   RuntimeProfile,
   RuntimeTurnOutcome,
 } from "../src/minimal-subagents-types.js";
@@ -59,8 +58,6 @@ const TEST_MODEL: Model<"openai-completions"> = {
 };
 
 class RecordingChildRuntime implements ChildAgentRuntime {
-  readonly sessionFile: string;
-  readonly sessionId: string;
   readonly sessionLeafId: string;
   isRunning = false;
   abortCount = 0;
@@ -72,8 +69,6 @@ class RecordingChildRuntime implements ChildAgentRuntime {
     private readonly holdPrompt: boolean,
     private readonly abortGate: Promise<void> | undefined,
   ) {
-    this.sessionFile = `/recording-sessions/${agentId}.jsonl`;
-    this.sessionId = `session-${agentId}`;
     this.sessionLeafId = `leaf-${agentId}`;
   }
 
@@ -122,7 +117,7 @@ class RecordingChildRuntime implements ChildAgentRuntime {
 
 class RecordingAgentSessionFactory implements AgentSessionFactory {
   readonly createdAgentIds: string[] = [];
-  readonly restoredAgentIds: string[] = [];
+  readonly openedAgentIds: string[] = [];
   readonly clonedAgentIds: string[] = [];
   readonly adoptedAgentIds: string[] = [];
   readonly trashedAgentIds: string[] = [];
@@ -139,13 +134,8 @@ class RecordingAgentSessionFactory implements AgentSessionFactory {
     };
   }
 
-  async createRuntime(request: RuntimeCreationRequest): Promise<ChildAgentRuntime> {
-    const runtime = this.runtimeFor(request.agent.agent_id);
-    return runtime;
-  }
-
-  async restoreRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime> {
-    this.restoredAgentIds.push(agent.agent_id);
+  async openRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime> {
+    this.openedAgentIds.push(agent.agent_id);
     return this.runtimeFor(agent.agent_id);
   }
 
@@ -532,7 +522,7 @@ describe("minimal subagents extension lifecycle", () => {
     const harness = await createExtensionHarness(sessionManager);
 
     await harness.runner.emit(sessionStartEvent());
-    expect(harness.sessionFactory.restoredAgentIds).toEqual(["branch-a"]);
+    expect(harness.sessionFactory.openedAgentIds).toEqual(["branch-a"]);
 
     sessionManager.branch(branchPoint);
     appendRegistryCheckpoint(sessionManager, sessionManager.getSessionId(), {
@@ -541,7 +531,7 @@ describe("minimal subagents extension lifecycle", () => {
       deliveries: [],
     });
     await harness.runner.emit(sessionTreeEvent);
-    expect(harness.sessionFactory.restoredAgentIds).toEqual(["branch-a", "branch-b"]);
+    expect(harness.sessionFactory.openedAgentIds).toEqual(["branch-a", "branch-b"]);
 
     await emitSessionShutdown(harness, "quit");
   });
@@ -655,7 +645,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.extensionErrors).toEqual([]);
     expect(harness.sessionFactory.clonedAgentIds).toEqual(["selected-child"]);
     expect(harness.sessionFactory.adoptedAgentIds).toEqual(["selected-child"]);
-    expect(harness.sessionFactory.restoredAgentIds).toEqual(["selected-child"]);
+    expect(harness.sessionFactory.openedAgentIds).toEqual(["selected-child"]);
     expect(harness.sessionFactory.clonedAgentIds).not.toContain("newer-source-head");
     expect(
       replayRegistryEntries(destination.getBranch(), destination.getSessionId()).tombstones,

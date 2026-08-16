@@ -8,7 +8,7 @@ export function formatBibleVerseMessage(message: BibleVerseMessage): string {
   return `${message.text} — ${message.reference} (${message.translation})`;
 }
 
-/** Creates an independent random picker that excludes recently returned passage IDs. */
+/** Creates an independent random picker that excludes recently returned passage objects. */
 export function createBibleVersePicker(
   messages: readonly BibleVerseMessage[] = bibleVerseMessages,
   recentLimit = RECENT_BIBLE_VERSE_LIMIT,
@@ -19,19 +19,19 @@ export function createBibleVersePicker(
     );
   }
 
-  const recentMessageIds: string[] = [];
+  const recentMessages: BibleVerseMessage[] = [];
 
   return (random = Math.random) => {
-    const availableMessages = messages.filter((message) => !recentMessageIds.includes(message.id));
+    const availableMessages = messages.filter((message) => !recentMessages.includes(message));
     const randomIndex = Math.floor(random() * availableMessages.length);
     const message = availableMessages[randomIndex];
     if (!message) {
       throw new Error(`Bible verse picker received an out-of-range random index: ${randomIndex}`);
     }
 
-    recentMessageIds.push(message.id);
-    if (recentMessageIds.length > recentLimit) {
-      recentMessageIds.shift();
+    recentMessages.push(message);
+    if (recentMessages.length > recentLimit) {
+      recentMessages.shift();
     }
 
     return message;

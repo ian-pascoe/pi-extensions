@@ -9,7 +9,6 @@ import {
   type ToolDefinition,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
-import type { Static } from "typebox";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
 import {
@@ -51,27 +50,6 @@ export interface CoordinatorToolDefinitionOptions {
   captureCaller: (context: ExtensionContext) => CallerSnapshot;
   onActivity?: () => void;
   onAttention?: (message: string) => void;
-}
-
-/** Arguments consumed by the wait tool's narrow coordinator execution seam. */
-export type CoordinatorWaitToolParameters = Static<
-  ReturnType<typeof createCoordinatorToolSchemas>["subagent_wait"]
->;
-
-/** Forward one typed wait-tool request without requiring an unrelated Pi execution context. */
-export function executeCoordinatorWaitTool(
-  coordinator: Pick<CoordinatorToolOperations, "wait">,
-  callerId: string,
-  parameters: CoordinatorWaitToolParameters,
-  signal: AbortSignal | undefined,
-): Promise<WaitResult> {
-  return coordinator.wait(
-    callerId,
-    parameters.agent_id,
-    parameters.timeout_ms,
-    signal,
-    parameters.turn_id,
-  );
 }
 
 function buildModelRolePromptGuidelines(
@@ -243,11 +221,12 @@ export function createCoordinatorToolDefinitions(
       waitingInterval.unref?.();
       try {
         return await runCoordinatorToolActivity(options, async () => {
-          const result = await executeCoordinatorWaitTool(
-            options.coordinator,
+          const result = await options.coordinator.wait(
             options.callerId,
-            parameters,
+            parameters.agent_id,
+            parameters.timeout_ms,
             signal,
+            parameters.turn_id,
           );
           return {
             ...structuredToolResult(result),

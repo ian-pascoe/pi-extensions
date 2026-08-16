@@ -51,8 +51,8 @@ interface MinimalSubagentsSettingsDocument {
 }
 
 interface MinimalSubagentsConfigInput {
-  globalSettings: MinimalSubagentsSettingsDocument;
-  projectSettings: MinimalSubagentsSettingsDocument;
+  globalSettings: MinimalSubagentsSettingsDocumentInput;
+  projectSettings: MinimalSubagentsSettingsDocumentInput;
   eligibleModelIds: readonly string[];
 }
 
@@ -126,19 +126,8 @@ function parseModelRolesWireValue(value: JsonValue): ModelRolesWireValue {
   };
 }
 
-function parsePiSettingsDocument(
-  settings: MinimalSubagentsSettingsDocumentInput,
-): MinimalSubagentsSettingsDocument {
-  if (!Value.Check(SettingsDocumentSchema, settings)) return {};
-  const parsed: MinimalSubagentsSettingsDocument = {};
-  if (settings.minimalSubagents !== undefined) {
-    parsed.minimalSubagents = settings.minimalSubagents;
-  }
-  return parsed;
-}
-
 function readMinimalSubagentsSettings(
-  settings: MinimalSubagentsSettingsDocument,
+  settings: MinimalSubagentsSettingsDocumentInput,
   scope: SettingsScope,
   warnings: string[],
 ): ParsedMinimalSubagentsSettings {
@@ -359,8 +348,8 @@ export function resolveMinimalSubagentsSettings(
   eligibleModelIds: readonly string[],
 ): ResolvedMinimalSubagentsConfig {
   return resolveMinimalSubagentsConfig({
-    globalSettings: parsePiSettingsDocument(settings.getGlobalSettings()),
-    projectSettings: parsePiSettingsDocument(settings.getProjectSettings()),
+    globalSettings: settings.getGlobalSettings(),
+    projectSettings: settings.getProjectSettings(),
     eligibleModelIds,
   });
 }

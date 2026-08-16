@@ -34,7 +34,6 @@ import {
   type RenderStatusAgent,
   type SpawnCallArguments,
   type SpawnRenderDetails,
-  type StatusCallArguments,
   type StatusRenderDetails,
   type WaitCallArguments,
   type WaitRenderDetails,
@@ -258,59 +257,6 @@ function renderManagementToolCall(
     0,
   );
 }
-
-type CoordinatorToolCallRenderers = {
-  readonly subagent: (args: SpawnCallArguments, theme: MinimalSubagentsRenderTheme) => Component;
-  readonly agent_message: (
-    args: MessageCallArguments,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-  readonly subagent_wait: (
-    args: WaitCallArguments,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-  readonly subagent_status: (
-    args: StatusCallArguments,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-  readonly subagent_cancel: (
-    args: ManagementCallArguments,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-  readonly subagent_delete: (
-    args: ManagementCallArguments,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-};
-
-const COORDINATOR_TOOL_CALL_RENDERERS = {
-  subagent: (args, theme) =>
-    new Text(
-      `${coordinatorToolCallTitle(theme, "Subagent")} ${theme.fg("accent", args.agent_id ?? "generated")}${coordinatorToolCallPreview(theme, args.task)}`,
-      0,
-      0,
-    ),
-  agent_message: (args, theme) =>
-    new Text(
-      `${coordinatorToolCallTitle(theme, "Message")} ${theme.fg("accent", args.agent_id ?? "parent")}${coordinatorToolCallPreview(theme, args.message)}`,
-      0,
-      0,
-    ),
-  subagent_wait: (args, theme) =>
-    new Text(
-      `${coordinatorToolCallTitle(theme, "Wait")} ${theme.fg("accent", args.agent_id ?? "agent")}`,
-      0,
-      0,
-    ),
-  subagent_status: (args, theme) =>
-    new Text(
-      `${coordinatorToolCallTitle(theme, "Status")} ${theme.fg("accent", args.agent_id ?? "children")}`,
-      0,
-      0,
-    ),
-  subagent_cancel: (args, theme) => renderManagementToolCall("Cancel", args, theme),
-  subagent_delete: (args, theme) => renderManagementToolCall("Delete", args, theme),
-} satisfies CoordinatorToolCallRenderers;
 
 function renderSpawnResult(
   details: SpawnRenderDetails,
@@ -660,51 +606,6 @@ function renderDeleteResult(
   return container;
 }
 
-type CoordinatorToolResultRenderers = {
-  readonly subagent: (
-    details: SpawnRenderDetails,
-    options: ToolRenderResultOptions,
-    theme: MinimalSubagentsRenderTheme,
-    args: SpawnCallArguments,
-  ) => Component;
-  readonly agent_message: (
-    details: MessageRenderDetails,
-    options: ToolRenderResultOptions,
-    theme: MinimalSubagentsRenderTheme,
-    args: MessageCallArguments,
-  ) => Component;
-  readonly subagent_wait: (
-    details: WaitRenderDetails,
-    options: ToolRenderResultOptions,
-    theme: MinimalSubagentsRenderTheme,
-    args: WaitCallArguments,
-  ) => Component;
-  readonly subagent_status: (
-    details: StatusRenderDetails,
-    options: ToolRenderResultOptions,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-  readonly subagent_cancel: (
-    details: CancelRenderDetails,
-    options: ToolRenderResultOptions,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-  readonly subagent_delete: (
-    details: DeleteRenderDetails,
-    options: ToolRenderResultOptions,
-    theme: MinimalSubagentsRenderTheme,
-  ) => Component;
-};
-
-const COORDINATOR_TOOL_RESULT_RENDERERS = {
-  subagent: renderSpawnResult,
-  agent_message: renderMessageResult,
-  subagent_wait: renderWaitResult,
-  subagent_status: renderStatusResult,
-  subagent_cancel: renderCancelResult,
-  subagent_delete: renderDeleteResult,
-} satisfies CoordinatorToolResultRenderers;
-
 /** Render one of the six coordinator tool calls with a shared native Pi grammar. */
 export function renderCoordinatorToolCall(
   toolName: CoordinatorToolName,
@@ -715,17 +616,33 @@ export function renderCoordinatorToolCall(
   if (parsed === undefined) return new Text(coordinatorToolCallTitle(theme, toolName), 0, 0);
   switch (parsed.toolName) {
     case "subagent":
-      return COORDINATOR_TOOL_CALL_RENDERERS.subagent(parsed.args, theme);
+      return new Text(
+        `${coordinatorToolCallTitle(theme, "Subagent")} ${theme.fg("accent", parsed.args.agent_id ?? "generated")}${coordinatorToolCallPreview(theme, parsed.args.task)}`,
+        0,
+        0,
+      );
     case "agent_message":
-      return COORDINATOR_TOOL_CALL_RENDERERS.agent_message(parsed.args, theme);
+      return new Text(
+        `${coordinatorToolCallTitle(theme, "Message")} ${theme.fg("accent", parsed.args.agent_id ?? "parent")}${coordinatorToolCallPreview(theme, parsed.args.message)}`,
+        0,
+        0,
+      );
     case "subagent_wait":
-      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_wait(parsed.args, theme);
+      return new Text(
+        `${coordinatorToolCallTitle(theme, "Wait")} ${theme.fg("accent", parsed.args.agent_id ?? "agent")}`,
+        0,
+        0,
+      );
     case "subagent_status":
-      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_status(parsed.args, theme);
+      return new Text(
+        `${coordinatorToolCallTitle(theme, "Status")} ${theme.fg("accent", parsed.args.agent_id ?? "children")}`,
+        0,
+        0,
+      );
     case "subagent_cancel":
-      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_cancel(parsed.args, theme);
+      return renderManagementToolCall("Cancel", parsed.args, theme);
     case "subagent_delete":
-      return COORDINATOR_TOOL_CALL_RENDERERS.subagent_delete(parsed.args, theme);
+      return renderManagementToolCall("Delete", parsed.args, theme);
   }
 }
 
@@ -743,44 +660,32 @@ export function renderCoordinatorToolResult(
   const parsedCall = parseCoordinatorToolCall(toolName, args);
   switch (parsedResult.toolName) {
     case "subagent":
-      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent(
+      return renderSpawnResult(
         parsedResult.details,
         options,
         theme,
         parsedCall?.toolName === "subagent" ? parsedCall.args : {},
       );
     case "agent_message":
-      return COORDINATOR_TOOL_RESULT_RENDERERS.agent_message(
+      return renderMessageResult(
         parsedResult.details,
         options,
         theme,
         parsedCall?.toolName === "agent_message" ? parsedCall.args : {},
       );
     case "subagent_wait":
-      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_wait(
+      return renderWaitResult(
         parsedResult.details,
         options,
         theme,
         parsedCall?.toolName === "subagent_wait" ? parsedCall.args : {},
       );
     case "subagent_status":
-      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_status(
-        parsedResult.details,
-        options,
-        theme,
-      );
+      return renderStatusResult(parsedResult.details, options, theme);
     case "subagent_cancel":
-      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_cancel(
-        parsedResult.details,
-        options,
-        theme,
-      );
+      return renderCancelResult(parsedResult.details, options, theme);
     case "subagent_delete":
-      return COORDINATOR_TOOL_RESULT_RENDERERS.subagent_delete(
-        parsedResult.details,
-        options,
-        theme,
-      );
+      return renderDeleteResult(parsedResult.details, options, theme);
   }
 }
 

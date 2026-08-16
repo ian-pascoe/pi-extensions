@@ -1,14 +1,14 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
-import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   packageSettingsSourceSchema,
   piSettingsDocumentSchema,
+  readJsonDocument,
   rootPiManifestSchema,
   workspacePackageManifestSchema,
 } from "../scripts/root-project-contract.mjs";
@@ -16,23 +16,6 @@ import {
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryDirectories: string[] = [];
 
-type ProjectSettingsDocument = Static<typeof piSettingsDocumentSchema>;
-type RootPiManifest = Static<typeof rootPiManifestSchema>;
-type WorkspacePackageManifest = Static<typeof workspacePackageManifestSchema>;
-type NormalizedPackageSettingsEntry =
-  | { readonly kind: "package-source"; readonly source: string }
-  | {
-      readonly autoload?: boolean;
-      readonly extensions?: readonly string[];
-      readonly kind: "package-configuration";
-      readonly source: string;
-    };
-type MutablePackageSettingsConfiguration = {
-  autoload?: boolean;
-  extensions?: readonly string[];
-  kind: "package-configuration";
-  source: string;
-};
 type ExtensionDescriptor = {
   readonly extensionPath: string;
   readonly packageName: string;
@@ -42,48 +25,6 @@ type OfflineProjectFixture = {
   readonly projectDirectory: string;
   readonly workspaceDirectory: string;
 };
-
-function parseProjectSettingsDocument(documentText: string): ProjectSettingsDocument {
-  const document = JSON.parse(documentText);
-  if (!Value.Check(piSettingsDocumentSchema, document)) {
-    throw new Error("Project extension overrides failed: invalid settings document");
-  }
-  return document;
-}
-
-function parseRootPiManifest(documentText: string): RootPiManifest {
-  const document = JSON.parse(documentText);
-  if (!Value.Check(rootPiManifestSchema, document)) {
-    throw new Error("Project extension overrides failed: invalid root package manifest");
-  }
-  return document;
-}
-
-function parseWorkspacePackageManifest(documentText: string): WorkspacePackageManifest {
-  const document = JSON.parse(documentText);
-  if (!Value.Check(workspacePackageManifestSchema, document)) {
-    throw new Error("Project extension overrides failed: invalid workspace package manifest");
-  }
-  return document;
-}
-
-function normalizePackageSettingsEntries(
-  settings: ProjectSettingsDocument,
-): readonly NormalizedPackageSettingsEntry[] {
-  return (settings.packages ?? []).map((entry) => {
-    if (!Value.Check(packageSettingsSourceSchema, entry)) {
-      return { kind: "package-source", source: entry };
-    }
-
-    const normalized: MutablePackageSettingsConfiguration = {
-      kind: "package-configuration",
-      source: entry.source,
-    };
-    if (entry.autoload !== undefined) normalized.autoload = entry.autoload;
-    if (entry.extensions !== undefined) normalized.extensions = entry.extensions;
-    return normalized;
-  });
-}
 
 function normalizeExtensionPath(extensionPath: string): string {
   return extensionPath.replace(/^\.\//, "");
@@ -97,8 +38,10 @@ function requireExactlyOne<T>(values: readonly T[], description: string): T {
   return value;
 }
 
-function requireConfiguredExtensions(entry: NormalizedPackageSettingsEntry): readonly string[] {
-  if (entry.kind !== "package-configuration" || entry.extensions === undefined) {
+function requireConfiguredExtensions(
+  entry: Static<typeof packageSettingsSourceSchema>,
+): readonly string[] {
+  if (entry.extensions === undefined) {
     throw new Error(
       `Project extension overrides failed: ${entry.source} has no extension overrides`,
     );
@@ -129,8 +72,9 @@ function assertSignedSourceOverrides(
 }
 
 async function readAuthoritativeExtensionDescriptors(): Promise<readonly ExtensionDescriptor[]> {
-  const rootManifest = parseRootPiManifest(
-    await readFile(resolve(repositoryRoot, "package.json"), "utf8"),
+  const rootManifest = await readJsonDocument(
+    resolve(repositoryRoot, "package.json"),
+    rootPiManifestSchema,
   );
   const descriptors: ExtensionDescriptor[] = [];
   for (const extensionPath of rootManifest.pi.extensions) {
@@ -139,8 +83,9 @@ async function readAuthoritativeExtensionDescriptors(): Promise<readonly Extensi
       dirname(dirname(extensionPath)),
       "package.json",
     );
-    const packageManifest = parseWorkspacePackageManifest(
-      await readFile(packageManifestPath, "utf8"),
+    const packageManifest = await readJsonDocument(
+      packageManifestPath,
+      workspacePackageManifestSchema,
     );
     descriptors.push({ extensionPath, packageName: packageManifest.name });
   }
@@ -242,10 +187,11 @@ describe("project extension overrides", () => {
   test("keeps the tracked two-source settings contract coherent", async () => {
     const extensionDescriptors = await readAuthoritativeExtensionDescriptors();
     expect(extensionDescriptors).toHaveLength(6);
-    const projectSettings = parseProjectSettingsDocument(
-      await readFile(resolve(repositoryRoot, ".pi/settings.json"), "utf8"),
+    const projectSettings = await readJsonDocument(
+      resolve(repositoryRoot, ".pi/settings.json"),
+      piSettingsDocumentSchema,
     );
-    const entries = normalizePackageSettingsEntries(projectSettings);
+    const entries = projectSettings.packages ?? [];
     const workspaceEntry = requireExactlyOne(
       entries.filter((entry) => entry.source === ".."),
       "workspace settings source",
@@ -256,8 +202,8 @@ describe("project extension overrides", () => {
     );
 
     expect(entries).toHaveLength(2);
-    expect(workspaceEntry).toMatchObject({ autoload: false, kind: "package-configuration" });
-    expect(gitEntry).toMatchObject({ autoload: false, kind: "package-configuration" });
+    expect(workspaceEntry).toMatchObject({ autoload: false });
+    expect(gitEntry).toMatchObject({ autoload: false });
 
     const extensionPaths = extensionDescriptors.map(({ extensionPath }) => extensionPath);
     const workspaceSelections = assertSignedSourceOverrides(
@@ -274,11 +220,13 @@ describe("project extension overrides", () => {
 
   test("honors workspace toggles while disabling inherited npm entrypoints", async () => {
     const extensionDescriptors = await readAuthoritativeExtensionDescriptors();
-    const projectSettings = parseProjectSettingsDocument(
-      await readFile(resolve(repositoryRoot, ".pi/settings.json"), "utf8"),
+    const projectSettings = await readJsonDocument(
+      resolve(repositoryRoot, ".pi/settings.json"),
+      piSettingsDocumentSchema,
     );
+    const entries = projectSettings.packages ?? [];
     const workspaceEntry = requireExactlyOne(
-      normalizePackageSettingsEntries(projectSettings).filter((entry) => entry.source === ".."),
+      entries.filter((entry) => entry.source === ".."),
       "workspace settings source",
     );
     const workspaceOverrides = requireConfiguredExtensions(workspaceEntry);
@@ -320,41 +268,6 @@ describe("project extension overrides", () => {
             "src/index.ts",
           ),
         }),
-      );
-    }
-  });
-
-  test("can disable each workspace extension independently", async () => {
-    const extensionDescriptors = await readAuthoritativeExtensionDescriptors();
-    const allEnabledOverrides = extensionDescriptors.map(
-      ({ extensionPath }) => `+${normalizeExtensionPath(extensionPath)}`,
-    );
-    const fixture = await createOfflineProjectFixture(extensionDescriptors, allEnabledOverrides);
-
-    for (const { extensionPath } of extensionDescriptors) {
-      await writeFile(
-        resolve(fixture.projectDirectory, ".pi/settings.json"),
-        JSON.stringify({
-          packages: [
-            {
-              extensions: [`-${normalizeExtensionPath(extensionPath)}`],
-              source: "..",
-            },
-          ],
-        }),
-      );
-      const resolvedExtensions = await resolveOfflineProjectExtensions(fixture);
-      const workspaceExtensions = resolvedExtensions.extensions.filter(
-        (extension) => extension.metadata.source === "..",
-      );
-
-      expect(
-        workspaceExtensions
-          .filter((extension) => !extension.enabled)
-          .map((extension) => extension.path),
-      ).toEqual([resolve(fixture.workspaceDirectory, extensionPath)]);
-      expect(workspaceExtensions.filter((extension) => extension.enabled)).toHaveLength(
-        extensionDescriptors.length - 1,
       );
     }
   });

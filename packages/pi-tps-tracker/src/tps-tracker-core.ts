@@ -61,11 +61,6 @@ export interface TiktokenRuntimeLoader {
   loadTiktokenRuntime(): Promise<TiktokenRuntime>;
 }
 
-/** Supplies time to the tracker core so streaming durations remain testable. */
-export interface TrackerClock {
-  now(): number;
-}
-
 /** The narrow UI contract used by the TPS tracker lifecycle. */
 export interface TpsTrackerContext {
   modelId: string | undefined;
@@ -90,8 +85,6 @@ export interface TpsTrackerLifecycleHost {
   ): void;
   onAgentEnd(handler: (event: AgentEndEvent, context: TpsTrackerContext) => Promise<void>): void;
 }
-
-const systemClock: TrackerClock = { now: () => Date.now() };
 
 function createState(): TrackerState {
   return {
@@ -192,11 +185,10 @@ export function createTiktokenTokenizedOutputCounterLoader(
   };
 }
 
-/** Registers TPS tracker behavior through a narrow lifecycle host and injected time/tokenizer effects. */
+/** Registers TPS tracker behavior through a narrow lifecycle host and tokenizer runtime seam. */
 export function registerTpsTracker(
   host: TpsTrackerLifecycleHost,
   tokenCounterLoader: TokenizedOutputCounterLoader = createTiktokenTokenizedOutputCounterLoader(),
-  clock: TrackerClock = systemClock,
 ) {
   const state = createState();
   let counterPromise: Promise<TokenizedOutputCounter | null> | null = null;
@@ -256,7 +248,7 @@ export function registerTpsTracker(
 
   host.onMessageStart(async (event, context) => {
     if (event.message.role !== "assistant") return;
-    state.messageStart = clock.now();
+    state.messageStart = Date.now();
     state.streamStart = null;
     state.lastStreamAt = null;
     state.streamedText = "";
@@ -270,7 +262,7 @@ export function registerTpsTracker(
     if (event.message.role !== "assistant") return;
     const delta = outputDeltaText(event);
     if (delta.length === 0) return;
-    const now = clock.now();
+    const now = Date.now();
     state.messageStart ??= now;
     state.streamStart ??= now;
     state.lastStreamAt = now;
@@ -296,7 +288,7 @@ export function registerTpsTracker(
     if (event.message.role !== "assistant") return;
     const messageTokens = await finalMessageTokens(outputTokens(event), context.modelId);
     const timingStart = state.streamStart ?? state.messageStart;
-    const timingEnd = state.lastStreamAt ?? clock.now();
+    const timingEnd = state.lastStreamAt ?? Date.now();
     if (timingStart && timingEnd >= timingStart && messageTokens > 0) {
       state.totalOutputTokens += messageTokens;
       state.totalStreamMs += Math.max(0, timingEnd - timingStart);

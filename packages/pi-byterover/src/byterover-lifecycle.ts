@@ -1,4 +1,4 @@
-import { type BrvBridgeConfig, type BrvLogger } from "@byterover/brv-bridge";
+import type { BrvBridgeConfig } from "@byterover/brv-bridge";
 import type {
   BeforeAgentStartEventResult,
   ContextEvent,
@@ -12,10 +12,8 @@ import {
   type ByteRoverBridgeFactory,
   createBrvBridgeFactory,
 } from "./byterover-bridge.js";
-import { maxCuratedTurnCacheSize } from "./config.js";
 import { type ByteroverConfig, loadConfig } from "./config-loader.js";
 import { ensureBrvGitignore } from "./gitignore.js";
-import { LruCache } from "./lru-cache.js";
 import {
   extractPiSessionMessages,
   formatMessages,
@@ -26,13 +24,7 @@ import {
 import { stripEchoedRecallQuery } from "./recall.js";
 import { registerManualTools } from "./tools.js";
 
-type LogLevel = "debug" | "info" | "warn" | "error";
 type NotifyType = "info" | "warning" | "error";
-
-type PendingRecall = {
-  key: string;
-  promise: Promise<string | undefined>;
-};
 
 /** The Pi session operations ByteRover needs to read conversation state. */
 export interface ByteRoverSessionReader {
@@ -89,14 +81,9 @@ export interface ByteRoverExtensionHost {
 type RuntimeState = {
   config: ByteroverConfig;
   bridge: ByteRoverBridge;
-  curatedTurns: LruCache<string, string>;
+  curatedTurns: Map<string, string>;
   inFlightCurations: Map<string, { key: string; promise: Promise<void> }>;
-  pendingRecalls: Map<string, PendingRecall>;
-};
-
-const logBrv = (level: LogLevel, message: string) => {
-  void level;
-  void message;
+  pendingRecalls: Map<string, Promise<string | undefined>>;
 };
 
 const notifyBrv = (
@@ -109,8 +96,6 @@ const notifyBrv = (
   if (!ctx.hasUI) return;
   ctx.ui.notify(message, type);
 };
-
-const errorMessage = (error: Error) => error.message;
 
 export const buildManualToolGuidance = (config: { autoRecall: boolean; autoPersist: boolean }) => {
   const guidance = [
@@ -168,7 +153,6 @@ export const createByteRoverExtension = (
   bridgeFactory: (
     config: BrvBridgeConfig,
     defaultCwd: string,
-    logger: BrvLogger,
   ) => ByteRoverBridgeFactory = createBrvBridgeFactory,
 ) => {
   let runtime: RuntimeState | undefined;
@@ -216,27 +200,24 @@ export const createByteRoverExtension = (
     if (!formattedMessages) return { systemPrompt };
 
     const query = `${config.recallPrompt.trim()}\n\nRecent conversation:\n\n---\n${formattedMessages}`;
-    pendingRecalls.set(sessionKey(ctx), {
-      key: turnKey(messagesForRecall),
-      promise: (async () => {
+    pendingRecalls.set(
+      sessionKey(ctx),
+      (async () => {
         try {
           const isReady = await bridge.ready();
           if (!isReady) {
             notifyBrv(ctx, "warning", "ByteRover bridge not ready, skipping recall", config);
-            logBrv("warn", "ByteRover bridge not ready, skipping recall");
             return undefined;
           }
 
           const brvResult = await bridge.recall(query, { cwd: ctx.cwd });
           return stripEchoedRecallQuery(brvResult.content, query) || undefined;
-        } catch (cause) {
-          const error = cause instanceof Error ? cause : new Error(String(cause));
+        } catch {
           notifyBrv(ctx, "error", "Failed to recall context from ByteRover", config);
-          logBrv("error", `ByteRover recall failed: ${errorMessage(error)}`);
           return undefined;
         }
       })(),
-    });
+    );
 
     return { systemPrompt };
   };
@@ -251,7 +232,7 @@ export const createByteRoverExtension = (
     const pendingRecall = state.pendingRecalls.get(sessionKey(ctx));
     if (pendingRecall === undefined) return {};
 
-    const content = await pendingRecall.promise;
+    const content = await pendingRecall;
     if (!content) return {};
 
     return {
@@ -285,16 +266,10 @@ export const createByteRoverExtension = (
 
     const key = turnKey(messagesInTurn);
     const dedupeKey = sessionKey(ctx);
-    if (curatedTurns.get(dedupeKey) === key) {
-      logBrv("debug", `Skipping duplicate ByteRover curation for ${dedupeKey}`);
-      return;
-    }
+    if (curatedTurns.get(dedupeKey) === key) return;
 
     const inFlightCuration = inFlightCurations.get(dedupeKey);
-    if (inFlightCuration?.key === key) {
-      logBrv("debug", `Skipping in-flight ByteRover curation for ${dedupeKey}`);
-      return;
-    }
+    if (inFlightCuration?.key === key) return;
 
     const formattedMessages = formatMessages(messagesInTurn);
     if (!formattedMessages) return;
@@ -307,7 +282,6 @@ export const createByteRoverExtension = (
         );
         if (result.status === "error") {
           notifyBrv(ctx, "error", "Failed to curate conversation turn with ByteRover", config);
-          logBrv("error", `ByteRover curation failed: ${result.message}`);
           return;
         }
 
@@ -315,10 +289,8 @@ export const createByteRoverExtension = (
         if (currentInFlightCuration?.key === key && currentInFlightCuration.promise === promise) {
           curatedTurns.set(dedupeKey, key);
         }
-      } catch (cause) {
-        const error = cause instanceof Error ? cause : new Error(String(cause));
+      } catch {
         notifyBrv(ctx, "error", "Failed to curate conversation turn with ByteRover", config);
-        logBrv("error", `ByteRover curation failed: ${errorMessage(error)}`);
       }
     };
 
@@ -338,7 +310,6 @@ export const createByteRoverExtension = (
     if (!configResult.success) {
       runtime = undefined;
       notifyBrv(ctx, "error", "Invalid ByteRover configuration");
-      logBrv("error", configResult.error.message);
       return;
     }
 
@@ -350,31 +321,24 @@ export const createByteRoverExtension = (
 
     try {
       await ensureBrvGitignore(ctx.cwd);
-    } catch (cause) {
-      const error = cause instanceof Error ? cause : new Error(String(cause));
+    } catch {
       notifyBrv(
         ctx,
         "warning",
         "Failed to initialize ByteRover storage, some features may not work",
         config,
       );
-      logBrv("warn", `Failed to bootstrap .brv/.gitignore: ${errorMessage(error)}`);
     }
 
-    const brvLogger: BrvLogger = {
-      debug: (message) => logBrv("debug", message),
-      info: (message) => logBrv("info", message),
-      warn: (message) => logBrv("warn", message),
-      error: (message) => logBrv("error", message),
-    };
-    const createBridge = bridgeFactory(config, ctx.cwd, brvLogger);
+    const createBridge = bridgeFactory(config, ctx.cwd);
     const bridge = createBridge();
     runtime = {
       config,
       bridge,
-      curatedTurns: new LruCache<string, string>(maxCuratedTurnCacheSize),
+      // ponytail: Restore a bounded cache only if one active extension session can accumulate many distinct session keys.
+      curatedTurns: new Map<string, string>(),
       inFlightCurations: new Map<string, { key: string; promise: Promise<void> }>(),
-      pendingRecalls: new Map<string, PendingRecall>(),
+      pendingRecalls: new Map<string, Promise<string | undefined>>(),
     };
 
     if (config.manualTools) {

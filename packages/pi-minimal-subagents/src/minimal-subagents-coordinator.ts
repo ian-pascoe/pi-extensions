@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { assembleImportedContext, contextContainsImages } from "./minimal-subagents-context.js";
 import {
   canAgentContractSpawn,
@@ -119,7 +118,6 @@ export class MinimalSubagentsCoordinator {
   private readonly agents = new Map<string, PersistedAgent>();
   private readonly runtimes = new Map<string, ChildAgentRuntime>();
   private readonly runtimeInitializations = new Map<string, Promise<ChildAgentRuntime>>();
-  private readonly importedMessages = new Map<string, AgentMessage[]>();
   private readonly tombstones = new Set<string>();
   private readonly pendingAgentIds = new Set<string>();
   private deliveryLedger: DeliveryLedger = createDeliveryLedger();
@@ -252,7 +250,6 @@ export class MinimalSubagentsCoordinator {
     agent.session_id = identity.sessionId;
     agent.session_leaf_id = identity.sessionLeafId;
     this.agents.set(agentId, agent);
-    this.importedMessages.set(agentId, imported.messages);
     this.dependencies.registry.append(
       createRegistryEvent(this.dependencies.registry.rootSessionId, "agent-created", { agent }),
     );
@@ -505,7 +502,6 @@ export class MinimalSubagentsCoordinator {
           result.trashed_session_files.push(agent.session_file);
         }
         this.agents.delete(agent.agent_id);
-        this.importedMessages.delete(agent.agent_id);
         this.pruneDeliveryStateForDeletedAgent(agent.agent_id);
         this.pruneRecentMessageProjectionsForDeletedAgent(agent.agent_id);
         this.tombstones.add(agent.agent_id);
@@ -520,10 +516,7 @@ export class MinimalSubagentsCoordinator {
         failedAncestors.add(agent.agent_id);
         if (runtime && agent.session_file) {
           try {
-            this.runtimes.set(
-              agent.agent_id,
-              await this.dependencies.sessions.restoreRuntime(agent),
-            );
+            this.runtimes.set(agent.agent_id, await this.dependencies.sessions.openRuntime(agent));
           } catch (restoreError) {
             agent.availability = "unavailable";
             agent.unavailable_reason = `Deletion recovery failed: ${
@@ -559,7 +552,6 @@ export class MinimalSubagentsCoordinator {
     for (const runtime of abandonedRuntimes) runtime.dispose();
     this.runtimes.clear();
     this.runtimeInitializations.clear();
-    this.importedMessages.clear();
     this.pendingAgentIds.clear();
     this.tombstones.clear();
     this.deliveryLedger = createDeliveryLedger();
@@ -623,7 +615,7 @@ export class MinimalSubagentsCoordinator {
           });
           continue;
         }
-        const runtime = await this.dependencies.sessions.restoreRuntime(agent);
+        const runtime = await this.dependencies.sessions.openRuntime(agent);
         if (restoreEpoch !== this.lifecycleEpoch) {
           runtime.dispose();
           return;
@@ -902,19 +894,14 @@ export class MinimalSubagentsCoordinator {
         new Error(agent.clone_error ?? `No persistent session exists for ${agent.agent_id}`),
       );
     }
-    const importedMessages = this.importedMessages.get(agent.agent_id);
-    const initialization = (
-      importedMessages
-        ? this.dependencies.sessions.createRuntime({ agent, importedMessages })
-        : this.dependencies.sessions.restoreRuntime(agent)
-    )
+    const initialization = this.dependencies.sessions
+      .openRuntime(agent)
       .then((runtime) => {
         if (this.agents.get(agent.agent_id) !== agent) {
           runtime.dispose();
           throw new Error(`Minimal subagents runtime replaced while opening ${agent.agent_id}`);
         }
         this.runtimes.set(agent.agent_id, runtime);
-        this.importedMessages.delete(agent.agent_id);
         return runtime;
       })
       .finally(() => {
@@ -1791,10 +1778,7 @@ export class MinimalSubagentsCoordinator {
         message.details.source_agent_id,
         message.details.source_turn_id,
       );
-    let releaseClaim!: () => void;
-    const claimPromise = new Promise<void>((resolve) => {
-      releaseClaim = resolve;
-    });
+    const { promise: claimPromise, resolve: releaseClaim } = Promise.withResolvers<void>();
     const pending: PendingParentMessage = {
       deliveryId: delivery.delivery_id,
       message,
@@ -1914,10 +1898,7 @@ export class MinimalSubagentsCoordinator {
   }
 
   private createRecipientIdleWait(agentId: string): CancelableWait {
-    let release!: () => void;
-    const promise = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise, resolve: release } = Promise.withResolvers<void>();
     const waiters = this.recipientIdleWaiters.get(agentId) ?? new Set();
     waiters.add(release);
     this.recipientIdleWaiters.set(agentId, waiters);
@@ -1932,10 +1913,7 @@ export class MinimalSubagentsCoordinator {
   }
 
   private createAutomaticDeliveryClaimWait(deliveryKey: string): CancelableWait {
-    let release!: () => void;
-    const promise = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise, resolve: release } = Promise.withResolvers<void>();
     const waiters = this.automaticDeliveryClaimWaiters.get(deliveryKey) ?? new Set();
     waiters.add(release);
     this.automaticDeliveryClaimWaiters.set(deliveryKey, waiters);

@@ -53,7 +53,6 @@ import type {
   PersistedAgent,
   PersistedSessionIdentity,
   ProjectContextMode,
-  RuntimeCreationRequest,
   RuntimeProfile,
   RuntimeTurnOutcome,
 } from "./minimal-subagents-types.js";
@@ -203,12 +202,14 @@ function findLatestChildSessionRecord<TRecordSchema extends TSchema>(
   customType: string,
   schema: TRecordSchema,
 ): Static<TRecordSchema> | undefined {
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const entry = entries[index];
-    if (!entry || entry.type !== "custom" || entry.customType !== customType) continue;
-    if (Value.Check(schema, entry.data)) return entry.data;
-  }
-  return undefined;
+  return entries.findLast(
+    (
+      entry,
+    ): entry is Extract<SessionEntry, { type: "custom" }> & {
+      data: Static<TRecordSchema>;
+    } =>
+      entry.type === "custom" && entry.customType === customType && Value.Check(schema, entry.data),
+  )?.data;
 }
 
 function findLatestForkGeneration(
@@ -247,18 +248,17 @@ function findCurrentForkOwnership(
   entries: ReturnType<SessionManager["getBranch"]>,
   cloneSessionId: string,
 ): ForkOwnershipRecord | undefined {
-  for (let index = entries.length - 1; index >= 0; index--) {
-    const entry = entries[index];
-    if (!entry || entry.type !== "custom" || entry.customType !== FORK_OWNERSHIP_ENTRY_TYPE)
-      continue;
-    if (
+  return entries.findLast(
+    (
+      entry,
+    ): entry is Extract<SessionEntry, { type: "custom" }> & {
+      data: ForkOwnershipRecord;
+    } =>
+      entry.type === "custom" &&
+      entry.customType === FORK_OWNERSHIP_ENTRY_TYPE &&
       Value.Check(ForkOwnershipRecordSchema, entry.data) &&
-      entry.data.clone_session_id === cloneSessionId
-    ) {
-      return entry.data;
-    }
-  }
-  return undefined;
+      entry.data.clone_session_id === cloneSessionId,
+  )?.data;
 }
 
 function verifyForkCloneProvenance(
@@ -527,17 +527,6 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     });
   }
 
-  get sessionFile(): string {
-    const sessionFile = this.session.sessionFile;
-    if (!sessionFile)
-      throw new Error("Minimal subagents child runtime lost its persistent session file");
-    return sessionFile;
-  }
-
-  get sessionId(): string {
-    return this.session.sessionId;
-  }
-
   get sessionLeafId(): string | undefined {
     return this.session.sessionManager.getLeafId() ?? undefined;
   }
@@ -718,14 +707,6 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       sessionDir: this.options.sessionDir,
       rootSessionId: this.options.rootSessionId,
     });
-  }
-
-  createRuntime(request: RuntimeCreationRequest): Promise<ChildAgentRuntime> {
-    return this.openRuntime(request.agent);
-  }
-
-  restoreRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime> {
-    return this.openRuntime(agent);
   }
 
   resolveLaunchMissingDependencies(agent: PersistedAgent): Promise<string[]> {
@@ -967,7 +948,8 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     return discovery;
   }
 
-  private async openRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime> {
+  /** Open one verified persisted Child Agent runtime for launch or restoration. */
+  async openRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime> {
     if (!agent.session_file)
       throw new Error(`Minimal subagents restore: ${agent.agent_id} has no session file`);
     const model = this.modelById.get(agent.launch_contract.model);

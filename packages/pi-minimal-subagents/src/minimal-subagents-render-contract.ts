@@ -3,7 +3,7 @@ import type {
   MessageRenderer,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type Static, type TSchema } from "typebox";
+import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
 /** Names of the six coordinator tools with custom transcript renderers. */
@@ -107,16 +107,6 @@ const ManagementCallArgumentsSchema = Type.Object({
   recursive: Type.Optional(Type.Boolean()),
 });
 
-/** Tool-call contracts keep each coordinator name correlated with its own arguments. */
-export const coordinatorToolCallSchemas = {
-  subagent: SpawnCallArgumentsSchema,
-  agent_message: MessageCallArgumentsSchema,
-  subagent_wait: WaitCallArgumentsSchema,
-  subagent_status: StatusCallArgumentsSchema,
-  subagent_cancel: ManagementCallArgumentsSchema,
-  subagent_delete: ManagementCallArgumentsSchema,
-} as const satisfies { readonly [Name in CoordinatorToolName]: TSchema };
-
 const SpawnDetailsSchema = Type.Object({
   agent_id: Type.String(),
   turn_id: Type.String(),
@@ -183,15 +173,11 @@ const DeleteDetailsSchema = Type.Object({
   ),
 });
 
-/** Result-detail contracts keep current and tolerated legacy transcript shapes explicit. */
-export const coordinatorToolResultSchemas = {
-  subagent: SpawnDetailsSchema,
-  agent_message: Type.Union([CurrentMessageDetailsSchema, LegacyMessageDetailsSchema]),
-  subagent_wait: Type.Union([WaitMessageDetailsSchema, WaitTurnDetailsSchema]),
-  subagent_status: StatusDetailsSchema,
-  subagent_cancel: CancelDetailsSchema,
-  subagent_delete: DeleteDetailsSchema,
-} as const satisfies { readonly [Name in CoordinatorToolName]: TSchema };
+const MessageRenderDetailsSchema = Type.Union([
+  CurrentMessageDetailsSchema,
+  LegacyMessageDetailsSchema,
+]);
+const WaitRenderDetailsSchema = Type.Union([WaitMessageDetailsSchema, WaitTurnDetailsSchema]);
 
 export type SpawnCallArguments = Static<typeof SpawnCallArgumentsSchema>;
 export type MessageCallArguments = Static<typeof MessageCallArgumentsSchema>;
@@ -199,12 +185,8 @@ export type WaitCallArguments = Static<typeof WaitCallArgumentsSchema>;
 export type StatusCallArguments = Static<typeof StatusCallArgumentsSchema>;
 export type ManagementCallArguments = Static<typeof ManagementCallArgumentsSchema>;
 export type SpawnRenderDetails = Static<typeof SpawnDetailsSchema>;
-export type MessageRenderDetails = Static<
-  typeof CurrentMessageDetailsSchema | typeof LegacyMessageDetailsSchema
->;
-export type WaitRenderDetails = Static<
-  typeof WaitMessageDetailsSchema | typeof WaitTurnDetailsSchema
->;
+export type MessageRenderDetails = Static<typeof MessageRenderDetailsSchema>;
+export type WaitRenderDetails = Static<typeof WaitRenderDetailsSchema>;
 export type StatusRenderDetails = Static<typeof StatusDetailsSchema>;
 export type CancelRenderDetails = Static<typeof CancelDetailsSchema>;
 export type DeleteRenderDetails = Static<typeof DeleteDetailsSchema>;
@@ -263,13 +245,9 @@ export function parseCoordinatorToolResult(
     case "subagent":
       return Value.Check(SpawnDetailsSchema, details) ? { toolName, details } : undefined;
     case "agent_message":
-      return Value.Check(coordinatorToolResultSchemas.agent_message, details)
-        ? { toolName, details }
-        : undefined;
+      return Value.Check(MessageRenderDetailsSchema, details) ? { toolName, details } : undefined;
     case "subagent_wait":
-      return Value.Check(coordinatorToolResultSchemas.subagent_wait, details)
-        ? { toolName, details }
-        : undefined;
+      return Value.Check(WaitRenderDetailsSchema, details) ? { toolName, details } : undefined;
     case "subagent_status":
       return Value.Check(StatusDetailsSchema, details) ? { toolName, details } : undefined;
     case "subagent_cancel":

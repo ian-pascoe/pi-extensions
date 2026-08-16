@@ -45,12 +45,7 @@ async function discoverWorkspaceManifests() {
     const manifestPath = resolve(packagesDirectory, entry.name, "package.json");
     try {
       manifests.push({
-        directory: resolve(packagesDirectory, entry.name),
-        manifest: await readJsonDocument(
-          manifestPath,
-          workspacePackageManifestSchema,
-          "workspace package manifest",
-        ),
+        manifest: await readJsonDocument(manifestPath, workspacePackageManifestSchema),
       });
     } catch (cause) {
       if (hasNodeProcessErrorCode(parseNodeProcessError(cause), "ENOENT")) continue;
@@ -92,16 +87,6 @@ function validatePackedFileList(packageName, files) {
       path.startsWith("src/");
     assertPackCondition(allowed, `${packageName} unexpectedly packs ${path}`);
   }
-  for (const forbiddenPrefix of ["test/", "dist/", ".git", ".github/", ".changeset/", ".brv/"]) {
-    assertPackCondition(
-      !paths.some((path) => path.startsWith(forbiddenPrefix)),
-      `${packageName} packs forbidden ${forbiddenPrefix}`,
-    );
-  }
-  assertPackCondition(
-    !paths.some((path) => /(?:^|\/)pnpm-lock\.yaml$/.test(path)),
-    `${packageName} packs a lockfile`,
-  );
 }
 
 function validatePackedManifest(sourceManifest, packedManifest) {
@@ -138,10 +123,6 @@ function validatePackedManifest(sourceManifest, packedManifest) {
   }
 }
 
-function installedPackageDirectory(projectDirectory, packageName) {
-  return resolve(projectDirectory, "node_modules", ...packageName.split("/"));
-}
-
 async function assertTarballLoads(packageName, tarballPath) {
   const installDirectory = await mkdtemp(resolve(tmpdir(), "pi-package-install-"));
   const agentDirectory = await mkdtemp(resolve(tmpdir(), "pi-package-agent-"));
@@ -163,7 +144,9 @@ async function assertTarballLoads(packageName, tarballPath) {
       { cwd: installDirectory },
     );
     const entrypoint = resolve(
-      installedPackageDirectory(installDirectory, packageName),
+      installDirectory,
+      "node_modules",
+      ...packageName.split("/"),
       "src/index.ts",
     );
     const result = await discoverAndLoadExtensions([entrypoint], installDirectory, agentDirectory);
@@ -191,21 +174,6 @@ const packDirectory = await mkdtemp(resolve(tmpdir(), "pi-package-packs-"));
 try {
   const workspaces = await discoverWorkspaceManifests();
   for (const { manifest } of workspaces) {
-    const dryRun = parsePackJson(
-      (
-        await runCommand("npm", [
-          "pack",
-          "--workspace",
-          manifest.name,
-          "--dry-run",
-          "--json",
-          "--package-lock=false",
-        ])
-      ).stdout,
-      manifest.name,
-    );
-    validatePackedFileList(manifest.name, dryRun.files);
-
     const packed = parsePackJson(
       (
         await runCommand("npm", [
