@@ -50,7 +50,8 @@
             ".yaml",
             ".yml"
           ]
-        }
+        },
+        "rootMarkers": ["package.json", ".git"]
       }
     }
   },

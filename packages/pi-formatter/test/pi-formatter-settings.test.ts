@@ -29,6 +29,7 @@ function markdownFormatter(command: string) {
     command,
     args: ["--fix", "$FILE"],
     files: { extensions: [".md"], fileNames: ["README"] },
+    rootMarkers: ["package.json", ".git"],
   };
 }
 
@@ -79,6 +80,7 @@ describe("resolveFormatterSettings", () => {
       extensions: [".md"],
       fileNames: ["README"],
       id: "first",
+      rootMarkers: ["package.json", ".git"],
     });
   });
 

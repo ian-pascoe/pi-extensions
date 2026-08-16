@@ -20,6 +20,7 @@ const FormatterDefinitionSchema = Type.Object(
       Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()])),
     ),
     files: FormatterFilesSchema,
+    rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
   },
   { additionalProperties: false },
 );
@@ -53,6 +54,7 @@ export interface FormatterDefinition {
   readonly extensions: readonly string[];
   readonly fileNames: readonly string[];
   readonly id: string;
+  readonly rootMarkers: readonly string[];
 }
 
 /** Contains resolved trusted formatter definitions and non-fatal configuration warnings. */
@@ -179,6 +181,7 @@ function resolveFormatterDefinition(
     extensions: definition.files.extensions ?? [],
     fileNames: definition.files.fileNames ?? [],
     id,
+    rootMarkers: definition.rootMarkers ?? [],
   };
 }
 

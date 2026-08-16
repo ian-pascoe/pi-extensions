@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { basename, dirname, extname, matchesGlob, resolve } from "node:path";
 import {
   getAgentDir,
   SettingsManager,
@@ -163,6 +163,32 @@ function formatterMatchesPath(definition: FormatterDefinition, path: string): bo
   );
 }
 
+async function findFormatterRoot(
+  filePath: string,
+  rootMarkers: readonly string[],
+  fallbackCwd: string,
+): Promise<string> {
+  if (rootMarkers.length === 0) return resolve(fallbackCwd);
+  let directory = dirname(filePath);
+  for (;;) {
+    try {
+      const entryNames = await readdir(directory);
+      if (
+        entryNames.some((entryName) =>
+          rootMarkers.some((rootMarker) => matchesGlob(entryName, rootMarker)),
+        )
+      ) {
+        return directory;
+      }
+    } catch {
+      // Match Pi LSP root discovery: continue to an existing ancestor.
+    }
+    const parentDirectory = dirname(directory);
+    if (parentDirectory === directory) return resolve(fallbackCwd);
+    directory = parentDirectory;
+  }
+}
+
 function formatterProcessEnvironment(configured: Readonly<Record<string, string | null>>) {
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -261,17 +287,28 @@ async function formatMutationPaths(
     const matchingPaths = existing.paths.filter((path) => formatterMatchesPath(definition, path));
     if (matchingPaths.length === 0) continue;
     const usesFile = definition.args.some((argument) => argument.includes("$FILE"));
-    const invocations = usesFile ? matchingPaths : [undefined];
-    for (const path of invocations) {
+    const pathsAndRoots = await Promise.all(
+      matchingPaths.map(async (path) => ({
+        path,
+        root: await findFormatterRoot(path, definition.rootMarkers, cwd),
+      })),
+    );
+    const invocations = usesFile
+      ? pathsAndRoots
+      : [...new Set(pathsAndRoots.map(({ root }) => root))].map((root) => ({
+          path: undefined,
+          root,
+        }));
+    for (const { path, root } of invocations) {
       const args = definition.args.map((argument) =>
         path === undefined ? argument : argument.replaceAll("$FILE", path),
       );
-      const failure = await runFormatterCommand(definition, args, cwd, settings.timeoutMs, signal);
+      const failure = await runFormatterCommand(definition, args, root, settings.timeoutMs, signal);
       if (failure !== undefined) {
         warnings.push(
           formatFormatterFailure(
             definition,
-            path ?? `workspace triggered by ${matchingPaths.join(", ")}`,
+            path ?? `workspace ${root} triggered by ${matchingPaths.join(", ")}`,
             failure,
           ),
         );

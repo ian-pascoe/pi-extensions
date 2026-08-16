@@ -184,6 +184,41 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(await readFile(resolve(harness.cwd, "workspace-runs"), "utf8")).toBe("1");
   });
 
+  test("runs formatters from each changed file's nearest root marker", async () => {
+    const script =
+      "const fs=require('node:fs');const p=process.argv[1];fs.appendFileSync(p,':'+process.cwd())";
+    const workspaceScript =
+      "const fs=require('node:fs');fs.writeFileSync('workspace-root',process.cwd())";
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: {
+          rooted: {
+            ...formatterDefinition(["-e", script, "$FILE"]),
+            rootMarkers: ["package.json"],
+          },
+          rootedWorkspace: {
+            ...formatterDefinition(["-e", workspaceScript]),
+            rootMarkers: ["package.json"],
+          },
+        },
+      },
+    });
+    const packageRoot = resolve(harness.cwd, "packages/example");
+    const filePath = resolve(packageRoot, "src/rooted.txt");
+    await mkdir(resolve(packageRoot, "src"), { recursive: true });
+    await Promise.all([
+      writeFile(resolve(packageRoot, "package.json"), "{}"),
+      writeFile(filePath, "root"),
+    ]);
+
+    await harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe(`root:${packageRoot}`);
+    expect(await readFile(resolve(packageRoot, "workspace-root"), "utf8")).toBe(packageRoot);
+  });
+
   test.each([
     ["edit", (path: string) => ({ input: { path }, details: undefined })],
     ["write", (path: string) => ({ input: { path }, details: undefined })],
