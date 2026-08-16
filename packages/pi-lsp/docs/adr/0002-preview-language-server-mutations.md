@@ -1,0 +1,3 @@
+# Preview language-server mutations before applying them
+
+Every mutating LSP operation produces a persisted Workspace Edit Preview instead of changing files immediately. A separate apply call rejects stale or conflicting previews, exposes a verified Mutation Manifest to other extensions before execution, and applies the batch with rollback on failure; server-initiated `workspace/applyEdit` requests enter the same workflow. This costs an extra tool call but keeps multi-file text and resource operations inspectable, permission-aware, and recoverable without claiming crash-level filesystem atomicity.

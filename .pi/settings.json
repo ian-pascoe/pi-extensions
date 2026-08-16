@@ -8,6 +8,7 @@
         "+packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
         "+packages/pi-git-status-widget/src/index.ts",
+        "+packages/pi-lsp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts"
       ]
@@ -20,9 +21,29 @@
         "-packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
+        "-packages/pi-lsp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts"
       ]
     }
-  ]
+  ],
+  "lsp": {
+    "servers": {
+      "typescript": {
+        "command": "pnpm",
+        "args": ["exec", "tsc", "--lsp", "--stdio"],
+        "languages": [
+          {
+            "extensions": [".ts", ".mts", ".cts"],
+            "languageId": "typescript"
+          },
+          {
+            "extensions": [".tsx"],
+            "languageId": "typescriptreact"
+          }
+        ],
+        "rootMarkers": ["tsconfig.json", "package.json", ".git"]
+      }
+    }
+  }
 }
