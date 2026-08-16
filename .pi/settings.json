@@ -33,7 +33,13 @@
     "formatters": {
       "oxfmt": {
         "command": "pnpm",
-        "args": ["exec", "oxfmt", "--no-error-on-unmatched-pattern", "$FILE"],
+        "args": [
+          "exec",
+          "oxfmt",
+          "--config=.oxfmtrc.json",
+          "--no-error-on-unmatched-pattern",
+          "$FILE"
+        ],
         "files": {
           "extensions": [
             ".js",
@@ -51,7 +57,7 @@
             ".yml"
           ]
         },
-        "rootMarkers": ["package.json", ".git"]
+        "rootMarkers": [".oxfmtrc.json", ".git"]
       }
     }
   },
