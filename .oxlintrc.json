@@ -45,20 +45,6 @@
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error"
   },
-  "overrides": [
-    {
-      "files": ["packages/pi-tps-tracker/src/index.ts"],
-      "rules": {
-        "typescript/no-base-to-string": "off"
-      }
-    },
-    {
-      "files": ["**/*.test.ts"],
-      "rules": {
-        "typescript/unbound-method": "off"
-      }
-    }
-  ],
   "env": {
     "builtin": true
   }
