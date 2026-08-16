@@ -36,18 +36,7 @@ export function buildEligibleModelIds(input: {
   const source = scopeConfigured
     ? input.scopedModels.map((entry) => entry.model)
     : input.availableModels;
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  for (const model of source) {
-    const canonicalId = `${model.provider}/${model.id}`;
-    if (!seen.has(canonicalId)) {
-      seen.add(canonicalId);
-      result.push(canonicalId);
-    }
-  }
-
-  return result;
+  return [...new Set(source.map(({ provider, id }) => `${provider}/${id}`))];
 }
 
 /** Supplies inherited tools, the ancestor ceiling, and runtime availability for exact tool resolution. */

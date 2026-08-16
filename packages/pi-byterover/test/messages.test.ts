@@ -88,6 +88,15 @@ describe("pi session message helpers", () => {
     expect(turnKey(selected)).toBe("u2:a2");
   });
 
+  test("keeps the complete message list when it has no user message", () => {
+    const messages = [
+      message("a1", "assistant", "first answer"),
+      message("a2", "assistant", "second answer"),
+    ];
+
+    expect(selectMessagesInTurn(messages)).toEqual(messages);
+  });
+
   test("selects recent substantive messages within maxRecallTurns", () => {
     const selected = selectMessagesForRecall(
       [

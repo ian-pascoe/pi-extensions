@@ -58,23 +58,13 @@ function deliveryTurnKey(sourceAgentId: string, sourceTurnId: string): string {
   return `${sourceAgentId}\u0000${sourceTurnId}`;
 }
 
-function cloneTerminalDelivery(delivery: PersistedDelivery): PersistedDelivery {
-  return structuredClone(delivery);
-}
-
-function cloneCoordinationDelivery(
-  delivery: PersistedCoordinationDelivery,
-): PersistedCoordinationDelivery {
-  return structuredClone(delivery);
-}
-
 function createTransition(
   ledger: DeliveryLedger,
   prunedTerminalDeliveries: readonly PersistedDelivery[] = [],
 ): DeliveryLedgerTransition {
   return {
     ledger,
-    prunedTerminalDeliveries: prunedTerminalDeliveries.map(cloneTerminalDelivery),
+    prunedTerminalDeliveries: prunedTerminalDeliveries.map((delivery) => structuredClone(delivery)),
   };
 }
 
@@ -134,7 +124,7 @@ export function createDeliveryLedger(
 ): DeliveryLedger {
   const coordinationDeliveries = (snapshot.coordination_deliveries ?? [])
     .filter((delivery) => !delivery.settled)
-    .map(cloneCoordinationDelivery);
+    .map((delivery) => structuredClone(delivery));
   let nextSequence = Math.max(
     1,
     snapshot.next_delivery_sequence ?? 1,
@@ -146,7 +136,7 @@ export function createDeliveryLedger(
   const terminalDeliveries = (snapshot.deliveries ?? [])
     .filter((delivery) => !delivery.settled)
     .map((delivery) => {
-      const restored = cloneTerminalDelivery(delivery);
+      const restored = structuredClone(delivery);
       if (restored.sequence === undefined) restored.sequence = nextSequence++;
       return restored;
     });
@@ -161,8 +151,10 @@ export function createDeliveryLedger(
 /** Serialize pending Delivery Ledger state without exposing mutable internal references. */
 export function deliveryLedgerSnapshot(ledger: DeliveryLedger): DeliveryLedgerSnapshot {
   return {
-    deliveries: ledger.terminalDeliveries.map(cloneTerminalDelivery),
-    coordination_deliveries: ledger.coordinationDeliveries.map(cloneCoordinationDelivery),
+    deliveries: ledger.terminalDeliveries.map((delivery) => structuredClone(delivery)),
+    coordination_deliveries: ledger.coordinationDeliveries.map((delivery) =>
+      structuredClone(delivery),
+    ),
     wait_claimed_turns: [...ledger.waitClaimedTurns],
     next_delivery_sequence: ledger.nextSequence,
   };
@@ -194,7 +186,7 @@ export function addTerminalDelivery(
     ],
     nextSequence: ledger.nextSequence + 1,
   });
-  return { ...transition, delivery: cloneTerminalDelivery(delivery) };
+  return { ...transition, delivery: structuredClone(delivery) };
 }
 
 /** Replay or update one already-sequenced terminal delivery. */
@@ -202,7 +194,7 @@ export function upsertTerminalDelivery(
   ledger: DeliveryLedger,
   delivery: PersistedDelivery,
 ): DeliveryLedgerTransition {
-  const restored = cloneTerminalDelivery(delivery);
+  const restored = structuredClone(delivery);
   const existing = ledger.terminalDeliveries.find(
     (current) =>
       deliveryTurnKey(current.source_agent_id, current.source_turn_id) ===
@@ -251,7 +243,7 @@ export function addCoordinationDelivery(
       ],
       nextSequence: ledger.nextSequence + 1,
     },
-    delivery: cloneCoordinationDelivery(delivery),
+    delivery: structuredClone(delivery),
     prunedTerminalDeliveries: [],
   };
 }
@@ -267,7 +259,7 @@ export function upsertCoordinationDelivery(
       ...ledger.coordinationDeliveries.filter(
         (current) => current.delivery_id !== delivery.delivery_id,
       ),
-      cloneCoordinationDelivery(delivery),
+      structuredClone(delivery),
     ],
     nextSequence: Math.max(ledger.nextSequence, delivery.sequence + 1),
   });
@@ -505,7 +497,7 @@ export function findTerminalDelivery(
   const delivery = ledger.terminalDeliveries.find(
     (candidate) => deliveryTurnKey(candidate.source_agent_id, candidate.source_turn_id) === key,
   );
-  return delivery ? cloneTerminalDelivery(delivery) : undefined;
+  return delivery ? structuredClone(delivery) : undefined;
 }
 
 /** Return one pending Coordination Message by stable delivery identity. */
@@ -516,7 +508,7 @@ export function findCoordinationDelivery(
   const delivery = ledger.coordinationDeliveries.find(
     (candidate) => candidate.delivery_id === deliveryId,
   );
-  return delivery ? cloneCoordinationDelivery(delivery) : undefined;
+  return delivery ? structuredClone(delivery) : undefined;
 }
 
 /** Report whether one source turn currently has a durable wait claim. */

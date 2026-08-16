@@ -5,11 +5,12 @@
       "autoload": false,
       "extensions": [
         "-packages/pi-adaptive-thinking/src/index.ts",
-        "-packages/pi-bible-verses/src/index.ts",
+        "+packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
-        "-packages/pi-git-status-widget/src/index.ts",
+        "+packages/pi-git-status-widget/src/index.ts",
+        "+packages/pi-lsp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
-        "-packages/pi-tps-tracker/src/index.ts"
+        "+packages/pi-tps-tracker/src/index.ts"
       ]
     },
     {
@@ -17,12 +18,94 @@
       "autoload": false,
       "extensions": [
         "-packages/pi-adaptive-thinking/src/index.ts",
-        "+packages/pi-bible-verses/src/index.ts",
+        "-packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
-        "+packages/pi-git-status-widget/src/index.ts",
+        "-packages/pi-git-status-widget/src/index.ts",
+        "-packages/pi-lsp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
-        "+packages/pi-tps-tracker/src/index.ts"
+        "-packages/pi-tps-tracker/src/index.ts"
       ]
     }
-  ]
+  ],
+  "lsp": {
+    "servers": {
+      "typescript": {
+        "command": "pnpm",
+        "args": ["exec", "tsc", "--lsp", "--stdio"],
+        "languages": [
+          {
+            "extensions": [".ts", ".mts", ".cts"],
+            "languageId": "typescript"
+          },
+          {
+            "extensions": [".tsx"],
+            "languageId": "typescriptreact"
+          }
+        ],
+        "rootMarkers": ["tsconfig.json", "package.json", ".git"]
+      },
+      "oxlint": {
+        "command": "pnpm",
+        "args": ["exec", "oxlint", "--lsp"],
+        "languages": [
+          {
+            "extensions": [".js", ".mjs", ".cjs"],
+            "languageId": "javascript"
+          },
+          {
+            "extensions": [".jsx"],
+            "languageId": "javascriptreact"
+          },
+          {
+            "extensions": [".ts", ".mts", ".cts"],
+            "languageId": "typescript"
+          },
+          {
+            "extensions": [".tsx"],
+            "languageId": "typescriptreact"
+          }
+        ],
+        "rootMarkers": ["package.json", ".git"]
+      },
+      "oxfmt": {
+        "command": "pnpm",
+        "args": ["exec", "oxfmt", "--lsp"],
+        "languages": [
+          {
+            "extensions": [".js", ".mjs", ".cjs"],
+            "languageId": "javascript"
+          },
+          {
+            "extensions": [".jsx"],
+            "languageId": "javascriptreact"
+          },
+          {
+            "extensions": [".ts", ".mts", ".cts"],
+            "languageId": "typescript"
+          },
+          {
+            "extensions": [".tsx"],
+            "languageId": "typescriptreact"
+          },
+          {
+            "extensions": [".json"],
+            "languageId": "json"
+          },
+          {
+            "extensions": [".jsonc"],
+            "languageId": "jsonc"
+          },
+          {
+            "extensions": [".md"],
+            "languageId": "markdown"
+          },
+          {
+            "extensions": [".yaml", ".yml"],
+            "languageId": "yaml"
+          }
+        ],
+        "rootMarkers": ["package.json", ".git"]
+      }
+    }
+  }
 }

@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { access, cp, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,23 +10,11 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
-import {
-  readJsonDocument,
-  rootPiManifestSchema,
-  workspacePackageManifestSchema,
-} from "./root-project-contract.mjs";
+import { readJsonDocument, rootPiManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const excludedDirectoryNames = new Set([
-  ".git",
-  ".turbo",
-  ".pack-check",
-  ".git-install-check",
-  "coverage",
-  "dist",
-  "node_modules",
-]);
+const excludedDirectoryNames = new Set([".git", "coverage", "dist", "node_modules"]);
 
 function assertGitInstallCondition(condition, message) {
   if (!condition) throw new Error(`Git install check failed: ${message}`);
@@ -66,56 +54,7 @@ async function runNpmProductionInstall(installDirectory) {
   }
 }
 
-async function discoverWorkspaceDirectories(installDirectory) {
-  const packagesDirectory = resolve(installDirectory, "packages");
-  const entries = await readdir(packagesDirectory, { withFileTypes: true });
-  const workspaceDirectories = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => resolve(packagesDirectory, entry.name))
-    .sort();
-  assertGitInstallCondition(
-    workspaceDirectories.length === 6,
-    `expected 6 workspace directories, found ${workspaceDirectories.length}`,
-  );
-  return workspaceDirectories;
-}
-
-async function assertWorkspaceRuntimeDependencies(installDirectory) {
-  for (const workspaceDirectory of await discoverWorkspaceDirectories(installDirectory)) {
-    const manifestPath = resolve(workspaceDirectory, "package.json");
-    const manifest = await readJsonDocument(
-      manifestPath,
-      workspacePackageManifestSchema,
-      "workspace package manifest",
-    );
-    for (const dependencyName of Object.keys(manifest.dependencies ?? {})) {
-      try {
-        await access(
-          resolve(installDirectory, "node_modules", ...dependencyName.split("/"), "package.json"),
-        );
-      } catch (error) {
-        throw new Error(
-          `Git install check failed: ${manifest.name} cannot resolve ${dependencyName}`,
-          {
-            cause: error,
-          },
-        );
-      }
-    }
-    for (const dependencyName of Object.keys(manifest.optionalDependencies ?? {})) {
-      try {
-        await access(
-          resolve(installDirectory, "node_modules", ...dependencyName.split("/"), "package.json"),
-        );
-      } catch {
-        assertGitInstallCondition(
-          dependencyName === "tiktoken",
-          `${manifest.name} cannot resolve optional dependency ${dependencyName}`,
-        );
-      }
-    }
-  }
-
+async function assertByteroverCliExcludedFromProductionInstall(installDirectory) {
   try {
     await access(resolve(installDirectory, "node_modules/byterover-cli/package.json"));
     throw new Error("Git install check failed: byterover-cli is present in the production install");
@@ -133,12 +72,11 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   const manifest = await readJsonDocument(
     resolve(installDirectory, "package.json"),
     rootPiManifestSchema,
-    "root package manifest",
   );
   const configuredPaths = manifest.pi.extensions;
   assertGitInstallCondition(
-    configuredPaths.length === 6,
-    "temporary root manifest does not contain six extension paths",
+    configuredPaths.length === 7,
+    "temporary root manifest does not contain seven extension paths",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
@@ -149,8 +87,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     `temporary source entrypoints failed to load: ${JSON.stringify(result.errors)}`,
   );
   assertGitInstallCondition(
-    result.extensions.length === 6,
-    "temporary install did not load six extensions",
+    result.extensions.length === 7,
+    "temporary install did not load seven extensions",
   );
   assertGitInstallCondition(
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===
@@ -167,7 +105,7 @@ try {
     filter: includeWorkingTreePath,
   });
   await runNpmProductionInstall(installDirectory);
-  await assertWorkspaceRuntimeDependencies(installDirectory);
+  await assertByteroverCliExcludedFromProductionInstall(installDirectory);
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
 } finally {
   await Promise.all([

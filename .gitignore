@@ -1,8 +1,6 @@
 node_modules
 dist
-.turbo
 coverage
 *.tgz
-.pack-check
-.git-install-check
 .pi/npm
+.repos/

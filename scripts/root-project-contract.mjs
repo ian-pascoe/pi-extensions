@@ -2,7 +2,6 @@ import { readFile } from "node:fs/promises";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
-const manifestDependencies = Type.Object({}, { additionalProperties: Type.String() });
 export const packageSettingsSourceSchema = Type.Object({
   autoload: Type.Optional(Type.Boolean()),
   extensions: Type.Optional(Type.Array(Type.String())),
@@ -14,24 +13,25 @@ export const rootPiManifestSchema = Type.Object({
   pi: Type.Object({ extensions: Type.Array(Type.String()) }),
 });
 
-/** Parses the package-manifest fields used to verify runtime dependency installation. */
+/** Parses the package-manifest fields used by root package checks. */
 export const workspacePackageManifestSchema = Type.Object({
-  dependencies: Type.Optional(manifestDependencies),
   name: Type.String(),
-  optionalDependencies: Type.Optional(manifestDependencies),
   pi: Type.Optional(Type.Object({ extensions: Type.Array(Type.String()) })),
 });
 
 /** Parses Pi's string and object package settings entries before callers inspect them. */
 export const piSettingsDocumentSchema = Type.Object({
-  packages: Type.Optional(Type.Array(Type.Union([Type.String(), packageSettingsSourceSchema]))),
+  packages: Type.Optional(Type.Array(packageSettingsSourceSchema)),
 });
 
-/** Reads JSON bytes and rejects documents that do not satisfy their owning schema. */
-export async function readJsonDocument(filePath, schema, documentName) {
-  const document = JSON.parse(await readFile(filePath, "utf8"));
-  if (!Value.Check(schema, document)) {
-    throw new Error(`Root project contract failed: invalid ${documentName}`);
-  }
-  return document;
+/**
+ * Reads JSON bytes and parses them into the schema-derived result.
+ *
+ * @template {import("typebox").TSchema} TSchema
+ * @param {string} filePath
+ * @param {TSchema} schema
+ * @returns {Promise<import("typebox").StaticParse<TSchema>>}
+ */
+export async function readJsonDocument(filePath, schema) {
+  return Value.Parse(schema, JSON.parse(await readFile(filePath, "utf8")));
 }

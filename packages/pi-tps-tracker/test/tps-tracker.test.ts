@@ -6,7 +6,7 @@ import type {
   MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createTiktokenTokenizedOutputCounterLoader,
   type TokenizedOutputCounter,
@@ -16,7 +16,6 @@ import {
   type TpsTrackerLifecycleHost,
   type TiktokenRuntime,
   type TiktokenRuntimeLoader,
-  type TrackerClock,
 } from "../src/tps-tracker-core.js";
 
 class RecordingLifecycleHost implements TpsTrackerLifecycleHost {
@@ -59,16 +58,6 @@ class RecordingTrackerContext implements TpsTrackerContext {
   }
   setStatus(_key: string, text: string) {
     this.statuses.push(text);
-  }
-}
-
-class RecordingClock implements TrackerClock {
-  constructor(private currentTime = 100) {}
-  now() {
-    return this.currentTime;
-  }
-  advance(milliseconds: number) {
-    this.currentTime += milliseconds;
   }
 }
 
@@ -123,12 +112,20 @@ function requireHandler<T>(handler: T | undefined): T {
   return handler;
 }
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(100);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("TPS Tracker extension", () => {
   it("prefers Official Output Count and resets totals for each agent run", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext();
-    const clock = new RecordingClock();
-    registerTpsTracker(host, new RecordingTokenCounterLoader(null), clock);
+    registerTpsTracker(host, new RecordingTokenCounterLoader(null));
 
     await requireHandler(host.agentStart)(
       { type: "agent_start" } satisfies AgentStartEvent,
@@ -136,7 +133,7 @@ describe("TPS Tracker extension", () => {
     );
     await requireHandler(host.messageStart)(messageStartEvent(), context);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("first", 12), context);
-    clock.advance(1_000);
+    vi.advanceTimersByTime(1_000);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("second", 12), context);
     await requireHandler(host.messageEnd)(messageEndEvent(12), context);
     await requireHandler(host.agentEnd)(
@@ -161,9 +158,8 @@ describe("TPS Tracker extension", () => {
   it("uses a model-keyed Tokenized Output Count when provider usage is absent", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext("model-a");
-    const clock = new RecordingClock();
     const loader = new RecordingTokenCounterLoader({ countOutputTokens: () => 3 });
-    registerTpsTracker(host, loader, clock);
+    registerTpsTracker(host, loader);
 
     await requireHandler(host.agentStart)(
       { type: "agent_start" } satisfies AgentStartEvent,
@@ -184,8 +180,7 @@ describe("TPS Tracker extension", () => {
   it("uses Estimated Output Count when the tokenizer is unavailable", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext();
-    const clock = new RecordingClock();
-    registerTpsTracker(host, new RecordingTokenCounterLoader(null), clock);
+    registerTpsTracker(host, new RecordingTokenCounterLoader(null));
 
     await requireHandler(host.agentStart)(
       { type: "agent_start" } satisfies AgentStartEvent,
@@ -205,7 +200,6 @@ describe("TPS Tracker extension", () => {
   it("counts all output delta variants and ignores non-output update events", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext();
-    const clock = new RecordingClock();
     const inputs: string[] = [];
     registerTpsTracker(
       host,
@@ -215,7 +209,6 @@ describe("TPS Tracker extension", () => {
           return text.length;
         },
       }),
-      clock,
     );
     const message = assistantMessage();
 
@@ -237,7 +230,7 @@ describe("TPS Tracker extension", () => {
       },
       context,
     );
-    clock.advance(1_000);
+    vi.advanceTimersByTime(1_000);
     await requireHandler(host.messageUpdate)(
       {
         type: "message_update",
@@ -251,7 +244,7 @@ describe("TPS Tracker extension", () => {
       },
       context,
     );
-    clock.advance(1_000);
+    vi.advanceTimersByTime(1_000);
     await requireHandler(host.messageUpdate)(
       {
         type: "message_update",
@@ -297,7 +290,7 @@ describe("TPS Tracker extension", () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext("waiting-model");
     const loader = new RecordingTokenCounterLoader({ countOutputTokens: () => 1 });
-    registerTpsTracker(host, loader, new RecordingClock());
+    registerTpsTracker(host, loader);
 
     expect(host.agentStart).toBeDefined();
     expect(host.messageStart).toBeDefined();
@@ -317,7 +310,7 @@ describe("TPS Tracker extension", () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext("model-a");
     const loader = new RecordingTokenCounterLoader({ countOutputTokens: () => 1 });
-    registerTpsTracker(host, loader, new RecordingClock());
+    registerTpsTracker(host, loader);
 
     await requireHandler(host.agentStart)(
       { type: "agent_start" } satisfies AgentStartEvent,
@@ -340,7 +333,6 @@ describe("TPS Tracker extension", () => {
   it("throttles Tokenized Output Count status calculation for 250 milliseconds", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext();
-    const clock = new RecordingClock();
     const inputs: string[] = [];
     registerTpsTracker(
       host,
@@ -350,7 +342,6 @@ describe("TPS Tracker extension", () => {
           return text.length;
         },
       }),
-      clock,
     );
 
     await requireHandler(host.agentStart)(
@@ -359,11 +350,11 @@ describe("TPS Tracker extension", () => {
     );
     await Promise.resolve();
     await requireHandler(host.messageStart)(messageStartEvent(), context);
-    clock.advance(1_000);
+    vi.advanceTimersByTime(1_000);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("first"), context);
-    clock.advance(100);
+    vi.advanceTimersByTime(100);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("second"), context);
-    clock.advance(250);
+    vi.advanceTimersByTime(250);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("third"), context);
 
     expect(inputs).toEqual(["first", "firstsecondthird"]);
@@ -372,7 +363,6 @@ describe("TPS Tracker extension", () => {
   it("resets tokenized message text while aggregating multiple messages", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext();
-    const clock = new RecordingClock();
     const inputs: string[] = [];
     registerTpsTracker(
       host,
@@ -382,7 +372,6 @@ describe("TPS Tracker extension", () => {
           return text.length;
         },
       }),
-      clock,
     );
 
     await requireHandler(host.agentStart)(
@@ -392,12 +381,12 @@ describe("TPS Tracker extension", () => {
     await Promise.resolve();
     await requireHandler(host.messageStart)(messageStartEvent(), context);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("first"), context);
-    clock.advance(1_000);
+    vi.advanceTimersByTime(1_000);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("!"), context);
     await requireHandler(host.messageEnd)(messageEndEvent(), context);
     await requireHandler(host.messageStart)(messageStartEvent(), context);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("second"), context);
-    clock.advance(2_000);
+    vi.advanceTimersByTime(2_000);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("!"), context);
     await requireHandler(host.messageEnd)(messageEndEvent(), context);
     await requireHandler(host.agentEnd)(
