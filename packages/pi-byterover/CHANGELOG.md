@@ -1,5 +1,11 @@
 # pi-byterover
 
+## 0.2.6
+
+### Patch Changes
+
+- 00e8819: Refactor AI overengineering
+
 ## 0.2.5
 
 ### Patch Changes

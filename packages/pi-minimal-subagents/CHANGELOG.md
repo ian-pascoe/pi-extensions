@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.2.1
+
+### Patch Changes
+
+- 00e8819: Refactor AI overengineering
+
 ## 0.2.0
 
 ### Minor Changes
