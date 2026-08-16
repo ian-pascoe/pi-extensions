@@ -545,6 +545,24 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("converts folding ranges to one-based Unicode code-point coordinates", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.responseByMethod.set("textDocument/foldingRange", [
+      { startLine: 0, startCharacter: 15, endLine: 0, endCharacter: 17 },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "folding_ranges",
+      file_path: fixture.filePath,
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(text).toContain('"startCharacter":16');
+    expect(text).toContain('"endCharacter":17');
+    expect(text).toContain('"startLine":1');
+    expect(text).toContain('"endLine":1');
+    await fixture.close();
+  });
+
   test("exposes a server-initiated workspace edit preview through the active result", async () => {
     const fixture = await createToolFixture();
     const preview = await fixture.dependencies.workspaceEdits.createPreview({

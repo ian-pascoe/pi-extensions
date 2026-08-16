@@ -109,6 +109,7 @@ describe("LspServerClient", () => {
     expect(client.positionEncoding).toBe("utf-8");
     expect(client.hasCapability("textDocument/hover")).toBe(true);
     expect(client.hasCapability("textDocument/foldingRange")).toBe(true);
+    expect(client.hasCapability("textDocument/prepareRename")).toBe(true);
     expect(state.initializationOptions).toEqual({ fakeInitialization: true });
     expect(state.settingsNotifications).toEqual([
       { typescript: { preferences: { quoteStyle: "single" } } },

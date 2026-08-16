@@ -73,6 +73,10 @@ const DynamicDiagnosticRegistrationSchema = Type.Object(
   },
   { additionalProperties: true },
 );
+const PrepareRenameProviderSchema = Type.Object(
+  { prepareProvider: Type.Literal(true) },
+  { additionalProperties: true },
+);
 
 /** Time budgets, in milliseconds, for one language-server process. */
 export interface LspServerClientTimeouts {
@@ -477,6 +481,15 @@ export class LspServerClient {
         );
       case "textDocument/onTypeFormatting":
         return capabilities.documentOnTypeFormattingProvider !== undefined;
+      case "textDocument/prepareRename":
+        return (
+          Value.Check(PrepareRenameProviderSchema, capabilities.renameProvider) ||
+          [...this.dynamicRegistrations.values()].some(
+            (registration) =>
+              registration.method === "textDocument/rename" &&
+              Value.Check(PrepareRenameProviderSchema, registration.registerOptions),
+          )
+        );
       case "textDocument/rename":
         return capabilities.renameProvider !== undefined && capabilities.renameProvider !== false;
       case "textDocument/codeAction":

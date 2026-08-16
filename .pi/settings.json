@@ -43,6 +43,68 @@
           }
         ],
         "rootMarkers": ["tsconfig.json", "package.json", ".git"]
+      },
+      "oxlint": {
+        "command": "pnpm",
+        "args": ["exec", "oxlint", "--lsp"],
+        "languages": [
+          {
+            "extensions": [".js", ".mjs", ".cjs"],
+            "languageId": "javascript"
+          },
+          {
+            "extensions": [".jsx"],
+            "languageId": "javascriptreact"
+          },
+          {
+            "extensions": [".ts", ".mts", ".cts"],
+            "languageId": "typescript"
+          },
+          {
+            "extensions": [".tsx"],
+            "languageId": "typescriptreact"
+          }
+        ],
+        "rootMarkers": ["package.json", ".git"]
+      },
+      "oxfmt": {
+        "command": "pnpm",
+        "args": ["exec", "oxfmt", "--lsp"],
+        "languages": [
+          {
+            "extensions": [".js", ".mjs", ".cjs"],
+            "languageId": "javascript"
+          },
+          {
+            "extensions": [".jsx"],
+            "languageId": "javascriptreact"
+          },
+          {
+            "extensions": [".ts", ".mts", ".cts"],
+            "languageId": "typescript"
+          },
+          {
+            "extensions": [".tsx"],
+            "languageId": "typescriptreact"
+          },
+          {
+            "extensions": [".json"],
+            "languageId": "json"
+          },
+          {
+            "extensions": [".jsonc"],
+            "languageId": "jsonc"
+          },
+          {
+            "extensions": [".md"],
+            "languageId": "markdown"
+          },
+          {
+            "extensions": [".yaml", ".yml"],
+            "languageId": "yaml"
+          }
+        ],
+        "rootMarkers": ["package.json", ".git"]
       }
     }
   }

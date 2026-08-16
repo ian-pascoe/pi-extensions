@@ -95,6 +95,7 @@ async function handleRequest(message) {
       state.initializationOptions = message.params?.initializationOptions ?? null;
       const capabilities = {
         positionEncoding: "utf-8",
+        renameProvider: { prepareProvider: true },
         textDocumentSync: { openClose: true, change: 2, save: { includeText: true } },
         hoverProvider: true,
       };

@@ -82,6 +82,15 @@ import { LspWorkspaceEditError, type LspWorkspaceEditStore } from "./lsp-workspa
 
 const ProtocolRecordSchema = Type.Record(Type.String(), Type.Any());
 const ProtocolStringSchema = Type.String();
+const ProtocolFoldingRangeSchema = Type.Object(
+  {
+    startLine: Type.Integer({ minimum: 0 }),
+    startCharacter: Type.Optional(Type.Integer({ minimum: 0 })),
+    endLine: Type.Integer({ minimum: 0 }),
+    endCharacter: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  { additionalProperties: true },
+);
 
 const ApplyPreviewArgumentsSchema = Type.Object(
   {
@@ -310,6 +319,37 @@ function protocolPositionValue(value: LSPAny): Position | undefined {
   return { line: record.line, character: record.character };
 }
 
+function normalizeProtocolFoldingRange(
+  value: LSPAny,
+  text: string,
+  encoding: LspPositionEncoding,
+): Record<string, LSPAny> | undefined {
+  if (!Value.Check(ProtocolFoldingRangeSchema, value)) return undefined;
+  const start = convertLspProtocolPosition(
+    text,
+    { line: value.startLine, character: value.startCharacter ?? 0 },
+    encoding,
+  );
+  const end = convertLspProtocolPosition(
+    text,
+    { line: value.endLine, character: value.endCharacter ?? 0 },
+    encoding,
+  );
+  const normalized = {
+    ...value,
+    startLine: start.line,
+    endLine: end.line,
+  };
+  if (value.startCharacter !== undefined && value.endCharacter !== undefined) {
+    return { ...normalized, startCharacter: start.character, endCharacter: end.character };
+  }
+  if (value.startCharacter !== undefined) {
+    return { ...normalized, startCharacter: start.character };
+  }
+  if (value.endCharacter !== undefined) return { ...normalized, endCharacter: end.character };
+  return normalized;
+}
+
 async function textForProtocolUri(uri: string): Promise<string | undefined> {
   if (!uri.startsWith("file:")) return undefined;
   try {
@@ -355,6 +395,10 @@ async function normalizeProtocolResult(
   const positionEncoding = inheritedEncoding ?? prepared?.positionEncoding;
   if (position !== undefined && text !== undefined && positionEncoding !== undefined) {
     return convertLspProtocolPosition(text, position, positionEncoding);
+  }
+  if (text !== undefined && positionEncoding !== undefined) {
+    const foldingRange = normalizeProtocolFoldingRange(value, text, positionEncoding);
+    if (foldingRange !== undefined) return foldingRange;
   }
 
   const record = protocolRecord(value);

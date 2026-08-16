@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { generateUnifiedPatch, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type {
   Position,
   PositionEncodingKind,
@@ -352,15 +352,7 @@ function regularTextEdits(
 function fileSummary(path: string, before: Buffer, after: Buffer): string {
   const beforeText = decodeUtf8(before, path).text;
   const afterText = decodeUtf8(after, path).text;
-  const beforeLines = beforeText.split("\n");
-  const afterLines = afterText.split("\n");
-  return [
-    `--- ${path}`,
-    `+++ ${path}`,
-    `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
-    ...beforeLines.map((line) => `-${line}`),
-    ...afterLines.map((line) => `+${line}`),
-  ].join("\n");
+  return generateUnifiedPatch(path, beforeText, afterText);
 }
 
 function snapshotMatches(left: FileSnapshot, right: FileSnapshot): boolean {

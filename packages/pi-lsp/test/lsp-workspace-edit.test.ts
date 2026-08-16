@@ -101,18 +101,16 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
       [
         `--- ${first}`,
         `+++ ${first}`,
-        "@@ -1,2 +1,2 @@",
+        "@@ -1,1 +1,1 @@",
         "-old",
-        "-",
         "+new",
-        "+",
+        "",
         `--- ${second}`,
         `+++ ${second}`,
-        "@@ -1,2 +1,2 @@",
+        "@@ -1,1 +1,1 @@",
         "-two",
-        "-",
         "+second",
-        "+",
+        "",
       ].join("\n"),
     );
     const manifest = store.prepareMutationManifest(preview.preview_id);
