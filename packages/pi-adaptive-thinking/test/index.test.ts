@@ -8,6 +8,7 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
+import lockfile from "proper-lockfile";
 import { describe, expect, test, vi } from "vitest";
 import {
   type AdaptiveThinkingContext,
@@ -466,6 +467,53 @@ describe("adaptiveThinking extension", () => {
     vi.mocked(pi.setThinkingLevel).mockClear();
     await host.emitAgentEnd(createCtx());
     expect(pi.setThinkingLevel).not.toHaveBeenCalled();
+  });
+
+  test("retries a contended settings lock without blocking the event loop", async () => {
+    const agentDir = join(tmpdir(), `pi-adaptive-thinking-lock-${Date.now()}`);
+    const settingsPath = join(agentDir, "settings.json");
+    const lockPath = `${settingsPath}.adaptive-thinking`;
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(lockPath, "");
+
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const release = await lockfile.lock(lockPath, { realpath: false });
+    let releasePromise: Promise<void> | undefined;
+    let releaseTimerRan = false;
+    const releaseTimer = setTimeout(() => {
+      releaseTimerRan = true;
+      releasePromise = release();
+    }, 50);
+
+    try {
+      const host = createPi();
+      const { tools } = host;
+      registerAdaptiveThinking(host);
+      await host.emitSessionStart({ reason: "startup" }, createCtx());
+
+      const result = await setThinkingLevelTool(tools).execute(
+        "tool-call",
+        setThinkingLevelParameters("high", true),
+        undefined,
+        undefined,
+        createCtx(),
+      );
+
+      expect(releaseTimerRan).toBe(true);
+      expect(toolResultText(result)).toBe("Thinking level set to high");
+      expect(host.setThinkingLevel).toHaveBeenCalledWith("high");
+    } finally {
+      clearTimeout(releaseTimer);
+      if (releasePromise) await releasePromise;
+      else await release();
+      if (previousAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      }
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 
   test("persistent tool call does not update global default settings", async () => {

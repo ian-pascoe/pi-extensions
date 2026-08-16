@@ -1,9 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
 
-/** Canonical path-like identity for one persistent subagent. */
-export type AgentId = string & { readonly __agentId: unique symbol };
-
 /** Stable identity for one prompt and its complete assistant/tool loop. */
 export type TurnId = string & { readonly __turnId: unique symbol };
 
@@ -190,8 +187,6 @@ export interface CoordinatorMessage {
 
 /** Process-local adapter around one SDK-created Pi child session. */
 export interface ChildAgentRuntime {
-  readonly sessionFile: string;
-  readonly sessionId: string;
   readonly sessionLeafId: string | undefined;
   readonly isRunning: boolean;
   runPrompt(
@@ -219,17 +214,11 @@ export interface PersistedSessionIdentity {
   sessionLeafId?: string;
 }
 
-/** Combines a persisted agent record with first-launch imported context. */
-export interface RuntimeCreationRequest {
-  agent: PersistedAgent;
-  importedMessages: AgentMessage[];
-}
-
 /** Pi-specific session operations injected into the pure coordinator. */
 export interface AgentSessionFactory {
   createIdentity(agent: PersistedAgent, importedMessages: AgentMessage[]): PersistedSessionIdentity;
-  createRuntime(request: RuntimeCreationRequest): Promise<ChildAgentRuntime>;
-  restoreRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime>;
+  /** Open one verified persisted Child Agent runtime for launch or restoration. */
+  openRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime>;
   resolveLaunchMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveRestorationMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveThinkingLevel(modelId: string, requested: ThinkingLevel): ThinkingLevel;

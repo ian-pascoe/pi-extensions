@@ -14,8 +14,6 @@ import {
   registerGitStatusWidget,
   type GitStatusWidgetContext,
   type GitStatusWidgetLifecycleHost,
-  type GitStatusWidgetRefreshLoop,
-  type GitStatusWidgetRefreshScheduler,
 } from "../src/git-status-widget-lifecycle.js";
 
 class RecordingGitStatusWidgetLifecycleHost implements GitStatusWidgetLifecycleHost {
@@ -35,24 +33,6 @@ class RecordingGitStatusWidgetLifecycleHost implements GitStatusWidgetLifecycleH
   }
   onSessionShutdown(handler: Parameters<GitStatusWidgetLifecycleHost["onSessionShutdown"]>[0]) {
     this.sessionShutdown = handler;
-  }
-}
-
-class RecordingRefreshLoop implements GitStatusWidgetRefreshLoop {
-  disposed = false;
-  dispose() {
-    this.disposed = true;
-  }
-}
-
-class RecordingRefreshScheduler implements GitStatusWidgetRefreshScheduler {
-  readonly intervals: number[] = [];
-  readonly loops: RecordingRefreshLoop[] = [];
-  scheduleRefresh(_callback: () => void, intervalMs: number) {
-    this.intervals.push(intervalMs);
-    const loop = new RecordingRefreshLoop();
-    this.loops.push(loop);
-    return loop;
   }
 }
 
@@ -78,16 +58,12 @@ class RecordingWidgetContext implements GitStatusWidgetContext {
 
 type FakeGitConfiguration = {
   mode?: string;
-  branch?: string;
-  head?: string;
   status?: string;
 };
 
 const temporaryDirectories: string[] = [];
 const originalEnvironment = {
   PATH: process.env.PATH,
-  GIT_WIDGET_BRANCH: process.env.GIT_WIDGET_BRANCH,
-  GIT_WIDGET_HEAD: process.env.GIT_WIDGET_HEAD,
   GIT_WIDGET_MODE: process.env.GIT_WIDGET_MODE,
   GIT_WIDGET_STATUS: process.env.GIT_WIDGET_STATUS,
 };
@@ -111,14 +87,8 @@ async function createFakeGitDirectory() {
     fakeGit,
     [
       "#!/bin/sh",
-      'if [ "$1" = "rev-parse" ] && [ "$2" = "--is-inside-work-tree" ]; then',
+      'if [ "$1" = "status" ]; then',
       '  [ "$GIT_WIDGET_MODE" = "fail" ] && exit 1',
-      "  echo true",
-      'elif [ "$1" = "branch" ]; then',
-      "  printf '%s\\n' \"$GIT_WIDGET_BRANCH\"",
-      'elif [ "$1" = "rev-parse" ]; then',
-      "  printf '%s\\n' \"$GIT_WIDGET_HEAD\"",
-      'elif [ "$1" = "status" ]; then',
       "  printf '%s\\n' \"$GIT_WIDGET_STATUS\"",
       "else",
       "  exit 1",
@@ -133,8 +103,6 @@ async function createFakeGitDirectory() {
 function configureFakeGit(fakeBin: string, values: FakeGitConfiguration) {
   process.env.PATH = `${fakeBin}:${originalEnvironment.PATH ?? ""}`;
   process.env.GIT_WIDGET_MODE = values.mode ?? "";
-  process.env.GIT_WIDGET_BRANCH = values.branch ?? "main";
-  process.env.GIT_WIDGET_HEAD = values.head ?? "abc1234";
   process.env.GIT_WIDGET_STATUS = values.status ?? "# branch.head main";
 }
 
@@ -206,7 +174,9 @@ describe("Git Status Widget extension", () => {
 
   test("renders detached clean worktrees and hides failures", async () => {
     const fakeBin = await createFakeGitDirectory();
-    configureFakeGit(fakeBin, { branch: "", head: "deadbee", status: "# branch.head (detached)" });
+    configureFakeGit(fakeBin, {
+      status: ["# branch.oid deadbeefcafebabe", "# branch.head (detached)"].join("\n"),
+    });
     const host = new RecordingGitStatusWidgetLifecycleHost();
     const context = new RecordingWidgetContext(
       await createTemporaryDirectory("pi-git-status-widget-cwd-"),
@@ -236,24 +206,29 @@ describe("Git Status Widget extension", () => {
     expect(context.widgetUpdates).toHaveLength(0);
   });
 
-  test("replaces the previous Widget Refresh loop and disposes it during shutdown", async () => {
+  test("refreshes every two seconds, replaces the interval, and clears it during shutdown", async () => {
+    vi.useFakeTimers();
     const fakeBin = await createFakeGitDirectory();
     configureFakeGit(fakeBin, {});
     const host = new RecordingGitStatusWidgetLifecycleHost();
-    const scheduler = new RecordingRefreshScheduler();
     const context = new RecordingWidgetContext(
       await createTemporaryDirectory("pi-git-status-widget-cwd-"),
     );
-    registerGitStatusWidget(host, scheduler);
+    registerGitStatusWidget(host);
 
     await requireHandler(host.sessionStart)(sessionStartEvent, context);
+    expect(vi.getTimerCount()).toBe(1);
     await requireHandler(host.sessionStart)(sessionStartEvent, context);
+    expect(vi.getTimerCount()).toBe(1);
 
-    expect(scheduler.intervals).toEqual([2_000, 2_000]);
-    expect(scheduler.loops[0]?.disposed).toBe(true);
-    expect(scheduler.loops[1]?.disposed).toBe(false);
+    const updatesBeforeInterval = context.widgetUpdates.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(() => {
+      expect(context.widgetUpdates.length).toBe(updatesBeforeInterval + 1);
+    });
+
     await requireHandler(host.sessionShutdown)(sessionShutdownEvent, context);
-    expect(scheduler.loops[1]?.disposed).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
     expect(context.widgetUpdates.at(-1)).toBeUndefined();
   });
 

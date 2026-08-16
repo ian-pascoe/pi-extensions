@@ -46,8 +46,6 @@ export const configDefaults = {
   maxRecallChars: 4096,
 };
 
-export const maxCuratedTurnCacheSize = 500;
-
 const positiveInteger = () => z.number().int().positive();
 const nonEmptyString = () => z.string().trim().min(1);
 

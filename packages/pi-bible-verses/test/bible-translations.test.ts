@@ -82,14 +82,12 @@ describe("Offline Bible translation data", () => {
 
   test("contains 291 unique, usable passages with known translations", () => {
     expect(bibleVerseMessages).toHaveLength(291);
-    expect(new Set(bibleVerseMessages.map(({ id }) => id))).toHaveLength(291);
+    expect(new Set(bibleVerseMessages.map(({ reference }) => reference))).toHaveLength(291);
 
     for (const message of bibleVerseMessages) {
-      expect(message.id).not.toBe("");
+      expect(Object.keys(message)).toEqual(["text", "reference", "translation"]);
       expect(message.text).not.toBe("");
       expect(message.reference).not.toBe("");
-      expect(message.book).not.toBe("");
-      expect(message.verseCount).toBeGreaterThan(0);
       expect(bibleTranslationMetadata).toHaveProperty(message.translation);
     }
   });

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { BrvBridgeConfig, BrvLogger, PersistResult } from "@byterover/brv-bridge";
+import type { BrvBridgeConfig, PersistResult } from "@byterover/brv-bridge";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
@@ -67,10 +67,9 @@ const bridgeInstances: RecordingBridge[] = [];
 const recordingBridgeFactory = (
   config: BrvBridgeConfig,
   defaultCwd: string,
-  logger: BrvLogger,
 ): ByteRoverBridgeFactory => {
   return (override) => {
-    const bridgeConfig = createBrvBridgeConfig(config, defaultCwd, logger, override);
+    const bridgeConfig = createBrvBridgeConfig(config, defaultCwd, override);
     const bridge: RecordingBridge = {
       config: bridgeConfig,
       ready: vi.fn(async () => true),
@@ -217,14 +216,9 @@ describe("byterover Pi extension", () => {
   beforeEach(() => {
     bridgeInstances.length = 0;
     vi.clearAllMocks();
-    vi.spyOn(console, "debug").mockImplementation(() => undefined);
-    vi.spyOn(console, "info").mockImplementation(() => undefined);
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
     await Promise.all(
       tempDirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
     );
@@ -248,24 +242,7 @@ describe("byterover Pi extension", () => {
       persistTimeoutMs: 3_000,
     });
     expect(bridgeInstances[0]?.config.cwd).toEqual(expect.stringContaining("pi-byterover-index-"));
-    expect(bridgeInstances[0]?.config.logger).toBeDefined();
-  });
-
-  test("suppresses bridge logger output from process console streams", async () => {
-    await setup();
-    const logger = bridgeInstances[0]?.config.logger;
-    expect(logger).toBeDefined();
-    if (logger === undefined) throw new Error("Expected recording bridge logger");
-
-    logger.debug?.("exit 0 (stdout=0 chars, stderr=0 chars)");
-    logger.info("bridge info");
-    logger.warn("bridge warning");
-    logger.error("bridge error");
-
-    expect(console.debug).not.toHaveBeenCalled();
-    expect(console.info).not.toHaveBeenCalled();
-    expect(console.warn).not.toHaveBeenCalled();
-    expect(console.error).not.toHaveBeenCalled();
+    expect(bridgeInstances[0]?.config).not.toHaveProperty("logger");
   });
 
   test("quiet suppresses user-facing ByteRover failure notifications", async () => {
@@ -278,7 +255,6 @@ describe("byterover Pi extension", () => {
 
     expect(result).toMatchObject({ systemPrompt: expect.stringContaining("base prompt") });
     expect(ctx.notifications).toEqual([]);
-    expect(console.error).not.toHaveBeenCalled();
   });
 
   test("disabled config creates no bridge/tools/event handlers beyond session_start", async () => {
@@ -418,7 +394,6 @@ describe("byterover Pi extension", () => {
       "[user]: persist this decision",
     );
     expect(bridgeInstances[0]?.persist.mock.calls[0]?.[0]).not.toContain("old question");
-    expect(console.debug).not.toHaveBeenCalled();
   });
 
   test("agent_end curation does not block handler completion", async () => {
@@ -506,6 +481,5 @@ describe("byterover Pi extension", () => {
     expect(ctx.notifications).toEqual([
       { message: "Invalid ByteRover configuration", type: "error" },
     ]);
-    expect(console.error).not.toHaveBeenCalled();
   });
 });

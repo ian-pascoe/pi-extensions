@@ -740,12 +740,6 @@ function validateRegistrySnapshot(
     }
     const identityError = validateDeliveryIdentity(delivery, version);
     if (identityError) return invalidRegistrySnapshot("invalid-delivery-identity", identityError);
-    if (!isOwnedTurnId(delivery.source_agent_id, delivery.source_turn_id)) {
-      return invalidRegistrySnapshot(
-        "invalid-delivery-identity",
-        "terminal source_turn_id must belong to source_agent_id",
-      );
-    }
     const source = agentsById.get(delivery.source_agent_id);
     if (!source) {
       return invalidRegistrySnapshot(
@@ -763,17 +757,6 @@ function validateRegistrySnapshot(
   for (const delivery of coordinationDeliveries) {
     const identityError = validateCoordinationIdentity(delivery);
     if (identityError) return invalidRegistrySnapshot("invalid-delivery-identity", identityError);
-    if (
-      !isOwnedTurnId(
-        delivery.message.details.source_agent_id,
-        delivery.message.details.source_turn_id,
-      )
-    ) {
-      return invalidRegistrySnapshot(
-        "invalid-delivery-identity",
-        "Coordination Message source_turn_id must belong to source_agent_id",
-      );
-    }
     if (
       !areAdjacentAgents(
         delivery.message.details.source_agent_id,
@@ -1228,13 +1211,7 @@ export function replayRegistryEntries(
     }
   });
 
-  let checkpointIndex = -1;
-  for (let index = parsedEvents.length - 1; index >= 0; index--) {
-    if (parsedEvents[index]?.event.event === "checkpoint") {
-      checkpointIndex = index;
-      break;
-    }
-  }
+  const checkpointIndex = parsedEvents.findLastIndex(({ event }) => event.event === "checkpoint");
   const checkpointEvent = checkpointIndex >= 0 ? parsedEvents[checkpointIndex]?.event : undefined;
   const checkpoint = checkpointEvent?.event === "checkpoint" ? checkpointEvent.snapshot : undefined;
   const agents = new Map(

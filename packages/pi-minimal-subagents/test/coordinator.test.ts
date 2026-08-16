@@ -9,7 +9,6 @@ import type {
   CoordinatorMessage,
   PersistedAgent,
   RootConversationEndpoint,
-  RuntimeCreationRequest,
   RuntimeProfile,
   RuntimeTurnOutcome,
 } from "../src/minimal-subagents-types.js";
@@ -52,8 +51,6 @@ function childRuntime(
   },
 ) {
   return {
-    sessionFile: "/sessions/runtime.jsonl",
-    sessionId: "runtime-session",
     sessionLeafId: "runtime-leaf",
     isRunning: false,
     runPrompt: vi.fn(async () => outcome),
@@ -80,12 +77,7 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
       sessionId: `session-${agent.agent_id}`,
       sessionLeafId: `leaf-${agent.agent_id}`,
     })),
-    createRuntime: vi.fn<(request: RuntimeCreationRequest) => Promise<ChildAgentRuntime>>(
-      async () => runtime,
-    ),
-    restoreRuntime: vi.fn<(agent: PersistedAgent) => Promise<ChildAgentRuntime>>(
-      async () => runtime,
-    ),
+    openRuntime: vi.fn<(agent: PersistedAgent) => Promise<ChildAgentRuntime>>(async () => runtime),
     resolveLaunchMissingDependencies: vi.fn<(agent: PersistedAgent) => Promise<string[]>>(
       async () => [],
     ),
@@ -168,7 +160,7 @@ describe("minimal subagents coordinator", () => {
         sessionLeafId: `leaf-${agent.agent_id}`,
       };
     });
-    sessions.createRuntime.mockImplementation(async () => {
+    sessions.openRuntime.mockImplementation(async () => {
       order.push("runtime");
       return childRuntime();
     });
@@ -189,7 +181,7 @@ describe("minimal subagents coordinator", () => {
     await expect(
       failedFixture.coordinator.spawn("root", { task: "Fail safely", agent_id: "failed" }, caller),
     ).rejects.toThrow("identity disk full");
-    expect(failedFixture.sessions.createRuntime).not.toHaveBeenCalled();
+    expect(failedFixture.sessions.openRuntime).not.toHaveBeenCalled();
     expect(failedFixture.coordinator.snapshot().agents).toEqual([]);
 
     const leaflessFixture = coordinatorFixture();
@@ -289,7 +281,7 @@ describe("minimal subagents coordinator", () => {
       resolveRuntime = resolve;
     });
     const pending = coordinatorFixture();
-    pending.sessions.createRuntime.mockReturnValue(runtimeInitialization);
+    pending.sessions.openRuntime.mockReturnValue(runtimeInitialization);
     await pending.coordinator.spawn("root", { task: "Wait", agent_id: "pending" }, caller);
     const beforeInitialization = pending.coordinator.status("root");
     resolveRuntime(childRuntime());
@@ -1093,7 +1085,7 @@ describe("minimal subagents coordinator", () => {
     sessions.resolveRestorationMissingDependencies.mockImplementation(
       async (agent: PersistedAgent) => (agent.agent_id === "missing" ? ["custom_tool"] : []),
     );
-    sessions.restoreRuntime.mockImplementation(async (agent: PersistedAgent) => {
+    sessions.openRuntime.mockImplementation(async (agent: PersistedAgent) => {
       if (agent.agent_id === "runtime-failed") throw new Error("session corrupt");
       return childRuntime();
     });
@@ -1149,7 +1141,7 @@ describe("minimal subagents coordinator", () => {
     expect(coordinator.inspectStatus("healthy")).toMatchObject({
       agent: { availability: "available" },
     });
-    expect(sessions.restoreRuntime).toHaveBeenCalledWith(
+    expect(sessions.openRuntime).toHaveBeenCalledWith(
       expect.objectContaining({ agent_id: "healthy" }),
     );
   });

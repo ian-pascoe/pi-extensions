@@ -1,28 +1,13 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
-import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
+import { readJsonDocument, rootPiManifestSchema } from "../scripts/root-project-contract.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const temporaryDirectories: string[] = [];
-
-const rootPiManifestSchema = Type.Object({
-  pi: Type.Object({ extensions: Type.Array(Type.String()) }),
-});
-
-type RootPiManifest = Static<typeof rootPiManifestSchema>;
-
-function parseRootPiManifest(documentText: string): RootPiManifest {
-  const document = JSON.parse(documentText);
-  if (!Value.Check(rootPiManifestSchema, document)) {
-    throw new Error("Root Pi extension entrypoints failed: invalid root package manifest");
-  }
-  return document;
-}
 
 const expectedExtensionPaths = [
   "./packages/pi-adaptive-thinking/src/index.ts",
@@ -41,8 +26,9 @@ afterEach(async () => {
 
 describe("root Pi extension entrypoints", () => {
   test("loads the authoritative ordered source entrypoints through Pi", async () => {
-    const packageManifest = parseRootPiManifest(
-      await readFile(resolve(repositoryRoot, "package.json"), "utf8"),
+    const packageManifest = await readJsonDocument(
+      resolve(repositoryRoot, "package.json"),
+      rootPiManifestSchema,
     );
     expect(packageManifest.pi.extensions).toEqual(expectedExtensionPaths);
 

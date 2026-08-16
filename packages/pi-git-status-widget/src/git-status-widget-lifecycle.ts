@@ -33,23 +33,6 @@ export interface GitStatusWidgetContext {
   setWidget(id: string, lines: string[] | undefined): void;
 }
 
-/** Represents one scheduled Worktree Snapshot refresh loop. */
-export interface GitStatusWidgetRefreshLoop {
-  dispose(): void;
-}
-
-/** Schedules Worktree Snapshot refresh loops independently from the lifecycle policy. */
-export interface GitStatusWidgetRefreshScheduler {
-  scheduleRefresh(callback: () => void, intervalMs: number): GitStatusWidgetRefreshLoop;
-}
-
-const systemGitStatusWidgetRefreshScheduler: GitStatusWidgetRefreshScheduler = {
-  scheduleRefresh(callback, intervalMs) {
-    const interval = setInterval(callback, intervalMs);
-    return { dispose: () => clearInterval(interval) };
-  },
-};
-
 /** Registers the exact Pi lifecycle events needed by the Git Status Widget. */
 export interface GitStatusWidgetLifecycleHost {
   onSessionStart(
@@ -73,19 +56,6 @@ async function runGit(args: string[], cwd: string) {
     maxBuffer: 1024 * 1024,
   });
   return stdout.trimEnd();
-}
-
-async function getFallbackBranch(cwd: string) {
-  const branch = await runGit(["branch", "--show-current"], cwd);
-  if (branch.length > 0) return branch;
-  const head = await runGit(["rev-parse", "--short", "HEAD"], cwd);
-  return head.length > 0 ? `detached@${head}` : "unknown";
-}
-
-function parseBranchHeader(line: string, fallback: string) {
-  const branch = line.slice("# branch.head ".length).trim();
-  if (branch === "(detached)") return fallback;
-  return branch || fallback;
 }
 
 function parseAheadBehind(line: string) {
@@ -113,12 +83,12 @@ function countStatusLine(status: GitStatus, line: string) {
 }
 
 async function getGitStatus(cwd: string): Promise<GitStatus> {
-  const [fallbackBranch, statusOutput] = await Promise.all([
-    getFallbackBranch(cwd),
-    runGit(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"], cwd),
-  ]);
+  const statusOutput = await runGit(
+    ["status", "--porcelain=v2", "--branch", "--untracked-files=normal"],
+    cwd,
+  );
   const status: GitStatus = {
-    branch: fallbackBranch,
+    branch: "unknown",
     ahead: 0,
     behind: 0,
     conflicted: 0,
@@ -126,9 +96,15 @@ async function getGitStatus(cwd: string): Promise<GitStatus> {
     modified: 0,
     clean: true,
   };
+  let branchHead: string | undefined;
+  let branchOid: string | undefined;
   for (const line of statusOutput.split("\n")) {
     if (line.startsWith("# branch.head ")) {
-      status.branch = parseBranchHeader(line, fallbackBranch);
+      branchHead = line.slice("# branch.head ".length).trim();
+      continue;
+    }
+    if (line.startsWith("# branch.oid ")) {
+      branchOid = line.slice("# branch.oid ".length).trim();
       continue;
     }
     if (line.startsWith("# branch.ab ")) {
@@ -137,6 +113,12 @@ async function getGitStatus(cwd: string): Promise<GitStatus> {
     }
     countStatusLine(status, line);
   }
+  status.branch =
+    branchHead === "(detached)"
+      ? branchOid && branchOid !== "(initial)"
+        ? `detached@${branchOid.slice(0, 7)}`
+        : "unknown"
+      : branchHead || "unknown";
   status.clean =
     status.ahead === 0 &&
     status.behind === 0 &&
@@ -176,7 +158,6 @@ function renderGitStatus(context: GitStatusWidgetContext, status: GitStatus) {
 async function updateGitStatusWidget(context: GitStatusWidgetContext) {
   if (!context.hasUI) return;
   try {
-    await runGit(["rev-parse", "--is-inside-work-tree"], context.cwd);
     context.setWidget(WIDGET_ID, [renderGitStatus(context, await getGitStatus(context.cwd))]);
   } catch {
     context.setWidget(WIDGET_ID, undefined);
@@ -184,15 +165,12 @@ async function updateGitStatusWidget(context: GitStatusWidgetContext) {
 }
 
 /** Installs Worktree Snapshot refresh behavior through a narrow lifecycle host. */
-export function registerGitStatusWidget(
-  host: GitStatusWidgetLifecycleHost,
-  refreshScheduler: GitStatusWidgetRefreshScheduler = systemGitStatusWidgetRefreshScheduler,
-) {
-  let refreshLoop: GitStatusWidgetRefreshLoop | undefined;
+export function registerGitStatusWidget(host: GitStatusWidgetLifecycleHost) {
+  let refreshInterval: ReturnType<typeof setInterval> | undefined;
   host.onSessionStart(async (_event, context) => {
-    refreshLoop?.dispose();
+    if (refreshInterval) clearInterval(refreshInterval);
     await updateGitStatusWidget(context);
-    refreshLoop = refreshScheduler.scheduleRefresh(() => {
+    refreshInterval = setInterval(() => {
       void updateGitStatusWidget(context);
     }, UPDATE_INTERVAL_MS);
   });
@@ -204,8 +182,8 @@ export function registerGitStatusWidget(
     await updateGitStatusWidget(context);
   });
   host.onSessionShutdown(async (_event, context) => {
-    refreshLoop?.dispose();
-    refreshLoop = undefined;
+    if (refreshInterval) clearInterval(refreshInterval);
+    refreshInterval = undefined;
     if (context.hasUI) context.setWidget(WIDGET_ID, undefined);
   });
 }

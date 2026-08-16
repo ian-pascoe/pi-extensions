@@ -147,43 +147,20 @@ const agentDir = () => process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi",
 
 const globalSettingsPath = () => join(agentDir(), "settings.json");
 
-const sleepSync = (milliseconds: number) => {
-  const end = Date.now() + milliseconds;
-  while (Date.now() < end) {
-    // Synchronous ExtensionAPI methods require a synchronous retry loop.
-  }
-};
-
-const acquireSettingsLock = (lockPath: string) => {
-  const maxAttempts = 100;
-  const delayMs = 20;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return lockfile.lockSync(lockPath, { realpath: false });
-    } catch (cause) {
-      const error = cause instanceof Error ? cause : new Error(String(cause));
-      const fileSystemError: NodeJS.ErrnoException = error;
-      const code = Object.hasOwn(fileSystemError, "code") ? fileSystemError.code : undefined;
-      if (code !== "ELOCKED" || attempt === maxAttempts) throw error;
-      sleepSync(delayMs);
-    }
-  }
-
-  throw new Error(`Failed to acquire settings lock: ${lockPath}`);
-};
-
-const withSettingsLock = <T>(settingsPath: string, fn: () => T): T => {
+const withSettingsLock = async <T>(settingsPath: string, fn: () => Promise<T> | T): Promise<T> => {
   mkdirSync(join(settingsPath, ".."), { recursive: true });
   const lockPath = `${settingsPath}.adaptive-thinking`;
   if (!existsSync(lockPath)) writeFileSync(lockPath, "");
 
-  const release = acquireSettingsLock(lockPath);
+  const release = await lockfile.lock(lockPath, {
+    realpath: false,
+    retries: { retries: 99, factor: 1, minTimeout: 20, maxTimeout: 20 },
+  });
 
   try {
-    return fn();
+    return await fn();
   } finally {
-    release();
+    await release();
   }
 };
 
@@ -218,10 +195,10 @@ const restoreDefaultThinkingLevel = (
   }
 };
 
-const withSessionOnlyThinkingLevelChange = (changeThinkingLevel: () => void) => {
+const withSessionOnlyThinkingLevelChange = async (changeThinkingLevel: () => void) => {
   const settingsPath = globalSettingsPath();
 
-  return withSettingsLock(settingsPath, () => {
+  await withSettingsLock(settingsPath, () => {
     const previousDefaultThinkingLevel = readDefaultThinkingLevel(settingsPath);
 
     changeThinkingLevel();
@@ -279,7 +256,7 @@ export function registerAdaptiveThinking(pi: AdaptiveThinkingExtensionHost) {
     if (!state || !resetLevel) return;
 
     try {
-      withSessionOnlyThinkingLevelChange(() => pi.setThinkingLevel(resetLevel));
+      await withSessionOnlyThinkingLevelChange(() => pi.setThinkingLevel(resetLevel));
       delete state.temporaryResetLevel;
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
@@ -361,7 +338,7 @@ export function registerAdaptiveThinking(pi: AdaptiveThinkingExtensionHost) {
         }
 
         try {
-          withSessionOnlyThinkingLevelChange(() => pi.setThinkingLevel(level));
+          await withSessionOnlyThinkingLevelChange(() => pi.setThinkingLevel(level));
         } catch (cause) {
           const error = cause instanceof Error ? cause : new Error(String(cause));
           return textResult(`Failed to set thinking level: ${errorMessage(error)}`);

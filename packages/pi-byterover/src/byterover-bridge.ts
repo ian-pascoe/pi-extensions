@@ -1,7 +1,6 @@
 import {
   BrvBridge,
   type BrvBridgeConfig,
-  type BrvLogger,
   type PersistOptions,
   type PersistResult,
   type RecallOptions,
@@ -31,10 +30,9 @@ export type ByteRoverBridgeFactory = (override?: ByteRoverBridgeOverride) => Byt
 export const createBrvBridgeConfig = (
   config: BrvBridgeConfig,
   defaultCwd: string,
-  logger: BrvLogger,
   override?: ByteRoverBridgeOverride,
 ): BrvBridgeConfig => {
-  const bridgeConfig: BrvBridgeConfig = { cwd: override?.cwd ?? defaultCwd, logger };
+  const bridgeConfig: BrvBridgeConfig = { cwd: override?.cwd ?? defaultCwd };
   const brvPath = config.brvPath;
   const searchTimeoutMs = override?.searchTimeoutMs ?? config.searchTimeoutMs;
   const recallTimeoutMs = override?.recallTimeoutMs ?? config.recallTimeoutMs;
@@ -50,7 +48,6 @@ export const createBrvBridgeConfig = (
 export const createBrvBridgeFactory = (
   config: BrvBridgeConfig,
   defaultCwd: string,
-  logger: BrvLogger,
 ): ByteRoverBridgeFactory => {
-  return (override) => new BrvBridge(createBrvBridgeConfig(config, defaultCwd, logger, override));
+  return (override) => new BrvBridge(createBrvBridgeConfig(config, defaultCwd, override));
 };
