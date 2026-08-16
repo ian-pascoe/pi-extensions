@@ -1057,7 +1057,7 @@ export function createLspToolDefinition(
     ],
     parameters: LspToolParametersSchema,
     renderCall: (argumentsValue, theme, context) =>
-      renderLspToolCall(argumentsValue, theme, context.expanded),
+      renderLspToolCall(argumentsValue, theme, context.expanded, context.cwd),
     renderResult: (result, options, theme, context) =>
       renderLspToolResult(result, options, theme, context.isError),
     prepareArguments(argumentsValue) {

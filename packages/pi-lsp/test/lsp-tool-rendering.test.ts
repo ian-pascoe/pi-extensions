@@ -34,14 +34,25 @@ describe("Pi LSP tool rendering", () => {
       },
     };
 
-    expect(renderLines(renderLspToolCall(parameters, plainTheme, false))).toBe(
+    expect(renderLines(renderLspToolCall(parameters, plainTheme, false, "/workspace"))).toBe(
       "LSP  Hover  packages/pi-lsp/src/lsp-tool.ts:12:4",
     );
+    expect(
+      renderLines(
+        renderLspToolCall(
+          { ...parameters, file_path: "@/workspace/packages/pi-lsp/src/lsp-tool.ts" },
+          plainTheme,
+          false,
+          "/workspace",
+        ),
+      ),
+    ).toBe("LSP  Hover  packages/pi-lsp/src/lsp-tool.ts:12:4");
 
     const collapsed = renderLines(
       renderLspToolResult(result, { expanded: false, isPartial: false }, plainTheme, false),
     );
     expect(collapsed).toContain("Completed");
+    expect(collapsed).toContain("1 result");
     expect(collapsed).toContain("typescript");
     expect(collapsed).not.toContain("hover text");
 
@@ -50,6 +61,41 @@ describe("Pi LSP tool rendering", () => {
     );
     expect(expanded).toContain("Server outcomes");
     expect(expanded).toContain('{"results":[{"value":"hover text"}]}');
+  });
+
+  test("summarizes operation-specific result counts while collapsed", () => {
+    const collapsed = renderLines(
+      renderLspToolResult(
+        {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                results: [
+                  {
+                    server_id: "typescript",
+                    root_path: "/workspace",
+                    value: { diagnostics: [{ message: "one" }, { message: "two" }] },
+                  },
+                ],
+                warnings: [],
+              }),
+            },
+          ],
+          details: {
+            kind: "operation",
+            operation: "diagnostics",
+            server_outcomes: [{ server_id: "typescript", outcome: "success" }],
+          },
+        },
+        { expanded: false, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+
+    expect(collapsed).toContain("2 diagnostics");
+    expect(collapsed).not.toContain("message");
   });
 
   test("surfaces preview, apply, partial, and error states without hardcoded styling", () => {
