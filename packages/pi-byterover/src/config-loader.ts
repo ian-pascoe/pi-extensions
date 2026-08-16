@@ -15,20 +15,13 @@ export type LoadConfigResult =
   | { success: true; config: ByteroverConfig; source?: string }
   | { success: false; source: string; error: Error };
 
-const hasCode = (error: unknown, code: string) => {
-  return typeof error === "object" && error !== null && "code" in error && error.code === code;
-};
-
-const errorMessage = (error: unknown) => {
-  return error instanceof Error ? error.message : String(error);
-};
-
-const invalidConfig = (source: string, error: unknown): LoadConfigResult => ({
+const invalidConfig = (source: string, error: Error): LoadConfigResult => ({
   success: false,
   source,
-  error: new Error(`Invalid Byterover configuration in ${source}: ${errorMessage(error)}`),
+  error: new Error(`Invalid Byterover configuration in ${source}: ${error.message}`),
 });
 
+/** Loads the highest-precedence ByteRover JSON configuration through its Zod boundary. */
 export const loadConfig = async ({
   cwd,
   homeDir = homedir(),
@@ -42,15 +35,15 @@ export const loadConfig = async ({
     let raw: string;
     try {
       raw = await readFile(source, "utf8");
-    } catch (error) {
-      if (hasCode(error, "ENOENT")) continue;
-      return invalidConfig(source, error);
+    } catch (cause) {
+      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") continue;
+      return invalidConfig(source, cause instanceof Error ? cause : new Error(String(cause)));
     }
 
     try {
       return { success: true, source, config: ConfigSchema.parse(JSON.parse(raw)) };
-    } catch (error) {
-      return invalidConfig(source, error);
+    } catch (cause) {
+      return invalidConfig(source, cause instanceof Error ? cause : new Error(String(cause)));
     }
   }
 

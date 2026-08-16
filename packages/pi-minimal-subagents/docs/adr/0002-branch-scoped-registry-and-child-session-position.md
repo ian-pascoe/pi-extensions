@@ -1,0 +1,11 @@
+# Scope persistent agents to the active Root Agent branch
+
+Pi session files are trees, not linear logs. Minimal Subagents therefore replays Registry entries and searches Delivery Evidence only on `SessionManager.getBranch()`. Events on an abandoned sibling branch cannot create, delete, or settle state on the active branch.
+
+On `session_tree`, the coordinator invalidates process-local delivery operations and waiters before restoring the newly selected branch. Persisted agents record a Child Session Position. Restore and clone verify the child session header and identity, then reopen or branch from that recorded leaf. Identity mismatch is isolated to that Child Agent; deletion never trashes an unverified path.
+
+`session_before_fork` is observational because a later extension may cancel the operation. It captures the selected branch state without canceling work, cloning files, or disabling tools. Only confirmed `session_shutdown { reason: "fork" }` restores the selected snapshot, interrupts selected in-flight records, drains work, and materializes independent child clones. Each clone appends a new generation-specific identity and source-provenance pair. The destination ignores inherited ownership records for earlier clone session IDs and appends a record binding the current clone session exclusively to the destination Root Agent before any runtime restore. Verification always selects the latest identity/provenance generation and ownership matching the current session ID.
+
+The normal handoff carries both the canonical source file and source Root Agent identity. If process-local handoff state is lost, the destination may reconstruct only from Registry entries already copied into its selected branch, and only when its canonical `parentSession` equals the reported source file. It never replays the source file's current head, which may represent another branch. An unprovable or canceled fork leaves child ownership unrestored rather than guessing.
+
+Malformed Registry payloads are parsed at replay and skipped locally with semantic diagnostics. The latest valid checkpoint remains usable, and one child restoration or ownership failure does not prevent healthy children or Root Agent tools from loading.

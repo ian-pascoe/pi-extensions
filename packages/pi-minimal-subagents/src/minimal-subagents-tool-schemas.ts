@@ -1,15 +1,25 @@
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type, type TSchema } from "typebox";
+import { Type } from "typebox";
 import { THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
 
 const SessionContextSchema = StringEnum(["inherit", "compact", "omit"] as const);
 const ProjectContextSchema = StringEnum(["inherit", "omit"] as const);
 const DelegationSchema = StringEnum(["none", "fanout"] as const);
 const ThinkingLevelSchema = StringEnum(THINKING_LEVELS);
-const ToolSelectionSchema = Type.Union([
-  StringEnum(["none", "read", "modify"] as const),
-  Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
-]);
+const ToolSelectionSchema = Type.Union(
+  [
+    StringEnum(["none", "read", "modify"] as const),
+    Type.Array(Type.String({ minLength: 1 }), {
+      uniqueItems: true,
+      description:
+        "Exact ordinary tool names. Coordinator tools are injected separately and must not appear here. Arrays are not bundle names; use the string preset `read` or `modify` for bundled capabilities.",
+    }),
+  ],
+  {
+    description:
+      'Use the string preset "read" for read, grep, find, and ls; use "modify" for the read bundle plus bash, edit, and write. An array grants exactly those named tools (ordinary tools only); coordinator tools are injected separately.',
+  },
+);
 const FRIENDLY_AGENT_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
 const CANONICAL_AGENT_ID_PATTERN =
   "^(?:root\\.)?[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:\\.[A-Za-z0-9][A-Za-z0-9_-]{0,63})*$";
@@ -20,8 +30,9 @@ function canonicalAgentIdSchema(description?: string) {
 
 /** Build all six strict TypeBox schemas, including the refreshed runtime model enum. */
 export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
-  const explicitModelSchema: TSchema =
-    modelIds.length > 0 ? StringEnum(modelIds as [string, ...string[]]) : Type.Never();
+  const [firstModelId, ...remainingModelIds] = modelIds;
+  const explicitModelSchema =
+    firstModelId === undefined ? Type.Never() : StringEnum([firstModelId, ...remainingModelIds]);
   return {
     subagent: Type.Object({
       task: Type.String({ minLength: 1, description: "Task for the persistent child agent" }),
@@ -49,6 +60,9 @@ export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
     }),
     subagent_wait: Type.Object({
       agent_id: canonicalAgentIdSchema("Direct child canonical agent ID"),
+      turn_id: Type.Optional(
+        Type.String({ minLength: 1, description: "Exact retained child turn ID" }),
+      ),
       timeout_ms: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
     subagent_status: Type.Object({

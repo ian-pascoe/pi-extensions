@@ -9,6 +9,7 @@ import {
   type ToolDefinition,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
+import type { Static } from "typebox";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
 import {
@@ -16,8 +17,17 @@ import {
   renderCoordinatorToolResult,
   type CoordinatorToolName,
 } from "./minimal-subagents-rendering.js";
+import type { CoordinatorToolCallInput } from "./minimal-subagents-render-contract.js";
 import type { createCoordinatorToolSchemas } from "./minimal-subagents-tool-schemas.js";
-import type { CallerSnapshot, SpawnParameters } from "./minimal-subagents-types.js";
+import type {
+  AgentMessageResult,
+  CallerSnapshot,
+  CancelResult,
+  DeleteResult,
+  SpawnResult,
+  StatusResult,
+  WaitResult,
+} from "./minimal-subagents-types.js";
 
 const ORDINARY_CHILD_COORDINATOR_TOOL_NAMES = new Set([
   "agent_message",
@@ -25,8 +35,15 @@ const ORDINARY_CHILD_COORDINATOR_TOOL_NAMES = new Set([
   "subagent_status",
 ]);
 
-interface CoordinatorToolDefinitionOptions {
-  coordinator: MinimalSubagentsCoordinator;
+/** Coordinator operations consumed by the six public coordinator tool definitions. */
+export type CoordinatorToolOperations = Pick<
+  MinimalSubagentsCoordinator,
+  "spawn" | "inspectStatus" | "sendAgentMessage" | "wait" | "status" | "cancel" | "delete"
+>;
+
+/** Dependencies and caller policy used to create caller-bound coordinator tools. */
+export interface CoordinatorToolDefinitionOptions {
+  coordinator: CoordinatorToolOperations;
   callerId: string;
   allowFanoutTools?: boolean;
   modelRoles?: readonly MinimalSubagentsModelRole[];
@@ -34,6 +51,27 @@ interface CoordinatorToolDefinitionOptions {
   captureCaller: (context: ExtensionContext) => CallerSnapshot;
   onActivity?: () => void;
   onAttention?: (message: string) => void;
+}
+
+/** Arguments consumed by the wait tool's narrow coordinator execution seam. */
+export type CoordinatorWaitToolParameters = Static<
+  ReturnType<typeof createCoordinatorToolSchemas>["subagent_wait"]
+>;
+
+/** Forward one typed wait-tool request without requiring an unrelated Pi execution context. */
+export function executeCoordinatorWaitTool(
+  coordinator: Pick<CoordinatorToolOperations, "wait">,
+  callerId: string,
+  parameters: CoordinatorWaitToolParameters,
+  signal: AbortSignal | undefined,
+): Promise<WaitResult> {
+  return coordinator.wait(
+    callerId,
+    parameters.agent_id,
+    parameters.timeout_ms,
+    signal,
+    parameters.turn_id,
+  );
 }
 
 function buildModelRolePromptGuidelines(
@@ -61,15 +99,24 @@ async function runCoordinatorToolActivity<T>(
   }
 }
 
+type CoordinatorToolResultDetails =
+  | SpawnResult
+  | AgentMessageResult
+  | WaitResult
+  | StatusResult
+  | CancelResult
+  | DeleteResult
+  | { agent_id: string; status: "waiting"; elapsed_ms: number };
+
 function createCoordinatorToolRendering(toolName: CoordinatorToolName) {
   return {
-    renderCall: (args: Record<string, unknown>, theme: Theme) =>
+    renderCall: (args: CoordinatorToolCallInput, theme: Theme) =>
       renderCoordinatorToolCall(toolName, args, theme),
     renderResult: (
-      result: AgentToolResult<unknown>,
+      result: AgentToolResult<CoordinatorToolResultDetails>,
       renderOptions: ToolRenderResultOptions,
       theme: Theme,
-      context: { args: Record<string, unknown>; isError: boolean },
+      context: { args: CoordinatorToolCallInput; isError: boolean },
     ) =>
       renderCoordinatorToolResult(
         toolName,
@@ -82,7 +129,9 @@ function createCoordinatorToolRendering(toolName: CoordinatorToolName) {
   };
 }
 
-function structuredToolResult(result: unknown) {
+function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
+  result: TDetails,
+): AgentToolResult<TDetails> {
   const json = JSON.stringify(result, null, 2);
   const truncated = truncateHead(json, {
     maxBytes: DEFAULT_MAX_BYTES,
@@ -94,7 +143,7 @@ function structuredToolResult(result: unknown) {
   };
 }
 
-function failedStructuredOperation(prefix: string, result: unknown): never {
+function failedStructuredOperation(prefix: string, result: DeleteResult): never {
   const json = JSON.stringify(result);
   const truncated = truncateHead(json, {
     maxBytes: DEFAULT_MAX_BYTES,
@@ -104,7 +153,7 @@ function failedStructuredOperation(prefix: string, result: unknown): never {
 }
 
 function callerSourceTurnId(
-  coordinator: MinimalSubagentsCoordinator,
+  coordinator: CoordinatorToolOperations,
   callerId: string,
   toolCallId: string,
 ): string {
@@ -132,17 +181,17 @@ export function createCoordinatorToolDefinitions(
       return runCoordinatorToolActivity(options, async () => {
         const result = await options.coordinator.spawn(
           options.callerId,
-          parameters as SpawnParameters,
+          parameters,
           options.captureCaller(context),
         );
         const status = options.coordinator.inspectStatus(result.agent_id);
-        return {
-          ...structuredToolResult(result),
-          details: {
-            ...result,
-            ...(status && "agent" in status ? { agent: status.agent } : {}),
-          },
+        const details: SpawnResult & {
+          agent?: import("./minimal-subagents-types.js").AgentDetail;
+        } = {
+          ...result,
         };
+        if (status && "agent" in status) details.agent = status.agent;
+        return structuredToolResult(details);
       });
     },
     ...createCoordinatorToolRendering("subagent"),
@@ -152,7 +201,7 @@ export function createCoordinatorToolDefinitions(
     name: "agent_message",
     label: "Agent Message",
     description:
-      "Send one mid-turn coordination message to a direct parent, direct sibling, or direct child when the recipient must act before the caller's turn finishes.",
+      "Send one mid-turn coordination message to a direct parent, direct sibling, or direct child. The result says whether it was delivered through an active wait, queued for the recipient, or failed.",
     promptSnippet: "Coordinate required mid-turn action with one adjacent agent",
     parameters: options.schemas.agent_message,
     async execute(toolCallId, parameters) {
@@ -175,7 +224,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's exact active turn, or return its latest settled turn immediately. Timeout never cancels the child.",
+      "Wait for one direct child's oldest observable turn, or select an exact retained turn_id. A Wait Event containing a Coordination Message may arrive first as event=message; call again for the terminal turn result. A successful wait durably claims that turn so later messages and its terminal result return through wait without duplicate automatic delivery. Timeout never cancels the child.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     async execute(_toolCallId, parameters, signal, onUpdate) {
@@ -194,10 +243,10 @@ export function createCoordinatorToolDefinitions(
       waitingInterval.unref?.();
       try {
         return await runCoordinatorToolActivity(options, async () => {
-          const result = await options.coordinator.wait(
+          const result = await executeCoordinatorWaitTool(
+            options.coordinator,
             options.callerId,
-            parameters.agent_id,
-            parameters.timeout_ms,
+            parameters,
             signal,
           );
           return {

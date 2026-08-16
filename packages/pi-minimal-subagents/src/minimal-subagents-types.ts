@@ -58,12 +58,28 @@ export interface TurnResult {
   elapsed_ms?: number;
 }
 
-/** Reports delivery of one direct message to an authorized adjacent agent. */
+/** Reports whether one direct message was handed to a wait, queued, or failed. */
+export type AgentMessageDisposition = "delivered-via-wait" | "queued" | "failed";
+
 export interface AgentMessageResult {
   agent_id: string;
-  delivered: boolean;
+  message_id: string;
+  disposition: AgentMessageDisposition;
   error?: string;
 }
+
+/** Reports one coordination message returned before the source turn settles. */
+export interface WaitMessageResult {
+  event: "message";
+  agent_id: string;
+  turn_id: string;
+  message_id: string;
+  delivery_id?: string;
+  message: string;
+}
+
+/** Reports one terminal child turn returned by subagent_wait. */
+export type WaitResult = WaitMessageResult | ({ event: "turn" } & TurnResult);
 
 /** Provides bounded hierarchy, usage, and best-known Runtime Profile data for one persistent agent. */
 export interface AgentSummary extends RuntimeProfile {
@@ -92,7 +108,7 @@ export interface RecentAgentMessage {
 /** Extends summary status with launch, dependency, and recent-message diagnostics. */
 export interface AgentDetail extends AgentSummary {
   session_file?: string;
-  launch_contract: Record<string, unknown>;
+  launch_contract: LaunchContract;
   capability_ceiling: string[];
   spawn_entry_id: string;
   recent_messages: RecentAgentMessage[];
@@ -164,6 +180,8 @@ export interface CoordinatorMessage {
     source_agent_id: string;
     destination_agent_id?: string;
     source_turn_id: string;
+    message_id: string;
+    delivery_id?: string;
     status?: TurnStatus;
     elapsed_ms?: number;
     usage?: Usage;
@@ -174,6 +192,7 @@ export interface CoordinatorMessage {
 export interface ChildAgentRuntime {
   readonly sessionFile: string;
   readonly sessionId: string;
+  readonly sessionLeafId: string | undefined;
   readonly isRunning: boolean;
   runPrompt(
     task: string,
@@ -182,22 +201,22 @@ export interface ChildAgentRuntime {
     callerThinkingLevel: ThinkingLevel,
   ): Promise<RuntimeTurnOutcome>;
   runMessage(message: CoordinatorMessage): Promise<RuntimeTurnOutcome>;
-  /** Steer one typed coordinator message into the child session. */
-  steerCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
+  /** Queue one typed coordinator message into the child session. */
+  queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
   abort(): Promise<void>;
   dispose(): void;
   /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
   getRuntimeProfile(): RuntimeProfile | undefined;
   snapshotCommittedMessages(): AgentMessage[];
-  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean;
+  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
   getUsage(): Usage | undefined;
-  cloneSession(): Promise<{ sessionFile: string; sessionId: string }>;
 }
 
 /** Identifies one writable child JSONL session owned by a coordinator root. */
 export interface PersistedSessionIdentity {
   sessionFile: string;
   sessionId: string;
+  sessionLeafId?: string;
 }
 
 /** Combines a persisted agent record with first-launch imported context. */
@@ -215,15 +234,28 @@ export interface AgentSessionFactory {
   resolveRestorationMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveThinkingLevel(modelId: string, requested: ThinkingLevel): ThinkingLevel;
   modelSupportsImages(modelId: string): boolean;
+  /** Clone a child leaf owned by the active source root during confirmed shutdown. */
   cloneSession(agent: PersistedAgent): Promise<PersistedSessionIdentity>;
-  trashSessionFile(sessionFile: string): Promise<void>;
+  /** Clone a source-owned leaf recovered from a proven destination branch. */
+  cloneForkSourceSession(
+    agent: PersistedAgent,
+    sourceRootSessionId: string,
+  ): Promise<PersistedSessionIdentity>;
+  /** Append and verify destination-root ownership for one fork clone. */
+  adoptForkSessionOwnership(
+    agent: PersistedAgent,
+    sourceRootSessionId: string,
+  ): Promise<PersistedSessionIdentity>;
+  trashSession(agent: PersistedAgent): Promise<void>;
 }
 
 /** Abstracts root message delivery and durable delivery-evidence lookup. */
 export interface RootConversationEndpoint {
-  /** Steer one typed coordinator message into the root conversation. */
-  steerCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
-  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean;
+  /** Queue one typed coordinator message into the root conversation. */
+  queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
+  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
+  /** Report whether automatic delivery can start a new root turn without racing an active wait. */
+  isIdle(): boolean;
 }
 
 /** Stores root-owned agent identity, launch contract, availability, and latest activity. */
@@ -237,6 +269,7 @@ export interface PersistedAgent {
   spawn_entry_id: string;
   session_file?: string;
   session_id?: string;
+  session_leaf_id?: string;
   clone_error?: string;
   launch_contract: LaunchContract;
   capability_ceiling: string[];
@@ -250,7 +283,7 @@ export interface PersistedAgent {
   deleted?: boolean;
 }
 
-/** Records whether successful output was observed through wait or automatic messaging. */
+/** Records which conversation path owns one successful terminal result. */
 export type DeliveryPath = "wait" | "message";
 
 /** Stores a keyed successful result until destination evidence settles delivery. */
@@ -260,26 +293,44 @@ export interface PersistedDelivery {
   destination_agent_id: string;
   path: DeliveryPath;
   settled: boolean;
+  sequence?: number;
   result?: TurnResult;
   error?: string;
 }
 
-/** Checkpoints all live agents, deletion tombstones, and delivery records for one root. */
+/** Stores one durable Coordination Message until destination evidence settles it. */
+export interface PersistedCoordinationDelivery {
+  delivery_id: string;
+  sequence: number;
+  destination_agent_id: string;
+  path: DeliveryPath;
+  settled: boolean;
+  message: CoordinatorMessage;
+  error?: string;
+}
+
+/** Checkpoints live agents, tombstones, and only pending delivery-ledger items for one root. */
 export interface RegistrySnapshot {
   agents: PersistedAgent[];
   tombstones: string[];
   deliveries: PersistedDelivery[];
+  coordination_deliveries?: PersistedCoordinationDelivery[];
+  wait_claimed_turns?: string[];
+  next_delivery_sequence?: number;
 }
 
 /** Clones a registry snapshot while recording the source root session file. */
 export interface ForkSnapshot extends RegistrySnapshot {
+  /** Canonical Pi root session file from which the selected fork branch originated. */
   source_root_session_file: string;
+  /** Root identity that every cloned Child Session provenance record must match. */
+  source_root_session_id: string;
 }
 
 /** Appends root-owned registry events to the active root conversation branch. */
 export interface RegistryWriter {
   readonly rootSessionId: string;
-  append(event: import("./minimal-subagents-registry.js").RegistryEventV1): void;
+  append(event: import("./minimal-subagents-registry.js").RegistryEventV2): void;
 }
 
 /** Describes concise lifecycle notices surfaced through Pi UI notifications. */

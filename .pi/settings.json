@@ -2,39 +2,27 @@
   "packages": [
     {
       "source": "..",
+      "autoload": false,
       "extensions": [
         "-packages/pi-adaptive-thinking/src/index.ts",
-        "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-bible-verses/src/index.ts",
-        "-packages/pi-tps-tracker/src/index.ts",
+        "-packages/pi-byterover/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
-        "-packages/pi-byterover/src/index.ts"
+        "+packages/pi-minimal-subagents/src/index.ts",
+        "-packages/pi-tps-tracker/src/index.ts"
       ]
     },
     {
-      "source": "npm:pi-adaptive-thinking",
+      "source": "git:github.com/ian-pascoe/pi-extensions",
       "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-minimal-subagents",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-bible-verses",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-tps-tracker",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
-    },
-    {
-      "source": "npm:@ian-pascoe/pi-git-status-widget",
-      "autoload": false,
-      "extensions": ["-src/index.ts"]
+      "extensions": [
+        "-packages/pi-adaptive-thinking/src/index.ts",
+        "+packages/pi-bible-verses/src/index.ts",
+        "-packages/pi-byterover/src/index.ts",
+        "+packages/pi-git-status-widget/src/index.ts",
+        "-packages/pi-minimal-subagents/src/index.ts",
+        "+packages/pi-tps-tracker/src/index.ts"
+      ]
     }
   ]
 }

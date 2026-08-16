@@ -1,0 +1,9 @@
+# Persist pending delivery intent as a sequenced ledger
+
+Delivery intent must outlive process-local waiters and queues. A cohesive pure Delivery Ledger module therefore owns sequence allocation, wait claims, settlement, observable-turn selection, subtree pruning, and terminal-retention transitions. Registry V2 checkpoints serialize that state as pending terminal deliveries, pending Coordination Messages, one monotonic sequence, and source-turn wait claims. Coordination items have stable delivery IDs; terminal items retain their complete result.
+
+The coordinator persists an item before returning queue acceptance. Live and restored automatic delivery reserve recipient queues in sequence order. Wait selection reads the same retained state, so a newer turn cannot strand an older claimed turn. One caller may own only one outstanding waiter for a given source turn. Destination custom-message or wait-tool-result evidence is the idempotency key: an attempted send alone never settles an item, including when evidence reconciliation completes synchronously inside queue delivery.
+
+Settled items are removed after settlement evidence is appended. Agent deletion prunes source- or destination-owned items and releases their process-local reservations. Pending wait-only terminal results are capped at the newest 20 per source agent; retention never removes Coordination Messages. A Registry V2 `delivery-pruned` event makes each terminal eviction replayable and releases only that turn's otherwise-empty claim.
+
+Checkpoints consequently grow with live agents, pending Coordination Messages, and bounded wait-only terminal work rather than every historical result. Registry V1 terminal state migrates by assigning deterministic sequences where absent. Process-local Coordination Messages from versions that never persisted them cannot be recovered retroactively.

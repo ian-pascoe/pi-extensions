@@ -16,8 +16,12 @@ import {
   SessionManager,
   SettingsManager,
   sessionEntryToContextMessages,
+  type AgentSessionEvent,
+  type SessionEntry,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { Static, TSchema } from "typebox";
+import { Value } from "typebox/value";
 import {
   buildSubagentSystemPrompt,
   snapshotCommittedContext,
@@ -27,7 +31,20 @@ import {
   DEFAULT_MAX_SUBAGENT_DEPTH,
   getSubagentDepth,
 } from "./minimal-subagents-capabilities.js";
-import { CHILD_IDENTITY_ENTRY_TYPE } from "./minimal-subagents-registry.js";
+import {
+  CHILD_IDENTITY_ENTRY_TYPE,
+  FORK_CLONE_ENTRY_TYPE,
+  FORK_OWNERSHIP_ENTRY_TYPE,
+} from "./minimal-subagents-registry.js";
+import {
+  ChildSessionIdentityRecordSchema,
+  DeliveryEvidenceDetailsSchema,
+  ForkCloneProvenanceRecordSchema,
+  ForkOwnershipRecordSchema,
+  type ChildSessionIdentityRecord,
+  type ForkCloneProvenanceRecord,
+  type ForkOwnershipRecord,
+} from "./minimal-subagents-session-wire.js";
 import { addMinimalSubagentsUsage } from "./minimal-subagents-usage.js";
 import type {
   AgentSessionFactory,
@@ -69,6 +86,19 @@ interface ChildResourceLoaderOptionsInput {
   settingsManager?: SettingsManager;
 }
 
+/** Moves one verified child session file to trash and reports command unavailability. */
+export interface SessionFileTrashCapability {
+  moveSessionFile(sessionFile: string): Promise<Error | undefined>;
+}
+
+const execFileSessionTrashCapability: SessionFileTrashCapability = {
+  moveSessionFile: (sessionFile) =>
+    new Promise((resolvePromise) => {
+      const trashArguments = sessionFile.startsWith("-") ? ["--", sessionFile] : [sessionFile];
+      execFile("trash", trashArguments, (cause) => resolvePromise(cause ?? undefined));
+    }),
+};
+
 /** Configures root ownership, model scope, child resources, and coordinator tool injection for Pi sessions. */
 export interface PiAgentSessionFactoryOptions {
   cwd: string;
@@ -82,6 +112,7 @@ export interface PiAgentSessionFactoryOptions {
   availableToolNames: readonly string[];
   projectTrusted: boolean;
   maxSubagentDepth?: number;
+  sessionFileTrash?: SessionFileTrashCapability;
   getCoordinatorTools: (callerId: string) => ToolDefinition[];
   onChildSessionActivity?: () => void;
 }
@@ -123,6 +154,7 @@ function appendImportedMessage(sessionManager: SessionManager, message: AgentMes
     );
     return;
   }
+  // SAFETY: AgentMessage is Pi's broader message union; non-session variants were handled above.
   sessionManager.appendMessage(message as Parameters<SessionManager["appendMessage"]>[0]);
 }
 
@@ -159,7 +191,147 @@ export function createPersistentChildIdentity(
     writeFileSync(sessionFile, `${lines}\n`, "utf8");
     sessionManager = SessionManager.open(sessionFile, options.sessionDir, options.cwd);
   }
-  return { sessionFile, sessionId: sessionManager.getSessionId() };
+  return {
+    sessionFile,
+    sessionId: sessionManager.getSessionId(),
+    sessionLeafId: sessionManager.getLeafId() ?? undefined,
+  };
+}
+
+function findLatestChildSessionRecord<TRecordSchema extends TSchema>(
+  entries: ReturnType<SessionManager["getBranch"]>,
+  customType: string,
+  schema: TRecordSchema,
+): Static<TRecordSchema> | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (!entry || entry.type !== "custom" || entry.customType !== customType) continue;
+    if (Value.Check(schema, entry.data)) return entry.data;
+  }
+  return undefined;
+}
+
+function findLatestForkGeneration(
+  entries: ReturnType<SessionManager["getBranch"]>,
+): { identity: ChildSessionIdentityRecord; provenance: ForkCloneProvenanceRecord } | undefined {
+  for (let provenanceIndex = entries.length - 1; provenanceIndex >= 0; provenanceIndex--) {
+    const provenanceEntry = entries[provenanceIndex];
+    if (
+      !provenanceEntry ||
+      provenanceEntry.type !== "custom" ||
+      provenanceEntry.customType !== FORK_CLONE_ENTRY_TYPE
+    ) {
+      continue;
+    }
+    if (!Value.Check(ForkCloneProvenanceRecordSchema, provenanceEntry.data)) continue;
+    const provenance = provenanceEntry.data;
+    for (let identityIndex = provenanceIndex - 1; identityIndex >= 0; identityIndex--) {
+      const identityEntry = entries[identityIndex];
+      if (
+        !identityEntry ||
+        identityEntry.type !== "custom" ||
+        identityEntry.customType !== CHILD_IDENTITY_ENTRY_TYPE
+      ) {
+        continue;
+      }
+      if (Value.Check(ChildSessionIdentityRecordSchema, identityEntry.data)) {
+        return { identity: identityEntry.data, provenance };
+      }
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+function findCurrentForkOwnership(
+  entries: ReturnType<SessionManager["getBranch"]>,
+  cloneSessionId: string,
+): ForkOwnershipRecord | undefined {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (!entry || entry.type !== "custom" || entry.customType !== FORK_OWNERSHIP_ENTRY_TYPE)
+      continue;
+    if (
+      Value.Check(ForkOwnershipRecordSchema, entry.data) &&
+      entry.data.clone_session_id === cloneSessionId
+    ) {
+      return entry.data;
+    }
+  }
+  return undefined;
+}
+
+function verifyForkCloneProvenance(
+  branch: ReturnType<SessionManager["getBranch"]>,
+  agent: PersistedAgent,
+  sourceRootSessionId: string,
+): ForkCloneProvenanceRecord {
+  const provenance = findLatestForkGeneration(branch)?.provenance;
+  if (
+    !provenance ||
+    provenance.source_root_session_id !== sourceRootSessionId ||
+    provenance.source_agent_id !== agent.agent_id
+  ) {
+    throw new Error(
+      `Minimal subagents session identity mismatch: fork provenance for ${agent.agent_id}`,
+    );
+  }
+  return provenance;
+}
+
+/** Verify that a persisted child session path belongs to the expected canonical agent and root. */
+export function verifyChildSessionIdentity(
+  sessionManager: SessionManager,
+  agent: PersistedAgent,
+  rootSessionId: string,
+): void {
+  if (sessionManager.getSessionId() !== agent.session_id) {
+    throw new Error(
+      `Minimal subagents session identity mismatch: session ID for ${agent.agent_id}`,
+    );
+  }
+  const identityBranch = sessionManager.getBranch(agent.session_leaf_id);
+  const generation = findLatestForkGeneration(identityBranch);
+  const identity =
+    generation?.identity ??
+    findLatestChildSessionRecord(
+      identityBranch,
+      CHILD_IDENTITY_ENTRY_TYPE,
+      ChildSessionIdentityRecordSchema,
+    );
+  if (!identity) {
+    throw new Error(`Minimal subagents session identity missing for ${agent.agent_id}`);
+  }
+  if (
+    identity.canonical_agent_id !== agent.agent_id ||
+    identity.direct_parent_id !== agent.parent_id ||
+    identity.created_at !== agent.created_at
+  ) {
+    throw new Error(`Minimal subagents session identity mismatch: ownership for ${agent.agent_id}`);
+  }
+  const ownership = findCurrentForkOwnership(identityBranch, sessionManager.getSessionId());
+  if (ownership || identity.original_root_session_id !== rootSessionId) {
+    const provenance = generation?.provenance;
+    if (
+      !ownership ||
+      !provenance ||
+      ownership.destination_root_session_id !== rootSessionId ||
+      ownership.source_root_session_id !== identity.original_root_session_id ||
+      ownership.source_root_session_id !== provenance.source_root_session_id ||
+      ownership.source_agent_id !== agent.agent_id ||
+      ownership.source_agent_id !== provenance.source_agent_id ||
+      ownership.source_session_id !== provenance.source_session_id ||
+      ownership.clone_session_id !== sessionManager.getSessionId() ||
+      ownership.direct_parent_id !== agent.parent_id
+    ) {
+      throw new Error(
+        `Minimal subagents session identity mismatch: root owner for ${agent.agent_id}`,
+      );
+    }
+  }
+  if (agent.session_leaf_id && !sessionManager.getEntry(agent.session_leaf_id)) {
+    throw new Error(`Minimal subagents session identity mismatch: leaf for ${agent.agent_id}`);
+  }
 }
 
 /** Build child resources while filtering recursive coordinator loading and honoring project-context omission. */
@@ -206,29 +378,44 @@ export function createChildResourceLoaderOptions(
 
 /** Find durable keyed evidence for exactly-once wait or custom-result delivery. */
 export function findDeliveryEvidence(
-  entries: readonly unknown[],
+  entries: readonly SessionEntry[],
   sourceAgentId: string,
   sourceTurnId: string,
+  deliveryId?: string,
 ): boolean {
   return entries.some((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    const candidate = entry as {
-      type?: string;
-      customType?: string;
-      details?: unknown;
-      message?: { role?: string; toolName?: string; details?: unknown };
-    };
-    const details =
-      candidate.type === "custom_message" && candidate.customType === "minimal-subagents.result"
-        ? candidate.details
-        : candidate.type === "message" &&
-            candidate.message?.role === "toolResult" &&
-            candidate.message.toolName === "subagent_wait"
-          ? candidate.message.details
-          : undefined;
-    if (!details || typeof details !== "object") return false;
-    const key = details as { source_agent_id?: string; source_turn_id?: string };
-    return key.source_agent_id === sourceAgentId && key.source_turn_id === sourceTurnId;
+    let details: SessionEntry extends infer TEntry
+      ? TEntry extends { details?: infer TDetails }
+        ? TDetails
+        : undefined
+      : undefined;
+    let waitToolResult = false;
+    if (
+      entry.type === "custom_message" &&
+      (entry.customType === "minimal-subagents.result" ||
+        (deliveryId !== undefined && entry.customType === "minimal-subagents.message"))
+    ) {
+      details = entry.details;
+    } else if (
+      entry.type === "message" &&
+      entry.message.role === "toolResult" &&
+      entry.message.toolName === "subagent_wait"
+    ) {
+      details = entry.message.details;
+      waitToolResult = true;
+    } else {
+      return false;
+    }
+    if (!Value.Check(DeliveryEvidenceDetailsSchema, details)) return false;
+    if (deliveryId !== undefined) {
+      return (
+        details.source_agent_id === sourceAgentId &&
+        details.source_turn_id === sourceTurnId &&
+        (details.delivery_id === deliveryId || details.message_id === deliveryId)
+      );
+    }
+    if (waitToolResult && details.event === "message") return false;
+    return details.source_agent_id === sourceAgentId && details.source_turn_id === sourceTurnId;
   });
 }
 
@@ -246,6 +433,77 @@ function assistantText(message: AgentMessage | undefined): string {
     .filter((content) => content.type === "text")
     .map((content) => content.text)
     .join("\n");
+}
+
+/** Collects finalized turn messages without relying on mutable post-compaction session state. */
+export class ChildTurnOutcomeCollector {
+  private readonly messages: AgentMessage[] = [];
+  private readonly unsubscribe: () => void;
+
+  constructor(session: Pick<AgentSession, "subscribe">) {
+    this.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+      if (event.type === "message_end") this.messages.push(event.message);
+    });
+  }
+
+  dispose(): void {
+    this.unsubscribe();
+  }
+
+  toOutcome(aborted: boolean): RuntimeTurnOutcome {
+    const finalAssistant = [...this.messages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+    if (!finalAssistant || finalAssistant.role !== "assistant") {
+      return {
+        status: aborted ? "cancelled" : "failed",
+        output: "",
+        error: "No terminal assistant response",
+      };
+    }
+    if (finalAssistant.stopReason === "aborted") {
+      return {
+        status: "cancelled",
+        output: assistantText(finalAssistant),
+        error: finalAssistant.errorMessage,
+        usage: sumUsage(this.messages),
+      };
+    }
+    if (finalAssistant.stopReason === "error") {
+      return {
+        status: "failed",
+        output: assistantText(finalAssistant),
+        error: finalAssistant.errorMessage ?? "Provider request failed",
+        usage: sumUsage(this.messages),
+      };
+    }
+    return {
+      status: "completed",
+      output: assistantText(finalAssistant),
+      usage: sumUsage(this.messages),
+    };
+  }
+}
+
+/** Run one child operation while retaining its finalized outcome across compaction. */
+export async function captureChildTurnOutcome(
+  session: Pick<AgentSession, "subscribe">,
+  operation: () => Promise<void>,
+  isAborted: () => boolean,
+): Promise<RuntimeTurnOutcome> {
+  const collector = new ChildTurnOutcomeCollector(session);
+  try {
+    await operation();
+    return collector.toOutcome(isAborted());
+  } catch (error) {
+    return {
+      status: isAborted() ? "cancelled" : "failed",
+      output: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    collector.dispose();
+  }
 }
 
 class PiChildAgentRuntime implements ChildAgentRuntime {
@@ -280,6 +538,10 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     return this.session.sessionId;
   }
 
+  get sessionLeafId(): string | undefined {
+    return this.session.sessionManager.getLeafId() ?? undefined;
+  }
+
   get isRunning(): boolean {
     return this.session.isStreaming;
   }
@@ -308,7 +570,7 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     );
   }
 
-  async steerCoordinatorMessage(message: CoordinatorMessage): Promise<void> {
+  async queueCoordinatorMessage(message: CoordinatorMessage): Promise<void> {
     await this.session.sendCustomMessage(
       {
         customType: message.customType,
@@ -343,11 +605,12 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     return snapshotCommittedContext(this.session.messages, this.session.isStreaming);
   }
 
-  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string): boolean {
+  hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean {
     return findDeliveryEvidence(
-      this.session.sessionManager.getEntries(),
+      this.session.sessionManager.getBranch(),
       sourceAgentId,
       sourceTurnId,
+      deliveryId,
     );
   }
 
@@ -355,59 +618,9 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     return sumUsage(this.session.messages);
   }
 
-  async cloneSession(): Promise<{ sessionFile: string; sessionId: string }> {
-    const leafId = this.session.sessionManager.getLeafId();
-    if (!leafId)
-      throw new Error(`Minimal subagents fork clone: ${this.sessionId} has no child leaf`);
-    const sessionFile = this.session.sessionManager.createBranchedSession(leafId);
-    if (!sessionFile)
-      throw new Error(`Minimal subagents fork clone: ${this.sessionId} is not persistent`);
-    return { sessionFile, sessionId: this.session.sessionManager.getSessionId() };
-  }
-
   private async captureTurn(operation: () => Promise<void>): Promise<RuntimeTurnOutcome> {
-    const messageStart = this.session.messages.length;
     this.aborted = false;
-    try {
-      await operation();
-    } catch (error) {
-      return {
-        status: this.aborted ? "cancelled" : "failed",
-        output: "",
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-    const turnMessages = this.session.messages.slice(messageStart);
-    const finalAssistant = [...turnMessages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    if (!finalAssistant || finalAssistant.role !== "assistant") {
-      return {
-        status: this.aborted ? "cancelled" : "failed",
-        output: "",
-        error: "No terminal assistant response",
-      };
-    }
-    if (finalAssistant.stopReason === "aborted") {
-      return {
-        status: "cancelled",
-        output: assistantText(finalAssistant),
-        error: finalAssistant.errorMessage,
-      };
-    }
-    if (finalAssistant.stopReason === "error") {
-      return {
-        status: "failed",
-        output: assistantText(finalAssistant),
-        error: finalAssistant.errorMessage ?? "Provider request failed",
-        usage: sumUsage(turnMessages),
-      };
-    }
-    return {
-      status: "completed",
-      output: assistantText(finalAssistant),
-      usage: sumUsage(turnMessages),
-    };
+    return captureChildTurnOutcome(this.session, operation, () => this.aborted);
   }
 
   private async compactImportedContext(
@@ -449,7 +662,7 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
       auth.auth.headers
         ? Object.fromEntries(
             Object.entries(auth.auth.headers).filter(
-              (entry): entry is [string, string] => typeof entry[1] === "string",
+              (entry): entry is [string, string] => entry[1] !== null,
             ),
           )
         : undefined,
@@ -483,6 +696,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
   private readonly eligibleModelIds: Set<string>;
   private readonly availableToolNames: Set<string>;
   private readonly discoveredToolNames = new Map<string, Promise<Set<string>>>();
+  private readonly sessionFileTrash: SessionFileTrashCapability;
 
   constructor(private readonly options: PiAgentSessionFactoryOptions) {
     this.modelById = new Map(
@@ -490,6 +704,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     );
     this.eligibleModelIds = new Set(options.eligibleModelIds);
     this.availableToolNames = new Set(options.availableToolNames);
+    this.sessionFileTrash = options.sessionFileTrash ?? execFileSessionTrashCapability;
   }
 
   createIdentity(
@@ -531,43 +746,100 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     return this.modelById.get(modelId)?.input.includes("image") ?? false;
   }
 
+  /** Clone one source-owned child leaf with explicit source-root provenance. */
   async cloneSession(agent: PersistedAgent): Promise<PersistedSessionIdentity> {
-    if (!agent.session_file) {
-      throw new Error(`Minimal subagents fork clone: ${agent.agent_id} has no source session`);
+    return this.cloneSessionOwnedByRoot(agent, this.options.rootSessionId);
+  }
+
+  /** Recover one proven selected child leaf after the source process handoff was lost. */
+  async cloneForkSourceSession(
+    agent: PersistedAgent,
+    sourceRootSessionId: string,
+  ): Promise<PersistedSessionIdentity> {
+    return this.cloneSessionOwnedByRoot(agent, sourceRootSessionId);
+  }
+
+  /** Bind one verified fork clone exclusively to this factory's destination root. */
+  async adoptForkSessionOwnership(
+    agent: PersistedAgent,
+    sourceRootSessionId: string,
+  ): Promise<PersistedSessionIdentity> {
+    if (!agent.session_file || !agent.session_id) {
+      throw new Error(`Minimal subagents fork ownership: ${agent.agent_id} has no clone session`);
     }
-    const source = SessionManager.open(
-      agent.session_file,
+    const sessionFile = canonicalPath(agent.session_file);
+    const sessionManager = SessionManager.open(
+      sessionFile,
       this.options.sessionDir,
       this.options.cwd,
     );
-    const leafId = source.getLeafId();
-    if (!leafId)
-      throw new Error(`Minimal subagents fork clone: ${agent.agent_id} has no child leaf`);
-    const sessionFile = source.createBranchedSession(leafId);
-    if (!sessionFile)
-      throw new Error(`Minimal subagents fork clone: ${agent.agent_id} is not persistent`);
-    source.appendCustomEntry("minimal-subagents.fork-clone", {
-      source_agent_id: agent.agent_id,
-      source_session_id: agent.session_id,
-    });
-    if (!existsSync(sessionFile)) {
-      const lines = [source.getHeader(), ...source.getEntries()]
-        .filter((entry) => entry !== null)
-        .map((entry) => JSON.stringify(entry))
-        .join("\n");
-      writeFileSync(sessionFile, `${lines}\n`, "utf8");
+    if (sessionManager.getSessionId() !== agent.session_id) {
+      throw new Error(
+        `Minimal subagents session identity mismatch: session ID for ${agent.agent_id}`,
+      );
     }
-    if (!existsSync(sessionFile)) {
-      throw new Error(`Minimal subagents fork clone: clone was not flushed for ${agent.agent_id}`);
+    const branch = sessionManager.getBranch(agent.session_leaf_id);
+    const generation = findLatestForkGeneration(branch);
+    const identity =
+      generation?.identity ??
+      findLatestChildSessionRecord(
+        branch,
+        CHILD_IDENTITY_ENTRY_TYPE,
+        ChildSessionIdentityRecordSchema,
+      );
+    if (
+      !identity ||
+      identity.original_root_session_id !== sourceRootSessionId ||
+      identity.canonical_agent_id !== agent.agent_id ||
+      identity.direct_parent_id !== agent.parent_id ||
+      identity.created_at !== agent.created_at
+    ) {
+      throw new Error(
+        `Minimal subagents session identity mismatch: fork provenance for ${agent.agent_id}`,
+      );
     }
-    return { sessionFile, sessionId: source.getSessionId() };
+    const provenance = verifyForkCloneProvenance(branch, agent, sourceRootSessionId);
+    const existingOwnership = findCurrentForkOwnership(branch, sessionManager.getSessionId());
+    if (existingOwnership) {
+      if (
+        existingOwnership.source_root_session_id !== sourceRootSessionId ||
+        existingOwnership.destination_root_session_id !== this.options.rootSessionId ||
+        existingOwnership.source_agent_id !== agent.agent_id ||
+        existingOwnership.source_session_id !== provenance.source_session_id ||
+        existingOwnership.direct_parent_id !== agent.parent_id
+      ) {
+        throw new Error(
+          `Minimal subagents session identity mismatch: root owner for ${agent.agent_id}`,
+        );
+      }
+    } else {
+      sessionManager.appendCustomEntry(FORK_OWNERSHIP_ENTRY_TYPE, {
+        version: 1,
+        source_root_session_id: sourceRootSessionId,
+        destination_root_session_id: this.options.rootSessionId,
+        source_agent_id: agent.agent_id,
+        source_session_id: provenance.source_session_id,
+        clone_session_id: sessionManager.getSessionId(),
+        direct_parent_id: agent.parent_id,
+      });
+    }
+    return {
+      sessionFile,
+      sessionId: sessionManager.getSessionId(),
+      sessionLeafId: sessionManager.getLeafId() ?? undefined,
+    };
   }
 
-  async trashSessionFile(sessionFile: string): Promise<void> {
-    const trashError = await new Promise<Error | undefined>((resolvePromise) => {
-      const trashArguments = sessionFile.startsWith("-") ? ["--", sessionFile] : [sessionFile];
-      execFile("trash", trashArguments, (error) => resolvePromise(error ?? undefined));
-    });
+  async trashSession(agent: PersistedAgent): Promise<void> {
+    if (!agent.session_file) return;
+    const sessionFile = canonicalPath(agent.session_file);
+    const sessionManager = SessionManager.open(
+      sessionFile,
+      this.options.sessionDir,
+      this.options.cwd,
+    );
+    verifyChildSessionIdentity(sessionManager, agent, this.options.rootSessionId);
+    const trashError = await this.sessionFileTrash.moveSessionFile(sessionFile);
     if (!trashError || !existsSync(sessionFile)) return;
 
     try {
@@ -578,6 +850,58 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
         `Minimal subagents session deletion failed for ${sessionFile}: ${unlinkError} (trash: ${trashError.message})`,
       );
     }
+  }
+
+  private async cloneSessionOwnedByRoot(
+    agent: PersistedAgent,
+    sourceRootSessionId: string,
+  ): Promise<PersistedSessionIdentity> {
+    if (!agent.session_file || !agent.session_id) {
+      throw new Error(`Minimal subagents fork clone: ${agent.agent_id} has no source session`);
+    }
+    const source = SessionManager.open(
+      canonicalPath(agent.session_file),
+      this.options.sessionDir,
+      this.options.cwd,
+    );
+    verifyChildSessionIdentity(source, agent, sourceRootSessionId);
+    const leafId = agent.session_leaf_id ?? source.getLeafId();
+    if (!leafId || !source.getEntry(leafId))
+      throw new Error(`Minimal subagents fork clone: ${agent.agent_id} has no child leaf`);
+    const sessionFile = source.createBranchedSession(leafId);
+    if (!sessionFile)
+      throw new Error(`Minimal subagents fork clone: ${agent.agent_id} is not persistent`);
+    // createBranchedSession mutates this manager to the new session even when Pi defers
+    // writing an identity-only branch until its first assistant response.
+    const clone = source;
+    clone.appendCustomEntry(CHILD_IDENTITY_ENTRY_TYPE, {
+      version: 1,
+      original_root_session_id: sourceRootSessionId,
+      canonical_agent_id: agent.agent_id,
+      direct_parent_id: agent.parent_id,
+      created_at: agent.created_at,
+    });
+    clone.appendCustomEntry(FORK_CLONE_ENTRY_TYPE, {
+      version: 1,
+      source_root_session_id: sourceRootSessionId,
+      source_agent_id: agent.agent_id,
+      source_session_id: agent.session_id,
+    });
+    if (!existsSync(sessionFile)) {
+      const lines = [clone.getHeader(), ...clone.getEntries()]
+        .filter((entry) => entry !== null)
+        .map((entry) => JSON.stringify(entry))
+        .join("\n");
+      writeFileSync(sessionFile, `${lines}\n`, "utf8");
+    }
+    if (!existsSync(sessionFile)) {
+      throw new Error(`Minimal subagents fork clone: clone was not flushed for ${agent.agent_id}`);
+    }
+    return {
+      sessionFile,
+      sessionId: clone.getSessionId(),
+      sessionLeafId: clone.getLeafId() ?? undefined,
+    };
   }
 
   private buildChildSystemPrompt(agent: PersistedAgent): string {
@@ -674,10 +998,12 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       modelsPath: resolve(this.options.agentDir, "models.json"),
     });
     const sessionManager = SessionManager.open(
-      agent.session_file,
+      canonicalPath(agent.session_file),
       this.options.sessionDir,
       this.options.cwd,
     );
+    verifyChildSessionIdentity(sessionManager, agent, this.options.rootSessionId);
+    if (agent.session_leaf_id) sessionManager.branch(agent.session_leaf_id);
     const coordinatorTools = this.options.getCoordinatorTools(agent.agent_id);
     const allowedToolNames = [
       ...agent.launch_contract.ordinary_tools,

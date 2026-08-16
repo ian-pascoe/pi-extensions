@@ -1,10 +1,16 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import {
+  getNodeProcessErrorStderr,
+  hasNodeProcessErrorCode,
+  parseNodeProcessError,
+} from "./node-process-error.mjs";
+import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -21,11 +27,11 @@ async function runCommand(command, args, options = {}) {
       maxBuffer: 20 * 1024 * 1024,
       ...options,
     });
-  } catch (error) {
-    const stderr = error && typeof error === "object" && "stderr" in error ? error.stderr : "";
+  } catch (cause) {
+    const processError = parseNodeProcessError(cause);
     throw new Error(
-      `Package pack check command failed: ${command} ${args.join(" ")}\n${String(stderr)}`,
-      { cause: error },
+      `Package pack check command failed: ${command} ${args.join(" ")}\n${getNodeProcessErrorStderr(processError)}`,
+      { cause },
     );
   }
 }
@@ -40,12 +46,15 @@ async function discoverWorkspaceManifests() {
     try {
       manifests.push({
         directory: resolve(packagesDirectory, entry.name),
-        manifest: JSON.parse(await readFile(manifestPath, "utf8")),
+        manifest: await readJsonDocument(
+          manifestPath,
+          workspacePackageManifestSchema,
+          "workspace package manifest",
+        ),
       });
-    } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
-        continue;
-      throw error;
+    } catch (cause) {
+      if (hasNodeProcessErrorCode(parseNodeProcessError(cause), "ENOENT")) continue;
+      throw cause;
     }
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
