@@ -251,6 +251,23 @@ describe("LspServerClient", () => {
     });
   });
 
+  test("omits versioned cached pushes for unsynchronized documents", async () => {
+    const directory = await createTemporaryDirectory();
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_NO_PULL: "1" },
+    });
+
+    await client.request("fake/publishDiagnostics", {
+      uri: "file:///not-synchronized.ts",
+      version: 1,
+    });
+    await expect(client.workspaceDiagnostics()).resolves.toMatchObject({
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: new Map(),
+    });
+  });
+
   test("notifies the owner exactly once after an unexpected process exit", async () => {
     const directory = await createTemporaryDirectory();
     const failures: LspServerClientError[] = [];

@@ -132,6 +132,18 @@ async function handleRequest(message) {
       return;
     case "fake/delay":
       return;
+    case "fake/publishDiagnostics":
+      send({
+        jsonrpc: "2.0",
+        method: "textDocument/publishDiagnostics",
+        params: {
+          uri: message.params.uri,
+          version: message.params.version,
+          diagnostics: diagnostics("unsynchronized diagnostic"),
+        },
+      });
+      respond(message.id, null);
+      return;
     case "fake/state":
       await clientRequestsReady;
       respond(message.id, state);

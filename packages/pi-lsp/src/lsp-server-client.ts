@@ -647,7 +647,7 @@ export class LspServerClient {
             .filter(([uri, state]) => {
               const version = this.openDocuments.get(uri)?.version;
               return (
-                state.version === undefined || version === undefined || state.version === version
+                state.version === undefined || (version !== undefined && state.version === version)
               );
             })
             .map(([uri, state]) => [uri, state.diagnostics]),
