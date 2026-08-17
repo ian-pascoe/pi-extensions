@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-minimal-subagents",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "description": "Persistent nested subagents with bounded delegation for Pi",
   "keywords": [
