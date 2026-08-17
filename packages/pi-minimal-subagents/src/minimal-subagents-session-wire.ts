@@ -28,6 +28,11 @@ export const ForkOwnershipRecordSchema = Type.Object({
   direct_parent_id: Type.String(),
 });
 
+const DeliveryEvidenceMessageSchema = Type.Object({
+  delivery_id: Type.Optional(Type.String()),
+  message_id: Type.Optional(Type.String()),
+});
+
 /** Parses durable custom-message and wait-tool Delivery Evidence details. */
 export const DeliveryEvidenceDetailsSchema = Type.Object({
   event: Type.Optional(Type.String()),
@@ -35,6 +40,7 @@ export const DeliveryEvidenceDetailsSchema = Type.Object({
   source_turn_id: Type.String(),
   delivery_id: Type.Optional(Type.String()),
   message_id: Type.Optional(Type.String()),
+  messages: Type.Optional(Type.Array(DeliveryEvidenceMessageSchema)),
 });
 
 export type ChildSessionIdentityRecord = Static<typeof ChildSessionIdentityRecordSchema>;

@@ -132,6 +132,7 @@ const WaitMessageDetailsSchema = Type.Object({
   agent_id: Type.String(),
   turn_id: Type.String(),
   message_id: Type.String(),
+  delivery_id: Type.Optional(Type.String()),
   message: Type.String(),
   elapsed_ms: Type.Optional(Type.Number()),
   usage: Type.Optional(RenderUsageSchema),
@@ -145,6 +146,7 @@ const WaitTurnDetailsSchema = Type.Object({
   error: Type.Optional(Type.String()),
   elapsed_ms: Type.Optional(Type.Number()),
   usage: Type.Optional(RenderUsageSchema),
+  messages: Type.Optional(Type.Array(WaitMessageDetailsSchema)),
 });
 const StatusDetailsSchema = Type.Union([
   Type.Object({

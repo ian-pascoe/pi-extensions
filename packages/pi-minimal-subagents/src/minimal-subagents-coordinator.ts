@@ -53,6 +53,7 @@ import type {
   StatusResult,
   TurnId,
   TurnResult,
+  WaitMessageResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
 
@@ -109,8 +110,9 @@ function terminalTurnResult(
   };
 }
 
-function terminalWaitResult(result: TurnResult): WaitResult {
-  return { event: "turn", ...structuredClone(result) };
+function terminalWaitResult(result: TurnResult, messages: WaitMessageResult[] = []): WaitResult {
+  const terminal = { event: "turn" as const, ...structuredClone(result) };
+  return messages.length === 0 ? terminal : { ...terminal, messages: structuredClone(messages) };
 }
 
 /** One root-owned coordinator for persistent nested Pi child sessions. */
@@ -363,15 +365,16 @@ export class MinimalSubagentsCoordinator {
         new Error(`Minimal subagents duplicate wait: ${callerId} is already waiting for ${turnId}`),
       );
     }
-    const pendingMessage = this.claimPendingParentMessage(callerId, agentId, turnId);
-    if (pendingMessage) return Promise.resolve(pendingMessage);
     const retainedResult =
       findTerminalDelivery(this.deliveryLedger, agentId, turnId)?.result ??
       (agent.latest_result?.turn_id === turnId ? agent.latest_result : undefined);
     if (retainedResult) {
+      const messages = this.drainPendingParentMessages(callerId, agentId, turnId);
       this.claimTerminalDelivery(callerId, retainedResult);
-      return Promise.resolve(terminalWaitResult(retainedResult));
+      return Promise.resolve(terminalWaitResult(retainedResult, messages));
     }
+    const pendingMessage = this.claimPendingParentMessage(callerId, agentId, turnId);
+    if (pendingMessage) return Promise.resolve(pendingMessage);
     if (agent.active_turn_id !== turnId) {
       return Promise.reject(
         new Error(`Minimal subagents wait: turn ${turnId} is no longer retained for ${agentId}`),
@@ -1673,7 +1676,6 @@ export class MinimalSubagentsCoordinator {
       (candidate) => candidate.callerId === destinationAgentId,
     );
     if (!waiter) return false;
-    this.claimDeliveryTurn(message.details.source_agent_id, message.details.source_turn_id);
     this.deliveryLedger = setCoordinationDeliveryPath(
       this.deliveryLedger,
       delivery.delivery_id,
@@ -1698,7 +1700,7 @@ export class MinimalSubagentsCoordinator {
     callerId: string,
     sourceAgentId: string,
     sourceTurnId: string,
-  ): WaitResult | undefined {
+  ): WaitMessageResult | undefined {
     const key = agentDeliveryKey(sourceAgentId, sourceTurnId);
     const pendingMessages = this.pendingParentMessages.get(key);
     const index = pendingMessages?.findIndex(
@@ -1715,7 +1717,6 @@ export class MinimalSubagentsCoordinator {
         )
         .sort((left, right) => left.sequence - right.sequence)[0];
       if (!retained) return undefined;
-      this.claimDeliveryTurn(sourceAgentId, sourceTurnId);
       this.deliveryLedger = setCoordinationDeliveryPath(
         this.deliveryLedger,
         retained.delivery_id,
@@ -1735,7 +1736,6 @@ export class MinimalSubagentsCoordinator {
     }
     const pending = pendingMessages[index];
     if (!pending) return undefined;
-    this.claimDeliveryTurn(sourceAgentId, sourceTurnId);
     const delivery = findCoordinationDelivery(this.deliveryLedger, pending.deliveryId);
     if (delivery) {
       this.deliveryLedger = setCoordinationDeliveryPath(
@@ -1746,10 +1746,6 @@ export class MinimalSubagentsCoordinator {
       const currentDelivery = findCoordinationDelivery(this.deliveryLedger, delivery.delivery_id);
       if (currentDelivery) this.persistCoordinationDeliveryState(currentDelivery);
       this.waitHandedDeliveryIds.add(delivery.delivery_id);
-    }
-    const sourceResult = this.agents.get(sourceAgentId)?.latest_result;
-    if (sourceResult?.turn_id === sourceTurnId) {
-      this.setTerminalDeliveryPathToWait(callerId, sourceResult);
     }
     pending.claimed = true;
     pending.cancelGrace?.();
@@ -1764,6 +1760,20 @@ export class MinimalSubagentsCoordinator {
       delivery_id: pending.deliveryId,
       message: pending.message.content,
     };
+  }
+
+  private drainPendingParentMessages(
+    callerId: string,
+    sourceAgentId: string,
+    sourceTurnId: string,
+  ): WaitMessageResult[] {
+    const messages: WaitMessageResult[] = [];
+    let message = this.claimPendingParentMessage(callerId, sourceAgentId, sourceTurnId);
+    while (message) {
+      messages.push(message);
+      message = this.claimPendingParentMessage(callerId, sourceAgentId, sourceTurnId);
+    }
+    return messages;
   }
 
   private queuePendingParentMessage(

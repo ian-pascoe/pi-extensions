@@ -555,6 +555,20 @@ describe("minimal subagent sessions", () => {
         "turn",
       ),
     ).toBe(false);
+    expect(
+      findDeliveryEvidence(
+        [
+          toolResultEntry("subagent_wait", {
+            ...details,
+            event: "turn",
+            messages: [{ delivery_id: "message:2" }],
+          }),
+        ],
+        "child",
+        "turn",
+        "message:2",
+      ),
+    ).toBe(true);
   });
 
   it("derives child fanout instructions from the active depth cap", () => {

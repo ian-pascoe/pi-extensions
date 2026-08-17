@@ -73,6 +73,27 @@ describe("minimal subagents rendering", () => {
           event: "turn",
           agent_id: "child",
           turn_id: "child:turn-1",
+          status: "completed",
+          output: "complete",
+          messages: [
+            {
+              event: "message",
+              agent_id: "child",
+              turn_id: "child:turn-1",
+              message_id: "message-2",
+              message: "queued update",
+            },
+          ],
+        },
+        expected: "queued update",
+      },
+      {
+        toolName: "subagent_wait",
+        args: { agent_id: "child" },
+        details: {
+          event: "turn",
+          agent_id: "child",
+          turn_id: "child:turn-1",
           status: "failed",
           error: "terminal failure",
           usage,

@@ -538,6 +538,42 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
   });
 
+  it("automatically delivers the terminal result when an intermediate message ends the wait", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator, root } = coordinatorFixture(runtime, 5);
+    root.isIdle.mockReturnValue(false);
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Report progress", agent_id: "worker" },
+      caller,
+    );
+    const wait = coordinator.wait("root", "worker", 1_000);
+
+    await coordinator.sendAgentMessage("worker", { message: "progress" }, spawned.turn_id);
+    await expect(wait).resolves.toMatchObject({ event: "message", message: "progress" });
+    finishPrompt({ status: "completed", output: "complete" });
+    await vi.waitFor(() =>
+      expect(coordinator.snapshot().deliveries).toContainEqual(
+        expect.objectContaining({ source_turn_id: spawned.turn_id, path: "message" }),
+      ),
+    );
+
+    root.isIdle.mockReturnValue(true);
+    coordinator.markRecipientIdle("root");
+    await coordinator.waitForSettledOperations();
+
+    expect(root.queueCoordinatorMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customType: "minimal-subagents.result",
+        details: expect.objectContaining({ source_turn_id: spawned.turn_id }),
+      }),
+    );
+  });
+
   it("lets a wait claim a queued direct-parent message sent just before it", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
@@ -587,13 +623,14 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
   });
 
-  it("keeps later coordination messages claimable after an earlier wait event", async () => {
+  it("drains later coordination messages with the terminal result after an earlier wait event", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
     runtime.runPrompt.mockImplementation(
       () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
     );
     const { coordinator, root } = coordinatorFixture(runtime, 5);
+    root.isIdle.mockReturnValue(false);
     const spawned = await coordinator.spawn(
       "root",
       { task: "Report progress", agent_id: "worker" },
@@ -616,13 +653,10 @@ describe("minimal subagents coordinator", () => {
     );
 
     await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
-      event: "message",
-      message: "progress 2",
-    });
-    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
       event: "turn",
       status: "completed",
       output: "complete",
+      messages: [{ event: "message", message: "progress 2" }],
     });
     await coordinator.waitForSettledOperations();
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
@@ -698,7 +732,7 @@ describe("minimal subagents coordinator", () => {
     );
   });
 
-  it("restores later wait-owned messages and the terminal result in sequence", async () => {
+  it("restores unclaimed later messages and terminal results through automatic fallback", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
     runtime.runPrompt.mockImplementation(
@@ -729,15 +763,9 @@ describe("minimal subagents coordinator", () => {
 
     const restored = coordinatorFixture(childRuntime(), 200);
     await restored.coordinator.restore(source.coordinator.snapshot());
-    await expect(restored.coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
-      event: "message",
-      message: "progress 2",
-    });
-    await expect(restored.coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
-      event: "turn",
-      output: "complete after reload",
-    });
-    expect(restored.root.queueCoordinatorMessage).not.toHaveBeenCalled();
+    expect(
+      restored.root.queueCoordinatorMessage.mock.calls.map(([message]) => message.customType),
+    ).toEqual(["minimal-subagents.message", "minimal-subagents.result"]);
   });
 
   it("selects the oldest retained turn by default and supports an exact turn ID", async () => {
@@ -814,7 +842,7 @@ describe("minimal subagents coordinator", () => {
     );
   });
 
-  it("lets an intermediate wait after settlement claim the existing terminal delivery", async () => {
+  it("drains queued messages with an already settled terminal result in one wait", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
     runtime.runPrompt.mockImplementation(
@@ -834,15 +862,12 @@ describe("minimal subagents coordinator", () => {
     );
 
     await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
-      event: "message",
-      message: "progress",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
       event: "turn",
       status: "completed",
       output: "complete",
+      messages: [{ event: "message", message: "progress" }],
     });
+    await new Promise((resolve) => setTimeout(resolve, 250));
     await coordinator.waitForSettledOperations();
 
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
