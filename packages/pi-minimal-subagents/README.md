@@ -155,10 +155,10 @@ items retain their sequence; gaps from skipped malformed records are valid.
 Claims can name only active, latest, or retained turns. Wait-returned messages
 retain individual delivery evidence; terminal wait ownership remains durable
 across reloads, forks, and newer turns. Automatic fallback retains its ordered
-queue reservation, treats idle notifications as advisory, and rechecks actual
-recipient idleness before injecting a message. Destination-session Delivery
-Evidence settles and compacts ledger items, preventing duplicate delivery and
-unbounded checkpoint growth. The pure Delivery Ledger state machine retains at
+queue reservation and sends every unclaimed Coordination Message and terminal
+result as a Pi steer, including while the recipient is active. Destination-session
+Delivery Evidence settles and compacts ledger items, preventing duplicate delivery
+and unbounded checkpoint growth. The pure Delivery Ledger state machine retains at
 most 20 pending wait-only terminal results per source agent; Coordination
 Messages are not removed by that terminal-retention limit. Delivered messages
 include stable delivery, source-agent, and source-turn identities in persisted

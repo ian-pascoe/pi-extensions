@@ -249,8 +249,6 @@ export interface RootConversationEndpoint {
   /** Queue one typed coordinator message into the root conversation. */
   queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
-  /** Report whether automatic delivery can start a new root turn without racing an active wait. */
-  isIdle(): boolean;
 }
 
 /** Stores root-owned agent identity, launch contract, availability, and latest activity. */

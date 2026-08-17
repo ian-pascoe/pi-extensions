@@ -205,6 +205,7 @@ type ExtensionHarness = {
   sessionManager: SessionManager;
   sessionFactory: RecordingAgentSessionFactory;
   sentMessageTypes: string[];
+  sentDeliveryModes: Array<"steer" | "followUp" | "nextTurn" | undefined>;
   notifications: RecordedNotification[];
   extensionErrors: string[];
   setIdle(idle: boolean): void;
@@ -359,13 +360,17 @@ async function createExtensionHarness(
   );
   let idle = true;
   const sentMessageTypes: string[] = [];
+  const sentDeliveryModes: Array<"steer" | "followUp" | "nextTurn" | undefined> = [];
   const notifications: RecordedNotification[] = [];
   const extensionErrors: string[] = [];
   runner.onError((error) => extensionErrors.push(error.error));
   let activeTools = ["read"];
   runner.bindCore(
     {
-      sendMessage: (message) => sentMessageTypes.push(message.customType),
+      sendMessage: (message, options) => {
+        sentMessageTypes.push(message.customType);
+        sentDeliveryModes.push(options?.deliverAs);
+      },
       sendUserMessage: () => undefined,
       appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
       setSessionName: (name) => sessionManager.appendSessionInfo(name),
@@ -421,6 +426,7 @@ async function createExtensionHarness(
     sessionManager,
     sessionFactory,
     sentMessageTypes,
+    sentDeliveryModes,
     notifications,
     extensionErrors,
     setIdle(nextIdle) {
@@ -480,7 +486,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.runner.hasHandlers("session_before_fork")).toBe(true);
     expect(harness.runner.hasHandlers("session_tree")).toBe(true);
     expect(harness.runner.hasHandlers("message_end")).toBe(true);
-    expect(harness.runner.hasHandlers("agent_settled")).toBe(true);
+    expect(harness.runner.hasHandlers("agent_settled")).toBe(false);
     expect(harness.runner.hasHandlers("session_shutdown")).toBe(true);
 
     await harness.runner.emit(sessionStartEvent());
@@ -536,7 +542,7 @@ describe("minimal subagents extension lifecycle", () => {
     await emitSessionShutdown(harness, "quit");
   });
 
-  it("does not release root delivery on a stale settled event and does not redeliver after reconciliation", async () => {
+  it("steers a completed result into an active root turn without duplicate reconciliation", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-delivery-cwd-");
     const sessionDirectory = await createTemporaryDirectory("minimal-subagents-delivery-sessions-");
     const sessionManager = await createPersistedSession(cwd, sessionDirectory);
@@ -557,17 +563,14 @@ describe("minimal subagents extension lifecycle", () => {
       expect(harness.sessionFactory.createdAgentIds).toEqual(["delivery-child"]);
     });
 
-    await harness.runner.emit(agentSettledEvent);
-    expect(harness.sentMessageTypes).toEqual([]);
-
-    harness.setIdle(true);
-    await harness.runner.emit(agentSettledEvent);
     await vi.waitFor(
       () => {
         expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
       },
       { timeout: 2_000 },
     );
+    expect(harness.sentDeliveryModes).toEqual(["steer"]);
+    await harness.runner.emit(agentSettledEvent);
     await harness.runner.emitMessageEnd(toolResultMessageEndEvent);
     await harness.runner.emitMessageEnd(toolResultMessageEndEvent);
     expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);

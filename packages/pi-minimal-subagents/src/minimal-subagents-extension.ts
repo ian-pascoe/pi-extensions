@@ -5,7 +5,6 @@ import {
   getAgentDir,
   SessionManager,
   SettingsManager,
-  type AgentSettledEvent,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionFactory,
@@ -107,7 +106,6 @@ function createRootConversationEndpoint(
         sourceTurnId,
         deliveryId,
       ),
-    isIdle: () => context.isIdle(),
   };
 }
 
@@ -331,7 +329,6 @@ export class MinimalSubagentsLifecycleController {
     this.pi.on("session_before_fork", (event, context) => this.prepareSessionFork(event, context));
     this.pi.on("session_tree", (event, context) => this.restoreSessionTree(event, context));
     this.pi.on("message_end", (event, context) => this.reconcileMessageDelivery(event, context));
-    this.pi.on("agent_settled", (event, context) => this.releaseSettledRecipient(event, context));
     this.pi.on("session_shutdown", (event, context) => this.shutdownSession(event, context));
   }
 
@@ -552,12 +549,6 @@ export class MinimalSubagentsLifecycleController {
       await this.coordinator.reconcileDeliveries();
       this.uiController?.refresh();
     }
-  }
-
-  private releaseSettledRecipient(_event: AgentSettledEvent, context: ExtensionContext): void {
-    if (!this.coordinator) return;
-    if (context.isIdle()) this.coordinator.markRecipientIdle("root");
-    this.uiController?.refresh();
   }
 
   private async shutdownSession(
