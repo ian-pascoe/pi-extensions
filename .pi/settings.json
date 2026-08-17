@@ -43,18 +43,20 @@
         "files": {
           "extensions": [
             ".js",
-            ".mjs",
-            ".cjs",
             ".jsx",
             ".ts",
+            ".tsx",
+            ".mjs",
+            ".cjs",
             ".mts",
             ".cts",
-            ".tsx",
             ".json",
             ".jsonc",
             ".md",
+            ".yml",
             ".yaml",
-            ".yml"
+            ".css",
+            ".astro"
           ]
         },
         "requireRootMarker": true,
@@ -101,46 +103,6 @@
           }
         ],
         "rootMarkers": ["package.json", ".git"]
-      },
-      "oxfmt": {
-        "command": "pnpm",
-        "args": ["exec", "oxfmt", "--lsp"],
-        "languages": [
-          {
-            "extensions": [".js", ".mjs", ".cjs"],
-            "languageId": "javascript"
-          },
-          {
-            "extensions": [".jsx"],
-            "languageId": "javascriptreact"
-          },
-          {
-            "extensions": [".ts", ".mts", ".cts"],
-            "languageId": "typescript"
-          },
-          {
-            "extensions": [".tsx"],
-            "languageId": "typescriptreact"
-          },
-          {
-            "extensions": [".json"],
-            "languageId": "json"
-          },
-          {
-            "extensions": [".jsonc"],
-            "languageId": "jsonc"
-          },
-          {
-            "extensions": [".md"],
-            "languageId": "markdown"
-          },
-          {
-            "extensions": [".yaml", ".yml"],
-            "languageId": "yaml"
-          }
-        ],
-        "requireRootMarker": true,
-        "rootMarkers": [".oxfmtrc.json"]
       }
     }
   }
