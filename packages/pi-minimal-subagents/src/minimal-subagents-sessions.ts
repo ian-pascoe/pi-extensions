@@ -411,7 +411,11 @@ export function findDeliveryEvidence(
       return (
         details.source_agent_id === sourceAgentId &&
         details.source_turn_id === sourceTurnId &&
-        (details.delivery_id === deliveryId || details.message_id === deliveryId)
+        (details.delivery_id === deliveryId ||
+          details.message_id === deliveryId ||
+          details.messages?.some(
+            (message) => message.delivery_id === deliveryId || message.message_id === deliveryId,
+          ))
       );
     }
     if (waitToolResult && details.event === "message") return false;

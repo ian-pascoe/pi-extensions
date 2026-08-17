@@ -341,9 +341,12 @@ function renderWaitResult(
       : details.status;
   const duration = formatSubagentDuration(details.elapsed_ms);
   const tokens = formatSubagentTokenCount(details.usage?.totalTokens);
-  const metrics = [duration, tokens ? `${tokens} tokens` : undefined].filter(
-    (metric): metric is string => metric !== undefined,
-  );
+  const drainedMessageCount = details.event === "message" ? 0 : (details.messages?.length ?? 0);
+  const metrics = [
+    duration,
+    tokens ? `${tokens} tokens` : undefined,
+    drainedMessageCount > 0 ? `${drainedMessageCount} messages` : undefined,
+  ].filter((metric): metric is string => metric !== undefined);
   const summary = renderSubagentSummary(theme, status, agentId, metrics);
   if (options.isPartial || !options.expanded) {
     return new Text(`${summary}${options.isPartial ? "" : collapsedExpansionHint(theme)}`, 0, 0);
@@ -355,6 +358,14 @@ function renderWaitResult(
     appendTextSection(container, theme, "Message", details.message);
     container.addChild(renderLabelValue(theme, "Message ID", details.message_id));
     return container;
+  }
+  if (details.messages && details.messages.length > 0) {
+    appendTextSection(
+      container,
+      theme,
+      "Messages",
+      details.messages.map((message) => message.message).join("\n\n"),
+    );
   }
   const output = details.output ?? "";
   if (status === "completed") {

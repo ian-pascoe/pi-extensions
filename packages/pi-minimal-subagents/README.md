@@ -141,22 +141,24 @@ the complete read-only discovery bundle.
 `agent_message` reports whether a message was delivered through an active
 parent wait, queued for the recipient, or failed. `subagent_wait` can return an
 intermediate Wait Event containing a Coordination Message before the child turn
-settles; call it again for the terminal turn result. Pass optional `turn_id` to
-address an older retained turn exactly. Without it, waits select the oldest
-observable claimed or pending turn before the active/latest turn. A caller may
-have only one outstanding wait for the same source turn; a concurrent duplicate
-is rejected instead of competing for one Wait Event.
+settles. That event claims only its message, so later unconsumed messages and the
+terminal result retain automatic fallback. If the turn has already settled, one
+wait returns its terminal result with queued messages in `messages`. Pass
+optional `turn_id` to address an older retained turn exactly. Without it, waits
+select the oldest observable claimed or pending turn before the active/latest
+turn. A caller may have only one outstanding wait for the same source turn; a
+concurrent duplicate is rejected instead of competing for one Wait Event.
 
 The persisted Delivery Ledger records Coordination Messages, terminal results,
 globally increasing sequence, and wait ownership before delivery. Existing
 items retain their sequence; gaps from skipped malformed records are valid.
-Claims can name only active, latest, or retained turns. Once a wait returns an
-intermediate message, that wait path owns the rest of the source turn across
-reloads, forks, and newer turns. Automatic fallback retains its ordered queue
-reservation, treats idle notifications as advisory, and rechecks actual
-recipient idleness before injecting a message. Destination-session Delivery
-Evidence settles and compacts ledger items, preventing duplicate delivery and
-unbounded checkpoint growth. The pure Delivery Ledger state machine retains at
+Claims can name only active, latest, or retained turns. Wait-returned messages
+retain individual delivery evidence; terminal wait ownership remains durable
+across reloads, forks, and newer turns. Automatic fallback retains its ordered
+queue reservation and sends every unclaimed Coordination Message and terminal
+result as a Pi steer, including while the recipient is active. Destination-session
+Delivery Evidence settles and compacts ledger items, preventing duplicate delivery
+and unbounded checkpoint growth. The pure Delivery Ledger state machine retains at
 most 20 pending wait-only terminal results per source agent; Coordination
 Messages are not removed by that terminal-retention limit. Delivered messages
 include stable delivery, source-agent, and source-turn identities in persisted

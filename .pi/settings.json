@@ -7,8 +7,8 @@
         "-packages/pi-adaptive-thinking/src/index.ts",
         "+packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
-        "+packages/pi-git-status-widget/src/index.ts",
         "+packages/pi-formatter/src/index.ts",
+        "+packages/pi-git-status-widget/src/index.ts",
         "+packages/pi-lsp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts"
@@ -21,8 +21,8 @@
         "-packages/pi-adaptive-thinking/src/index.ts",
         "-packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
-        "-packages/pi-git-status-widget/src/index.ts",
         "-packages/pi-formatter/src/index.ts",
+        "-packages/pi-git-status-widget/src/index.ts",
         "-packages/pi-lsp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts"
@@ -36,7 +36,6 @@
         "args": [
           "exec",
           "oxfmt",
-          "--config=.oxfmtrc.json",
           "--no-error-on-unmatched-pattern",
           "$FILE"
         ],
@@ -55,12 +54,10 @@
             ".md",
             ".yml",
             ".yaml",
-            ".css",
-            ".astro"
+            ".css"
           ]
         },
-        "requireRootMarker": true,
-        "rootMarkers": [".oxfmtrc.json"]
+        "rootMarkers": [".oxfmtrc.json", "package.json", ".git"]
       }
     }
   },
@@ -102,7 +99,7 @@
             "languageId": "typescriptreact"
           }
         ],
-        "rootMarkers": ["package.json", ".git"]
+        "rootMarkers": [".oxlintrc.json", "package.json", ".git"]
       }
     }
   }

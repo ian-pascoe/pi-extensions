@@ -53,6 +53,7 @@ import type {
   StatusResult,
   TurnId,
   TurnResult,
+  WaitMessageResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
 
@@ -85,11 +86,6 @@ interface PendingParentMessage {
   cancelGrace?: () => void;
 }
 
-interface CancelableWait {
-  promise: Promise<void>;
-  cancel: () => void;
-}
-
 function agentDeliveryKey(agentId: string, turnId: string): string {
   return `${agentId}\u0000${turnId}`;
 }
@@ -109,8 +105,9 @@ function terminalTurnResult(
   };
 }
 
-function terminalWaitResult(result: TurnResult): WaitResult {
-  return { event: "turn", ...structuredClone(result) };
+function terminalWaitResult(result: TurnResult, messages: WaitMessageResult[] = []): WaitResult {
+  const terminal = { event: "turn" as const, ...structuredClone(result) };
+  return messages.length === 0 ? terminal : { ...terminal, messages: structuredClone(messages) };
 }
 
 /** One root-owned coordinator for persistent nested Pi child sessions. */
@@ -124,11 +121,9 @@ export class MinimalSubagentsCoordinator {
   private readonly waiters = new Map<string, Set<TurnWaiter>>();
   private readonly pendingParentMessages = new Map<string, PendingParentMessage[]>();
   private readonly recipientQueues = new Map<string, Promise<unknown>>();
-  private readonly recipientIdleWaiters = new Map<string, Set<() => void>>();
   private readonly automaticDeliveryKeys = new Set<string>();
   private readonly automaticCoordinationDeliveryIds = new Set<string>();
   private readonly waitHandedDeliveryIds = new Set<string>();
-  private readonly automaticDeliveryClaimWaiters = new Map<string, Set<() => void>>();
   private readonly backgroundOperations = new Set<Promise<void>>();
   private acceptingOperations = true;
   private lifecycleEpoch = 0;
@@ -363,15 +358,16 @@ export class MinimalSubagentsCoordinator {
         new Error(`Minimal subagents duplicate wait: ${callerId} is already waiting for ${turnId}`),
       );
     }
-    const pendingMessage = this.claimPendingParentMessage(callerId, agentId, turnId);
-    if (pendingMessage) return Promise.resolve(pendingMessage);
     const retainedResult =
       findTerminalDelivery(this.deliveryLedger, agentId, turnId)?.result ??
       (agent.latest_result?.turn_id === turnId ? agent.latest_result : undefined);
     if (retainedResult) {
+      const messages = this.drainPendingParentMessages(callerId, agentId, turnId);
       this.claimTerminalDelivery(callerId, retainedResult);
-      return Promise.resolve(terminalWaitResult(retainedResult));
+      return Promise.resolve(terminalWaitResult(retainedResult, messages));
     }
+    const pendingMessage = this.claimPendingParentMessage(callerId, agentId, turnId);
+    if (pendingMessage) return Promise.resolve(pendingMessage);
     if (agent.active_turn_id !== turnId) {
       return Promise.reject(
         new Error(`Minimal subagents wait: turn ${turnId} is no longer retained for ${agentId}`),
@@ -543,7 +539,6 @@ export class MinimalSubagentsCoordinator {
     this.agents.clear();
     this.deliveryLedger = createDeliveryLedger();
     this.pendingParentMessages.clear();
-    this.releaseAllRecipientIdleWaiters();
     this.recipientQueues.clear();
     this.backgroundOperations.clear();
     await Promise.allSettled(
@@ -558,12 +553,10 @@ export class MinimalSubagentsCoordinator {
     this.waiters.clear();
     this.pendingParentMessages.clear();
     this.waitHandedDeliveryIds.clear();
-    this.releaseAllRecipientIdleWaiters();
     this.recipientQueues.clear();
     this.backgroundOperations.clear();
     this.automaticDeliveryKeys.clear();
     this.automaticCoordinationDeliveryIds.clear();
-    this.automaticDeliveryClaimWaiters.clear();
     this.deliveryLedger = createDeliveryLedger({
       deliveries: snapshot.deliveries,
       coordination_deliveries: snapshot.coordination_deliveries,
@@ -720,13 +713,6 @@ export class MinimalSubagentsCoordinator {
     await Promise.allSettled(scheduled);
   }
 
-  /** Release ordered automatic deliveries after one recipient conversation becomes idle. */
-  markRecipientIdle(agentId: string): void {
-    const waiters = this.recipientIdleWaiters.get(agentId);
-    this.recipientIdleWaiters.delete(agentId);
-    for (const resolve of waiters ?? []) resolve();
-  }
-
   /** Clone complete child leaves for root fork ownership without ever sharing source session paths. */
   async prepareFork(sourceRootSessionFile: string): Promise<ForkSnapshot> {
     const activeRootChildren = this.childrenOf("root");
@@ -785,7 +771,6 @@ export class MinimalSubagentsCoordinator {
   shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.acceptingOperations = false;
-    this.releaseAllRecipientIdleWaiters();
     this.shutdownPromise = this.finishShutdown();
     return this.shutdownPromise;
   }
@@ -999,7 +984,6 @@ export class MinimalSubagentsCoordinator {
       });
     }
     if (result.status !== "completed") this.removeSettledEmptyTurnClaim(agent.agent_id, turnId);
-    this.markRecipientIdle(agent.agent_id);
   }
 
   private async deliverAutomaticResult(
@@ -1024,15 +1008,6 @@ export class MinimalSubagentsCoordinator {
           this.settleDelivery(delivery);
           return;
         }
-        while (!this.isRecipientIdle(delivery.destination_agent_id)) {
-          const idleWait = this.createRecipientIdleWait(delivery.destination_agent_id);
-          const claimWait = this.createAutomaticDeliveryClaimWait(deliveryKey);
-          await Promise.race([idleWait.promise, claimWait.promise]);
-          idleWait.cancel();
-          claimWait.cancel();
-          if (!this.acceptingOperations || this.shouldStopAutomaticTerminalDelivery(delivery))
-            return;
-        }
         if (!this.acceptingOperations || this.shouldStopAutomaticTerminalDelivery(delivery)) return;
         if (this.hasDeliveryEvidence(delivery)) {
           this.settleDelivery(delivery);
@@ -1051,11 +1026,8 @@ export class MinimalSubagentsCoordinator {
             usage: result.usage,
           },
         };
-        await this.deliverToRecipient(
-          delivery.destination_agent_id,
-          message,
-          () => this.isTerminalDeliveryCurrent(delivery),
-          true,
+        await this.deliverToRecipient(delivery.destination_agent_id, message, () =>
+          this.isTerminalDeliveryCurrent(delivery),
         );
       });
     } catch (error) {
@@ -1263,7 +1235,6 @@ export class MinimalSubagentsCoordinator {
     targetId: string,
     message: CoordinatorMessage,
     isCurrentDelivery: () => boolean = () => true,
-    requireIdleRecipient = false,
   ): Promise<void> {
     if (!isCurrentDelivery()) {
       throw new Error("Minimal subagents delivery abandoned after session branch change");
@@ -1281,9 +1252,6 @@ export class MinimalSubagentsCoordinator {
       throw new Error("Minimal subagents delivery abandoned after session branch change");
     }
     const visibleMessage = addCoordinatorMessageEnvelope(message);
-    if (requireIdleRecipient && (target.active_turn_id || runtime.isRunning)) {
-      throw new Error(`Minimal subagents automatic delivery recipient became active: ${targetId}`);
-    }
     if (target.active_turn_id || runtime.isRunning) {
       await runtime.queueCoordinatorMessage(visibleMessage);
       return;
@@ -1367,8 +1335,6 @@ export class MinimalSubagentsCoordinator {
   private applyDeliveryLedgerTransition(transition: DeliveryLedgerTransition): void {
     this.deliveryLedger = transition.ledger;
     for (const delivery of transition.prunedTerminalDeliveries) {
-      const key = agentDeliveryKey(delivery.source_agent_id, delivery.source_turn_id);
-      this.releaseAutomaticDeliveryClaimWaiters(key);
       this.dependencies.registry.append(
         createRegistryEvent(this.dependencies.registry.rootSessionId, "delivery-pruned", {
           source_agent_id: delivery.source_agent_id,
@@ -1504,16 +1470,8 @@ export class MinimalSubagentsCoordinator {
   }
 
   private pruneDeliveryStateForDeletedAgent(agentId: string): void {
-    const previousTerminalDeliveries = this.deliveryLedger.terminalDeliveries;
     const previousCoordinationDeliveries = this.deliveryLedger.coordinationDeliveries;
     this.deliveryLedger = pruneDeliveryLedgerAgents(this.deliveryLedger, [agentId]).ledger;
-    for (const delivery of previousTerminalDeliveries) {
-      if (!this.isTerminalDeliveryCurrent(delivery)) {
-        this.releaseAutomaticDeliveryClaimWaiters(
-          agentDeliveryKey(delivery.source_agent_id, delivery.source_turn_id),
-        );
-      }
-    }
     for (const delivery of previousCoordinationDeliveries) {
       if (!this.isCoordinationDeliveryCurrent(delivery)) {
         this.waitHandedDeliveryIds.delete(delivery.delivery_id);
@@ -1673,7 +1631,6 @@ export class MinimalSubagentsCoordinator {
       (candidate) => candidate.callerId === destinationAgentId,
     );
     if (!waiter) return false;
-    this.claimDeliveryTurn(message.details.source_agent_id, message.details.source_turn_id);
     this.deliveryLedger = setCoordinationDeliveryPath(
       this.deliveryLedger,
       delivery.delivery_id,
@@ -1698,7 +1655,7 @@ export class MinimalSubagentsCoordinator {
     callerId: string,
     sourceAgentId: string,
     sourceTurnId: string,
-  ): WaitResult | undefined {
+  ): WaitMessageResult | undefined {
     const key = agentDeliveryKey(sourceAgentId, sourceTurnId);
     const pendingMessages = this.pendingParentMessages.get(key);
     const index = pendingMessages?.findIndex(
@@ -1715,7 +1672,6 @@ export class MinimalSubagentsCoordinator {
         )
         .sort((left, right) => left.sequence - right.sequence)[0];
       if (!retained) return undefined;
-      this.claimDeliveryTurn(sourceAgentId, sourceTurnId);
       this.deliveryLedger = setCoordinationDeliveryPath(
         this.deliveryLedger,
         retained.delivery_id,
@@ -1735,7 +1691,6 @@ export class MinimalSubagentsCoordinator {
     }
     const pending = pendingMessages[index];
     if (!pending) return undefined;
-    this.claimDeliveryTurn(sourceAgentId, sourceTurnId);
     const delivery = findCoordinationDelivery(this.deliveryLedger, pending.deliveryId);
     if (delivery) {
       this.deliveryLedger = setCoordinationDeliveryPath(
@@ -1746,10 +1701,6 @@ export class MinimalSubagentsCoordinator {
       const currentDelivery = findCoordinationDelivery(this.deliveryLedger, delivery.delivery_id);
       if (currentDelivery) this.persistCoordinationDeliveryState(currentDelivery);
       this.waitHandedDeliveryIds.add(delivery.delivery_id);
-    }
-    const sourceResult = this.agents.get(sourceAgentId)?.latest_result;
-    if (sourceResult?.turn_id === sourceTurnId) {
-      this.setTerminalDeliveryPathToWait(callerId, sourceResult);
     }
     pending.claimed = true;
     pending.cancelGrace?.();
@@ -1764,6 +1715,20 @@ export class MinimalSubagentsCoordinator {
       delivery_id: pending.deliveryId,
       message: pending.message.content,
     };
+  }
+
+  private drainPendingParentMessages(
+    callerId: string,
+    sourceAgentId: string,
+    sourceTurnId: string,
+  ): WaitMessageResult[] {
+    const messages: WaitMessageResult[] = [];
+    let message = this.claimPendingParentMessage(callerId, sourceAgentId, sourceTurnId);
+    while (message) {
+      messages.push(message);
+      message = this.claimPendingParentMessage(callerId, sourceAgentId, sourceTurnId);
+    }
+    return messages;
   }
 
   private queuePendingParentMessage(
@@ -1821,20 +1786,11 @@ export class MinimalSubagentsCoordinator {
       pending.cancelGrace?.();
       pending.cancelGrace = undefined;
       if (!this.acceptingOperations || pending.claimed || turnClaimed()) return;
-      while (!this.isRecipientIdle(targetId)) {
-        const idleWait = this.createRecipientIdleWait(targetId);
-        await Promise.race([pending.claimPromise, idleWait.promise]);
-        idleWait.cancel();
-        if (!this.acceptingOperations || pending.claimed || turnClaimed()) return;
-      }
       if (!this.acceptingOperations || pending.claimed || turnClaimed()) return;
       this.removePendingParentMessage(key, pending);
       this.waitHandedDeliveryIds.add(delivery.delivery_id);
-      await this.deliverToRecipient(
-        targetId,
-        message,
-        () => this.isCoordinationDeliveryCurrent(delivery),
-        true,
+      await this.deliverToRecipient(targetId, message, () =>
+        this.isCoordinationDeliveryCurrent(delivery),
       );
     });
     void operation.catch((cause) => {
@@ -1874,71 +1830,18 @@ export class MinimalSubagentsCoordinator {
   }
 
   private setTerminalDeliveryPathToWait(callerId: string, result: TurnResult): void {
-    const key = agentDeliveryKey(result.agent_id, result.turn_id);
     const delivery = findTerminalDelivery(this.deliveryLedger, result.agent_id, result.turn_id);
     if (!delivery || delivery.destination_agent_id !== callerId || delivery.path === "wait") return;
     this.applyDeliveryLedgerTransition(
       setTerminalDeliveryPath(this.deliveryLedger, result.agent_id, result.turn_id, "wait"),
     );
     const retained = findTerminalDelivery(this.deliveryLedger, result.agent_id, result.turn_id);
-    this.releaseAutomaticDeliveryClaimWaiters(key);
     if (!retained) return;
     this.dependencies.registry.append(
       createRegistryEvent(this.dependencies.registry.rootSessionId, "delivery-pending", {
         delivery: retained,
       }),
     );
-  }
-
-  private isRecipientIdle(agentId: string): boolean {
-    if (agentId === "root") return this.dependencies.root.isIdle();
-    const agent = this.agents.get(agentId);
-    if (!agent || agent.active_turn_id) return false;
-    return !this.runtimes.get(agentId)?.isRunning;
-  }
-
-  private createRecipientIdleWait(agentId: string): CancelableWait {
-    const { promise, resolve: release } = Promise.withResolvers<void>();
-    const waiters = this.recipientIdleWaiters.get(agentId) ?? new Set();
-    waiters.add(release);
-    this.recipientIdleWaiters.set(agentId, waiters);
-    return {
-      promise,
-      cancel: () => {
-        const currentWaiters = this.recipientIdleWaiters.get(agentId);
-        currentWaiters?.delete(release);
-        if (currentWaiters?.size === 0) this.recipientIdleWaiters.delete(agentId);
-      },
-    };
-  }
-
-  private createAutomaticDeliveryClaimWait(deliveryKey: string): CancelableWait {
-    const { promise, resolve: release } = Promise.withResolvers<void>();
-    const waiters = this.automaticDeliveryClaimWaiters.get(deliveryKey) ?? new Set();
-    waiters.add(release);
-    this.automaticDeliveryClaimWaiters.set(deliveryKey, waiters);
-    return {
-      promise,
-      cancel: () => {
-        const currentWaiters = this.automaticDeliveryClaimWaiters.get(deliveryKey);
-        currentWaiters?.delete(release);
-        if (currentWaiters?.size === 0) this.automaticDeliveryClaimWaiters.delete(deliveryKey);
-      },
-    };
-  }
-
-  private releaseAutomaticDeliveryClaimWaiters(deliveryKey: string): void {
-    const waiters = this.automaticDeliveryClaimWaiters.get(deliveryKey);
-    this.automaticDeliveryClaimWaiters.delete(deliveryKey);
-    for (const resolve of waiters ?? []) resolve();
-  }
-
-  private releaseAllRecipientIdleWaiters(): void {
-    const allWaiters = [...this.recipientIdleWaiters.values()];
-    this.recipientIdleWaiters.clear();
-    for (const waiters of allWaiters) {
-      for (const resolve of waiters) resolve();
-    }
   }
 
   private async cancelDuringShutdown(agentId: string): Promise<void> {

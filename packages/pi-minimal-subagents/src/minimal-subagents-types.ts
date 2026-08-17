@@ -75,8 +75,14 @@ export interface WaitMessageResult {
   message: string;
 }
 
+/** Reports one terminal child turn and any earlier messages drained by the same wait. */
+export interface WaitTurnResult extends TurnResult {
+  event: "turn";
+  messages?: WaitMessageResult[];
+}
+
 /** Reports one terminal child turn returned by subagent_wait. */
-export type WaitResult = WaitMessageResult | ({ event: "turn" } & TurnResult);
+export type WaitResult = WaitMessageResult | WaitTurnResult;
 
 /** Provides bounded hierarchy, usage, and best-known Runtime Profile data for one persistent agent. */
 export interface AgentSummary extends RuntimeProfile {
@@ -243,8 +249,6 @@ export interface RootConversationEndpoint {
   /** Queue one typed coordinator message into the root conversation. */
   queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
-  /** Report whether automatic delivery can start a new root turn without racing an active wait. */
-  isIdle(): boolean;
 }
 
 /** Stores root-owned agent identity, launch contract, availability, and latest activity. */
