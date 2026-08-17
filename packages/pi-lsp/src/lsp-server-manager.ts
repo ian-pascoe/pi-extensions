@@ -18,6 +18,8 @@ export interface LspServerRoutingDefinition {
   readonly serverId: string;
   /** Languages and file patterns accepted by this server. */
   readonly languages: readonly LspServerLanguage[];
+  /** Exclude this server when none of its root markers exists above the requested file. */
+  readonly requireRootMarker?: boolean;
   /** Basename glob patterns that select this server instance's nearest workspace root. */
   readonly rootMarkers?: readonly string[];
 }
@@ -71,6 +73,7 @@ export type LspServerFailureCode =
   | "no-capable-server"
   | "no-matching-server"
   | "request-failed"
+  | "root-marker-not-found"
   | "server-unavailable";
 
 /** Preserves one matching server's failure without discarding sibling successes. */
@@ -167,8 +170,11 @@ function findNearestLspRoot(
   rootMarkers: readonly string[] | undefined,
   ancestorDirectories: readonly LspAncestorDirectory[],
   cwd: string,
-): string {
-  if (rootMarkers === undefined || rootMarkers.length === 0) return resolve(cwd);
+  requireRootMarker: boolean,
+): string | undefined {
+  if (rootMarkers === undefined || rootMarkers.length === 0) {
+    return requireRootMarker ? undefined : resolve(cwd);
+  }
   for (const directory of ancestorDirectories) {
     if (
       directory.entryNames.some((entryName) =>
@@ -178,7 +184,7 @@ function findNearestLspRoot(
       return directory.path;
     }
   }
-  return resolve(cwd);
+  return requireRootMarker ? undefined : resolve(cwd);
 }
 
 /** Route one file to every matching configured server in stable settings-map order. */
@@ -196,10 +202,17 @@ export function routeLspServersForFile(
       languageMatchesFile(candidate, normalizedFilePath),
     );
     if (language === undefined) continue;
+    const rootPath = findNearestLspRoot(
+      serverDefinition.rootMarkers,
+      ancestorDirectories,
+      cwd,
+      serverDefinition.requireRootMarker ?? false,
+    );
+    if (rootPath === undefined) continue;
     routes.push({
       serverId: serverDefinition.serverId,
       language,
-      rootPath: findNearestLspRoot(serverDefinition.rootMarkers, ancestorDirectories, cwd),
+      rootPath,
     });
   }
 
@@ -288,10 +301,19 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     const ancestors = await readLspAncestorDirectories(absolutePath);
     const definitions = [...this.input.settings.servers.values()].map((definition) => ({
       languages: definition.languages,
+      requireRootMarker: definition.requireRootMarker,
       rootMarkers: definition.rootMarkers,
       serverId: definition.id,
     }));
     return routeLspServersForFile(definitions, absolutePath, this.input.cwd, ancestors);
+  }
+
+  /** Report whether any Server Definition accepts the file language before activation gating. */
+  hasConfiguredLanguageServerForFile(filePath: string): boolean {
+    const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
+    return [...this.input.settings.servers.values()].some((definition) =>
+      definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
+    );
   }
 
   /** Query every matching capable instance while retaining independent successes and failures. */
@@ -446,10 +468,23 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   }
 
   private noMatchingFailure(serverId: string | undefined, filePath: string): LspServerFailure {
+    const normalizedFilePath = normalizeLspFilePath(filePath);
+    const definition =
+      serverId === undefined ? undefined : this.input.settings.servers.get(serverId);
+    if (
+      definition?.requireRootMarker === true &&
+      definition.languages.some((language) => languageMatchesFile(language, normalizedFilePath))
+    ) {
+      return {
+        code: "root-marker-not-found",
+        message: `Pi LSP: required root marker not found for server ${definition.id} and ${normalizedFilePath}; expected one of: ${definition.rootMarkers.join(", ")}`,
+        serverId: definition.id,
+      };
+    }
     const requestedServer = serverId === undefined ? "any configured server" : `server ${serverId}`;
     return {
       code: "no-matching-server",
-      message: `Pi LSP: ${requestedServer} does not match ${normalizeLspFilePath(filePath)}`,
+      message: `Pi LSP: ${requestedServer} does not match ${normalizedFilePath}`,
       serverId: serverId ?? "*",
     };
   }

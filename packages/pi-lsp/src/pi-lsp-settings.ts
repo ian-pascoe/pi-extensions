@@ -30,6 +30,7 @@ const LspServerDefinitionSchema = Type.Object(
     ),
     initializationOptions: Type.Optional(JsonValueSchema),
     languages: Type.Optional(Type.Array(LspLanguageMappingSchema, { minItems: 1 })),
+    requireRootMarker: Type.Optional(Type.Boolean()),
     rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
     settings: Type.Optional(JsonValueSchema),
   },
@@ -71,7 +72,7 @@ export interface LspLanguageMapping {
   readonly languageId: string;
 }
 
-/** Contains the parsed command and protocol values for one enabled language server. */
+/** Contains the parsed command and protocol values for one configured language server. */
 export interface LspServerDefinition {
   readonly args: readonly string[];
   readonly command: string;
@@ -79,6 +80,8 @@ export interface LspServerDefinition {
   readonly id: string;
   readonly initializationOptions?: JsonValue;
   readonly languages: readonly LspLanguageMapping[];
+  /** Require any root marker above a candidate file; false falls back to Pi's working directory. */
+  readonly requireRootMarker: boolean;
   readonly rootMarkers: readonly string[];
   readonly settings?: JsonValue;
 }
@@ -172,6 +175,13 @@ function parseLspServerDefinitions(
     ) {
       warnings.push(
         `${scope} lsp.servers.${id}.languages: each language needs extensions or fileNames`,
+      );
+      servers.set(id, { kind: "excluded" });
+      continue;
+    }
+    if (server.requireRootMarker === true && (server.rootMarkers?.length ?? 0) === 0) {
+      warnings.push(
+        `${scope} lsp.servers.${id}.rootMarkers: at least one root marker is required when requireRootMarker is true`,
       );
       servers.set(id, { kind: "excluded" });
       continue;
@@ -282,6 +292,7 @@ function resolveLspServerDefinition(
     environment: resolveLspEnvironment(server.environment),
     id,
     languages,
+    requireRootMarker: server.requireRootMarker ?? false,
     rootMarkers: server.rootMarkers ?? [],
   };
   const initializationOptions = server.initializationOptions;

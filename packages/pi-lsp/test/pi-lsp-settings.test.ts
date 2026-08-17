@@ -111,6 +111,7 @@ describe("resolveLspSettings", () => {
       args: [],
       command: "project-lsp",
       id: "replaced",
+      requireRootMarker: false,
     });
   });
 
@@ -265,5 +266,36 @@ describe("resolveLspSettings", () => {
     expect(settings.enabled).toBe(true);
     expect(settings.servers.get("valid")).toMatchObject({ command: "valid-lsp" });
     expect(settings.warnings).toEqual([expect.stringContaining("project lsp")]);
+  });
+
+  test("parses root marker activation and quarantines an activation gate without markers", async () => {
+    const settingsManager = await createSettingsReader(
+      {
+        lsp: {
+          servers: {
+            gated: {
+              ...typescriptServer("gated-lsp"),
+              requireRootMarker: true,
+              rootMarkers: ["tsconfig.json"],
+            },
+            impossible: {
+              ...typescriptServer("impossible-lsp"),
+              requireRootMarker: true,
+              rootMarkers: [],
+            },
+          },
+        },
+      },
+      {},
+      true,
+    );
+
+    const settings = resolveLspSettings(settingsManager);
+
+    expect(settings.servers.get("gated")?.requireRootMarker).toBe(true);
+    expect(settings.servers.has("impossible")).toBe(false);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("global lsp.servers.impossible.rootMarkers"),
+    ]);
   });
 });

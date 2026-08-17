@@ -45,6 +45,7 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
             "languageId": "typescriptreact"
           }
         ],
+        "requireRootMarker": true,
         "rootMarkers": ["tsconfig.json", "package.json", ".git"],
         "initializationOptions": {},
         "settings": {},
@@ -58,7 +59,10 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
 Every field is optional except an enabled server's non-empty `command` and `languages`. Each
 language needs a non-empty `languageId` and at least one extension or exact filename. Extensions
 include their leading period. `rootMarkers` are basename glob patterns; the nearest matching
-ancestor becomes the server root and Pi's working directory is the fallback.
+ancestor becomes the server root and Pi's working directory is the fallback. Set
+`requireRootMarker` to `true` to exclude the server for files without any matching ancestor; it
+defaults to `false`. A required empty `rootMarkers` list is invalid. Explicit requests naming an
+otherwise compatible excluded server report that its required root marker was not found.
 
 Global and project timeouts merge by field. A project server replaces the complete global server
 with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
@@ -167,6 +171,7 @@ timeout, unavailable server, or an `apply_patch` adapter-version warning. Diagno
 duplicates from independent servers and never change the original tool's success or error state.
 Only servers that advertise document diagnostics participate; formatting-only servers remain
 available for explicit LSP formatting operations without appearing in Post-edit Diagnostics.
+Files excluded by every matching server's Activation Gate are skipped silently.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. Clean results and files without a

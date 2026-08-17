@@ -80,6 +80,7 @@ describe("resolveFormatterSettings", () => {
       extensions: [".md"],
       fileNames: ["README"],
       id: "first",
+      requireRootMarker: false,
       rootMarkers: ["package.json", ".git"],
     });
   });
@@ -160,5 +161,31 @@ describe("resolveFormatterSettings", () => {
 
     expect(settings.formatters).toEqual(new Map());
     expect(settings.warnings).toHaveLength(3);
+  });
+
+  test("parses root marker activation and quarantines an activation gate without markers", async () => {
+    const settings = resolveFormatterSettings(
+      await createSettingsReader(
+        {
+          formatter: {
+            formatters: {
+              gated: { ...markdownFormatter("gated"), requireRootMarker: true },
+              impossible: {
+                ...markdownFormatter("impossible"),
+                requireRootMarker: true,
+                rootMarkers: [],
+              },
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(settings.formatters.get("gated")?.requireRootMarker).toBe(true);
+    expect(settings.formatters.has("impossible")).toBe(false);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("global formatter.formatters.impossible.rootMarkers"),
+    ]);
   });
 });

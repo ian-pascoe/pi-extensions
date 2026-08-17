@@ -31,6 +31,7 @@ project `.pi/settings.json`:
           "extensions": [".md", ".mdx"],
           "fileNames": ["README"]
         },
+        "requireRootMarker": true,
         "rootMarkers": ["package.json", ".git"],
         "environment": {}
       }
@@ -47,9 +48,11 @@ absolute changed-file path.
 A formatter using `$FILE` runs once per matching changed file. A formatter without `$FILE` runs
 once per matching workspace root, allowing full-project formatting. `rootMarkers` are basename glob
 patterns; the nearest matching ancestor becomes the command working directory and Pi's working
-directory is the fallback. Formatters run sequentially in configuration order. Successful output
-is silent. A timeout, spawn error, or non-zero exit appends a warning to the original tool result
-without changing that result's success state; later formatters still run.
+directory is the fallback. Set `requireRootMarker` to `true` to skip the formatter unless any root
+marker exists above the changed file; it defaults to `false`. A required empty `rootMarkers` list is
+invalid. Formatters run sequentially in configuration order. Successful output is silent. A
+timeout, spawn error, or non-zero exit appends a warning to the original tool result without
+changing that result's success state; later formatters still run.
 
 Global and project `timeoutMs` values override by scope. A project formatter replaces the complete
 global definition with the same ID; set it to `null` to disable it. Invalid definitions and fields

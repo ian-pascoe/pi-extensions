@@ -138,6 +138,7 @@ function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
           args: [],
           environment: {},
           languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
+          requireRootMarker: false,
           rootMarkers: [],
         },
       ]),

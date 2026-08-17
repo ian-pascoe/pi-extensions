@@ -190,7 +190,11 @@ class ManagerPostEditDiagnosticsRunner implements PostEditDiagnosticsRunner {
       outcomes.push(...successfulOutcomes);
       outcomes.push(
         ...result.failures.flatMap((failure) =>
-          failure.code === "no-capable-server" ? [] : [failureDiagnosticOutcome(filePath, failure)],
+          failure.code === "no-capable-server" ||
+          (failure.code === "no-matching-server" &&
+            this.session.manager.hasConfiguredLanguageServerForFile(filePath))
+            ? []
+            : [failureDiagnosticOutcome(filePath, failure)],
         ),
       );
     }

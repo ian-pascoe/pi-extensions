@@ -273,6 +273,7 @@ export async function appendPostEditDiagnostics(
     })),
     ...(await diagnostics.runPostEditDiagnostics(extracted.paths)),
   ];
+  if (outcomes.length === 0) return undefined;
   const patch: PostEditDiagnosticsResultPatch = {
     content: [...event.content, { type: "text", text: formatPostEditDiagnostics(outcomes) }],
     details: event.details,

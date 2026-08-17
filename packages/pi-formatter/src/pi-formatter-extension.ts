@@ -167,8 +167,9 @@ async function findFormatterRoot(
   filePath: string,
   rootMarkers: readonly string[],
   fallbackCwd: string,
-): Promise<string> {
-  if (rootMarkers.length === 0) return resolve(fallbackCwd);
+  requireRootMarker: boolean,
+): Promise<string | undefined> {
+  if (rootMarkers.length === 0) return requireRootMarker ? undefined : resolve(fallbackCwd);
   let directory = dirname(filePath);
   for (;;) {
     try {
@@ -184,7 +185,9 @@ async function findFormatterRoot(
       // Match Pi LSP root discovery: continue to an existing ancestor.
     }
     const parentDirectory = dirname(directory);
-    if (parentDirectory === directory) return resolve(fallbackCwd);
+    if (parentDirectory === directory) {
+      return requireRootMarker ? undefined : resolve(fallbackCwd);
+    }
     directory = parentDirectory;
   }
 }
@@ -287,11 +290,19 @@ async function formatMutationPaths(
     const matchingPaths = existing.paths.filter((path) => formatterMatchesPath(definition, path));
     if (matchingPaths.length === 0) continue;
     const usesFile = definition.args.some((argument) => argument.includes("$FILE"));
-    const pathsAndRoots = await Promise.all(
+    const discoveredRoots = await Promise.all(
       matchingPaths.map(async (path) => ({
         path,
-        root: await findFormatterRoot(path, definition.rootMarkers, cwd),
+        root: await findFormatterRoot(
+          path,
+          definition.rootMarkers,
+          cwd,
+          definition.requireRootMarker,
+        ),
       })),
+    );
+    const pathsAndRoots = discoveredRoots.flatMap(({ path, root }) =>
+      root === undefined ? [] : [{ path, root }],
     );
     const invocations = usesFile
       ? pathsAndRoots

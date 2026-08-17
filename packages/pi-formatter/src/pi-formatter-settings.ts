@@ -20,6 +20,7 @@ const FormatterDefinitionSchema = Type.Object(
       Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()])),
     ),
     files: FormatterFilesSchema,
+    requireRootMarker: Type.Optional(Type.Boolean()),
     rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
   },
   { additionalProperties: false },
@@ -46,7 +47,7 @@ type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
-/** Contains one enabled formatter command and its exact file matching policy. */
+/** Contains one configured formatter command and its exact file matching policy. */
 export interface FormatterDefinition {
   readonly args: readonly string[];
   readonly command: string;
@@ -54,6 +55,8 @@ export interface FormatterDefinition {
   readonly extensions: readonly string[];
   readonly fileNames: readonly string[];
   readonly id: string;
+  /** Require any root marker above a candidate file; false falls back to Pi's working directory. */
+  readonly requireRootMarker: boolean;
   readonly rootMarkers: readonly string[];
 }
 
@@ -160,6 +163,14 @@ function readFormatterLayer(
             `${scope} formatter.formatters.${id}.files: extensions or fileNames is required`,
           );
           definitions.set(id, null);
+        } else if (
+          definition.requireRootMarker === true &&
+          (definition.rootMarkers?.length ?? 0) === 0
+        ) {
+          warnings.push(
+            `${scope} formatter.formatters.${id}.rootMarkers: at least one root marker is required when requireRootMarker is true`,
+          );
+          definitions.set(id, null);
         } else {
           definitions.set(id, definition);
         }
@@ -181,6 +192,7 @@ function resolveFormatterDefinition(
     extensions: definition.files.extensions ?? [],
     fileNames: definition.files.fileNames ?? [],
     id,
+    requireRootMarker: definition.requireRootMarker ?? false,
     rootMarkers: definition.rootMarkers ?? [],
   };
 }

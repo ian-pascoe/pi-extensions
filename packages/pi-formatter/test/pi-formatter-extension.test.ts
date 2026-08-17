@@ -219,6 +219,47 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(await readFile(resolve(packageRoot, "workspace-root"), "utf8")).toBe(packageRoot);
   });
 
+  test("activates file and workspace formatters only while a required root marker exists", async () => {
+    const fileScript =
+      "const fs=require('node:fs');const p=process.argv[1];fs.appendFileSync(p,':formatted')";
+    const workspaceScript =
+      "const fs=require('node:fs');fs.writeFileSync('workspace-formatted','yes')";
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: {
+          gatedFile: {
+            ...formatterDefinition(["-e", fileScript, "$FILE"]),
+            requireRootMarker: true,
+            rootMarkers: ["formatter.config.json"],
+          },
+          gatedWorkspace: {
+            ...formatterDefinition(["-e", workspaceScript]),
+            requireRootMarker: true,
+            rootMarkers: ["formatter.config.json"],
+          },
+        },
+      },
+    });
+    const filePath = resolve(harness.cwd, "src/gated.txt");
+    await mkdir(resolve(harness.cwd, "src"));
+    await writeFile(filePath, "original");
+
+    await harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe("original");
+    await expect(readFile(resolve(harness.cwd, "workspace-formatted"))).rejects.toThrow();
+
+    await writeFile(resolve(harness.cwd, "formatter.config.json"), "{}");
+    await harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe("original:formatted");
+    expect(await readFile(resolve(harness.cwd, "workspace-formatted"), "utf8")).toBe("yes");
+  });
+
   test.each([
     ["edit", (path: string) => ({ input: { path }, details: undefined })],
     ["write", (path: string) => ({ input: { path }, details: undefined })],

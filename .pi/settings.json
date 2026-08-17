@@ -57,7 +57,8 @@
             ".yml"
           ]
         },
-        "rootMarkers": [".oxfmtrc.json", ".git"]
+        "requireRootMarker": true,
+        "rootMarkers": [".oxfmtrc.json"]
       }
     }
   },
@@ -138,7 +139,8 @@
             "languageId": "yaml"
           }
         ],
-        "rootMarkers": ["package.json", ".git"]
+        "requireRootMarker": true,
+        "rootMarkers": [".oxfmtrc.json"]
       }
     }
   }
