@@ -45,6 +45,7 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
             "languageId": "typescriptreact"
           }
         ],
+        "requireRootMarker": true,
         "rootMarkers": ["tsconfig.json", "package.json", ".git"],
         "initializationOptions": {},
         "settings": {},
@@ -58,14 +59,18 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
 Every field is optional except an enabled server's non-empty `command` and `languages`. Each
 language needs a non-empty `languageId` and at least one extension or exact filename. Extensions
 include their leading period. `rootMarkers` are basename glob patterns; the nearest matching
-ancestor becomes the server root and Pi's working directory is the fallback.
+ancestor becomes the server root and Pi's working directory is the fallback. Set
+`requireRootMarker` to `true` to exclude the server for files without any matching ancestor; it
+defaults to `false`. A required empty `rootMarkers` list is invalid. Explicit requests naming an
+otherwise compatible excluded server report that its required root marker was not found.
 
 Global and project timeouts merge by field. A project server replaces the complete global server
 with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
 during initialization. `settings` is used for `workspace/didChangeConfiguration` and
 `workspace/configuration`. Environment strings override `process.env`; `null` removes a variable.
-A malformed layer or unknown field disables LSP startup and remains visible through `status`.
-Untrusted project settings are ignored.
+Invalid server definitions and timeout fields are quarantined individually and remain visible
+through `status`; unrelated valid settings continue to work. An invalid project server replacement
+still shadows the global definition. Untrusted project settings are ignored.
 
 Pi's `/reload` reloads configuration. Servers start on first use, live for one Pi session, and stay
 unavailable after a process or protocol failure until `restart` or `/reload`.
@@ -164,6 +169,9 @@ Changed, created, and renamed destination files are diagnosed; deleted files are
 recognized result gets an explicit outcome, including `no diagnostics`, `no configured server`,
 timeout, unavailable server, or an `apply_patch` adapter-version warning. Diagnostics preserve
 duplicates from independent servers and never change the original tool's success or error state.
+Only servers that advertise document diagnostics participate; formatting-only servers remain
+available for explicit LSP formatting operations without appearing in Post-edit Diagnostics.
+Files excluded by every matching server's Activation Gate are skipped silently.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. Clean results and files without a

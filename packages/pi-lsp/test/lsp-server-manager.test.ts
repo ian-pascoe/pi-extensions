@@ -97,6 +97,35 @@ describe("LSP server file routing", () => {
     expect(routes.map(({ rootPath }) => rootPath)).toEqual(["/fallback", "/fallback"]);
   });
 
+  test("excludes only definitions that require a missing root marker", () => {
+    const routes = routeLspServersForFile(
+      [
+        {
+          languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          requireRootMarker: true,
+          rootMarkers: ["tsconfig.json"],
+          serverId: "gated",
+        },
+        {
+          languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          rootMarkers: ["tsconfig.json"],
+          serverId: "fallback",
+        },
+      ],
+      "/workspace/source.ts",
+      "/workspace",
+      [{ entryNames: ["source.ts"], path: "/workspace" }],
+    );
+
+    expect(routes).toEqual([
+      {
+        language: { extensions: [".ts"], languageId: "typescript" },
+        rootPath: "/workspace",
+        serverId: "fallback",
+      },
+    ]);
+  });
+
   test("keeps all matching servers in deterministic definition order", () => {
     const routes = routeLspServersForFile(
       [...configuredServers].reverse(),
@@ -174,6 +203,7 @@ function serverDefinition(id: string): LspServerDefinition {
     environment: {},
     id,
     languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
+    requireRootMarker: false,
     rootMarkers: ["package.json"],
   };
 }
@@ -219,6 +249,41 @@ describe("session-scoped LSP server manager", () => {
       warnings: [],
     });
     expect(factory.inputs).toEqual([]);
+  });
+
+  test("re-evaluates required root markers and explains explicit activation failures", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory();
+    const definition = {
+      ...serverDefinition("typescript"),
+      requireRootMarker: true,
+      rootMarkers: ["tsconfig.json"],
+    };
+    const settings = {
+      ...resolvedSettings([]),
+      servers: new Map([[definition.id, definition]]),
+    };
+    const manager = new LspServerManager({ cwd, settings, startClient: factory.start });
+
+    await expect(manager.getCapabilities("typescript", filePath)).resolves.toMatchObject({
+      failure: {
+        code: "root-marker-not-found",
+        message: expect.stringContaining("required root marker not found"),
+      },
+      kind: "failure",
+    });
+    expect(factory.inputs).toEqual([]);
+
+    await writeFile(resolve(cwd, "packages/example/tsconfig.json"), "{}");
+    expect((await manager.getCapabilities("typescript", filePath)).kind).toBe("success");
+    expect(factory.inputs).toHaveLength(1);
+
+    await rm(resolve(cwd, "packages/example/tsconfig.json"));
+    await expect(manager.getCapabilities("typescript", filePath)).resolves.toMatchObject({
+      failure: { code: "root-marker-not-found" },
+      kind: "failure",
+    });
+    expect(factory.clients[0]?.shutdownCount).toBe(0);
   });
 
   test("deduplicates concurrent startup for one server ID and root", async () => {

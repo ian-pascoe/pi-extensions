@@ -8,6 +8,7 @@
         "+packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
         "+packages/pi-git-status-widget/src/index.ts",
+        "+packages/pi-formatter/src/index.ts",
         "+packages/pi-lsp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts"
@@ -21,12 +22,48 @@
         "-packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
+        "-packages/pi-formatter/src/index.ts",
         "-packages/pi-lsp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts"
       ]
     }
   ],
+  "formatter": {
+    "formatters": {
+      "oxfmt": {
+        "command": "pnpm",
+        "args": [
+          "exec",
+          "oxfmt",
+          "--config=.oxfmtrc.json",
+          "--no-error-on-unmatched-pattern",
+          "$FILE"
+        ],
+        "files": {
+          "extensions": [
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".mjs",
+            ".cjs",
+            ".mts",
+            ".cts",
+            ".json",
+            ".jsonc",
+            ".md",
+            ".yml",
+            ".yaml",
+            ".css",
+            ".astro"
+          ]
+        },
+        "requireRootMarker": true,
+        "rootMarkers": [".oxfmtrc.json"]
+      }
+    }
+  },
   "lsp": {
     "servers": {
       "typescript": {
@@ -63,45 +100,6 @@
           {
             "extensions": [".tsx"],
             "languageId": "typescriptreact"
-          }
-        ],
-        "rootMarkers": ["package.json", ".git"]
-      },
-      "oxfmt": {
-        "command": "pnpm",
-        "args": ["exec", "oxfmt", "--lsp"],
-        "languages": [
-          {
-            "extensions": [".js", ".mjs", ".cjs"],
-            "languageId": "javascript"
-          },
-          {
-            "extensions": [".jsx"],
-            "languageId": "javascriptreact"
-          },
-          {
-            "extensions": [".ts", ".mts", ".cts"],
-            "languageId": "typescript"
-          },
-          {
-            "extensions": [".tsx"],
-            "languageId": "typescriptreact"
-          },
-          {
-            "extensions": [".json"],
-            "languageId": "json"
-          },
-          {
-            "extensions": [".jsonc"],
-            "languageId": "jsonc"
-          },
-          {
-            "extensions": [".md"],
-            "languageId": "markdown"
-          },
-          {
-            "extensions": [".yaml", ".yml"],
-            "languageId": "yaml"
           }
         ],
         "rootMarkers": ["package.json", ".git"]

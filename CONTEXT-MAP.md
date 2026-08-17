@@ -11,6 +11,7 @@ context relevant to the work:
 | `@ian-pascoe/pi-bible-verses`      | [`packages/pi-bible-verses/CONTEXT.md`](packages/pi-bible-verses/CONTEXT.md)           | Offline verse rotation and provenance   |
 | `@ian-pascoe/pi-tps-tracker`       | [`packages/pi-tps-tracker/CONTEXT.md`](packages/pi-tps-tracker/CONTEXT.md)             | Output-token throughput measurement     |
 | `@ian-pascoe/pi-git-status-widget` | [`packages/pi-git-status-widget/CONTEXT.md`](packages/pi-git-status-widget/CONTEXT.md) | Worktree-status display refresh         |
+| `@ian-pascoe/pi-formatter`         | [`packages/pi-formatter/CONTEXT.md`](packages/pi-formatter/CONTEXT.md)                 | Automatic post-edit formatting          |
 | `@ian-pascoe/pi-lsp`               | [`packages/pi-lsp/CONTEXT.md`](packages/pi-lsp/CONTEXT.md)                             | Language-server tools and edit feedback |
 
 The contexts are package-local vocabulary authorities. Repository-wide decisions

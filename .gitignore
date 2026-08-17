@@ -1,6 +1,7 @@
-node_modules
-dist
-coverage
+node_modules/
+dist/
+coverage/
 *.tgz
 .pi/npm
 .repos/
+.turbo/

@@ -75,8 +75,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   );
   const configuredPaths = manifest.pi.extensions;
   assertGitInstallCondition(
-    configuredPaths.length === 7,
-    "temporary root manifest does not contain seven extension paths",
+    configuredPaths.length === 8,
+    "temporary root manifest does not contain eight extension paths",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
@@ -87,8 +87,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     `temporary source entrypoints failed to load: ${JSON.stringify(result.errors)}`,
   );
   assertGitInstallCondition(
-    result.extensions.length === 7,
-    "temporary install did not load seven extensions",
+    result.extensions.length === 8,
+    "temporary install did not load eight extensions",
   );
   assertGitInstallCondition(
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===

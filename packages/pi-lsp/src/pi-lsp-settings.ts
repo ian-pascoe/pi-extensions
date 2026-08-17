@@ -12,6 +12,7 @@ const DEFAULT_LSP_TIMEOUTS = {
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
 const PositiveMillisecondsSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const JsonValueSchema = Type.Any();
+const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
 const LspLanguageMappingSchema = Type.Object(
   {
     extensions: Type.Optional(Type.Array(NonEmptyStringSchema, { minItems: 1 })),
@@ -29,6 +30,7 @@ const LspServerDefinitionSchema = Type.Object(
     ),
     initializationOptions: Type.Optional(JsonValueSchema),
     languages: Type.Optional(Type.Array(LspLanguageMappingSchema, { minItems: 1 })),
+    requireRootMarker: Type.Optional(Type.Boolean()),
     rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
     settings: Type.Optional(JsonValueSchema),
   },
@@ -43,18 +45,6 @@ const LspTimeoutsSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const LspLayerSchema = Type.Object(
-  {
-    servers: Type.Optional(
-      Type.Record(
-        Type.String({ minLength: 1 }),
-        Type.Union([LspServerDefinitionSchema, Type.Null()]),
-      ),
-    ),
-    timeouts: Type.Optional(LspTimeoutsSchema),
-  },
-  { additionalProperties: false },
-);
 const SettingsDocumentSchema = Type.Object({ lsp: Type.Optional(JsonValueSchema) });
 
 interface JsonObject {
@@ -64,7 +54,16 @@ interface JsonObject {
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
 type LspServerDefinitionWire = Static<typeof LspServerDefinitionSchema>;
 type LspTimeoutsWire = Static<typeof LspTimeoutsSchema>;
-type LspLayerWire = Static<typeof LspLayerSchema>;
+type LspTimeoutName = keyof typeof DEFAULT_LSP_TIMEOUTS;
+const LSP_TIMEOUT_NAMES: readonly LspTimeoutName[] = [
+  "diagnosticsMs",
+  "initializeMs",
+  "requestMs",
+  "shutdownMs",
+];
+type ParsedLspServerDefinition =
+  | { readonly kind: "excluded" }
+  | { readonly kind: "valid"; readonly value: LspServerDefinitionWire };
 
 /** Describes one configured filename or extension mapping to an LSP language identifier. */
 export interface LspLanguageMapping {
@@ -73,7 +72,7 @@ export interface LspLanguageMapping {
   readonly languageId: string;
 }
 
-/** Contains the parsed command and protocol values for one enabled language server. */
+/** Contains the parsed command and protocol values for one configured language server. */
 export interface LspServerDefinition {
   readonly args: readonly string[];
   readonly command: string;
@@ -81,6 +80,8 @@ export interface LspServerDefinition {
   readonly id: string;
   readonly initializationOptions?: JsonValue;
   readonly languages: readonly LspLanguageMapping[];
+  /** Require any root marker above a candidate file; false falls back to Pi's working directory. */
+  readonly requireRootMarker: boolean;
   readonly rootMarkers: readonly string[];
   readonly settings?: JsonValue;
 }
@@ -93,7 +94,7 @@ export interface LspTimeouts {
   readonly shutdownMs: number;
 }
 
-/** Reports resolved trusted configuration, or disabled startup when either layer is malformed. */
+/** Reports resolved trusted configuration, retaining valid entries when other settings are invalid. */
 export interface ResolvedLspSettings {
   readonly enabled: boolean;
   readonly servers: ReadonlyMap<string, LspServerDefinition>;
@@ -113,17 +114,115 @@ type PiSettingsDocument = ReturnType<SettingsManager["getGlobalSettings"]>;
 /** Pi's core Settings type or a test/boundary document carrying the extension-owned `lsp` value. */
 export type LspSettingsDocumentInput = PiSettingsDocument | { readonly lsp?: JsonValue };
 
-type ParsedLspLayer =
-  | { readonly kind: "absent" }
-  | { readonly kind: "invalid"; readonly warning: string }
-  | { readonly kind: "valid"; readonly value: LspLayerWire };
+interface ParsedLspLayer {
+  readonly servers: ReadonlyMap<string, ParsedLspServerDefinition>;
+  readonly timeouts: LspTimeoutsWire;
+  readonly warnings: readonly string[];
+}
 
-function lspValidationWarning(value: JsonValue, scope: "global" | "project"): string {
-  const error = Value.Errors(LspLayerSchema, value)[0];
+function isJsonObject(value: JsonValue): value is JsonObject {
+  return Value.Check(JsonObjectSchema, value);
+}
+
+function schemaValidationWarning(
+  schema: typeof LspServerDefinitionSchema | typeof PositiveMillisecondsSchema,
+  value: JsonValue,
+  prefix: string,
+): string {
+  const error = Value.Errors(schema, value)[0];
   const path = error?.instancePath.replaceAll("/", ".") ?? "";
   const unknownField =
     error?.keyword === "additionalProperties" ? error.params.additionalProperties[0] : undefined;
-  return `${scope} lsp${path}${unknownField === undefined ? "" : `.${unknownField}`}: ${error?.message ?? "invalid settings"}`;
+  const unknownFieldSuffix = unknownField === undefined ? "" : `.${String(unknownField)}`;
+  return `${prefix}${path}${unknownFieldSuffix}: ${error?.message ?? "invalid settings"}`;
+}
+
+function parseLspServerDefinitions(
+  value: JsonValue | undefined,
+  scope: "global" | "project",
+): Pick<ParsedLspLayer, "servers" | "warnings"> {
+  const warnings: string[] = [];
+  const servers = new Map<string, ParsedLspServerDefinition>();
+  if (value === undefined) return { servers, warnings };
+  if (!isJsonObject(value)) {
+    return { servers, warnings: [`${scope} lsp.servers: expected a JSON object`] };
+  }
+  for (const [id, server] of Object.entries(value)) {
+    if (!Value.Check(NonEmptyStringSchema, id)) {
+      warnings.push(`${scope} lsp.servers.${String(id)}: server ID must be a non-empty string`);
+      continue;
+    }
+    if (server === null) {
+      servers.set(id, { kind: "excluded" });
+      continue;
+    }
+    if (!Value.Check(LspServerDefinitionSchema, server)) {
+      warnings.push(
+        schemaValidationWarning(LspServerDefinitionSchema, server, `${scope} lsp.servers.${id}`),
+      );
+      servers.set(id, { kind: "excluded" });
+      continue;
+    }
+    if (server.command === undefined || server.languages === undefined) {
+      warnings.push(`${scope} lsp.servers.${id}: command and languages are required`);
+      servers.set(id, { kind: "excluded" });
+      continue;
+    }
+    if (
+      server.languages.some(
+        (language) => language.extensions === undefined && language.fileNames === undefined,
+      )
+    ) {
+      warnings.push(
+        `${scope} lsp.servers.${id}.languages: each language needs extensions or fileNames`,
+      );
+      servers.set(id, { kind: "excluded" });
+      continue;
+    }
+    if (server.requireRootMarker === true && (server.rootMarkers?.length ?? 0) === 0) {
+      warnings.push(
+        `${scope} lsp.servers.${id}.rootMarkers: at least one root marker is required when requireRootMarker is true`,
+      );
+      servers.set(id, { kind: "excluded" });
+      continue;
+    }
+    servers.set(id, { kind: "valid", value: server });
+  }
+  return { servers, warnings };
+}
+
+function isLspTimeoutName(name: string): name is LspTimeoutName {
+  return LSP_TIMEOUT_NAMES.some((timeoutName) => timeoutName === name);
+}
+
+function parseLspTimeouts(
+  value: JsonValue | undefined,
+  scope: "global" | "project",
+): Pick<ParsedLspLayer, "timeouts" | "warnings"> {
+  const warnings: string[] = [];
+  const timeouts: LspTimeoutsWire = {};
+  if (value === undefined) return { timeouts, warnings };
+  if (!isJsonObject(value)) {
+    return { timeouts, warnings: [`${scope} lsp.timeouts: expected a JSON object`] };
+  }
+  for (const [name, timeout] of Object.entries(value)) {
+    if (!isLspTimeoutName(name)) {
+      warnings.push(`${scope} lsp.timeouts.${name}: unknown field`);
+      continue;
+    }
+    if (!Value.Check(PositiveMillisecondsSchema, timeout)) {
+      warnings.push(
+        schemaValidationWarning(
+          PositiveMillisecondsSchema,
+          timeout,
+          `${scope} lsp.timeouts.${name}`,
+        ),
+      );
+      continue;
+    }
+    timeouts[name] = timeout;
+  }
+  return { timeouts, warnings };
 }
 
 function readLspLayer(
@@ -131,40 +230,34 @@ function readLspLayer(
   scope: "global" | "project",
 ): ParsedLspLayer {
   if (!Value.Check(SettingsDocumentSchema, settings)) {
-    return { kind: "invalid", warning: `${scope} settings: expected a JSON object` };
+    return {
+      servers: new Map(),
+      timeouts: {},
+      warnings: [`${scope} settings: expected a JSON object`],
+    };
   }
-  if (settings.lsp === undefined) return { kind: "absent" };
-  if (!Value.Check(LspLayerSchema, settings.lsp)) {
-    return { kind: "invalid", warning: lspValidationWarning(settings.lsp, scope) };
+  if (settings.lsp === undefined) return { servers: new Map(), timeouts: {}, warnings: [] };
+  if (!isJsonObject(settings.lsp)) {
+    return {
+      servers: new Map(),
+      timeouts: {},
+      warnings: [`${scope} lsp: expected a JSON object`],
+    };
   }
-  for (const [serverId, server] of Object.entries(settings.lsp.servers ?? {})) {
-    if (server === null) continue;
-    if (server.command === undefined || server.languages === undefined) {
-      return {
-        kind: "invalid",
-        warning: `${scope} lsp.servers.${serverId}: command and languages are required`,
-      };
-    }
-    if (
-      server.languages.some(
-        (language) => language.extensions === undefined && language.fileNames === undefined,
-      )
-    ) {
-      return {
-        kind: "invalid",
-        warning: `${scope} lsp.servers.${serverId}.languages: each language needs extensions or fileNames`,
-      };
-    }
-  }
-  return { kind: "valid", value: settings.lsp };
+  const warnings = Object.keys(settings.lsp)
+    .filter((field) => field !== "servers" && field !== "timeouts")
+    .map((field) => `${scope} lsp.${field}: unknown field`);
+  const parsedServers = parseLspServerDefinitions(settings.lsp.servers, scope);
+  const parsedTimeouts = parseLspTimeouts(settings.lsp.timeouts, scope);
+  return {
+    servers: parsedServers.servers,
+    timeouts: parsedTimeouts.timeouts,
+    warnings: [...warnings, ...parsedServers.warnings, ...parsedTimeouts.warnings],
+  };
 }
 
 function mergeLspTimeouts(globalLayer: ParsedLspLayer, projectLayer: ParsedLspLayer): LspTimeouts {
-  const timeoutValues: readonly (LspTimeoutsWire | undefined)[] = [
-    globalLayer.kind === "valid" ? globalLayer.value.timeouts : undefined,
-    projectLayer.kind === "valid" ? projectLayer.value.timeouts : undefined,
-  ];
-  return Object.assign({}, DEFAULT_LSP_TIMEOUTS, ...timeoutValues);
+  return Object.assign({}, DEFAULT_LSP_TIMEOUTS, globalLayer.timeouts, projectLayer.timeouts);
 }
 
 function resolveLspEnvironment(
@@ -199,6 +292,7 @@ function resolveLspServerDefinition(
     environment: resolveLspEnvironment(server.environment),
     id,
     languages,
+    requireRootMarker: server.requireRootMarker ?? false,
     rootMarkers: server.rootMarkers ?? [],
   };
   const initializationOptions = server.initializationOptions;
@@ -224,18 +318,13 @@ function mergeLspServers(
   projectLayer: ParsedLspLayer,
 ): ReadonlyMap<string, LspServerDefinition> {
   const serverDefinitions = new Map<string, LspServerDefinitionWire>();
-  const addServers = (layer: ParsedLspLayer, projectLayerValue: boolean): void => {
-    if (layer.kind !== "valid") return;
-    for (const [id, server] of Object.entries(layer.value.servers ?? {})) {
-      if (server === null) {
-        if (projectLayerValue) serverDefinitions.delete(id);
-        continue;
-      }
-      serverDefinitions.set(id, server);
-    }
-  };
-  addServers(globalLayer, false);
-  addServers(projectLayer, true);
+  for (const [id, server] of globalLayer.servers) {
+    if (server.kind === "valid") serverDefinitions.set(id, server.value);
+  }
+  for (const [id, server] of projectLayer.servers) {
+    serverDefinitions.delete(id);
+    if (server.kind === "valid") serverDefinitions.set(id, server.value);
+  }
   return new Map(
     [...serverDefinitions]
       .sort(([left], [right]) => left.localeCompare(right))
@@ -243,21 +332,14 @@ function mergeLspServers(
   );
 }
 
-/** Resolve global and trusted-project LSP settings without adding an `lsp` field to Pi's Settings type. */
+/** Resolve global and trusted-project LSP settings, quarantining invalid entries instead of disabling valid settings. */
 export function resolveLspSettings(reader: LspSettingsReader): ResolvedLspSettings {
   const globalLayer = readLspLayer(reader.getGlobalSettings(), "global");
   const projectLayer = readLspLayer(reader.getProjectSettings(), "project");
-  const warnings = [globalLayer, projectLayer]
-    .filter(
-      (layer): layer is Extract<ParsedLspLayer, { readonly kind: "invalid" }> =>
-        layer.kind === "invalid",
-    )
-    .map((layer) => layer.warning);
-  const enabled = warnings.length === 0;
   return {
-    enabled,
-    servers: enabled ? mergeLspServers(globalLayer, projectLayer) : new Map(),
+    enabled: true,
+    servers: mergeLspServers(globalLayer, projectLayer),
     timeouts: mergeLspTimeouts(globalLayer, projectLayer),
-    warnings,
+    warnings: [...globalLayer.warnings, ...projectLayer.warnings],
   };
 }

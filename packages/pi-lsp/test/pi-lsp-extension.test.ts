@@ -403,6 +403,12 @@ describe("Pi LSP extension lifecycle", () => {
             environment: { FAKE_DIAGNOSTICS: "one" },
             languages: [{ extensions: [".ts"], languageId: "typescript" }],
           },
+          formattingOnly: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            environment: { FAKE_NO_PULL: "1", FAKE_PUSH: "none" },
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
         },
       },
     });
@@ -424,6 +430,9 @@ describe("Pi LSP extension lifecycle", () => {
     expect(augmented?.content?.at(-1)).toMatchObject({
       type: "text",
       text: expect.stringContaining("fake diagnostic"),
+    });
+    expect(augmented?.content?.at(-1)).toMatchObject({
+      text: expect.not.stringContaining("formattingOnly"),
     });
     expect(
       harness.sessionManager
@@ -461,6 +470,48 @@ describe("Pi LSP extension lifecycle", () => {
     expect(harness.runner.getEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE)).toBeTypeOf(
       "function",
     );
+    await shutdownExtension(harness);
+  });
+
+  test("silently skips post-edit diagnostics until a required root marker exists", async () => {
+    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        timeouts: { diagnosticsMs: 1_000, initializeMs: 5_000, shutdownMs: 1_000 },
+        servers: {
+          gated: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            environment: { FAKE_DIAGNOSTICS: "one" },
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+            requireRootMarker: true,
+            rootMarkers: ["tsconfig.json"],
+          },
+        },
+      },
+    });
+    await startExtension(harness);
+    const cwd = harness.sessionManager.getCwd();
+    const filePath = resolve(cwd, "source.ts");
+    await writeFile(filePath, "const value: string = 1;\n");
+    const event = {
+      type: "tool_result",
+      toolCallId: "gated-write",
+      toolName: "write",
+      input: { path: filePath, content: "const value: string = 1;\n" },
+      content: [{ type: "text", text: "Wrote source.ts" }],
+      details: { bytesWritten: 25 },
+      isError: false,
+    } satisfies ToolResultEvent;
+
+    await expect(harness.runner.emitToolResult(event)).resolves.toBeUndefined();
+
+    await writeFile(resolve(cwd, "tsconfig.json"), "{}");
+    const augmented = await harness.runner.emitToolResult(event);
+    expect(augmented?.content?.at(-1)).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("fake diagnostic"),
+    });
     await shutdownExtension(harness);
   });
 });
