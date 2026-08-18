@@ -16,6 +16,7 @@ const expectedExtensionPaths = [
   "./packages/pi-bible-verses/src/index.ts",
   "./packages/pi-tps-tracker/src/index.ts",
   "./packages/pi-git-status-widget/src/index.ts",
+  "./packages/pi-git-checkpoints/src/index.ts",
   "./packages/pi-formatter/src/index.ts",
   "./packages/pi-lsp/src/index.ts",
 ];
@@ -44,7 +45,7 @@ describe("root Pi extension entrypoints", () => {
     const result = await discoverAndLoadExtensions(expectedResolvedPaths, cwd, agentDir);
 
     expect(result.errors).toEqual([]);
-    expect(result.extensions).toHaveLength(8);
+    expect(result.extensions).toHaveLength(9);
     expect(result.extensions.map((extension) => extension.resolvedPath)).toEqual(
       expectedResolvedPaths,
     );

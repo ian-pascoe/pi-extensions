@@ -113,6 +113,15 @@ importers:
         specifier: '*'
         version: 1.3.14
 
+  packages/pi-git-checkpoints:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.84.2(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      typebox:
+        specifier: '*'
+        version: 1.3.14
+
   packages/pi-git-status-widget:
     dependencies:
       '@earendil-works/pi-coding-agent':

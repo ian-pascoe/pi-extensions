@@ -1,7 +1,16 @@
+# Dependencies
 node_modules/
+# Build Output
 dist/
+# Code Coverage
 coverage/
+# NPM Packs
 *.tgz
+# Pi Deps
 .pi/npm
+# Reference Repos
 .repos/
+# Temp scripts
+.scratch/
+# TurboRepo
 .turbo/
