@@ -276,6 +276,10 @@ export interface DapSessionOptions {
   readonly cwd: string;
   readonly settings: ResolvedDapSettings;
   readonly sessionFiles: DapSessionFiles;
+  /** Observe lifecycle snapshots synchronously without gaining protocol authority. */
+  readonly onSnapshotChange?: (snapshot: DapSessionSnapshot) => void;
+  /** Observe an asynchronous adapter or protocol failure not caused by an operation request. */
+  readonly onUnexpectedFailure?: (error: Error) => void;
 }
 
 type DapLaunchArgumentValue =
@@ -513,6 +517,7 @@ export class DapSession {
       };
       active = startedActive;
       this.state = { kind: "active", active: startedActive };
+      this.publishSnapshot();
       startedActive.unsubscribeEvents.add(
         client.onEvent((event) => this.handleDapEvent(startedActive, event)),
       );
@@ -565,7 +570,9 @@ export class DapSession {
       }
       const launchOutcome = await launchResponse;
       if (launchOutcome.kind === "failure") throw launchOutcome.error;
-      if (this.isCurrentActive(active) && active.phase === "launching") active.phase = "running";
+      if (this.isCurrentActive(active) && active.phase === "launching") {
+        this.transitionActiveToRunning(active);
+      }
       if (this.isCurrentActive(active) && active.phase === "running") {
         const wait = this.waitForExecutionTransition(signal);
         await wait.promise;
@@ -583,6 +590,7 @@ export class DapSession {
           ),
         );
         this.state = { kind: "idle" };
+        this.publishSnapshot();
       }
       if (cause instanceof Error && isProtocolCancellation(cause)) {
         throw new DapSessionError("adapter", "launch was cancelled and cleaned up", { cause });
@@ -822,8 +830,7 @@ export class DapSession {
   ): Promise<DapSessionResult> {
     const active = this.requireActivePhase("stopped", command);
     const threadId = await this.resolveThreadId(active, signal);
-    active.phase = "running";
-    active.stopReason = undefined;
+    this.transitionActiveToRunning(active);
     const wait = this.waitForExecutionTransition(signal);
     try {
       await active.client.request(command, { threadId }, dapRequestOptions(signal));
@@ -897,12 +904,13 @@ export class DapSession {
           active.phase = "stopped";
           active.stopReason = body.reason;
           active.threadId = body.threadId;
+          this.publishSnapshot();
           this.settleExecutionWaiters();
           return;
         }
         case "continued": {
           const body = parseDapBody(DapContinuedEventBodySchema, event.body, "continued event");
-          active.phase = "running";
+          this.transitionActiveToRunning(active);
           if (body.threadId !== undefined) active.threadId = body.threadId;
           return;
         }
@@ -921,15 +929,16 @@ export class DapSession {
           return;
       }
     } catch (cause) {
-      void this.finishActiveSession(
-        active,
-        cause instanceof Error ? cause.message : "invalid Debug Adapter event",
-      );
+      const error =
+        cause instanceof Error ? cause : new Error("DAP Session: invalid Debug Adapter event");
+      this.publishUnexpectedFailure(error);
+      void this.finishActiveSession(active, error.message);
     }
   }
 
   private handleAdapterFailure(active: ActiveDapSession, error: DapProtocolClientError): void {
     if (!this.isCurrentActive(active) || active.stopping) return;
+    this.publishUnexpectedFailure(error);
     void this.finishActiveSession(active, error.message);
   }
 
@@ -1113,9 +1122,34 @@ export class DapSession {
     active.cleanupPromise = cleanup;
     if (this.isCurrentActive(active)) {
       this.state = terminatedDapSessionState(active, cleanup, terminationReason);
+      this.publishSnapshot();
     }
     this.settleExecutionWaiters();
     await cleanup;
+  }
+
+  private transitionActiveToRunning(active: ActiveDapSession): void {
+    if (!this.isCurrentActive(active)) return;
+    const changed = active.phase !== "running" || active.stopReason !== undefined;
+    active.phase = "running";
+    active.stopReason = undefined;
+    if (changed) this.publishSnapshot();
+  }
+
+  private publishSnapshot(): void {
+    try {
+      this.options.onSnapshotChange?.(this.snapshot());
+    } catch {
+      // Observer UI failures cannot change Debug Session cleanup or protocol behavior.
+    }
+  }
+
+  private publishUnexpectedFailure(error: Error): void {
+    try {
+      this.options.onUnexpectedFailure?.(error);
+    } catch {
+      // Observer UI failures cannot change Debug Session cleanup or protocol behavior.
+    }
   }
 
   private snapshot(): DapSessionSnapshot {

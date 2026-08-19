@@ -21,6 +21,7 @@ interface ExtensionHarness {
   readonly notifications: string[];
   readonly runner: ExtensionRunner;
   readonly sessionDirectory: string;
+  readonly widgetCalls: readonly { readonly key: string; readonly content: unknown }[];
 }
 
 async function makeTemporaryDirectory(prefix: string): Promise<string> {
@@ -32,6 +33,7 @@ async function makeTemporaryDirectory(prefix: string): Promise<string> {
 async function createExtensionHarness(
   projectTrusted: boolean,
   globalSettings: DapSettingsDocumentInput,
+  mode: "tui" | "rpc" = "rpc",
 ): Promise<ExtensionHarness> {
   const cwd = await makeTemporaryDirectory("pi-dap-extension-cwd-");
   const agentDirectory = await makeTemporaryDirectory("pi-dap-extension-agent-");
@@ -107,14 +109,16 @@ async function createExtensionHarness(
     },
   );
   const notifications: string[] = [];
+  const widgetCalls: { key: string; content: unknown }[] = [];
   runner.setUIContext(
     {
       ...runner.getUIContext(),
       notify: (message) => notifications.push(message),
+      setWidget: (key, content) => widgetCalls.push({ key, content }),
     },
-    "rpc",
+    mode,
   );
-  return { agentDirectory, notifications, runner, sessionDirectory };
+  return { agentDirectory, notifications, runner, sessionDirectory, widgetCalls };
 }
 
 async function startExtension(
@@ -156,6 +160,10 @@ describe("Pi DAP extension lifecycle", () => {
     expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
       ["dap"],
     );
+    expect(harness.runner.getToolDefinition("dap")).toMatchObject({
+      renderCall: expect.any(Function),
+      renderResult: expect.any(Function),
+    });
     expect(harness.notifications).toEqual([
       expect.stringContaining("global dap.unknownGlobalField"),
     ]);
@@ -185,6 +193,60 @@ describe("Pi DAP extension lifecycle", () => {
 
     await Promise.all([shutdownExtension(harness), shutdownExtension(harness)]);
     expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
+  });
+
+  test("mounts only in TUI mode and disposes the old Observer widget on reload", async () => {
+    const fakeAdapterPath = resolve(import.meta.dirname, "fixtures/fake-dap-session-adapter.mjs");
+    const harness = await createExtensionHarness(
+      false,
+      {
+        dap: {
+          timeouts: { executionMs: 20 },
+          adapters: {
+            node: {
+              command: process.execPath,
+              args: [fakeAdapterPath],
+              transport: "stdio",
+            },
+          },
+          profiles: {
+            node: { adapter: "node", arguments: { neverStop: true, stopOnEntry: false } },
+          },
+        },
+      },
+      "tui",
+    );
+    await startExtension(harness, "startup");
+    const tool = harness.runner.getToolDefinition("dap");
+    if (tool === undefined) throw new Error("Expected registered DAP tool");
+    await tool.execute(
+      "launch",
+      { operation: "launch" },
+      undefined,
+      undefined,
+      harness.runner.createContext(),
+    );
+    expect(harness.widgetCalls).toContainEqual({ key: "pi-dap", content: expect.any(Function) });
+
+    await startExtension(harness, "reload");
+    expect(harness.widgetCalls.at(-1)).toEqual({ key: "pi-dap", content: undefined });
+    await shutdownExtension(harness);
+
+    const rpc = await createExtensionHarness(false, {});
+    await startExtension(rpc, "startup");
+    const rpcTool = rpc.runner.getToolDefinition("dap");
+    if (rpcTool === undefined) throw new Error("Expected registered DAP tool");
+    await expect(
+      rpcTool.execute(
+        "launch",
+        { operation: "launch" },
+        undefined,
+        undefined,
+        rpc.runner.createContext(),
+      ),
+    ).rejects.toThrow("launch requires profile");
+    expect(rpc.widgetCalls).toEqual([]);
+    await shutdownExtension(rpc);
   });
 
   test("surfaces malformed trusted project settings without starting a Debug Adapter", async () => {

@@ -1,9 +1,14 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  truncateHead,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type {
   DapEvaluateInput,
   DapLaunchInput,
@@ -14,12 +19,11 @@ import type {
 } from "../src/dap-session.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
 import {
-  createDapToolDefinition,
   DapToolParametersSchema,
   DapToolResultDetailsSchema,
   type DapToolParameters,
-  type DapToolRuntime,
-} from "../src/dap-tool.js";
+} from "../src/dap-tool-contract.js";
+import { createDapToolDefinition, type DapToolRuntime } from "../src/dap-tool.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -38,6 +42,7 @@ interface RecordedCall {
 
 class RecordingDapSession {
   readonly calls: RecordedCall[] = [];
+  wait: Promise<void> | undefined;
   result: DapSessionResult = {
     snapshot: { state: "idle" },
     output: "",
@@ -54,6 +59,7 @@ class RecordingDapSession {
     if (input !== undefined) call.input = input;
     if (signal !== undefined) call.signal = signal;
     this.calls.push(call);
+    await this.wait;
     return this.result;
   }
 
@@ -123,6 +129,7 @@ async function createToolFixture(): Promise<{
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -131,6 +138,172 @@ afterEach(async () => {
 });
 
 describe("DAP tool contract", () => {
+  test("preserves exact ordinary, Debuggee output, and Result Spill text", async () => {
+    const fixture = await createToolFixture();
+    const tool = createDapToolDefinition(() => fixture.runtime);
+    const ordinary = await tool.execute(
+      "ordinary",
+      { operation: "status" },
+      undefined,
+      undefined,
+      fixture.context,
+    );
+    expect(ordinary.content).toEqual([
+      {
+        type: "text",
+        text: 'DAP status: {"snapshot":{"state":"idle"},"discardedOutputBytes":0,"desiredBreakpoints":[]}',
+      },
+    ]);
+
+    fixture.session.result = {
+      snapshot: { state: "running", adapterId: "node", profileId: "node" },
+      output: "debuggee\u001b[31m output\n",
+      discardedOutputBytes: 7,
+      desiredBreakpoints: [],
+    };
+    const withOutput = await tool.execute(
+      "output",
+      { operation: "status" },
+      undefined,
+      undefined,
+      fixture.context,
+    );
+    expect(withOutput.content).toEqual([
+      {
+        type: "text",
+        text: 'DAP status: {"snapshot":{"state":"running","adapterId":"node","profileId":"node"},"discardedOutputBytes":7,"desiredBreakpoints":[]}\n\nDebuggee output (7 older bytes discarded):\ndebuggee\u001b[31m output\n',
+      },
+    ]);
+
+    const oversizedOutput = "line\n".repeat(20_000);
+    fixture.session.result = {
+      snapshot: { state: "running", adapterId: "node", profileId: "node" },
+      output: oversizedOutput,
+      discardedOutputBytes: 0,
+      desiredBreakpoints: [],
+    };
+    const raw = `DAP status: {"snapshot":{"state":"running","adapterId":"node","profileId":"node"},"discardedOutputBytes":0,"desiredBreakpoints":[]}\n\nDebuggee output:\n${oversizedOutput}`;
+    const truncation = truncateHead(raw, {
+      maxBytes: DEFAULT_MAX_BYTES,
+      maxLines: DEFAULT_MAX_LINES,
+    });
+    const spilled = await tool.execute(
+      "spilled",
+      { operation: "status" },
+      undefined,
+      undefined,
+      fixture.context,
+    );
+    if ("kind" in spilled.details) throw new Error("Expected final DAP result details");
+    expect(spilled.content).toEqual([
+      {
+        type: "text",
+        text: `${truncation.content}\n\n[Pi DAP: output truncated; complete Result Spill: ${spilled.details.spill_path}]`,
+      },
+    ]);
+  });
+
+  test("publishes immediate one-second progress only for execution waits and clears its timer", async () => {
+    vi.useFakeTimers();
+    const fixture = await createToolFixture();
+    let release: () => void = () => undefined;
+    fixture.session.wait = new Promise<void>((resolveWait) => {
+      release = resolveWait;
+    });
+    const tool = createDapToolDefinition(() => fixture.runtime);
+    const onUpdate = vi.fn();
+    const execution = tool.execute(
+      "continue",
+      { operation: "continue" },
+      undefined,
+      onUpdate,
+      fixture.context,
+    );
+    expect(onUpdate).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onUpdate).toHaveBeenCalledTimes(3);
+    expect(onUpdate.mock.calls.map(([update]) => update.details.elapsed_ms)).toEqual([
+      0, 1_000, 2_000,
+    ]);
+    release();
+    await execution;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onUpdate).toHaveBeenCalledTimes(3);
+
+    fixture.session.wait = undefined;
+    onUpdate.mockClear();
+    await tool.execute("status", { operation: "status" }, undefined, onUpdate, fixture.context);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  test("marks a cancelled execution wait without changing its final raw text", async () => {
+    const fixture = await createToolFixture();
+    fixture.session.result = {
+      snapshot: { state: "running", adapterId: "node", profileId: "node" },
+      output: "",
+      discardedOutputBytes: 0,
+      desiredBreakpoints: [],
+    };
+    const controller = new AbortController();
+    controller.abort();
+    const result = await createDapToolDefinition(() => fixture.runtime).execute(
+      "cancelled",
+      { operation: "continue" },
+      controller.signal,
+      undefined,
+      fixture.context,
+    );
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: 'DAP continue: {"snapshot":{"state":"running","adapterId":"node","profileId":"node"},"discardedOutputBytes":0,"desiredBreakpoints":[]}',
+      },
+    ]);
+    expect(result.details).toMatchObject({
+      presentation: { kind: "execution_wait", operation: "continue", cancelled: true },
+    });
+  });
+
+  test("bounds presentation rows and values without bounding the raw result", async () => {
+    const fixture = await createToolFixture();
+    const longValue = "x".repeat(1_000);
+    fixture.session.result = {
+      snapshot: {
+        state: "stopped",
+        adapterId: "node",
+        profileId: "node",
+        stopReason: "breakpoint",
+      },
+      output: "",
+      discardedOutputBytes: 0,
+      desiredBreakpoints: [],
+      variables: Array.from({ length: 25 }, (_, index) => ({
+        name: `value-${index}`,
+        value: longValue,
+        variablesReference: 0,
+      })),
+    };
+    const result = await createDapToolDefinition(() => fixture.runtime).execute(
+      "variables",
+      { operation: "variables", variables_reference: 1 },
+      undefined,
+      undefined,
+      fixture.context,
+    );
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(longValue) });
+    expect(result.details).toMatchObject({
+      presentation: {
+        kind: "variables",
+        rows: expect.arrayContaining([expect.objectContaining({ value: `${"x".repeat(499)}…` })]),
+        omitted_count: 5,
+      },
+    });
+    if ("kind" in result.details || result.details.presentation?.kind !== "variables") {
+      throw new Error("Expected variables presentation details");
+    }
+    expect(result.details.presentation.rows).toHaveLength(20);
+  });
+
   test("accepts exactly the twelve operation branches", () => {
     const valid = [
       { operation: "launch", program: "src/app.ts", args: ["one"] },
@@ -269,7 +442,7 @@ describe("DAP tool contract", () => {
       output: "x".repeat(60 * 1024),
       discardedOutputBytes: 12,
       desiredBreakpoints: [],
-      stackFrames: [{ id: 42, name: "main", line: 1, column: 1 }],
+      stackFrames: [{ id: 42, name: "main", line: 0, column: 0 }],
     };
     const result = await tool.execute(
       "spilled",
@@ -290,6 +463,7 @@ describe("DAP tool contract", () => {
       output_truncated: true,
       spill_path: expect.any(String),
     });
+    if ("kind" in result.details) throw new Error("Expected final DAP result details");
     if (result.details.spill_path === undefined) throw new Error("Expected Result Spill path");
     expect(await readFile(result.details.spill_path, "utf8")).toContain("x".repeat(60 * 1024));
     expect(result.content[0]).toMatchObject({

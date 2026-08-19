@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { DapSession } from "../src/dap-session.js";
+import { DapSession, type DapSessionSnapshot } from "../src/dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "../src/dap-session-files.js";
 import type { ResolvedDapSettings } from "../src/pi-dap-settings.js";
 
@@ -122,7 +122,13 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
     timeouts: { startupMs: 10_000, requestMs: 10_000, executionMs: 10_000, shutdownMs: 3_000 },
     warnings: [],
   };
-  const session = new DapSession({ cwd: projectDirectory, settings, sessionFiles: files });
+  const observerSnapshots: DapSessionSnapshot[] = [];
+  const session = new DapSession({
+    cwd: projectDirectory,
+    settings,
+    sessionFiles: files,
+    onSnapshotChange: (snapshot) => observerSnapshots.push(snapshot),
+  });
   await session.setBreakpoints({ filePath: programPath, breakpoints: [{ line: 3 }] });
 
   const launch = await session.launch({
@@ -131,8 +137,14 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
     cwd: projectDirectory,
   });
   expect(launch.snapshot).toMatchObject({ state: "stopped", stopReason: "entry" });
+  expect(observerSnapshots).toContainEqual(
+    expect.objectContaining({ state: "stopped", stopReason: "entry" }),
+  );
   const breakpointStop = await session.continue();
   expect(breakpointStop.snapshot).toMatchObject({ state: "stopped", stopReason: "breakpoint" });
+  expect(observerSnapshots).toContainEqual(
+    expect.objectContaining({ state: "stopped", stopReason: "breakpoint" }),
+  );
   const stack = await session.stack();
   const topStackFrame = stack.stackFrames?.at(0);
   expect(topStackFrame?.source?.path).toBe(programPath);
@@ -154,6 +166,7 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
 
   const continued = await session.continue();
   expect(continued.snapshot.state).toBe("terminated");
+  expect(observerSnapshots.at(-1)).toMatchObject({ state: "terminated" });
   expect(continued.output).toContain("answer=42");
   expect(session.status().snapshot.state).toBe("terminated");
   await waitForProcessesToExit(new Set([...adapterProcesses, ...debuggeeProcesses]));

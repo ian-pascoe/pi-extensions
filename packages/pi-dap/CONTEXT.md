@@ -17,6 +17,14 @@ _Avoid_: Target, child process
 The temporary relationship among Pi, one debug adapter, and one debuggee. It is not a Pi conversation session.
 _Avoid_: Connection, run
 
+**Observer UI**:
+Human-facing presentation of Debug Session activity in Pi. It does not change the tool result available to the agent or provide direct debugger controls.
+_Avoid_: Debugger UI, debug panel
+
+**Observer snapshot**:
+The current human-facing summary of a Debug Session, derived only from activity Pi DAP has already observed. It is not authoritative Debug Session state.
+_Avoid_: Session state, debugger state
+
 **Adapter definition**:
 Named configuration describing how Pi starts or connects to a debug adapter.
 _Avoid_: Adapter catalog, debugger configuration

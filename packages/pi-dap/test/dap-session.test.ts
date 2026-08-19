@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { DapSession } from "../src/dap-session.js";
+import { DapSession, type DapSessionSnapshot } from "../src/dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "../src/dap-session-files.js";
 import type { ResolvedDapSettings } from "../src/pi-dap-settings.js";
 
@@ -40,6 +40,11 @@ async function createSession(
     stopOnEntry: true,
   },
   executionMs = 200,
+  observation: {
+    readonly onSnapshotChange?: (snapshot: DapSessionSnapshot) => void;
+    readonly onUnexpectedFailure?: (error: Error) => void;
+  } = {},
+  adapterCommand = process.execPath,
 ): Promise<SessionFixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-dap-session-project-"));
   temporaryDirectories.push(cwd);
@@ -51,7 +56,7 @@ async function createSession(
         "node",
         {
           id: "node",
-          command: process.execPath,
+          command: adapterCommand,
           args: [fakeAdapterPath],
           environment: {},
           transport: { type: "stdio" },
@@ -76,7 +81,11 @@ async function createSession(
     },
     warnings: [],
   };
-  return { cwd, files, session: new DapSession({ cwd, settings, sessionFiles: files }) };
+  return {
+    cwd,
+    files,
+    session: new DapSession({ cwd, settings, sessionFiles: files, ...observation }),
+  };
 }
 
 afterEach(async () => {
@@ -175,6 +184,96 @@ describe("DapSession", () => {
     });
   });
 
+  test("publishes actual lifecycle transitions and clears stop-specific context on resume", async () => {
+    const snapshots: DapSessionSnapshot[] = [];
+    const { session } = await createSession({ stopOnEntry: true }, 200, {
+      onSnapshotChange: (snapshot) => snapshots.push(snapshot),
+    });
+
+    await session.launch();
+    expect(snapshots).toEqual([
+      { state: "launching", adapterId: "node", profileId: "node" },
+      { state: "running", adapterId: "node", profileId: "node" },
+      {
+        state: "stopped",
+        adapterId: "node",
+        profileId: "node",
+        stopReason: "entry",
+        threadId: 1,
+      },
+    ]);
+
+    const priorRunningCount = snapshots.filter(({ state }) => state === "running").length;
+    const continuing = session.continue();
+    await waitFor(
+      () => snapshots.filter(({ state }) => state === "running").length > priorRunningCount,
+    );
+    expect(snapshots).toContainEqual({
+      state: "running",
+      adapterId: "node",
+      profileId: "node",
+    });
+    await continuing;
+    expect(snapshots.at(-1)).toMatchObject({ state: "stopped", stopReason: "breakpoint" });
+
+    await session.stop();
+    expect(snapshots.at(-1)).toMatchObject({
+      state: "terminated",
+      terminationReason: "stopped by request",
+    });
+  });
+
+  test("publishes running before a launch wait and isolates observation failures", async () => {
+    const snapshots: DapSessionSnapshot[] = [];
+    const { session } = await createSession({ neverStop: true, stopOnEntry: false }, 20, {
+      onSnapshotChange: (snapshot) => {
+        snapshots.push(snapshot);
+        if (snapshot.state === "launching") throw new Error("observer failed");
+      },
+    });
+
+    await expect(session.launch()).resolves.toMatchObject({
+      snapshot: { state: "running" },
+    });
+    expect(snapshots.map(({ state }) => state)).toEqual(["launching", "running"]);
+    await expect(session.stop()).resolves.toMatchObject({
+      snapshot: { state: "terminated" },
+    });
+  });
+
+  test("publishes idle after a failed pre-launch startup", async () => {
+    const snapshots: DapSessionSnapshot[] = [];
+    const { session } = await createSession(
+      { stopOnEntry: true },
+      200,
+      { onSnapshotChange: (snapshot) => snapshots.push(snapshot) },
+      resolve(tmpdir(), "missing-pi-dap-adapter"),
+    );
+
+    await expect(session.launch()).rejects.toThrow("launch failed");
+    expect(snapshots).toEqual([{ state: "idle" }]);
+  });
+
+  test("reports an unexpected adapter failure without allowing its observer to break cleanup", async () => {
+    const failures: Error[] = [];
+    const snapshots: DapSessionSnapshot[] = [];
+    const { session } = await createSession({ crashOnContinue: true, stopOnEntry: true }, 200, {
+      onSnapshotChange: (snapshot) => snapshots.push(snapshot),
+      onUnexpectedFailure: (error) => {
+        failures.push(error);
+        throw new Error("failure observer failed");
+      },
+    });
+
+    await session.launch();
+    await expect(session.continue()).resolves.toMatchObject({
+      snapshot: { state: "terminated" },
+    });
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.message).toContain("adapter-stderr");
+    expect(snapshots.at(-1)?.state).toBe("terminated");
+  });
+
   test("execution timeout and cancellation return running and pause recovers the Debug Session", async () => {
     const { session } = await createSession({ neverStop: true, stopOnEntry: false }, 40);
 
@@ -252,9 +351,12 @@ describe("DapSession", () => {
   });
 
   test("cleans up launch cancellation and an unexpected Debug Adapter exit", async () => {
-    const cancelled = await createSession({ delayInitializedMs: 200, stopOnEntry: true });
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 10);
+    const cancelled = await createSession({ delayInitializedMs: 200, stopOnEntry: true }, 200, {
+      onSnapshotChange: (snapshot) => {
+        if (snapshot.state === "launching") controller.abort();
+      },
+    });
 
     await expect(cancelled.session.launch({}, controller.signal)).rejects.toThrow(
       "launch was cancelled and cleaned up",

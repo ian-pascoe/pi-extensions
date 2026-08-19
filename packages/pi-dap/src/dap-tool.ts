@@ -7,7 +7,6 @@ import {
   type ExtensionAPI,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import type {
   DapEvaluateInput,
@@ -18,139 +17,15 @@ import type {
   DapVariablesInput,
 } from "./dap-session.js";
 import type { DapSessionFiles } from "./dap-session-files.js";
-
-const NonEmptyStringSchema = Type.String({ minLength: 1 });
-const DapIdSchema = Type.Integer({ minimum: 0 });
-const EmptyOperationSchema = <TOperation extends string>(operation: TOperation) =>
-  Type.Object({ operation: Type.Literal(operation) }, { additionalProperties: false });
-
-const LaunchParametersSchema = Type.Object(
-  {
-    operation: Type.Literal("launch"),
-    profile: Type.Optional(NonEmptyStringSchema),
-    program: Type.Optional(NonEmptyStringSchema),
-    args: Type.Optional(Type.Array(Type.String())),
-    cwd: Type.Optional(NonEmptyStringSchema),
-  },
-  { additionalProperties: false },
-);
-const SetBreakpointsParametersSchema = Type.Object(
-  {
-    operation: Type.Literal("set_breakpoints"),
-    file_path: NonEmptyStringSchema,
-    breakpoints: Type.Array(
-      Type.Object(
-        {
-          line: Type.Integer({ minimum: 1 }),
-          condition: Type.Optional(Type.String()),
-        },
-        { additionalProperties: false },
-      ),
-    ),
-  },
-  { additionalProperties: false },
-);
-const StackParametersSchema = Type.Object(
-  {
-    operation: Type.Literal("stack"),
-    thread_id: Type.Optional(DapIdSchema),
-    start: Type.Optional(Type.Integer({ minimum: 0 })),
-    count: Type.Optional(Type.Integer({ minimum: 1 })),
-  },
-  { additionalProperties: false },
-);
-const VariablesPageSchema = {
-  start: Type.Optional(Type.Integer({ minimum: 0 })),
-  count: Type.Optional(Type.Integer({ minimum: 1 })),
-};
-const VariablesParametersSchema = Type.Union([
-  Type.Object(
-    {
-      operation: Type.Literal("variables"),
-      frame_id: DapIdSchema,
-      ...VariablesPageSchema,
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      operation: Type.Literal("variables"),
-      variables_reference: DapIdSchema,
-      ...VariablesPageSchema,
-    },
-    { additionalProperties: false },
-  ),
-]);
-const EvaluateParametersSchema = Type.Object(
-  {
-    operation: Type.Literal("evaluate"),
-    expression: NonEmptyStringSchema,
-    frame_id: Type.Optional(DapIdSchema),
-  },
-  { additionalProperties: false },
-);
-
-/** Strict model-facing contract for the package's twelve DAP operations. */
-export const DapToolParametersSchema = Type.Union([
-  LaunchParametersSchema,
-  SetBreakpointsParametersSchema,
-  EmptyOperationSchema("continue"),
-  EmptyOperationSchema("next"),
-  EmptyOperationSchema("step_in"),
-  EmptyOperationSchema("step_out"),
-  EmptyOperationSchema("pause"),
-  StackParametersSchema,
-  VariablesParametersSchema,
-  EvaluateParametersSchema,
-  EmptyOperationSchema("status"),
-  EmptyOperationSchema("stop"),
-]);
-
-/** Parsed input for one invocation of the strict `dap` tool. */
-export type DapToolParameters = Static<typeof DapToolParametersSchema>;
-
-const DapStateSchema = Type.Union([
-  Type.Literal("idle"),
-  Type.Literal("launching"),
-  Type.Literal("running"),
-  Type.Literal("stopped"),
-  Type.Literal("terminated"),
-]);
-const DapOperationSchema = Type.Union([
-  Type.Literal("launch"),
-  Type.Literal("set_breakpoints"),
-  Type.Literal("continue"),
-  Type.Literal("next"),
-  Type.Literal("step_in"),
-  Type.Literal("step_out"),
-  Type.Literal("pause"),
-  Type.Literal("stack"),
-  Type.Literal("variables"),
-  Type.Literal("evaluate"),
-  Type.Literal("status"),
-  Type.Literal("stop"),
-]);
-
-/** Structured, runtime-validated details returned with every successful DAP operation. */
-export const DapToolResultDetailsSchema = Type.Object(
-  {
-    operation: DapOperationSchema,
-    state: DapStateSchema,
-    adapter_id: Type.Optional(NonEmptyStringSchema),
-    profile_id: Type.Optional(NonEmptyStringSchema),
-    stop_reason: Type.Optional(Type.String()),
-    thread_id: Type.Optional(DapIdSchema),
-    stack_frame_ids: Type.Optional(Type.Array(DapIdSchema)),
-    exit_code: Type.Optional(Type.Integer()),
-    output_discarded_bytes: Type.Integer({ minimum: 0 }),
-    output_truncated: Type.Boolean(),
-    spill_path: Type.Optional(NonEmptyStringSchema),
-  },
-  { additionalProperties: false },
-);
-
-/** Validated metadata accompanying one successful DAP tool result. */
-export type DapToolResultDetails = Static<typeof DapToolResultDetailsSchema>;
+import {
+  DapToolParametersSchema,
+  DapToolResultDetailsSchema,
+  type DapPresentationDetails,
+  type DapToolParameters,
+  type DapToolRenderDetails,
+  type DapToolResultDetails,
+} from "./dap-tool-contract.js";
+import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js";
 
 type DapToolSession = Pick<
   DapSession,
@@ -174,6 +49,18 @@ export interface DapToolRuntime {
   readonly session: DapToolSession;
   /** Private Result Spill storage owned by the same Pi conversation session. */
   readonly sessionFiles: DapSessionFiles;
+  /** Non-authoritative Observer UI hooks for tool presentation context. */
+  readonly observer?: DapToolObserver;
+}
+
+/** Narrow Observer UI dependency that cannot dispatch Debug Adapter requests. */
+export interface DapToolObserver {
+  /** Record explicit tool arguments before execution begins. */
+  onToolStart(parameters: DapToolParameters): void;
+  /** Record one successful operation and its already-returned Debug Session result. */
+  onToolSuccess(parameters: DapToolParameters, result: DapSessionResult): void;
+  /** Record one failed operation without changing its error. */
+  onToolFailure(parameters: DapToolParameters, error: Error): void;
 }
 
 function piDapError(cause: unknown): Error {
@@ -191,9 +78,132 @@ function parseDapToolParameters(input: DapToolParameters): DapToolParameters {
   }
 }
 
+function isDapExecutionWaitOperation(
+  operation: DapToolParameters["operation"],
+): operation is "launch" | "continue" | "next" | "step_in" | "step_out" {
+  return (
+    operation === "launch" ||
+    operation === "continue" ||
+    operation === "next" ||
+    operation === "step_in" ||
+    operation === "step_out"
+  );
+}
+
+function boundedDapPresentationText(value: string): string {
+  if (value.length <= 500) return value;
+  const end = value.charCodeAt(498) >= 0xd800 && value.charCodeAt(498) <= 0xdbff ? 498 : 499;
+  return `${value.slice(0, end)}…`;
+}
+
+function dapVariablePresentation(result: DapSessionResult): DapPresentationDetails | undefined {
+  const rows: Extract<DapPresentationDetails, { kind: "variables" }>["rows"][number][] = [];
+  let totalRows = 0;
+  const appendVariable = (
+    variable: NonNullable<DapSessionResult["variables"]>[number],
+    group?: string,
+  ) => {
+    totalRows++;
+    if (rows.length >= 20) return;
+    const row: Extract<
+      Extract<DapPresentationDetails, { kind: "variables" }>["rows"][number],
+      { kind: "variable" }
+    > = {
+      kind: "variable",
+      name: boundedDapPresentationText(variable.name),
+      value: boundedDapPresentationText(variable.value),
+      variables_reference: variable.variablesReference,
+    };
+    if (group !== undefined) row.group = boundedDapPresentationText(group);
+    if (variable.type !== undefined) row.type = boundedDapPresentationText(variable.type);
+    rows.push(row);
+  };
+  if (result.variableGroups !== undefined) {
+    for (const group of result.variableGroups) {
+      totalRows++;
+      if (rows.length < 20) {
+        rows.push({
+          kind: "group",
+          name: boundedDapPresentationText(group.scope.name),
+          variables_reference: group.scope.variablesReference,
+          expensive: group.scope.expensive,
+        });
+      }
+      for (const variable of group.variables) appendVariable(variable, group.scope.name);
+    }
+  } else if (result.variables !== undefined) {
+    for (const variable of result.variables) appendVariable(variable);
+  } else {
+    return undefined;
+  }
+  return { kind: "variables", rows, omitted_count: Math.max(0, totalRows - rows.length) };
+}
+
+function dapPresentationDetails(result: DapSessionResult): DapPresentationDetails | undefined {
+  if (result.breakpoints !== undefined) {
+    return {
+      kind: "breakpoints",
+      rows: result.breakpoints.slice(0, 20).map((breakpoint) => {
+        const row: Extract<DapPresentationDetails, { kind: "breakpoints" }>["rows"][number] = {
+          verified: breakpoint.verified,
+        };
+        if (breakpoint.id !== undefined) row.id = breakpoint.id;
+        if (breakpoint.message !== undefined) {
+          row.message = boundedDapPresentationText(breakpoint.message);
+        }
+        if (breakpoint.line !== undefined) row.line = breakpoint.line;
+        if (breakpoint.source?.name !== undefined) {
+          row.source_name = boundedDapPresentationText(breakpoint.source.name);
+        }
+        if (breakpoint.source?.path !== undefined) {
+          row.source_path = boundedDapPresentationText(breakpoint.source.path);
+        }
+        return row;
+      }),
+      omitted_count: Math.max(0, result.breakpoints.length - 20),
+    };
+  }
+  if (result.stackFrames !== undefined) {
+    const totalCount = result.totalFrames ?? result.stackFrames.length;
+    return {
+      kind: "stack_frames",
+      rows: result.stackFrames.slice(0, 20).map((frame) => {
+        const row: Extract<DapPresentationDetails, { kind: "stack_frames" }>["rows"][number] = {
+          id: frame.id,
+          name: boundedDapPresentationText(frame.name),
+          line: frame.line,
+          column: frame.column,
+        };
+        if (frame.source?.name !== undefined) {
+          row.source_name = boundedDapPresentationText(frame.source.name);
+        }
+        if (frame.source?.path !== undefined) {
+          row.source_path = boundedDapPresentationText(frame.source.path);
+        }
+        return row;
+      }),
+      total_count: totalCount,
+      omitted_count: Math.max(0, totalCount - Math.min(20, result.stackFrames.length)),
+    };
+  }
+  const variables = dapVariablePresentation(result);
+  if (variables !== undefined) return variables;
+  if (result.evaluation === undefined) return undefined;
+  const evaluation: Extract<DapPresentationDetails, { kind: "evaluation" }> = {
+    kind: "evaluation",
+    value: boundedDapPresentationText(result.evaluation.result),
+    variables_reference: result.evaluation.variablesReference,
+  };
+  if (result.evaluation.type !== undefined) {
+    evaluation.type = boundedDapPresentationText(result.evaluation.type);
+  }
+  return evaluation;
+}
+
 function toolResultDetails(
   operation: DapToolParameters["operation"],
   result: DapSessionResult,
+  executionWaitCancelled: boolean,
 ): DapToolResultDetails {
   const snapshot = result.snapshot;
   const details: DapToolResultDetails = {
@@ -214,6 +224,14 @@ function toolResultDetails(
   if (snapshot.state === "terminated" && snapshot.exitCode !== undefined) {
     details.exit_code = snapshot.exitCode;
   }
+  if (snapshot.state === "terminated" && snapshot.terminationReason !== undefined) {
+    details.termination_reason = snapshot.terminationReason;
+  }
+  const presentation =
+    executionWaitCancelled && isDapExecutionWaitOperation(operation)
+      ? { kind: "execution_wait" as const, operation, cancelled: true as const }
+      : dapPresentationDetails(result);
+  if (presentation !== undefined) details.presentation = presentation;
   return Value.Parse(DapToolResultDetailsSchema, details);
 }
 
@@ -235,9 +253,10 @@ async function createDapToolOutput(
   operation: DapToolParameters["operation"],
   result: DapSessionResult,
   sessionFiles: DapSessionFiles,
+  executionWaitCancelled: boolean,
 ): Promise<AgentToolResult<DapToolResultDetails>> {
   const text = formatDapToolResult(operation, result);
-  const details = toolResultDetails(operation, result);
+  const details = toolResultDetails(operation, result, executionWaitCancelled);
   const truncation = truncateHead(text, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
@@ -323,10 +342,18 @@ async function dispatchDapOperation(
   }
 }
 
+function notifyDapToolObserver(operation: () => void): void {
+  try {
+    operation();
+  } catch {
+    // Observer UI failures cannot change model-facing Debug Session behavior.
+  }
+}
+
 /** Create the single strict Pi DAP ToolDefinition bound to current session resources. */
 export function createDapToolDefinition(
   getRuntime: () => DapToolRuntime | undefined,
-): ToolDefinition<typeof DapToolParametersSchema, DapToolResultDetails> {
+): ToolDefinition<typeof DapToolParametersSchema, DapToolRenderDetails> {
   return {
     name: "dap",
     label: "DAP",
@@ -337,15 +364,48 @@ export function createDapToolDefinition(
       "Use dap to set source breakpoints, launch a configured Debug Session, control the Debuggee, and inspect stopped Stack Frames and variables.",
     ],
     parameters: DapToolParametersSchema,
-    async execute(_toolCallId, input, signal, _onUpdate, context) {
+    renderCall: (argumentsValue, theme, context) =>
+      renderDapToolCall(argumentsValue, theme, context.expanded, context.cwd),
+    renderResult: (result, options, theme, context) =>
+      renderDapToolResult(result, options, theme, context.isError, context.cwd),
+    async execute(_toolCallId, input, signal, onUpdate, context) {
       const parameters = parseDapToolParameters(input);
       const runtime = getRuntime();
       if (runtime === undefined) throw piDapError("Pi conversation session is not active");
+      notifyDapToolObserver(() => runtime.observer?.onToolStart(parameters));
+      const startedAt = Date.now();
+      const updateProgress = () => {
+        if (!isDapExecutionWaitOperation(parameters.operation)) return;
+        onUpdate?.({
+          content: [{ type: "text", text: `${parameters.operation} waiting` }],
+          details: {
+            kind: "progress",
+            operation: parameters.operation,
+            elapsed_ms: Date.now() - startedAt,
+          },
+        });
+      };
+      updateProgress();
+      const progressInterval = isDapExecutionWaitOperation(parameters.operation)
+        ? setInterval(updateProgress, 1_000)
+        : undefined;
+      progressInterval?.unref?.();
       try {
         const result = await dispatchDapOperation(parameters, runtime.session, context.cwd, signal);
-        return await createDapToolOutput(parameters.operation, result, runtime.sessionFiles);
+        const output = await createDapToolOutput(
+          parameters.operation,
+          result,
+          runtime.sessionFiles,
+          isDapExecutionWaitOperation(parameters.operation) && signal?.aborted === true,
+        );
+        notifyDapToolObserver(() => runtime.observer?.onToolSuccess(parameters, result));
+        return output;
       } catch (cause) {
-        throw piDapError(cause);
+        const error = piDapError(cause);
+        notifyDapToolObserver(() => runtime.observer?.onToolFailure(parameters, error));
+        throw error;
+      } finally {
+        if (progressInterval !== undefined) clearInterval(progressInterval);
       }
     },
   };

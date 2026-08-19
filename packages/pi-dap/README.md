@@ -128,6 +128,25 @@ terminating owned Linux process groups. Session shutdown removes session files.
 Cancelling an execution wait only ends that wait; the live Debug Session remains
 recoverable.
 
+### Observer UI
+
+In TUI mode, calls and results use compact semantic transcript rows. Expanding a
+row shows only explicitly supplied arguments and bounded Breakpoint, Stack Frame,
+variable, or evaluation details. Long execution waits update once per second.
+Malformed or historical rows fall back to their original tool text.
+
+One widget above the editor follows launching, running, stopped, and terminated
+activity. It is derived only from lifecycle transitions and successful results
+Pi DAP has already received; it sends no additional DAP request and provides no
+human debugger controls. Stopped source locations clear on resume. The terminal
+snapshot remains for ten seconds, while idle sessions have no widget. RPC, JSON,
+and print modes do not mount it.
+
+The model still receives the unchanged raw `DAP <operation>: <JSON>` text,
+Debuggee output, truncation, and Result Spill notice. Only the human-visible copy
+of Debuggee output is stripped of terminal sequences and unsafe controls; the raw
+tool result and Result Spill retain the original bytes.
+
 ## V1 boundary
 
 V1 supports configured stdio and TCP adapters on Linux, one active Debug
@@ -137,7 +156,8 @@ adapter-owned primary target channel; it is not a second model-facing Debug
 Session, and unrelated, second, or nested `startDebugging` requests are rejected.
 V1 excludes attach, restart, function/data/instruction breakpoints, hit counts,
 logpoints, memory, disassembly, modules, user-requested child Debug Sessions, raw
-DAP requests, `launch.json`, WebSocket, persistence, and debugger UI.
+DAP requests, `launch.json`, WebSocket, persistence, and a directly operated
+debugger UI.
 
 Trusted project settings can run arbitrary local executables with Pi's
 permissions. Review adapter commands and configuration before trusting a

@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { DapSession } from "./dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "./dap-session-files.js";
+import { DapObserverUiController } from "./dap-observer-ui.js";
 import { registerDapTool, type DapToolRuntime } from "./dap-tool.js";
 import { resolveDapSettings } from "./pi-dap-settings.js";
 
@@ -17,6 +18,7 @@ export interface PiDapLifecycleEffects {
 }
 
 interface ActivePiDapSession extends DapToolRuntime {
+  readonly observer: DapObserverUiController;
   readonly session: DapSession;
   readonly sessionFiles: DapSessionFiles;
 }
@@ -54,8 +56,16 @@ export class PiDapLifecycleController {
     }
 
     const sessionFiles = await createDapSessionFiles(context.sessionManager.getSessionDir());
+    const observer = new DapObserverUiController(context);
     this.activeSession = {
-      session: new DapSession({ cwd: context.cwd, settings, sessionFiles }),
+      observer,
+      session: new DapSession({
+        cwd: context.cwd,
+        settings,
+        sessionFiles,
+        onSnapshotChange: (snapshot) => observer.onSessionSnapshot(snapshot),
+        onUnexpectedFailure: (error) => observer.onUnexpectedFailure(error),
+      }),
       sessionFiles,
     };
     if (!this.toolRegistered) {
@@ -72,6 +82,7 @@ export class PiDapLifecycleController {
     const activeSession = this.activeSession;
     this.activeSession = undefined;
     const shutdown = (async () => {
+      activeSession.observer.dispose();
       try {
         await activeSession.session.shutdown();
       } finally {
