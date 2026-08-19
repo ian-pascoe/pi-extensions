@@ -10,6 +10,7 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
+import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
 import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -143,12 +144,12 @@ async function assertTarballLoads(packageName, tarballPath) {
       ],
       { cwd: installDirectory },
     );
-    const entrypoint = resolve(
+    const installedPackageDirectory = resolve(
       installDirectory,
       "node_modules",
       ...packageName.split("/"),
-      "src/index.ts",
     );
+    const entrypoint = resolve(installedPackageDirectory, "src/index.ts");
     const result = await discoverAndLoadExtensions([entrypoint], installDirectory, agentDirectory);
     assertPackCondition(
       result.errors.length === 0,
@@ -162,6 +163,12 @@ async function assertTarballLoads(packageName, tarballPath) {
       result.extensions[0]?.resolvedPath === entrypoint,
       `${packageName} resolved the wrong installed entrypoint`,
     );
+    if (packageName === "@ian-pascoe/pi-codemode") {
+      await assertCodeModeDenoProcessSmoke(
+        resolve(installedPackageDirectory, "src/codemode-worker.ts"),
+        "installed package tarball",
+      );
+    }
   } finally {
     await Promise.all([
       rm(installDirectory, { recursive: true, force: true }),

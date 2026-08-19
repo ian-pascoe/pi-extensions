@@ -2,6 +2,7 @@ packages:
   - packages/*
 allowBuilds:
   "@google/genai": true
+  deno: false
   esbuild: true
   protobufjs: true
   tesseract.js: true

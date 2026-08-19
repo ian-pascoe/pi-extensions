@@ -10,6 +10,7 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
+import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
 import { readJsonDocument, rootPiManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -105,6 +106,10 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===
       JSON.stringify(entrypoints),
     "temporary install loaded an unexpected extension path order",
+  );
+  await assertCodeModeDenoProcessSmoke(
+    resolve(installDirectory, "packages/pi-codemode/src/codemode-worker.ts"),
+    "production Git copy",
   );
 }
 

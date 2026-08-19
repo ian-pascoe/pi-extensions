@@ -60,7 +60,8 @@
       "./packages/pi-git-checkpoints/src/index.ts",
       "./packages/pi-formatter/src/index.ts",
       "./packages/pi-lsp/src/index.ts",
-      "./packages/pi-dap/src/index.ts"
+      "./packages/pi-dap/src/index.ts",
+      "./packages/pi-codemode/src/index.ts"
     ]
   }
 }
