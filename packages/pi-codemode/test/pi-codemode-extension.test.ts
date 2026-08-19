@@ -279,7 +279,7 @@ describe("Pi CodeMode extension", () => {
     expect(executeDescription(fixture.session)).toContain('readonly ["closure_echo"]');
 
     const started = await executeTool(fixture.session, "codemode_execute", {
-      script: "let value = 2; return value;",
+      script: "type Count = number; let value: Count = 2; return value;",
       wait: false,
     });
     const pending = codeModeResult(started);

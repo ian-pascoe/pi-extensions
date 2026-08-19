@@ -1,12 +1,12 @@
 # @ian-pascoe/pi-codemode
 
-Run persistent JavaScript notebook Cells that compose Pi's registered tools.
+Run persistent TypeScript notebook Cells that compose Pi's registered tools.
 CodeMode calls the exact handlers Pi registered; it does not contain substitute
 implementations of built-in tools.
 
 Tested with Pi `0.84.2` and Node `22.19.0`. The package installs its pinned
-`deno@2.9.5` process host and QuickJS runtime. Its official npm binaries cover
-macOS, glibc Linux, and Windows on x64 and arm64.
+`deno@2.9.5` runtime, which itself transpiles and executes Cells. Its official
+npm binaries cover macOS, glibc Linux, and Windows on x64 and arm64.
 
 ## Install
 
@@ -36,7 +36,7 @@ codemode_execute({
 `wait` defaults to `true`. `timeoutMs` has no default. Omitting `sessionId`
 creates a new CodeMode Session; supplying an unknown ID fails.
 
-```js
+```ts
 const result = await tools.read({ path: "README.md" });
 return result.content[0];
 ```
@@ -93,7 +93,7 @@ Top-level `let`, `const`, `var`, function, class, and destructuring declarations
 become Notebook Bindings. Later Cells in the same session use them without
 `globalThis`:
 
-```js
+```ts
 // Cell 1
 let count = 1;
 function current() {
@@ -111,10 +111,16 @@ later assignments and successful redefinitions. A failed declaration
 initializer preserves the previous value; earlier completed mutations and
 declarations in the same failing Cell remain committed.
 
-Cells support top-level `await`, explicit `return`, and automatic return of the
-final expression. Static and dynamic imports are unavailable. Declarations
-created by `eval` or `Function`, Annex-B block functions, nested lexical scopes,
+Cells accept TypeScript syntax, which Deno transpiles without type checking.
+Type annotations therefore do not validate tool inputs or results. Cells support
+top-level `await`, explicit `return`, and automatic return of the final
+expression. Static and dynamic imports, `eval`, and dynamic function
+constructors are unavailable. Annex-B block functions, nested lexical scopes,
 and declarations beneath a source `with` statement remain Cell-local.
+
+Notebook Bindings use protected non-configurable Deno global properties
+internally. Normal unqualified and `globalThis` assignment both observe
+`const` protection. Protected runtime names are rejected.
 
 One Cell may run at a time in each session. Ordinary script and catchable Pi
 tool failures leave the session reusable. Timeout, cancellation, Pi
@@ -171,15 +177,19 @@ worker-free terminal or failed-admission records remain pollable.
 
 ## Isolation and limits
 
-Each live CodeMode Session owns a pinned Deno subprocess containing one QuickJS
-runtime. Deno receives read access only to the installed QuickJS WASM asset;
-network, environment, system information, subprocess, write, FFI, and remote
-import capabilities are denied.
+Each live CodeMode Session owns a pinned Deno subprocess. Deno itself executes
+unique `Blob` modules with the `application/typescript` media type, keeping
+generated helper source out of ordinary source locations. Every operating-system
+permission class is denied: filesystem read/write, network, environment, system
+information, subprocesses, FFI, and remote imports.
 
-Guest code receives QuickJS ECMAScript built-ins and the read-only `tools`
-object—no Node, Bun, Deno, console, timers, filesystem, network, or module
-loader. QuickJS uses a 128 MiB heap limit and 1 MiB stack limit. Protocol inputs,
-tool results, and Cell results are JSON-only and limited to 8 MiB of UTF-8.
+Guest code receives ECMAScript built-ins, a read-only `tools` object, and only a
+frozen `Deno.version` identity. Raw process and standard-stream access,
+`console`, `Worker`, timers, filesystem/network APIs, and module loading are
+withheld. The parent watchdog terminates the subprocess for timeout or an
+infinite loop. Deno/V8 bounds each Session to a 128 MiB old-space heap and a
+1 MiB stack. Protocol inputs, tool results, and Cell results remain JSON-only
+and limited to 8 MiB of UTF-8.
 
 Registered Pi tools still execute in Pi's parent process with their normal
 permissions and lifecycle hooks. Cancellation aborts them through Pi's

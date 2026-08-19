@@ -8,12 +8,31 @@ const CODEMODE_WORKER_SMOKE_TIMEOUT_MS = 30_000;
 const CODEMODE_WORKER_PROTOCOL_VERSION = 1;
 const CODEMODE_WORKER_SMOKE_RESULT = 42;
 const CODEMODE_WORKER_SMOKE_SESSION_ID = "smoke-session";
+const CODEMODE_WORKER_SMOKE_CELL_ID = "native-typescript-cell";
+const CODEMODE_WORKER_SMOKE_PLACEHOLDER = "__piCodeModeCellInternal";
+const CODEMODE_WORKER_SMOKE_SOURCE = `
+type Answer = number;
+if (
+  typeof eval !== "undefined" ||
+  typeof Function !== "undefined" ||
+  (() => {}).constructor !== undefined ||
+  (async () => {}).constructor !== undefined ||
+  (function* () {}).constructor !== undefined ||
+  (async function* () {}).constructor !== undefined
+) {
+  throw new Error("dynamic code constructors are exposed");
+}
+await ${CODEMODE_WORKER_SMOKE_PLACEHOLDER}.declare([["answer", "const"]], async () => {
+  ${CODEMODE_WORKER_SMOKE_PLACEHOLDER}.init["answer"] = 6 * 7 satisfies Answer;
+});
+return answer;
+`;
 
 function rejectSmoke(reject, label, message) {
   reject(new Error(`CodeMode worker smoke failed (${label}): ${message}`));
 }
 
-async function loadCodeModeDenoLaunch(workerPath, variant) {
+async function loadCodeModeDenoLaunch(workerPath) {
   const packageDirectory = dirname(dirname(workerPath));
   const sourcePath = resolve(packageDirectory, "src/codemode-deno-launch.ts");
   const temporaryDirectory = await mkdtemp(resolve(tmpdir(), "pi-codemode-launch-"));
@@ -24,11 +43,7 @@ async function loadCodeModeDenoLaunch(workerPath, variant) {
       `${pathToFileURL(temporarySourcePath).href}?loaded=${Date.now()}`
     );
     return {
-      launch: launchModule.resolveCodeModeDenoLaunch(
-        workerPath,
-        variant,
-        CODEMODE_WORKER_SMOKE_SESSION_ID,
-      ),
+      launch: launchModule.resolveCodeModeDenoLaunch(workerPath, CODEMODE_WORKER_SMOKE_SESSION_ID),
       temporaryDirectory,
     };
   } catch (cause) {
@@ -47,9 +62,9 @@ function assertProtocolEnvelope(message, expectedType) {
   }
 }
 
-/** Starts the shipped source-TypeScript Deno process, evaluates in QuickJS, and waits for exit. */
-export async function assertCodeModeDenoProcessSmoke(workerPath, label, variant = "release") {
-  const { launch, temporaryDirectory } = await loadCodeModeDenoLaunch(workerPath, variant);
+/** Starts the shipped source-TypeScript Deno process, executes a native TypeScript Cell, and waits for exit. */
+export async function assertCodeModeDenoProcessSmoke(workerPath, label) {
+  const { launch, temporaryDirectory } = await loadCodeModeDenoLaunch(workerPath);
   const worker = spawn(launch.command, launch.args, {
     env: { DENO_NO_UPDATE_CHECK: "1", NO_COLOR: "1" },
     stdio: ["pipe", "pipe", "pipe"],
@@ -57,7 +72,9 @@ export async function assertCodeModeDenoProcessSmoke(workerPath, label, variant 
   let responseReceived = false;
   let settled = false;
   let stdout = "";
+  let pendingStdout = "";
   let stderr = "";
+  const messages = [];
 
   try {
     await new Promise((resolvePromise, reject) => {
@@ -72,9 +89,65 @@ export async function assertCodeModeDenoProcessSmoke(workerPath, label, variant 
         callback();
       }
 
+      function send(message) {
+        worker.stdin.write(`${JSON.stringify(message)}\n`);
+      }
+
+      function acceptMessage(message) {
+        messages.push(message);
+        if (message.type === "ready") {
+          assertProtocolEnvelope(message, "ready");
+          send({
+            version: CODEMODE_WORKER_PROTOCOL_VERSION,
+            type: "execute",
+            sessionId: CODEMODE_WORKER_SMOKE_SESSION_ID,
+            cellId: CODEMODE_WORKER_SMOKE_CELL_ID,
+            source: CODEMODE_WORKER_SMOKE_SOURCE,
+            internalIdentifierPlaceholder: CODEMODE_WORKER_SMOKE_PLACEHOLDER,
+            toolNames: [],
+          });
+          return;
+        }
+        if (message.type === "cell-error") {
+          throw new Error(`native TypeScript Cell failed ${JSON.stringify(message.error)}`);
+        }
+        assertProtocolEnvelope(message, "cell-result");
+        if (
+          message.cellId !== CODEMODE_WORKER_SMOKE_CELL_ID ||
+          message.resultJson !== JSON.stringify(CODEMODE_WORKER_SMOKE_RESULT)
+        ) {
+          throw new Error(`unexpected native TypeScript result ${JSON.stringify(message)}`);
+        }
+        responseReceived = true;
+        worker.stdin.end(
+          `${JSON.stringify({
+            version: CODEMODE_WORKER_PROTOCOL_VERSION,
+            type: "shutdown",
+            sessionId: CODEMODE_WORKER_SMOKE_SESSION_ID,
+          })}\n`,
+        );
+      }
+
       worker.stdout.setEncoding("utf8");
       worker.stdout.on("data", (chunk) => {
         stdout += chunk;
+        pendingStdout += chunk;
+        let newlineIndex = pendingStdout.indexOf("\n");
+        while (newlineIndex !== -1) {
+          const line = pendingStdout.slice(0, newlineIndex);
+          pendingStdout = pendingStdout.slice(newlineIndex + 1);
+          if (line.length > 0) {
+            try {
+              acceptMessage(JSON.parse(line));
+            } catch (cause) {
+              const message = cause instanceof Error ? cause.message : String(cause);
+              settle(() => rejectSmoke(reject, label, message));
+              worker.kill();
+              return;
+            }
+          }
+          newlineIndex = pendingStdout.indexOf("\n");
+        }
       });
       worker.stderr.setEncoding("utf8");
       worker.stderr.on("data", (chunk) => {
@@ -88,94 +161,15 @@ export async function assertCodeModeDenoProcessSmoke(workerPath, label, variant 
           if (code !== 0) {
             throw new Error(`exited with code ${code}: ${stderr.trim()}`);
           }
-          const lines = stdout.trimEnd().split("\n");
-          const expectedLineCount = variant === "debug" ? 4 : 2;
-          if (lines.length !== expectedLineCount) {
-            throw new Error(`worker response is not ${expectedLineCount} bounded JSON lines`);
+          if (!responseReceived || messages.length !== 2 || pendingStdout.length !== 0) {
+            throw new Error(`worker emitted unexpected bounded JSON lines: ${stdout.trimEnd()}`);
           }
-          const ready = JSON.parse(lines[0]);
-          const responseIndex = variant === "debug" ? 2 : 1;
-          const response = JSON.parse(lines[responseIndex]);
-          assertProtocolEnvelope(ready, "ready");
-          assertProtocolEnvelope(response, "result");
-          if (
-            response.requestId !== "step-1-tracer" ||
-            response.resultJson !== JSON.stringify(CODEMODE_WORKER_SMOKE_RESULT)
-          ) {
-            throw new Error(`unexpected tracer response ${stdout.trimEnd()}`);
-          }
-          if (variant === "debug") {
-            const baseline = JSON.parse(lines[1]);
-            const after = JSON.parse(lines[3]);
-            assertProtocolEnvelope(baseline, "debug-memory");
-            assertProtocolEnvelope(after, "debug-memory");
-            for (const memory of [baseline, after]) {
-              if (
-                !Number.isSafeInteger(memory.memory?.mallocCount) ||
-                memory.memory.mallocCount <= 0 ||
-                !Number.isSafeInteger(memory.memory?.memoryUsedBytes) ||
-                memory.memory.memoryUsedBytes <= 0 ||
-                !Number.isSafeInteger(memory.memory?.objectCount) ||
-                memory.memory.objectCount <= 0
-              ) {
-                throw new Error(`invalid QuickJS module memory response ${JSON.stringify(memory)}`);
-              }
-            }
-            if (
-              baseline.requestId !== "debug-memory-before" ||
-              after.requestId !== "debug-memory-after" ||
-              after.memory.objectCount !== baseline.memory.objectCount ||
-              after.memory.mallocCount !== baseline.memory.mallocCount ||
-              after.memory.memoryUsedBytes !== baseline.memory.memoryUsedBytes
-            ) {
-              throw new Error(
-                `QuickJS tracer handles were retained: baseline=${JSON.stringify(baseline.memory)} after=${JSON.stringify(after.memory)}`,
-              );
-            }
-          }
-          responseReceived = true;
           settle(resolvePromise);
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : String(cause);
           settle(() => rejectSmoke(reject, label, message));
         }
       });
-
-      const messages = [
-        ...(variant === "debug"
-          ? [
-              {
-                version: CODEMODE_WORKER_PROTOCOL_VERSION,
-                type: "debug-memory",
-                sessionId: CODEMODE_WORKER_SMOKE_SESSION_ID,
-                requestId: "debug-memory-before",
-              },
-            ]
-          : []),
-        {
-          version: CODEMODE_WORKER_PROTOCOL_VERSION,
-          type: "evaluate",
-          sessionId: CODEMODE_WORKER_SMOKE_SESSION_ID,
-          requestId: "step-1-tracer",
-          script: "6 * 7",
-        },
-        ...(variant === "debug"
-          ? [
-              {
-                version: CODEMODE_WORKER_PROTOCOL_VERSION,
-                type: "debug-memory",
-                sessionId: CODEMODE_WORKER_SMOKE_SESSION_ID,
-                requestId: "debug-memory-after",
-              },
-            ]
-          : []),
-        {
-          version: CODEMODE_WORKER_PROTOCOL_VERSION,
-          type: "shutdown",
-          sessionId: CODEMODE_WORKER_SMOKE_SESSION_ID,
-        },
-      ];
-      worker.stdin.end(`${messages.map((message) => JSON.stringify(message)).join("\n")}\n`);
     });
   } finally {
     if (!settled || !responseReceived) worker.kill();
@@ -187,9 +181,8 @@ const invokedScriptPath = process.argv[1];
 if (invokedScriptPath !== undefined && pathToFileURL(invokedScriptPath).href === import.meta.url) {
   const workerPath = process.argv[2];
   const label = process.argv[3] ?? "command line";
-  const variant = process.argv[4] === "debug" ? "debug" : "release";
   if (workerPath === undefined) {
     throw new Error("CodeMode worker smoke failed (command line): missing worker path");
   }
-  await assertCodeModeDenoProcessSmoke(workerPath, label, variant);
+  await assertCodeModeDenoProcessSmoke(workerPath, label);
 }

@@ -6,26 +6,13 @@ import { describe, test } from "vitest";
 const executeFile = promisify(execFile);
 
 describe("shipped CodeMode Deno process", () => {
-  test("evaluates the Step 1 tracer in QuickJS and exits", async () => {
+  test("executes a native TypeScript Cell and exits cleanly", async () => {
     await executeFile(
       process.execPath,
       [
         resolve(import.meta.dirname, "../../../scripts/codemode-worker-smoke.mjs"),
         resolve(import.meta.dirname, "../src/codemode-worker.ts"),
-        "workspace",
-      ],
-      { timeout: 30_000 },
-    );
-  });
-
-  test("reports debug QuickJS module memory after disposing tracer handles", async () => {
-    await executeFile(
-      process.execPath,
-      [
-        resolve(import.meta.dirname, "../../../scripts/codemode-worker-smoke.mjs"),
-        resolve(import.meta.dirname, "../src/codemode-worker.ts"),
-        "workspace debug memory",
-        "debug",
+        "workspace native TypeScript",
       ],
       { timeout: 30_000 },
     );

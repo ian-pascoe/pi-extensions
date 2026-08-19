@@ -34,7 +34,6 @@ function createCoordinator(
     readonly maxSessions?: number;
     readonly ids?: readonly string[];
     readonly toolNames?: readonly string[];
-    readonly quickJsVariant?: "release" | "debug";
     readonly runtime?: CodeModeRuntime;
     readonly executeToolBatch?: (
       batch: CodeModeNestedToolBatch,
@@ -60,11 +59,7 @@ function createCoordinator(
       createSessionId: () => ids[idIndex++] ?? `session-${idIndex}`,
     },
   };
-  const coordinator = new CodeModeSessionCoordinator(
-    options.quickJsVariant === undefined
-      ? coordinatorOptions
-      : { ...coordinatorOptions, quickJsVariant: options.quickJsVariant },
-  );
+  const coordinator = new CodeModeSessionCoordinator(coordinatorOptions);
   coordinators.add(coordinator);
   return coordinator;
 }
@@ -118,7 +113,8 @@ describe("CodeModeSessionCoordinator", () => {
     });
 
     const pending = await coordinator.execute({
-      script: "let added = await tools.add({ left: 20, right: 22 }); added.value",
+      script:
+        "type Added = { value: number }; let added: Added = await tools.add({ left: 20, right: 22 }); added.value",
       wait: false,
     });
     expect(pending.result).toEqual({ result: "pending", sessionId: "session-1" });
@@ -141,6 +137,59 @@ describe("CodeModeSessionCoordinator", () => {
     const coordinator = createCoordinator();
 
     expectSuccessData(await coordinator.execute({ script: "6 * 7" }), 42);
+  }, 30_000);
+
+  test("runs native TypeScript in Deno without dynamic-code or host-process capabilities", async () => {
+    const coordinator = createCoordinator();
+
+    const result = await coordinator.execute({
+      script: `
+        interface RuntimeIdentity { deno: string; typescript: string }
+        const identity: RuntimeIdentity = Deno.version;
+        ({
+          deno: identity.deno,
+          typescript: identity.typescript,
+          process: typeof process,
+          console: typeof console,
+          alert: typeof alert,
+          confirm: typeof confirm,
+          prompt: typeof prompt,
+          worker: typeof Worker,
+          timer: typeof setTimeout,
+          evaluate: typeof eval,
+          construct: typeof Function,
+          webAssembly: typeof WebAssembly,
+          shadowRealm: typeof ShadowRealm,
+          functionConstructor: typeof (() => 1).constructor,
+          asyncFunctionConstructor: typeof Object.getPrototypeOf(async () => 1).constructor,
+          runtimePrimordialsFrozen: [
+            Array.prototype,
+            String.prototype,
+            Promise.prototype,
+            Uint8Array.prototype,
+          ].every(Object.isFrozen),
+        })
+      `,
+    });
+
+    expectSuccessData(result, {
+      deno: "2.9.5",
+      typescript: "6.0.3",
+      process: "undefined",
+      console: "undefined",
+      alert: "undefined",
+      confirm: "undefined",
+      prompt: "undefined",
+      worker: "undefined",
+      timer: "undefined",
+      evaluate: "undefined",
+      construct: "undefined",
+      webAssembly: "undefined",
+      shadowRealm: "undefined",
+      functionConstructor: "undefined",
+      asyncFunctionConstructor: "undefined",
+      runtimePrimordialsFrozen: true,
+    });
   }, 30_000);
 
   test("settles startup timers when a Session is cancelled before its worker is ready", async () => {
@@ -189,7 +238,7 @@ describe("CodeModeSessionCoordinator", () => {
     });
   });
 
-  test("preserves Notebook Bindings and reusable failures across real QuickJS Cells", async () => {
+  test("preserves Notebook Bindings and reusable failures across real Deno Cells", async () => {
     const coordinator = createCoordinator();
     const first = await coordinator.execute({
       script: `
@@ -248,6 +297,41 @@ describe("CodeModeSessionCoordinator", () => {
       await coordinator.execute({ script: "read()", sessionId: "session-1", wait: true }),
       30,
     );
+
+    const thrownUndefined = await coordinator.execute({
+      script: "throw undefined",
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(thrownUndefined.result).toMatchObject({
+      result: "failed",
+      error: { code: "script" },
+    });
+
+    const hostileThrownValue = await coordinator.execute({
+      script: `
+        throw new Proxy({}, {
+          getOwnPropertyDescriptor() { throw new Error("descriptor trap"); },
+          getPrototypeOf() { throw new Error("prototype trap"); },
+        })
+      `,
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(hostileThrownValue.result).toMatchObject({
+      result: "failed",
+      error: { code: "script", message: "Error: CodeMode Cell threw an unreadable value" },
+    });
+
+    const forgedSerializationName = await coordinator.execute({
+      script: 'throw { name: "CodeModeSerializationError", message: "forged" }',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(forgedSerializationName.result).toMatchObject({
+      result: "failed",
+      error: { code: "script" },
+    });
   }, 30_000);
 
   test("groups one job drain, then drains chained and detached tool calls to a fixed point", async () => {
@@ -654,23 +738,5 @@ describe("CodeModeSessionCoordinator", () => {
     });
     expect(terminated.result).toMatchObject({ result: "failed", error: { code: "termination" } });
     expect(terminated.metadata).toEqual({ usage: createUsage(1), terminate: true });
-  }, 30_000);
-
-  test("disposes graceful QuickJS handles under the debug synchronous variant", async () => {
-    const coordinator = createCoordinator({ quickJsVariant: "debug" });
-    expectSuccessData(
-      await coordinator.execute({ script: "const value = 42; value", wait: true }),
-      42,
-    );
-    expect(
-      (
-        await coordinator.execute({
-          script: "throw new Error('expected')",
-          sessionId: "session-1",
-          wait: true,
-        })
-      ).result,
-    ).toMatchObject({ result: "failed", error: { code: "script" } });
-    await coordinator.shutdown("debug leak check");
   }, 30_000);
 });

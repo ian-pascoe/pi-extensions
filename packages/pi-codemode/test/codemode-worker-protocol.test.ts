@@ -17,7 +17,6 @@ describe("CodeMode worker protocol", () => {
       source: "42",
       internalIdentifierPlaceholder: "__internal",
       toolNames: ["read", "odd.name"],
-      timeoutMs: 25,
     };
     const serialized = serializeCodeModeWorkerRequest(request);
     expect(serialized.ok).toBe(true);
@@ -58,7 +57,7 @@ describe("CodeMode worker protocol", () => {
     ).toBe(false);
   });
 
-  test("rejects duplicate guest tool names and invalid timeout units", () => {
+  test("rejects duplicate guest tool names and parent-only timeout fields", () => {
     const request = {
       version: 1,
       type: "execute",
@@ -67,9 +66,12 @@ describe("CodeMode worker protocol", () => {
       source: "42",
       internalIdentifierPlaceholder: "__internal",
       toolNames: ["read", "read"],
-      timeoutMs: 0,
     };
     expect(parseCodeModeWorkerRequest(JSON.stringify(request)).ok).toBe(false);
+    expect(
+      parseCodeModeWorkerRequest(JSON.stringify({ ...request, toolNames: ["read"], timeoutMs: 25 }))
+        .ok,
+    ).toBe(false);
   });
 
   test("parses ready, batches, optional Cell data, and stable Cell errors", () => {
@@ -95,18 +97,23 @@ describe("CodeMode worker protocol", () => {
     ).toBe(true);
     expect(
       parseCodeModeWorkerResponse(
-        '{"version":1,"type":"cell-error","sessionId":"session-1","cellId":"cell-1","error":{"code":"timeout","message":"late"}}',
-      ).ok,
-    ).toBe(true);
-    expect(
-      parseCodeModeWorkerResponse(
-        '{"version":1,"type":"debug-memory","sessionId":"session-1","requestId":"memory-1","memory":{"mallocCount":1500,"memoryUsedBytes":86000,"objectCount":300}}',
+        '{"version":1,"type":"cell-error","sessionId":"session-1","cellId":"cell-1","error":{"code":"runtime","message":"failed"}}',
       ).ok,
     ).toBe(true);
   });
 
-  test("rejects malformed, empty-batch, unknown-version, and over-limit lines", () => {
+  test("rejects malformed, removed diagnostics, empty batches, unknown versions, and over-limit lines", () => {
     expect(parseCodeModeWorkerRequest("not json").ok).toBe(false);
+    expect(
+      parseCodeModeWorkerRequest(
+        '{"version":1,"type":"evaluate","sessionId":"session-1","requestId":"old","script":"42"}',
+      ).ok,
+    ).toBe(false);
+    expect(
+      parseCodeModeWorkerResponse(
+        '{"version":1,"type":"debug-memory","sessionId":"session-1","requestId":"old","memory":{"mallocCount":1,"memoryUsedBytes":1,"objectCount":1}}',
+      ).ok,
+    ).toBe(false);
     expect(
       parseCodeModeWorkerResponse('{"version":2,"type":"ready","sessionId":"session-1"}').ok,
     ).toBe(false);

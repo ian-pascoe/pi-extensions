@@ -15,10 +15,9 @@ const CODEMODE_PROCESS_START_TIMEOUT_MS = 30_000;
 const CODEMODE_PROCESS_STOP_GRACE_MS = 2_000;
 const CODEMODE_STDERR_LIMIT_BYTES = 64 * 1024;
 
-/** Construction options for one Deno-hosted persistent QuickJS process. */
+/** Construction options for one Deno-native persistent notebook process. */
 export type CodeModeWorkerProcessOptions = {
   readonly sessionId: string;
-  readonly variant: "release" | "debug";
   readonly runtime: CodeModeRuntime;
   readonly onResponse: (response: CodeModeWorkerResponse) => void;
   readonly onFailure: (message: string) => void;
@@ -45,7 +44,7 @@ export class CodeModeWorkerProcess {
     this.exitPromiseResolvers = Promise.withResolvers<void>();
     this.exitPromise = this.exitPromiseResolvers.promise;
     const workerPath = fileURLToPath(new URL("./codemode-worker.ts", import.meta.url));
-    const launch = resolveCodeModeDenoLaunch(workerPath, options.variant, options.sessionId);
+    const launch = resolveCodeModeDenoLaunch(workerPath, options.sessionId);
     this.child = spawn(launch.command, launch.args, {
       env: { DENO_NO_UPDATE_CHECK: "1", NO_COLOR: "1" },
       stdio: ["pipe", "pipe", "pipe"],

@@ -1,20 +1,127 @@
-/* oxlint-disable anti-slop/no-unknown-returns -- Cell results are intentionally unknown until the worker applies bounded JSON serialization. */
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-runtime-typeof -- This faithful test-only Notebook helper receives arbitrary guest values and Proxy property keys at the same dynamic JavaScript boundary as Deno. */
 import { describe, expect, test } from "vitest";
 import {
-  CODEMODE_NOTEBOOK_BOOTSTRAP_SOURCE,
   transformCodeModeCell,
   type TransformedCodeModeCell,
 } from "../src/codemode-cell-transform.js";
 
 type CodeModeNotebookRunner = (source: string, internalIdentifier: string) => Promise<unknown>;
+type TestNotebookBinding = { kind: string; value: unknown };
+type TestStagedBinding = TestNotebookBinding & { initialized: boolean };
 
 function createCodeModeNotebookRunner(): CodeModeNotebookRunner {
-  // SAFETY: The bootstrap source is a package-owned constant with a two-string async callable contract, not caller-provided code.
-  // oxlint-disable-next-line typescript/no-implied-eval -- The public seam is package-owned guest bootstrap source that must be evaluated like QuickJS evaluates it.
-  const createRunner = Function(
-    `return (${CODEMODE_NOTEBOOK_BOOTSTRAP_SOURCE});`,
-  ) as () => CodeModeNotebookRunner;
-  return createRunner();
+  const bindings = new Map<string, TestNotebookBinding>();
+  let activeStage: Map<string, TestStagedBinding> | undefined;
+
+  function exposeNotebookBinding(name: string): void {
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      get() {
+        const staged = activeStage?.get(name);
+        if (staged !== undefined) {
+          if (!staged.initialized) {
+            throw new ReferenceError(`Cannot access '${name}' before initialization`);
+          }
+          return staged.value;
+        }
+        const binding = bindings.get(name);
+        if (binding === undefined) throw new ReferenceError(`${name} is not defined`);
+        return binding.value;
+      },
+      set(value: unknown) {
+        const staged = activeStage?.get(name);
+        if (staged !== undefined) {
+          if (!staged.initialized) {
+            throw new ReferenceError(`Cannot access '${name}' before initialization`);
+          }
+          staged.value = value;
+          return;
+        }
+        const binding = bindings.get(name);
+        if (binding === undefined) throw new ReferenceError(`${name} is not defined`);
+        if (binding.kind === "const") {
+          throw new TypeError(`Assignment to constant Notebook Binding '${name}'`);
+        }
+        binding.value = value;
+      },
+    });
+  }
+
+  const initializationTarget = new Proxy(Object.create(null), {
+    set(_target, name, value) {
+      if (typeof name !== "string" || activeStage === undefined) return false;
+      const staged = activeStage.get(name);
+      if (staged === undefined) return false;
+      staged.initialized = true;
+      staged.value = value;
+      return true;
+    },
+  });
+  const declarationHelper = {
+    init: initializationTarget,
+    async declare(
+      entries: readonly (readonly [string, string])[],
+      initialize: () => Promise<void>,
+    ) {
+      const absentNames = entries.map(([name]) => name).filter((name) => !bindings.has(name));
+      activeStage = new Map(
+        entries.map(([name, kind]) => {
+          exposeNotebookBinding(name);
+          const existing = bindings.get(name);
+          return [
+            name,
+            {
+              initialized: kind === "var",
+              kind,
+              value: kind === "var" ? existing?.value : undefined,
+            },
+          ];
+        }),
+      );
+      let committed = false;
+      try {
+        await initialize();
+        for (const [name, staged] of activeStage) {
+          if (!staged.initialized) throw new Error("Notebook Binding was not initialized");
+          bindings.set(name, { kind: staged.kind, value: staged.value });
+        }
+        committed = true;
+      } finally {
+        activeStage = undefined;
+        if (!committed) {
+          for (const name of absentNames) Reflect.deleteProperty(globalThis, name);
+        }
+      }
+    },
+    hoistVars(names: readonly string[]) {
+      for (const name of names) {
+        const binding = bindings.get(name);
+        if (binding === undefined) {
+          bindings.set(name, { kind: "var", value: undefined });
+          exposeNotebookBinding(name);
+        } else binding.kind = "var";
+      }
+    },
+  };
+
+  return async (source, internalIdentifier) => {
+    const helperName = `${internalIdentifier}_${Math.random().toString(36).slice(2)}`;
+    Object.defineProperty(globalThis, helperName, {
+      configurable: true,
+      value: declarationHelper,
+    });
+    const executableSource = source.replaceAll(internalIdentifier, helperName);
+    // SAFETY: The transformed source is executed only in this test harness; the returned function has no parameters and always resolves through the async Cell contract.
+    // oxlint-disable-next-line typescript/no-implied-eval -- Evaluating transformed Cell source is the behavior under test.
+    const executeCell = Function(
+      `return async function () {\n${executableSource}\n};`,
+    ) as () => () => Promise<unknown>;
+    try {
+      return await executeCell()();
+    } finally {
+      Reflect.deleteProperty(globalThis, helperName);
+    }
+  };
 }
 
 function transformCellOrThrow(script: string): TransformedCodeModeCell {
@@ -36,6 +143,22 @@ describe("CodeMode Cell transform", () => {
 
     await expect(runCell(runner, "let answer = 40;")).resolves.toBeUndefined();
     await expect(runCell(runner, "answer += 2; answer")).resolves.toBe(42);
+  });
+
+  test("preserves TypeScript for Deno-native transpilation while rewriting declarations", () => {
+    const cell = transformCellOrThrow(`
+      type Added = { value: number };
+      let added: Added = { value: 41 };
+      function read<T extends Added>(input: T): number { return input.value; }
+      class Box<T> { value?: T }
+      read(added) satisfies number
+    `);
+
+    expect(cell.source).toContain("type Added = { value: number }");
+    expect(cell.source).toContain("as Added");
+    expect(cell.source).toContain("function <T extends Added>(input: T): number");
+    expect(cell.source).toContain("class Box<T> { value?: T }");
+    expect(cell.source).toContain("return (read(added) satisfies number);");
   });
 
   test("persists every direct Program declaration form and nested destructuring", async () => {
@@ -100,6 +223,13 @@ describe("CodeMode Cell transform", () => {
         message: "CodeMode Cell dynamic import is not supported",
       },
     });
+    expect(transformCodeModeCell("import.meta.url")).toEqual({
+      ok: false,
+      error: {
+        code: "unsupported-syntax",
+        message: "CodeMode Cell import.meta is not supported",
+      },
+    });
   });
 
   test("keeps every bootstrap capability unreachable from guest lexical lookup", async () => {
@@ -110,12 +240,10 @@ describe("CodeMode Cell transform", () => {
         runner,
         `
           const guessed = "__piCodeModeCell" + "Internal";
-          function currentCellFunction() { return currentCellFunction.caller; }
           ({
             guessed: eval(\`typeof \${guessed}\`),
             scope: typeof scope,
             declarationHelper: typeof declarationHelper,
-            source: Function.prototype.toString.call(currentCellFunction()),
           })
         `,
       ),
@@ -123,7 +251,6 @@ describe("CodeMode Cell transform", () => {
       guessed: "undefined",
       scope: "undefined",
       declarationHelper: "undefined",
-      source: "async function () { [CodeMode Cell] }",
     });
 
     await expect(
@@ -139,22 +266,21 @@ describe("CodeMode Cell transform", () => {
     await expect(runCell(runner, "injected")).rejects.toThrow("injected is not defined");
   });
 
-  test("keeps dynamic, Annex-B block, and source-with declarations Cell-local", async () => {
+  test("keeps Annex-B block and source-with declarations Cell-local", async () => {
     const runner = createCodeModeNotebookRunner();
     await runCell(runner, "let existing = 1;");
 
     await runCell(
       runner,
       `
-        eval("var evalOnly = 1; existing = 2;");
-        Function("var functionOnly = 1;")();
+        existing = 2;
         { function annexOnly() { return 1; } }
         with ({}) { var withOnly = 1; }
       `,
     );
 
     await expect(runCell(runner, "existing")).resolves.toBe(2);
-    for (const localName of ["evalOnly", "functionOnly", "annexOnly", "withOnly"]) {
+    for (const localName of ["annexOnly", "withOnly"]) {
       await expect(runCell(runner, localName)).rejects.toThrow(`${localName} is not defined`);
     }
   });
@@ -164,6 +290,7 @@ describe("CodeMode Cell transform", () => {
 
     await expect(runCell(runner, "await Promise.resolve(6 * 7)")).resolves.toBe(42);
     await expect(runCell(runner, "return 7;")).resolves.toBe(7);
+    await expect(runCell(runner, '1; "final string"')).resolves.toBe("final string");
     await expect(runCell(runner, '"use strict"; const strictValue = 8; strictValue')).resolves.toBe(
       8,
     );
@@ -236,7 +363,7 @@ describe("CodeMode Cell transform", () => {
     await expect(runCell(runner, "hiddenByWith")).rejects.toThrow("hiddenByWith is not defined");
   });
 
-  test("keeps nested lexical declarations local and does not store bindings on globalThis", async () => {
+  test("keeps nested lexical declarations local while Notebook Bindings use global lookup", async () => {
     const runner = createCodeModeNotebookRunner();
 
     await runCell(
@@ -252,7 +379,7 @@ describe("CodeMode Cell transform", () => {
 
     await expect(
       runCell(runner, '[readLocal(7), shared, Object.hasOwn(globalThis, "shared")]'),
-    ).resolves.toEqual([7, 1, false]);
+    ).resolves.toEqual([7, 1, true]);
     await expect(runCell(runner, "const sameCell = 1; sameCell = 2;")).rejects.toThrow(
       "Assignment to constant Notebook Binding 'sameCell'",
     );

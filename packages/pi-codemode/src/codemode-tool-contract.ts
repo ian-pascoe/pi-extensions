@@ -328,7 +328,7 @@ type CodeModeToolDefinition =
 /** Creates the three stable Pi definitions while leaving admission and session policy to the coordinator. */
 export function createCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
-  executeDescription = "Execute JavaScript in a persistent isolated CodeMode session.",
+  executeDescription = "Execute TypeScript in a persistent isolated Deno CodeMode Session.",
 ): readonly CodeModeToolDefinition[] {
   const executeTool: ToolDefinition<typeof CodeModeExecuteParametersSchema, CodeModeResultDetails> =
     {

@@ -36,7 +36,7 @@ import {
 } from "./pi-tool-bridge.js";
 
 const CODEMODE_EXECUTE_DESCRIPTION =
-  "Execute a JavaScript Cell in a persistent isolated CodeMode Session. Top-level declarations become Notebook Bindings. Use the read-only tools object for registered Pi tools.";
+  "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Top-level declarations become Notebook Bindings. Use the read-only tools object for registered Pi tools.";
 
 type PiCodeModeGeneration = {
   readonly captured: CapturedPiAgentSession;

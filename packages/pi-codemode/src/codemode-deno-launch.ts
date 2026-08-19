@@ -1,6 +1,5 @@
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 
 /** Fully resolved Deno command for one persistent CodeMode worker process. */
 export type CodeModeDenoLaunch = {
@@ -17,17 +16,9 @@ const denoPlatformPackages = new Map([
   ["win32-x64", "@deno/win32-x64"],
 ]);
 
-const quickJsVariantPackages = [
-  "@jitl/quickjs-wasmfile-debug-asyncify",
-  "@jitl/quickjs-wasmfile-debug-sync",
-  "@jitl/quickjs-wasmfile-release-asyncify",
-  "@jitl/quickjs-wasmfile-release-sync",
-] as const;
-
-/** Resolves the pinned installed Deno binary and offline QuickJS import map from the package containing `workerPath`. */
+/** Resolves the pinned installed Deno binary and denied-permission worker command. */
 export function resolveCodeModeDenoLaunch(
   workerPath: string,
-  variant: "release" | "debug",
   sessionId: string,
 ): CodeModeDenoLaunch {
   const packageDirectory = dirname(dirname(workerPath));
@@ -41,43 +32,6 @@ export function resolveCodeModeDenoLaunch(
     );
   }
   const denoPlatformDirectory = dirname(denoRequire.resolve(`${platformPackage}/package.json`));
-  const acornPackageJson = packageRequire.resolve("acorn/package.json");
-  const quickJsPackageJson = packageRequire.resolve("quickjs-emscripten/package.json");
-  const quickJsRequire = createRequire(quickJsPackageJson);
-  const quickJsCoreDirectory = dirname(dirname(quickJsRequire.resolve("quickjs-emscripten-core")));
-  const quickJsCoreRequire = createRequire(resolve(quickJsCoreDirectory, "package.json"));
-  const quickJsFfiDirectory = dirname(
-    quickJsCoreRequire.resolve("@jitl/quickjs-ffi-types/package.json"),
-  );
-  const variantImports = quickJsVariantPackages.flatMap((packageName) => {
-    const variantDirectory = dirname(quickJsRequire.resolve(`${packageName}/package.json`));
-    return [
-      [packageName, pathToFileURL(resolve(variantDirectory, "dist/index.mjs")).href],
-      [
-        `${packageName}/emscripten-module`,
-        pathToFileURL(resolve(variantDirectory, "dist/emscripten-module.mjs")).href,
-      ],
-    ];
-  });
-  const imports = Object.fromEntries([
-    ["acorn", pathToFileURL(resolve(dirname(acornPackageJson), "dist/acorn.mjs")).href],
-    [
-      "quickjs-emscripten",
-      pathToFileURL(resolve(dirname(quickJsPackageJson), "dist/index.mjs")).href,
-    ],
-    [
-      "quickjs-emscripten-core",
-      pathToFileURL(resolve(quickJsCoreDirectory, "dist/index.mjs")).href,
-    ],
-    ["@jitl/quickjs-ffi-types", pathToFileURL(resolve(quickJsFfiDirectory, "dist/index.mjs")).href],
-    ...variantImports,
-  ]);
-  const wasmPackage =
-    variant === "debug"
-      ? "@jitl/quickjs-wasmfile-debug-sync"
-      : "@jitl/quickjs-wasmfile-release-sync";
-  const quickJsWasmDirectory = dirname(quickJsRequire.resolve(`${wasmPackage}/package.json`));
-  const importMap = `data:application/json,${encodeURIComponent(JSON.stringify({ imports }))}`;
   return {
     command: resolve(denoPlatformDirectory, process.platform === "win32" ? "deno.exe" : "deno"),
     args: [
@@ -87,9 +41,10 @@ export function resolveCodeModeDenoLaunch(
       "--no-config",
       "--no-lock",
       "--cached-only",
+      "--no-npm",
       "--node-modules-dir=none",
-      `--import-map=${importMap}`,
-      `--allow-read=${quickJsWasmDirectory}`,
+      "--v8-flags=--max-old-space-size=128,--stack-size=1024",
+      "--deny-read",
       "--deny-write",
       "--deny-net",
       "--deny-env",
@@ -98,7 +53,6 @@ export function resolveCodeModeDenoLaunch(
       "--deny-ffi",
       "--deny-import",
       workerPath,
-      variant,
       sessionId,
     ],
   };

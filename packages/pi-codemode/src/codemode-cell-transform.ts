@@ -1,28 +1,10 @@
-import {
-  parse,
-  type AssignmentPattern,
-  type AssignmentProperty,
-  type ClassDeclaration,
-  type ExpressionStatement,
-  type ForInStatement,
-  type ForOfStatement,
-  type ForStatement,
-  type FunctionDeclaration,
-  type Node,
-  type ObjectPattern,
-  type Pattern,
-  type Program,
-  type RestElement,
-  type Statement,
-  type VariableDeclaration,
-  type VariableDeclarator,
-} from "acorn";
+import ts from "typescript";
 
-/** Successful pure transform output consumed only by the worker-owned Notebook bootstrap. */
+/** Successful pure transform output consumed only by the worker-owned Notebook runtime. */
 export type TransformedCodeModeCell = {
-  /** JavaScript body with only generated declaration operations rewritten. */
+  /** TypeScript body with only generated declaration operations rewritten. */
   readonly source: string;
-  /** Placeholder the guest bootstrap replaces with an inaccessible per-Cell identifier. */
+  /** Placeholder the worker replaces with an inaccessible per-Cell helper identifier. */
   readonly internalIdentifierPlaceholder: string;
 };
 
@@ -32,7 +14,7 @@ export type CodeModeCellTransformError = {
   readonly message: string;
 };
 
-/** Result of parsing and transforming one Cell without evaluating guest JavaScript. */
+/** Result of parsing and transforming one Cell without evaluating guest TypeScript. */
 export type CodeModeCellTransformResult =
   | { readonly ok: true; readonly cell: TransformedCodeModeCell }
   | { readonly ok: false; readonly error: CodeModeCellTransformError };
@@ -43,160 +25,13 @@ type SourceEdit = {
   readonly replacement: string;
 };
 
+type CodeModeVariableKind = "const" | "let" | "var";
+type UnsupportedModuleSyntax = "dynamic-import" | "import-meta" | "static-module";
+type ParsedTypeScriptSourceFile = ts.SourceFile & {
+  readonly parseDiagnostics: readonly ts.DiagnosticWithLocation[];
+};
+
 const INTERNAL_IDENTIFIER_PREFIX = "__piCodeModeCellInternal";
-
-/**
- * Guest bootstrap expression that owns stable Notebook Bindings without placing them on
- * `globalThis`; evaluate it once per CodeMode Session to obtain the Cell runner.
- */
-export const CODEMODE_NOTEBOOK_BOOTSTRAP_SOURCE = String.raw`(() => {
-  const bindings = new Map();
-  const createCellFunction = Function;
-  const createIdentifierRandom = Math.random.bind(Math);
-  const numberToString = Function.call.bind(Number.prototype.toString);
-  const replaceAllString = Function.call.bind(String.prototype.replaceAll);
-  const sliceString = Function.call.bind(String.prototype.slice);
-  const internalCellFunctions = new WeakSet();
-  const addInternalCellFunction = Function.call.bind(
-    WeakSet.prototype.add,
-    internalCellFunctions,
-  );
-  const hasInternalCellFunction = Function.call.bind(
-    WeakSet.prototype.has,
-    internalCellFunctions,
-  );
-  const originalFunctionToString = Function.call.bind(Function.prototype.toString);
-  Object.defineProperty(Function.prototype, "toString", {
-    configurable: true,
-    writable: true,
-    value: function codeModeFunctionToString() {
-      return hasInternalCellFunction(this)
-        ? "async function () { [CodeMode Cell] }"
-        : originalFunctionToString(this);
-    },
-  });
-  let activeStage;
-  let internalIdentifierSequence = 0;
-
-  const initializationTarget = new Proxy(Object.create(null), {
-    set(_target, name, value) {
-      if (typeof name !== "string" || activeStage === undefined) {
-        throw new Error("Pi CodeMode: declaration initialization outside an active stage");
-      }
-      const stagedBinding = activeStage.get(name);
-      if (stagedBinding === undefined) {
-        throw new Error("Pi CodeMode: declaration initialized an unplanned Notebook Binding");
-      }
-      stagedBinding.initialized = true;
-      stagedBinding.value = value;
-      return true;
-    },
-  });
-
-  const declarationHelper = Object.freeze({
-    init: initializationTarget,
-    async declare(entries, initialize) {
-      if (activeStage !== undefined) {
-        throw new Error("Pi CodeMode: overlapping declaration stages");
-      }
-      activeStage = new Map(entries.map(([name, kind]) => {
-        const existingBinding = bindings.get(name);
-        return [name, {
-          initialized: kind === "var",
-          kind,
-          value: kind === "var" ? existingBinding?.value : undefined,
-        }];
-      }));
-      try {
-        await initialize();
-        for (const [name, stagedBinding] of activeStage) {
-          if (!stagedBinding.initialized) {
-            throw new Error("Pi CodeMode: declaration did not initialize its Notebook Binding");
-          }
-          const binding = bindings.get(name);
-          if (binding === undefined) {
-            bindings.set(name, {
-              kind: stagedBinding.kind,
-              value: stagedBinding.value,
-            });
-          } else {
-            binding.kind = stagedBinding.kind;
-            binding.value = stagedBinding.value;
-          }
-        }
-      } finally {
-        activeStage = undefined;
-      }
-    },
-    hoistVars(names) {
-      if (activeStage !== undefined) {
-        throw new Error("Pi CodeMode: variable hoisting during an active declaration stage");
-      }
-      for (const name of names) {
-        const binding = bindings.get(name);
-        if (binding === undefined) bindings.set(name, { kind: "var", value: undefined });
-        else binding.kind = "var";
-      }
-    },
-  });
-
-  return async function runCodeModeCell(source, internalIdentifierPlaceholder) {
-    internalIdentifierSequence += 1;
-    const randomPart = sliceString(numberToString(createIdentifierRandom(), 36), 2);
-    const internalIdentifier = "__piCodeModeRuntime" + internalIdentifierSequence + "_" + randomPart;
-    const executableSource = replaceAllString(
-      source,
-      internalIdentifierPlaceholder,
-      internalIdentifier,
-    );
-    const scope = new Proxy(Object.create(null), {
-      has(_target, name) {
-        if (name === internalIdentifier || typeof name !== "string") return false;
-        return activeStage?.has(name) === true || bindings.has(name);
-      },
-      get(_target, name) {
-        if (name === Symbol.unscopables || typeof name !== "string") return undefined;
-        const stagedBinding = activeStage?.get(name);
-        if (stagedBinding !== undefined) {
-          if (!stagedBinding.initialized) {
-            throw new ReferenceError("Cannot access '" + name + "' before initialization");
-          }
-          return stagedBinding.value;
-        }
-        return bindings.get(name)?.value;
-      },
-      set(_target, name, value) {
-        if (typeof name !== "string") return false;
-        const stagedBinding = activeStage?.get(name);
-        if (stagedBinding !== undefined) {
-          if (!stagedBinding.initialized) {
-            throw new ReferenceError("Cannot access '" + name + "' before initialization");
-          }
-          stagedBinding.value = value;
-          return true;
-        }
-        const binding = bindings.get(name);
-        if (binding === undefined) return false;
-        if (binding.kind === "const") {
-          throw new TypeError("Assignment to constant Notebook Binding '" + name + "'");
-        }
-        binding.value = value;
-        return true;
-      },
-    });
-
-    const scopeIdentifier = internalIdentifier + "Scope";
-    const createExecutableCell = createCellFunction(
-      scopeIdentifier,
-      internalIdentifier,
-      "with (" + scopeIdentifier + ") { return async function () {\n" + executableSource +
-      "\n}; }",
-    );
-    const executeCell = createExecutableCell(scope, declarationHelper);
-    addInternalCellFunction(executeCell);
-    return executeCell.call(undefined);
-  };
-})()`;
 
 function chooseInternalIdentifier(script: string): string {
   let suffix = 0;
@@ -219,452 +54,551 @@ function applySourceEdits(script: string, edits: readonly SourceEdit[]): string 
   return transformed;
 }
 
-function collectPatternBindingNames(pattern: Pattern, names: string[]): void {
-  switch (pattern.type) {
-    case "Identifier":
-      if (!names.includes(pattern.name)) names.push(pattern.name);
-      return;
-    case "ArrayPattern":
-      for (const element of pattern.elements) {
-        if (element !== null) collectPatternBindingNames(element, names);
-      }
-      return;
-    case "ObjectPattern":
-      for (const property of pattern.properties) {
-        collectPatternBindingNames(
-          property.type === "RestElement" ? property.argument : property.value,
-          names,
-        );
-      }
-      return;
-    case "AssignmentPattern":
-      collectPatternBindingNames(pattern.left, names);
-      return;
-    case "RestElement":
-      collectPatternBindingNames(pattern.argument, names);
-      return;
-    case "MemberExpression":
-      throw new Error("Pi CodeMode: parser returned a member expression in a binding pattern");
+function nodeSource(node: ts.Node, sourceFile: ts.SourceFile, script: string): string {
+  return script.slice(node.getStart(sourceFile), node.end);
+}
+
+function collectBindingNames(name: ts.BindingName, names: string[]): void {
+  if (ts.isIdentifier(name)) {
+    if (!names.includes(name.text)) names.push(name.text);
+    return;
+  }
+  for (const element of name.elements) {
+    if (!ts.isOmittedExpression(element)) collectBindingNames(element.name, names);
   }
 }
 
-function renderAssignmentProperty(
-  property: AssignmentProperty,
+function renderPropertyName(
+  name: ts.PropertyName,
+  sourceFile: ts.SourceFile,
   script: string,
-  internalIdentifier: string,
 ): string {
-  const key = script.slice(property.key.start, property.key.end);
-  const renderedKey = property.computed ? `[${key}]` : key;
-  return `${renderedKey}: ${renderPatternAssignmentTarget(property.value, script, internalIdentifier)}`;
+  return ts.isComputedPropertyName(name)
+    ? `[${nodeSource(name.expression, sourceFile, script)}]`
+    : nodeSource(name, sourceFile, script);
 }
 
-function renderObjectPattern(
-  pattern: ObjectPattern,
+function renderBindingElementAssignmentTarget(
+  element: ts.BindingElement,
+  sourceFile: ts.SourceFile,
   script: string,
   internalIdentifier: string,
+  includePropertyName: boolean,
 ): string {
-  const properties = pattern.properties.map((property) => {
-    if (property.type === "RestElement") {
-      return renderPatternAssignmentTarget(property, script, internalIdentifier);
-    }
-    return renderAssignmentProperty(property, script, internalIdentifier);
-  });
-  return `{ ${properties.join(", ")} }`;
+  const target = renderBindingAssignmentTarget(
+    element.name,
+    sourceFile,
+    script,
+    internalIdentifier,
+  );
+  const initializedTarget =
+    element.initializer === undefined
+      ? target
+      : `${target} = ${nodeSource(element.initializer, sourceFile, script)}`;
+  if (element.dotDotDotToken !== undefined) return `...${initializedTarget}`;
+  if (!includePropertyName) return initializedTarget;
+  const propertyName =
+    element.propertyName ?? (ts.isIdentifier(element.name) ? element.name : undefined);
+  return propertyName === undefined
+    ? initializedTarget
+    : `${renderPropertyName(propertyName, sourceFile, script)}: ${initializedTarget}`;
 }
 
-function renderPatternAssignmentTarget(
-  pattern: Pattern,
+function renderBindingAssignmentTarget(
+  name: ts.BindingName,
+  sourceFile: ts.SourceFile,
   script: string,
   internalIdentifier: string,
 ): string {
-  switch (pattern.type) {
-    case "Identifier":
-      return `${internalIdentifier}.init[${JSON.stringify(pattern.name)}]`;
-    case "ArrayPattern":
-      return `[${pattern.elements
-        .map((element) =>
-          element === null
-            ? ""
-            : renderPatternAssignmentTarget(element, script, internalIdentifier),
-        )
-        .join(", ")}]`;
-    case "ObjectPattern":
-      return renderObjectPattern(pattern, script, internalIdentifier);
-    case "AssignmentPattern": {
-      const assignmentPattern: AssignmentPattern = pattern;
-      return `${renderPatternAssignmentTarget(assignmentPattern.left, script, internalIdentifier)} = ${script.slice(assignmentPattern.right.start, assignmentPattern.right.end)}`;
-    }
-    case "RestElement": {
-      const restElement: RestElement = pattern;
-      return `...${renderPatternAssignmentTarget(restElement.argument, script, internalIdentifier)}`;
-    }
-    case "MemberExpression":
-      return script.slice(pattern.start, pattern.end);
+  if (ts.isIdentifier(name)) {
+    return `${internalIdentifier}.init[${JSON.stringify(name.text)}]`;
   }
+  if (ts.isArrayBindingPattern(name)) {
+    return `[${name.elements
+      .map((element) =>
+        ts.isOmittedExpression(element)
+          ? ""
+          : renderBindingElementAssignmentTarget(
+              element,
+              sourceFile,
+              script,
+              internalIdentifier,
+              false,
+            ),
+      )
+      .join(", ")}]`;
+  }
+  return `{ ${name.elements
+    .map((element) =>
+      renderBindingElementAssignmentTarget(element, sourceFile, script, internalIdentifier, true),
+    )
+    .join(", ")} }`;
 }
 
-function renderVariableDeclarator(
-  declarator: VariableDeclarator,
-  declaration: VariableDeclaration,
+function variableKind(declarationList: ts.VariableDeclarationList): CodeModeVariableKind {
+  if ((declarationList.flags & ts.NodeFlags.Const) !== 0) return "const";
+  if ((declarationList.flags & ts.NodeFlags.Let) !== 0) return "let";
+  return "var";
+}
+
+function hasUsingDeclaration(declarationList: ts.VariableDeclarationList): boolean {
+  return (declarationList.flags & ts.NodeFlags.Using) !== 0;
+}
+
+function renderVariableDeclaration(
+  declaration: ts.VariableDeclaration,
+  declarationList: ts.VariableDeclarationList,
+  sourceFile: ts.SourceFile,
   script: string,
   internalIdentifier: string,
   initializerOverride?: string,
 ): string {
+  const kind = variableKind(declarationList);
   if (
-    declaration.kind === "var" &&
-    (declarator.init === null || declarator.init === undefined) &&
+    kind === "var" &&
+    declaration.initializer === undefined &&
     initializerOverride === undefined
   ) {
     return "void 0";
   }
   const names: string[] = [];
-  collectPatternBindingNames(declarator.id, names);
-  const entries = names.map(
-    (name) => `[${JSON.stringify(name)}, ${JSON.stringify(declaration.kind)}]`,
-  );
-  const initializer =
+  collectBindingNames(declaration.name, names);
+  const entries = names.map((name) => `[${JSON.stringify(name)}, ${JSON.stringify(kind)}]`);
+  const rawInitializer =
     initializerOverride ??
-    (declarator.init === null || declarator.init === undefined
+    (declaration.initializer === undefined
       ? "undefined"
-      : script.slice(declarator.init.start, declarator.init.end));
-  const target = renderPatternAssignmentTarget(declarator.id, script, internalIdentifier);
+      : nodeSource(declaration.initializer, sourceFile, script));
+  const initializer =
+    declaration.type === undefined
+      ? rawInitializer
+      : `(${rawInitializer} as ${nodeSource(declaration.type, sourceFile, script)})`;
+  const target = renderBindingAssignmentTarget(
+    declaration.name,
+    sourceFile,
+    script,
+    internalIdentifier,
+  );
   return `await ${internalIdentifier}.declare([${entries.join(", ")}], async () => { (${target} = ${initializer}); })`;
 }
 
-function renderFunctionDeclaration(
-  declaration: FunctionDeclaration,
+function renderVariableDeclarationList(
+  declarationList: ts.VariableDeclarationList,
+  sourceFile: ts.SourceFile,
   script: string,
   internalIdentifier: string,
-): string {
-  const name = declaration.id.name;
-  const anonymousFunction = `${script.slice(declaration.start, declaration.id.start)}${script.slice(declaration.id.end, declaration.end)}`;
+): string[] {
+  return declarationList.declarations.map((declaration) =>
+    renderVariableDeclaration(declaration, declarationList, sourceFile, script, internalIdentifier),
+  );
+}
+
+function renderFunctionDeclaration(
+  declaration: ts.FunctionDeclaration,
+  sourceFile: ts.SourceFile,
+  script: string,
+  internalIdentifier: string,
+): string | undefined {
+  if (declaration.name === undefined || declaration.body === undefined) return undefined;
+  const name = declaration.name.text;
+  const declarationStart = declaration.getStart(sourceFile);
+  const anonymousFunction = `${script.slice(declarationStart, declaration.name.getStart(sourceFile))}${script.slice(declaration.name.end, declaration.end)}`;
   return `await ${internalIdentifier}.declare([[${JSON.stringify(name)}, "function"]], async () => { ${internalIdentifier}.init[${JSON.stringify(name)}] = ${anonymousFunction}; });`;
 }
 
 function renderClassDeclaration(
-  declaration: ClassDeclaration,
+  declaration: ts.ClassDeclaration,
+  sourceFile: ts.SourceFile,
   script: string,
   internalIdentifier: string,
-): string {
-  const name = declaration.id.name;
-  return `await ${internalIdentifier}.declare([[${JSON.stringify(name)}, "class"]], async () => { ${internalIdentifier}.init[${JSON.stringify(name)}] = ${script.slice(declaration.start, declaration.end)}; });`;
+): string | undefined {
+  if (declaration.name === undefined) return undefined;
+  const name = declaration.name.text;
+  return `await ${internalIdentifier}.declare([[${JSON.stringify(name)}, "class"]], async () => { ${internalIdentifier}.init[${JSON.stringify(name)}] = ${nodeSource(declaration, sourceFile, script)}; });`;
 }
 
-function addLoopBodyDeclaration(body: Statement, declaration: string, edits: SourceEdit[]): void {
-  if (body.type === "BlockStatement") {
-    edits.push({ start: body.start + 1, end: body.start + 1, replacement: `\n${declaration};\n` });
+function collectDeclarationListBindingNames(
+  declarationList: ts.VariableDeclarationList,
+  names: string[],
+): void {
+  for (const declaration of declarationList.declarations) {
+    collectBindingNames(declaration.name, names);
+  }
+}
+
+function addLoopBodyDeclaration(
+  body: ts.Statement,
+  declaration: string,
+  sourceFile: ts.SourceFile,
+  edits: SourceEdit[],
+): void {
+  if (ts.isBlock(body)) {
+    edits.push({
+      start: body.getStart(sourceFile) + 1,
+      end: body.getStart(sourceFile) + 1,
+      replacement: `\n${declaration};\n`,
+    });
     return;
   }
-  edits.push({ start: body.start, end: body.start, replacement: `{ ${declaration}; ` });
+  edits.push({
+    start: body.getStart(sourceFile),
+    end: body.getStart(sourceFile),
+    replacement: `{ ${declaration}; `,
+  });
   edits.push({ start: body.end, end: body.end, replacement: " }" });
 }
 
 function transformForIterationDeclaration(
-  statement: ForInStatement | ForOfStatement,
-  declaration: VariableDeclaration,
+  statement: ts.ForInStatement | ts.ForOfStatement,
+  declarationList: ts.VariableDeclarationList,
+  sourceFile: ts.SourceFile,
   script: string,
   internalIdentifier: string,
   edits: SourceEdit[],
 ): void {
-  const declarator = declaration.declarations[0];
-  if (declarator === undefined) {
-    throw new Error("Pi CodeMode: parser returned an empty loop variable declaration");
+  const declaration = declarationList.declarations[0];
+  if (declaration === undefined) {
+    throw new Error("Pi CodeMode: TypeScript parser returned an empty loop declaration");
   }
   const iterationIdentifier = `${internalIdentifier}Iteration`;
   edits.push({
-    start: declaration.start,
-    end: declaration.end,
+    start: declarationList.getStart(sourceFile),
+    end: declarationList.end,
     replacement: `const ${iterationIdentifier}`,
   });
   addLoopBodyDeclaration(
-    statement.body,
-    renderVariableDeclarator(
-      declarator,
+    statement.statement,
+    renderVariableDeclaration(
       declaration,
+      declarationList,
+      sourceFile,
       script,
       internalIdentifier,
       iterationIdentifier,
     ),
+    sourceFile,
     edits,
   );
 }
 
-function collectVariableDeclarationBindingNames(
-  declaration: VariableDeclaration,
-  names: string[],
-): void {
-  for (const declarator of declaration.declarations) {
-    collectPatternBindingNames(declarator.id, names);
-  }
-}
-
 function collectNestedProgramVarEdits(
-  statement: Statement,
+  statement: ts.Statement,
+  sourceFile: ts.SourceFile,
   script: string,
   internalIdentifier: string,
   hoistedVarNames: string[],
   edits: SourceEdit[],
 ): void {
-  const collectNested = (nestedStatement: Statement): void =>
+  const collectNested = (nestedStatement: ts.Statement): void =>
     collectNestedProgramVarEdits(
       nestedStatement,
+      sourceFile,
       script,
       internalIdentifier,
       hoistedVarNames,
       edits,
     );
 
-  switch (statement.type) {
-    case "VariableDeclaration":
-      if (statement.kind === "var") {
-        collectVariableDeclarationBindingNames(statement, hoistedVarNames);
-        const declarations = statement.declarations.map((declarator) =>
-          renderVariableDeclarator(declarator, statement, script, internalIdentifier),
-        );
-        edits.push({
-          start: statement.start,
-          end: statement.end,
-          replacement: `{ ${declarations.join("; ")}; }`,
-        });
-      }
-      return;
-    case "BlockStatement":
-      for (const child of statement.body) collectNested(child);
-      return;
-    case "IfStatement":
-      collectNested(statement.consequent);
-      if (statement.alternate !== null && statement.alternate !== undefined) {
-        collectNested(statement.alternate);
-      }
-      return;
-    case "LabeledStatement":
-      collectNested(statement.body);
-      return;
-    case "SwitchStatement":
-      for (const switchCase of statement.cases) {
-        for (const child of switchCase.consequent) collectNested(child);
-      }
-      return;
-    case "TryStatement":
-      collectNested(statement.block);
-      if (statement.handler !== null && statement.handler !== undefined) {
-        collectNested(statement.handler.body);
-      }
-      if (statement.finalizer !== null && statement.finalizer !== undefined) {
-        collectNested(statement.finalizer);
-      }
-      return;
-    case "WhileStatement":
-    case "DoWhileStatement":
-      collectNested(statement.body);
-      return;
-    case "ForStatement": {
-      const forStatement: ForStatement = statement;
-      const initializer = forStatement.init;
-      if (initializer?.type === "VariableDeclaration" && initializer.kind === "var") {
-        collectVariableDeclarationBindingNames(initializer, hoistedVarNames);
-        const declarations = initializer.declarations.map((declarator) =>
-          renderVariableDeclarator(declarator, initializer, script, internalIdentifier),
-        );
-        edits.push({
-          start: initializer.start,
-          end: initializer.end,
-          replacement: `(${declarations.join(", ")})`,
-        });
-      }
-      collectNested(forStatement.body);
-      return;
+  if (ts.isVariableStatement(statement)) {
+    const declarationList = statement.declarationList;
+    if (variableKind(declarationList) === "var") {
+      collectDeclarationListBindingNames(declarationList, hoistedVarNames);
+      const declarations = renderVariableDeclarationList(
+        declarationList,
+        sourceFile,
+        script,
+        internalIdentifier,
+      );
+      edits.push({
+        start: statement.getStart(sourceFile),
+        end: statement.end,
+        replacement: `{ ${declarations.join("; ")}; }`,
+      });
     }
-    case "ForInStatement":
-    case "ForOfStatement": {
-      const iterationStatement: ForInStatement | ForOfStatement = statement;
-      if (
-        iterationStatement.left.type === "VariableDeclaration" &&
-        iterationStatement.left.kind === "var"
-      ) {
-        collectVariableDeclarationBindingNames(iterationStatement.left, hoistedVarNames);
-        transformForIterationDeclaration(
-          iterationStatement,
-          iterationStatement.left,
-          script,
-          internalIdentifier,
-          edits,
-        );
-      }
-      collectNested(iterationStatement.body);
-      return;
-    }
-    case "WithStatement":
-    case "FunctionDeclaration":
-    case "ClassDeclaration":
-    case "ExpressionStatement":
-    case "EmptyStatement":
-    case "DebuggerStatement":
-    case "ReturnStatement":
-    case "BreakStatement":
-    case "ContinueStatement":
-    case "ThrowStatement":
-      return;
+    return;
   }
+  if (ts.isBlock(statement)) {
+    for (const child of statement.statements) collectNested(child);
+    return;
+  }
+  if (ts.isIfStatement(statement)) {
+    collectNested(statement.thenStatement);
+    if (statement.elseStatement !== undefined) collectNested(statement.elseStatement);
+    return;
+  }
+  if (ts.isLabeledStatement(statement)) {
+    collectNested(statement.statement);
+    return;
+  }
+  if (ts.isSwitchStatement(statement)) {
+    for (const clause of statement.caseBlock.clauses) {
+      for (const child of clause.statements) collectNested(child);
+    }
+    return;
+  }
+  if (ts.isTryStatement(statement)) {
+    collectNested(statement.tryBlock);
+    if (statement.catchClause !== undefined) collectNested(statement.catchClause.block);
+    if (statement.finallyBlock !== undefined) collectNested(statement.finallyBlock);
+    return;
+  }
+  if (ts.isWhileStatement(statement) || ts.isDoStatement(statement)) {
+    collectNested(statement.statement);
+    return;
+  }
+  if (ts.isForStatement(statement)) {
+    const initializer = statement.initializer;
+    if (
+      initializer !== undefined &&
+      ts.isVariableDeclarationList(initializer) &&
+      variableKind(initializer) === "var"
+    ) {
+      collectDeclarationListBindingNames(initializer, hoistedVarNames);
+      const declarations = renderVariableDeclarationList(
+        initializer,
+        sourceFile,
+        script,
+        internalIdentifier,
+      );
+      edits.push({
+        start: initializer.getStart(sourceFile),
+        end: initializer.end,
+        replacement: `(${declarations.join(", ")})`,
+      });
+    }
+    collectNested(statement.statement);
+    return;
+  }
+  if (ts.isForInStatement(statement) || ts.isForOfStatement(statement)) {
+    const initializer = statement.initializer;
+    if (ts.isVariableDeclarationList(initializer) && variableKind(initializer) === "var") {
+      collectDeclarationListBindingNames(initializer, hoistedVarNames);
+      transformForIterationDeclaration(
+        statement,
+        initializer,
+        sourceFile,
+        script,
+        internalIdentifier,
+        edits,
+      );
+    }
+    collectNested(statement.statement);
+  }
+  // Functions, classes, modules, and source `with` introduce boundaries whose `var`
+  // declarations are deliberately Cell-local rather than Program-scope Notebook Bindings.
 }
 
-function containsDynamicImport(node: Node): boolean {
-  if (node.type === "ImportExpression") return true;
-  for (const value of Object.values(node)) {
-    if (Array.isArray(value)) {
-      for (const element of value) {
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Acorn nodes cross a generic AST traversal boundary.
-        if (typeof element === "object" && element !== null && "type" in element) {
-          // SAFETY: Acorn's AST arrays contain Node values where a structural `type` field is present.
-          if (containsDynamicImport(element as Node)) return true;
-        }
-      }
-      continue;
-    }
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Acorn nodes cross a generic AST traversal boundary.
-    if (typeof value === "object" && value !== null && "type" in value) {
-      // SAFETY: Acorn's AST object children are Node values where a structural `type` field is present.
-      if (containsDynamicImport(value as Node)) return true;
-    }
-  }
-  return false;
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  return (
+    ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((item) => item.kind === kind) === true
+  );
 }
 
-function parsesAsStaticModule(script: string): boolean {
-  try {
-    const moduleProgram = parse(script, {
-      ecmaVersion: "latest",
-      sourceType: "module",
-    });
-    return moduleProgram.body.some(
-      (statement) =>
-        statement.type === "ImportDeclaration" ||
-        statement.type === "ExportNamedDeclaration" ||
-        statement.type === "ExportDefaultDeclaration" ||
-        statement.type === "ExportAllDeclaration",
-    );
-  } catch {
-    return false;
-  }
+function findUnsupportedModuleSyntax(
+  sourceFile: ts.SourceFile,
+): UnsupportedModuleSyntax | undefined {
+  let found: UnsupportedModuleSyntax | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found !== undefined) return;
+    if (
+      ts.isImportDeclaration(node) ||
+      ts.isImportEqualsDeclaration(node) ||
+      ts.isExportDeclaration(node) ||
+      ts.isExportAssignment(node) ||
+      ts.isImportTypeNode(node) ||
+      hasModifier(node, ts.SyntaxKind.ExportKeyword) ||
+      hasModifier(node, ts.SyntaxKind.DefaultKeyword)
+    ) {
+      found = "static-module";
+      return;
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      found = "dynamic-import";
+      return;
+    }
+    if (ts.isMetaProperty(node) && node.keywordToken === ts.SyntaxKind.ImportKeyword) {
+      found = "import-meta";
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
+function syntaxErrorFromDiagnostic(
+  diagnostic: ts.DiagnosticWithLocation,
+): CodeModeCellTransformError {
+  return {
+    code: "syntax",
+    message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+  };
 }
 
 function parseCodeModeProgram(
   script: string,
 ):
-  | { readonly ok: true; readonly program: Program }
+  | { readonly ok: true; readonly sourceFile: ts.SourceFile }
   | { readonly ok: false; readonly error: CodeModeCellTransformError } {
-  try {
-    const program = parse(script, {
-      allowAwaitOutsideFunction: true,
-      allowReturnOutsideFunction: true,
-      ecmaVersion: "latest",
-      sourceType: "script",
-    });
-    if (containsDynamicImport(program)) {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported-syntax",
-          message: "CodeMode Cell dynamic import is not supported",
-        },
-      };
-    }
-    return { ok: true, program };
-  } catch (cause) {
-    if (parsesAsStaticModule(script)) {
-      return {
-        ok: false,
-        error: {
-          code: "unsupported-syntax",
-          message: "CodeMode Cell imports and exports are not supported",
-        },
-      };
-    }
+  const sourceFile = ts.createSourceFile(
+    "codemode-cell.ts",
+    script,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  // SAFETY: TypeScript's createSourceFile result owns parseDiagnostics at runtime, but the public SourceFile contract omits this parser-owned field.
+  const parsedSourceFile = sourceFile as ParsedTypeScriptSourceFile;
+  const diagnostic = parsedSourceFile.parseDiagnostics[0];
+  if (diagnostic !== undefined) return { ok: false, error: syntaxErrorFromDiagnostic(diagnostic) };
+
+  const unsupported = findUnsupportedModuleSyntax(sourceFile);
+  if (unsupported === "static-module") {
     return {
       ok: false,
       error: {
-        code: "syntax",
-        message: cause instanceof Error ? cause.message : "Invalid JavaScript Cell",
+        code: "unsupported-syntax",
+        message: "CodeMode Cell imports and exports are not supported",
       },
     };
   }
+  if (unsupported === "dynamic-import") {
+    return {
+      ok: false,
+      error: {
+        code: "unsupported-syntax",
+        message: "CodeMode Cell dynamic import is not supported",
+      },
+    };
+  }
+  if (unsupported === "import-meta") {
+    return {
+      ok: false,
+      error: {
+        code: "unsupported-syntax",
+        message: "CodeMode Cell import.meta is not supported",
+      },
+    };
+  }
+  return { ok: true, sourceFile };
 }
 
-/** Parses and transforms one Cell into the explicit persistent Notebook Binding dialect. */
+function isDirective(statement: ts.Statement): boolean {
+  return ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression);
+}
+
+function directVariableStatementError(
+  statement: ts.VariableStatement,
+): CodeModeCellTransformError | undefined {
+  if (hasUsingDeclaration(statement.declarationList)) {
+    return {
+      code: "unsupported-syntax",
+      message: "CodeMode Cell top-level using declarations are not supported",
+    };
+  }
+  const kind = variableKind(statement.declarationList);
+  if (
+    kind === "const" &&
+    statement.declarationList.declarations.some(
+      (declaration) => declaration.initializer === undefined,
+    )
+  ) {
+    return { code: "syntax", message: "CodeMode Cell const declarations require an initializer" };
+  }
+  return undefined;
+}
+
+/** Parses TypeScript and rewrites one Cell into the explicit persistent Notebook Binding dialect. */
 export function transformCodeModeCell(script: string): CodeModeCellTransformResult {
   const parsed = parseCodeModeProgram(script);
   if (!parsed.ok) return parsed;
-
+  const sourceFile = parsed.sourceFile;
   const internalIdentifier = chooseInternalIdentifier(script);
   const edits: SourceEdit[] = [];
-  const finalStatement = parsed.program.body.at(-1);
-  if (finalStatement?.type === "ExpressionStatement") {
-    const expressionStatement: ExpressionStatement = finalStatement;
+  const finalStatement = sourceFile.statements.at(-1);
+  if (finalStatement !== undefined && ts.isExpressionStatement(finalStatement)) {
     edits.push({
-      start: expressionStatement.start,
-      end: expressionStatement.end,
-      replacement: `return (${script.slice(expressionStatement.expression.start, expressionStatement.expression.end)});`,
+      start: finalStatement.getStart(sourceFile),
+      end: finalStatement.end,
+      replacement: `return (${nodeSource(finalStatement.expression, sourceFile, script)});`,
     });
   }
 
   const hoistedVarNames: string[] = [];
   const functionPrologue: string[] = [];
-  for (const statement of parsed.program.body) {
-    if (statement.type === "VariableDeclaration") {
-      if (statement.kind === "var") {
-        collectVariableDeclarationBindingNames(statement, hoistedVarNames);
+  for (const statement of sourceFile.statements) {
+    if (ts.isVariableStatement(statement)) {
+      const error = directVariableStatementError(statement);
+      if (error !== undefined) return { ok: false, error };
+      const declarationList = statement.declarationList;
+      if (variableKind(declarationList) === "var") {
+        collectDeclarationListBindingNames(declarationList, hoistedVarNames);
       }
       edits.push({
-        start: statement.start,
+        start: statement.getStart(sourceFile),
         end: statement.end,
-        replacement: `${statement.declarations
-          .map((declarator) =>
-            renderVariableDeclarator(declarator, statement, script, internalIdentifier),
-          )
-          .join(";\n")};`,
+        replacement: `${renderVariableDeclarationList(
+          declarationList,
+          sourceFile,
+          script,
+          internalIdentifier,
+        ).join("; ")};`,
       });
       continue;
     }
-    if (statement.type === "FunctionDeclaration") {
-      functionPrologue.push(renderFunctionDeclaration(statement, script, internalIdentifier));
-      edits.push({ start: statement.start, end: statement.end, replacement: "" });
+    if (ts.isFunctionDeclaration(statement)) {
+      const declaration = renderFunctionDeclaration(
+        statement,
+        sourceFile,
+        script,
+        internalIdentifier,
+      );
+      if (declaration !== undefined) {
+        functionPrologue.push(declaration);
+        edits.push({
+          start: statement.getStart(sourceFile),
+          end: statement.end,
+          replacement: "void 0;",
+        });
+      }
       continue;
     }
-    if (statement.type === "ClassDeclaration") {
-      edits.push({
-        start: statement.start,
-        end: statement.end,
-        replacement: renderClassDeclaration(statement, script, internalIdentifier),
-      });
+    if (ts.isClassDeclaration(statement)) {
+      const declaration = renderClassDeclaration(statement, sourceFile, script, internalIdentifier);
+      if (declaration !== undefined) {
+        edits.push({
+          start: statement.getStart(sourceFile),
+          end: statement.end,
+          replacement: declaration,
+        });
+      }
       continue;
     }
-    if (
-      statement.type === "ImportDeclaration" ||
-      statement.type === "ExportNamedDeclaration" ||
-      statement.type === "ExportDefaultDeclaration" ||
-      statement.type === "ExportAllDeclaration"
-    ) {
-      throw new Error("Pi CodeMode: script parser returned a module declaration");
-    }
-    collectNestedProgramVarEdits(statement, script, internalIdentifier, hoistedVarNames, edits);
+    collectNestedProgramVarEdits(
+      statement,
+      sourceFile,
+      script,
+      internalIdentifier,
+      hoistedVarNames,
+      edits,
+    );
   }
 
-  const cellPrologue = [
-    ...(hoistedVarNames.length === 0
-      ? []
-      : [`${internalIdentifier}.hoistVars(${JSON.stringify(hoistedVarNames)});`]),
-    ...functionPrologue,
-  ];
-  if (cellPrologue.length > 0) {
-    const directiveEnd = parsed.program.body.findIndex(
-      (statement) => statement.type !== "ExpressionStatement" || statement.directive === undefined,
-    );
-    const insertionIndex =
-      directiveEnd === -1 ? parsed.program.end : (parsed.program.body[directiveEnd]?.start ?? 0);
+  const prologue: string[] = [];
+  if (hoistedVarNames.length > 0) {
+    prologue.push(`${internalIdentifier}.hoistVars(${JSON.stringify(hoistedVarNames)});`);
+  }
+  prologue.push(...functionPrologue);
+  if (prologue.length > 0) {
+    let insertionPosition = 0;
+    for (const statement of sourceFile.statements) {
+      if (!isDirective(statement)) break;
+      insertionPosition = statement.end;
+    }
     edits.push({
-      start: insertionIndex,
-      end: insertionIndex,
-      replacement: `${cellPrologue.join("\n")}\n`,
+      start: insertionPosition,
+      end: insertionPosition,
+      replacement: `\n${prologue.join("\n")}\n`,
     });
   }
 

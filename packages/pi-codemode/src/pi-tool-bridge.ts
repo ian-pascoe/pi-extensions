@@ -47,7 +47,7 @@ export interface PiToolBridgeCall {
   readonly name: string;
 }
 
-/** JSON-safe text or image content returned to a QuickJS Cell. */
+/** JSON-safe text or image content returned to a Deno Cell. */
 export type PiToolBridgeContent =
   | { readonly type: "text"; readonly text: string }
   | {
@@ -56,7 +56,7 @@ export type PiToolBridgeContent =
       readonly mimeType: string;
     };
 
-/** JSON-safe nested Pi tool value resolved inside the QuickJS Cell. */
+/** JSON-safe nested Pi tool value resolved inside the Deno Cell. */
 export interface PiToolBridgeValue {
   readonly content: readonly PiToolBridgeContent[];
   readonly details?: CodeModeJsonValue;

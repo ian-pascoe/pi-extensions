@@ -1,6 +1,6 @@
 # CodeMode context
 
-CodeMode lets an agent compose registered Pi tools from persistent JavaScript
+CodeMode lets an agent compose registered Pi tools from persistent TypeScript
 notebook sessions.
 
 ## Language
@@ -11,7 +11,7 @@ execution.
 _Avoid_: Pi session, runtime
 
 **Cell**:
-One JavaScript script submitted to a CodeMode Session for evaluation.
+One TypeScript program submitted to a CodeMode Session for evaluation.
 _Avoid_: command, query
 
 **Notebook Binding**:

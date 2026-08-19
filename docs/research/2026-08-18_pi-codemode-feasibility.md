@@ -3,30 +3,33 @@
 **Date:** 2026-08-18
 **Question:** Can a Pi extension run OpenAI Codex's stateful Code Mode JavaScript REPL over Pi's already-registered tools, without changing upstream Pi or reimplementing Pi's built-in tools? Monkey-patching Pi is allowed.
 
-## 2026-08-19 QuickJS and Deno update
+## 2026-08-19 Deno-native update
 
-The user rejected the Codex host dependency after this report. A throwaway `quickjs-emscripten` spike, removed after validation, proved persistent explicit state, capability isolation, detached-call draining, timeout, and cancellation. Its integration proof called Pi's real built-in `read`, observed a tool registered after startup, preserved argument mutation and result hooks, and blocked execution through `tool_call` without running the handler.
+The user rejected the Codex host dependency after this report. The earlier
+`quickjs-emscripten` spike is historical validation only: it established that
+Pi handler capture, detached-call draining, timeout, and cancellation merit
+end-to-end proof. It is not part of the selected runtime.
 
-A subsequent packaging tracer found that Node 22.19 rejects native TypeScript
-below `node_modules`. Deno 2.9.5 also rejects it in manual `node_modules`
-compatibility mode, but executes the same installed source with
-`--node-modules-dir=none`. The approved design therefore adds the official
-exact `deno@2.9.5` npm dependency and runs one Deno subprocess per CodeMode
-Session. A runtime `data:` import map points at Node-resolved installed QuickJS
-ES modules, and Deno receives only the filesystem read grant needed for the
-release-sync WASM asset. Workspace, actual tarball, and production Git-copy
-tracers passed under parent Node 22.19.0 without a build, generated fallback,
-runtime download, or writable cache.
+Node 22.19 rejects native TypeScript below `node_modules`. Deno 2.9.5 executes
+the same installed source with `--node-modules-dir=none`, and dynamically
+imports `Blob` modules marked `application/typescript`. The selected design
+therefore adds the official exact `deno@2.9.5` npm dependency and runs one
+permission-denied Deno subprocess per CodeMode Session. Deno itself transpiles
+and executes Cells without type checking. The package-local `typescript@6.0.3`
+parser matches Deno's bundled compiler and only plans source-range declaration
+rewrites.
 
-**Updated verdict:** an independently implemented Code Mode is feasible with
-Deno-hosted embedded QuickJS and the same transient `AgentSession` capture
-described below. Bun remains rejected because its runtime is not a capability
-sandbox. Pi handler closures remain in the parent Node process and cross a
-bounded generic standard-stream bridge; they are never moved into Deno. The
-original Codex-host sections remain useful comparison material, but no longer
-describe the selected runtime.
+**Selected verdict:** an independently implemented Code Mode is feasible with
+Deno-native TypeScript Cells and the same transient `AgentSession` capture
+described below. Pi handler closures remain in the parent Node process and cross
+a bounded standard-stream JSON bridge; they are never moved into Deno. The
+historical Codex-host sections below remain comparison material, not the
+selected runtime.
 
-The spike deliberately does not yet implement yielded cells/wait, full lexical REPL persistence, nested `executionMode` scheduling, streamed nested updates, exact `terminate` propagation, or bounded shutdown when a registered tool ignores `AbortSignal`.
+The production proof must cover Notebook Binding persistence, native TypeScript
+execution, nested `executionMode` scheduling, streamed nested updates, exact
+`terminate` propagation, and bounded shutdown when a registered tool ignores
+`AbortSignal`.
 
 ## Verdict
 

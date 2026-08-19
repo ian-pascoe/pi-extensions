@@ -21,7 +21,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                 | Configured automatic post-edit formatting.                    | `pi install npm:@ian-pascoe/pi-formatter`         |
 | [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                             | Configured language-server tools and post-edit diagnostics.   | `pi install npm:@ian-pascoe/pi-lsp`               |
 | [`@ian-pascoe/pi-dap`](packages/pi-dap)                             | Configured Debug Adapter Protocol sessions.                   | `pi install npm:@ian-pascoe/pi-dap`               |
-| [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent JavaScript composition of registered Pi tools.     | `pi install npm:@ian-pascoe/pi-codemode`          |
+| [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.     | `pi install npm:@ian-pascoe/pi-codemode`          |
 
 ## Install the collection from Git
 
@@ -82,8 +82,9 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi DAP requires a separately managed Debug Adapter executable. The repository's
   `vscode-js-debug` development dependency supports its local Node smoke profile; its files are
   not packed or installed with `@ian-pascoe/pi-dap`.
-- Pi CodeMode installs its pinned Deno runtime and runs guest JavaScript inside
-  QuickJS; registered Pi tools still execute with their normal host permissions.
+- Pi CodeMode installs Deno 2.9.5 and runs TypeScript Cells directly in a
+  permission-denied Deno subprocess; registered Pi tools still execute with
+  their normal host permissions.
 
 See package READMEs for configuration. The repository MIT license covers
 package code; Bible Verses documents separate embedded-text rights and

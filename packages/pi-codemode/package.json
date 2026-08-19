@@ -2,14 +2,14 @@
   "name": "@ian-pascoe/pi-codemode",
   "version": "0.1.0",
   "private": false,
-  "description": "Process-isolated persistent JavaScript tool composition for Pi",
+  "description": "Process-isolated persistent TypeScript tool composition for Pi",
   "keywords": [
     "codemode",
     "deno",
     "pi",
     "pi-extension",
     "pi-package",
-    "quickjs"
+    "typescript"
   ],
   "homepage": "https://github.com/ian-pascoe/pi-extensions#readme",
   "bugs": {
@@ -37,10 +37,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "acorn": "^8.15.0",
     "deno": "2.9.5",
     "minimatch": "^10.2.5",
-    "quickjs-emscripten": "0.32.0"
+    "typescript": "6.0.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

@@ -28,7 +28,7 @@ const INVALID_CODEMODE_SESSION_ID = "invalid-session-id";
 /** Branded identifier for one retained CodeMode Session. */
 export type CodeModeSessionId = string & { readonly CodeModeSessionId: unique symbol };
 
-/** One guest-originated nested Pi tool call in a QuickJS job-drain batch. */
+/** One guest-originated nested Pi tool call in a Deno microtask batch. */
 export type CodeModeNestedToolCall = {
   readonly callId: string;
   readonly toolName: string;
@@ -85,8 +85,6 @@ export type CodeModeSessionCoordinatorOptions = {
   readonly executeToolBatch: ExecuteCodeModeNestedToolBatch;
   /** Explicit parent clock and Session-ID capabilities. */
   readonly runtime: CodeModeRuntime;
-  /** Uses the leak-detecting synchronous QuickJS build in focused tests. */
-  readonly quickJsVariant?: "release" | "debug";
 };
 
 type CodeModeMetadataAccumulator = {
@@ -220,11 +218,10 @@ function finalizeCodeModeMetadata(
   return metadata;
 }
 
-/** Owns bounded CodeMode Session records and one Deno/QuickJS process per live Session. */
+/** Owns bounded CodeMode Session records and one isolated Deno process per live Session. */
 export class CodeModeSessionCoordinator {
   private readonly records = new Map<CodeModeSessionId, CodeModeSessionRecord>();
   private readonly runtime: CodeModeRuntime;
-  private readonly variant: "release" | "debug";
   private accessSequence = 0;
   private cellSequence = 0;
   private shuttingDown = false;
@@ -238,7 +235,6 @@ export class CodeModeSessionCoordinator {
   /** Creates one coordinator from its Pi bridge, limits, and parent runtime capabilities. */
   constructor(private readonly options: CodeModeSessionCoordinatorOptions) {
     this.runtime = options.runtime;
-    this.variant = options.quickJsVariant ?? "release";
   }
 
   /** Starts one Cell, optionally returning before its retained result settles. */
@@ -403,7 +399,6 @@ export class CodeModeSessionCoordinator {
     try {
       worker = new CodeModeWorkerProcess({
         sessionId,
-        variant: this.variant,
         runtime: this.runtime,
         onResponse: (response) => this.handleWorkerResponse(sessionId, response),
         onFailure: (message) => this.handleWorkerFailure(sessionId, message),
@@ -493,10 +488,7 @@ export class CodeModeSessionCoordinator {
         internalIdentifierPlaceholder: transformed.cell.internalIdentifierPlaceholder,
         toolNames,
       } as const;
-      const request: CodeModeWorkerRequest =
-        input.timeoutMs === undefined
-          ? requestBase
-          : { ...requestBase, timeoutMs: input.timeoutMs };
+      const request: CodeModeWorkerRequest = requestBase;
       const sent = record.worker.send(request);
       if (!sent.ok) {
         this.settleReusableCell(
@@ -550,7 +542,7 @@ export class CodeModeSessionCoordinator {
         });
         return;
       }
-      if (response.error.code === "timeout" || response.error.code === "runtime") {
+      if (response.error.code === "runtime") {
         this.fatalizeSession(record, cell, {
           code: response.error.code,
           message: response.error.message,
@@ -574,16 +566,6 @@ export class CodeModeSessionCoordinator {
       }
       void this.executeNestedToolBatch(record, cell, response);
       return;
-    }
-    if (
-      response.type === "result" ||
-      response.type === "error" ||
-      response.type === "debug-memory"
-    ) {
-      this.fatalizeSession(record, cell, {
-        code: "runtime",
-        message: "CodeMode worker emitted an unexpected diagnostic response",
-      });
     }
   }
 

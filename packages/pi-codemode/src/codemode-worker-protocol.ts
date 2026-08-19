@@ -5,15 +5,19 @@ import { Buffer } from "node:buffer";
 export const CODEMODE_WORKER_MESSAGE_LIMIT_BYTES = 8 * 1024 * 1024;
 
 const CODEMODE_WORKER_PROTOCOL_VERSION = 1;
+const arrayIsArray = Array.isArray;
+const jsonParse = JSON.parse;
+const jsonStringify = JSON.stringify;
+const objectKeys = Object.keys;
 
-/** A nested tool call emitted by the QuickJS guest after one job drain. */
+/** A nested tool call emitted by a Deno Cell after one microtask drain. */
 export type CodeModeWorkerToolCall = {
   readonly callId: string;
   readonly toolName: string;
   readonly inputJson: string;
 };
 
-/** A catchable nested tool settlement returned to the QuickJS guest. */
+/** A catchable nested tool settlement returned to the Deno Cell. */
 export type CodeModeWorkerToolSettlement =
   | { readonly callId: string; readonly outcome: "success"; readonly resultJson: string }
   | {
@@ -21,13 +25,6 @@ export type CodeModeWorkerToolSettlement =
       readonly outcome: "error";
       readonly error: { readonly code: string; readonly message: string };
     };
-
-/** QuickJS allocator state returned only by the debug worker variant. */
-export type CodeModeWorkerMemoryUsage = {
-  readonly mallocCount: number;
-  readonly memoryUsedBytes: number;
-  readonly objectCount: number;
-};
 
 /** Strict parent-to-process message for one persistent CodeMode Session. */
 export type CodeModeWorkerRequest =
@@ -39,7 +36,6 @@ export type CodeModeWorkerRequest =
       readonly source: string;
       readonly internalIdentifierPlaceholder: string;
       readonly toolNames: readonly string[];
-      readonly timeoutMs?: number;
     }
   | {
       readonly version: 1;
@@ -49,23 +45,10 @@ export type CodeModeWorkerRequest =
       readonly batchId: string;
       readonly results: readonly CodeModeWorkerToolSettlement[];
     }
-  | { readonly version: 1; readonly type: "shutdown"; readonly sessionId: string }
-  | {
-      readonly version: 1;
-      readonly type: "evaluate";
-      readonly sessionId: string;
-      readonly requestId: string;
-      readonly script: string;
-    }
-  | {
-      readonly version: 1;
-      readonly type: "debug-memory";
-      readonly sessionId: string;
-      readonly requestId: string;
-    };
+  | { readonly version: 1; readonly type: "shutdown"; readonly sessionId: string };
 
 /** Stable worker-side Cell failures translated by the session coordinator. */
-export type CodeModeWorkerCellErrorCode = "script" | "serialization" | "timeout" | "runtime";
+export type CodeModeWorkerCellErrorCode = "script" | "serialization" | "runtime";
 
 /** Strict process-to-parent message for one persistent CodeMode Session. */
 export type CodeModeWorkerResponse =
@@ -97,34 +80,7 @@ export type CodeModeWorkerResponse =
       readonly type: "protocol-error";
       readonly sessionId: string;
       readonly message: string;
-    }
-  | {
-      readonly version: 1;
-      readonly type: "result";
-      readonly sessionId: string;
-      readonly requestId: string;
-      readonly resultJson: string;
-    }
-  | {
-      readonly version: 1;
-      readonly type: "error";
-      readonly sessionId: string;
-      readonly requestId: string;
-      readonly error: { readonly code: string; readonly message: string };
-    }
-  | {
-      readonly version: 1;
-      readonly type: "debug-memory";
-      readonly sessionId: string;
-      readonly requestId: string;
-      readonly memory: CodeModeWorkerMemoryUsage;
     };
-
-/** One-shot compatibility response emitted by the installed-layout worker smoke test. */
-export type CodeModeWorkerTracerResponse = Extract<
-  CodeModeWorkerResponse,
-  { readonly type: "result" | "error" }
->;
 
 /** Expected result of parsing one untrusted CodeMode worker protocol line. */
 export type CodeModeWorkerParseResult<T> =
@@ -133,7 +89,7 @@ export type CodeModeWorkerParseResult<T> =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Protocol bytes require primitive refinement before exact-key parsing.
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !arrayIsArray(value);
 }
 
 function isString(value: unknown): value is string {
@@ -145,16 +101,44 @@ function isNonEmptyString(value: unknown): value is string {
   return isString(value) && value.length > 0;
 }
 
+function isUniqueNonEmptyStringArray(value: unknown): value is string[] {
+  if (!arrayIsArray(value)) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const candidate: unknown = value[index];
+    if (!isNonEmptyString(candidate)) return false;
+    for (let priorIndex = 0; priorIndex < index; priorIndex += 1) {
+      if (value[priorIndex] === candidate) return false;
+    }
+  }
+  return true;
+}
+
+function hasString(values: readonly string[], candidate: string): boolean {
+  for (let index = 0; index < values.length; index += 1) {
+    if (values[index] === candidate) return true;
+  }
+  return false;
+}
+
 function hasExactKeys(
   value: Readonly<Record<string, unknown>>,
   expected: readonly string[],
 ): boolean {
-  const keys = Object.keys(value).sort();
-  const sortedExpected = [...expected].sort();
-  return (
-    keys.length === sortedExpected.length &&
-    keys.every((key, index) => key === sortedExpected[index])
-  );
+  const keys = objectKeys(value);
+  if (keys.length !== expected.length) return false;
+  for (let expectedIndex = 0; expectedIndex < expected.length; expectedIndex += 1) {
+    const expectedKey = expected[expectedIndex];
+    if (expectedKey === undefined) return false;
+    let found = false;
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      if (keys[keyIndex] === expectedKey) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
 }
 
 function parseProtocolJson(
@@ -167,7 +151,7 @@ function parseProtocolJson(
     return { ok: false, message: `CodeMode worker ${subject} exceeds 8 MiB` };
   }
   try {
-    return { ok: true, value: JSON.parse(message) };
+    return { ok: true, value: jsonParse(message) };
   } catch {
     return { ok: false, message: `CodeMode worker ${subject} is not valid JSON` };
   }
@@ -207,17 +191,17 @@ function parseToolResultsRequest(
     !isNonEmptyString(decoded.sessionId) ||
     !isNonEmptyString(decoded.cellId) ||
     !isNonEmptyString(decoded.batchId) ||
-    !Array.isArray(decoded.results)
+    !arrayIsArray(decoded.results)
   ) {
     return undefined;
   }
   const results: CodeModeWorkerToolSettlement[] = [];
-  const callIds = new Set<string>();
-  for (const candidate of decoded.results) {
-    const result = parseToolSettlement(candidate);
-    if (result === undefined || callIds.has(result.callId)) return undefined;
-    callIds.add(result.callId);
-    results.push(result);
+  const callIds: string[] = [];
+  for (let index = 0; index < decoded.results.length; index += 1) {
+    const result = parseToolSettlement(decoded.results[index]);
+    if (result === undefined || hasString(callIds, result.callId)) return undefined;
+    callIds[callIds.length] = result.callId;
+    results[results.length] = result;
   }
   return {
     version: CODEMODE_WORKER_PROTOCOL_VERSION,
@@ -258,40 +242,6 @@ export function parseCodeModeWorkerRequest(
       },
     };
   }
-  if (
-    decoded.type === "evaluate" &&
-    hasExactKeys(decoded, ["requestId", "script", "sessionId", "type", "version"]) &&
-    isNonEmptyString(decoded.sessionId) &&
-    isNonEmptyString(decoded.requestId) &&
-    isString(decoded.script)
-  ) {
-    return {
-      ok: true,
-      value: {
-        version: CODEMODE_WORKER_PROTOCOL_VERSION,
-        type: "evaluate",
-        sessionId: decoded.sessionId,
-        requestId: decoded.requestId,
-        script: decoded.script,
-      },
-    };
-  }
-  if (
-    decoded.type === "debug-memory" &&
-    hasExactKeys(decoded, ["requestId", "sessionId", "type", "version"]) &&
-    isNonEmptyString(decoded.sessionId) &&
-    isNonEmptyString(decoded.requestId)
-  ) {
-    return {
-      ok: true,
-      value: {
-        version: CODEMODE_WORKER_PROTOCOL_VERSION,
-        type: "debug-memory",
-        sessionId: decoded.sessionId,
-        requestId: decoded.requestId,
-      },
-    };
-  }
   if (decoded.type === "tool-results") {
     const request = parseToolResultsRequest(decoded);
     return request === undefined
@@ -299,51 +249,34 @@ export function parseCodeModeWorkerRequest(
       : { ok: true, value: request };
   }
   if (decoded.type === "execute") {
-    const expectedKeys =
-      decoded.timeoutMs === undefined
-        ? [
-            "cellId",
-            "internalIdentifierPlaceholder",
-            "sessionId",
-            "source",
-            "toolNames",
-            "type",
-            "version",
-          ]
-        : [
-            "cellId",
-            "internalIdentifierPlaceholder",
-            "sessionId",
-            "source",
-            "timeoutMs",
-            "toolNames",
-            "type",
-            "version",
-          ];
     if (
-      hasExactKeys(decoded, expectedKeys) &&
+      hasExactKeys(decoded, [
+        "cellId",
+        "internalIdentifierPlaceholder",
+        "sessionId",
+        "source",
+        "toolNames",
+        "type",
+        "version",
+      ]) &&
       isNonEmptyString(decoded.sessionId) &&
       isNonEmptyString(decoded.cellId) &&
       isString(decoded.source) &&
       isNonEmptyString(decoded.internalIdentifierPlaceholder) &&
-      Array.isArray(decoded.toolNames) &&
-      decoded.toolNames.every(isNonEmptyString) &&
-      new Set(decoded.toolNames).size === decoded.toolNames.length &&
-      (decoded.timeoutMs === undefined ||
-        (Number.isSafeInteger(decoded.timeoutMs) && Number(decoded.timeoutMs) > 0))
+      isUniqueNonEmptyStringArray(decoded.toolNames)
     ) {
-      const value = {
-        version: CODEMODE_WORKER_PROTOCOL_VERSION,
-        type: "execute",
-        sessionId: decoded.sessionId,
-        cellId: decoded.cellId,
-        source: decoded.source,
-        internalIdentifierPlaceholder: decoded.internalIdentifierPlaceholder,
-        toolNames: decoded.toolNames,
-      } as const;
-      return decoded.timeoutMs === undefined
-        ? { ok: true, value }
-        : { ok: true, value: { ...value, timeoutMs: Number(decoded.timeoutMs) } };
+      return {
+        ok: true,
+        value: {
+          version: CODEMODE_WORKER_PROTOCOL_VERSION,
+          type: "execute",
+          sessionId: decoded.sessionId,
+          cellId: decoded.cellId,
+          source: decoded.source,
+          internalIdentifierPlaceholder: decoded.internalIdentifierPlaceholder,
+          toolNames: decoded.toolNames,
+        },
+      };
     }
   }
   return { ok: false, message: "CodeMode worker request has an invalid protocol shape" };
@@ -371,29 +304,30 @@ function parseToolBatchResponse(
     !isNonEmptyString(decoded.sessionId) ||
     !isNonEmptyString(decoded.cellId) ||
     !isNonEmptyString(decoded.batchId) ||
-    !Array.isArray(decoded.calls)
+    !arrayIsArray(decoded.calls)
   ) {
     return undefined;
   }
   const calls: CodeModeWorkerToolCall[] = [];
-  const callIds = new Set<string>();
-  for (const candidate of decoded.calls) {
+  const callIds: string[] = [];
+  for (let index = 0; index < decoded.calls.length; index += 1) {
+    const candidate: unknown = decoded.calls[index];
     if (
       !isRecord(candidate) ||
       !hasExactKeys(candidate, ["callId", "inputJson", "toolName"]) ||
       !isNonEmptyString(candidate.callId) ||
-      callIds.has(candidate.callId) ||
+      hasString(callIds, candidate.callId) ||
       !isNonEmptyString(candidate.toolName) ||
       !isString(candidate.inputJson)
     ) {
       return undefined;
     }
-    callIds.add(candidate.callId);
-    calls.push({
+    callIds[callIds.length] = candidate.callId;
+    calls[calls.length] = {
       callId: candidate.callId,
       toolName: candidate.toolName,
       inputJson: candidate.inputJson,
-    });
+    };
   }
   if (calls.length === 0) return undefined;
   return {
@@ -479,10 +413,7 @@ export function parseCodeModeWorkerResponse(
     isNonEmptyString(decoded.cellId)
   ) {
     const error = parseWorkerError(decoded.error);
-    if (
-      error !== undefined &&
-      ["script", "serialization", "timeout", "runtime"].includes(error.code)
-    ) {
+    if (error !== undefined && ["script", "serialization", "runtime"].includes(error.code)) {
       // SAFETY: The literal-membership check above refines the protocol string to the closed worker error code union.
       const code = error.code as CodeModeWorkerCellErrorCode;
       return {
@@ -497,69 +428,6 @@ export function parseCodeModeWorkerResponse(
       };
     }
   }
-  if (
-    decoded.type === "debug-memory" &&
-    hasExactKeys(decoded, ["memory", "requestId", "sessionId", "type", "version"]) &&
-    isNonEmptyString(decoded.requestId) &&
-    isRecord(decoded.memory) &&
-    hasExactKeys(decoded.memory, ["mallocCount", "memoryUsedBytes", "objectCount"]) &&
-    Number.isSafeInteger(decoded.memory.mallocCount) &&
-    Number(decoded.memory.mallocCount) >= 0 &&
-    Number.isSafeInteger(decoded.memory.memoryUsedBytes) &&
-    Number(decoded.memory.memoryUsedBytes) >= 0 &&
-    Number.isSafeInteger(decoded.memory.objectCount) &&
-    Number(decoded.memory.objectCount) >= 0
-  ) {
-    return {
-      ok: true,
-      value: {
-        version: CODEMODE_WORKER_PROTOCOL_VERSION,
-        type: "debug-memory",
-        sessionId: decoded.sessionId,
-        requestId: decoded.requestId,
-        memory: {
-          mallocCount: Number(decoded.memory.mallocCount),
-          memoryUsedBytes: Number(decoded.memory.memoryUsedBytes),
-          objectCount: Number(decoded.memory.objectCount),
-        },
-      },
-    };
-  }
-  if (
-    decoded.type === "result" &&
-    hasExactKeys(decoded, ["requestId", "resultJson", "sessionId", "type", "version"]) &&
-    isNonEmptyString(decoded.requestId) &&
-    isString(decoded.resultJson)
-  ) {
-    return {
-      ok: true,
-      value: {
-        version: CODEMODE_WORKER_PROTOCOL_VERSION,
-        type: "result",
-        sessionId: decoded.sessionId,
-        requestId: decoded.requestId,
-        resultJson: decoded.resultJson,
-      },
-    };
-  }
-  if (
-    decoded.type === "error" &&
-    hasExactKeys(decoded, ["error", "requestId", "sessionId", "type", "version"]) &&
-    isNonEmptyString(decoded.requestId)
-  ) {
-    const error = parseWorkerError(decoded.error);
-    if (error !== undefined)
-      return {
-        ok: true,
-        value: {
-          version: CODEMODE_WORKER_PROTOCOL_VERSION,
-          type: "error",
-          sessionId: decoded.sessionId,
-          requestId: decoded.requestId,
-          error,
-        },
-      };
-  }
   return { ok: false, message: "CodeMode worker response has an invalid protocol shape" };
 }
 
@@ -567,7 +435,7 @@ export function parseCodeModeWorkerResponse(
 export function serializeCodeModeWorkerRequest(
   request: CodeModeWorkerRequest,
 ): CodeModeWorkerParseResult<string> {
-  const message = JSON.stringify(request);
+  const message = jsonStringify(request);
   return Buffer.byteLength(message, "utf8") <= CODEMODE_WORKER_MESSAGE_LIMIT_BYTES
     ? { ok: true, value: message }
     : { ok: false, message: "CodeMode worker request exceeds 8 MiB" };
@@ -575,14 +443,14 @@ export function serializeCodeModeWorkerRequest(
 
 /** Serializes one worker response, replacing oversized Cell output with a bounded error. */
 export function serializeCodeModeWorkerResponse(response: CodeModeWorkerResponse): string {
-  const message = JSON.stringify(response);
+  const message = jsonStringify(response);
   if (Buffer.byteLength(message, "utf8") <= CODEMODE_WORKER_MESSAGE_LIMIT_BYTES) return message;
   if (
     response.type === "cell-result" ||
     response.type === "cell-error" ||
     response.type === "tool-batch"
   ) {
-    return JSON.stringify({
+    return jsonStringify({
       version: CODEMODE_WORKER_PROTOCOL_VERSION,
       type: "cell-error",
       sessionId: response.sessionId,
@@ -590,7 +458,7 @@ export function serializeCodeModeWorkerResponse(response: CodeModeWorkerResponse
       error: { code: "serialization", message: "CodeMode worker response exceeds 8 MiB" },
     } satisfies CodeModeWorkerResponse);
   }
-  return JSON.stringify({
+  return jsonStringify({
     version: CODEMODE_WORKER_PROTOCOL_VERSION,
     type: "protocol-error",
     sessionId: response.sessionId,
