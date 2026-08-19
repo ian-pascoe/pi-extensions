@@ -186,7 +186,7 @@ afterEach(async () => {
 describe("project extension overrides", () => {
   test("keeps the tracked two-source settings contract coherent", async () => {
     const extensionDescriptors = await readAuthoritativeExtensionDescriptors();
-    expect(extensionDescriptors).toHaveLength(9);
+    expect(extensionDescriptors).toHaveLength(10);
     const projectSettings = await readJsonDocument(
       resolve(repositoryRoot, ".pi/settings.json"),
       piSettingsDocumentSchema,

@@ -1,0 +1,56 @@
+{
+  "name": "@ian-pascoe/pi-dap",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Configured Debug Adapter Protocol sessions for Pi",
+  "keywords": [
+    "dap",
+    "debug-adapter-protocol",
+    "pi",
+    "pi-extension",
+    "pi-package"
+  ],
+  "homepage": "https://github.com/ian-pascoe/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/ian-pascoe/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
+    "directory": "packages/pi-dap"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@vscode/debugprotocol": "^1.68.0"
+  },
+  "devDependencies": {
+    "vscode-js-debug": "https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

@@ -20,6 +20,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-git-checkpoints`](packages/pi-git-checkpoints)     | Git-backed worktree checkpoints for tree navigation.          | `pi install npm:@ian-pascoe/pi-git-checkpoints`   |
 | [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                 | Configured automatic post-edit formatting.                    | `pi install npm:@ian-pascoe/pi-formatter`         |
 | [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                             | Configured language-server tools and post-edit diagnostics.   | `pi install npm:@ian-pascoe/pi-lsp`               |
+| [`@ian-pascoe/pi-dap`](packages/pi-dap)                             | Configured Debug Adapter Protocol sessions.                   | `pi install npm:@ian-pascoe/pi-dap`               |
 
 ## Install the collection from Git
 
@@ -56,6 +57,7 @@ packages/pi-git-status-widget/src/index.ts
 packages/pi-git-checkpoints/src/index.ts
 packages/pi-formatter/src/index.ts
 packages/pi-lsp/src/index.ts
+packages/pi-dap/src/index.ts
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -75,6 +77,9 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi Formatter requires separately installed formatter binaries.
 - Pi LSP requires separately installed language-server binaries. This repository
   uses the installed TypeScript 7 `tsc --lsp --stdio` server.
+- Pi DAP requires a separately managed Debug Adapter executable. The repository's
+  `vscode-js-debug` development dependency supports its local Node smoke profile; its files are
+  not packed or installed with `@ian-pascoe/pi-dap`.
 
 See package READMEs for configuration. The repository MIT license covers
 package code; Bible Verses documents separate embedded-text rights and
@@ -103,6 +108,7 @@ pnpm --filter @ian-pascoe/pi-git-status-widget test
 pnpm --filter @ian-pascoe/pi-git-checkpoints test
 pnpm --filter @ian-pascoe/pi-formatter test
 pnpm --filter @ian-pascoe/pi-lsp test
+pnpm --filter @ian-pascoe/pi-dap test
 ```
 
 Read [`CONTEXT-MAP.md`](CONTEXT-MAP.md), ADRs, and

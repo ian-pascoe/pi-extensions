@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { access, cp, mkdtemp, rm } from "node:fs/promises";
+import { access, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,10 +54,12 @@ async function runNpmProductionInstall(installDirectory) {
   }
 }
 
-async function assertByteroverCliExcludedFromProductionInstall(installDirectory) {
+async function assertPackageExcludedFromProductionInstall(installDirectory, packagePath) {
   try {
-    await access(resolve(installDirectory, "node_modules/byterover-cli/package.json"));
-    throw new Error("Git install check failed: byterover-cli is present in the production install");
+    await access(resolve(installDirectory, "node_modules", packagePath, "package.json"));
+    throw new Error(
+      `Git install check failed: ${packagePath} is present in the production install`,
+    );
   } catch (cause) {
     if (cause instanceof Error && cause.message.startsWith("Git install check failed:")) {
       throw cause;
@@ -68,6 +70,15 @@ async function assertByteroverCliExcludedFromProductionInstall(installDirectory)
   }
 }
 
+async function omitUnsupportedDevelopmentArchive(installDirectory) {
+  // npm resolves workspace devDependencies even with --omit=dev, but Microsoft's DAP archive
+  // has no package.json. Removing it models the production tree that --omit=dev should produce.
+  const manifestPath = resolve(installDirectory, "packages/pi-dap/package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  delete manifest.devDependencies["vscode-js-debug"];
+  await writeFile(manifestPath, JSON.stringify(manifest));
+}
+
 async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory) {
   const manifest = await readJsonDocument(
     resolve(installDirectory, "package.json"),
@@ -75,8 +86,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   );
   const configuredPaths = manifest.pi.extensions;
   assertGitInstallCondition(
-    configuredPaths.length === 9,
-    "temporary root manifest does not contain nine extension paths",
+    configuredPaths.length === 10,
+    "temporary root manifest does not contain ten extension paths",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
@@ -87,8 +98,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     `temporary source entrypoints failed to load: ${JSON.stringify(result.errors)}`,
   );
   assertGitInstallCondition(
-    result.extensions.length === 9,
-    "temporary install did not load nine extensions",
+    result.extensions.length === 10,
+    "temporary install did not load ten extensions",
   );
   assertGitInstallCondition(
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===
@@ -104,8 +115,10 @@ try {
     recursive: true,
     filter: includeWorkingTreePath,
   });
+  await omitUnsupportedDevelopmentArchive(installDirectory);
   await runNpmProductionInstall(installDirectory);
-  await assertByteroverCliExcludedFromProductionInstall(installDirectory);
+  await assertPackageExcludedFromProductionInstall(installDirectory, "byterover-cli");
+  await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
 } finally {
   await Promise.all([

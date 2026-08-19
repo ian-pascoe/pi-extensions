@@ -19,6 +19,7 @@ const expectedExtensionPaths = [
   "./packages/pi-git-checkpoints/src/index.ts",
   "./packages/pi-formatter/src/index.ts",
   "./packages/pi-lsp/src/index.ts",
+  "./packages/pi-dap/src/index.ts",
 ];
 
 afterEach(async () => {
@@ -45,7 +46,7 @@ describe("root Pi extension entrypoints", () => {
     const result = await discoverAndLoadExtensions(expectedResolvedPaths, cwd, agentDir);
 
     expect(result.errors).toEqual([]);
-    expect(result.extensions).toHaveLength(9);
+    expect(result.extensions).toHaveLength(10);
     expect(result.extensions.map((extension) => extension.resolvedPath)).toEqual(
       expectedResolvedPaths,
     );

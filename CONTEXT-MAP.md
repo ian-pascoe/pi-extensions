@@ -14,6 +14,7 @@ context relevant to the work:
 | `@ian-pascoe/pi-git-checkpoints`   | [`packages/pi-git-checkpoints/CONTEXT.md`](packages/pi-git-checkpoints/CONTEXT.md)     | Session-linked worktree restoration     |
 | `@ian-pascoe/pi-formatter`         | [`packages/pi-formatter/CONTEXT.md`](packages/pi-formatter/CONTEXT.md)                 | Automatic post-edit formatting          |
 | `@ian-pascoe/pi-lsp`               | [`packages/pi-lsp/CONTEXT.md`](packages/pi-lsp/CONTEXT.md)                             | Language-server tools and edit feedback |
+| `@ian-pascoe/pi-dap`               | [`packages/pi-dap/CONTEXT.md`](packages/pi-dap/CONTEXT.md)                             | Interactive debug sessions              |
 
 The contexts are package-local vocabulary authorities. Repository-wide decisions
 live in [`docs/adr/`](docs/adr/).
