@@ -1,4 +1,4 @@
 {
-  "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,json,jsonc,md,yml,yaml,css,astro}": "oxfmt --check",
+  "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts,json,jsonc,md,yml,yaml,css,astro}": "oxfmt --check --no-error-on-unmatched-pattern",
   "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}": "oxlint"
 }
