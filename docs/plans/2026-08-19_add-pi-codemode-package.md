@@ -27,7 +27,8 @@ Mode terms in identifiers, tests, errors, and caller-facing documentation.
 
 ## Boundaries
 
-- Register exactly `codemode_execute`, `codemode_result`, and `codemode_cancel`.
+- Register exactly `codemode_execute`, `codemode_result`, `codemode_cancel`, and
+  `codemode_sessions`.
   Keep `src/index.ts` a thin default export.
 - Run one subprocess from the exact official `deno@2.9.5` npm dependency per
   live CodeMode Session. Deno itself transpiles and executes TypeScript Cells;
@@ -64,17 +65,23 @@ codemode_execute({
 
 codemode_result({ sessionId: string });
 codemode_cancel({ sessionId: string });
+codemode_sessions({});
 ```
 
 `wait` defaults to `true`; `timeoutMs` has no default and, when present, is a
 positive safe integer. An omitted `sessionId` creates an opaque UUID. A supplied
 unknown ID fails rather than creating a caller-named session.
 
-All three tools return the same schema-derived union:
+The execute, result, and cancel tools return the same schema-derived union:
 
 ```ts
 type CodeModeResult =
-  | { result: "success"; sessionId: string; data?: JsonValue }
+  | {
+      result: "success";
+      sessionId: string;
+      data?: JsonValue;
+      reclaimedSessionId?: string;
+    }
   | { result: "pending"; sessionId: string }
   | {
       result: "failed";
@@ -83,14 +90,19 @@ type CodeModeResult =
     };
 ```
 
-Stable error codes cover unknown, busy, capacity, script, serialization,
-timeout, cancellation, termination, and runtime failures. Expected failures are
+`codemode_sessions` returns every live Session ordered idle LRU first, then
+running LRU, without refreshing recency. Stable error codes cover unknown,
+busy, capacity, eviction, script, serialization, timeout, cancellation,
+termination, and runtime failures. Expected failures are
 result values. Accepted `wait: false` executions always return `pending`.
 `codemode_result` repeats the active or latest terminal result without consuming
 it. One CodeMode Session accepts one active Cell; `codemode_cancel` terminates a
 pending or idle live session and retains its cancellation failure. Only live
-Deno processes count toward `maxSessions`; retain at most 64 process-free
-terminal or failed-admission records by LRU.
+Deno processes count toward `maxSessions`. At capacity, admission gracefully
+stops and awaits the least-recently-used idle process; running Sessions are
+never reclaimed. The old ID retains an `eviction` failure, and the replacement
+success reports `reclaimedSessionId`. Retain at most 64 process-free terminal or
+failed-admission records by LRU.
 
 ### TypeScript Cells and Notebook Bindings
 
@@ -168,7 +180,7 @@ case-sensitive minimatch globs, last match wins, project `tools` replaces the
 global array, project `maxSessions` overrides only that field, and malformed
 configuration disables CodeMode without changing Pi's active tools. One
 Exposure Mode decision controls direct visibility, guest visibility, and the
-generated catalogue. CodeMode's three own tools are always direct-only.
+generated catalogue. CodeMode's four own tools are always direct-only.
 
 Before each provider snapshot and after relevant registry/active-set changes,
 re-register `codemode_execute` only when its bounded deterministic TypeScript
@@ -227,7 +239,7 @@ and degrade complex schemas to `unknown` rather than misleading declarations.
 
 Complete only when:
 
-- all three tools and their public results preserve the stated contract;
+- all four tools and their public results preserve the stated contract;
 - Deno itself, in the permission-denied subprocess, executes a TypeScript Cell
   from workspace, packed tarball, and clean Git installation;
 - Notebook Binding and exact Pi handler behavior are proven end to end;

@@ -62,11 +62,38 @@ codemode_cancel({ sessionId: string });
 Stops the session process and frees its capacity. The cancel call succeeds;
 subsequent polling returns the retained `cancellation` failure.
 
-All three tools return:
+### `codemode_sessions`
+
+```ts
+codemode_sessions({});
+```
+
+Lists every live Session, with idle Sessions first in least-recently-used order,
+then running Sessions in least-recently-used order. Listing does not refresh
+Session recency.
+
+```ts
+type CodeModeSessionsResult = {
+  result: "success";
+  sessions: Array<{
+    sessionId: string;
+    state: "idle" | "running";
+    cellCount: number;
+    lastActivityAtMs: number;
+  }>;
+};
+```
+
+The execute, result, and cancel tools return:
 
 ```ts
 type CodeModeResult =
-  | { result: "success"; sessionId: string; data?: JsonValue }
+  | {
+      result: "success";
+      sessionId: string;
+      data?: JsonValue;
+      reclaimedSessionId?: string;
+    }
   | { result: "pending"; sessionId: string }
   | {
       result: "failed";
@@ -76,6 +103,7 @@ type CodeModeResult =
           | "unknown"
           | "busy"
           | "capacity"
+          | "eviction"
           | "script"
           | "serialization"
           | "timeout"
@@ -93,7 +121,7 @@ Snapshots in tool-result details for Transcript replay and the TUI.
 
 ## Transcript and Observer UI
 
-The CodeMode Transcript gives all three tools semantic collapsed and expanded
+The CodeMode Transcript gives all four tools semantic collapsed and expanded
 rendering. Collapsed rows prioritize Cell lifecycle, a short Session ID, Cell
 Ordinal, returned-value shape, nested-tool count, and elapsed time. Expanded
 rows show the full Session ID, explicit call arguments, TypeScript source,
@@ -105,15 +133,17 @@ Status always uses a symbol and text together:
 
 ```text
 ◉ running   ○ idle   ✓ completed
-× failed    ■ cancelled   ! timed out
+× failed    ■ cancelled   ■ reclaimed   ! timed out
 ```
 
 Awaited Cells publish a presentation update immediately and once per second.
-Source display is limited to 200 lines or 50 KB. Returned-data display uses
-Pi's 2,000-line/50-KB limit; complete oversized data is written to a private
-Result Spill while the model-facing result remains unchanged. Result Spill
-files last for the live Pi session. Replayed history falls back to its retained
-bounded data when a prior spill is no longer available.
+Collapsed calls show one highlighted line inline or the first eight highlighted
+lines of a multi-line Cell. Expanded calls show the complete TypeScript source.
+Returned-data display uses Pi's 2,000-line/50-KB limit; complete oversized data
+is written to a private Result Spill while the model-facing result remains
+unchanged. Result Spill files last for the live Pi session. Replayed history
+falls back to its retained bounded data when a prior spill is no longer
+available.
 
 In TUI mode, the read-only CodeMode Observer UI appears above the editor during
 Cell activity. It shows up to eight running, idle, or recently terminal
@@ -204,12 +234,18 @@ last match wins. Project `tools` replaces the global array, while project
 
 An unmatched active tool defaults to `direct-and-codemode`; an unmatched
 inactive tool remains unavailable. An explicit rule may expose an inactive tool
-or activate direct access. The three `codemode_*` tools are always direct-only.
+or activate direct access. The four `codemode_*` tools are always direct-only.
 Pi's global allowed/excluded registry remains authoritative. Invalid fields or
 patterns disable CodeMode for that session without changing Pi's active tools.
 
-`maxSessions` defaults to 8 and counts only live Deno processes. Up to 64 recent
-worker-free terminal or failed-admission records remain pollable.
+`maxSessions` defaults to 8 and counts only live Deno processes. When capacity
+is full, a new Session gracefully stops the least-recently-used idle Session
+before starting; its Notebook Bindings are discarded, the new success reports
+`reclaimedSessionId`, and polling the old ID returns `eviction`. Running Sessions
+are never reclaimed, so admission still returns `capacity` when every process is
+busy. Executing or polling refreshes recency; listing and Observer rendering do
+not. Up to 64 recent worker-free terminal or failed-admission records remain
+pollable.
 
 ## Isolation and limits
 

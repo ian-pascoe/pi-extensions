@@ -47,3 +47,8 @@ _Avoid_: result, Observer state
 A private file containing complete returned data when the expanded CodeMode
 Transcript reaches its display limit.
 _Avoid_: log, cache
+
+**Session Reclamation**:
+Capacity-pressure shutdown of the least-recently-used idle CodeMode Session.
+It releases the Deno process and discards that Session's Notebook Bindings.
+_Avoid_: cleanup, timeout

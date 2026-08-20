@@ -1,5 +1,6 @@
 import {
   getMarkdownTheme,
+  highlightCode,
   keyText,
   truncateHead,
   type AgentToolResult,
@@ -25,6 +26,8 @@ import {
   CodeModeExecuteParametersSchema,
   CodeModeResultDetailsSchema,
   CodeModeResultParametersSchema,
+  CodeModeSessionsParametersSchema,
+  CodeModeSessionsResultSchema,
   createCodeModeToolDefinitions,
   type CodeModeCancelParameters,
   type CodeModeErrorCode,
@@ -34,17 +37,24 @@ import {
   type CodeModePresentationSnapshot,
   type CodeModeResultDetails,
   type CodeModeResultParameters,
+  type CodeModeSessionsParameters,
+  type CodeModeSessionsResult,
   type CodeModeToolOperations,
 } from "./codemode-tool-contract.js";
 
-/** Names of the three CodeMode tools with semantic Transcript rendering. */
-export type CodeModeRenderedToolName = "codemode_execute" | "codemode_result" | "codemode_cancel";
+/** Names of the four CodeMode tools with semantic Transcript rendering. */
+export type CodeModeRenderedToolName =
+  | "codemode_execute"
+  | "codemode_result"
+  | "codemode_cancel"
+  | "codemode_sessions";
 
-/** Parsed arguments accepted by one of the three CodeMode Transcript renderers. */
+/** Parsed arguments accepted by one of the four CodeMode Transcript renderers. */
 export type CodeModeRenderedToolParameters =
   | CodeModeExecuteParameters
   | CodeModeResultParameters
-  | CodeModeCancelParameters;
+  | CodeModeCancelParameters
+  | CodeModeSessionsParameters;
 
 /** Theme operations used by CodeMode Transcript renderers. */
 export type CodeModeRenderTheme = Pick<Theme, "bold" | "fg">;
@@ -62,7 +72,7 @@ const CODEMODE_STATUS_PRESENTATION = {
   cancelled: { color: "warning", label: "■ cancelled" },
   timed_out: { color: "error", label: "! timed out" },
 } satisfies Record<CodeModeCellState, CodeModeStatusPresentation>;
-const CODEMODE_SCRIPT_MAX_LINES = 200;
+const CODEMODE_COLLAPSED_SCRIPT_LINES = 8;
 const CODEMODE_PRESENTATION_MAX_BYTES = 50 * 1024;
 const CodeModeJsonStringSchema = Type.String();
 
@@ -82,14 +92,6 @@ function boundedCodeModePreview(text: string, width = 72): string {
   return `${sliceByColumn(singleLine, 0, width - 1, true).trimEnd()}…`;
 }
 
-function firstMeaningfulScriptLine(script: string): string | undefined {
-  const line = sanitizeCodeModeText(script)
-    .split("\n")
-    .map((candidate) => candidate.trim())
-    .find(Boolean);
-  return line === undefined ? undefined : boundedCodeModePreview(line);
-}
-
 function parseCodeModeRenderedToolParameters(
   toolName: CodeModeRenderedToolName,
   parameters: CodeModeJsonValue,
@@ -100,7 +102,10 @@ function parseCodeModeRenderedToolParameters(
   if (toolName === "codemode_result") {
     return Value.Check(CodeModeResultParametersSchema, parameters) ? parameters : undefined;
   }
-  return Value.Check(CodeModeCancelParametersSchema, parameters) ? parameters : undefined;
+  if (toolName === "codemode_cancel") {
+    return Value.Check(CodeModeCancelParametersSchema, parameters) ? parameters : undefined;
+  }
+  return Value.Check(CodeModeSessionsParametersSchema, parameters) ? parameters : undefined;
 }
 
 function shortCodeModeSessionId(sessionId: string): string {
@@ -139,6 +144,9 @@ function codeModeSessionLifecycle(
   toolName: CodeModeRenderedToolName,
   details: CodeModeResultDetails,
 ): "Session reusable" | "Session closed" | "No reusable Session" {
+  if (details.result === "failed" && details.error.code === "eviction") {
+    return "Session closed";
+  }
   if (details.presentation !== undefined) {
     return details.presentation.session_state === "live" ? "Session reusable" : "Session closed";
   }
@@ -192,6 +200,16 @@ function appendCodeModeBlock(container: Container, language: "ts" | "json", cont
   );
 }
 
+function highlightedCodeModeSource(source: string): string {
+  return highlightCode(source, "typescript")
+    .map((line) => `  ${line}`)
+    .join("\n");
+}
+
+function appendHighlightedCodeModeSource(container: Container, source: string): void {
+  container.addChild(new Text(highlightedCodeModeSource(source), 0, 0));
+}
+
 function boundedCodeModeText(text: string, maxLines: number): string {
   const safe = sanitizeCodeModeText(text);
   const truncated = truncateHead(safe, {
@@ -235,7 +253,10 @@ function renderCodeModeSummary(
 ): string {
   const presentation = details.presentation;
   const state = codeModeCellState(toolName, details);
-  const status = CODEMODE_STATUS_PRESENTATION[state];
+  const status =
+    details.result === "failed" && details.error.code === "eviction"
+      ? { color: "warning" as const, label: "■ reclaimed" }
+      : CODEMODE_STATUS_PRESENTATION[state];
   const activeToolNames = presentation?.active_tool_names.slice(0, 3) ?? [];
   const omittedActiveToolCount = Math.max(
     0,
@@ -268,7 +289,7 @@ function renderCodeModeSummary(
   return parts.join("  ");
 }
 
-/** Render one CodeMode tool call as a semantic operation with bounded source detail. */
+/** Render one CodeMode tool call with a bounded collapsed preview or complete expanded source. */
 export function renderCodeModeToolCall(
   toolName: CodeModeRenderedToolName,
   parameters: CodeModeJsonValue,
@@ -281,7 +302,9 @@ export function renderCodeModeToolCall(
       ? "Run Cell"
       : toolName === "codemode_result"
         ? "Poll"
-        : "Cancel";
+        : toolName === "codemode_cancel"
+          ? "Cancel"
+          : "List Sessions";
   const parsedParameters = parseCodeModeRenderedToolParameters(toolName, parameters);
   const executeParameters =
     toolName === "codemode_execute" &&
@@ -289,11 +312,14 @@ export function renderCodeModeToolCall(
     "script" in parsedParameters
       ? parsedParameters
       : undefined;
-  const sessionId = parsedParameters?.sessionId;
-  const preview =
-    executeParameters === undefined
-      ? undefined
-      : firstMeaningfulScriptLine(executeParameters.script);
+  const sessionId =
+    parsedParameters !== undefined && "sessionId" in parsedParameters
+      ? parsedParameters.sessionId
+      : undefined;
+  const source =
+    executeParameters === undefined ? undefined : sanitizeCodeModeText(executeParameters.script);
+  const oneLineSource = source !== undefined && !source.includes("\n") ? source : undefined;
+  const expansionHint = `${keyText("app.tools.expand")} to expand`;
   const container = new Container();
   container.addChild(
     new Text(
@@ -301,7 +327,12 @@ export function renderCodeModeToolCall(
         theme.fg("toolTitle", theme.bold("CodeMode")),
         theme.fg("accent", operation),
         theme.fg("muted", sessionId === undefined ? "new" : formatSessionPrefix(sessionId)),
-        preview === undefined ? undefined : theme.fg("dim", preview),
+        !expanded && oneLineSource !== undefined
+          ? highlightCode(oneLineSource, "typescript")[0]
+          : undefined,
+        !expanded && oneLineSource !== undefined
+          ? theme.fg("dim", `·  ${expansionHint}`)
+          : undefined,
       ]
         .filter((part): part is string => part !== undefined)
         .join("  "),
@@ -309,7 +340,17 @@ export function renderCodeModeToolCall(
       0,
     ),
   );
-  if (!expanded) return container;
+  if (!expanded) {
+    if (source === undefined || oneLineSource !== undefined) return container;
+    const sourceLines = source.split("\n");
+    const visibleSource = sourceLines.slice(0, CODEMODE_COLLAPSED_SCRIPT_LINES).join("\n");
+    appendHighlightedCodeModeSource(container, visibleSource);
+    const omittedLines = Math.max(0, sourceLines.length - CODEMODE_COLLAPSED_SCRIPT_LINES);
+    const omitted =
+      omittedLines === 0 ? "" : `… ${pluralizedCodeModeCount(omittedLines, "line")} omitted  ·  `;
+    container.addChild(new Text(theme.fg("dim", `  ${omitted}${expansionHint}`), 0, 0));
+    return container;
+  }
   container.addChild(new Spacer(1));
   if (sessionId !== undefined) appendCodeModeField(container, theme, "Session", sessionId);
   if (executeParameters === undefined) return container;
@@ -319,8 +360,41 @@ export function renderCodeModeToolCall(
     appendCodeModeField(container, theme, "Timeout", `${executeParameters.timeoutMs}ms`);
   container.addChild(new Spacer(1));
   container.addChild(new Text(theme.fg("muted", theme.bold("TypeScript")), 0, 0));
-  const script = boundedCodeModeText(executeParameters.script, CODEMODE_SCRIPT_MAX_LINES);
-  appendCodeModeBlock(container, "ts", script);
+  appendHighlightedCodeModeSource(container, source ?? "");
+  return container;
+}
+
+function renderCodeModeSessionsResult(
+  result: AgentToolResult<unknown>,
+  options: ToolRenderResultOptions,
+  theme: CodeModeRenderTheme,
+): Component {
+  if (!Value.Check(CodeModeSessionsResultSchema, result.details)) {
+    return renderCodeModeFallback(result, options, theme, false);
+  }
+  const sessions: CodeModeSessionsResult = result.details;
+  const summary = `${theme.fg("success", "✓")} ${pluralizedCodeModeCount(sessions.sessions.length, "session")}`;
+  if (!options.expanded) {
+    const hint = options.isPartial ? "" : `  ·  ${keyText("app.tools.expand")} to expand`;
+    return new Text(`${summary}${hint}`, 0, 0);
+  }
+  const container = new Container();
+  container.addChild(new Text(summary, 0, 0));
+  if (sessions.sessions.length === 0) {
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(theme.fg("dim", "No live Sessions"), 0, 0));
+    return container;
+  }
+  container.addChild(new Spacer(1));
+  for (const session of sessions.sessions) {
+    container.addChild(
+      new Text(
+        `${theme.fg(session.state === "running" ? "accent" : "muted", session.state)}  ${sanitizeCodeModeText(session.sessionId)}  ${pluralizedCodeModeCount(session.cellCount, "cell")}  ${session.lastActivityAtMs}`,
+        0,
+        0,
+      ),
+    );
+  }
   return container;
 }
 
@@ -330,10 +404,12 @@ export function renderCodeModeToolResult(
   result: AgentToolResult<unknown>,
   options: ToolRenderResultOptions,
   theme: CodeModeRenderTheme,
-  parameters: CodeModeRenderedToolParameters,
   isError: boolean,
   formatSessionPrefix: CodeModeSessionPrefixFormatter = shortCodeModeSessionId,
 ): Component {
+  if (toolName === "codemode_sessions") {
+    return renderCodeModeSessionsResult(result, options, theme);
+  }
   if (!Value.Check(CodeModeResultDetailsSchema, result.details)) {
     return renderCodeModeFallback(result, options, theme, isError);
   }
@@ -409,13 +485,13 @@ export function renderCodeModeToolResult(
   return container;
 }
 
-/** Create the three CodeMode tools with semantic call and result Transcript renderers. */
+/** Create the four CodeMode tools with semantic call and result Transcript renderers. */
 export function createRenderedCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
   executeDescription?: string,
   formatSessionPrefix: CodeModeSessionPrefixFormatter = shortCodeModeSessionId,
 ): ReturnType<typeof createCodeModeToolDefinitions> {
-  const [executeTool, resultTool, cancelTool] = createCodeModeToolDefinitions(
+  const [executeTool, resultTool, cancelTool, sessionsTool] = createCodeModeToolDefinitions(
     operations,
     executeDescription,
   );
@@ -436,7 +512,6 @@ export function createRenderedCodeModeToolDefinitions(
           result,
           options,
           theme,
-          context.args,
           context.isError,
           formatSessionPrefix,
         ),
@@ -457,7 +532,6 @@ export function createRenderedCodeModeToolDefinitions(
           result,
           options,
           theme,
-          context.args,
           context.isError,
           formatSessionPrefix,
         ),
@@ -478,7 +552,26 @@ export function createRenderedCodeModeToolDefinitions(
           result,
           options,
           theme,
-          context.args,
+          context.isError,
+          formatSessionPrefix,
+        ),
+    },
+    {
+      ...sessionsTool,
+      renderCall: (_args, theme, context) =>
+        renderCodeModeToolCall(
+          "codemode_sessions",
+          {},
+          theme,
+          context.expanded,
+          formatSessionPrefix,
+        ),
+      renderResult: (result, options, theme, context) =>
+        renderCodeModeToolResult(
+          "codemode_sessions",
+          result,
+          options,
+          theme,
           context.isError,
           formatSessionPrefix,
         ),

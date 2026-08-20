@@ -11,6 +11,8 @@ import {
   CodeModeResultDetailsSchema,
   CodeModeResultParametersSchema,
   CodeModeResultSchema,
+  CodeModeSessionsParametersSchema,
+  CodeModeSessionsResultSchema,
   createCodeModeFailure,
   createCodeModePending,
   createCodeModeSuccess,
@@ -38,6 +40,8 @@ describe("CodeMode tool contract", () => {
     expect(Value.Check(CodeModeExecuteParametersSchema, { script: "" })).toBe(true);
     expect(Value.Check(CodeModeResultParametersSchema, { sessionId: "s" })).toBe(true);
     expect(Value.Check(CodeModeCancelParametersSchema, { sessionId: "s", extra: 1 })).toBe(false);
+    expect(Value.Check(CodeModeSessionsParametersSchema, {})).toBe(true);
+    expect(Value.Check(CodeModeSessionsParametersSchema, { extra: true })).toBe(false);
   });
 
   test("validates every result branch and nested JSON data", () => {
@@ -56,6 +60,28 @@ describe("CodeMode tool contract", () => {
     ).toBe(false);
     expect(Value.Check(CodeModeJsonValueSchema, { nested: ["ok"] })).toBe(true);
     expect(CODEMODE_ERROR_CODES).toContain("termination");
+    expect(CODEMODE_ERROR_CODES).toContain("eviction");
+    expect(
+      Value.Check(CodeModeResultSchema, {
+        ...createCodeModeSuccess("replacement"),
+        reclaimedSessionId: "reclaimed",
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(CodeModeSessionsResultSchema, {
+        result: "success",
+        sessions: [
+          { sessionId: "idle", state: "idle", cellCount: 2, lastActivityAtMs: 100 },
+          { sessionId: "running", state: "running", cellCount: 3, lastActivityAtMs: 200 },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(CodeModeSessionsResultSchema, {
+        result: "success",
+        sessions: [{ sessionId: "bad", state: "closed", cellCount: 0, lastActivityAtMs: 0 }],
+      }),
+    ).toBe(false);
   });
 
   test("inspects hostile values without invoking accessors or toJSON", () => {
@@ -249,23 +275,35 @@ describe("CodeMode tool contract", () => {
         result: createCodeModeSuccess("cancel-session"),
         presentation: cancelPresentation,
       }),
+      sessions: async () => ({
+        result: "success" as const,
+        sessions: [
+          {
+            sessionId: "idle-session",
+            state: "idle" as const,
+            cellCount: 2,
+            lastActivityAtMs: 10,
+          },
+        ],
+      }),
     };
     const tools = createCodeModeToolDefinitions(operations);
     expect(tools.map((tool) => tool.name)).toEqual([
       "codemode_execute",
       "codemode_result",
       "codemode_cancel",
+      "codemode_sessions",
     ]);
     expect(tools[0]?.parameters).toBe(CodeModeExecuteParametersSchema);
 
-    const outputs = [];
     const commonInput = { script: "42", sessionId: "s" };
     const unusedContext = Object.create(null);
-    for (const tool of tools) {
-      outputs.push(
-        await tool.execute("tool-call-1", commonInput, undefined, undefined, unusedContext),
-      );
-    }
+    const outputs = [
+      await tools[0].execute("tool-call-1", commonInput, undefined, undefined, unusedContext),
+      await tools[1].execute("tool-call-1", commonInput, undefined, undefined, unusedContext),
+      await tools[2].execute("tool-call-1", commonInput, undefined, undefined, unusedContext),
+      await tools[3].execute("tool-call-1", {}, undefined, undefined, unusedContext),
+    ];
 
     expect(outputs.map((output) => output.content)).toEqual([
       [{ type: "text", text: '{"result":"pending","sessionId":"execute-session"}' }],
@@ -276,6 +314,12 @@ describe("CodeMode tool contract", () => {
         },
       ],
       [{ type: "text", text: '{"result":"success","sessionId":"cancel-session"}' }],
+      [
+        {
+          type: "text",
+          text: '{"result":"success","sessions":[{"sessionId":"idle-session","state":"idle","cellCount":2,"lastActivityAtMs":10}]}',
+        },
+      ],
     ]);
     expect(outputs.map((output) => output.details)).toEqual([
       { ...createCodeModePending("execute-session"), presentation: executePresentation },
@@ -284,9 +328,16 @@ describe("CodeMode tool contract", () => {
         presentation: resultPresentation,
       },
       { ...createCodeModeSuccess("cancel-session"), presentation: cancelPresentation },
+      {
+        result: "success",
+        sessions: [
+          { sessionId: "idle-session", state: "idle", cellCount: 2, lastActivityAtMs: 10 },
+        ],
+      },
     ]);
-    for (const output of outputs) {
+    for (const output of outputs.slice(0, 3)) {
       expect(Value.Check(CodeModeResultDetailsSchema, output.details)).toBe(true);
     }
+    expect(Value.Check(CodeModeSessionsResultSchema, outputs[3]?.details)).toBe(true);
   });
 });

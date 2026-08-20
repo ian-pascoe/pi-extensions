@@ -39,7 +39,7 @@ import {
 } from "./pi-tool-bridge.js";
 
 const CODEMODE_EXECUTE_DESCRIPTION =
-  "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Top-level declarations become Notebook Bindings. Use the read-only tools object for registered Pi tools.";
+  "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; a new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools.";
 
 type PiCodeModeGeneration = {
   readonly captured: CapturedPiAgentSession;
@@ -207,6 +207,10 @@ class PiCodeModeLifecycleController {
       },
       result: async (input) => coordinator.result(input.sessionId),
       cancel: async (input) => coordinator.cancel(input.sessionId),
+      sessions: async () => ({
+        result: "success",
+        sessions: [...coordinator.listSessions()],
+      }),
     };
     generation = {
       captured,
@@ -253,13 +257,16 @@ class PiCodeModeLifecycleController {
       return;
     }
 
-    for (const definition of createRenderedCodeModeToolDefinitions(
-      operations,
-      generation.executeDescription,
-      (sessionId) => coordinator.formatSessionPrefix(sessionId),
-    )) {
-      this.pi.registerTool(definition);
-    }
+    const [executeTool, resultTool, cancelTool, sessionsTool] =
+      createRenderedCodeModeToolDefinitions(
+        operations,
+        generation.executeDescription,
+        (sessionId) => coordinator.formatSessionPrefix(sessionId),
+      );
+    this.pi.registerTool(executeTool);
+    this.pi.registerTool(resultTool);
+    this.pi.registerTool(cancelTool);
+    this.pi.registerTool(sessionsTool);
     generation.toolsRegistered = true;
     this.synchronizeGeneration(generation);
   }
