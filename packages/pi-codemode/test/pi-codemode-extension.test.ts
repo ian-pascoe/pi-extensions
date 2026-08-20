@@ -330,6 +330,18 @@ describe("Pi CodeMode extension", () => {
     const executeDefinition = fixture.session.getToolDefinition("codemode_execute");
     expect(executeDefinition?.renderCall).toEqual(expect.any(Function));
     expect(executeDefinition?.renderResult).toEqual(expect.any(Function));
+    expect(fixture.session.systemPrompt).toContain(
+      "- codemode_execute: Batch, filter, and aggregate Pi tool calls in TypeScript with less latency and context usage.",
+    );
+    expect(fixture.session.systemPrompt).toContain(
+      "- Prefer codemode_execute when multiple Pi tool calls can be filtered, joined, aggregated, paginated, or used to drive later calls, or when one large result can be reduced before returning. Use direct parallel calls for a few small results needed verbatim.",
+    );
+    expect(fixture.session.systemPrompt).toContain(
+      "- Return only decision-relevant CodeMode data while preserving paths, line numbers, IDs, URLs, source names, and concise evidence needed for verification.",
+    );
+    expect(fixture.session.systemPrompt).toContain(
+      "- Reuse a CodeMode Session for related work. Prefer direct tools for simple one-off calls, full raw output, and confirmation-sensitive or destructive actions; use CodeMode mutations only when conditional sequencing is the point, and fall back to direct tools when the CodeMode boundary does not fit.",
+    );
     expect(fixture.session.getActiveToolNames()).not.toContain("closure_echo");
     expect(executeDescription(fixture.session)).toContain('readonly ["closure_echo"]');
 

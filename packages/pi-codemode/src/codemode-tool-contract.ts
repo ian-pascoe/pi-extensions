@@ -494,6 +494,13 @@ export function createCodeModeToolDefinitions(
       name: CODEMODE_TOOL_NAMES.execute,
       label: "CodeMode Execute",
       description: executeDescription,
+      promptSnippet:
+        "Batch, filter, and aggregate Pi tool calls in TypeScript with less latency and context usage.",
+      promptGuidelines: [
+        "Prefer codemode_execute when multiple Pi tool calls can be filtered, joined, aggregated, paginated, or used to drive later calls, or when one large result can be reduced before returning. Use direct parallel calls for a few small results needed verbatim.",
+        "Return only decision-relevant CodeMode data while preserving paths, line numbers, IDs, URLs, source names, and concise evidence needed for verification.",
+        "Reuse a CodeMode Session for related work. Prefer direct tools for simple one-off calls, full raw output, and confirmation-sensitive or destructive actions; use CodeMode mutations only when conditional sequencing is the point, and fall back to direct tools when the CodeMode boundary does not fit.",
+      ],
       parameters: CodeModeExecuteParametersSchema,
       executionMode: "sequential",
       async execute(_toolCallId, input, signal, onUpdate, context) {
