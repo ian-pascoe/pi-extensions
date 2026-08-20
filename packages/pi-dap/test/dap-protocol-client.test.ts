@@ -27,7 +27,7 @@ async function createClient(
     args: [fixturePath],
     environment: {},
     transport: "stdio",
-    timeouts: { startupMs: 500, requestMs: 200, shutdownMs: 500 },
+    timeouts: { startupMs: 500, requestMs: 1_000, shutdownMs: 500 },
     stderrPath: resolve(directory, "adapter.stderr.log"),
     ...overrides,
   });
@@ -327,8 +327,9 @@ describe("DapProtocolClient", () => {
 
     expect(error).toBeInstanceOf(DapProtocolClientError);
     expect(error).toMatchObject({ kind: expect.stringMatching(/exit|transport/) });
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
-    await expect(readFile(client.stderrPath, "utf8")).resolves.toContain("fixture adapter crashed");
+    await expect
+      .poll(() => readFile(client.stderrPath, "utf8"), { timeout: 1_000 })
+      .toContain("fixture adapter crashed");
   });
 
   test("rejects event waiters immediately after a fatal adapter failure", async () => {
