@@ -7,6 +7,7 @@
         "-packages/pi-adaptive-thinking/src/index.ts",
         "+packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
+        "+packages/pi-dap/src/index.ts",
         "+packages/pi-formatter/src/index.ts",
         "+packages/pi-git-checkpoints/src/index.ts",
         "+packages/pi-git-status-widget/src/index.ts",
@@ -22,6 +23,7 @@
         "-packages/pi-adaptive-thinking/src/index.ts",
         "-packages/pi-bible-verses/src/index.ts",
         "-packages/pi-byterover/src/index.ts",
+        "-packages/pi-dap/src/index.ts",
         "-packages/pi-formatter/src/index.ts",
         "-packages/pi-git-checkpoints/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
@@ -60,6 +62,40 @@
           ]
         },
         "rootMarkers": [".oxfmtrc.json", "package.json", ".git"]
+      }
+    }
+  },
+  "dap": {
+    "timeouts": {
+      "startupMs": 10000,
+      "requestMs": 10000,
+      "executionMs": 30000,
+      "shutdownMs": 5000
+    },
+    "adapters": {
+      "node": {
+        "command": "node",
+        "args": [
+          "packages/pi-dap/node_modules/vscode-js-debug/src/dapDebugServer.js",
+          "$PORT",
+          "127.0.0.1"
+        ],
+        "environment": {},
+        "transport": {
+          "type": "tcp",
+          "host": "127.0.0.1",
+          "port": 0
+        }
+      }
+    },
+    "profiles": {
+      "node": {
+        "adapter": "node",
+        "arguments": {
+          "type": "pwa-node",
+          "console": "internalConsole",
+          "stopOnEntry": true
+        }
       }
     }
   },

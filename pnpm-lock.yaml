@@ -104,6 +104,25 @@ importers:
         specifier: 3.16.1
         version: 3.16.1(@aws-sdk/credential-provider-node@3.972.80)(@napi-rs/canvas@0.1.100)(@smithy/signature-v4@5.7.0)(@types/node@26.2.0)(@types/react@19.2.18)(debug@4.4.3(supports-color@8.1.1))(react-dom@19.2.8(react@18.3.1))(react@18.3.1)(supports-color@8.1.1)(ws@8.21.3)
 
+  packages/pi-dap:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.84.2(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      '@earendil-works/pi-tui':
+        specifier: '*'
+        version: 0.84.2
+      '@vscode/debugprotocol':
+        specifier: ^1.68.0
+        version: 1.68.0
+      typebox:
+        specifier: '*'
+        version: 1.3.14
+    devDependencies:
+      vscode-js-debug:
+        specifier: https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz
+        version: https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz
+
   packages/pi-formatter:
     dependencies:
       '@earendil-works/pi-coding-agent':
@@ -1857,6 +1876,9 @@ packages:
 
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
+
+  '@vscode/debugprotocol@1.68.0':
+    resolution: {integrity: sha512-2J27dysaXmvnfuhFGhfeuxfHRXunqNPxtBoR3koiTOA9rdxWNDTa1zIFLCFMSHJ9MPTPKFcBeblsyaCJCIlQxg==}
 
   '@xmldom/xmldom@0.9.11':
     resolution: {integrity: sha512-tW8bcK3hsG0/uqSnNz6TK4BkcuZSezoU7DlnYssILmZDktPnSHHuDJJFM0AJv+13gz2r0iGdrj6qqKeUnxXEDg==}
@@ -4284,6 +4306,10 @@ packages:
       jsdom:
         optional: true
 
+  vscode-js-debug@https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz:
+    resolution: {integrity: sha512-KUypjsAyj4Po7FPMcLLVkGA+ske37velcZnjFM4r2hgBqfU6cBM9aBwyk7QhlEGzu0HpN0xy3pYCRwiZYt+sHg==, tarball: https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz}
+    version: 0.0.0
+
   vscode-jsonrpc@9.0.1:
     resolution: {integrity: sha512-rfuA6T75H6m5EkbhtEPzre9pT0HPcDI2MMy4+nPFIBks5J8JBAUHD4tRYSgaBOijIEC7SRkC1kKyXTLqbmh9jw==}
     engines: {node: '>=14.0.0'}
@@ -6150,6 +6176,8 @@ snapshots:
       '@vitest/pretty-format': 4.1.10
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
+
+  '@vscode/debugprotocol@1.68.0': {}
 
   '@xmldom/xmldom@0.9.11': {}
 
@@ -8954,6 +8982,8 @@ snapshots:
       '@types/node': 26.2.0
     transitivePeerDependencies:
       - msw
+
+  vscode-js-debug@https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz: {}
 
   vscode-jsonrpc@9.0.1: {}
 
