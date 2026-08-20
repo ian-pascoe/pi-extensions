@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.2.3
+
+### Patch Changes
+
+- b5f7aeb: Batch queued coordination messages and terminal results so recipients process all available subagent output in one model turn.
+
 ## 0.2.2
 
 ### Patch Changes
