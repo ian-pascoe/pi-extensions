@@ -1,4 +1,3 @@
-/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- SAFETY: This module is the JSON-lines protocol boundary and refines untrusted process messages before returning typed values. */
 import { Buffer } from "node:buffer";
 
 /** Maximum UTF-8 bytes in one CodeMode worker protocol line, excluding its newline. */
@@ -9,6 +8,16 @@ const arrayIsArray = Array.isArray;
 const jsonParse = JSON.parse;
 const jsonStringify = JSON.stringify;
 const objectKeys = Object.keys;
+
+type CodeModeProtocolObject = { readonly [key: string]: CodeModeProtocolValue };
+type CodeModeProtocolValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly CodeModeProtocolValue[]
+  | CodeModeProtocolObject;
+type CodeModeProtocolSlot = CodeModeProtocolValue | undefined;
 
 /** A nested tool call emitted by a Deno Cell after one microtask drain. */
 export type CodeModeWorkerToolCall = {
@@ -87,24 +96,24 @@ export type CodeModeWorkerParseResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly message: string };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Protocol bytes require primitive refinement before exact-key parsing.
+function isRecord(value: CodeModeProtocolSlot): value is CodeModeProtocolObject {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: JSON.parse has already limited the value to JSON primitives, arrays, and objects; this selects the object arm without coercion.
   return typeof value === "object" && value !== null && !arrayIsArray(value);
 }
 
-function isString(value: unknown): value is string {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Protocol bytes require primitive refinement before use.
+function isString(value: CodeModeProtocolSlot): value is string {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: JSON.parse has already limited the value to JSON data; this selects its string arm without coercion.
   return typeof value === "string";
 }
 
-function isNonEmptyString(value: unknown): value is string {
+function isNonEmptyString(value: CodeModeProtocolSlot): value is string {
   return isString(value) && value.length > 0;
 }
 
-function isUniqueNonEmptyStringArray(value: unknown): value is string[] {
+function isUniqueNonEmptyStringArray(value: CodeModeProtocolSlot): value is readonly string[] {
   if (!arrayIsArray(value)) return false;
   for (let index = 0; index < value.length; index += 1) {
-    const candidate: unknown = value[index];
+    const candidate = value[index];
     if (!isNonEmptyString(candidate)) return false;
     for (let priorIndex = 0; priorIndex < index; priorIndex += 1) {
       if (value[priorIndex] === candidate) return false;
@@ -120,10 +129,7 @@ function hasString(values: readonly string[], candidate: string): boolean {
   return false;
 }
 
-function hasExactKeys(
-  value: Readonly<Record<string, unknown>>,
-  expected: readonly string[],
-): boolean {
+function hasExactKeys(value: CodeModeProtocolObject, expected: readonly string[]): boolean {
   const keys = objectKeys(value);
   if (keys.length !== expected.length) return false;
   for (let expectedIndex = 0; expectedIndex < expected.length; expectedIndex += 1) {
@@ -142,22 +148,27 @@ function hasExactKeys(
 }
 
 function parseProtocolJson(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Raw process input is untrusted until the string and JSON checks below establish the protocol representation.
   message: unknown,
   subject: "request" | "response",
-): CodeModeWorkerParseResult<unknown> {
-  if (!isString(message))
+): CodeModeWorkerParseResult<CodeModeProtocolValue> {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: This is the sole raw process-line ingress; only primitive string input reaches JSON.parse and protocol tests cover non-string rejection.
+  if (typeof message !== "string")
     return { ok: false, message: `CodeMode worker ${subject} must be JSON text` };
   if (Buffer.byteLength(message, "utf8") > CODEMODE_WORKER_MESSAGE_LIMIT_BYTES) {
     return { ok: false, message: `CodeMode worker ${subject} exceeds 8 MiB` };
   }
   try {
-    return { ok: true, value: jsonParse(message) };
+    // SAFETY: Successful JSON.parse output is exactly the recursive JSON representation modeled by CodeModeProtocolValue.
+    return { ok: true, value: jsonParse(message) as CodeModeProtocolValue };
   } catch {
     return { ok: false, message: `CodeMode worker ${subject} is not valid JSON` };
   }
 }
 
-function parseToolSettlement(value: unknown): CodeModeWorkerToolSettlement | undefined {
+function parseToolSettlement(
+  value: CodeModeProtocolSlot,
+): CodeModeWorkerToolSettlement | undefined {
   if (!isRecord(value) || !isNonEmptyString(value.callId)) return undefined;
   if (
     value.outcome === "success" &&
@@ -184,7 +195,7 @@ function parseToolSettlement(value: unknown): CodeModeWorkerToolSettlement | und
 }
 
 function parseToolResultsRequest(
-  decoded: Readonly<Record<string, unknown>>,
+  decoded: CodeModeProtocolObject,
 ): CodeModeWorkerRequest | undefined {
   if (
     !hasExactKeys(decoded, ["batchId", "cellId", "results", "sessionId", "type", "version"]) ||
@@ -215,6 +226,7 @@ function parseToolResultsRequest(
 
 /** Parses one strict, versioned, bounded parent-to-worker JSON line. */
 export function parseCodeModeWorkerRequest(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This exported parser is the parent-to-worker protocol ingress and accepts arbitrary process input by design.
   message: unknown,
 ): CodeModeWorkerParseResult<CodeModeWorkerRequest> {
   const parsed = parseProtocolJson(message, "request");
@@ -283,7 +295,7 @@ export function parseCodeModeWorkerRequest(
 }
 
 function parseWorkerError(
-  value: unknown,
+  value: CodeModeProtocolSlot,
 ): { readonly code: string; readonly message: string } | undefined {
   if (
     !isRecord(value) ||
@@ -297,7 +309,7 @@ function parseWorkerError(
 }
 
 function parseToolBatchResponse(
-  decoded: Readonly<Record<string, unknown>>,
+  decoded: CodeModeProtocolObject,
 ): CodeModeWorkerResponse | undefined {
   if (
     !hasExactKeys(decoded, ["batchId", "calls", "cellId", "sessionId", "type", "version"]) ||
@@ -311,7 +323,7 @@ function parseToolBatchResponse(
   const calls: CodeModeWorkerToolCall[] = [];
   const callIds: string[] = [];
   for (let index = 0; index < decoded.calls.length; index += 1) {
-    const candidate: unknown = decoded.calls[index];
+    const candidate = decoded.calls[index];
     if (
       !isRecord(candidate) ||
       !hasExactKeys(candidate, ["callId", "inputJson", "toolName"]) ||
@@ -342,6 +354,7 @@ function parseToolBatchResponse(
 
 /** Parses one strict, versioned, bounded worker-to-parent JSON line. */
 export function parseCodeModeWorkerResponse(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This exported parser is the worker-to-parent protocol ingress and accepts arbitrary process input by design.
   message: unknown,
 ): CodeModeWorkerParseResult<CodeModeWorkerResponse> {
   const parsed = parseProtocolJson(message, "response");

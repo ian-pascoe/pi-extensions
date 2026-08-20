@@ -1,9 +1,50 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 type PiAgentSessionPrivateFields = {
   readonly _toolRegistry: unknown;
 };
+
+const PiCallableSchema = Type.Function([], Type.Unknown());
+const PiToolWrapperSchema = Type.Object(
+  {
+    name: Type.String(),
+    label: Type.String(),
+    description: Type.String(),
+    parameters: Type.Object({}, { additionalProperties: true }),
+    execute: PiCallableSchema,
+    prepareArguments: Type.Optional(PiCallableSchema),
+    executionMode: Type.Optional(
+      Type.Union([Type.Literal("parallel"), Type.Literal("sequential")]),
+    ),
+  },
+  { additionalProperties: true },
+);
+const PiToolRegistryEntrySchema = Type.Tuple([Type.String(), PiToolWrapperSchema]);
+const PiAgentSessionCapabilitiesSchema = Type.Object(
+  {
+    getActiveToolNames: PiCallableSchema,
+    setActiveToolsByName: PiCallableSchema,
+    settingsManager: Type.Object(
+      {
+        getGlobalSettings: PiCallableSchema,
+        getProjectSettings: PiCallableSchema,
+        isProjectTrusted: PiCallableSchema,
+      },
+      { additionalProperties: true },
+    ),
+    agent: Type.Object(
+      {
+        beforeToolCall: PiCallableSchema,
+        afterToolCall: PiCallableSchema,
+      },
+      { additionalProperties: true },
+    ),
+  },
+  { additionalProperties: true },
+);
 
 /** Capabilities proven against the pinned Pi AgentSession before CodeMode changes tool exposure. */
 export interface CapturedPiAgentSession {
@@ -26,62 +67,17 @@ function piAgentSessionPrivateFields(session: AgentSession): PiAgentSessionPriva
 }
 
 function hasCallableSessionCapabilities(session: AgentSession): boolean {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Public Pi methods are runtime-gated because this package intentionally supports only the pinned capability shape.
-  if (typeof session.getAllTools !== "function") return false;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Public Pi methods are runtime-gated because this package intentionally supports only the pinned capability shape.
-  if (typeof session.getActiveToolNames !== "function") return false;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Public Pi methods are runtime-gated because this package intentionally supports only the pinned capability shape.
-  if (typeof session.setActiveToolsByName !== "function") return false;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Trust-aware settings methods are runtime-gated at the compatibility boundary.
-  if (typeof session.settingsManager.getGlobalSettings !== "function") return false;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Trust-aware settings methods are runtime-gated at the compatibility boundary.
-  if (typeof session.settingsManager.getProjectSettings !== "function") return false;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Trust-aware settings methods are runtime-gated at the compatibility boundary.
-  if (typeof session.settingsManager.isProjectTrusted !== "function") return false;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Agent hook installation is runtime-gated at the compatibility boundary.
-  if (typeof session.agent.beforeToolCall !== "function") return false;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Agent hook installation is runtime-gated at the compatibility boundary.
-  return typeof session.agent.afterToolCall === "function";
+  return Value.Check(PiAgentSessionCapabilitiesSchema, session);
 }
 
 function isExecutablePiToolRegistry(
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This is the parser for Pi's private version-dependent registry boundary.
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This private Pi compatibility parser validates the version-pinned registry before exposing its wrapped handlers; pi-tool-bridge.test.ts covers capability loss.
   value: unknown,
 ): value is ReadonlyMap<string, AgentTool> {
   if (!(value instanceof Map)) return false;
   try {
-    for (const [name, tool] of value) {
-      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The private Pi registry is version-gated untrusted compatibility data.
-      if (typeof name !== "string" || typeof tool !== "object" || tool === null) {
-        return false;
-      }
-      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Executable wrapper members are checked at the private compatibility boundary.
-      if (typeof tool.name !== "string" || tool.name !== name) return false;
-      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Executable wrapper members are checked at the private compatibility boundary.
-      if (typeof tool.label !== "string" || typeof tool.description !== "string") return false;
-      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The exact validation schema is checked at the private compatibility boundary.
-      if (typeof tool.parameters !== "object" || tool.parameters === null) return false;
-      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Executable wrapper members are checked at the private compatibility boundary.
-      if (typeof tool.execute !== "function") return false;
-      if (
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The private wrapper's structural TypeBox schema must exist before validation or catalogue rendering.
-        typeof tool.parameters !== "object" ||
-        tool.parameters === null
-      ) {
-        return false;
-      }
-      if (
-        tool.prepareArguments !== undefined &&
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Optional executable wrapper members are checked at the private compatibility boundary.
-        typeof tool.prepareArguments !== "function"
-      ) {
-        return false;
-      }
-      if (
-        tool.executionMode !== undefined &&
-        tool.executionMode !== "parallel" &&
-        tool.executionMode !== "sequential"
-      ) {
+    for (const entry of value) {
+      if (!Value.Check(PiToolRegistryEntrySchema, entry) || entry[1].name !== entry[0]) {
         return false;
       }
     }
@@ -104,8 +100,7 @@ export function capturePiAgentSession(
 ): CapturePiAgentSessionResult {
   const prototype = AgentSession.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, "getAllTools");
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The exact private-compatible prototype descriptor is runtime-gated before patching.
-  if (descriptor === undefined || typeof descriptor.value !== "function") {
+  if (descriptor === undefined || !Value.Check(PiCallableSchema, descriptor.value)) {
     return captureFailure("AgentSession.getAllTools is not the tested data method");
   }
 
@@ -114,7 +109,7 @@ export function capturePiAgentSession(
   Object.defineProperty(prototype, "getAllTools", {
     ...descriptor,
     value(this: AgentSession) {
-      // oxlint-disable-next-line typescript/no-this-alias -- Capturing the exact synchronous receiver is the approved transient AgentSession discovery mechanism.
+      // oxlint-disable-next-line typescript/no-this-alias -- SAFETY: Capturing the exact synchronous receiver is the approved transient AgentSession discovery mechanism; pi-tool-bridge.test.ts verifies descriptor restoration.
       capturedSession = this;
       return originalGetAllTools.call(this);
     },

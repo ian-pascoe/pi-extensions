@@ -5,10 +5,25 @@ import type {
   AgentToolResult,
 } from "@earendil-works/pi-agent-core";
 import { validateToolArguments, type AssistantMessage, type Usage } from "@earendil-works/pi-ai";
-import { parseCodeModeJsonValue, type CodeModeJsonValue } from "./codemode-tool-contract.js";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import {
+  isCodeModeJsonObject,
+  parseCodeModeJsonValue,
+  type CodeModeJsonValue,
+} from "./codemode-tool-contract.js";
 import type { CapturedPiAgentSession } from "./pi-agent-session-capture.js";
 
 const PI_TOOL_BRIDGE_RESULT_LIMIT_BYTES = 8 * 1024 * 1024;
+
+const PiToolBridgeTextContentSchema = Type.Object(
+  { type: Type.Literal("text"), text: Type.String() },
+  { additionalProperties: true },
+);
+const PiToolBridgeImageContentSchema = Type.Object(
+  { type: Type.Literal("image"), data: Type.String(), mimeType: Type.String() },
+  { additionalProperties: true },
+);
 
 /** Stable nested Pi tool failure categories exposed to the CodeMode guest bridge. */
 export type CodeModeToolErrorCode =
@@ -436,27 +451,11 @@ function resultErrorMessage(result: AgentToolResult<unknown>, toolName: string):
   return `Pi CodeMode tool failed: ${toolName}`;
 }
 
-function isJsonObject(
-  value: CodeModeJsonValue,
-): value is { readonly [key: string]: CodeModeJsonValue } {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- This predicate parses the recursive JSON union into its object domain arm.
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseBridgeContent(value: CodeModeJsonValue): PiToolBridgeContent | undefined {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The JSON-safe object is parsed into the supported text/image content contract here.
-  if (!isJsonObject(value) || typeof value.type !== "string") return undefined;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The JSON-safe object is parsed into the supported text content contract here.
-  if (value.type === "text" && typeof value.text === "string") {
+  if (Value.Check(PiToolBridgeTextContentSchema, value)) {
     return { type: "text", text: value.text };
   }
-  if (
-    value.type === "image" &&
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The JSON-safe object is parsed into the supported image content contract here.
-    typeof value.data === "string" &&
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The JSON-safe object is parsed into the supported image content contract here.
-    typeof value.mimeType === "string"
-  ) {
+  if (Value.Check(PiToolBridgeImageContentSchema, value)) {
     return { type: "image", data: value.data, mimeType: value.mimeType };
   }
   return undefined;
@@ -481,7 +480,7 @@ function translatePiToolResult(
       message: `Pi CodeMode tool result is not JSON-safe: ${parsed.message}`,
     };
   }
-  if (parsed.value === undefined || !isJsonObject(parsed.value)) {
+  if (parsed.value === undefined || !isCodeModeJsonObject(parsed.value)) {
     return { ok: false, message: "Pi CodeMode tool result is not a JSON object" };
   }
   const contentValue = parsed.value.content;

@@ -6,6 +6,7 @@ import {
   CodeModeExecuteParametersSchema,
   CodeModeJsonValueSchema,
   type CodeModePresentationSnapshot,
+  isCodeModeJsonObject,
   CodeModePresentationSnapshotSchema,
   CodeModeResultDetailsSchema,
   CodeModeResultParametersSchema,
@@ -82,15 +83,53 @@ describe("CodeMode tool contract", () => {
     expect(parseCodeModeJsonValue(undefined)).toMatchObject({ ok: false });
   });
 
-  test("rejects cycles, sparse arrays, non-finite values, and byte overflow", () => {
+  test("rejects cycles, sparse/accessor arrays, symbols, functions, hostile proxies, non-finite values, and byte overflow", () => {
     const cycle: CyclicTestValue = {};
     cycle.self = cycle;
     expect(parseCodeModeJsonValue(cycle).ok).toBe(false);
+
     const sparse: unknown[] = [];
     sparse.length = 1;
     expect(parseCodeModeJsonValue(sparse).ok).toBe(false);
+
+    const accessorArray = [1];
+    Object.defineProperty(accessorArray, "0", { enumerable: true, get: () => 1 });
+    expect(parseCodeModeJsonValue(accessorArray).ok).toBe(false);
+    expect(parseCodeModeJsonValue({ [Symbol("hidden")]: true }).ok).toBe(false);
+    expect(parseCodeModeJsonValue(() => undefined).ok).toBe(false);
     expect(parseCodeModeJsonValue(Number.NaN).ok).toBe(false);
+    expect(parseCodeModeJsonValue(Number.POSITIVE_INFINITY).ok).toBe(false);
+    expect(
+      parseCodeModeJsonValue(
+        new Proxy(
+          {},
+          {
+            ownKeys: () => {
+              throw new Error("hostile");
+            },
+          },
+        ),
+      ).ok,
+    ).toBe(false);
     expect(parseCodeModeJsonValue({ text: "12345" }, { maxBytes: 3 }).ok).toBe(false);
+  });
+
+  test("normalizes nested undefined exactly for JSON transport", () => {
+    expect(
+      parseCodeModeJsonValue(
+        { omitted: undefined, retained: [undefined, { omitted: undefined, value: 1 }] },
+        { normalizeUndefinedForJsonTransport: true },
+      ),
+    ).toEqual({ ok: true, value: { retained: [null, { value: 1 }] } });
+    expect(parseCodeModeJsonValue({ nested: undefined }, { allowUndefined: true }).ok).toBe(false);
+  });
+
+  test("classifies parsed JSON objects without widening the recursive JSON contract", () => {
+    expect(isCodeModeJsonObject({ answer: 42 })).toBe(true);
+    expect(isCodeModeJsonObject(Object.create(null))).toBe(true);
+    expect(isCodeModeJsonObject([1, 2])).toBe(false);
+    expect(isCodeModeJsonObject(null)).toBe(false);
+    expect(isCodeModeJsonObject("text")).toBe(false);
   });
 
   test("accepts strict bounded presentation snapshots without changing public results", () => {

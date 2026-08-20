@@ -437,19 +437,22 @@ describe("Pi CodeMode extension", () => {
   test("mounts the read-only Observer only after TUI Cell activity", async () => {
     initTheme("dark");
     const fixture = await createCodeModeExtensionFixture({}, false);
-    const widgetEvents: Array<{ readonly content: unknown; readonly placement?: string }> = [];
+    type ObserverWidgetFactory = Exclude<Parameters<ExtensionUIContext["setWidget"]>[1], undefined>;
+    const widgetEvents: Array<{
+      readonly content: ObserverWidgetFactory | undefined;
+      readonly placement?: string;
+    }> = [];
     const statusEvents: Array<string | undefined> = [];
     const setWidget = (
       _key: string,
-      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The faithful test recorder accepts both overloaded widget content representations without inspecting them.
-      content: unknown,
+      content: ObserverWidgetFactory | undefined,
       options?: { readonly placement?: string },
     ): void => {
       widgetEvents.push(
         options?.placement === undefined ? { content } : { content, placement: options.placement },
       );
     };
-    // SAFETY: This recorder accepts both ExtensionUIContext setWidget overloads and records without invoking their content.
+    // SAFETY: The Observer installs only component factories, matching the selected setWidget overload recorded above.
     const recordWidget = setWidget as ExtensionUIContext["setWidget"];
     await fixture.session.bindExtensions({
       mode: "tui",

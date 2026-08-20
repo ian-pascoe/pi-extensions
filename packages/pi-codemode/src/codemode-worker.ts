@@ -1,4 +1,3 @@
-/* oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-known-value-widening -- This Deno entrypoint is the guest-value boundary: it refines unknown Cell values into bounded JSON before any process message. */
 import {
   CODEMODE_WORKER_MESSAGE_LIMIT_BYTES,
   parseCodeModeWorkerRequest,
@@ -53,7 +52,6 @@ const randomUuid = crypto.randomUUID.bind(crypto);
 // oxlint-disable-next-line typescript/unbound-method -- Capturing this primordial before guest execution prevents a Cell from replacing it.
 const replaceAllStringPrimordial = String.prototype.replaceAll;
 const stringPrototype = String.prototype;
-// oxlint-disable-next-line typescript/unbound-method -- Reflect.apply does not use this; capture prevents guest replacement.
 const applyFunction = Reflect.apply;
 function replaceAllString(value: string, searchValue: string, replaceValue: string): string {
   return applyFunction(replaceAllStringPrimordial, value, [searchValue, replaceValue]);
@@ -104,10 +102,23 @@ function createCodeModeToolError(code: string, message: string): CodeModeToolErr
   return error;
 }
 
-function internalToolErrorCode(error: unknown): string | undefined {
-  return (typeof error === "object" && error !== null) || typeof error === "function"
-    ? getToolErrorCode(error)
-    : undefined;
+function isGuestReference(cause: unknown): cause is object {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: `typeof` cannot invoke guest Proxy traps; coordinator hostile-value tests prove this non-observable classification.
+  return (typeof cause === "object" && cause !== null) || typeof cause === "function";
+}
+
+function isGuestString(cause: unknown): cause is string {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: `typeof` cannot invoke guest coercion or Proxy traps; coordinator hostile-value tests prove this non-observable classification.
+  return typeof cause === "string";
+}
+
+function isStringPropertyKey(key: PropertyKey): key is string {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: Reflect and Proxy keys require a primitive string/symbol split; coordinator hostile JSON and tool-key tests cover symbol rejection and dynamic lookup.
+  return typeof key === "string";
+}
+
+function internalToolErrorCode(cause: unknown): string | undefined {
+  return isGuestReference(cause) ? getToolErrorCode(cause) : undefined;
 }
 
 type CodeModeNotebookBindingKind = "var" | "let" | "const" | "function" | "class";
@@ -126,6 +137,7 @@ type CodeModeNotebookStage = {
 };
 type CodeModeNotebookDeclarationHelper = {
   readonly init: object;
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Transformed Cell source completes with arbitrary guest data; coordinator hostile JSON and Notebook Binding tests cover deferred inspection.
   complete(value: unknown): void;
   declare(
     entries: readonly (readonly [string, CodeModeNotebookBindingKind])[],
@@ -230,6 +242,7 @@ function defineNotebookBindingProperty(name: string, configurable: boolean): voi
       }
       return findNotebookBinding(name)?.value;
     },
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Notebook Binding assignment accepts arbitrary Cell values by design; coordinator Notebook Binding reuse tests cover this dynamic seam.
     set(value: unknown) {
       const staged = findNotebookStage(name);
       if (staged !== undefined) {
@@ -281,7 +294,7 @@ function commitNotebookStage(stage: readonly CodeModeNotebookStage[]): void {
 
 const notebookInitializationTarget = new Proxy(createObject(null), {
   set(_target, name, value) {
-    if (typeof name !== "string" || activeNotebookStage === undefined) {
+    if (!isStringPropertyKey(name) || activeNotebookStage === undefined) {
       throw new errorConstructor("Pi CodeMode: declaration initialization outside an active stage");
     }
     const staged = findNotebookStage(name);
@@ -385,9 +398,12 @@ function utf8ByteLength(value: string): number {
   return encodeUtf8(value).byteLength;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This is arbitrary guest ingress; descriptor-only traversal avoids invoking accessors, coercion, and guest-mutated methods. Coordinator hostile JSON tests cover the boundary.
 function serializeGuestJson(value: unknown, allowUndefined: boolean): string | undefined {
   const seen: object[] = [];
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- SAFETY: Recursive guest inspection remains unknown until each descriptor value is classified; coordinator hostile JSON tests cover accessors, Proxies, cycles, and sparse arrays.
   const inspect = (candidate: unknown, path: string): unknown => {
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- SAFETY: The recursive result remains unknown so JSON.stringify performs the existing transport normalization without a lint-only universal value hierarchy; coordinator serialization tests cover null and undefined.
     if (candidate === null) return null;
     if (candidate === undefined) {
       if (path === "$" && allowUndefined) return undefined;
@@ -395,6 +411,7 @@ function serializeGuestJson(value: unknown, allowUndefined: boolean): string | u
         `CodeMode serialization failed: ${path} must be JSON data`,
       );
     }
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: Primitive classification with `typeof` cannot execute guest code; coordinator hostile JSON and mutated-primordial tests cover this ingress.
     const type = typeof candidate;
     if (type === "boolean" || type === "string") return candidate;
     if (type === "number") {
@@ -420,7 +437,7 @@ function serializeGuestJson(value: unknown, allowUndefined: boolean): string | u
         const output: unknown[] = [];
         for (const key of ownKeys(candidate)) {
           if (key === "length") continue;
-          if (typeof key !== "string") {
+          if (!isStringPropertyKey(key)) {
             throw new CodeModeSerializationError(
               `CodeMode serialization failed: ${path} has a symbol property`,
             );
@@ -448,6 +465,7 @@ function serializeGuestJson(value: unknown, allowUndefined: boolean): string | u
           }
           output[output.length] = inspect(descriptor.value, `${path}[${index}]`);
         }
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- SAFETY: The hostile-safe recursive inspector intentionally carries the array as unknown until JSON.stringify; coordinator sparse/accessor and undefined-normalization tests cover it.
         return output;
       }
       const prototype = getPrototypeOf(candidate);
@@ -458,7 +476,7 @@ function serializeGuestJson(value: unknown, allowUndefined: boolean): string | u
       }
       const output = createObject(null);
       for (const key of ownKeys(candidate)) {
-        if (typeof key !== "string") {
+        if (!isStringPropertyKey(key)) {
           throw new CodeModeSerializationError(
             `CodeMode serialization failed: ${path} has a symbol property`,
           );
@@ -491,38 +509,40 @@ function serializeGuestJson(value: unknown, allowUndefined: boolean): string | u
   return json;
 }
 
-function describeGuestError(error: unknown): GuestErrorDescription {
-  if (typeof error === "string") return { name: "Error", message: error };
-  if (error === null) return { name: "Error", message: "null" };
+function describeGuestError(cause: unknown): GuestErrorDescription {
+  if (isGuestString(cause)) return { name: "Error", message: cause };
+  if (cause === null) return { name: "Error", message: "null" };
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: One non-observable primitive split avoids coercing guest objects; coordinator hostile-thrown-value tests cover Proxy containment.
+  const causeType = typeof cause;
   if (
-    typeof error === "number" ||
-    typeof error === "boolean" ||
-    typeof error === "bigint" ||
-    typeof error === "undefined"
+    causeType === "number" ||
+    causeType === "boolean" ||
+    causeType === "bigint" ||
+    causeType === "undefined"
   ) {
-    return { name: "Error", message: stringFrom(error) };
+    return { name: "Error", message: stringFrom(cause) };
   }
-  if (typeof error === "symbol") return { name: "Error", message: "Symbol" };
+  if (causeType === "symbol") return { name: "Error", message: "Symbol" };
   try {
-    const nameDescriptor = getOwnPropertyDescriptor(error, "name");
-    const messageDescriptor = getOwnPropertyDescriptor(error, "message");
-    const stackDescriptor = getOwnPropertyDescriptor(error, "stack");
+    const nameDescriptor = getOwnPropertyDescriptor(cause, "name");
+    const messageDescriptor = getOwnPropertyDescriptor(cause, "message");
+    const stackDescriptor = getOwnPropertyDescriptor(cause, "stack");
     const name =
       nameDescriptor !== undefined &&
       "value" in nameDescriptor &&
-      typeof nameDescriptor.value === "string"
+      isGuestString(nameDescriptor.value)
         ? nameDescriptor.value
         : "Error";
     const message =
       messageDescriptor !== undefined &&
       "value" in messageDescriptor &&
-      typeof messageDescriptor.value === "string"
+      isGuestString(messageDescriptor.value)
         ? messageDescriptor.value
         : "CodeMode Cell rejected";
     if (
       stackDescriptor === undefined ||
       !("value" in stackDescriptor) ||
-      typeof stackDescriptor.value !== "string"
+      !isGuestString(stackDescriptor.value)
     ) {
       return { name, message };
     }
@@ -598,6 +618,7 @@ function copyToolNames(): string[] {
   return names;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- SAFETY: Guest tool calls accept arbitrary Cell input and return JSON.parse output; coordinator nested-tool and hostile JSON tests cover both directions.
 async function nativeToolCall(name: string, input: unknown): Promise<unknown> {
   const cell = activeCell;
   if (cell === undefined) {
@@ -638,6 +659,7 @@ function setToolNames(names: readonly string[]): void {
     defineProperty(nextFunctions, name, {
       configurable: false,
       enumerable: true,
+      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This is the guest-facing tool function boundary; nativeToolCall immediately performs hostile-safe JSON inspection. Coordinator nested-tool tests exercise it.
       value: (input: unknown) => {
         const result = nativeToolCall(name, input);
         // Observe ignored direct calls without changing rejection behavior for callers that await them.
@@ -659,19 +681,19 @@ const tools = new Proxy(createObject(null), {
     return false;
   },
   get(_target, name) {
-    return typeof name === "string"
+    return isStringPropertyKey(name)
       ? getOwnPropertyDescriptor(toolFunctions, name)?.value
       : undefined;
   },
   getOwnPropertyDescriptor(_target, name) {
-    if (typeof name !== "string") return undefined;
+    if (!isStringPropertyKey(name)) return undefined;
     const value = getOwnPropertyDescriptor(toolFunctions, name)?.value;
     return value === undefined
       ? undefined
       : { configurable: true, enumerable: true, value, writable: false };
   },
   has(_target, name) {
-    return typeof name === "string" && getOwnPropertyDescriptor(toolFunctions, name) !== undefined;
+    return isStringPropertyKey(name) && getOwnPropertyDescriptor(toolFunctions, name) !== undefined;
   },
   ownKeys() {
     return copyToolNames();
@@ -694,7 +716,7 @@ defineProperty(globalThis, "tools", {
   writable: false,
 });
 
-function disableGuestGlobal(name: string, value?: unknown): void {
+function disableGuestGlobal(name: string, value?: Readonly<typeof safeDenoIdentity>): void {
   const descriptor = getOwnPropertyDescriptor(globalThis, name);
   if (descriptor?.configurable === false) return;
   defineProperty(globalThis, name, {
@@ -871,8 +893,7 @@ function scheduleCellFinish(cell: ActiveWorkerCell): void {
     if (cell.mainFailed) {
       const error = describeGuestError(cell.mainError);
       const serializationFailure =
-        ((typeof cell.mainError === "object" && cell.mainError !== null) ||
-          typeof cell.mainError === "function") &&
+        isGuestReference(cell.mainError) &&
         (hasSerializationErrorInstance(cell.mainError) ||
           internalToolErrorCode(cell.mainError) === "serialization");
       response = {

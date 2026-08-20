@@ -18,6 +18,7 @@ import { createCodeModeSessionFiles, type CodeModeSessionFiles } from "./codemod
 import {
   createCodeModeFailure,
   createCodeModePending,
+  isCodeModeJsonObject,
   type CodeModeJsonValue,
   type CodeModeResultDetails,
   type CodeModeToolOperations,
@@ -74,13 +75,6 @@ function renderGenerationCatalogue(
         : [{ name, description: tool.description, inputSchema: tool.parameters }];
     }),
   );
-}
-
-function isCodeModeJsonObject(
-  value: CodeModeJsonValue,
-): value is { readonly [key: string]: CodeModeJsonValue } {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Nested guest JSON is refined to Pi's object-shaped tool arguments here.
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function latestCodeModeAssistantMessage(
@@ -352,17 +346,19 @@ class PiCodeModeLifecycleController {
             `Pi CodeMode tool is not currently exposed: ${call.toolName}`,
           ),
         );
-      } else if (!isCodeModeJsonObject(call.input)) {
-        earlyResults.set(
-          call.callId,
-          unavailableNestedResult(
-            call.callId,
-            "validation",
-            `Pi CodeMode tool input must be an object: ${call.toolName}`,
-          ),
-        );
       } else {
-        bridgeCalls.push({ callId: call.callId, name: call.toolName, input: call.input });
+        if (!isCodeModeJsonObject(call.input)) {
+          earlyResults.set(
+            call.callId,
+            unavailableNestedResult(
+              call.callId,
+              "validation",
+              `Pi CodeMode tool input must be an object: ${call.toolName}`,
+            ),
+          );
+        } else {
+          bridgeCalls.push({ callId: call.callId, name: call.toolName, input: call.input });
+        }
       }
     }
 

@@ -1,15 +1,24 @@
-/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type -- This module is the deliberately structural JSON Schema parser boundary; JSON Schema values have no closed TypeScript shape and are refined before rendering. */
 import { Buffer } from "node:buffer";
-import { isReservedCodeModeToolName } from "./codemode-tool-contract.js";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import {
+  isCodeModeJsonObject,
+  isReservedCodeModeToolName,
+  type CodeModeJsonObject,
+  type CodeModeJsonValue,
+} from "./codemode-tool-contract.js";
 
 const CODEMODE_CATALOGUE_LIMIT_BYTES = 1024 * 1024;
 const CODEMODE_JSDOC_LIMIT_BYTES = 2 * 1024;
 const CODEMODE_SCHEMA_DEPTH_LIMIT = 16;
 
-/** One CodeMode-callable Pi tool and its untrusted structural input schema. */
+/** A structural JSON Schema document accepted from TypeBox or another producer. */
+export type CodeModeToolInputSchema = boolean | object;
+
+/** One CodeMode-callable Pi tool and its structural input schema. */
 export type CodeModeToolCatalogueTool = {
   readonly name: string;
-  readonly inputSchema: unknown;
+  readonly inputSchema: CodeModeToolInputSchema;
   readonly description?: string;
 };
 
@@ -18,7 +27,7 @@ export type CodeModeToolCatalogueResult =
   | { readonly ok: true; readonly text: string }
   | { readonly ok: false; readonly reason: "names-exceed-catalogue-limit" };
 
-type SchemaRecord = Readonly<Record<string, unknown>>;
+type ParsedCodeModeToolInputSchema = boolean | CodeModeJsonObject;
 type RenderedTool = {
   readonly name: string;
   readonly description: string | undefined;
@@ -26,29 +35,68 @@ type RenderedTool = {
 };
 type CodeModeCatalogueDescriptionMode = "include-descriptions" | "omit-descriptions";
 
-function isRecord(value: unknown): value is SchemaRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+const JsonStringSchema = Type.String();
+const JsonNumberSchema = Type.Number();
+const JsonBooleanSchema = Type.Boolean();
+const StructuralJsonObjectSchema = Type.Object({}, { additionalProperties: true });
+
+function isJsonString(value: CodeModeJsonValue): value is string {
+  return Value.Check(JsonStringSchema, value);
 }
 
-function schemaRecord(value: unknown): SchemaRecord | undefined {
-  return isRecord(value) ? value : undefined;
-}
-
-function jsonLiteral(value: unknown): string | undefined {
-  if (
-    value === undefined ||
-    typeof value === "bigint" ||
-    typeof value === "function" ||
-    typeof value === "symbol"
-  ) {
-    return undefined;
+function parseStructuralJsonValue(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This is the catalogue's sole structural JSON ingress; the TypeBox, non-TypeBox, and boolean-schema test proves supported producers remain accepted without invoking schema accessors.
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+  depth = 0,
+): CodeModeJsonValue | undefined {
+  if (depth > CODEMODE_SCHEMA_DEPTH_LIMIT * 4) return undefined;
+  if (value === null) return null;
+  if (Value.Check(JsonStringSchema, value) || Value.Check(JsonBooleanSchema, value)) return value;
+  if (Value.Check(JsonNumberSchema, value)) return Number.isFinite(value) ? value : undefined;
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return undefined;
+    seen.add(value);
+    try {
+      const output: CodeModeJsonValue[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (descriptor === undefined || !("value" in descriptor)) return undefined;
+        const item = parseStructuralJsonValue(descriptor.value, seen, depth + 1);
+        if (item === undefined) return undefined;
+        output.push(item);
+      }
+      return output;
+    } finally {
+      seen.delete(value);
+    }
   }
+  if (!Value.Check(StructuralJsonObjectSchema, value) || seen.has(value)) return undefined;
+  seen.add(value);
   try {
-    const rendered = JSON.stringify(value);
-    return rendered === undefined ? undefined : rendered;
-  } catch {
-    return undefined;
+    const output: Array<readonly [string, CodeModeJsonValue]> = [];
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !("value" in descriptor)) continue;
+      const property = parseStructuralJsonValue(descriptor.value, seen, depth + 1);
+      if (property !== undefined) output.push([key, property]);
+    }
+    return Object.fromEntries(output);
+  } finally {
+    seen.delete(value);
   }
+}
+
+function isStructuralJsonObject(value: CodeModeJsonValue | undefined): value is CodeModeJsonObject {
+  return Value.Check(StructuralJsonObjectSchema, value);
+}
+
+function schemaRecord(value: CodeModeJsonValue | undefined): CodeModeJsonObject | undefined {
+  return value !== undefined && isCodeModeJsonObject(value) ? value : undefined;
+}
+
+function jsonLiteral(value: CodeModeJsonValue): string | undefined {
+  return JSON.stringify(value);
 }
 
 function quotedName(name: string): string {
@@ -71,8 +119,8 @@ function jsdoc(description: string | undefined): string {
 }
 
 function schemaType(
-  schema: unknown,
-  root: SchemaRecord | undefined,
+  schema: CodeModeJsonValue | undefined,
+  root: CodeModeJsonObject | undefined,
   seen: ReadonlySet<string>,
   depth: number,
 ): string {
@@ -83,13 +131,16 @@ function schemaType(
   if (record === undefined) return "unknown";
 
   const reference = record.$ref;
-  if (typeof reference === "string") {
+  if (reference !== undefined && isJsonString(reference)) {
     const referenced = resolveLocalReference(reference, root);
     if (referenced === undefined || seen.has(reference)) return "unknown";
     return schemaType(referenced, root, new Set([...seen, reference]), depth + 1);
   }
 
-  if (Object.hasOwn(record, "const")) return jsonLiteral(record.const) ?? "unknown";
+  const constant = record.const;
+  if (Object.hasOwn(record, "const") && constant !== undefined) {
+    return jsonLiteral(constant) ?? "unknown";
+  }
   const enumValues = Array.isArray(record.enum) ? record.enum.map(jsonLiteral) : undefined;
   if (
     enumValues !== undefined &&
@@ -107,14 +158,14 @@ function schemaType(
 
   const type = record.type;
   if (Array.isArray(type)) {
-    const types = type.filter((entry): entry is string => typeof entry === "string");
+    const types = type.filter(isJsonString);
     return types.length === type.length && types.length > 0
       ? types
           .map((entry) => primitiveOrStructuredType(entry, record, root, seen, depth))
           .join(" | ")
       : "unknown";
   }
-  return typeof type === "string"
+  return type !== undefined && isJsonString(type)
     ? primitiveOrStructuredType(type, record, root, seen, depth)
     : hasObjectKeywords(record)
       ? objectType(record, root, seen, depth)
@@ -123,7 +174,10 @@ function schemaType(
         : "unknown";
 }
 
-function resolveLocalReference(reference: string, root: SchemaRecord | undefined): unknown {
+function resolveLocalReference(
+  reference: string,
+  root: CodeModeJsonObject | undefined,
+): CodeModeJsonValue | undefined {
   if (root === undefined || !reference.startsWith("#/$defs/")) return undefined;
   const name = reference.slice("#/$defs/".length);
   if (name.length === 0 || name.includes("/")) return undefined;
@@ -132,8 +186,8 @@ function resolveLocalReference(reference: string, root: SchemaRecord | undefined
 }
 
 function unionType(
-  value: unknown,
-  root: SchemaRecord | undefined,
+  value: CodeModeJsonValue | undefined,
+  root: CodeModeJsonObject | undefined,
   seen: ReadonlySet<string>,
   depth: number,
 ): string | undefined {
@@ -142,8 +196,8 @@ function unionType(
 }
 
 function intersectionType(
-  value: unknown,
-  root: SchemaRecord | undefined,
+  value: CodeModeJsonValue | undefined,
+  root: CodeModeJsonObject | undefined,
   seen: ReadonlySet<string>,
   depth: number,
 ): string | undefined {
@@ -153,8 +207,8 @@ function intersectionType(
 
 function primitiveOrStructuredType(
   type: string,
-  record: SchemaRecord,
-  root: SchemaRecord | undefined,
+  record: CodeModeJsonObject,
+  root: CodeModeJsonObject | undefined,
   seen: ReadonlySet<string>,
   depth: number,
 ): string {
@@ -177,7 +231,7 @@ function primitiveOrStructuredType(
   }
 }
 
-function hasObjectKeywords(record: SchemaRecord): boolean {
+function hasObjectKeywords(record: CodeModeJsonObject): boolean {
   return (
     Object.hasOwn(record, "properties") ||
     Object.hasOwn(record, "additionalProperties") ||
@@ -185,21 +239,19 @@ function hasObjectKeywords(record: SchemaRecord): boolean {
   );
 }
 
-function hasArrayKeywords(record: SchemaRecord): boolean {
+function hasArrayKeywords(record: CodeModeJsonObject): boolean {
   return Object.hasOwn(record, "items") || Object.hasOwn(record, "prefixItems");
 }
 
 function objectType(
-  record: SchemaRecord,
-  root: SchemaRecord | undefined,
+  record: CodeModeJsonObject,
+  root: CodeModeJsonObject | undefined,
   seen: ReadonlySet<string>,
   depth: number,
 ): string {
   const properties = schemaRecord(record.properties);
   const required = new Set(
-    Array.isArray(record.required)
-      ? record.required.filter((name): name is string => typeof name === "string")
-      : [],
+    Array.isArray(record.required) ? record.required.filter(isJsonString) : [],
   );
   const members = Object.entries(properties ?? {})
     .sort(([left], [right]) => left.localeCompare(right))
@@ -210,7 +262,7 @@ function objectType(
   const additional = record.additionalProperties;
   if (additional !== false) {
     const additionalType =
-      members.length === 0 && isRecord(additional)
+      members.length === 0 && schemaRecord(additional) !== undefined
         ? schemaType(additional, root, seen, depth + 1)
         : "unknown";
     members.push(`readonly [key: string]: ${additionalType};`);
@@ -219,8 +271,8 @@ function objectType(
 }
 
 function arrayType(
-  record: SchemaRecord,
-  root: SchemaRecord | undefined,
+  record: CodeModeJsonObject,
+  root: CodeModeJsonObject | undefined,
   seen: ReadonlySet<string>,
   depth: number,
 ): string {
@@ -228,7 +280,7 @@ function arrayType(
   if (Array.isArray(prefixItems)) {
     const tuple = prefixItems.map((item) => schemaType(item, root, seen, depth + 1));
     const items = record.items;
-    if (isRecord(items) || items === true) {
+    if (schemaRecord(items) !== undefined || items === true) {
       tuple.push(`...${items === true ? "unknown" : schemaType(items, root, seen, depth + 1)}[]`);
     }
     return `readonly [${tuple.join(", ")}]`;
@@ -261,11 +313,16 @@ export function renderCodeModeToolCatalogue(
   const unique = candidates.filter(
     (tool, index) => index === 0 || tool.name !== candidates[index - 1]?.name,
   );
-  const rendered = unique.map((tool) => ({
-    name: tool.name,
-    description: boundedDescription(tool.description),
-    input: schemaType(tool.inputSchema, schemaRecord(tool.inputSchema), new Set(), 0),
-  }));
+  const rendered = unique.map((tool) => {
+    const parsed = parseStructuralJsonValue(tool.inputSchema);
+    const inputSchema: ParsedCodeModeToolInputSchema | undefined =
+      parsed === true || parsed === false || isStructuralJsonObject(parsed) ? parsed : undefined;
+    return {
+      name: tool.name,
+      description: boundedDescription(tool.description),
+      input: schemaType(inputSchema, schemaRecord(inputSchema), new Set(), 0),
+    };
+  });
 
   let text = renderCatalogue(rendered, "include-descriptions");
   if (isWithinCatalogueLimit(text)) return { ok: true, text };

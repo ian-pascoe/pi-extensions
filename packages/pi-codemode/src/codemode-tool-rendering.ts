@@ -17,6 +17,7 @@ import {
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { formatCodeModePresentationData } from "./codemode-presentation-output.js";
 import {
@@ -28,6 +29,7 @@ import {
   type CodeModeCancelParameters,
   type CodeModeErrorCode,
   type CodeModeExecuteParameters,
+  isCodeModeJsonObject,
   type CodeModeJsonValue,
   type CodeModePresentationSnapshot,
   type CodeModeResultDetails,
@@ -62,13 +64,14 @@ const CODEMODE_STATUS_PRESENTATION = {
 } satisfies Record<CodeModeCellState, CodeModeStatusPresentation>;
 const CODEMODE_SCRIPT_MAX_LINES = 200;
 const CODEMODE_PRESENTATION_MAX_BYTES = 50 * 1024;
+const CodeModeJsonStringSchema = Type.String();
 
 function sanitizeCodeModeText(text: string): string {
   return (
     stripTerminalSequences(text)
       .replaceAll("\r\n", "\n")
       .replaceAll("\r", "\n")
-      // oxlint-disable-next-line eslint/no-control-regex -- Transcript text permits tabs/newlines but must remove every remaining C0/C1 terminal control.
+      // oxlint-disable-next-line eslint/no-control-regex -- SAFETY: Transcript text permits tabs/newlines but must remove every remaining C0/C1 terminal control.
       .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
   );
 }
@@ -89,8 +92,7 @@ function firstMeaningfulScriptLine(script: string): string | undefined {
 
 function parseCodeModeRenderedToolParameters(
   toolName: CodeModeRenderedToolName,
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This function owns schema parsing for historical tool-call arguments.
-  parameters: unknown,
+  parameters: CodeModeJsonValue,
 ): CodeModeRenderedToolParameters | undefined {
   if (toolName === "codemode_execute") {
     return Value.Check(CodeModeExecuteParametersSchema, parameters) ? parameters : undefined;
@@ -162,13 +164,13 @@ function codeModeValueSummary(value: CodeModeJsonValue | undefined): string {
   if (value === undefined) return "(no data)";
   if (value === null) return "null";
   if (Array.isArray(value)) return `array · ${pluralizedCodeModeCount(value.length, "item")}`;
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parsed recursive JSON union is discriminated into its object value arm for presentation.
-  if (typeof value === "object") {
+  if (isCodeModeJsonObject(value)) {
     return `object · ${pluralizedCodeModeCount(Object.keys(value).length, "key")}`;
   }
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parsed recursive JSON union is discriminated into its string value arm for presentation.
-  if (typeof value === "string") return boundedCodeModePreview(JSON.stringify(value), 48);
-  return String(value);
+  if (Value.Check(CodeModeJsonStringSchema, value)) {
+    return boundedCodeModePreview(JSON.stringify(value), 48);
+  }
+  return JSON.stringify(value) ?? "";
 }
 
 function appendCodeModeField(
@@ -269,8 +271,7 @@ function renderCodeModeSummary(
 /** Render one CodeMode tool call as a semantic operation with bounded source detail. */
 export function renderCodeModeToolCall(
   toolName: CodeModeRenderedToolName,
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Historical tool arguments are parsed against the selected public schema immediately below.
-  parameters: unknown,
+  parameters: CodeModeJsonValue,
   theme: CodeModeRenderTheme,
   expanded: boolean,
   formatSessionPrefix: CodeModeSessionPrefixFormatter = shortCodeModeSessionId,

@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Usage } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
 
 const CODEMODE_TOOL_NAMES = {
   execute: "codemode_execute",
@@ -122,6 +123,9 @@ export type CodeModeResultParameters = Static<typeof CodeModeResultParametersSch
 /** Parsed arguments for `codemode_cancel`. */
 export type CodeModeCancelParameters = Static<typeof CodeModeCancelParametersSchema>;
 
+/** A JSON object accepted in a successful CodeMode result. */
+export type CodeModeJsonObject = { readonly [key: string]: CodeModeJsonValue };
+
 /** JSON data accepted in a successful CodeMode result. */
 export type CodeModeJsonValue =
   | null
@@ -129,7 +133,15 @@ export type CodeModeJsonValue =
   | number
   | string
   | readonly CodeModeJsonValue[]
-  | { readonly [key: string]: CodeModeJsonValue };
+  | CodeModeJsonObject;
+
+const CodeModeJsonObjectSchema = Type.Object({}, { additionalProperties: true });
+const CodeModeJsonStringSchema = Type.String();
+
+/** Refines an already-parsed CodeMode JSON value to its object arm. */
+export function isCodeModeJsonObject(value: CodeModeJsonValue): value is CodeModeJsonObject {
+  return Value.Check(CodeModeJsonObjectSchema, value);
+}
 
 /** Recursive TypeBox schema for JSON-safe CodeMode values crossing the worker boundary. */
 export const CodeModeJsonValueSchema = Type.Unsafe<CodeModeJsonValue>({
@@ -254,7 +266,7 @@ export function createCodeModeFailure(
 
 /** A bounded JSON compatibility parse that never invokes getters or `toJSON`. */
 export function parseCodeModeJsonValue(
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This parser owns the JSON protocol boundary and refines arbitrary runtime values.
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Arbitrary guest values enter only through this descriptor-based parser; the hostile-values test proves accessors, proxies, functions, symbols, and cycles fail closed.
   value: unknown,
   options: {
     readonly allowUndefined?: boolean;
@@ -265,14 +277,14 @@ export function parseCodeModeJsonValue(
   | { readonly ok: true; readonly value?: CodeModeJsonValue }
   | { readonly ok: false; readonly message: string } {
   const seen = new WeakSet<object>();
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Recursive inspection continues the same JSON protocol parse.
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Data descriptors recursively expose arbitrary guest values without invoking them; the hostile-values test proves this recursive boundary fails closed.
   const inspect = (candidate: unknown, path: string): CodeModeJsonValue | undefined => {
     if (candidate === null) return null;
     if (candidate === undefined) {
       if (path === "$" && options.allowUndefined === true) return undefined;
       throw new Error(`${path} must be JSON data`);
     }
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Primitive refinement is required while parsing the JSON protocol representation.
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: Primitive classification avoids coercion or guest methods; the hostile-values test proves non-JSON runtime kinds fail closed.
     switch (typeof candidate) {
       case "boolean":
       case "string":
@@ -298,8 +310,9 @@ export function parseCodeModeJsonValue(
         const output: CodeModeJsonValue[] = [];
         for (const key of Reflect.ownKeys(candidate)) {
           if (key === "length") continue;
-          // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Reflect.ownKeys returns strings and symbols; JSON permits only strings.
-          if (typeof key !== "string") throw new Error(`${path} has a symbol property`);
+          if (!Value.Check(CodeModeJsonStringSchema, key)) {
+            throw new Error(`${path} has a symbol property`);
+          }
           const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
           if (descriptor === undefined || !descriptor.enumerable) {
             throw new Error(`${path}.${key} is non-enumerable`);
@@ -335,8 +348,9 @@ export function parseCodeModeJsonValue(
       }
       const output: Record<string, CodeModeJsonValue> = {};
       for (const key of Reflect.ownKeys(candidate)) {
-        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Reflect.ownKeys returns strings and symbols; JSON permits only strings.
-        if (typeof key !== "string") throw new Error(`${path} has a symbol property`);
+        if (!Value.Check(CodeModeJsonStringSchema, key)) {
+          throw new Error(`${path} has a symbol property`);
+        }
         const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
         if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
           throw new Error(`${path}.${key} is non-enumerable or accessor-backed`);

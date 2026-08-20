@@ -42,13 +42,6 @@
       ]
     },
     {
-      "source": "npm:@ian-pascoe/pi-codemode",
-      "autoload": false,
-      "extensions": [
-        "-src/index.ts"
-      ]
-    },
-    {
       "source": "npm:@ian-pascoe/pi-dap",
       "autoload": false,
       "extensions": [

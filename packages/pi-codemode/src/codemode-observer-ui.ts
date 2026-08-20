@@ -114,7 +114,7 @@ function sanitizeCodeModeObserverText(value: string): string {
       .replaceAll("\t", " ")
       .replace(/\s+/g, " ")
       .trim()
-      // oxlint-disable-next-line eslint/no-control-regex -- Observer text must remove terminal C0/C1 controls after preserving ordinary spacing above.
+      // oxlint-disable-next-line eslint/no-control-regex -- SAFETY: Observer text must remove terminal C0/C1 controls after preserving ordinary spacing above.
       .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
   );
 }

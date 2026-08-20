@@ -16,8 +16,7 @@ const typescriptDirectory = dirname(require.resolve("typescript/package.json"));
 
 function tool(
   name: string,
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Tests supply arbitrary JSON Schema documents to the renderer's structural parsing boundary.
-  inputSchema: unknown,
+  inputSchema: CodeModeToolCatalogueTool["inputSchema"],
   description?: string,
 ): CodeModeToolCatalogueTool {
   if (description === undefined) return { name, inputSchema };
@@ -60,6 +59,34 @@ describe("renderCodeModeToolCatalogue", () => {
     expect(rendered.text).toContain("readonly [key: string]: unknown;");
     expect(rendered.text).toContain("A *\\/ description");
     await expectTypeScriptToAccept(rendered.text);
+  }, 20_000);
+
+  test("preserves boolean and non-TypeBox structural JSON Schemas", () => {
+    const rendered = renderCodeModeToolCatalogue([
+      tool("anything", true),
+      tool("nothing", false),
+      tool("prototype-property", {
+        type: "object",
+        properties: Object.fromEntries([["__proto__", { type: "string" }]]),
+        required: ["__proto__"],
+        additionalProperties: false,
+      }),
+      tool("structural", {
+        type: "object",
+        properties: {
+          "arbitrary/property": { oneOf: [{ type: "integer" }, { type: "null" }] },
+        },
+        required: ["arbitrary/property"],
+        additionalProperties: false,
+      }),
+    ]);
+
+    expect(rendered).toMatchObject({ ok: true });
+    if (!rendered.ok) return;
+    expect(rendered.text).toContain('readonly ["anything"]: (input: unknown)');
+    expect(rendered.text).toContain('readonly ["nothing"]: (input: never)');
+    expect(rendered.text).toContain('readonly ["__proto__"]: string;');
+    expect(rendered.text).toContain('readonly ["arbitrary/property"]: number | null;');
   });
 
   test("resolves local definitions but makes recursive, deep, and unsupported regions unknown", () => {

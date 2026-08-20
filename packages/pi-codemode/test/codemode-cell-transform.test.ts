@@ -1,11 +1,15 @@
-/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-runtime-typeof -- This faithful test-only Notebook helper receives arbitrary guest values and Proxy property keys at the same dynamic JavaScript boundary as Deno. */
 import { describe, expect, test } from "vitest";
 import {
   transformCodeModeCell,
   type TransformedCodeModeCell,
 } from "../src/codemode-cell-transform.js";
+import type { CodeModeJsonValue } from "../src/codemode-tool-contract.js";
 
-type CodeModeNotebookRunner = (source: string, internalIdentifier: string) => Promise<unknown>;
+type TestCellResult = CodeModeJsonValue | undefined;
+type CodeModeNotebookRunner = (
+  source: string,
+  internalIdentifier: string,
+) => Promise<TestCellResult>;
 type TestNotebookBinding = { kind: string; value: unknown };
 type TestStagedBinding = TestNotebookBinding & { initialized: boolean };
 
@@ -28,6 +32,7 @@ function createCodeModeNotebookRunner(): CodeModeNotebookRunner {
         if (binding === undefined) throw new ReferenceError(`${name} is not defined`);
         return binding.value;
       },
+      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This setter is the faithful arbitrary-JavaScript Notebook Binding boundary exercised by the transform tests.
       set(value: unknown) {
         const staged = activeStage?.get(name);
         if (staged !== undefined) {
@@ -49,6 +54,7 @@ function createCodeModeNotebookRunner(): CodeModeNotebookRunner {
 
   const initializationTarget = new Proxy(Object.create(null), {
     set(_target, name, value) {
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: Proxy PropertyKey is the JavaScript boundary; only string Notebook Binding names may enter the staged map.
       if (typeof name !== "string" || activeStage === undefined) return false;
       const staged = activeStage.get(name);
       if (staged === undefined) return false;
@@ -115,7 +121,7 @@ function createCodeModeNotebookRunner(): CodeModeNotebookRunner {
     // oxlint-disable-next-line typescript/no-implied-eval -- Evaluating transformed Cell source is the behavior under test.
     const executeCell = Function(
       `return async function () {\n${executableSource}\n};`,
-    ) as () => () => Promise<unknown>;
+    ) as () => () => Promise<TestCellResult>;
     try {
       return await executeCell()();
     } finally {
@@ -132,7 +138,7 @@ function transformCellOrThrow(script: string): TransformedCodeModeCell {
   return result.cell;
 }
 
-async function runCell(runner: CodeModeNotebookRunner, script: string): Promise<unknown> {
+async function runCell(runner: CodeModeNotebookRunner, script: string): Promise<TestCellResult> {
   const cell = transformCellOrThrow(script);
   return runner(cell.source, cell.internalIdentifierPlaceholder);
 }
