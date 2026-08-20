@@ -1,5 +1,6 @@
 import {
   getMarkdownTheme,
+  highlightCode,
   keyText,
   truncateHead,
   type AgentToolResult,
@@ -71,7 +72,7 @@ const CODEMODE_STATUS_PRESENTATION = {
   cancelled: { color: "warning", label: "■ cancelled" },
   timed_out: { color: "error", label: "! timed out" },
 } satisfies Record<CodeModeCellState, CodeModeStatusPresentation>;
-const CODEMODE_SCRIPT_MAX_LINES = 200;
+const CODEMODE_COLLAPSED_SCRIPT_LINES = 8;
 const CODEMODE_PRESENTATION_MAX_BYTES = 50 * 1024;
 const CodeModeJsonStringSchema = Type.String();
 
@@ -89,14 +90,6 @@ function boundedCodeModePreview(text: string, width = 72): string {
   const singleLine = sanitizeCodeModeText(text).replace(/\s+/g, " ").trim();
   if (visibleWidth(singleLine) <= width) return singleLine;
   return `${sliceByColumn(singleLine, 0, width - 1, true).trimEnd()}…`;
-}
-
-function firstMeaningfulScriptLine(script: string): string | undefined {
-  const line = sanitizeCodeModeText(script)
-    .split("\n")
-    .map((candidate) => candidate.trim())
-    .find(Boolean);
-  return line === undefined ? undefined : boundedCodeModePreview(line);
 }
 
 function parseCodeModeRenderedToolParameters(
@@ -207,6 +200,16 @@ function appendCodeModeBlock(container: Container, language: "ts" | "json", cont
   );
 }
 
+function highlightedCodeModeSource(source: string): string {
+  return highlightCode(source, "typescript")
+    .map((line) => `  ${line}`)
+    .join("\n");
+}
+
+function appendHighlightedCodeModeSource(container: Container, source: string): void {
+  container.addChild(new Text(highlightedCodeModeSource(source), 0, 0));
+}
+
 function boundedCodeModeText(text: string, maxLines: number): string {
   const safe = sanitizeCodeModeText(text);
   const truncated = truncateHead(safe, {
@@ -286,7 +289,7 @@ function renderCodeModeSummary(
   return parts.join("  ");
 }
 
-/** Render one CodeMode tool call as a semantic operation with bounded source detail. */
+/** Render one CodeMode tool call with a bounded collapsed preview or complete expanded source. */
 export function renderCodeModeToolCall(
   toolName: CodeModeRenderedToolName,
   parameters: CodeModeJsonValue,
@@ -313,10 +316,10 @@ export function renderCodeModeToolCall(
     parsedParameters !== undefined && "sessionId" in parsedParameters
       ? parsedParameters.sessionId
       : undefined;
-  const preview =
-    executeParameters === undefined
-      ? undefined
-      : firstMeaningfulScriptLine(executeParameters.script);
+  const source =
+    executeParameters === undefined ? undefined : sanitizeCodeModeText(executeParameters.script);
+  const oneLineSource = source !== undefined && !source.includes("\n") ? source : undefined;
+  const expansionHint = `${keyText("app.tools.expand")} to expand`;
   const container = new Container();
   container.addChild(
     new Text(
@@ -324,7 +327,12 @@ export function renderCodeModeToolCall(
         theme.fg("toolTitle", theme.bold("CodeMode")),
         theme.fg("accent", operation),
         theme.fg("muted", sessionId === undefined ? "new" : formatSessionPrefix(sessionId)),
-        preview === undefined ? undefined : theme.fg("dim", preview),
+        !expanded && oneLineSource !== undefined
+          ? highlightCode(oneLineSource, "typescript")[0]
+          : undefined,
+        !expanded && oneLineSource !== undefined
+          ? theme.fg("dim", `·  ${expansionHint}`)
+          : undefined,
       ]
         .filter((part): part is string => part !== undefined)
         .join("  "),
@@ -332,7 +340,17 @@ export function renderCodeModeToolCall(
       0,
     ),
   );
-  if (!expanded) return container;
+  if (!expanded) {
+    if (source === undefined || oneLineSource !== undefined) return container;
+    const sourceLines = source.split("\n");
+    const visibleSource = sourceLines.slice(0, CODEMODE_COLLAPSED_SCRIPT_LINES).join("\n");
+    appendHighlightedCodeModeSource(container, visibleSource);
+    const omittedLines = Math.max(0, sourceLines.length - CODEMODE_COLLAPSED_SCRIPT_LINES);
+    const omitted =
+      omittedLines === 0 ? "" : `… ${pluralizedCodeModeCount(omittedLines, "line")} omitted  ·  `;
+    container.addChild(new Text(theme.fg("dim", `  ${omitted}${expansionHint}`), 0, 0));
+    return container;
+  }
   container.addChild(new Spacer(1));
   if (sessionId !== undefined) appendCodeModeField(container, theme, "Session", sessionId);
   if (executeParameters === undefined) return container;
@@ -342,8 +360,7 @@ export function renderCodeModeToolCall(
     appendCodeModeField(container, theme, "Timeout", `${executeParameters.timeoutMs}ms`);
   container.addChild(new Spacer(1));
   container.addChild(new Text(theme.fg("muted", theme.bold("TypeScript")), 0, 0));
-  const script = boundedCodeModeText(executeParameters.script, CODEMODE_SCRIPT_MAX_LINES);
-  appendCodeModeBlock(container, "ts", script);
+  appendHighlightedCodeModeSource(container, source ?? "");
   return container;
 }
 

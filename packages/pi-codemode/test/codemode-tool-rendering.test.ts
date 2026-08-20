@@ -31,7 +31,7 @@ function result(details: CodeModeResultDetails, text = JSON.stringify(details)) 
 }
 
 describe("CodeMode Transcript rendering", () => {
-  test("renders compact semantic calls and bounded expanded TypeScript", () => {
+  test("renders highlighted source previews and complete expanded TypeScript", () => {
     const script = `\n\u001b[31mconst answer: number = 42;\u001b[0m\n${Array.from(
       { length: 205 },
       (_, index) => `const value${index} = ${index};`,
@@ -41,18 +41,40 @@ describe("CodeMode Transcript rendering", () => {
     const collapsed = renderText(
       renderCodeModeToolCall("codemode_execute", execute, plainTheme, false),
     );
-    expect(collapsed).toContain("CodeMode  Run Cell  new  const answer: number = 42;");
+    expect(collapsed).toContain("CodeMode  Run Cell  new");
+    expect(collapsed).toContain("  const answer: number = 42;");
+    expect(collapsed).toContain("  const value5 = 5;");
+    expect(collapsed).not.toContain("value6");
+    expect(collapsed).toContain("199 lines omitted");
+    expect(collapsed).toContain("to expand");
     expect(collapsed).not.toContain("\u001b");
 
-    const expanded = renderText(
-      renderCodeModeToolCall("codemode_execute", execute, plainTheme, true),
-    );
+    const expandedComponent = renderCodeModeToolCall("codemode_execute", execute, plainTheme, true);
+    const expanded = renderText(expandedComponent);
     expect(expanded).toContain("Wait: false");
     expect(expanded).toContain("Timeout: 5000ms");
     expect(expanded).toContain("TypeScript");
     expect(expanded).toContain("const answer: number = 42;");
-    expect(expanded).toContain("lines omitted");
-    expect(expanded).not.toContain("value204");
+    expect(expanded).not.toContain("lines omitted");
+    expect(expanded).toContain("value204");
+    const highlightedSourceLine = expandedComponent
+      .render(120)
+      .find((line) => stripTerminalSequences(line).includes("const answer: number = 42;"));
+    expect(highlightedSourceLine).toBeDefined();
+    expect(highlightedSourceLine).not.toBe(stripTerminalSequences(highlightedSourceLine ?? ""));
+
+    const oneLineComponent = renderCodeModeToolCall(
+      "codemode_execute",
+      { script: "const answer: number = 42;" },
+      plainTheme,
+      false,
+    );
+    const oneLine = renderLines(oneLineComponent);
+    expect(oneLine).toHaveLength(1);
+    expect(oneLine[0]).toContain("CodeMode  Run Cell  new  const answer: number = 42;");
+    expect(oneLine[0]).toContain("to expand");
+    const rawOneLineSource = oneLineComponent.render(120)[0]?.split("·", 1)[0] ?? "";
+    expect(rawOneLineSource).not.toBe(stripTerminalSequences(rawOneLineSource));
 
     expect(
       renderText(
