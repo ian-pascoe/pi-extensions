@@ -1,8 +1,11 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
+import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { transformCodeModeCell } from "./codemode-cell-transform.js";
 import { CodeModeWorkerProcess } from "./codemode-deno-process.js";
+import { formatCodeModePresentationData } from "./codemode-presentation-output.js";
 import type { CodeModeRuntime, CodeModeTimerHandle } from "./codemode-runtime.js";
+import type { CodeModeResultSpillWriter } from "./codemode-session-files.js";
 import {
   createCodeModeFailure,
   createCodeModePending,
@@ -11,7 +14,9 @@ import {
   type CodeModeErrorCode,
   type CodeModeExecuteParameters,
   type CodeModeJsonValue,
+  type CodeModePresentationSnapshot,
   type CodeModeResult,
+  type CodeModeResultDetails,
   type CodeModeToolOperationMetadata,
 } from "./codemode-tool-contract.js";
 import {
@@ -22,11 +27,70 @@ import {
 } from "./codemode-worker-protocol.js";
 
 const CODEMODE_MAX_TERMINAL_RECORDS = 64;
+const CODEMODE_PRESENTED_NESTED_TOOL_LIMIT = 20;
+const CODEMODE_ACTIVE_TOOL_NAME_LIMIT = 32;
+const CODEMODE_PROGRESS_REFRESH_MS = 1_000;
+const CODEMODE_RESULT_PRESENTATION_MAX_BYTES = 50 * 1024;
+const CODEMODE_RESULT_PRESENTATION_MAX_LINES = 2_000;
 const CODEMODE_WATCHDOG_GRACE_MS = 100;
 const INVALID_CODEMODE_SESSION_ID = "invalid-session-id";
 
 /** Branded identifier for one retained CodeMode Session. */
 export type CodeModeSessionId = string & { readonly CodeModeSessionId: unique symbol };
+
+/** Observer state of one settled CodeMode Cell. */
+export type CodeModeObservedCellState = "completed" | "failed" | "cancelled" | "timed_out";
+
+/** Immutable read-only facts for the currently running CodeMode Cell. */
+export type CodeModeObservedCurrentCell = {
+  /** One-based Cell Ordinal within its CodeMode Session. */
+  readonly ordinal: number;
+  /** Parent wall-clock start time in Unix-epoch milliseconds. */
+  readonly started_at_ms: number;
+  /** Bounded unique names currently delegated to registered Pi handlers. */
+  readonly active_tool_names: readonly string[];
+  /** Exact current nested-call count, including names omitted from the bounded list. */
+  readonly active_tool_count: number;
+  /** Exact nested-call count accumulated by the current Cell. */
+  readonly nested_tool_count: number;
+};
+
+/** Immutable read-only facts for the most recently settled CodeMode Cell. */
+export type CodeModeObservedLastCell = {
+  /** One-based Cell Ordinal within its CodeMode Session. */
+  readonly ordinal: number;
+  /** Parent wall-clock start time in Unix-epoch milliseconds. */
+  readonly started_at_ms: number;
+  /** Parent wall-clock settlement time in Unix-epoch milliseconds. */
+  readonly settled_at_ms: number;
+  readonly state: CodeModeObservedCellState;
+  readonly error_code?: CodeModeErrorCode;
+  readonly nested_tool_count: number;
+};
+
+/** Immutable read-only facts for one CodeMode Session with at least one Cell. */
+export type CodeModeObservedSession = {
+  readonly sessionId: CodeModeSessionId;
+  readonly lifecycle: "running" | "idle" | "terminal";
+  /** Number of Cells started in this CodeMode Session. */
+  readonly cell_count: number;
+  /** Parent wall-clock time of the latest execution-visible transition. */
+  readonly last_activity_at_ms: number;
+  readonly current_cell?: CodeModeObservedCurrentCell;
+  readonly last_cell?: CodeModeObservedLastCell;
+  readonly terminal_error_code?: CodeModeErrorCode;
+};
+
+/** Immutable point-in-time facts used by the ephemeral CodeMode Observer UI. */
+export type CodeModeObserverSnapshot = {
+  readonly sessions: readonly CodeModeObservedSession[];
+};
+
+/** One idle CodeMode worker failure not represented by an active Cell result. */
+export type CodeModeUnexpectedFailure = {
+  readonly sessionId: CodeModeSessionId;
+  readonly message: string;
+};
 
 /** One guest-originated nested Pi tool call in a Deno microtask batch. */
 export type CodeModeNestedToolCall = {
@@ -59,6 +123,12 @@ export type CodeModeNestedToolBatch = {
 /** Nested Pi results and metadata accumulated onto the next outer terminal result. */
 export type CodeModeNestedToolBatchResult = {
   readonly results: readonly CodeModeNestedToolResult[];
+  readonly presentation?: readonly {
+    readonly callId: string;
+    readonly name: string;
+    readonly outcome: "success" | "failed" | "cancelled";
+    readonly elapsedMs: number;
+  }[];
   readonly usage?: Usage;
   readonly addedToolNames?: readonly string[];
   readonly terminate?: boolean;
@@ -76,6 +146,7 @@ export type CodeModeOuterToolMetadata = CodeModeToolOperationMetadata;
 export type CodeModeSessionOperationResult = {
   readonly result: CodeModeResult;
   readonly metadata?: CodeModeOuterToolMetadata;
+  readonly presentation?: CodeModePresentationSnapshot;
 };
 
 /** Construction capabilities and limits for one CodeMode Session coordinator. */
@@ -83,8 +154,14 @@ export type CodeModeSessionCoordinatorOptions = {
   readonly maxSessions: number;
   readonly getToolNames: () => readonly string[];
   readonly executeToolBatch: ExecuteCodeModeNestedToolBatch;
+  /** Private Result Spill storage for complete oversized presentation data. */
+  readonly resultSpillWriter: CodeModeResultSpillWriter;
   /** Explicit parent clock and Session-ID capabilities. */
   readonly runtime: CodeModeRuntime;
+  /** Receives immutable Observer facts after a visible Session transition. */
+  readonly onSnapshotChange?: (snapshot: CodeModeObserverSnapshot) => void;
+  /** Receives an idle worker failure that no active Cell result represents. */
+  readonly onUnexpectedFailure?: (failure: CodeModeUnexpectedFailure) => void;
 };
 
 type CodeModeMetadataAccumulator = {
@@ -101,12 +178,21 @@ type MutableCodeModeOuterToolMetadata = {
 
 type ActiveCodeModeCell = {
   readonly cellId: string;
+  readonly ordinal: number;
+  readonly startedAtMs: number;
   readonly abortController: AbortController;
   readonly completion: Promise<CodeModeResult>;
   readonly resolveCompletion: (result: CodeModeResult) => void;
   readonly metadata: CodeModeMetadataAccumulator;
+  readonly nestedTools: CodeModePresentationSnapshot["nested_tools"];
+  activeToolNames: readonly string[];
+  activeToolCount: number;
+  failedNestedToolCount: number;
+  nestedToolCount: number;
+  succeededNestedToolCount: number;
   acceptsUpdates: boolean;
   settled: boolean;
+  progressTimer?: CodeModeTimerHandle;
   watchdog?: CodeModeTimerHandle;
 };
 
@@ -115,8 +201,12 @@ type LiveCodeModeSession = {
   readonly sessionId: CodeModeSessionId;
   readonly worker: CodeModeWorkerProcess;
   lastAccess: number;
+  lastActivityAtMs: number;
+  cellCount: number;
   latestResult?: CodeModeResult;
+  latestPresentation?: CodeModePresentationSnapshot;
   currentCell?: ActiveCodeModeCell;
+  lastCell?: CodeModeObservedLastCell;
   availableMetadata?: CodeModeOuterToolMetadata;
 };
 
@@ -124,7 +214,11 @@ type TerminalCodeModeSession = {
   readonly state: "terminal";
   readonly sessionId: CodeModeSessionId;
   lastAccess: number;
+  readonly lastActivityAtMs: number;
+  readonly cellCount: number;
   readonly latestResult: CodeModeResult;
+  readonly latestPresentation?: CodeModePresentationSnapshot;
+  readonly lastCell?: CodeModeObservedLastCell;
   availableMetadata?: CodeModeOuterToolMetadata;
 };
 
@@ -266,7 +360,11 @@ export class CodeModeSessionCoordinator {
     const record = located.record;
     this.touch(record);
     if (record.state === "terminal")
-      return this.operationResult(record.latestResult, this.takeMetadata(record));
+      return this.operationResult(
+        record.latestResult,
+        this.takeMetadata(record),
+        record.latestPresentation,
+      );
     if (record.currentCell !== undefined) {
       return {
         result: createCodeModeFailure(
@@ -278,15 +376,24 @@ export class CodeModeSessionCoordinator {
     }
 
     const shouldWait = input.wait !== false;
-    const cell = this.createActiveCell(shouldWait && onUpdate !== undefined ? { onUpdate } : {});
+    const cell = this.createActiveCell(
+      record,
+      shouldWait && onUpdate !== undefined ? { onUpdate } : {},
+    );
     const priorMetadata = this.takeMetadata(record);
     if (priorMetadata !== undefined) mergeCodeModeOuterMetadata(cell.metadata, priorMetadata);
     record.currentCell = cell;
     record.latestResult = createCodeModePending(record.sessionId);
+    record.lastActivityAtMs = cell.startedAtMs;
+    this.publishObserverSnapshot();
+    this.emitCellProgress(record, cell);
+    this.scheduleCellProgress(record, cell);
     void this.startCell(record, cell, input);
 
     const pending = createCodeModePending(record.sessionId);
-    if (!shouldWait) return { result: pending };
+    if (!shouldWait) {
+      return this.operationResult(pending, undefined, this.runningCellPresentation(cell));
+    }
     const abort = (): void => {
       this.fatalizeSession(record, cell, {
         code: "cancellation",
@@ -298,7 +405,11 @@ export class CodeModeSessionCoordinator {
     try {
       const result = await cell.completion;
       const retainedRecord = this.records.get(record.sessionId) ?? record;
-      return this.operationResult(result, this.takeMetadata(retainedRecord));
+      return this.operationResult(
+        result,
+        this.takeMetadata(retainedRecord),
+        retainedRecord.latestPresentation,
+      );
     } finally {
       cell.acceptsUpdates = false;
       signal?.removeEventListener("abort", abort);
@@ -316,10 +427,40 @@ export class CodeModeSessionCoordinator {
     }
     this.touch(record);
     if (record.state === "live" && record.currentCell !== undefined) {
-      return { result: createCodeModePending(sessionId) };
+      return this.operationResult(
+        createCodeModePending(sessionId),
+        undefined,
+        this.runningCellPresentation(record.currentCell),
+      );
     }
     const result = record.latestResult ?? createCodeModePending(sessionId);
-    return this.operationResult(result, this.takeMetadata(record));
+    return this.operationResult(result, this.takeMetadata(record), record.latestPresentation);
+  }
+
+  /** Returns immutable, non-authoritative facts for the ephemeral CodeMode Observer UI. */
+  inspectObserverSnapshot(): CodeModeObserverSnapshot {
+    const sessions = [...this.records.values()]
+      .filter((record) => record.cellCount > 0)
+      .map((record) => this.observeSession(record));
+    return Object.freeze({ sessions: Object.freeze(sessions) });
+  }
+
+  /** Return the shortest currently unique Session prefix, or the full unknown historical ID. */
+  formatSessionPrefix(sessionIdValue: string): string {
+    const parsed = parseCodeModeSessionId(sessionIdValue);
+    if (!parsed.ok || !this.records.has(parsed.value)) return sessionIdValue;
+    const sessionIds = [...this.records.keys()];
+    let length = Math.min(8, sessionIdValue.length);
+    while (
+      length < sessionIdValue.length &&
+      sessionIds.some(
+        (candidate) =>
+          candidate !== parsed.value && candidate.startsWith(sessionIdValue.slice(0, length)),
+      )
+    ) {
+      length += 1;
+    }
+    return sessionIdValue.slice(0, length);
   }
 
   /** Force-terminates one live CodeMode Session and retains its cancellation result. */
@@ -332,13 +473,33 @@ export class CodeModeSessionCoordinator {
       return { result: createCodeModeFailure(sessionId, "unknown", "Unknown CodeMode Session") };
     }
     this.touch(record);
-    if (record.state === "terminal") return { result: createCodeModeSuccess(sessionId) };
+    if (record.state === "terminal") {
+      return this.operationResult(
+        createCodeModeSuccess(sessionId),
+        undefined,
+        record.latestPresentation,
+      );
+    }
     if (record.currentCell !== undefined) {
       this.fatalizeSession(record, record.currentCell, {
         code: "cancellation",
         message: "CodeMode Session was cancelled",
       });
     } else {
+      record.lastActivityAtMs = this.runtime.now();
+      record.latestPresentation = {
+        version: 1,
+        cell_state: "cancelled",
+        session_state: "closed",
+        elapsed_ms: 0,
+        active_tool_names: [],
+        active_tool_count: 0,
+        nested_tool_count: 0,
+        succeeded_nested_tool_count: 0,
+        failed_nested_tool_count: 0,
+        nested_tools: [],
+        omitted_nested_tool_count: 0,
+      };
       this.replaceWithTerminal(
         record,
         createCodeModeFailure(sessionId, "cancellation", "CodeMode Session was cancelled"),
@@ -346,7 +507,12 @@ export class CodeModeSessionCoordinator {
       void this.stopWorker(record.worker, "terminate");
     }
     await Promise.allSettled(this.pendingProcessStops);
-    return { result: createCodeModeSuccess(sessionId) };
+    const terminal = this.records.get(sessionId);
+    return this.operationResult(
+      createCodeModeSuccess(sessionId),
+      undefined,
+      terminal?.latestPresentation,
+    );
   }
 
   /** Releases every live Deno process; repeated shutdown calls share one completion. */
@@ -415,6 +581,8 @@ export class CodeModeSessionCoordinator {
       sessionId,
       worker,
       lastAccess: ++this.accessSequence,
+      lastActivityAtMs: this.runtime.now(),
+      cellCount: 0,
     };
     this.records.set(sessionId, record);
     return { record, failure: createCodeModePending(sessionId) };
@@ -427,16 +595,25 @@ export class CodeModeSessionCoordinator {
       : { record, failure: createCodeModePending(sessionId) };
   }
 
-  private createActiveCell(options: {
-    readonly onUpdate?: (update: CodeModeNestedToolUpdate) => void;
-  }): ActiveCodeModeCell {
+  private createActiveCell(
+    record: LiveCodeModeSession,
+    options: { readonly onUpdate?: (update: CodeModeNestedToolUpdate) => void },
+  ): ActiveCodeModeCell {
     const completion = Promise.withResolvers<CodeModeResult>();
     const cell: ActiveCodeModeCell = {
       cellId: `cell-${++this.cellSequence}`,
+      ordinal: ++record.cellCount,
+      startedAtMs: this.runtime.now(),
       abortController: new AbortController(),
       completion: completion.promise,
       resolveCompletion: completion.resolve,
       metadata: emptyMetadataAccumulator(),
+      nestedTools: [],
+      activeToolNames: [],
+      activeToolCount: 0,
+      failedNestedToolCount: 0,
+      nestedToolCount: 0,
+      succeededNestedToolCount: 0,
       acceptsUpdates: options.onUpdate !== undefined,
       settled: false,
     };
@@ -574,6 +751,12 @@ export class CodeModeSessionCoordinator {
     cell: ActiveCodeModeCell,
     response: Extract<CodeModeWorkerResponse, { readonly type: "tool-batch" }>,
   ): Promise<void> {
+    cell.activeToolNames = [...new Set(response.calls.map((call) => call.toolName))];
+    cell.activeToolCount = response.calls.length;
+    cell.nestedToolCount += response.calls.length;
+    record.lastActivityAtMs = this.runtime.now();
+    this.publishObserverSnapshot();
+
     const parsedCalls: CodeModeNestedToolCall[] = [];
     const earlyResults: CodeModeWorkerToolSettlement[] = [];
     for (const call of response.calls) {
@@ -597,11 +780,9 @@ export class CodeModeSessionCoordinator {
         calls: parsedCalls,
         signal: cell.abortController.signal,
       } as const;
-      const onUpdate = (update: CodeModeNestedToolUpdate): void => {
+      const onUpdate = (_update: CodeModeNestedToolUpdate): void => {
         if (cell.acceptsUpdates && this.isCurrentCell(record, cell)) {
-          // The outer callback is captured by execute through this closure only while it awaits.
-          const callback = this.activeUpdateCallbacks.get(cell);
-          callback?.(update);
+          this.emitCellProgress(record, cell);
         }
       };
       batchResult =
@@ -621,6 +802,12 @@ export class CodeModeSessionCoordinator {
       };
     }
     if (!this.isCurrentCell(record, cell)) return;
+    this.recordNestedToolPresentation(cell, response.calls, batchResult);
+    cell.activeToolNames = [];
+    cell.activeToolCount = 0;
+    record.lastActivityAtMs = this.runtime.now();
+    this.publishObserverSnapshot();
+    this.emitCellProgress(record, cell);
     mergeCodeModeOuterMetadata(cell.metadata, batchResult);
     if (batchResult.terminate === true) {
       this.fatalizeSession(record, cell, {
@@ -712,6 +899,32 @@ export class CodeModeSessionCoordinator {
     this.fatalizeSession(record, cell, { code: "runtime", message: sent.message });
   }
 
+  private recordNestedToolPresentation(
+    cell: ActiveCodeModeCell,
+    calls: readonly { readonly callId: string; readonly toolName: string }[],
+    batchResult: CodeModeNestedToolBatchResult,
+  ): void {
+    const results = new Map(batchResult.results.map((result) => [result.callId, result]));
+    const presented = new Map(batchResult.presentation?.map((item) => [item.callId, item]) ?? []);
+    for (const call of calls) {
+      const bridgePresentation = presented.get(call.callId);
+      const outcome =
+        bridgePresentation?.outcome ??
+        (results.get(call.callId)?.outcome === "success" ? "success" : "failed");
+      if (outcome === "success") cell.succeededNestedToolCount += 1;
+      else cell.failedNestedToolCount += 1;
+      if (cell.nestedTools.length >= CODEMODE_PRESENTED_NESTED_TOOL_LIMIT) continue;
+      cell.nestedTools.push({
+        name: call.toolName.slice(0, 256) || "unknown-tool",
+        outcome,
+        elapsed_ms: Math.max(
+          0,
+          Math.min(Number.MAX_SAFE_INTEGER, Math.round(bridgePresentation?.elapsedMs ?? 0)),
+        ),
+      });
+    }
+  }
+
   private parseJsonString(
     json: string,
     options: { readonly allowUndefined: boolean },
@@ -737,6 +950,105 @@ export class CodeModeSessionCoordinator {
     return { ok: true, value: parsed.value };
   }
 
+  private runningCellPresentation(cell: ActiveCodeModeCell): CodeModePresentationSnapshot {
+    return this.cellPresentation(cell, "running", "live", this.runtime.now());
+  }
+
+  private cellPresentation(
+    cell: ActiveCodeModeCell,
+    cellState: CodeModePresentationSnapshot["cell_state"],
+    sessionState: CodeModePresentationSnapshot["session_state"],
+    observedAtMs: number,
+    spillPath?: string,
+  ): CodeModePresentationSnapshot {
+    const presentation: CodeModePresentationSnapshot = {
+      version: 1,
+      cell_ordinal: cell.ordinal,
+      cell_state: cellState,
+      session_state: sessionState,
+      elapsed_ms: Math.max(
+        0,
+        Math.min(Number.MAX_SAFE_INTEGER, Math.round(observedAtMs - cell.startedAtMs)),
+      ),
+      active_tool_names: cell.activeToolNames
+        .slice(0, CODEMODE_ACTIVE_TOOL_NAME_LIMIT)
+        .map((name) => name.slice(0, 256) || "unknown-tool"),
+      active_tool_count: cell.activeToolCount,
+      nested_tool_count: cell.nestedToolCount,
+      succeeded_nested_tool_count: cell.succeededNestedToolCount,
+      failed_nested_tool_count: cell.failedNestedToolCount,
+      nested_tools: [...cell.nestedTools],
+      omitted_nested_tool_count: Math.max(0, cell.nestedToolCount - cell.nestedTools.length),
+    };
+    return spillPath === undefined ? presentation : { ...presentation, spill_path: spillPath };
+  }
+
+  private settledCellPresentation(
+    cell: ActiveCodeModeCell,
+    result: CodeModeResult,
+    sessionState: CodeModePresentationSnapshot["session_state"],
+  ): CodeModePresentationSnapshot {
+    let spillPath: string | undefined;
+    if (result.result === "success" && result.data !== undefined) {
+      const completeOutput = formatCodeModePresentationData(result.data);
+      const visible = truncateHead(completeOutput, {
+        maxBytes: CODEMODE_RESULT_PRESENTATION_MAX_BYTES,
+        maxLines: CODEMODE_RESULT_PRESENTATION_MAX_LINES,
+      });
+      if (visible.truncated) {
+        try {
+          const spill = this.options.resultSpillWriter.writeResultSpill(completeOutput);
+          spillPath = spill.path;
+          void spill.completion.catch(() => undefined);
+        } catch {
+          // Presentation storage failure must not change the successful model-facing Cell result.
+        }
+      }
+    }
+    return this.cellPresentation(
+      cell,
+      this.presentationCellState(result),
+      sessionState,
+      this.runtime.now(),
+      spillPath,
+    );
+  }
+
+  private presentationCellState(
+    result: CodeModeResult,
+  ): CodeModePresentationSnapshot["cell_state"] {
+    if (result.result !== "failed") return result.result === "pending" ? "running" : "completed";
+    if (result.error.code === "timeout") return "timed_out";
+    if (result.error.code === "cancellation") return "cancelled";
+    return "failed";
+  }
+
+  private emitCellProgress(record: LiveCodeModeSession, cell: ActiveCodeModeCell): void {
+    if (!cell.acceptsUpdates || !this.isCurrentCell(record, cell)) return;
+    const result = createCodeModePending(record.sessionId);
+    const details: CodeModeResultDetails = {
+      ...result,
+      presentation: this.runningCellPresentation(cell),
+    };
+    try {
+      this.activeUpdateCallbacks.get(cell)?.({
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details,
+      });
+    } catch {
+      // A non-authoritative progress renderer cannot alter Cell execution.
+    }
+  }
+
+  private scheduleCellProgress(record: LiveCodeModeSession, cell: ActiveCodeModeCell): void {
+    if (!cell.acceptsUpdates || !this.isCurrentCell(record, cell)) return;
+    cell.progressTimer = this.runtime.setTimeout(() => {
+      delete cell.progressTimer;
+      this.emitCellProgress(record, cell);
+      this.scheduleCellProgress(record, cell);
+    }, CODEMODE_PROGRESS_REFRESH_MS);
+  }
+
   private settleReusableCell(
     record: LiveCodeModeSession,
     cell: ActiveCodeModeCell,
@@ -744,7 +1056,12 @@ export class CodeModeSessionCoordinator {
   ): void {
     if (!this.isCurrentCell(record, cell)) return;
     this.clearCellResources(cell);
+    const presentation = this.settledCellPresentation(cell, result, "live");
+    const settledAtMs = this.runtime.now();
     record.latestResult = result;
+    record.latestPresentation = presentation;
+    record.lastCell = this.observeSettledCell(cell, result, settledAtMs);
+    record.lastActivityAtMs = settledAtMs;
     const metadata = finalizeCodeModeMetadata(cell.metadata);
     if (metadata === undefined) delete record.availableMetadata;
     else record.availableMetadata = metadata;
@@ -752,6 +1069,7 @@ export class CodeModeSessionCoordinator {
     cell.settled = true;
     cell.resolveCompletion(result);
     this.touch(record);
+    this.publishObserverSnapshot();
   }
 
   private fatalizeSession(
@@ -764,6 +1082,15 @@ export class CodeModeSessionCoordinator {
     cell.abortController.abort();
     this.clearCellResources(cell);
     const result = createCodeModeFailure(record.sessionId, failure.code, failure.message);
+    const settledAtMs = this.runtime.now();
+    record.latestPresentation = this.cellPresentation(
+      cell,
+      this.presentationCellState(result),
+      "closed",
+      settledAtMs,
+    );
+    record.lastCell = this.observeSettledCell(cell, result, settledAtMs);
+    record.lastActivityAtMs = settledAtMs;
     const metadata = finalizeCodeModeMetadata(cell.metadata);
     this.replaceWithTerminal(record, result, metadata);
     cell.settled = true;
@@ -776,16 +1103,22 @@ export class CodeModeSessionCoordinator {
     result: CodeModeResult,
     metadata = record.availableMetadata,
   ): void {
-    const terminalBase = {
+    let terminal: TerminalCodeModeSession = {
       state: "terminal",
       sessionId: record.sessionId,
       lastAccess: ++this.accessSequence,
+      lastActivityAtMs: record.lastActivityAtMs,
+      cellCount: record.cellCount,
       latestResult: result,
-    } as const;
-    const terminal: TerminalCodeModeSession =
-      metadata === undefined ? terminalBase : { ...terminalBase, availableMetadata: metadata };
+    };
+    if (record.latestPresentation !== undefined) {
+      terminal = { ...terminal, latestPresentation: record.latestPresentation };
+    }
+    if (record.lastCell !== undefined) terminal = { ...terminal, lastCell: record.lastCell };
+    if (metadata !== undefined) terminal = { ...terminal, availableMetadata: metadata };
     this.records.set(record.sessionId, terminal);
     this.evictTerminalRecords();
+    this.publishObserverSnapshot();
   }
 
   private stopWorker(worker: CodeModeWorkerProcess, mode: "shutdown" | "terminate"): Promise<void> {
@@ -802,7 +1135,26 @@ export class CodeModeSessionCoordinator {
     if (record.currentCell !== undefined) {
       this.fatalizeSession(record, record.currentCell, { code: "runtime", message });
     } else {
+      record.lastActivityAtMs = this.runtime.now();
+      record.latestPresentation = {
+        version: 1,
+        cell_state: "failed",
+        session_state: "closed",
+        elapsed_ms: 0,
+        active_tool_names: [],
+        active_tool_count: 0,
+        nested_tool_count: 0,
+        succeeded_nested_tool_count: 0,
+        failed_nested_tool_count: 0,
+        nested_tools: [],
+        omitted_nested_tool_count: 0,
+      };
       this.replaceWithTerminal(record, createCodeModeFailure(sessionId, "runtime", message));
+      try {
+        this.options.onUnexpectedFailure?.(Object.freeze({ sessionId, message }));
+      } catch {
+        // A non-authoritative Observer failure cannot alter CodeMode Session lifecycle.
+      }
     }
   }
 
@@ -813,7 +1165,14 @@ export class CodeModeSessionCoordinator {
   }
 
   private clearCellResources(cell: ActiveCodeModeCell): void {
-    if (cell.watchdog !== undefined) this.runtime.clearTimeout(cell.watchdog);
+    if (cell.progressTimer !== undefined) {
+      this.runtime.clearTimeout(cell.progressTimer);
+      delete cell.progressTimer;
+    }
+    if (cell.watchdog !== undefined) {
+      this.runtime.clearTimeout(cell.watchdog);
+      delete cell.watchdog;
+    }
     this.activeUpdateCallbacks.delete(cell);
     cell.acceptsUpdates = false;
   }
@@ -827,12 +1186,87 @@ export class CodeModeSessionCoordinator {
   private operationResult(
     result: CodeModeResult,
     metadata: CodeModeOuterToolMetadata | undefined,
+    presentation: CodeModePresentationSnapshot | undefined,
   ): CodeModeSessionOperationResult {
-    return metadata === undefined ? { result } : { result, metadata };
+    if (metadata === undefined) {
+      return presentation === undefined ? { result } : { result, presentation };
+    }
+    if (presentation === undefined) return { result, metadata };
+    return { result, metadata, presentation };
   }
 
   private touch(record: CodeModeSessionRecord): void {
     record.lastAccess = ++this.accessSequence;
+  }
+
+  private observeSession(record: CodeModeSessionRecord): CodeModeObservedSession {
+    const lifecycle =
+      record.state === "terminal"
+        ? "terminal"
+        : record.currentCell === undefined
+          ? "idle"
+          : "running";
+    const currentCell = record.state === "live" ? record.currentCell : undefined;
+    const current_cell =
+      currentCell === undefined
+        ? undefined
+        : Object.freeze({
+            ordinal: currentCell.ordinal,
+            started_at_ms: currentCell.startedAtMs,
+            active_tool_names: Object.freeze([...currentCell.activeToolNames]),
+            active_tool_count: currentCell.activeToolCount,
+            nested_tool_count: currentCell.nestedToolCount,
+          });
+    const terminalErrorCode =
+      record.state === "terminal" && record.latestResult.result === "failed"
+        ? record.latestResult.error.code
+        : undefined;
+    let observed: CodeModeObservedSession = {
+      sessionId: record.sessionId,
+      lifecycle,
+      cell_count: record.cellCount,
+      last_activity_at_ms: record.lastActivityAtMs,
+    };
+    if (current_cell !== undefined) observed = { ...observed, current_cell };
+    if (record.lastCell !== undefined) observed = { ...observed, last_cell: record.lastCell };
+    if (terminalErrorCode !== undefined) {
+      observed = { ...observed, terminal_error_code: terminalErrorCode };
+    }
+    return Object.freeze(observed);
+  }
+
+  private observeSettledCell(
+    cell: ActiveCodeModeCell,
+    result: CodeModeResult,
+    settledAtMs: number,
+  ): CodeModeObservedLastCell {
+    const errorCode = result.result === "failed" ? result.error.code : undefined;
+    const state: CodeModeObservedCellState =
+      errorCode === "cancellation"
+        ? "cancelled"
+        : errorCode === "timeout"
+          ? "timed_out"
+          : errorCode === undefined
+            ? "completed"
+            : "failed";
+    const settledCell = {
+      ordinal: cell.ordinal,
+      started_at_ms: cell.startedAtMs,
+      settled_at_ms: settledAtMs,
+      state,
+      nested_tool_count: cell.nestedToolCount,
+    };
+    return Object.freeze(
+      errorCode === undefined ? settledCell : { ...settledCell, error_code: errorCode },
+    );
+  }
+
+  private publishObserverSnapshot(): void {
+    try {
+      this.options.onSnapshotChange?.(this.inspectObserverSnapshot());
+    } catch {
+      // A non-authoritative Observer failure cannot alter CodeMode Session lifecycle.
+    }
   }
 
   private retainTerminalFailure(sessionId: CodeModeSessionId, failure: CodeModeResult): void {
@@ -840,6 +1274,8 @@ export class CodeModeSessionCoordinator {
       state: "terminal",
       sessionId,
       lastAccess: ++this.accessSequence,
+      lastActivityAtMs: this.runtime.now(),
+      cellCount: 0,
       latestResult: failure,
     });
     this.evictTerminalRecords();

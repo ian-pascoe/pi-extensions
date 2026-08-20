@@ -23,3 +23,27 @@ _Avoid_: global, persisted variable
 The policy that makes a registered Pi tool direct-only, CodeMode-only, or
 available through both interfaces.
 _Avoid_: inclusion, visibility
+
+**CodeMode Transcript**:
+The durable, semantic presentation of CodeMode tool calls and results in Pi's
+conversation history.
+_Avoid_: notebook UI, raw tool JSON
+
+**CodeMode Observer UI**:
+The ephemeral, read-only TUI presentation of current CodeMode Session activity.
+It never executes a Cell or controls a Session.
+_Avoid_: session manager, notebook editor, control panel
+
+**Cell Ordinal**:
+The human-facing sequence number of a Cell within one CodeMode Session.
+_Avoid_: Cell ID, protocol ID
+
+**Presentation Snapshot**:
+Bounded facts retained with a CodeMode Transcript result so its semantic display
+can be reconstructed later. It is not returned to the model.
+_Avoid_: result, Observer state
+
+**Result Spill**:
+A private file containing complete returned data when the expanded CodeMode
+Transcript reaches its display limit.
+_Avoid_: log, cache

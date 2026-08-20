@@ -87,6 +87,42 @@ type CodeModeResult =
     };
 ```
 
+`AgentToolResult.content` remains exactly this JSON and is the only CodeMode
+result text returned to the model. Pi retains additional bounded Presentation
+Snapshots in tool-result details for Transcript replay and the TUI.
+
+## Transcript and Observer UI
+
+The CodeMode Transcript gives all three tools semantic collapsed and expanded
+rendering. Collapsed rows prioritize Cell lifecycle, a short Session ID, Cell
+Ordinal, returned-value shape, nested-tool count, and elapsed time. Expanded
+rows show the full Session ID, explicit call arguments, TypeScript source,
+structured returned data or error, and bounded nested-tool names, outcomes, and
+durations. Nested arguments and raw nested outputs are never copied into the
+presentation.
+
+Status always uses a symbol and text together:
+
+```text
+◉ running   ○ idle   ✓ completed
+× failed    ■ cancelled   ! timed out
+```
+
+Awaited Cells publish a presentation update immediately and once per second.
+Source display is limited to 200 lines or 50 KB. Returned-data display uses
+Pi's 2,000-line/50-KB limit; complete oversized data is written to a private
+Result Spill while the model-facing result remains unchanged. Result Spill
+files last for the live Pi session. Replayed history falls back to its retained
+bounded data when a prior spill is no longer available.
+
+In TUI mode, the read-only CodeMode Observer UI appears above the editor during
+Cell activity. It shows up to eight running, idle, or recently terminal
+Sessions, uses the shortest unique Session prefix of at least eight characters,
+and adds `… +N more` when bounded. A footer shows `◉ N running · N live` only
+while Cells run. The widget disappears ten seconds after every Session becomes
+idle or terminal and remounts on later activity. It has no controls and issues
+no hidden CodeMode or Pi tool calls.
+
 ## Notebook Bindings
 
 Top-level `let`, `const`, `var`, function, class, and destructuring declarations

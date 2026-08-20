@@ -1,14 +1,22 @@
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
+import { readFile } from "node:fs/promises";
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   CodeModeSessionCoordinator,
   type CodeModeNestedToolBatch,
   type CodeModeNestedToolBatchResult,
+  type CodeModeObserverSnapshot,
   type CodeModeSessionCoordinatorOptions,
   type CodeModeSessionOperationResult,
+  type CodeModeUnexpectedFailure,
 } from "../src/codemode-session-coordinator.js";
 import { CODEMODE_SYSTEM_RUNTIME, type CodeModeRuntime } from "../src/codemode-runtime.js";
-import type { CodeModeJsonValue } from "../src/codemode-tool-contract.js";
+import {
+  CodeModeResultDetailsSchema,
+  type CodeModeJsonValue,
+} from "../src/codemode-tool-contract.js";
 
 const coordinators = new Set<CodeModeSessionCoordinator>();
 
@@ -35,9 +43,16 @@ function createCoordinator(
     readonly ids?: readonly string[];
     readonly toolNames?: readonly string[];
     readonly runtime?: CodeModeRuntime;
+    readonly now?: () => number;
+    readonly writeResultSpill?: (output: string) => {
+      readonly path: string;
+      readonly completion: Promise<void>;
+    };
     readonly executeToolBatch?: (
       batch: CodeModeNestedToolBatch,
     ) => Promise<CodeModeNestedToolBatchResult>;
+    readonly onSnapshotChange?: (snapshot: CodeModeObserverSnapshot) => void;
+    readonly onUnexpectedFailure?: (failure: CodeModeUnexpectedFailure) => void;
   } = {},
 ): CodeModeSessionCoordinator {
   const ids = [...(options.ids ?? ["session-1"])];
@@ -57,8 +72,23 @@ function createCoordinator(
     runtime: options.runtime ?? {
       ...CODEMODE_SYSTEM_RUNTIME,
       createSessionId: () => ids[idIndex++] ?? `session-${idIndex}`,
+      now: options.now ?? CODEMODE_SYSTEM_RUNTIME.now,
+    },
+    resultSpillWriter: {
+      writeResultSpill:
+        options.writeResultSpill ??
+        (() => ({
+          path: "/tmp/pi-codemode-test-result-spill.txt",
+          completion: Promise.resolve(),
+        })),
     },
   };
+  if (options.onSnapshotChange !== undefined) {
+    Object.assign(coordinatorOptions, { onSnapshotChange: options.onSnapshotChange });
+  }
+  if (options.onUnexpectedFailure !== undefined) {
+    Object.assign(coordinatorOptions, { onUnexpectedFailure: options.onUnexpectedFailure });
+  }
   const coordinator = new CodeModeSessionCoordinator(coordinatorOptions);
   coordinators.add(coordinator);
   return coordinator;
@@ -92,6 +122,248 @@ afterEach(async () => {
 });
 
 describe("CodeModeSessionCoordinator", () => {
+  test("observes immutable per-Session Cell ordinals across reusable settlement", async () => {
+    let nowMs = 1_000;
+    const publishedSnapshots: CodeModeObserverSnapshot[] = [];
+    const coordinator = createCoordinator({
+      now: () => nowMs,
+      onSnapshotChange: (snapshot) => publishedSnapshots.push(snapshot),
+    });
+
+    expectSuccessData(await coordinator.execute({ script: "40 + 2", wait: true }), 42);
+    expect(coordinator.inspectObserverSnapshot()).toEqual({
+      sessions: [
+        {
+          sessionId: "session-1",
+          lifecycle: "idle",
+          cell_count: 1,
+          last_activity_at_ms: 1_000,
+          last_cell: {
+            ordinal: 1,
+            started_at_ms: 1_000,
+            settled_at_ms: 1_000,
+            state: "completed",
+            nested_tool_count: 0,
+          },
+        },
+      ],
+    });
+
+    nowMs = 2_500;
+    const failed = await coordinator.execute({
+      script: "let =",
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(failed.result).toMatchObject({ result: "failed", error: { code: "script" } });
+    const snapshot = coordinator.inspectObserverSnapshot();
+    expect(snapshot).toEqual({
+      sessions: [
+        {
+          sessionId: "session-1",
+          lifecycle: "idle",
+          cell_count: 2,
+          last_activity_at_ms: 2_500,
+          last_cell: {
+            ordinal: 2,
+            started_at_ms: 2_500,
+            settled_at_ms: 2_500,
+            state: "failed",
+            error_code: "script",
+            nested_tool_count: 0,
+          },
+        },
+      ],
+    });
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.sessions)).toBe(true);
+    expect(Object.isFrozen(snapshot.sessions[0])).toBe(true);
+    expect(Object.isFrozen(snapshot.sessions[0]?.last_cell)).toBe(true);
+    expect(publishedSnapshots.at(-1)).toEqual(snapshot);
+  }, 30_000);
+
+  test("isolates non-authoritative Observer callback defects from Cell execution", async () => {
+    const coordinator = createCoordinator({
+      onSnapshotChange: () => {
+        throw new Error("observer render failed");
+      },
+    });
+
+    expectSuccessData(await coordinator.execute({ script: "6 * 7" }), 42);
+  }, 30_000);
+
+  test("isolates non-authoritative progress callback defects from Cell execution", async () => {
+    const coordinator = createCoordinator();
+
+    expectSuccessData(
+      await coordinator.execute({ script: "6 * 7" }, undefined, () => {
+        throw new Error("progress render failed");
+      }),
+      42,
+    );
+  }, 30_000);
+
+  test("formats the shortest currently unique Transcript Session prefixes", async () => {
+    const coordinator = createCoordinator({
+      ids: ["aaaaaaaa-1111", "aaaaaaaa-2222"],
+    });
+    await coordinator.execute({ script: "1" });
+    await coordinator.execute({ script: "2" });
+
+    expect(coordinator.formatSessionPrefix("aaaaaaaa-1111")).toBe("aaaaaaaa-1");
+    expect(coordinator.formatSessionPrefix("aaaaaaaa-2222")).toBe("aaaaaaaa-2");
+    expect(coordinator.formatSessionPrefix("historical-session")).toBe("historical-session");
+  }, 30_000);
+
+  test("observes active unique nested tool names, active call count, and total calls", async () => {
+    const batchStarted = Promise.withResolvers<void>();
+    const releaseBatch = Promise.withResolvers<void>();
+    const coordinator = createCoordinator({
+      now: () => 5_000,
+      toolNames: ["read", "grep"],
+      executeToolBatch: async (batch) => {
+        batchStarted.resolve();
+        await releaseBatch.promise;
+        return {
+          results: batch.calls.map((call) => ({
+            callId: call.callId,
+            outcome: "success" as const,
+            result: null,
+          })),
+        };
+      },
+    });
+
+    const pending = await coordinator.execute({
+      script: "await Promise.all([tools.read({}), tools.read({}), tools.grep({})])",
+      wait: false,
+    });
+    await batchStarted.promise;
+
+    expect(coordinator.inspectObserverSnapshot()).toMatchObject({
+      sessions: [
+        {
+          lifecycle: "running",
+          cell_count: 1,
+          current_cell: {
+            ordinal: 1,
+            started_at_ms: 5_000,
+            active_tool_names: ["read", "grep"],
+            active_tool_count: 3,
+            nested_tool_count: 3,
+          },
+        },
+      ],
+    });
+
+    releaseBatch.resolve();
+    expectSuccessData(await pollTerminal(coordinator, pending.result.sessionId), [
+      null,
+      null,
+      null,
+    ]);
+    expect(coordinator.inspectObserverSnapshot()).toMatchObject({
+      sessions: [
+        {
+          lifecycle: "idle",
+          last_cell: { ordinal: 1, state: "completed", nested_tool_count: 3 },
+        },
+      ],
+    });
+  }, 30_000);
+
+  test.skipIf(process.platform !== "linux")(
+    "reports an idle worker death exactly once",
+    async () => {
+      const unexpectedFailures: CodeModeUnexpectedFailure[] = [];
+      const idleFailureObserved = Promise.withResolvers<void>();
+      const coordinator = createCoordinator({
+        toolNames: ["crashLater"],
+        onUnexpectedFailure: (failure) => {
+          unexpectedFailures.push(failure);
+          idleFailureObserved.resolve();
+        },
+        executeToolBatch: async (batch) => {
+          const children = await readFile(
+            `/proc/${process.pid}/task/${process.pid}/children`,
+            "utf8",
+          );
+          const workerPid = Number(children.trim().split(/\s+/).at(-1));
+          setTimeout(() => process.kill(workerPid, "SIGKILL"), 50);
+          return {
+            results: batch.calls.map((call) => ({
+              callId: call.callId,
+              outcome: "success" as const,
+              result: null,
+            })),
+          };
+        },
+      });
+
+      expectSuccessData(
+        await coordinator.execute({ script: "await tools.crashLater({}); 42" }),
+        42,
+      );
+      await Promise.race([
+        idleFailureObserved.promise,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("CodeMode coordinator test: idle worker stayed alive")),
+            5_000,
+          ),
+        ),
+      ]);
+      expect(unexpectedFailures).toHaveLength(1);
+      expect(unexpectedFailures[0]).toMatchObject({ sessionId: "session-1" });
+      expect(Object.isFrozen(unexpectedFailures[0])).toBe(true);
+      expect(coordinator.inspectObserverSnapshot()).toMatchObject({
+        sessions: [
+          {
+            lifecycle: "terminal",
+            terminal_error_code: "runtime",
+            last_cell: { ordinal: 1, state: "completed" },
+          },
+        ],
+      });
+    },
+    30_000,
+  );
+
+  test.skipIf(process.platform !== "linux")(
+    "does not report an active worker death represented by its Cell result",
+    async () => {
+      const representedFailures: CodeModeUnexpectedFailure[] = [];
+      const coordinator = createCoordinator({
+        toolNames: ["crashNow"],
+        onUnexpectedFailure: (failure) => representedFailures.push(failure),
+        executeToolBatch: async () => {
+          const children = await readFile(
+            `/proc/${process.pid}/task/${process.pid}/children`,
+            "utf8",
+          );
+          const workerPid = Number(children.trim().split(/\s+/).at(-1));
+          process.kill(workerPid, "SIGKILL");
+          return new Promise(() => {});
+        },
+      });
+
+      const represented = await coordinator.execute({ script: "await tools.crashNow({})" });
+
+      expect(represented.result).toMatchObject({ result: "failed", error: { code: "runtime" } });
+      expect(representedFailures).toEqual([]);
+      expect(coordinator.inspectObserverSnapshot()).toMatchObject({
+        sessions: [
+          {
+            lifecycle: "terminal",
+            terminal_error_code: "runtime",
+            last_cell: { ordinal: 1, state: "failed", error_code: "runtime" },
+          },
+        ],
+      });
+    },
+    30_000,
+  );
+
   test("runs create, deterministic pending/poll, one nested tool, reuse, and shutdown", async () => {
     const recordedBatches: string[][] = [];
     const coordinator = createCoordinator({
@@ -137,6 +409,104 @@ describe("CodeModeSessionCoordinator", () => {
     const coordinator = createCoordinator();
 
     expectSuccessData(await coordinator.execute({ script: "6 * 7" }), 42);
+  }, 30_000);
+
+  test("retains bounded Cell presentation, publishes progress, and spills complete large data", async () => {
+    const spills: string[] = [];
+    const updates: AgentToolResult<unknown>[] = [];
+    const coordinator = createCoordinator({
+      toolNames: ["echo"],
+      writeResultSpill: (output) => {
+        spills.push(output);
+        return {
+          path: "/tmp/pi-codemode-test-result-spill.txt",
+          completion: Promise.resolve(),
+        };
+      },
+    });
+
+    const composed = await coordinator.execute(
+      {
+        script: "await tools.echo({ value: 42 }); ({ answer: 42 })",
+        wait: true,
+      },
+      undefined,
+      (update) => updates.push(update),
+    );
+
+    expect(composed.presentation).toMatchObject({
+      version: 1,
+      cell_ordinal: 1,
+      cell_state: "completed",
+      session_state: "live",
+      nested_tool_count: 1,
+      succeeded_nested_tool_count: 1,
+      failed_nested_tool_count: 0,
+      nested_tools: [{ name: "echo", outcome: "success", elapsed_ms: 0 }],
+    });
+    expect(updates[0]?.details).toMatchObject({
+      result: "pending",
+      presentation: { cell_ordinal: 1, cell_state: "running" },
+    });
+    expect(coordinator.result("session-1").presentation).toEqual(composed.presentation);
+
+    const large = await coordinator.execute({
+      script: '"x".repeat(60 * 1024)',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(large.presentation).toMatchObject({
+      cell_ordinal: 2,
+      spill_path: "/tmp/pi-codemode-test-result-spill.txt",
+    });
+    expect(spills).toHaveLength(1);
+    expect(spills[0]).toBe(JSON.stringify("x".repeat(60 * 1024), undefined, 2));
+  }, 30_000);
+
+  test("publishes awaited Cell progress once per second", async () => {
+    const elapsedValues: number[] = [];
+    const coordinator = createCoordinator({
+      toolNames: ["slow"],
+      executeToolBatch: async (batch) => {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050));
+        return {
+          results: batch.calls.map((call) => ({
+            callId: call.callId,
+            outcome: "success" as const,
+            result: null,
+          })),
+        };
+      },
+    });
+
+    await coordinator.execute(
+      { script: "await tools.slow({})", wait: true },
+      undefined,
+      (update) => {
+        const details = update.details;
+        if (Value.Check(CodeModeResultDetailsSchema, details)) {
+          elapsedValues.push(details.presentation?.elapsed_ms ?? -1);
+        }
+      },
+    );
+
+    expect(elapsedValues[0]).toBeGreaterThanOrEqual(0);
+    expect(elapsedValues.some((elapsedMs) => elapsedMs >= 1_000)).toBe(true);
+  }, 30_000);
+
+  test("does not delay a completed Cell for presentation-only Result Spill I/O", async () => {
+    const pendingWrite = Promise.withResolvers<void>();
+    const coordinator = createCoordinator({
+      writeResultSpill: () => ({
+        path: "/tmp/pending-result-spill.txt",
+        completion: pendingWrite.promise,
+      }),
+    });
+
+    const result = await coordinator.execute({ script: '"x".repeat(60 * 1024)' });
+
+    expect(result.result).toMatchObject({ result: "success" });
+    expect(result.presentation?.spill_path).toBe("/tmp/pending-result-spill.txt");
   }, 30_000);
 
   test("runs native TypeScript in Deno without dynamic-code or host-process capabilities", async () => {
@@ -196,6 +566,7 @@ describe("CodeModeSessionCoordinator", () => {
     const activeTimers = new Set<ReturnType<typeof setTimeout>>();
     const runtime: CodeModeRuntime = {
       createSessionId: () => "starting-session",
+      now: CODEMODE_SYSTEM_RUNTIME.now,
       setTimeout(callback, delayMs) {
         const handle = setTimeout(() => {
           activeTimers.delete(handle);
@@ -601,7 +972,10 @@ describe("CodeModeSessionCoordinator", () => {
     expect(timedOut.result).toMatchObject({ result: "failed", error: { code: "timeout" } });
     slowToolReleased.resolve();
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
-    expect(updates).toEqual(["started"]);
+    expect(updates).toEqual([
+      '{"result":"pending","sessionId":"session-1"}',
+      '{"result":"pending","sessionId":"session-1"}',
+    ]);
     expect(
       (await coordinator.execute({ script: "1", sessionId: "session-1", wait: true })).result,
     ).toEqual(timedOut.result);

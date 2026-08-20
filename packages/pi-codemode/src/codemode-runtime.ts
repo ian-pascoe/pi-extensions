@@ -7,6 +7,8 @@ export type CodeModeTimerHandle = ReturnType<typeof setTimeout>;
 export type CodeModeRuntime = {
   /** Produces a candidate identifier for a new CodeMode Session. */
   readonly createSessionId: () => string;
+  /** Reads parent wall-clock time in milliseconds since the Unix epoch. */
+  readonly now: () => number;
   /** Schedules one parent-side watchdog or process lifecycle deadline. */
   readonly setTimeout: (callback: () => void, delayMs: number) => CodeModeTimerHandle;
   /** Cancels one parent-side deadline. */
@@ -16,6 +18,7 @@ export type CodeModeRuntime = {
 /** Production Node clock and UUID capabilities for the Pi extension composition root. */
 export const CODEMODE_SYSTEM_RUNTIME: CodeModeRuntime = {
   createSessionId: randomUUID,
+  now: Date.now,
   setTimeout: globalThis.setTimeout,
   clearTimeout: globalThis.clearTimeout,
 };

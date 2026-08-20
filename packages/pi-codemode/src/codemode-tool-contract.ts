@@ -42,6 +42,55 @@ const PositiveSafeIntegerSchema = Type.Integer({
   minimum: 1,
   maximum: Number.MAX_SAFE_INTEGER,
 });
+const NonNegativeSafeIntegerSchema = Type.Integer({
+  minimum: 0,
+  maximum: Number.MAX_SAFE_INTEGER,
+});
+const CodeModePresentationNameSchema = Type.String({ minLength: 1, maxLength: 256 });
+const CodeModeNestedToolPresentationSchema = Type.Object(
+  {
+    name: CodeModePresentationNameSchema,
+    outcome: Type.Union([
+      Type.Literal("success"),
+      Type.Literal("failed"),
+      Type.Literal("cancelled"),
+    ]),
+    elapsed_ms: NonNegativeSafeIntegerSchema,
+  },
+  { additionalProperties: false },
+);
+
+/** Strict, bounded version-one facts used to render final and partial CodeMode results. */
+export const CodeModePresentationSnapshotSchema = Type.Object(
+  {
+    version: Type.Literal(1),
+    cell_ordinal: Type.Optional(PositiveSafeIntegerSchema),
+    cell_state: Type.Union([
+      Type.Literal("running"),
+      Type.Literal("completed"),
+      Type.Literal("failed"),
+      Type.Literal("cancelled"),
+      Type.Literal("timed_out"),
+    ]),
+    session_state: Type.Union([Type.Literal("live"), Type.Literal("closed")]),
+    // Parent wall-clock duration of the current or settled Cell.
+    elapsed_ms: NonNegativeSafeIntegerSchema,
+    // Bounded active names; active_tool_count remains exact when names are omitted.
+    active_tool_names: Type.Array(CodeModePresentationNameSchema, { maxItems: 32 }),
+    active_tool_count: NonNegativeSafeIntegerSchema,
+    // Exact totals paired with at most twenty retained per-tool summaries.
+    nested_tool_count: NonNegativeSafeIntegerSchema,
+    succeeded_nested_tool_count: NonNegativeSafeIntegerSchema,
+    failed_nested_tool_count: NonNegativeSafeIntegerSchema,
+    nested_tools: Type.Array(CodeModeNestedToolPresentationSchema, { maxItems: 20 }),
+    omitted_nested_tool_count: NonNegativeSafeIntegerSchema,
+    spill_path: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096 })),
+  },
+  { additionalProperties: false },
+);
+
+/** Schema-derived bounded presentation facts retained outside model-facing result JSON. */
+export type CodeModePresentationSnapshot = Static<typeof CodeModePresentationSnapshotSchema>;
 
 /** Strict arguments accepted by `codemode_execute`. */
 export const CodeModeExecuteParametersSchema = Type.Object(
@@ -143,10 +192,42 @@ export const CodeModeResultSchema = Type.Union([
   CodeModeFailedSchema,
 ]);
 
-/** Details retained by Pi for each CodeMode tool result. */
-export const CodeModeResultDetailsSchema = CodeModeResultSchema;
 /** Schema-derived result returned by every public CodeMode tool. */
 export type CodeModeResult = Static<typeof CodeModeResultSchema>;
+
+const CodeModeSuccessDetailsSchema = Type.Object(
+  {
+    result: Type.Literal("success"),
+    sessionId: SessionIdSchema,
+    data: Type.Optional(CodeModeJsonValueSchema),
+    presentation: Type.Optional(CodeModePresentationSnapshotSchema),
+  },
+  { additionalProperties: false },
+);
+const CodeModePendingDetailsSchema = Type.Object(
+  {
+    result: Type.Literal("pending"),
+    sessionId: SessionIdSchema,
+    presentation: Type.Optional(CodeModePresentationSnapshotSchema),
+  },
+  { additionalProperties: false },
+);
+const CodeModeFailedDetailsSchema = Type.Object(
+  {
+    result: Type.Literal("failed"),
+    sessionId: SessionIdSchema,
+    error: CodeModeErrorSchema,
+    presentation: Type.Optional(CodeModePresentationSnapshotSchema),
+  },
+  { additionalProperties: false },
+);
+
+/** Strict final or partial tool details, including optional versioned presentation facts. */
+export const CodeModeResultDetailsSchema = Type.Union([
+  CodeModeSuccessDetailsSchema,
+  CodeModePendingDetailsSchema,
+  CodeModeFailedDetailsSchema,
+]);
 /** Schema-derived details retained by every public CodeMode tool. */
 export type CodeModeResultDetails = Static<typeof CodeModeResultDetailsSchema>;
 
@@ -286,10 +367,11 @@ export type CodeModeToolOperationMetadata = {
   readonly terminate?: boolean;
 };
 
-/** One public CodeMode result plus metadata that must not enter its JSON details. */
+/** One public CodeMode result plus Pi-only metadata and bounded presentation facts. */
 export type CodeModeToolOperationResult = {
   readonly result: CodeModeResult;
   readonly metadata?: CodeModeToolOperationMetadata;
+  readonly presentation?: CodeModePresentationSnapshot;
 };
 
 /** Operations supplied by the session coordinator to build the three Pi tools. */
@@ -308,9 +390,13 @@ function structuredCodeModeResult(
   operation: CodeModeToolOperationResult,
 ): AgentToolResult<CodeModeResultDetails> {
   const metadata = operation.metadata;
+  const details: CodeModeResultDetails =
+    operation.presentation === undefined
+      ? operation.result
+      : { ...operation.result, presentation: operation.presentation };
   const output: AgentToolResult<CodeModeResultDetails> = {
     content: [{ type: "text", text: JSON.stringify(operation.result) }],
-    details: operation.result,
+    details,
   };
   if (metadata?.usage !== undefined) output.usage = metadata.usage;
   if (metadata?.addedToolNames !== undefined) {
@@ -320,16 +406,17 @@ function structuredCodeModeResult(
   return output;
 }
 
-type CodeModeToolDefinition =
-  | ToolDefinition<typeof CodeModeExecuteParametersSchema, CodeModeResultDetails>
-  | ToolDefinition<typeof CodeModeResultParametersSchema, CodeModeResultDetails>
-  | ToolDefinition<typeof CodeModeCancelParametersSchema, CodeModeResultDetails>;
+type CodeModeToolDefinitions = readonly [
+  ToolDefinition<typeof CodeModeExecuteParametersSchema, CodeModeResultDetails>,
+  ToolDefinition<typeof CodeModeResultParametersSchema, CodeModeResultDetails>,
+  ToolDefinition<typeof CodeModeCancelParametersSchema, CodeModeResultDetails>,
+];
 
 /** Creates the three stable Pi definitions while leaving admission and session policy to the coordinator. */
 export function createCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
   executeDescription = "Execute TypeScript in a persistent isolated Deno CodeMode Session.",
-): readonly CodeModeToolDefinition[] {
+): CodeModeToolDefinitions {
   const executeTool: ToolDefinition<typeof CodeModeExecuteParametersSchema, CodeModeResultDetails> =
     {
       name: CODEMODE_TOOL_NAMES.execute,

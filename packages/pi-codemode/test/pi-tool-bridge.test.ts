@@ -29,6 +29,11 @@ const ONE_PIXEL_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const fixtureDirectories: string[] = [];
 
+function deterministicNow(...values: readonly number[]): () => number {
+  let index = 0;
+  return () => values[index++] ?? values.at(-1) ?? 0;
+}
+
 function usage(units: number): Usage {
   return {
     input: units,
@@ -470,6 +475,7 @@ describe("executePiToolBridgeBatch", () => {
     const messageCount = fixture.captured.agent.state.messages.length;
     const controller = new AbortController();
     const batch = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [
         { callId: "read-1", name: "read", input: { path: "README.md" } },
         { callId: "context-1", name: "context_echo", input: {} },
@@ -529,6 +535,7 @@ describe("executePiToolBridgeBatch", () => {
     const controller = new AbortController();
     const outer = outerAssistantMessage(fixture.captured);
     const batch = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [
         { callId: "mutated-1", name: "mutated", input: { value: "40" } },
         { callId: "image-1", name: "image-source", input: {} },
@@ -583,6 +590,7 @@ describe("executePiToolBridgeBatch", () => {
     ]);
 
     const aggregatedUsage = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [
         { callId: "mutated-usage-1", name: "mutated", input: { value: "0" } },
         { callId: "mutated-usage-2", name: "mutated", input: { value: "1" } },
@@ -598,6 +606,7 @@ describe("executePiToolBridgeBatch", () => {
     const fixture = await createBridgeFixture();
     const controller = new AbortController();
     const batch = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [
         { callId: "invalid-1", name: "mutated", input: {} },
         { callId: "blocked-1", name: "blocked", input: {} },
@@ -633,6 +642,7 @@ describe("executePiToolBridgeBatch", () => {
     const blockedController = new AbortController();
     let blockedTerminations = 0;
     const blocked = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [
         { callId: "terminate-block-1", name: "terminate-block", input: {} },
         { callId: "sibling-1", name: "sibling", input: {} },
@@ -653,6 +663,7 @@ describe("executePiToolBridgeBatch", () => {
     const resultController = new AbortController();
     let resultTerminations = 0;
     const terminatingResult = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [
         { callId: "terminate-result-1", name: "terminate-result", input: {} },
         { callId: "sibling-2", name: "sibling", input: {} },
@@ -679,6 +690,7 @@ describe("executePiToolBridgeBatch", () => {
     try {
       parallelTermination = await Promise.race([
         executePiToolBridgeBatch(fixture.captured, {
+          now: deterministicNow(),
           calls: [
             {
               callId: "parallel-terminate-1",
@@ -722,6 +734,7 @@ describe("executePiToolBridgeBatch", () => {
     });
     const overrideController = new AbortController();
     const overridden = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [{ callId: "terminate-result-2", name: "terminate-result", input: {} }],
       signal: overrideController.signal,
       onTerminate: () => overrideController.abort(),
@@ -732,6 +745,7 @@ describe("executePiToolBridgeBatch", () => {
     const abortController = new AbortController();
     abortController.abort();
     const aborted = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [{ callId: "abort-1", name: "abort-aware", input: {} }],
       signal: abortController.signal,
       onTerminate: () => {},
@@ -744,7 +758,8 @@ describe("executePiToolBridgeBatch", () => {
   test("runs mixed modes correctly and refreshes replacement/added wrappers", async () => {
     const fixture = await createBridgeFixture();
     const parallelController = new AbortController();
-    await executePiToolBridgeBatch(fixture.captured, {
+    const parallel = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(10, 20, 50, 70),
       calls: [
         { callId: "left-1", name: "parallel-left", input: {} },
         { callId: "right-1", name: "parallel-right", input: {} },
@@ -757,9 +772,15 @@ describe("executePiToolBridgeBatch", () => {
       "parallel-right:start",
     ]);
 
+    expect(parallel.presentation).toEqual([
+      { callId: "left-1", name: "parallel-left", outcome: "success", elapsedMs: 60 },
+      { callId: "right-1", name: "parallel-right", outcome: "success", elapsedMs: 30 },
+    ]);
+
     fixture.executedNames.length = 0;
     const sequentialController = new AbortController();
-    await executePiToolBridgeBatch(fixture.captured, {
+    const sequential = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(100, 130, 200, 240, 300, 350),
       calls: [
         { callId: "left-2", name: "parallel-left", input: {} },
         { callId: "middle-1", name: "sequential-middle", input: {} },
@@ -776,9 +797,15 @@ describe("executePiToolBridgeBatch", () => {
       "parallel-right:start",
       "parallel-right:end",
     ]);
+    expect(sequential.presentation).toEqual([
+      { callId: "left-2", name: "parallel-left", outcome: "success", elapsedMs: 30 },
+      { callId: "middle-1", name: "sequential-middle", outcome: "success", elapsedMs: 40 },
+      { callId: "right-2", name: "parallel-right", outcome: "success", elapsedMs: 50 },
+    ]);
 
     const replacementController = new AbortController();
     const first = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [{ callId: "replace-1", name: "replaceable", input: {} }],
       signal: replacementController.signal,
       onTerminate: () => replacementController.abort(),
@@ -786,6 +813,7 @@ describe("executePiToolBridgeBatch", () => {
     expect(textContent(successfulCall(first, 0))).toEqual(["original"]);
     fixture.replace("replacement");
     const second = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [{ callId: "replace-2", name: "replaceable", input: {} }],
       signal: replacementController.signal,
       onTerminate: () => replacementController.abort(),
@@ -793,12 +821,14 @@ describe("executePiToolBridgeBatch", () => {
     expect(textContent(successfulCall(second, 0))).toEqual(["replacement"]);
 
     const added = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [{ callId: "add-1", name: "add-tool", input: {} }],
       signal: replacementController.signal,
       onTerminate: () => replacementController.abort(),
     });
     expect(added.addedToolNames).toEqual(["added-dynamic"]);
     const dynamic = await executePiToolBridgeBatch(fixture.captured, {
+      now: deterministicNow(),
       calls: [{ callId: "dynamic-1", name: "added-dynamic", input: {} }],
       signal: replacementController.signal,
       onTerminate: () => replacementController.abort(),

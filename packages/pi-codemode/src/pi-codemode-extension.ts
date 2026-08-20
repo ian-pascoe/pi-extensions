@@ -6,6 +6,7 @@ import type {
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { renderCodeModeToolCatalogue } from "./codemode-tool-catalog.js";
+import { CodeModeObserverUiController } from "./codemode-observer-ui.js";
 import {
   CodeModeSessionCoordinator,
   type CodeModeNestedToolBatch,
@@ -13,14 +14,15 @@ import {
   type CodeModeNestedToolResult,
 } from "./codemode-session-coordinator.js";
 import { CODEMODE_SYSTEM_RUNTIME } from "./codemode-runtime.js";
+import { createCodeModeSessionFiles, type CodeModeSessionFiles } from "./codemode-session-files.js";
 import {
   createCodeModeFailure,
   createCodeModePending,
-  createCodeModeToolDefinitions,
   type CodeModeJsonValue,
   type CodeModeResultDetails,
   type CodeModeToolOperations,
 } from "./codemode-tool-contract.js";
+import { createRenderedCodeModeToolDefinitions } from "./codemode-tool-rendering.js";
 import {
   decideCodeModeToolExposure,
   installCodeModeToolExposure,
@@ -42,6 +44,8 @@ type PiCodeModeGeneration = {
   readonly captured: CapturedPiAgentSession;
   readonly context: ExtensionContext;
   readonly coordinator: CodeModeSessionCoordinator;
+  readonly observer: CodeModeObserverUiController;
+  readonly sessionFiles: CodeModeSessionFiles;
   readonly operations: CodeModeToolOperations;
   exposure?: InstalledCodeModeToolExposure;
   decision: CodeModeToolExposureDecision;
@@ -160,10 +164,25 @@ class PiCodeModeLifecycleController {
       return;
     }
 
+    let sessionFiles: CodeModeSessionFiles;
+    try {
+      sessionFiles = await createCodeModeSessionFiles(context.sessionManager.getSessionDir());
+    } catch (cause) {
+      this.notifyWarning(
+        context,
+        `Pi CodeMode disabled: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+      return;
+    }
+
     let generation: PiCodeModeGeneration;
+    const observer = new CodeModeObserverUiController(context, CODEMODE_SYSTEM_RUNTIME);
     const coordinator = new CodeModeSessionCoordinator({
       maxSessions: settings.maxSessions,
       runtime: CODEMODE_SYSTEM_RUNTIME,
+      resultSpillWriter: sessionFiles,
+      onSnapshotChange: (snapshot) => observer.onSnapshotChange(snapshot),
+      onUnexpectedFailure: (failure) => observer.onUnexpectedFailure(failure),
       getToolNames: () =>
         generation.active && this.generation === generation
           ? generation.decision.codeModeNames
@@ -199,6 +218,8 @@ class PiCodeModeLifecycleController {
       captured,
       context,
       coordinator,
+      observer,
+      sessionFiles,
       operations,
       decision: initialDecision,
       executeDescription: catalogueDescription(initialCatalogue.text),
@@ -223,7 +244,13 @@ class PiCodeModeLifecycleController {
       );
     } catch (cause) {
       generation.active = false;
+      try {
+        observer.dispose();
+      } catch {
+        // Observer cleanup is presentation-only; execution resources still require release.
+      }
       await coordinator.shutdown("startup failure");
+      await sessionFiles.close();
       if (this.generation === generation) this.generation = undefined;
       this.notifyWarning(
         context,
@@ -232,9 +259,10 @@ class PiCodeModeLifecycleController {
       return;
     }
 
-    for (const definition of createCodeModeToolDefinitions(
+    for (const definition of createRenderedCodeModeToolDefinitions(
       operations,
       generation.executeDescription,
+      (sessionId) => coordinator.formatSessionPrefix(sessionId),
     )) {
       this.pi.registerTool(definition);
     }
@@ -282,9 +310,10 @@ class PiCodeModeLifecycleController {
         if (description === generation.executeDescription) continue;
         generation.executeDescription = description;
         if (!generation.toolsRegistered) continue;
-        const executeDefinition = createCodeModeToolDefinitions(
+        const executeDefinition = createRenderedCodeModeToolDefinitions(
           generation.operations,
           description,
+          (sessionId) => generation.coordinator.formatSessionPrefix(sessionId),
         )[0];
         if (executeDefinition !== undefined) this.pi.registerTool(executeDefinition);
       } while (generation.synchronizationPending);
@@ -354,6 +383,7 @@ class PiCodeModeLifecycleController {
     const terminationController = new AbortController();
     const bridgeOptions = {
       calls: bridgeCalls,
+      now: CODEMODE_SYSTEM_RUNTIME.now,
       signal: AbortSignal.any([batch.signal, terminationController.signal]),
       onTerminate: () => terminationController.abort(),
     };
@@ -398,7 +428,7 @@ class PiCodeModeLifecycleController {
           "Pi CodeMode nested tool returned no result",
         ),
     );
-    const batchResult = { results };
+    const batchResult = { results, presentation: bridged.presentation };
     if (bridged.usage !== undefined) Object.assign(batchResult, { usage: bridged.usage });
     if (bridged.addedToolNames.length > 0) {
       Object.assign(batchResult, { addedToolNames: bridged.addedToolNames });
@@ -412,10 +442,19 @@ class PiCodeModeLifecycleController {
     if (generation === undefined || !generation.active) return;
     generation.active = false;
     try {
+      generation.observer.dispose();
+    } catch {
+      // Observer cleanup is presentation-only; execution resources still require release.
+    }
+    try {
       await generation.coordinator.shutdown(reason);
     } finally {
-      generation.exposure?.restore();
-      if (this.generation === generation) this.generation = undefined;
+      try {
+        await generation.sessionFiles.close();
+      } finally {
+        generation.exposure?.restore();
+        if (this.generation === generation) this.generation = undefined;
+      }
     }
   }
 

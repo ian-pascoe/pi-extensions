@@ -79,10 +79,21 @@ export interface PiToolBridgeCallFailure {
 /** Ordered outcome for one supplied nested Pi tool call. */
 export type PiToolBridgeCallOutcome = PiToolBridgeCallSuccess | PiToolBridgeCallFailure;
 
+/** Parent-only bounded presentation facts for one nested Pi tool call. */
+export interface PiToolBridgeCallPresentation {
+  readonly callId: string;
+  /** Parent wall-clock elapsed time from preparation through final hooks, in milliseconds. */
+  readonly elapsedMs: number;
+  /** Exact registered Pi tool name; arguments and output are deliberately absent. */
+  readonly name: string;
+  readonly outcome: "success" | "failed" | "cancelled";
+}
+
 /** Complete nested batch output plus metadata forwarded by the outer CodeMode tool. */
 export interface PiToolBridgeBatchResult {
   readonly addedToolNames: readonly string[];
   readonly calls: readonly PiToolBridgeCallOutcome[];
+  readonly presentation: readonly PiToolBridgeCallPresentation[];
   readonly terminate: boolean;
   readonly usage?: Usage;
 }
@@ -90,6 +101,8 @@ export interface PiToolBridgeBatchResult {
 /** Inputs that keep one synthetic hook message and one Cell signal across a nested batch. */
 export interface ExecutePiToolBridgeBatchOptions {
   readonly calls: readonly PiToolBridgeCall[];
+  /** Injected parent wall clock used only for clamped presentation durations. */
+  readonly now: () => number;
   readonly onTerminate: () => void;
   readonly onUpdate?: (callId: string, result: AgentToolResult<unknown>) => void;
   readonly outerAssistantMessage?: AssistantMessage;
@@ -117,6 +130,11 @@ type PreparedOrFinalizedPiToolCall =
 type FinalizedPiToolMetadata = {
   readonly addedToolNames: readonly string[];
   readonly usage?: Usage;
+};
+
+type TimedFinalizedPiToolCall = {
+  readonly finalized: FinalizedPiToolCall;
+  readonly presentation: PiToolBridgeCallPresentation;
 };
 
 function normalizeThrownMessage(cause: unknown): string {
@@ -526,13 +544,52 @@ function terminatedPiToolCall(callId: string): FinalizedPiToolCall {
   );
 }
 
+function presentationOutcome(
+  outcome: PiToolBridgeCallOutcome,
+): PiToolBridgeCallPresentation["outcome"] {
+  if (outcome.ok) return "success";
+  return outcome.error.code === "cancellation" || outcome.error.code === "termination"
+    ? "cancelled"
+    : "failed";
+}
+
+function elapsedMilliseconds(startedAt: number, finishedAt: number): number {
+  const elapsed = Math.round(finishedAt - startedAt);
+  if (!Number.isFinite(elapsed)) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, elapsed));
+}
+
+function timedFinalizedPiToolCall(
+  call: PiToolBridgeCall,
+  finalized: FinalizedPiToolCall,
+  startedAt: number,
+  now: () => number,
+): TimedFinalizedPiToolCall {
+  return {
+    finalized,
+    presentation: {
+      callId: call.callId,
+      elapsedMs: elapsedMilliseconds(startedAt, now()),
+      name: call.name,
+      outcome: presentationOutcome(finalized.outcome),
+    },
+  };
+}
+
+function cancelledPiToolCallPresentation(call: PiToolBridgeCall): TimedFinalizedPiToolCall {
+  return {
+    finalized: terminatedPiToolCall(call.callId),
+    presentation: { callId: call.callId, elapsedMs: 0, name: call.name, outcome: "cancelled" },
+  };
+}
+
 function collectPiToolBridgeBatch(
-  finalizedCalls: readonly FinalizedPiToolCall[],
+  timedCalls: readonly TimedFinalizedPiToolCall[],
 ): PiToolBridgeBatchResult {
   let usage: Usage | undefined;
   const addedToolNames: string[] = [];
   const seenToolNames = new Set<string>();
-  for (const finalized of finalizedCalls) {
+  for (const { finalized } of timedCalls) {
     usage = addUsage(usage, finalized.usage);
     for (const toolName of finalized.addedToolNames) {
       if (seenToolNames.has(toolName)) continue;
@@ -542,8 +599,9 @@ function collectPiToolBridgeBatch(
   }
   const batch = {
     addedToolNames,
-    calls: finalizedCalls.map(({ outcome }) => outcome),
-    terminate: finalizedCalls.some(({ terminate }) => terminate),
+    calls: timedCalls.map(({ finalized }) => finalized.outcome),
+    presentation: timedCalls.map(({ presentation }) => presentation),
+    terminate: timedCalls.some(({ finalized }) => finalized.terminate),
   };
   return usage === undefined ? batch : { ...batch, usage };
 }
@@ -594,12 +652,13 @@ export async function executePiToolBridgeBatch(
     (call) => captured.getToolRegistry().get(call.name)?.executionMode === "sequential",
   );
   if (hasSequentialCall) {
-    const finalizedCalls: FinalizedPiToolCall[] = [];
+    const finalizedCalls: TimedFinalizedPiToolCall[] = [];
     for (const [index, call] of options.calls.entries()) {
       if (terminationNotified) {
-        finalizedCalls.push(terminatedPiToolCall(call.callId));
+        finalizedCalls.push(cancelledPiToolCallPresentation(call));
         continue;
       }
+      const startedAt = options.now();
       const preparation = await preparePiToolCall(
         captured,
         call,
@@ -609,11 +668,11 @@ export async function executePiToolBridgeBatch(
       );
       const finalized =
         preparation.kind === "finalized" ? preparation.value : await finalizePrepared(preparation);
-      finalizedCalls.push(finalized);
+      finalizedCalls.push(timedFinalizedPiToolCall(call, finalized, startedAt, options.now));
       if (finalized.terminate) {
         notifyTermination();
         for (const sibling of options.calls.slice(index + 1)) {
-          finalizedCalls.push(terminatedPiToolCall(sibling.callId));
+          finalizedCalls.push(cancelledPiToolCallPresentation(sibling));
         }
         break;
       }
@@ -622,36 +681,37 @@ export async function executePiToolBridgeBatch(
     return collectPiToolBridgeBatch(finalizedCalls);
   }
 
-  const preparations: PreparedOrFinalizedPiToolCall[] = [];
-  for (const call of options.calls) {
-    const preparation = await preparePiToolCall(
-      captured,
-      call,
-      assistantMessage,
-      context,
-      options.signal,
-    );
-    preparations.push(preparation);
-    if (preparation.kind === "finalized" && preparation.value.terminate) {
-      notifyTermination();
-      break;
-    }
-  }
-  if (terminationNotified) {
+  const preparations = await Promise.all(
+    options.calls.map(async (call) => {
+      const startedAt = options.now();
+      const preparation = await preparePiToolCall(
+        captured,
+        call,
+        assistantMessage,
+        context,
+        options.signal,
+      );
+      return { call, preparation, startedAt };
+    }),
+  );
+  const terminatingPreparation = preparations.find(
+    ({ preparation }) => preparation.kind === "finalized" && preparation.value.terminate,
+  );
+  if (terminatingPreparation !== undefined) {
+    notifyTermination();
     return collectPiToolBridgeBatch(
-      options.calls.map((call, index) => {
-        const preparation = preparations[index];
-        return preparation?.kind === "finalized" && preparation.value.terminate
-          ? preparation.value
-          : terminatedPiToolCall(call.callId);
-      }),
+      preparations.map(({ call, preparation, startedAt }) =>
+        preparation.kind === "finalized" && preparation.value.terminate
+          ? timedFinalizedPiToolCall(call, preparation.value, startedAt, options.now)
+          : cancelledPiToolCallPresentation(call),
+      ),
     );
   }
 
-  const finalizedSlots: Array<FinalizedPiToolCall | undefined> = Array.from({
+  const finalizedSlots: Array<TimedFinalizedPiToolCall | undefined> = Array.from({
     length: preparations.length,
   });
-  const trackedFinalizations = preparations.map((preparation, index) => {
+  const trackedFinalizations = preparations.map(({ call, preparation, startedAt }, index) => {
     const callId =
       preparation.kind === "prepared" ? preparation.toolCall.id : preparation.value.outcome.callId;
     const finalization =
@@ -661,9 +721,10 @@ export async function executePiToolBridgeBatch(
     return finalization
       .catch((cause) => createBridgeFailure(callId, "execution", normalizeThrownMessage(cause)))
       .then((finalized) => {
-        finalizedSlots[index] = finalized;
+        const timed = timedFinalizedPiToolCall(call, finalized, startedAt, options.now);
+        finalizedSlots[index] = timed;
         if (finalized.terminate) notifyTermination();
-        return finalized;
+        return timed;
       });
   });
   const settled = await Promise.race([
@@ -677,7 +738,7 @@ export async function executePiToolBridgeBatch(
     ? collectPiToolBridgeBatch(settled.finalizedCalls)
     : collectPiToolBridgeBatch(
         options.calls.map(
-          (call, index) => finalizedSlots[index] ?? terminatedPiToolCall(call.callId),
+          (call, index) => finalizedSlots[index] ?? cancelledPiToolCallPresentation(call),
         ),
       );
 }

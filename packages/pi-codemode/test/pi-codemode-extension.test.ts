@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -9,13 +9,17 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   type ExtensionAPI,
+  type ExtensionUIContext,
+  initTheme,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  CodeModeResultDetailsSchema,
   CodeModeResultSchema,
   type CodeModeJsonValue,
   type CodeModeResult,
@@ -204,12 +208,19 @@ async function executeTool(
 }
 
 function codeModeResult(result: AgentToolResult<unknown>): CodeModeResult {
-  if (!Value.Check(CodeModeResultSchema, result.details)) {
+  if (!Value.Check(CodeModeResultDetailsSchema, result.details)) {
     throw new Error(
       `Pi CodeMode extension test: invalid details ${JSON.stringify(result.details)}`,
     );
   }
-  return result.details;
+  const { presentation: _presentation, ...publicResult } = result.details;
+  if (!Value.Check(CodeModeResultSchema, publicResult)) {
+    throw new Error(
+      `Pi CodeMode extension test: invalid public result ${JSON.stringify(publicResult)}`,
+    );
+  }
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify(publicResult) }]);
+  return publicResult;
 }
 
 async function pollCodeModeSession(
@@ -222,6 +233,17 @@ async function pollCodeModeSession(
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
   throw new Error(`Pi CodeMode extension test: session ${sessionId} remained pending`);
+}
+
+async function readResultSpill(path: string): Promise<string> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+    }
+  }
+  throw new Error(`Pi CodeMode extension test: Result Spill was not written: ${path}`);
 }
 
 function codeModeToolNames(session: AgentSession): string[] {
@@ -275,6 +297,9 @@ describe("Pi CodeMode extension", () => {
       "codemode_result",
       "codemode_cancel",
     ]);
+    const executeDefinition = fixture.session.getToolDefinition("codemode_execute");
+    expect(executeDefinition?.renderCall).toEqual(expect.any(Function));
+    expect(executeDefinition?.renderResult).toEqual(expect.any(Function));
     expect(fixture.session.getActiveToolNames()).not.toContain("closure_echo");
     expect(executeDescription(fixture.session)).toContain('readonly ["closure_echo"]');
 
@@ -316,13 +341,25 @@ describe("Pi CodeMode extension", () => {
     });
     expect(reused.usage).toEqual(nestedUsage(1));
     expect(reused.addedToolNames).toEqual(["closure_echo"]);
-    expect(updates).toHaveLength(1);
-    const firstUpdate = updates[0];
-    if (firstUpdate === undefined)
-      throw new Error("Pi CodeMode extension test: missing nested update");
-    expect(codeModeResult(firstUpdate)).toEqual({
-      result: "pending",
-      sessionId: pending.sessionId,
+    expect(reused.details).toMatchObject({
+      presentation: {
+        cell_ordinal: 2,
+        nested_tool_count: 1,
+        nested_tools: [{ name: "closure_echo", outcome: "success" }],
+      },
+    });
+    expect(updates).toHaveLength(3);
+    for (const update of updates) {
+      expect(codeModeResult(update)).toEqual({
+        result: "pending",
+        sessionId: pending.sessionId,
+      });
+    }
+    expect(updates[1]?.details).toMatchObject({
+      presentation: { active_tool_names: ["closure_echo"], active_tool_count: 1 },
+    });
+    expect(updates[2]?.details).toMatchObject({
+      presentation: { active_tool_names: [], nested_tool_count: 1 },
     });
 
     const cancelled = await executeTool(fixture.session, "codemode_cancel", {
@@ -341,6 +378,70 @@ describe("Pi CodeMode extension", () => {
       error: { code: "cancellation" },
     });
   }, 20_000);
+
+  test("keeps model content complete while writing oversized presentation data to a Result Spill", async () => {
+    const fixture = await createCodeModeExtensionFixture({}, false);
+    await fixture.session.bindExtensions({ mode: "rpc" });
+    const data = "x".repeat(60 * 1024);
+
+    const result = await executeTool(fixture.session, "codemode_execute", {
+      script: `"x".repeat(${data.length})`,
+      wait: true,
+    });
+
+    expect(codeModeResult(result)).toMatchObject({ result: "success", data });
+    if (!Value.Check(CodeModeResultDetailsSchema, result.details)) {
+      throw new Error("Pi CodeMode extension test: missing Result Spill details");
+    }
+    const spillPath = result.details.presentation?.spill_path;
+    if (spillPath === undefined) {
+      throw new Error("Pi CodeMode extension test: missing Result Spill path");
+    }
+    expect(await readResultSpill(spillPath)).toBe(JSON.stringify(data, undefined, 2));
+  }, 30_000);
+
+  test("mounts the read-only Observer only after TUI Cell activity", async () => {
+    initTheme("dark");
+    const fixture = await createCodeModeExtensionFixture({}, false);
+    const widgetEvents: Array<{ readonly content: unknown; readonly placement?: string }> = [];
+    const statusEvents: Array<string | undefined> = [];
+    const setWidget = (
+      _key: string,
+      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The faithful test recorder accepts both overloaded widget content representations without inspecting them.
+      content: unknown,
+      options?: { readonly placement?: string },
+    ): void => {
+      widgetEvents.push(
+        options?.placement === undefined ? { content } : { content, placement: options.placement },
+      );
+    };
+    // SAFETY: This recorder accepts both ExtensionUIContext setWidget overloads and records without invoking their content.
+    const recordWidget = setWidget as ExtensionUIContext["setWidget"];
+    await fixture.session.bindExtensions({
+      mode: "tui",
+      uiContext: {
+        ...fixture.session.extensionRunner.getUIContext(),
+        setStatus: (_key, text) => statusEvents.push(text),
+        setWidget: recordWidget,
+      },
+    });
+    expect(widgetEvents).toEqual([]);
+    expect(statusEvents).toEqual([]);
+
+    const started = await executeTool(fixture.session, "codemode_execute", {
+      script: "while (true) {}",
+      wait: false,
+    });
+    const pending = codeModeResult(started);
+    expect(widgetEvents).toContainEqual({
+      content: expect.any(Function),
+      placement: "aboveEditor",
+    });
+    expect(stripTerminalSequences(statusEvents.at(-1) ?? "")).toContain("1 running · 1 live");
+
+    await executeTool(fixture.session, "codemode_cancel", { sessionId: pending.sessionId });
+    expect(statusEvents.at(-1)).toBeUndefined();
+  }, 30_000);
 
   test("keeps direct exposure, guest exposure, and the dynamic catalogue coherent", async () => {
     const fixture = await createCodeModeExtensionFixture();
