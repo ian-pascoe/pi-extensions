@@ -106,10 +106,12 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
     trashSession: vi.fn<(agent: PersistedAgent) => Promise<void>>(async () => undefined),
   } satisfies AgentSessionFactory;
   const queuedMessages: CoordinatorMessage[] = [];
+  let rootIdle = true;
   const root = {
     queueCoordinatorMessage: vi.fn(async (message: CoordinatorMessage): Promise<void> => {
       queuedMessages.push(message);
     }),
+    isIdle: vi.fn(() => rootIdle),
     hasDeliveryEvidence: vi.fn<
       (sourceAgentId: string, sourceTurnId: string, deliveryId?: string) => boolean
     >(() => false),
@@ -134,6 +136,7 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
     sessions,
     registryEvents,
     queuedMessages,
+    setRootIdle: (idle: boolean) => (rootIdle = idle),
   };
 }
 
@@ -619,6 +622,34 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
   });
 
+  it("batches queued direct-parent messages into one steer", async () => {
+    const { coordinator, queuedMessages } = coordinatorFixture(childRuntime(), 5);
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+
+    await coordinator.sendAgentMessage("worker", { message: "progress 1" }, "worker:turn");
+    await coordinator.sendAgentMessage("worker", { message: "progress 2" }, "worker:turn");
+    await coordinator.waitForSettledOperations();
+
+    expect(queuedMessages).toHaveLength(1);
+    expect(queuedMessages[0]).toMatchObject({
+      customType: "minimal-subagents.message",
+      content: expect.stringContaining("progress 1"),
+      details: {
+        source_agent_id: "worker",
+        source_turn_id: "worker:turn",
+        messages: [
+          { delivery_id: expect.any(String), message_id: expect.any(String) },
+          { delivery_id: expect.any(String), message_id: expect.any(String) },
+        ],
+      },
+    });
+    expect(queuedMessages[0]?.content).toContain("progress 2");
+  });
+
   it("steers later coordination messages after an earlier wait event", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
@@ -759,9 +790,17 @@ describe("minimal subagents coordinator", () => {
 
     const restored = coordinatorFixture(childRuntime(), 200);
     await restored.coordinator.restore(source.coordinator.snapshot());
-    expect(
-      restored.root.queueCoordinatorMessage.mock.calls.map(([message]) => message.customType),
-    ).toEqual(["minimal-subagents.message", "minimal-subagents.result"]);
+    expect(restored.queuedMessages).toHaveLength(1);
+    expect(restored.queuedMessages[0]).toMatchObject({
+      customType: "minimal-subagents.result",
+      content: expect.stringContaining("progress 2"),
+      details: {
+        source_agent_id: "worker",
+        source_turn_id: spawned.turn_id,
+        messages: [{ delivery_id: expect.any(String), message_id: expect.any(String) }],
+      },
+    });
+    expect(restored.queuedMessages[0]?.content).toContain("complete after reload");
   });
 
   it("selects the oldest retained turn by default and supports an exact turn ID", async () => {
@@ -880,7 +919,7 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
   });
 
-  it("releases unclaimed coordination messages before the automatic terminal result", async () => {
+  it("batches queued coordination messages into the automatic terminal result", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
     runtime.runPrompt.mockImplementation(
@@ -893,14 +932,65 @@ describe("minimal subagents coordinator", () => {
       caller,
     );
     await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
-    await coordinator.sendAgentMessage("worker", { message: "progress" }, spawned.turn_id);
+    await coordinator.sendAgentMessage("worker", { message: "progress 1" }, spawned.turn_id);
+    await coordinator.sendAgentMessage("worker", { message: "progress 2" }, spawned.turn_id);
     finishPrompt({ status: "completed", output: "complete" });
     await coordinator.waitForSettledOperations();
 
-    expect(queuedMessages.map((message) => message.customType)).toEqual([
-      "minimal-subagents.message",
-      "minimal-subagents.result",
-    ]);
+    expect(queuedMessages).toHaveLength(1);
+    expect(queuedMessages[0]).toMatchObject({
+      customType: "minimal-subagents.result",
+      content: expect.stringContaining("progress 1"),
+      details: {
+        source_agent_id: "worker",
+        source_turn_id: spawned.turn_id,
+        messages: [
+          { delivery_id: expect.any(String), message_id: expect.any(String) },
+          { delivery_id: expect.any(String), message_id: expect.any(String) },
+        ],
+      },
+    });
+    expect(queuedMessages[0]?.content).toContain("progress 2");
+    expect(queuedMessages[0]?.content).toContain("complete");
+  });
+
+  it("keeps root-bound messages batchable while the root turn is active", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const fixture = coordinatorFixture(runtime, 5);
+    fixture.setRootIdle(false);
+    const spawned = await fixture.coordinator.spawn(
+      "root",
+      { task: "Report across model round trips", agent_id: "worker" },
+      caller,
+    );
+    await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
+
+    await fixture.coordinator.sendAgentMessage(
+      "worker",
+      { message: "progress before delay" },
+      spawned.turn_id,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fixture.queuedMessages).toHaveLength(0);
+    await fixture.coordinator.sendAgentMessage(
+      "worker",
+      { message: "progress after delay" },
+      spawned.turn_id,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fixture.queuedMessages).toHaveLength(0);
+
+    finishPrompt({ status: "completed", output: "complete" });
+    await fixture.coordinator.waitForSettledOperations();
+
+    expect(fixture.queuedMessages).toHaveLength(1);
+    expect(fixture.queuedMessages[0]?.content).toContain("progress before delay");
+    expect(fixture.queuedMessages[0]?.content).toContain("progress after delay");
+    expect(fixture.queuedMessages[0]?.content).toContain("complete");
   });
 
   it("reserves automatic result delivery before later recipient messages", async () => {
