@@ -638,7 +638,12 @@ function setToolNames(names: readonly string[]): void {
     defineProperty(nextFunctions, name, {
       configurable: false,
       enumerable: true,
-      value: (input: unknown) => nativeToolCall(name, input),
+      value: (input: unknown) => {
+        const result = nativeToolCall(name, input);
+        // Observe ignored direct calls without changing rejection behavior for callers that await them.
+        void result.catch(() => {});
+        return result;
+      },
       writable: false,
     });
   }

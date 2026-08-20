@@ -256,7 +256,11 @@ export function createCodeModeFailure(
 export function parseCodeModeJsonValue(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This parser owns the JSON protocol boundary and refines arbitrary runtime values.
   value: unknown,
-  options: { readonly allowUndefined?: boolean; readonly maxBytes?: number } = {},
+  options: {
+    readonly allowUndefined?: boolean;
+    readonly maxBytes?: number;
+    readonly normalizeUndefinedForJsonTransport?: boolean;
+  } = {},
 ):
   | { readonly ok: true; readonly value?: CodeModeJsonValue }
   | { readonly ok: false; readonly message: string } {
@@ -310,6 +314,13 @@ export function parseCodeModeJsonValue(
           if (descriptor === undefined || !("value" in descriptor)) {
             throw new Error(`${path}[${index}] is sparse or accessor-backed`);
           }
+          if (
+            descriptor.value === undefined &&
+            options.normalizeUndefinedForJsonTransport === true
+          ) {
+            output.push(null);
+            continue;
+          }
           const item = inspect(descriptor.value, `${path}[${index}]`);
           if (item === undefined) {
             throw new Error(`${path}[${index}] must be JSON data`);
@@ -329,6 +340,9 @@ export function parseCodeModeJsonValue(
         const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
         if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
           throw new Error(`${path}.${key} is non-enumerable or accessor-backed`);
+        }
+        if (descriptor.value === undefined && options.normalizeUndefinedForJsonTransport === true) {
+          continue;
         }
         const property = inspect(descriptor.value, `${path}.${key}`);
         if (property === undefined) throw new Error(`${path}.${key} must be JSON data`);

@@ -473,6 +473,7 @@ function translatePiToolResult(
       : { content: result.content ?? [], details: result.details };
   const parsed = parseCodeModeJsonValue(wireCandidate, {
     maxBytes: PI_TOOL_BRIDGE_RESULT_LIMIT_BYTES,
+    normalizeUndefinedForJsonTransport: true,
   });
   if (!parsed.ok) {
     return {

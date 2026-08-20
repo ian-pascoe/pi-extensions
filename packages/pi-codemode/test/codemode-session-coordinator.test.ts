@@ -742,6 +742,33 @@ describe("CodeModeSessionCoordinator", () => {
     expect(batches).toEqual([[1, 2], [3], [4]]);
   }, 30_000);
 
+  test("keeps the Session reusable when a detached nested tool rejects after the Cell fails", async () => {
+    const coordinator = createCoordinator({
+      toolNames: ["reject"],
+      executeToolBatch: async (batch) => ({
+        results: batch.calls.map((call) => ({
+          callId: call.callId,
+          outcome: "error" as const,
+          error: { code: "tool-error", message: "nested rejection" },
+        })),
+      }),
+    });
+
+    const failed = await coordinator.execute({
+      script: 'tools.reject({}); throw new Error("primary Cell failure")',
+      wait: true,
+    });
+    expect(failed.result).toMatchObject({
+      result: "failed",
+      sessionId: "session-1",
+      error: { code: "script", message: "Error: primary Cell failure" },
+    });
+    expectSuccessData(
+      await coordinator.execute({ script: "6 * 7", sessionId: "session-1", wait: true }),
+      42,
+    );
+  }, 30_000);
+
   test("rejects hostile guest JSON without invoking accessors and recovers", async () => {
     let parentGetterCalled = false;
     const hostileParentResult = {};

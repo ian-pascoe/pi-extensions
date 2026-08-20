@@ -121,6 +121,23 @@ async function createCodeModeExtensionFixture(
         };
       },
     });
+    pi.registerTool({
+      name: "undefined_details",
+      label: "Undefined Details",
+      description: "Returns optional undefined fields in otherwise JSON-safe details.",
+      parameters: Type.Object({}, { additionalProperties: false }),
+      async execute() {
+        return {
+          content: [{ type: "text", text: "undefined details" }],
+          details: {
+            kept: true,
+            omitted: undefined,
+            nested: { value: 42, omitted: undefined },
+            values: [1, undefined, 3],
+          },
+        };
+      },
+    });
   };
   const extensionFactory = (pi: ExtensionAPI): void => {
     extensionApi = pi;
@@ -399,6 +416,23 @@ describe("Pi CodeMode extension", () => {
     }
     expect(await readResultSpill(spillPath)).toBe(JSON.stringify(data, undefined, 2));
   }, 30_000);
+
+  test("bridges registered tool results with optional undefined detail fields", async () => {
+    const fixture = await createCodeModeExtensionFixture();
+
+    const result = await executeTool(fixture.session, "codemode_execute", {
+      script: "await tools.undefined_details({})",
+      wait: true,
+    });
+
+    expect(codeModeResult(result)).toMatchObject({
+      result: "success",
+      data: {
+        content: [{ type: "text", text: "undefined details" }],
+        details: { kept: true, nested: { value: 42 }, values: [1, null, 3] },
+      },
+    });
+  }, 20_000);
 
   test("mounts the read-only Observer only after TUI Cell activity", async () => {
     initTheme("dark");

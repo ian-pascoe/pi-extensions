@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type {
   Definition,
   DefinitionLink,
@@ -11,6 +12,7 @@ import type {
 import { DefinitionRequest } from "vscode-languageserver-protocol";
 import { afterEach, describe, expect, test } from "vitest";
 import { LspServerClient } from "../src/lsp-server-client.js";
+import { resolveLspSettings } from "../src/pi-lsp-settings.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const temporaryDirectories: string[] = [];
@@ -39,6 +41,34 @@ afterEach(async () => {
 });
 
 describe("real TypeScript 7 language server client", () => {
+  test("starts the tracked TypeScript server from a workspace package root", async () => {
+    const agentDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-settings-agent-"));
+    temporaryDirectories.push(agentDirectory);
+    const settingsManager = SettingsManager.create(repositoryRoot, agentDirectory, {
+      projectTrusted: true,
+    });
+    const settings = resolveLspSettings(settingsManager);
+    const definition = settings.servers.get("typescript");
+    if (definition === undefined) {
+      throw new Error("Pi LSP integration test: missing tracked TypeScript server definition");
+    }
+
+    const client = await LspServerClient.start({
+      serverId: definition.id,
+      rootPath: resolve(repositoryRoot, "packages/pi-codemode"),
+      command: definition.command,
+      args: definition.args,
+      environment: { ...definition.environment },
+      initializationOptions: definition.initializationOptions ?? null,
+      settings: definition.settings ?? null,
+      stderrPath: resolve(agentDirectory, "typescript.stderr.log"),
+      timeouts: settings.timeouts,
+    });
+    clients.push(client);
+
+    expect(client.serverInfo?.name).toBe("typescript-go");
+  }, 60_000);
+
   test("initializes, synchronizes UTF-8, reports a semantic error, resolves a definition, and exits", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);
