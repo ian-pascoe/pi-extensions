@@ -72,7 +72,7 @@ export type CodeModeObserverRow = {
   /** Idle Session summary retained only during relevant Observer activity. */
   | { readonly state: "idle"; readonly cellCount: number }
   | {
-      readonly state: "failed" | "cancelled" | "timed_out";
+      readonly state: "failed" | "cancelled" | "reclaimed" | "timed_out";
       /** Most recent one-based Cell Ordinal, or Session Cell count when no final Cell exists. */
       readonly cellOrdinal: number;
     }
@@ -102,6 +102,7 @@ const CODEMODE_OBSERVER_STATE_PRESENTATION = {
   idle: { symbol: "○", label: "idle", color: "muted" },
   failed: { symbol: "×", label: "failed", color: "error" },
   cancelled: { symbol: "■", label: "cancelled", color: "warning" },
+  reclaimed: { symbol: "■", label: "reclaimed", color: "warning" },
   timed_out: { symbol: "!", label: "timed out", color: "error" },
 } satisfies Record<CodeModeObserverState, CodeModeObserverStatePresentation>;
 
@@ -153,10 +154,11 @@ function boundedElapsedMilliseconds(nowMs: number, startedAtMs: number): number 
 
 function codeModeTerminalObserverState(
   session: CodeModeObservedSession,
-): Extract<CodeModeObserverState, "failed" | "cancelled" | "timed_out"> {
+): Extract<CodeModeObserverState, "failed" | "cancelled" | "reclaimed" | "timed_out"> {
   if (session.terminal_error_code === "cancellation" || session.last_cell?.state === "cancelled") {
     return "cancelled";
   }
+  if (session.terminal_error_code === "eviction") return "reclaimed";
   if (session.terminal_error_code === "timeout" || session.last_cell?.state === "timed_out") {
     return "timed_out";
   }

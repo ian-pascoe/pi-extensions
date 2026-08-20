@@ -116,6 +116,13 @@ describe("CodeMode Observer UI", () => {
           nested_tool_count: 0,
         },
       },
+      {
+        sessionId: sessionId("reclaimed-terminal"),
+        lifecycle: "terminal",
+        cell_count: 2,
+        last_activity_at_ms: 6_500,
+        terminal_error_code: "eviction",
+      },
       ...Array.from({ length: 7 }, (_, index) => ({
         sessionId: sessionId(`session-${index}-terminal`),
         lifecycle: "terminal" as const,
@@ -130,8 +137,8 @@ describe("CodeMode Observer UI", () => {
     expect(view.runningCount).toBe(1);
     expect(view.liveCount).toBe(2);
     expect(view.rows).toHaveLength(8);
-    expect(view.overflowCount).toBe(2);
-    expect(view.rows.slice(0, 3)).toMatchObject([
+    expect(view.overflowCount).toBe(3);
+    expect(view.rows.slice(0, 4)).toMatchObject([
       {
         sessionPrefix: "aaaaaaaa-1",
         state: "running",
@@ -142,8 +149,12 @@ describe("CodeMode Observer UI", () => {
       },
       { sessionPrefix: "aaaaaaaa-2", state: "idle", cellCount: 3 },
       { sessionPrefix: "bbbbbbbb", state: "cancelled", cellOrdinal: 1 },
+      { sessionPrefix: "reclaime", state: "reclaimed", cellOrdinal: 2 },
     ]);
     expect(view.rows.find((row) => row.sessionPrefix === "session-0")?.state).toBe("timed_out");
+    expect(renderCodeModeObserverWidgetLines(view, 120, plainTheme)).toContain(
+      "  ■ reclaime  ·  reclaimed  ·  Cell 2",
+    );
   });
 
   test("renders semantic status rows and degrades rightmost detail within every terminal width", () => {

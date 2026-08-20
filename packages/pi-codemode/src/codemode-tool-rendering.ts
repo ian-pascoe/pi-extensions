@@ -25,6 +25,8 @@ import {
   CodeModeExecuteParametersSchema,
   CodeModeResultDetailsSchema,
   CodeModeResultParametersSchema,
+  CodeModeSessionsParametersSchema,
+  CodeModeSessionsResultSchema,
   createCodeModeToolDefinitions,
   type CodeModeCancelParameters,
   type CodeModeErrorCode,
@@ -34,17 +36,24 @@ import {
   type CodeModePresentationSnapshot,
   type CodeModeResultDetails,
   type CodeModeResultParameters,
+  type CodeModeSessionsParameters,
+  type CodeModeSessionsResult,
   type CodeModeToolOperations,
 } from "./codemode-tool-contract.js";
 
-/** Names of the three CodeMode tools with semantic Transcript rendering. */
-export type CodeModeRenderedToolName = "codemode_execute" | "codemode_result" | "codemode_cancel";
+/** Names of the four CodeMode tools with semantic Transcript rendering. */
+export type CodeModeRenderedToolName =
+  | "codemode_execute"
+  | "codemode_result"
+  | "codemode_cancel"
+  | "codemode_sessions";
 
-/** Parsed arguments accepted by one of the three CodeMode Transcript renderers. */
+/** Parsed arguments accepted by one of the four CodeMode Transcript renderers. */
 export type CodeModeRenderedToolParameters =
   | CodeModeExecuteParameters
   | CodeModeResultParameters
-  | CodeModeCancelParameters;
+  | CodeModeCancelParameters
+  | CodeModeSessionsParameters;
 
 /** Theme operations used by CodeMode Transcript renderers. */
 export type CodeModeRenderTheme = Pick<Theme, "bold" | "fg">;
@@ -100,7 +109,10 @@ function parseCodeModeRenderedToolParameters(
   if (toolName === "codemode_result") {
     return Value.Check(CodeModeResultParametersSchema, parameters) ? parameters : undefined;
   }
-  return Value.Check(CodeModeCancelParametersSchema, parameters) ? parameters : undefined;
+  if (toolName === "codemode_cancel") {
+    return Value.Check(CodeModeCancelParametersSchema, parameters) ? parameters : undefined;
+  }
+  return Value.Check(CodeModeSessionsParametersSchema, parameters) ? parameters : undefined;
 }
 
 function shortCodeModeSessionId(sessionId: string): string {
@@ -139,6 +151,9 @@ function codeModeSessionLifecycle(
   toolName: CodeModeRenderedToolName,
   details: CodeModeResultDetails,
 ): "Session reusable" | "Session closed" | "No reusable Session" {
+  if (details.result === "failed" && details.error.code === "eviction") {
+    return "Session closed";
+  }
   if (details.presentation !== undefined) {
     return details.presentation.session_state === "live" ? "Session reusable" : "Session closed";
   }
@@ -235,7 +250,10 @@ function renderCodeModeSummary(
 ): string {
   const presentation = details.presentation;
   const state = codeModeCellState(toolName, details);
-  const status = CODEMODE_STATUS_PRESENTATION[state];
+  const status =
+    details.result === "failed" && details.error.code === "eviction"
+      ? { color: "warning" as const, label: "■ reclaimed" }
+      : CODEMODE_STATUS_PRESENTATION[state];
   const activeToolNames = presentation?.active_tool_names.slice(0, 3) ?? [];
   const omittedActiveToolCount = Math.max(
     0,
@@ -281,7 +299,9 @@ export function renderCodeModeToolCall(
       ? "Run Cell"
       : toolName === "codemode_result"
         ? "Poll"
-        : "Cancel";
+        : toolName === "codemode_cancel"
+          ? "Cancel"
+          : "List Sessions";
   const parsedParameters = parseCodeModeRenderedToolParameters(toolName, parameters);
   const executeParameters =
     toolName === "codemode_execute" &&
@@ -289,7 +309,10 @@ export function renderCodeModeToolCall(
     "script" in parsedParameters
       ? parsedParameters
       : undefined;
-  const sessionId = parsedParameters?.sessionId;
+  const sessionId =
+    parsedParameters !== undefined && "sessionId" in parsedParameters
+      ? parsedParameters.sessionId
+      : undefined;
   const preview =
     executeParameters === undefined
       ? undefined
@@ -324,16 +347,52 @@ export function renderCodeModeToolCall(
   return container;
 }
 
+function renderCodeModeSessionsResult(
+  result: AgentToolResult<unknown>,
+  options: ToolRenderResultOptions,
+  theme: CodeModeRenderTheme,
+): Component {
+  if (!Value.Check(CodeModeSessionsResultSchema, result.details)) {
+    return renderCodeModeFallback(result, options, theme, false);
+  }
+  const sessions: CodeModeSessionsResult = result.details;
+  const summary = `${theme.fg("success", "✓")} ${pluralizedCodeModeCount(sessions.sessions.length, "session")}`;
+  if (!options.expanded) {
+    const hint = options.isPartial ? "" : `  ·  ${keyText("app.tools.expand")} to expand`;
+    return new Text(`${summary}${hint}`, 0, 0);
+  }
+  const container = new Container();
+  container.addChild(new Text(summary, 0, 0));
+  if (sessions.sessions.length === 0) {
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(theme.fg("dim", "No live Sessions"), 0, 0));
+    return container;
+  }
+  container.addChild(new Spacer(1));
+  for (const session of sessions.sessions) {
+    container.addChild(
+      new Text(
+        `${theme.fg(session.state === "running" ? "accent" : "muted", session.state)}  ${sanitizeCodeModeText(session.sessionId)}  ${pluralizedCodeModeCount(session.cellCount, "cell")}  ${session.lastActivityAtMs}`,
+        0,
+        0,
+      ),
+    );
+  }
+  return container;
+}
+
 /** Render one CodeMode result in collapsed, expanded, partial, or historical form. */
 export function renderCodeModeToolResult(
   toolName: CodeModeRenderedToolName,
   result: AgentToolResult<unknown>,
   options: ToolRenderResultOptions,
   theme: CodeModeRenderTheme,
-  parameters: CodeModeRenderedToolParameters,
   isError: boolean,
   formatSessionPrefix: CodeModeSessionPrefixFormatter = shortCodeModeSessionId,
 ): Component {
+  if (toolName === "codemode_sessions") {
+    return renderCodeModeSessionsResult(result, options, theme);
+  }
   if (!Value.Check(CodeModeResultDetailsSchema, result.details)) {
     return renderCodeModeFallback(result, options, theme, isError);
   }
@@ -409,13 +468,13 @@ export function renderCodeModeToolResult(
   return container;
 }
 
-/** Create the three CodeMode tools with semantic call and result Transcript renderers. */
+/** Create the four CodeMode tools with semantic call and result Transcript renderers. */
 export function createRenderedCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
   executeDescription?: string,
   formatSessionPrefix: CodeModeSessionPrefixFormatter = shortCodeModeSessionId,
 ): ReturnType<typeof createCodeModeToolDefinitions> {
-  const [executeTool, resultTool, cancelTool] = createCodeModeToolDefinitions(
+  const [executeTool, resultTool, cancelTool, sessionsTool] = createCodeModeToolDefinitions(
     operations,
     executeDescription,
   );
@@ -436,7 +495,6 @@ export function createRenderedCodeModeToolDefinitions(
           result,
           options,
           theme,
-          context.args,
           context.isError,
           formatSessionPrefix,
         ),
@@ -457,7 +515,6 @@ export function createRenderedCodeModeToolDefinitions(
           result,
           options,
           theme,
-          context.args,
           context.isError,
           formatSessionPrefix,
         ),
@@ -478,7 +535,26 @@ export function createRenderedCodeModeToolDefinitions(
           result,
           options,
           theme,
-          context.args,
+          context.isError,
+          formatSessionPrefix,
+        ),
+    },
+    {
+      ...sessionsTool,
+      renderCall: (_args, theme, context) =>
+        renderCodeModeToolCall(
+          "codemode_sessions",
+          {},
+          theme,
+          context.expanded,
+          formatSessionPrefix,
+        ),
+      renderResult: (result, options, theme, context) =>
+        renderCodeModeToolResult(
+          "codemode_sessions",
+          result,
+          options,
+          theme,
           context.isError,
           formatSessionPrefix,
         ),

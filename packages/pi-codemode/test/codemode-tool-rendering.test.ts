@@ -6,7 +6,10 @@ import {
   renderCodeModeToolResult,
   type CodeModeRenderTheme,
 } from "../src/codemode-tool-rendering.js";
-import type { CodeModeResultDetails } from "../src/codemode-tool-contract.js";
+import type {
+  CodeModeResultDetails,
+  CodeModeSessionsResult,
+} from "../src/codemode-tool-contract.js";
 
 const plainTheme: CodeModeRenderTheme = {
   bold: (text) => text,
@@ -115,7 +118,6 @@ describe("CodeMode Transcript rendering", () => {
         result(details),
         { expanded: false, isPartial: false },
         plainTheme,
-        { script: "42" },
         false,
       ),
     );
@@ -133,7 +135,6 @@ describe("CodeMode Transcript rendering", () => {
         result(details),
         { expanded: true, isPartial: false },
         plainTheme,
-        { script: "const answer: number = 42;\nanswer" },
         false,
       ),
     );
@@ -174,7 +175,6 @@ describe("CodeMode Transcript rendering", () => {
           result(pending),
           { expanded: false, isPartial: true },
           plainTheme,
-          { script: "await tools.exec_command({ cmd: 'true' })" },
           false,
         ),
       ),
@@ -200,7 +200,6 @@ describe("CodeMode Transcript rendering", () => {
           result(failed),
           { expanded: true, isPartial: false },
           plainTheme,
-          { sessionId: failed.sessionId },
           false,
         ),
       );
@@ -222,11 +221,83 @@ describe("CodeMode Transcript rendering", () => {
           result(oversizedError),
           { expanded: true, isPartial: false },
           plainTheme,
-          { script: "throw new Error()" },
           false,
         ),
       ),
     ).toContain("line omitted");
+  });
+
+  test("renders reclaimed Sessions as closed", () => {
+    const reclaimed: CodeModeResultDetails = {
+      result: "failed",
+      sessionId: "reclaimed-session",
+      error: {
+        code: "eviction",
+        message: "CodeMode Session was reclaimed to free capacity.",
+      },
+      presentation: {
+        version: 1,
+        cell_ordinal: 1,
+        cell_state: "completed",
+        session_state: "live",
+        elapsed_ms: 10,
+        active_tool_names: [],
+        active_tool_count: 0,
+        nested_tool_count: 0,
+        succeeded_nested_tool_count: 0,
+        failed_nested_tool_count: 0,
+        nested_tools: [],
+        omitted_nested_tool_count: 0,
+      },
+    };
+
+    const rendered = renderText(
+      renderCodeModeToolResult(
+        "codemode_result",
+        result(reclaimed),
+        { expanded: true, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+    expect(rendered).toContain("■ reclaimed");
+    expect(rendered).toContain("Session closed");
+  });
+
+  test("renders the read-only live Session list", () => {
+    const sessions: CodeModeSessionsResult = {
+      result: "success",
+      sessions: [
+        { sessionId: "idle-session", state: "idle", cellCount: 2, lastActivityAtMs: 10 },
+        { sessionId: "running-session", state: "running", cellCount: 3, lastActivityAtMs: 20 },
+      ],
+    };
+    const output = {
+      content: [{ type: "text" as const, text: JSON.stringify(sessions) }],
+      details: sessions,
+    };
+    const collapsed = renderText(
+      renderCodeModeToolResult(
+        "codemode_sessions",
+        output,
+        { expanded: false, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+    expect(collapsed).toContain("✓ 2 sessions");
+
+    const expanded = renderText(
+      renderCodeModeToolResult(
+        "codemode_sessions",
+        output,
+        { expanded: true, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+    expect(expanded).toContain("idle  idle-session  2 cells  10");
+    expect(expanded).toContain("running  running-session  3 cells  20");
   });
 
   test("infers historical details and falls back safely for malformed details", () => {
@@ -242,7 +313,6 @@ describe("CodeMode Transcript rendering", () => {
           result(historical),
           { expanded: false, isPartial: false },
           plainTheme,
-          { sessionId: historical.sessionId },
           false,
         ),
       ),
@@ -258,7 +328,6 @@ describe("CodeMode Transcript rendering", () => {
         malformed,
         { expanded: false, isPartial: false },
         plainTheme,
-        { sessionId: "history1-1234" },
         true,
       ),
     );
@@ -272,7 +341,6 @@ describe("CodeMode Transcript rendering", () => {
           malformed,
           { expanded: true, isPartial: false },
           plainTheme,
-          { sessionId: "history1-1234" },
           true,
         ),
       ),
@@ -289,7 +357,6 @@ describe("CodeMode Transcript rendering", () => {
           oversizedMalformed,
           { expanded: false, isPartial: false },
           plainTheme,
-          { sessionId: "history1-1234" },
           true,
         ),
       ).length,
@@ -301,7 +368,6 @@ describe("CodeMode Transcript rendering", () => {
           oversizedMalformed,
           { expanded: true, isPartial: false },
           plainTheme,
-          { sessionId: "history1-1234" },
           true,
         ),
       ),
@@ -318,7 +384,6 @@ describe("CodeMode Transcript rendering", () => {
       result(details),
       { expanded: false, isPartial: false },
       plainTheme,
-      { sessionId: details.sessionId },
       false,
     );
 

@@ -13,6 +13,7 @@ const CODEMODE_TOOL_NAMES = {
   execute: "codemode_execute",
   result: "codemode_result",
   cancel: "codemode_cancel",
+  sessions: "codemode_sessions",
 } as const;
 const RESERVED_CODEMODE_TOOL_NAMES = new Set<string>(Object.values(CODEMODE_TOOL_NAMES));
 
@@ -26,6 +27,7 @@ export const CODEMODE_ERROR_CODES = [
   "unknown",
   "busy",
   "capacity",
+  "eviction",
   "script",
   "serialization",
   "timeout",
@@ -116,12 +118,17 @@ export const CodeModeCancelParametersSchema = Type.Object(
   { additionalProperties: false },
 );
 
+/** Strict empty arguments accepted by the read-only `codemode_sessions` tool. */
+export const CodeModeSessionsParametersSchema = Type.Object({}, { additionalProperties: false });
+
 /** Parsed arguments for `codemode_execute`. */
 export type CodeModeExecuteParameters = Static<typeof CodeModeExecuteParametersSchema>;
 /** Parsed arguments for `codemode_result`. */
 export type CodeModeResultParameters = Static<typeof CodeModeResultParametersSchema>;
 /** Parsed arguments for `codemode_cancel`. */
 export type CodeModeCancelParameters = Static<typeof CodeModeCancelParametersSchema>;
+/** Parsed arguments for the read-only `codemode_sessions` tool. */
+export type CodeModeSessionsParameters = Static<typeof CodeModeSessionsParametersSchema>;
 
 /** A JSON object accepted in a successful CodeMode result. */
 export type CodeModeJsonObject = { readonly [key: string]: CodeModeJsonValue };
@@ -178,9 +185,34 @@ const CodeModeSuccessSchema = Type.Object(
     result: Type.Literal("success"),
     sessionId: SessionIdSchema,
     data: Type.Optional(CodeModeJsonValueSchema),
+    reclaimedSessionId: Type.Optional(SessionIdSchema),
   },
   { additionalProperties: false },
 );
+
+/** One live CodeMode Session with its Unix-epoch last-activity time. */
+export const CodeModeSessionListEntrySchema = Type.Object(
+  {
+    sessionId: SessionIdSchema,
+    state: Type.Union([Type.Literal("idle"), Type.Literal("running")]),
+    cellCount: NonNegativeSafeIntegerSchema,
+    lastActivityAtMs: NonNegativeSafeIntegerSchema,
+  },
+  { additionalProperties: false },
+);
+
+/** Idle-LRU-first, then running-LRU aggregate returned by `codemode_sessions`. */
+export const CodeModeSessionsResultSchema = Type.Object(
+  {
+    result: Type.Literal("success"),
+    sessions: Type.Array(CodeModeSessionListEntrySchema),
+  },
+  { additionalProperties: false },
+);
+
+/** Schema-derived live Session list ordered by reclamation priority. */
+export type CodeModeSessionsResult = Static<typeof CodeModeSessionsResultSchema>;
+
 const CodeModePendingSchema = Type.Object(
   {
     result: Type.Literal("pending"),
@@ -197,14 +229,14 @@ const CodeModeFailedSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** Schema-derived result union shared by all three public CodeMode tools. */
+/** Schema-derived result union shared by the execute, result, and cancel tools. */
 export const CodeModeResultSchema = Type.Union([
   CodeModeSuccessSchema,
   CodeModePendingSchema,
   CodeModeFailedSchema,
 ]);
 
-/** Schema-derived result returned by every public CodeMode tool. */
+/** Schema-derived result returned by one session-scoped CodeMode operation. */
 export type CodeModeResult = Static<typeof CodeModeResultSchema>;
 
 const CodeModeSuccessDetailsSchema = Type.Object(
@@ -212,6 +244,7 @@ const CodeModeSuccessDetailsSchema = Type.Object(
     result: Type.Literal("success"),
     sessionId: SessionIdSchema,
     data: Type.Optional(CodeModeJsonValueSchema),
+    reclaimedSessionId: Type.Optional(SessionIdSchema),
     presentation: Type.Optional(CodeModePresentationSnapshotSchema),
   },
   { additionalProperties: false },
@@ -240,7 +273,7 @@ export const CodeModeResultDetailsSchema = Type.Union([
   CodeModePendingDetailsSchema,
   CodeModeFailedDetailsSchema,
 ]);
-/** Schema-derived details retained by every public CodeMode tool. */
+/** Schema-derived details retained by one session-scoped CodeMode operation. */
 export type CodeModeResultDetails = Static<typeof CodeModeResultDetailsSchema>;
 
 /** A successful result with optional JSON data. */
@@ -402,7 +435,7 @@ export type CodeModeToolOperationResult = {
   readonly presentation?: CodeModePresentationSnapshot;
 };
 
-/** Operations supplied by the session coordinator to build the three Pi tools. */
+/** Operations supplied by the session coordinator to build the four Pi tools. */
 export interface CodeModeToolOperations {
   execute(
     input: CodeModeExecuteParameters,
@@ -412,6 +445,7 @@ export interface CodeModeToolOperations {
   ): Promise<CodeModeToolOperationResult>;
   result(input: CodeModeResultParameters): Promise<CodeModeToolOperationResult>;
   cancel(input: CodeModeCancelParameters): Promise<CodeModeToolOperationResult>;
+  sessions(): Promise<CodeModeSessionsResult>;
 }
 
 function structuredCodeModeResult(
@@ -438,9 +472,19 @@ type CodeModeToolDefinitions = readonly [
   ToolDefinition<typeof CodeModeExecuteParametersSchema, CodeModeResultDetails>,
   ToolDefinition<typeof CodeModeResultParametersSchema, CodeModeResultDetails>,
   ToolDefinition<typeof CodeModeCancelParametersSchema, CodeModeResultDetails>,
+  ToolDefinition<typeof CodeModeSessionsParametersSchema, CodeModeSessionsResult>,
 ];
 
-/** Creates the three stable Pi definitions while leaving admission and session policy to the coordinator. */
+function structuredCodeModeSessionsResult(
+  result: CodeModeSessionsResult,
+): AgentToolResult<CodeModeSessionsResult> {
+  return {
+    content: [{ type: "text", text: JSON.stringify(result) }],
+    details: result,
+  };
+}
+
+/** Creates the four stable Pi definitions while leaving admission and session policy to the coordinator. */
 export function createCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
   executeDescription = "Execute TypeScript in a persistent isolated Deno CodeMode Session.",
@@ -469,12 +513,25 @@ export function createCodeModeToolDefinitions(
   const cancelTool: ToolDefinition<typeof CodeModeCancelParametersSchema, CodeModeResultDetails> = {
     name: CODEMODE_TOOL_NAMES.cancel,
     label: "CodeMode Cancel",
-    description: "Cancel a live CodeMode session and retain its terminal result.",
+    description: "Cancel a live CodeMode Session, free its capacity, and retain its result.",
     parameters: CodeModeCancelParametersSchema,
     executionMode: "sequential",
     async execute(_toolCallId, input) {
       return structuredCodeModeResult(await operations.cancel(input));
     },
   };
-  return [executeTool, resultTool, cancelTool];
+  const sessionsTool: ToolDefinition<
+    typeof CodeModeSessionsParametersSchema,
+    CodeModeSessionsResult
+  > = {
+    name: CODEMODE_TOOL_NAMES.sessions,
+    label: "List Sessions",
+    description: "List live CodeMode Sessions without changing their recency or state.",
+    parameters: CodeModeSessionsParametersSchema,
+    executionMode: "sequential",
+    async execute() {
+      return structuredCodeModeSessionsResult(await operations.sessions());
+    },
+  };
+  return [executeTool, resultTool, cancelTool, sessionsTool];
 }

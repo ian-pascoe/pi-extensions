@@ -28,13 +28,26 @@ describe("decideCodeModeToolExposure", () => {
   test("defaults requested tools to both interfaces and keeps inactive tools unavailable", () => {
     expect(
       decideCodeModeToolExposure(
-        ["active", "inactive", "codemode_execute", "codemode_result", "codemode_cancel"],
+        [
+          "active",
+          "inactive",
+          "codemode_execute",
+          "codemode_result",
+          "codemode_cancel",
+          "codemode_sessions",
+        ],
         ["active"],
         [],
       ),
     ).toEqual({
       codeModeNames: ["active"],
-      directNames: ["active", "codemode_execute", "codemode_result", "codemode_cancel"],
+      directNames: [
+        "active",
+        "codemode_execute",
+        "codemode_result",
+        "codemode_cancel",
+        "codemode_sessions",
+      ],
       unavailableNames: ["inactive"],
     });
   });

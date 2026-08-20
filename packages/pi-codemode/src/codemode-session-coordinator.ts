@@ -86,6 +86,15 @@ export type CodeModeObserverSnapshot = {
   readonly sessions: readonly CodeModeObservedSession[];
 };
 
+/** Read-only facts for one live CodeMode Session, ordered by admission priority. */
+export type CodeModeListedSession = {
+  readonly sessionId: CodeModeSessionId;
+  readonly state: "running" | "idle";
+  readonly cellCount: number;
+  /** Parent wall-clock time of the latest execution-visible transition in Unix-epoch milliseconds. */
+  readonly lastActivityAtMs: number;
+};
+
 /** One idle CodeMode worker failure not represented by an active Cell result. */
 export type CodeModeUnexpectedFailure = {
   readonly sessionId: CodeModeSessionId;
@@ -176,10 +185,16 @@ type MutableCodeModeOuterToolMetadata = {
   terminate?: boolean;
 };
 
+type CreateActiveCodeModeCellOptions = {
+  onUpdate?: (update: CodeModeNestedToolUpdate) => void;
+  reclaimedSessionId?: CodeModeSessionId;
+};
+
 type ActiveCodeModeCell = {
   readonly cellId: string;
   readonly ordinal: number;
   readonly startedAtMs: number;
+  readonly reclaimedSessionId?: CodeModeSessionId;
   readonly abortController: AbortController;
   readonly completion: Promise<CodeModeResult>;
   readonly resolveCompletion: (result: CodeModeResult) => void;
@@ -224,10 +239,12 @@ type TerminalCodeModeSession = {
 
 type CodeModeSessionRecord = LiveCodeModeSession | TerminalCodeModeSession;
 
-type LocateCodeModeSessionResult = {
-  readonly record?: CodeModeSessionRecord;
-  readonly failure: CodeModeResult;
-};
+type LocateCodeModeSessionResult =
+  | {
+      readonly record: CodeModeSessionRecord;
+      readonly reclaimedSessionId?: CodeModeSessionId;
+    }
+  | { readonly failure: CodeModeResult };
 
 type FatalCodeModeSessionFailure = {
   readonly code: Extract<CodeModeErrorCode, "timeout" | "cancellation" | "termination" | "runtime">;
@@ -325,6 +342,7 @@ export class CodeModeSessionCoordinator {
     (update: CodeModeNestedToolUpdate) => void
   >();
   private readonly pendingProcessStops = new Set<Promise<void>>();
+  private admissionQueue: Promise<void> = Promise.resolve();
 
   /** Creates one coordinator from its Pi bridge, limits, and parent runtime capabilities. */
   constructor(private readonly options: CodeModeSessionCoordinatorOptions) {
@@ -349,70 +367,80 @@ export class CodeModeSessionCoordinator {
         ),
       };
     }
-    let located: LocateCodeModeSessionResult;
-    if (input.sessionId === undefined) located = this.createLiveSession();
-    else {
-      const parsedSessionId = parseCodeModeSessionId(input.sessionId);
-      if (!parsedSessionId.ok) return invalidCodeModeSessionResult();
-      located = this.findSession(parsedSessionId.value);
-    }
-    if (located.record === undefined) return { result: located.failure };
-    const record = located.record;
-    this.touch(record);
-    if (record.state === "terminal")
-      return this.operationResult(
-        record.latestResult,
-        this.takeMetadata(record),
-        record.latestPresentation,
-      );
-    if (record.currentCell !== undefined) {
-      return {
-        result: createCodeModeFailure(
-          record.sessionId,
-          "busy",
-          "CodeMode Session already has an active Cell",
-        ),
-      };
-    }
-
-    const shouldWait = input.wait !== false;
-    const cell = this.createActiveCell(
-      record,
-      shouldWait && onUpdate !== undefined ? { onUpdate } : {},
-    );
-    const priorMetadata = this.takeMetadata(record);
-    if (priorMetadata !== undefined) mergeCodeModeOuterMetadata(cell.metadata, priorMetadata);
-    record.currentCell = cell;
-    record.latestResult = createCodeModePending(record.sessionId);
-    record.lastActivityAtMs = cell.startedAtMs;
-    this.publishObserverSnapshot();
-    this.emitCellProgress(record, cell);
-    this.scheduleCellProgress(record, cell);
-    void this.startCell(record, cell, input);
-
-    const pending = createCodeModePending(record.sessionId);
-    if (!shouldWait) {
-      return this.operationResult(pending, undefined, this.runningCellPresentation(cell));
-    }
-    const abort = (): void => {
-      this.fatalizeSession(record, cell, {
-        code: "cancellation",
-        message: "CodeMode Cell was cancelled",
-      });
-    };
-    if (signal?.aborted === true) abort();
-    else signal?.addEventListener("abort", abort, { once: true });
+    let releaseAdmission =
+      input.sessionId === undefined ? await this.acquireSessionAdmission() : undefined;
     try {
-      const result = await cell.completion;
-      const retainedRecord = this.records.get(record.sessionId) ?? record;
-      return this.operationResult(
-        result,
-        this.takeMetadata(retainedRecord),
-        retainedRecord.latestPresentation,
-      );
+      let located: LocateCodeModeSessionResult;
+      if (input.sessionId === undefined) located = await this.createLiveSession();
+      else {
+        const parsedSessionId = parseCodeModeSessionId(input.sessionId);
+        if (!parsedSessionId.ok) return invalidCodeModeSessionResult();
+        located = this.findSession(parsedSessionId.value);
+      }
+      if ("failure" in located) return { result: located.failure };
+      const record = located.record;
+      this.touch(record);
+      if (record.state === "terminal")
+        return this.operationResult(
+          record.latestResult,
+          this.takeMetadata(record),
+          record.latestPresentation,
+        );
+      if (record.currentCell !== undefined) {
+        return {
+          result: createCodeModeFailure(
+            record.sessionId,
+            "busy",
+            "CodeMode Session already has an active Cell",
+          ),
+        };
+      }
+
+      const shouldWait = input.wait !== false;
+      const cellOptions: CreateActiveCodeModeCellOptions = {};
+      if (shouldWait && onUpdate !== undefined) cellOptions.onUpdate = onUpdate;
+      if (located.reclaimedSessionId !== undefined) {
+        cellOptions.reclaimedSessionId = located.reclaimedSessionId;
+      }
+      const cell = this.createActiveCell(record, cellOptions);
+      const priorMetadata = this.takeMetadata(record);
+      if (priorMetadata !== undefined) mergeCodeModeOuterMetadata(cell.metadata, priorMetadata);
+      record.currentCell = cell;
+      record.latestResult = createCodeModePending(record.sessionId);
+      record.lastActivityAtMs = cell.startedAtMs;
+      this.publishObserverSnapshot();
+      this.emitCellProgress(record, cell);
+      this.scheduleCellProgress(record, cell);
+      void this.startCell(record, cell, input);
+      releaseAdmission?.();
+      releaseAdmission = undefined;
+
+      const pending = createCodeModePending(record.sessionId);
+      if (!shouldWait) {
+        return this.operationResult(pending, undefined, this.runningCellPresentation(cell));
+      }
+      const abort = (): void => {
+        this.fatalizeSession(record, cell, {
+          code: "cancellation",
+          message: "CodeMode Cell was cancelled",
+        });
+      };
+      if (signal?.aborted === true) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+      try {
+        const result = await cell.completion;
+        const retainedRecord = this.records.get(record.sessionId) ?? record;
+        return this.operationResult(
+          result,
+          this.takeMetadata(retainedRecord),
+          retainedRecord.latestPresentation,
+        );
+      } finally {
+        cell.acceptsUpdates = false;
+        signal?.removeEventListener("abort", abort);
+      }
     } finally {
-      cell.acceptsUpdates = false;
-      signal?.removeEventListener("abort", abort);
+      releaseAdmission?.();
     }
   }
 
@@ -435,6 +463,26 @@ export class CodeModeSessionCoordinator {
     }
     const result = record.latestResult ?? createCodeModePending(sessionId);
     return this.operationResult(result, this.takeMetadata(record), record.latestPresentation);
+  }
+
+  /** Lists all live Sessions with idle least-recently-used entries before running entries. */
+  listSessions(): readonly CodeModeListedSession[] {
+    const sessions = [...this.records.values()]
+      .filter((record): record is LiveCodeModeSession => record.state === "live")
+      .toSorted((left, right) => {
+        const stateOrder =
+          Number(left.currentCell !== undefined) - Number(right.currentCell !== undefined);
+        return stateOrder === 0 ? left.lastAccess - right.lastAccess : stateOrder;
+      })
+      .map((record) =>
+        Object.freeze({
+          sessionId: record.sessionId,
+          state: record.currentCell === undefined ? "idle" : "running",
+          cellCount: record.cellCount,
+          lastActivityAtMs: record.lastActivityAtMs,
+        } satisfies CodeModeListedSession),
+      );
+    return Object.freeze(sessions);
   }
 
   /** Returns immutable, non-authoritative facts for the ephemeral CodeMode Observer UI. */
@@ -537,7 +585,15 @@ export class CodeModeSessionCoordinator {
     await Promise.all(this.pendingProcessStops);
   }
 
-  private createLiveSession(): LocateCodeModeSessionResult {
+  private async acquireSessionAdmission(): Promise<() => void> {
+    const previousAdmission = this.admissionQueue;
+    const admission = Promise.withResolvers<void>();
+    this.admissionQueue = previousAdmission.then(() => admission.promise);
+    await previousAdmission;
+    return admission.resolve;
+  }
+
+  private async createLiveSession(): Promise<LocateCodeModeSessionResult> {
     const parsedSessionId = parseCodeModeSessionId(this.runtime.createSessionId());
     if (!parsedSessionId.ok) {
       return {
@@ -549,13 +605,67 @@ export class CodeModeSessionCoordinator {
       };
     }
     const sessionId = parsedSessionId.value;
-    this.evictTerminalRecords();
-    const liveCount = [...this.records.values()].filter((record) => record.state === "live").length;
-    if (liveCount >= this.options.maxSessions) {
+    if (this.shuttingDown) {
       const failure = createCodeModeFailure(
         sessionId,
-        "capacity",
-        "CodeMode Session capacity is exhausted",
+        "runtime",
+        "CodeMode coordinator is shutting down",
+      );
+      this.retainTerminalFailure(sessionId, failure);
+      return { failure };
+    }
+    this.evictTerminalRecords();
+    const liveRecords = [...this.records.values()].filter(
+      (record): record is LiveCodeModeSession => record.state === "live",
+    );
+    let reclaimedSessionId: CodeModeSessionId | undefined;
+    if (liveRecords.length >= this.options.maxSessions) {
+      const reclaimedRecord = liveRecords
+        .filter((record) => record.currentCell === undefined)
+        .toSorted((left, right) => left.lastAccess - right.lastAccess)[0];
+      if (reclaimedRecord === undefined) {
+        const failure = createCodeModeFailure(
+          sessionId,
+          "capacity",
+          "CodeMode Session capacity is exhausted",
+        );
+        this.retainTerminalFailure(sessionId, failure);
+        return { failure };
+      }
+      reclaimedSessionId = reclaimedRecord.sessionId;
+      reclaimedRecord.lastActivityAtMs = this.runtime.now();
+      this.touch(reclaimedRecord);
+      if (reclaimedRecord.latestPresentation !== undefined) {
+        reclaimedRecord.latestPresentation = {
+          ...reclaimedRecord.latestPresentation,
+          session_state: "closed",
+        };
+      }
+      this.replaceWithTerminal(
+        reclaimedRecord,
+        createCodeModeFailure(
+          reclaimedRecord.sessionId,
+          "eviction",
+          "CodeMode Session was reclaimed to free capacity.",
+        ),
+      );
+      try {
+        await this.stopWorker(reclaimedRecord.worker, "shutdown");
+      } catch (cause) {
+        const message =
+          cause instanceof Error
+            ? `CodeMode Session reclamation failed: ${cause.message}`
+            : "CodeMode Session reclamation failed: Deno process did not stop cleanly";
+        const failure = createCodeModeFailure(sessionId, "runtime", message);
+        this.retainTerminalFailure(sessionId, failure);
+        return { failure };
+      }
+    }
+    if (this.shuttingDown) {
+      const failure = createCodeModeFailure(
+        sessionId,
+        "runtime",
+        "CodeMode coordinator is shutting down",
       );
       this.retainTerminalFailure(sessionId, failure);
       return { failure };
@@ -585,22 +695,22 @@ export class CodeModeSessionCoordinator {
       cellCount: 0,
     };
     this.records.set(sessionId, record);
-    return { record, failure: createCodeModePending(sessionId) };
+    return reclaimedSessionId === undefined ? { record } : { record, reclaimedSessionId };
   }
 
   private findSession(sessionId: CodeModeSessionId): LocateCodeModeSessionResult {
     const record = this.records.get(sessionId);
     return record === undefined
       ? { failure: createCodeModeFailure(sessionId, "unknown", "Unknown CodeMode Session") }
-      : { record, failure: createCodeModePending(sessionId) };
+      : { record };
   }
 
   private createActiveCell(
     record: LiveCodeModeSession,
-    options: { readonly onUpdate?: (update: CodeModeNestedToolUpdate) => void },
+    options: CreateActiveCodeModeCellOptions,
   ): ActiveCodeModeCell {
     const completion = Promise.withResolvers<CodeModeResult>();
-    const cell: ActiveCodeModeCell = {
+    const cellBase: Omit<ActiveCodeModeCell, "reclaimedSessionId"> = {
       cellId: `cell-${++this.cellSequence}`,
       ordinal: ++record.cellCount,
       startedAtMs: this.runtime.now(),
@@ -617,6 +727,10 @@ export class CodeModeSessionCoordinator {
       acceptsUpdates: options.onUpdate !== undefined,
       settled: false,
     };
+    const cell: ActiveCodeModeCell =
+      options.reclaimedSessionId === undefined
+        ? cellBase
+        : { ...cellBase, reclaimedSessionId: options.reclaimedSessionId };
     if (options.onUpdate !== undefined) this.activeUpdateCallbacks.set(cell, options.onUpdate);
     return cell;
   }
@@ -1056,18 +1170,22 @@ export class CodeModeSessionCoordinator {
   ): void {
     if (!this.isCurrentCell(record, cell)) return;
     this.clearCellResources(cell);
-    const presentation = this.settledCellPresentation(cell, result, "live");
+    const retainedResult =
+      result.result === "success" && cell.reclaimedSessionId !== undefined
+        ? { ...result, reclaimedSessionId: cell.reclaimedSessionId }
+        : result;
+    const presentation = this.settledCellPresentation(cell, retainedResult, "live");
     const settledAtMs = this.runtime.now();
-    record.latestResult = result;
+    record.latestResult = retainedResult;
     record.latestPresentation = presentation;
-    record.lastCell = this.observeSettledCell(cell, result, settledAtMs);
+    record.lastCell = this.observeSettledCell(cell, retainedResult, settledAtMs);
     record.lastActivityAtMs = settledAtMs;
     const metadata = finalizeCodeModeMetadata(cell.metadata);
     if (metadata === undefined) delete record.availableMetadata;
     else record.availableMetadata = metadata;
     delete record.currentCell;
     cell.settled = true;
-    cell.resolveCompletion(result);
+    cell.resolveCompletion(retainedResult);
     this.touch(record);
     this.publishObserverSnapshot();
   }

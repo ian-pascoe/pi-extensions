@@ -1035,6 +1035,112 @@ describe("CodeModeSessionCoordinator", () => {
     ).toEqual(result.result);
   }, 30_000);
 
+  test("reclaims the least-recently-used idle Session and retains its eviction result", async () => {
+    let nowMs = 1_000;
+    const coordinator = createCoordinator({
+      maxSessions: 2,
+      ids: ["session-1", "session-2", "session-3"],
+      now: () => nowMs,
+    });
+
+    await coordinator.execute({ script: "1", wait: true });
+    nowMs = 2_000;
+    await coordinator.execute({ script: "2", wait: true });
+    coordinator.result("session-1");
+
+    expect(coordinator.listSessions()).toEqual([
+      { sessionId: "session-2", state: "idle", cellCount: 1, lastActivityAtMs: 2_000 },
+      { sessionId: "session-1", state: "idle", cellCount: 1, lastActivityAtMs: 1_000 },
+    ]);
+
+    nowMs = 3_000;
+    const replacement = await coordinator.execute({ script: "3", wait: true });
+    expect(replacement.result).toEqual({
+      result: "success",
+      sessionId: "session-3",
+      data: 3,
+      reclaimedSessionId: "session-2",
+    });
+    const reclaimed = coordinator.result("session-2");
+    expect(reclaimed.result).toEqual({
+      result: "failed",
+      sessionId: "session-2",
+      error: {
+        code: "eviction",
+        message: "CodeMode Session was reclaimed to free capacity.",
+      },
+    });
+    expect(reclaimed.presentation).toMatchObject({ session_state: "closed" });
+    expect(coordinator.result("session-3").result).toEqual(replacement.result);
+    expect(coordinator.inspectObserverSnapshot().sessions).toContainEqual(
+      expect.objectContaining({
+        sessionId: "session-2",
+        lifecycle: "terminal",
+        terminal_error_code: "eviction",
+      }),
+    );
+    expect(coordinator.listSessions()).toEqual([
+      { sessionId: "session-1", state: "idle", cellCount: 1, lastActivityAtMs: 1_000 },
+      { sessionId: "session-3", state: "idle", cellCount: 1, lastActivityAtMs: 3_000 },
+    ]);
+  }, 30_000);
+
+  test("lists idle Sessions before running Sessions without refreshing recency", async () => {
+    const coordinator = createCoordinator({
+      maxSessions: 3,
+      ids: ["session-1", "session-2", "session-3", "session-4"],
+    });
+
+    await coordinator.execute({ script: "1", wait: true });
+    await coordinator.execute({ script: "await new Promise(() => {})", wait: false });
+    await coordinator.execute({ script: "3", wait: true });
+
+    expect(coordinator.listSessions()).toEqual([
+      expect.objectContaining({ sessionId: "session-1", state: "idle", cellCount: 1 }),
+      expect.objectContaining({ sessionId: "session-3", state: "idle", cellCount: 1 }),
+      expect.objectContaining({ sessionId: "session-2", state: "running", cellCount: 1 }),
+    ]);
+    coordinator.listSessions();
+    coordinator.listSessions();
+
+    const replacement = await coordinator.execute({ script: "4", wait: true });
+    expect(replacement.result).toMatchObject({
+      result: "success",
+      sessionId: "session-4",
+      reclaimedSessionId: "session-1",
+    });
+  }, 30_000);
+
+  test("serializes concurrent admissions while preserving the hard process bound", async () => {
+    const coordinator = createCoordinator({
+      maxSessions: 1,
+      ids: ["session-1", "session-2", "session-3"],
+    });
+    await coordinator.execute({ script: "1", wait: true });
+
+    const [replacement, concurrent] = await Promise.all([
+      coordinator.execute({ script: "await new Promise(() => {})", wait: false }),
+      coordinator.execute({ script: "3", wait: false }),
+    ]);
+
+    expect(replacement.result).toEqual({
+      result: "pending",
+      sessionId: "session-2",
+    });
+    expect(concurrent.result).toMatchObject({
+      result: "failed",
+      sessionId: "session-3",
+      error: { code: "capacity" },
+    });
+    expect(coordinator.listSessions()).toEqual([
+      expect.objectContaining({ sessionId: "session-2", state: "running" }),
+    ]);
+    expect(coordinator.result("session-1").result).toMatchObject({
+      result: "failed",
+      error: { code: "eviction" },
+    });
+  }, 30_000);
+
   test("enforces busy, unknown, capacity, cancellation, and the 64-record terminal LRU", async () => {
     const toolStarted = Promise.withResolvers<void>();
     const toolReleased = Promise.withResolvers<void>();

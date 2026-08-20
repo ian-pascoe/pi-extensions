@@ -21,8 +21,10 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   CodeModeResultDetailsSchema,
   CodeModeResultSchema,
+  CodeModeSessionsResultSchema,
   type CodeModeJsonValue,
   type CodeModeResult,
+  type CodeModeSessionsResult,
 } from "../src/codemode-tool-contract.js";
 import piCodeModeExtension from "../src/pi-codemode-extension.js";
 
@@ -240,6 +242,16 @@ function codeModeResult(result: AgentToolResult<unknown>): CodeModeResult {
   return publicResult;
 }
 
+function codeModeSessionsResult(result: AgentToolResult<unknown>): CodeModeSessionsResult {
+  if (!Value.Check(CodeModeSessionsResultSchema, result.details)) {
+    throw new Error(
+      `Pi CodeMode extension test: invalid Session list ${JSON.stringify(result.details)}`,
+    );
+  }
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
+  return result.details;
+}
+
 async function pollCodeModeSession(
   session: AgentSession,
   sessionId: string,
@@ -313,6 +325,7 @@ describe("Pi CodeMode extension", () => {
       "codemode_execute",
       "codemode_result",
       "codemode_cancel",
+      "codemode_sessions",
     ]);
     const executeDefinition = fixture.session.getToolDefinition("codemode_execute");
     expect(executeDefinition?.renderCall).toEqual(expect.any(Function));
@@ -518,7 +531,12 @@ describe("Pi CodeMode extension", () => {
     expect(fixture.session.getActiveToolNames()).not.toContain("dynamic_later");
     expect(executeDescription(fixture.session)).not.toContain('readonly ["dynamic_later"]');
     expect(fixture.session.getActiveToolNames()).toEqual(
-      expect.arrayContaining(["codemode_execute", "codemode_result", "codemode_cancel"]),
+      expect.arrayContaining([
+        "codemode_execute",
+        "codemode_result",
+        "codemode_cancel",
+        "codemode_sessions",
+      ]),
     );
 
     const hidden = await executeTool(fixture.session, "codemode_execute", {
@@ -624,6 +642,41 @@ describe("Pi CodeMode extension", () => {
     expect(terminated.usage).toEqual(nestedUsage(2));
   }, 30_000);
 
+  test("lists live Sessions and reclaims the least-recently-used idle Session", async () => {
+    const fixture = await createCodeModeExtensionFixture({ maxSessions: 2 });
+    const first = codeModeResult(
+      await executeTool(fixture.session, "codemode_execute", { script: "1", wait: true }),
+    );
+    const second = codeModeResult(
+      await executeTool(fixture.session, "codemode_execute", { script: "2", wait: true }),
+    );
+    await executeTool(fixture.session, "codemode_result", { sessionId: first.sessionId });
+
+    const listed = codeModeSessionsResult(
+      await executeTool(fixture.session, "codemode_sessions", {}),
+    );
+    expect(listed.sessions).toMatchObject([
+      { sessionId: second.sessionId, state: "idle", cellCount: 1 },
+      { sessionId: first.sessionId, state: "idle", cellCount: 1 },
+    ]);
+
+    const replacement = codeModeResult(
+      await executeTool(fixture.session, "codemode_execute", { script: "3", wait: true }),
+    );
+    expect(replacement).toMatchObject({
+      result: "success",
+      data: 3,
+      reclaimedSessionId: second.sessionId,
+    });
+    expect(
+      codeModeResult(
+        await executeTool(fixture.session, "codemode_result", {
+          sessionId: second.sessionId,
+        }),
+      ),
+    ).toMatchObject({ result: "failed", error: { code: "eviction" } });
+  }, 30_000);
+
   test("tears down the prior generation on reload and restores the active-set method on shutdown", async () => {
     const fixture = await createCodeModeExtensionFixture();
     const hanging = codeModeResult(
@@ -646,6 +699,7 @@ describe("Pi CodeMode extension", () => {
       "codemode_execute",
       "codemode_result",
       "codemode_cancel",
+      "codemode_sessions",
     ]);
     const stale = await executeTool(fixture.session, "codemode_result", {
       sessionId: hanging.sessionId,
