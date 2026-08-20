@@ -104,6 +104,33 @@ importers:
         specifier: 3.16.1
         version: 3.16.1(@aws-sdk/credential-provider-node@3.972.80)(@napi-rs/canvas@0.1.100)(@smithy/signature-v4@5.7.0)(@types/node@26.2.0)(@types/react@19.2.18)(debug@4.4.3(supports-color@8.1.1))(react-dom@19.2.8(react@18.3.1))(react@18.3.1)(supports-color@8.1.1)(ws@8.21.3)
 
+  packages/pi-codemode:
+    dependencies:
+      '@earendil-works/pi-agent-core':
+        specifier: '*'
+        version: 0.84.2(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      '@earendil-works/pi-ai':
+        specifier: '*'
+        version: 0.84.2(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.84.2(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.4.3))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)
+      '@earendil-works/pi-tui':
+        specifier: '*'
+        version: 0.84.2
+      deno:
+        specifier: 2.9.5
+        version: 2.9.5
+      minimatch:
+        specifier: ^10.2.5
+        version: 10.2.6
+      typebox:
+        specifier: '*'
+        version: 1.3.14
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+
   packages/pi-dap:
     dependencies:
       '@earendil-works/pi-coding-agent':
@@ -533,6 +560,38 @@ packages:
   '@clack/prompts@1.7.0':
     resolution: {integrity: sha512-y7/yvZ2TPAnR9+jnc00klvNNLkJiXFFrQA/hlLCcxA9a2A4zQIOimyFQ9XfwYKiGD1fb5GY8vbKIIgO8d5Tb2A==}
     engines: {node: '>= 20.12.0'}
+
+  '@deno/darwin-arm64@2.9.5':
+    resolution: {integrity: sha512-SX98qSdBT1lw9x6NwGwx2xIayl1kRimdRnFohYlJ6nt3mLKzTKHHKQwQs5D2pEY7mbUGGbYe9brM2kfN75pPkg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@deno/darwin-x64@2.9.5':
+    resolution: {integrity: sha512-gbdlxWZuAZFiJiZtTT00Mv/aC7f/31+pyqJGQKlZr5X33WeTo5B0GG+efcX3P1UZceRKHuPEAQ1B/M2oRt8r9Q==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@deno/linux-arm64-glibc@2.9.5':
+    resolution: {integrity: sha512-IuYjsz9PGl7CJcNXMuN27KNDB8Q40brK3SG3l+TXMDVW61ZKwcn0fQHBHnXFiiygEwI8by/fKnASEluhZB1atw==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@deno/linux-x64-glibc@2.9.5':
+    resolution: {integrity: sha512-TDqcnoLe3jlgqYEQm7H7MK6q0JOth+o8iSZzknRODnVkJfPiNnjVn1M1Zc6vnp+ipkyb6Av1/CUlHgHtlq59Gw==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@deno/win32-arm64@2.9.5':
+    resolution: {integrity: sha512-tTPrE/4SX7uaC8nJW47iNnibtjzk1y4zoiYjBBHE34vdkbb6LHopqH68BxyT61HZdfqXzOTEYjDVHhtmVZFy+w==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@deno/win32-x64@2.9.5':
+    resolution: {integrity: sha512-LkcERsH0olOgevg9L9eootSr1U8ydyfnX1bS3mFqU+lGBeTYtlec5b/QF473WUOGVgPlWECrkxi4As5kEaFOzg==}
+    cpu: [x64]
+    os: [win32]
 
   '@earendil-works/pi-agent-core@0.84.2':
     resolution: {integrity: sha512-8Pn3wSCxj0cfo5I6jxQYVB/3uuQRmHhAlEclyjqpOuMEdQMIODHizRogv56FLdbU+dTiGnybeHQ2N+sV1/L2YA==}
@@ -2316,6 +2375,10 @@ packages:
   delayed-stream@1.0.0:
     resolution: {integrity: sha512-ZySD7Nf91aLB0RxL4KGrKHBXl7Eds1DAmEdcoVawXnLD7SDhpNgtuII2aAkg7a7QS41jxPSZ17p4VdGnMHk3MQ==}
     engines: {node: '>=0.4.0'}
+
+  deno@2.9.5:
+    resolution: {integrity: sha512-Jt/AcJiErtUW9krGwlwUDsm1coNtmfthiQ4JtSCF+JNkqohbeiJoRVkCr4FA4WQstyHuSJaON6PHCin0UCtlLg==}
+    hasBin: true
 
   depd@2.0.0:
     resolution: {integrity: sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==}
@@ -4151,6 +4214,11 @@ packages:
     resolution: {integrity: sha512-nAYYwfY3qnzX30IkA6AQZjVbtK6duGontcQm1WSG1MD94YLqK0515GNApXkoxKOWMusVssAHWLh9SeaoefYFGw==}
     engines: {node: '>= 0.4'}
 
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -4947,6 +5015,24 @@ snapshots:
       fast-string-width: 3.0.2
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
+
+  '@deno/darwin-arm64@2.9.5':
+    optional: true
+
+  '@deno/darwin-x64@2.9.5':
+    optional: true
+
+  '@deno/linux-arm64-glibc@2.9.5':
+    optional: true
+
+  '@deno/linux-x64-glibc@2.9.5':
+    optional: true
+
+  '@deno/win32-arm64@2.9.5':
+    optional: true
+
+  '@deno/win32-x64@2.9.5':
+    optional: true
 
   '@earendil-works/pi-agent-core@0.84.2(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@3.25.76))(supports-color@8.1.1)(ws@8.21.3)(zod@4.4.3)':
     dependencies:
@@ -6636,6 +6722,15 @@ snapshots:
       quickjs-wasi: 0.0.1
 
   delayed-stream@1.0.0: {}
+
+  deno@2.9.5:
+    optionalDependencies:
+      '@deno/darwin-arm64': 2.9.5
+      '@deno/darwin-x64': 2.9.5
+      '@deno/linux-arm64-glibc': 2.9.5
+      '@deno/linux-x64-glibc': 2.9.5
+      '@deno/win32-arm64': 2.9.5
+      '@deno/win32-x64': 2.9.5
 
   depd@2.0.0: {}
 
@@ -8839,6 +8934,8 @@ snapshots:
       call-bound: 1.0.4
       es-errors: 1.3.0
       is-typed-array: 1.1.15
+
+  typescript@6.0.3: {}
 
   typescript@7.0.2:
     optionalDependencies:

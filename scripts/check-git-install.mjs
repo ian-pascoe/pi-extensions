@@ -10,6 +10,7 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
+import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
 import { readJsonDocument, rootPiManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -86,8 +87,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   );
   const configuredPaths = manifest.pi.extensions;
   assertGitInstallCondition(
-    configuredPaths.length === 10,
-    "temporary root manifest does not contain ten extension paths",
+    configuredPaths.length === 11,
+    "temporary root manifest does not contain eleven extension paths",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
@@ -98,13 +99,17 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     `temporary source entrypoints failed to load: ${JSON.stringify(result.errors)}`,
   );
   assertGitInstallCondition(
-    result.extensions.length === 10,
-    "temporary install did not load ten extensions",
+    result.extensions.length === 11,
+    "temporary install did not load eleven extensions",
   );
   assertGitInstallCondition(
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===
       JSON.stringify(entrypoints),
     "temporary install loaded an unexpected extension path order",
+  );
+  await assertCodeModeDenoProcessSmoke(
+    resolve(installDirectory, "packages/pi-codemode/src/codemode-worker.ts"),
+    "production Git copy",
   );
 }
 

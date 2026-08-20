@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -178,6 +179,47 @@ describe("LspServerClient", () => {
     await expect(client.synchronizeDocument(invalidPath, "typescript")).rejects.toMatchObject({
       kind: "invalid_utf8",
     });
+  });
+
+  test("synchronizes concurrent requests for one document exactly once", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "concurrent.ts");
+    await writeFile(filePath, "export const value = 42;\n");
+    const client = await startFakeServer(directory);
+
+    const documents = await Promise.all([
+      client.synchronizeDocument(filePath, "typescript"),
+      client.synchronizeDocument(filePath, "typescript"),
+      client.synchronizeDocument(filePath, "typescript"),
+    ]);
+    const state = await client.request<FakeServerState>("fake/state", {});
+
+    expect(documents.map(({ version }) => version)).toEqual([1, 1, 1]);
+    expect(state.opened).toHaveLength(1);
+    expect(state.changed).toHaveLength(0);
+  });
+
+  test("re-reads a document after a concurrent synchronization failure", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "recovered.ts");
+    await writeFile(filePath, Buffer.from([0xc3, 0x28]));
+    const client = await startFakeServer(directory);
+
+    const failed = client.synchronizeDocument(filePath, "typescript");
+    void failed.catch(() => {
+      writeFileSync(filePath, "export const recovered = true;\n");
+    });
+    const recovered = client.synchronizeDocument(filePath, "typescript");
+
+    await expect(failed).rejects.toMatchObject({ kind: "invalid_utf8" });
+    await expect(recovered).resolves.toMatchObject({
+      languageId: "typescript",
+      text: "export const recovered = true;\n",
+      version: 1,
+    });
+    const state = await client.request<FakeServerState>("fake/state", {});
+
+    expect(state.opened).toHaveLength(1);
   });
 
   test("bridges AbortSignal cancellation and keeps the latest 1 MB of stderr", async () => {

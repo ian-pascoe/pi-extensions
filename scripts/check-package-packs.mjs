@@ -10,6 +10,7 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
+import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
 import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -54,8 +55,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 10,
-    `expected 10 workspace manifests, found ${manifests.length}`,
+    manifests.length === 11,
+    `expected 11 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -121,6 +122,17 @@ function validatePackedManifest(sourceManifest, packedManifest) {
       );
     }
   }
+  if (packageName === "@ian-pascoe/pi-codemode") {
+    assertPackCondition(
+      packedManifest.dependencies?.deno === "2.9.5" &&
+        packedManifest.dependencies?.typescript === "6.0.3",
+      `${packageName} does not pin its Deno-native TypeScript runtime`,
+    );
+    assertPackCondition(
+      !Object.keys(packedManifest.dependencies ?? {}).some((name) => name.includes("quickjs")),
+      `${packageName} still depends on QuickJS`,
+    );
+  }
 }
 
 async function assertTarballLoads(packageName, tarballPath) {
@@ -143,12 +155,12 @@ async function assertTarballLoads(packageName, tarballPath) {
       ],
       { cwd: installDirectory },
     );
-    const entrypoint = resolve(
+    const installedPackageDirectory = resolve(
       installDirectory,
       "node_modules",
       ...packageName.split("/"),
-      "src/index.ts",
     );
+    const entrypoint = resolve(installedPackageDirectory, "src/index.ts");
     const result = await discoverAndLoadExtensions([entrypoint], installDirectory, agentDirectory);
     assertPackCondition(
       result.errors.length === 0,
@@ -162,6 +174,12 @@ async function assertTarballLoads(packageName, tarballPath) {
       result.extensions[0]?.resolvedPath === entrypoint,
       `${packageName} resolved the wrong installed entrypoint`,
     );
+    if (packageName === "@ian-pascoe/pi-codemode") {
+      await assertCodeModeDenoProcessSmoke(
+        resolve(installedPackageDirectory, "src/codemode-worker.ts"),
+        "installed package tarball",
+      );
+    }
   } finally {
     await Promise.all([
       rm(installDirectory, { recursive: true, force: true }),
@@ -201,4 +219,4 @@ try {
   await rm(packDirectory, { recursive: true, force: true });
 }
 
-console.log("Validated ten package tarballs and installed source entrypoints.");
+console.log("Validated eleven package tarballs and installed source entrypoints.");

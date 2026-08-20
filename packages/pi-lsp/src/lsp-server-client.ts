@@ -268,6 +268,7 @@ export class LspServerClient {
   private positionEncodingValue: LspPositionEncoding = "utf-16";
   private textDocumentSyncKind: TextDocumentSyncKind = TextDocumentSyncKind.None;
   private readonly openDocuments = new Map<string, OpenDocumentState>();
+  private readonly documentSynchronizations = new Map<string, Promise<LspSynchronizedDocument>>();
   private readonly pushDiagnostics = new Map<string, PushDiagnosticsState>();
   private readonly pullDiagnostics = new Map<string, PullDiagnosticsState>();
   private readonly dynamicRegistrations = new Map<string, Registration>();
@@ -525,8 +526,33 @@ export class LspServerClient {
     filePath: string,
     languageId: string,
   ): Promise<LspSynchronizedDocument> {
-    this.throwIfUnavailable();
     const absolutePath = resolve(filePath);
+    const uri = pathToFileURL(absolutePath).href;
+    const activeSynchronization = this.documentSynchronizations.get(uri);
+    const waitForActiveSynchronization =
+      activeSynchronization?.then(
+        () => undefined,
+        () => undefined,
+      ) ?? Promise.resolve();
+    const synchronization = waitForActiveSynchronization.then(() =>
+      this.synchronizeDocumentOnce(absolutePath, uri, languageId),
+    );
+    this.documentSynchronizations.set(uri, synchronization);
+    try {
+      return await synchronization;
+    } finally {
+      if (this.documentSynchronizations.get(uri) === synchronization) {
+        this.documentSynchronizations.delete(uri);
+      }
+    }
+  }
+
+  private async synchronizeDocumentOnce(
+    absolutePath: string,
+    uri: string,
+    languageId: string,
+  ): Promise<LspSynchronizedDocument> {
+    this.throwIfUnavailable();
     let text: string;
     try {
       const bytes = await readFile(absolutePath);
@@ -544,8 +570,12 @@ export class LspServerClient {
       throw cause;
     }
 
-    const uri = pathToFileURL(absolutePath).href;
     const existing = this.openDocuments.get(uri);
+    if (existing?.text === text && existing.languageId === languageId) {
+      this.openDocuments.delete(uri);
+      this.openDocuments.set(uri, existing);
+      return existing;
+    }
     const next: OpenDocumentState = {
       filePath: absolutePath,
       uri,
