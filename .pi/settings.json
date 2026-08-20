@@ -31,6 +31,62 @@
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts"
       ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-bible-verses",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-dap",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-formatter",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-git-checkpoints",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-git-status-widget",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-lsp",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-minimal-subagents",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-tps-tracker",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
     }
   ],
   "formatter": {
@@ -61,7 +117,11 @@
             ".css"
           ]
         },
-        "rootMarkers": [".oxfmtrc.json", "package.json", ".git"]
+        "rootMarkers": [
+          ".oxfmtrc.json",
+          "package.json",
+          ".git"
+        ]
       }
     }
   },
@@ -103,41 +163,76 @@
     "servers": {
       "typescript": {
         "command": "pnpm",
-        "args": ["exec", "tsc", "--lsp", "--stdio"],
+        "args": [
+          "exec",
+          "tsc",
+          "--lsp",
+          "--stdio"
+        ],
         "languages": [
           {
-            "extensions": [".ts", ".mts", ".cts"],
+            "extensions": [
+              ".ts",
+              ".mts",
+              ".cts"
+            ],
             "languageId": "typescript"
           },
           {
-            "extensions": [".tsx"],
+            "extensions": [
+              ".tsx"
+            ],
             "languageId": "typescriptreact"
           }
         ],
-        "rootMarkers": ["tsconfig.json", "package.json", ".git"]
+        "rootMarkers": [
+          "tsconfig.json",
+          "package.json",
+          ".git"
+        ]
       },
       "oxlint": {
         "command": "pnpm",
-        "args": ["exec", "oxlint", "--lsp"],
+        "args": [
+          "exec",
+          "oxlint",
+          "--lsp"
+        ],
         "languages": [
           {
-            "extensions": [".js", ".mjs", ".cjs"],
+            "extensions": [
+              ".js",
+              ".mjs",
+              ".cjs"
+            ],
             "languageId": "javascript"
           },
           {
-            "extensions": [".jsx"],
+            "extensions": [
+              ".jsx"
+            ],
             "languageId": "javascriptreact"
           },
           {
-            "extensions": [".ts", ".mts", ".cts"],
+            "extensions": [
+              ".ts",
+              ".mts",
+              ".cts"
+            ],
             "languageId": "typescript"
           },
           {
-            "extensions": [".tsx"],
+            "extensions": [
+              ".tsx"
+            ],
             "languageId": "typescriptreact"
           }
         ],
-        "rootMarkers": [".oxlintrc.json", "package.json", ".git"]
+        "rootMarkers": [
+          ".oxlintrc.json",
+          "package.json",
+          ".git"
+        ]
       }
     }
   }
