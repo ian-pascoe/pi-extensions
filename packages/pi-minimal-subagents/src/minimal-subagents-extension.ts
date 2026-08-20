@@ -99,6 +99,7 @@ function createRootConversationEndpoint(
         },
       );
     },
+    isIdle: () => context.isIdle(),
     hasDeliveryEvidence: (sourceAgentId, sourceTurnId, deliveryId) =>
       findDeliveryEvidence(
         context.sessionManager.getBranch(),

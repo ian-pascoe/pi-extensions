@@ -520,6 +520,8 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     private readonly modelById: ReadonlyMap<string, Model<any>>,
     onSessionActivity?: () => void,
   ) {
+    // Keep this child-only; AgentSession.setSteeringMode would overwrite the user's global setting.
+    session.agent.steeringMode = "all";
     this.unsubscribe = session.subscribe((event) => {
       if (event.type !== "entry_appended") return;
       if (

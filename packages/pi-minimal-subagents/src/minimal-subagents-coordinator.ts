@@ -110,6 +110,24 @@ function terminalWaitResult(result: TurnResult, messages: WaitMessageResult[] = 
   return messages.length === 0 ? terminal : { ...terminal, messages: structuredClone(messages) };
 }
 
+function combineCoordinatorMessages(messages: readonly CoordinatorMessage[]): CoordinatorMessage {
+  const latest = messages.at(-1);
+  if (!latest) throw new Error("Minimal subagents message batch must not be empty");
+  if (messages.length === 1) return latest;
+  const references = messages.flatMap(
+    (message) =>
+      message.details.messages ??
+      (message.details.delivery_id
+        ? [{ delivery_id: message.details.delivery_id, message_id: message.details.message_id }]
+        : []),
+  );
+  return {
+    ...latest,
+    content: messages.map((message) => message.content).join("\n\n"),
+    details: references.length > 0 ? { ...latest.details, messages: references } : latest.details,
+  };
+}
+
 /** One root-owned coordinator for persistent nested Pi child sessions. */
 export class MinimalSubagentsCoordinator {
   private readonly agents = new Map<string, PersistedAgent>();
@@ -994,6 +1012,7 @@ export class MinimalSubagentsCoordinator {
     if (this.automaticDeliveryKeys.has(deliveryKey)) return;
     this.automaticDeliveryKeys.add(deliveryKey);
     const graceMs = this.deliveryGraceMs();
+    let batchedCoordinationDeliveries: PersistedCoordinationDelivery[] = [];
     try {
       await this.enqueueRecipientDelivery(delivery.destination_agent_id, async () => {
         if (delivery.destination_agent_id !== "root") {
@@ -1026,11 +1045,28 @@ export class MinimalSubagentsCoordinator {
             usage: result.usage,
           },
         };
-        await this.deliverToRecipient(delivery.destination_agent_id, message, () =>
-          this.isTerminalDeliveryCurrent(delivery),
+        batchedCoordinationDeliveries = this.takePendingParentDeliveryBatch(
+          deliveryKey,
+          delivery.destination_agent_id,
+        );
+        for (const batchedDelivery of batchedCoordinationDeliveries) {
+          this.waitHandedDeliveryIds.add(batchedDelivery.delivery_id);
+        }
+        await this.deliverToRecipient(
+          delivery.destination_agent_id,
+          combineCoordinatorMessages([
+            ...batchedCoordinationDeliveries.map((item) => item.message),
+            message,
+          ]),
+          () =>
+            this.isTerminalDeliveryCurrent(delivery) &&
+            batchedCoordinationDeliveries.every((item) => this.isCoordinationDeliveryCurrent(item)),
         );
       });
     } catch (error) {
+      for (const batchedDelivery of batchedCoordinationDeliveries) {
+        this.waitHandedDeliveryIds.delete(batchedDelivery.delivery_id);
+      }
       if (!this.isTerminalDeliveryCurrent(delivery)) return;
       const deliveryError = error instanceof Error ? error.message : String(error);
       this.deliveryLedger = setTerminalDeliveryError(
@@ -1765,6 +1801,7 @@ export class MinimalSubagentsCoordinator {
     )
       return;
 
+    let automaticBatch = [delivery];
     const operation = this.enqueueRecipientDelivery(targetId, async () => {
       if (targetId !== "root") {
         await this.ensureRuntime(this.requireUsableAgent(targetId, "message"));
@@ -1786,25 +1823,63 @@ export class MinimalSubagentsCoordinator {
       pending.cancelGrace?.();
       pending.cancelGrace = undefined;
       if (!this.acceptingOperations || pending.claimed || turnClaimed()) return;
+      while (
+        targetId === "root" &&
+        !this.dependencies.root.isIdle() &&
+        !findTerminalDelivery(
+          this.deliveryLedger,
+          message.details.source_agent_id,
+          message.details.source_turn_id,
+        ) &&
+        this.acceptingOperations &&
+        !pending.claimed &&
+        !turnClaimed()
+      ) {
+        await Promise.race([
+          pending.claimPromise,
+          new Promise((resolve) => setTimeout(resolve, 25)),
+        ]);
+      }
       if (!this.acceptingOperations || pending.claimed || turnClaimed()) return;
-      this.removePendingParentMessage(key, pending);
-      this.waitHandedDeliveryIds.add(delivery.delivery_id);
-      await this.deliverToRecipient(targetId, message, () =>
-        this.isCoordinationDeliveryCurrent(delivery),
+      const terminalDelivery = findTerminalDelivery(
+        this.deliveryLedger,
+        message.details.source_agent_id,
+        message.details.source_turn_id,
+      );
+      if (
+        terminalDelivery?.destination_agent_id === targetId &&
+        terminalDelivery.path === "message"
+      ) {
+        for (const queued of this.pendingParentMessages.get(key) ?? []) {
+          queued.cancelGrace?.();
+          queued.releaseClaim();
+        }
+        return;
+      }
+      automaticBatch = this.takePendingParentDeliveryBatch(key, targetId);
+      for (const batchedDelivery of automaticBatch) {
+        this.waitHandedDeliveryIds.add(batchedDelivery.delivery_id);
+      }
+      if (automaticBatch.length === 0) return;
+      await this.deliverToRecipient(
+        targetId,
+        combineCoordinatorMessages(automaticBatch.map((item) => item.message)),
+        () => automaticBatch.every((item) => this.isCoordinationDeliveryCurrent(item)),
       );
     });
     void operation.catch((cause) => {
-      this.removePendingParentMessage(key, pending);
-      this.waitHandedDeliveryIds.delete(delivery.delivery_id);
-      if (!this.isCoordinationDeliveryCurrent(delivery)) return;
       const deliveryError = cause instanceof Error ? cause.message : String(cause);
-      this.deliveryLedger = setCoordinationDeliveryError(
-        this.deliveryLedger,
-        delivery.delivery_id,
-        deliveryError,
-      );
-      const current = findCoordinationDelivery(this.deliveryLedger, delivery.delivery_id);
-      if (current) this.persistCoordinationDeliveryState(current);
+      for (const batchedDelivery of automaticBatch) {
+        this.waitHandedDeliveryIds.delete(batchedDelivery.delivery_id);
+        if (!this.isCoordinationDeliveryCurrent(batchedDelivery)) continue;
+        this.deliveryLedger = setCoordinationDeliveryError(
+          this.deliveryLedger,
+          batchedDelivery.delivery_id,
+          deliveryError,
+        );
+        const current = findCoordinationDelivery(this.deliveryLedger, batchedDelivery.delivery_id);
+        if (current) this.persistCoordinationDeliveryState(current);
+      }
       this.dependencies.notify?.({
         type: "failure",
         agentId: message.details.source_agent_id,
@@ -1812,6 +1887,25 @@ export class MinimalSubagentsCoordinator {
           cause instanceof Error ? cause.message : String(cause)
         }`,
       });
+    });
+  }
+
+  private takePendingParentDeliveryBatch(
+    key: string,
+    targetId: string,
+  ): PersistedCoordinationDelivery[] {
+    const batch = (this.pendingParentMessages.get(key) ?? []).filter(
+      (pending) => pending.destinationAgentId === targetId && !pending.claimed,
+    );
+    for (const pending of batch) {
+      pending.claimed = true;
+      pending.cancelGrace?.();
+      pending.releaseClaim();
+      this.removePendingParentMessage(key, pending);
+    }
+    return batch.flatMap((pending) => {
+      const delivery = findCoordinationDelivery(this.deliveryLedger, pending.deliveryId);
+      return delivery ? [delivery] : [];
     });
   }
 

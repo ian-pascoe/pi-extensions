@@ -188,6 +188,7 @@ export interface CoordinatorMessage {
     status?: TurnStatus;
     elapsed_ms?: number;
     usage?: Usage;
+    messages?: Array<{ delivery_id?: string; message_id?: string }>;
   };
 }
 
@@ -248,6 +249,8 @@ export interface AgentSessionFactory {
 export interface RootConversationEndpoint {
   /** Queue one typed coordinator message into the root conversation. */
   queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
+  /** Whether a coordinator message can start immediately instead of joining Pi's steer queue. */
+  isIdle(): boolean;
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
 }
 

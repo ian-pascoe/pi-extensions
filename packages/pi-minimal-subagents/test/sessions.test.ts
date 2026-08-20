@@ -550,6 +550,19 @@ describe("minimal subagent sessions", () => {
     expect(findDeliveryEvidence([coordinationEvidence], "child", "turn")).toBe(false);
     expect(
       findDeliveryEvidence(
+        [
+          customMessageEntry("minimal-subagents.result", {
+            ...details,
+            messages: [{ delivery_id: "message:batched" }],
+          }),
+        ],
+        "child",
+        "turn",
+        "message:batched",
+      ),
+    ).toBe(true);
+    expect(
+      findDeliveryEvidence(
         [toolResultEntry("subagent_wait", { ...details, event: "message" })],
         "child",
         "turn",
