@@ -1,4 +1,4 @@
-import { type Static, Type } from "typebox";
+import { Decode, type StaticDecode, Type } from "typebox";
 import { Value } from "typebox/value";
 
 export const brvGitignoreBeginMarker = "# BEGIN pi-byterover";
@@ -48,7 +48,7 @@ export const configDefaults = {
 };
 
 /** Raw, partially-specified Byterover configuration document. */
-export type ByteroverConfigDocument = Static<typeof ConfigSchema>;
+export type ByteroverConfigDocument = StaticDecode<typeof ConfigSchema>;
 
 /** Fully defaulted Byterover configuration. */
 export type ByteroverConfig = ByteroverConfigDocument & typeof configDefaults;
@@ -57,14 +57,17 @@ export type ByteroverConfig = ByteroverConfigDocument & typeof configDefaults;
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This function IS the untrusted-document parser boundary.
 export const parseConfigDocument = (value: unknown): ByteroverConfig => ({
   ...configDefaults,
-  ...Value.Parse(ConfigSchema, value ?? {}),
+  ...Value.Decode(ConfigSchema, value === undefined ? {} : value),
 });
+
+const trimmedNonEmptyString = () =>
+  Decode(Type.String({ minLength: 1, pattern: "\\S" }), (value) => value.trim());
 
 export const ConfigSchema = Type.Object(
   {
     enabled: Type.Optional(Type.Boolean()),
     // BrvBridge options
-    brvPath: Type.Optional(Type.String({ minLength: 1 })),
+    brvPath: Type.Optional(trimmedNonEmptyString()),
     searchTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
     recallTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
     persistTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -74,10 +77,12 @@ export const ConfigSchema = Type.Object(
     autoPersist: Type.Optional(Type.Boolean()),
     manualTools: Type.Optional(Type.Boolean()),
     contextTagName: Type.Optional(
-      Type.String({ minLength: 1, pattern: "^[A-Za-z][A-Za-z0-9._-]*$" }),
+      Decode(Type.String({ minLength: 1, pattern: "^\\s*[A-Za-z][A-Za-z0-9._-]*\\s*$" }), (value) =>
+        value.trim(),
+      ),
     ),
-    recallPrompt: Type.Optional(Type.String({ minLength: 1 })),
-    persistPrompt: Type.Optional(Type.String({ minLength: 1 })),
+    recallPrompt: Type.Optional(trimmedNonEmptyString()),
+    persistPrompt: Type.Optional(trimmedNonEmptyString()),
     maxRecallTurns: Type.Optional(Type.Integer({ minimum: 1 })),
     maxRecallChars: Type.Optional(Type.Integer({ minimum: 1 })),
   },

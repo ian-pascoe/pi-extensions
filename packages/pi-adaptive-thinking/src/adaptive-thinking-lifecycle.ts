@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { open, rm } from "node:fs/promises";
+import { open, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -151,8 +151,11 @@ const globalSettingsPath = () => join(agentDir(), "settings.json");
 // proper-lockfile; the bound matches its previous policy (99 retries at a fixed 20 ms delay).
 // The .lock suffix distinguishes owned lock files from the legacy always-present marker the
 // previous implementation pre-created next to the settings document.
+// Stale recovery assumes the critical section stays synchronous; use a heartbeat lock if it gains
+// asynchronous work.
 const SETTINGS_LOCK_RETRY_DELAY_MS = 20;
 const SETTINGS_LOCK_RETRIES = 99;
+const SETTINGS_LOCK_STALE_MS = 10_000;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -164,20 +167,25 @@ const acquireSettingsLock = async (lockPath: string): Promise<void> => {
       await handle.close();
       return;
     } catch (cause) {
-      if (
-        !(cause instanceof Error) ||
-        !("code" in cause) ||
-        cause.code !== "EEXIST" ||
-        attempt >= SETTINGS_LOCK_RETRIES
-      ) {
-        throw cause;
+      if (!(cause instanceof Error) || !("code" in cause) || cause.code !== "EEXIST") throw cause;
+      try {
+        const lock = await stat(lockPath);
+        if (lock.mtimeMs < Date.now() - SETTINGS_LOCK_STALE_MS) {
+          await rm(lockPath, { force: true });
+          continue;
+        }
+      } catch (statCause) {
+        if (!(statCause instanceof Error) || !("code" in statCause) || statCause.code !== "ENOENT")
+          throw statCause;
+        continue;
       }
+      if (attempt >= SETTINGS_LOCK_RETRIES) throw cause;
     }
     await sleep(SETTINGS_LOCK_RETRY_DELAY_MS);
   }
 };
 
-const withSettingsLock = async <T>(settingsPath: string, fn: () => Promise<T> | T): Promise<T> => {
+const withSettingsLock = async <T>(settingsPath: string, fn: () => T): Promise<T> => {
   mkdirSync(join(settingsPath, ".."), { recursive: true });
   const lockPath = `${settingsPath}.adaptive-thinking.lock`;
   await acquireSettingsLock(lockPath);

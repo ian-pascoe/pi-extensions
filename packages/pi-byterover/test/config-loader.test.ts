@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
-import { configDefaults } from "../src/config.js";
+import { configDefaults, parseConfigDocument } from "../src/config.js";
 import { loadConfig } from "../src/config-loader.js";
 
 const withTempDirectory = async (run: (directory: string) => Promise<void>) => {
@@ -31,6 +31,26 @@ const writeJson = async (path: string, value: JsonValue) => {
 };
 
 describe("loadConfig", () => {
+  test("trims configured strings before validating them", () => {
+    expect(
+      parseConfigDocument({
+        brvPath: "  /usr/local/bin/brv  ",
+        contextTagName: "  byterover-context  ",
+        recallPrompt: "  recall memory  ",
+        persistPrompt: "  persist memory  ",
+      }),
+    ).toMatchObject({
+      brvPath: "/usr/local/bin/brv",
+      contextTagName: "byterover-context",
+      recallPrompt: "recall memory",
+      persistPrompt: "persist memory",
+    });
+
+    for (const field of ["brvPath", "contextTagName", "recallPrompt", "persistPrompt"]) {
+      expect(() => parseConfigDocument({ [field]: " \n " })).toThrow();
+    }
+  });
+
   test("returns defaults when no config files exist", async () => {
     await withTempProjectAndHome(async (cwd, homeDir) => {
       const result = await loadConfig({ cwd, homeDir });

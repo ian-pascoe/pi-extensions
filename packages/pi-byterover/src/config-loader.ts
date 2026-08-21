@@ -20,7 +20,7 @@ const invalidConfig = (source: string, error: Error): LoadConfigResult => ({
   error: new Error(`Invalid Byterover configuration in ${source}: ${error.message}`),
 });
 
-/** Loads the highest-precedence ByteRover JSON configuration through its Zod boundary. */
+/** Loads the highest-precedence ByteRover JSON configuration through its TypeBox boundary. */
 export const loadConfig = async ({
   cwd,
   homeDir = homedir(),

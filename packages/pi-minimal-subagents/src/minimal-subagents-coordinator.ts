@@ -551,6 +551,10 @@ export class MinimalSubagentsCoordinator {
     );
     const abandonedRuntimes = [...this.runtimes.values()];
     this.agents.clear();
+    this.deliveryLedger = createDeliveryLedger();
+    this.pendingParentMessages.clear();
+    this.recipientQueues.clear();
+    this.backgroundOperations.clear();
     await Promise.allSettled(
       abandonedRuntimes.map((runtime) => (runtime.isRunning ? runtime.abort() : Promise.resolve())),
     );
@@ -559,7 +563,6 @@ export class MinimalSubagentsCoordinator {
     this.runtimeInitializations.clear();
     this.pendingAgentIds.clear();
     this.tombstones.clear();
-    this.deliveryLedger = createDeliveryLedger();
     this.waiters.clear();
     this.waitHandedDeliveryIds.clear();
     this.automaticDeliveryKeys.clear();

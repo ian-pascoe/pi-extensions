@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -504,6 +504,41 @@ describe("adaptiveThinking extension", () => {
     } finally {
       clearTimeout(releaseTimer);
       rmSync(lockPath, { force: true });
+      if (previousAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      }
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+
+  test("reclaims an abandoned settings lock", async () => {
+    const agentDir = join(tmpdir(), `pi-adaptive-thinking-stale-lock-${Date.now()}`);
+    const lockPath = join(agentDir, "settings.json.adaptive-thinking.lock");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(lockPath, "");
+    utimesSync(lockPath, 0, 0);
+
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+
+    try {
+      const host = createPi();
+      registerAdaptiveThinking(host);
+      await host.emitSessionStart({ reason: "startup" }, createCtx());
+
+      const result = await setThinkingLevelTool(host.tools).execute(
+        "tool-call",
+        setThinkingLevelParameters("high", true),
+        undefined,
+        undefined,
+        createCtx(),
+      );
+
+      expect(toolResultText(result)).toBe("Thinking level set to high");
+      expect(host.setThinkingLevel).toHaveBeenCalledWith("high");
+    } finally {
       if (previousAgentDir === undefined) {
         delete process.env.PI_CODING_AGENT_DIR;
       } else {
