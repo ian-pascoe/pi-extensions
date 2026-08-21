@@ -52,7 +52,7 @@ async function createExtensionHarness(
     extensionFactories: [
       {
         name: "pi-dap-lifecycle-test",
-        factory: createPiDapExtension({ getAgentDirectory: () => agentDirectory }),
+        factory: createPiDapExtension(() => agentDirectory),
       },
     ],
     noContextFiles: true,

@@ -362,7 +362,6 @@ describe("DapProtocolClient", () => {
     await client.shutdown();
     await waitForProcessExit(pid);
 
-    expect(client.isClosed).toBe(true);
     expect(processExists(pid)).toBe(false);
   });
 

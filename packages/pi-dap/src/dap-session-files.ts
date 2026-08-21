@@ -11,11 +11,25 @@ export interface DapOutputDrain {
 }
 
 /** Retains only bounded unread Debuggee output until a tool operation drains it. */
-export interface DapOutputBuffer {
+export class RetainedDapOutput {
+  private content = Buffer.alloc(0);
+  private discardedBytes = 0;
+
   /** Append Debuggee output in protocol event order. */
-  append(output: string): void;
+  append(output: string): void {
+    const combined = Buffer.concat([this.content, Buffer.from(output)]);
+    const overflow = Math.max(0, combined.length - MAX_DAP_RETAINED_BYTES);
+    this.discardedBytes += overflow;
+    this.content = overflow === 0 ? combined : Buffer.from(combined.subarray(overflow));
+  }
+
   /** Return and clear all currently unread Debuggee output. */
-  drain(): DapOutputDrain;
+  drain(): DapOutputDrain {
+    const drained = { discardedBytes: this.discardedBytes, text: this.content.toString("utf8") };
+    this.content = Buffer.alloc(0);
+    this.discardedBytes = 0;
+    return drained;
+  }
 }
 
 /** Owns private Result Spill and adapter stderr paths for one Pi session. */
@@ -25,28 +39,9 @@ export interface DapSessionFiles {
   /** Write complete truncated tool output to a Result Spill file. */
   writeResultSpill(output: string): Promise<string>;
   /** Create a private stderr file path for one Debug Adapter launch. */
-  getAdapterStderrPath(adapterId: string): Promise<string>;
+  getAdapterStderrPath(): Promise<string>;
   /** Remove all session files after queued writes finish. */
   close(): Promise<void>;
-}
-
-class RetainedDapOutput implements DapOutputBuffer {
-  private content = Buffer.alloc(0);
-  private discardedBytes = 0;
-
-  append(output: string): void {
-    const combined = Buffer.concat([this.content, Buffer.from(output)]);
-    const overflow = Math.max(0, combined.length - MAX_DAP_RETAINED_BYTES);
-    this.discardedBytes += overflow;
-    this.content = overflow === 0 ? combined : Buffer.from(combined.subarray(overflow));
-  }
-
-  drain(): DapOutputDrain {
-    const drained = { discardedBytes: this.discardedBytes, text: this.content.toString("utf8") };
-    this.content = Buffer.alloc(0);
-    this.discardedBytes = 0;
-    return drained;
-  }
 }
 
 class DapSessionFileStore implements DapSessionFiles {
@@ -66,7 +61,7 @@ class DapSessionFileStore implements DapSessionFiles {
     });
   }
 
-  getAdapterStderrPath(_adapterId: string): Promise<string> {
+  getAdapterStderrPath(): Promise<string> {
     const path = join(this.directoryPath, `adapter-stderr-${this.nextFileIndex++}.log`);
     return this.enqueueWrite(async () => {
       await writeFile(path, "", { mode: 0o600 });
@@ -94,11 +89,6 @@ class DapSessionFileStore implements DapSessionFiles {
     );
     return result;
   }
-}
-
-/** Create a bounded unread Debuggee output buffer. */
-export function createDapOutputBuffer(): DapOutputBuffer {
-  return new RetainedDapOutput();
 }
 
 /** Create a private directory for Result Spills and Debug Adapter stderr. */

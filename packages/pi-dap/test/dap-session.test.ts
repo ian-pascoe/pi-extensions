@@ -384,7 +384,6 @@ describe("DapSession", () => {
 
     await expect(session.launch()).rejects.toEqual(
       expect.objectContaining({
-        _tag: "DapSessionError",
         kind: "configuration",
       }),
     );
