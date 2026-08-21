@@ -128,31 +128,27 @@ async function getGitStatus(cwd: string): Promise<GitStatus> {
   return status;
 }
 
-function renderToken(context: GitStatusWidgetContext, color: ThemeColor, text: string) {
-  return context.render(color, text);
-}
-
 function renderCount(
   context: GitStatusWidgetContext,
   color: ThemeColor,
   icon: string,
   count: number,
 ) {
-  return count === 0 ? undefined : renderToken(context, color, `${icon}${count}`);
+  return count === 0 ? undefined : context.render(color, `${icon}${count}`);
 }
 
 function renderGitStatus(context: GitStatusWidgetContext, status: GitStatus) {
   const tokens = [
-    renderToken(context, "syntaxKeyword", ""),
-    renderToken(context, "syntaxType", status.branch),
+    context.render("syntaxKeyword", ""),
+    context.render("syntaxType", status.branch),
     renderCount(context, "error", "⇡", status.ahead),
     renderCount(context, "error", "⇣", status.behind),
     renderCount(context, "error", "", status.conflicted),
     renderCount(context, "mdLink", "?", status.untracked),
     renderCount(context, "warning", "", status.modified),
-    status.clean ? renderToken(context, "success", "") : undefined,
+    status.clean ? context.render("success", "") : undefined,
   ].filter((token): token is string => Boolean(token));
-  return tokens.join(renderToken(context, "dim", " "));
+  return tokens.join(context.render("dim", " "));
 }
 
 async function updateGitStatusWidget(context: GitStatusWidgetContext) {
