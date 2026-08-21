@@ -354,7 +354,10 @@ export class MinimalSubagentsCoordinator {
     }
   }
 
-  /** Wait for one exact turn and claim its message/result delivery from automatic fallback. */
+  /**
+   * Wait for one exact turn and claim its message/result delivery from automatic fallback.
+   * The timeout is an internal test seam; public waits use cancellation.
+   */
   wait(
     callerId: string,
     agentId: string,

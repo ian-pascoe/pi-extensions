@@ -202,7 +202,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's oldest observable turn, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. An already settled turn returns event=turn once with queued messages in messages. Timeout never cancels the child.",
+      "Wait for one direct child's oldest observable turn, or select an exact retained turn_id. The wait remains pending until a Wait Event is available or the tool call is cancelled. An active child may first return event=message; later unconsumed items still fall back automatically. An already settled turn returns event=turn once with queued messages in messages.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     async execute(_toolCallId, parameters, signal, onUpdate) {
@@ -224,7 +224,7 @@ export function createCoordinatorToolDefinitions(
           const result = await options.coordinator.wait(
             options.callerId,
             parameters.agent_id,
-            parameters.timeout_ms,
+            undefined,
             signal,
             parameters.turn_id,
           );

@@ -119,7 +119,10 @@ describe("minimal subagents coordinator tools", () => {
     ).toEqual(["agent_message", "subagent_wait", "subagent_status"]);
   });
 
-  it("forwards an exact retained turn ID through subagent_wait", async () => {
+  it("exposes cancellation-only subagent_wait and forwards the exact turn ID", async () => {
+    expect(
+      createCoordinatorToolSchemas(["provider/model"]).subagent_wait.properties,
+    ).not.toHaveProperty("timeout_ms");
     const options = toolOptions("root", true);
     options.recordedWait.mockResolvedValue({
       event: "turn",
@@ -133,7 +136,7 @@ describe("minimal subagents coordinator tools", () => {
     const waitTool = requireTool(options, "subagent_wait");
     await waitTool.execute(
       "wait-call",
-      { agent_id: "child", turn_id: "child:older", timeout_ms: 50 },
+      { agent_id: "child", turn_id: "child:older" },
       signal,
       undefined,
       await createToolExecutionContext(),
@@ -142,7 +145,7 @@ describe("minimal subagents coordinator tools", () => {
     expect(options.coordinator.wait).toHaveBeenCalledWith(
       "root",
       "child",
-      50,
+      undefined,
       signal,
       "child:older",
     );

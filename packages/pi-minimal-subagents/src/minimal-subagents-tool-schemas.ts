@@ -63,7 +63,6 @@ export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
       turn_id: Type.Optional(
         Type.String({ minLength: 1, description: "Exact retained child turn ID" }),
       ),
-      timeout_ms: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
     subagent_status: Type.Object({
       agent_id: Type.Optional(canonicalAgentIdSchema("Direct child canonical agent ID")),
