@@ -1,9 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
 
-/** Stable identity for one prompt and its complete assistant/tool loop. */
-export type TurnId = string & { readonly __turnId: unique symbol };
-
 /** Controls how much committed caller conversation enters a new child session. */
 export type SessionContextMode = "inherit" | "compact" | "omit";
 /** Controls whether child resource discovery includes project instructions, skills, and prompts. */
@@ -94,7 +91,6 @@ export interface AgentSummary extends RuntimeProfile {
   latest_turn?: Pick<TurnResult, "turn_id" | "status">;
   tools: string[];
   elapsed_ms?: number;
-  latest_activity?: string;
   latest_activity_at?: string;
   task?: string;
   child_count: number;
@@ -142,7 +138,6 @@ export interface DeleteResult {
   agent_id: string;
   recursive: boolean;
   deleted_agent_ids: string[];
-  tombstoned_agent_ids: string[];
   trashed_session_files: string[];
   failures: Array<{ agent_id: string; error: string }>;
 }
@@ -163,7 +158,6 @@ export interface CallerSnapshot {
   thinkingLevel: ThinkingLevel;
   ordinaryTools: string[];
   capabilityCeiling: string[];
-  availableTools: string[];
   spawnEntryId: string;
 }
 
@@ -276,7 +270,6 @@ export interface PersistedAgent {
   missing_dependencies: string[];
   unavailable_reason?: string;
   recent_messages: RecentAgentMessage[];
-  deleted?: boolean;
 }
 
 /** Records which conversation path owns one successful terminal result. */

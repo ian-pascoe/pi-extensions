@@ -102,7 +102,6 @@ export const RegistryAgentWireSchema = Type.Object({
   missing_dependencies: Type.Array(NonEmptyStringSchema),
   unavailable_reason: Type.Optional(NonEmptyStringSchema),
   recent_messages: Type.Array(RegistryRecentMessageWireSchema),
-  deleted: Type.Optional(Type.Boolean()),
 });
 
 /** Parses one terminal Delivery Ledger item without applying ownership semantics. */

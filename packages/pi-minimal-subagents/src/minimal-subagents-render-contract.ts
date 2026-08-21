@@ -5,15 +5,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
+import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
 
-/** Names of the six coordinator tools with custom transcript renderers. */
-export type CoordinatorToolName =
-  | "subagent"
-  | "agent_message"
-  | "subagent_wait"
-  | "subagent_status"
-  | "subagent_cancel"
-  | "subagent_delete";
+export type CoordinatorToolName = (typeof COORDINATOR_TOOL_NAMES)[number];
 
 const RenderUsageSchema = Type.Object({
   input: Type.Number(),
@@ -165,7 +159,6 @@ const DeleteDetailsSchema = Type.Object({
   agent_id: Type.String(),
   recursive: Type.Boolean(),
   deleted_agent_ids: Type.Array(Type.String()),
-  tombstoned_agent_ids: Type.Array(Type.String()),
   trashed_session_files: Type.Array(Type.String()),
   failures: Type.Array(
     Type.Object({

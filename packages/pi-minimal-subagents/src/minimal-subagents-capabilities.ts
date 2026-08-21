@@ -39,11 +39,10 @@ export function buildEligibleModelIds(input: {
   return [...new Set(source.map(({ provider, id }) => `${provider}/${id}`))];
 }
 
-/** Supplies inherited tools, the ancestor ceiling, and runtime availability for exact tool resolution. */
+/** Supplies inherited tools and the ancestor ceiling for exact tool resolution. */
 export interface ToolResolutionContext {
   ordinaryTools: readonly string[];
   capabilityCeiling: readonly string[];
-  availableTools: readonly string[];
 }
 
 /** Resolve an exact ordinary-tool contract and reject missing or over-ceiling capabilities. */
@@ -69,13 +68,9 @@ export function resolveOrdinaryToolSelection(
       `Minimal subagents ordinary tool selection: coordinator tools are injected separately and must not appear in tools: ${requestedCoordinatorTools.join(", ")}`,
     );
   }
-  const available = new Set(context.availableTools);
+  // ponytail: availableTools and capabilityCeiling are identical at every production site,
+  // so availability and the ancestor ceiling are enforced by a single membership check.
   const ceiling = new Set(context.capabilityCeiling);
-  const missing = uniqueRequested.filter((name) => !available.has(name));
-  if (missing.length > 0) {
-    throw new Error(`Minimal subagents tool resolution: unavailable tool: ${missing.join(", ")}`);
-  }
-
   const exceeded = uniqueRequested.filter((name) => !ceiling.has(name));
   if (exceeded.length > 0) {
     throw new Error(`Minimal subagents capability ceiling exceeded: ${exceeded.join(", ")}`);

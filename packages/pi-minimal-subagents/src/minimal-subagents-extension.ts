@@ -39,6 +39,7 @@ import {
   findDeliveryEvidence,
   PiAgentSessionFactory,
   type PiAgentSessionFactoryOptions,
+  unavailableAgent,
 } from "./minimal-subagents-sessions.js";
 import { shutdownMinimalSubagentsSession } from "./minimal-subagents-shutdown.js";
 import { createCoordinatorToolDefinitions } from "./minimal-subagents-tools.js";
@@ -53,6 +54,7 @@ import type {
   CoordinatorNotification,
   ForkSnapshot,
   PersistedAgent,
+  PersistedSessionIdentity,
   RegistrySnapshot,
   RootConversationEndpoint,
 } from "./minimal-subagents-types.js";
@@ -75,7 +77,6 @@ function rootCallerSnapshot(pi: ExtensionAPI, context: ExtensionContext): Caller
     thinkingLevel: context.thinkingLevel ?? pi.getThinkingLevel(),
     ordinaryTools: activeTools,
     capabilityCeiling: availableTools,
-    availableTools,
     spawnEntryId: context.sessionManager.getLeafId() ?? "root",
   };
 }
@@ -183,18 +184,65 @@ function orderForkAgentsParentFirst(agents: readonly PersistedAgent[]): Persiste
 }
 
 function unavailableForkAgent(agent: PersistedAgent, error: string): PersistedAgent {
-  return {
-    ...structuredClone(agent),
-    session_file: undefined,
-    session_id: undefined,
-    session_leaf_id: undefined,
-    clone_error: error,
-    active_turn_id: undefined,
-    active_turn_started_at: undefined,
-    availability: "unavailable",
-    missing_dependencies: [error],
-    unavailable_reason: error,
-  };
+  return unavailableAgent(agent, error);
+}
+
+/** One per-agent fork rebind step returning the destination session identity. */
+type ForkAgentRebind = (agent: PersistedAgent) => Promise<PersistedSessionIdentity>;
+
+interface ForkRebindOptions {
+  /** Require an existing clone session before rebinding (ownership pass only). */
+  readonly requiresCloneSession: boolean;
+  /** Message for agents skipped because an ancestor's rebind failed. */
+  readonly skippedMessage: (agent: PersistedAgent, failedAncestor: string) => string;
+  /** Human label used in failure notifications. */
+  readonly notifyLabel: string;
+}
+
+/** Walk fork agents parent-first, rebind each session, and quarantine failed subtrees. */
+async function rebindForkAgents(
+  snapshotAgents: readonly PersistedAgent[],
+  rebind: ForkAgentRebind,
+  options: ForkRebindOptions,
+  context: ExtensionContext,
+): Promise<PersistedAgent[]> {
+  const agents: PersistedAgent[] = [];
+  const failedSubtrees = new Set<string>();
+  for (const agent of orderForkAgentsParentFirst(snapshotAgents)) {
+    const failedAncestor = [...failedSubtrees].find(
+      (agentId) => agent.agent_id === agentId || agent.agent_id.startsWith(`${agentId}.`),
+    );
+    const missingCloneSession =
+      options.requiresCloneSession && (!agent.session_file || !agent.session_id);
+    if (failedAncestor !== undefined || missingCloneSession) {
+      const message =
+        failedAncestor !== undefined
+          ? options.skippedMessage(agent, failedAncestor)
+          : (agent.clone_error ?? `Ancestor ownership failed: ${agent.agent_id}`);
+      agents.push(unavailableForkAgent(agent, message));
+      continue;
+    }
+    try {
+      const identity = await rebind(agent);
+      if (!identity.sessionLeafId) {
+        throw new Error(
+          `Minimal subagents fork recovery: no selected session leaf for ${agent.agent_id}`,
+        );
+      }
+      agents.push({
+        ...structuredClone(agent),
+        session_file: identity.sessionFile,
+        session_id: identity.sessionId,
+        session_leaf_id: identity.sessionLeafId,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failedSubtrees.add(agent.agent_id);
+      agents.push(unavailableForkAgent(agent, message));
+      context.ui.notify(`${options.notifyLabel} for ${agent.agent_id}: ${message}`, "error");
+    }
+  }
+  return agents;
 }
 
 async function cloneSelectedForkSessions(
@@ -204,36 +252,16 @@ async function cloneSelectedForkSessions(
   sourceRootSessionId: string,
   context: ExtensionContext,
 ): Promise<ForkSnapshot> {
-  const agents: PersistedAgent[] = [];
-  const failedSubtrees = new Set<string>();
-  for (const agent of orderForkAgentsParentFirst(snapshot.agents)) {
-    const failedAncestor = [...failedSubtrees].find(
-      (agentId) => agent.agent_id === agentId || agent.agent_id.startsWith(`${agentId}.`),
-    );
-    if (failedAncestor) {
-      agents.push(unavailableForkAgent(agent, `Ancestor clone failed: ${failedAncestor}`));
-      continue;
-    }
-    try {
-      const clone = await sessionFactory.cloneForkSourceSession(agent, sourceRootSessionId);
-      if (!clone.sessionLeafId) {
-        throw new Error(
-          `Minimal subagents fork recovery: no selected session leaf for ${agent.agent_id}`,
-        );
-      }
-      agents.push({
-        ...structuredClone(agent),
-        session_file: clone.sessionFile,
-        session_id: clone.sessionId,
-        session_leaf_id: clone.sessionLeafId,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failedSubtrees.add(agent.agent_id);
-      agents.push(unavailableForkAgent(agent, message));
-      context.ui.notify(`Fork recovery clone failed for ${agent.agent_id}: ${message}`, "error");
-    }
-  }
+  const agents = await rebindForkAgents(
+    snapshot.agents,
+    (agent) => sessionFactory.cloneForkSourceSession(agent, sourceRootSessionId),
+    {
+      requiresCloneSession: false,
+      skippedMessage: (_agent, failedAncestor) => `Ancestor clone failed: ${failedAncestor}`,
+      notifyLabel: "Fork recovery clone failed",
+    },
+    context,
+  );
   return {
     ...structuredClone(snapshot),
     source_root_session_file: sourceRootSessionFile,
@@ -247,44 +275,16 @@ async function bindForkSnapshotToDestination(
   snapshot: ForkSnapshot,
   context: ExtensionContext,
 ): Promise<ForkSnapshot> {
-  const agents: PersistedAgent[] = [];
-  const failedSubtrees = new Set<string>();
-  for (const agent of orderForkAgentsParentFirst(snapshot.agents)) {
-    const failedAncestor = [...failedSubtrees].find(
-      (agentId) => agent.agent_id === agentId || agent.agent_id.startsWith(`${agentId}.`),
-    );
-    if (failedAncestor || !agent.session_file || !agent.session_id) {
-      agents.push(
-        unavailableForkAgent(
-          agent,
-          agent.clone_error ?? `Ancestor ownership failed: ${failedAncestor ?? agent.agent_id}`,
-        ),
-      );
-      continue;
-    }
-    try {
-      const owned = await sessionFactory.adoptForkSessionOwnership(
-        agent,
-        snapshot.source_root_session_id,
-      );
-      if (!owned.sessionLeafId) {
-        throw new Error(
-          `Minimal subagents fork ownership: no selected session leaf for ${agent.agent_id}`,
-        );
-      }
-      agents.push({
-        ...structuredClone(agent),
-        session_file: owned.sessionFile,
-        session_id: owned.sessionId,
-        session_leaf_id: owned.sessionLeafId,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failedSubtrees.add(agent.agent_id);
-      agents.push(unavailableForkAgent(agent, message));
-      context.ui.notify(`Fork ownership failed for ${agent.agent_id}: ${message}`, "error");
-    }
-  }
+  const agents = await rebindForkAgents(
+    snapshot.agents,
+    (agent) => sessionFactory.adoptForkSessionOwnership(agent, snapshot.source_root_session_id),
+    {
+      requiresCloneSession: true,
+      skippedMessage: () => "Ancestor ownership failed",
+      notifyLabel: "Fork ownership failed",
+    },
+    context,
+  );
   return { ...structuredClone(snapshot), agents };
 }
 

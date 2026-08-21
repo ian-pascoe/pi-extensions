@@ -146,7 +146,6 @@ const caller: CallerSnapshot = {
   thinkingLevel: "medium",
   ordinaryTools: ["read"],
   capabilityCeiling: ["read"],
-  availableTools: ["read"],
   spawnEntryId: "entry",
 };
 
@@ -1126,7 +1125,6 @@ describe("minimal subagents coordinator", () => {
     });
     const result = await coordinator.delete("root", "team", true);
     expect(result.deleted_agent_ids).toEqual(["team.worker", "team"]);
-    expect(result.tombstoned_agent_ids).toEqual(["team.worker", "team"]);
     expect(sessions.trashSession.mock.calls.map(([agent]) => agent.session_file)).toEqual([
       "/sessions/team.worker.jsonl",
       "/sessions/team.jsonl",

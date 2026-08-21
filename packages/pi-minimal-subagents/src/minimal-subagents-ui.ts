@@ -15,6 +15,7 @@ import {
   formatSubagentDuration,
   renderSubagentStatusLabel,
   renderSubagentStatusSymbol,
+  subagentStatusLadder,
 } from "./minimal-subagents-rendering.js";
 import type {
   AgentSummary,
@@ -65,9 +66,9 @@ function flattenAgentHierarchy(agents: readonly AgentSummary[]): FlattenedAgentS
 }
 
 function agentTerminalStatus(agent: AgentSummary): TurnStatus | "idle" | "unavailable" {
-  if (agent.availability === "unavailable") return "unavailable";
-  if (agent.state === "running") return "running";
-  return agent.latest_turn?.status ?? "idle";
+  const status = subagentStatusLadder(agent);
+  // SAFETY: the shared ladder emits exactly the unavailable/running/TurnStatus/idle vocabulary.
+  return status as TurnStatus | "idle" | "unavailable";
 }
 
 function terminalTimestamp(agent: AgentSummary): number {

@@ -399,7 +399,6 @@ function parseRegistryAgent(value: RegistryAgentWire, version: 1 | 2): Persisted
     agent.latest_result = cloneRegistryTurnResult(value.latest_result);
   }
   if (value.unavailable_reason !== undefined) agent.unavailable_reason = value.unavailable_reason;
-  if (value.deleted !== undefined) agent.deleted = value.deleted;
   return agent;
 }
 
@@ -618,12 +617,6 @@ function validateRegistrySnapshot(
     return invalidRegistrySnapshot(
       "invalid-agent-hierarchy",
       "tombstone agent ID is not canonical",
-    );
-  }
-  if (agents.some((agent) => agent.deleted === true)) {
-    return invalidRegistrySnapshot(
-      "invalid-agent-hierarchy",
-      "live snapshot agents cannot be deleted",
     );
   }
   const agentIds = new Set(agents.map((agent) => agent.agent_id));
@@ -1245,8 +1238,7 @@ export function replayRegistryEntries(
         if (
           event.agent.active_turn_id ||
           event.agent.latest_result ||
-          event.agent.recent_messages.length > 0 ||
-          event.agent.deleted
+          event.agent.recent_messages.length > 0
         ) {
           reportDiagnostic(
             diagnostics,

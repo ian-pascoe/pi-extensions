@@ -96,11 +96,21 @@ function toolResultText(result: AgentToolResult<unknown>): string {
   return text?.type === "text" ? text.text : "";
 }
 
+/** Shared unavailable → running → latest-turn → idle status ladder for one subagent. */
+export function subagentStatusLadder(agent: {
+  readonly availability?: string;
+  readonly state?: string;
+  readonly latest_turn?: { readonly status?: string };
+}): string {
+  if (agent.availability === "unavailable") return "unavailable";
+  if (agent.state === "running") return "running";
+  return agent.latest_turn?.status ?? "idle";
+}
+
 function subagentStatusPresentation(status: string): SubagentStatusPresentation {
-  for (const [knownStatus, presentation] of Object.entries(SUBAGENT_STATUS_PRESENTATION)) {
-    if (knownStatus === status) return presentation;
-  }
-  return SUBAGENT_STATUS_PRESENTATION.idle;
+  // SAFETY: unknown statuses fall back to the idle presentation below.
+  const known = status as keyof typeof SUBAGENT_STATUS_PRESENTATION;
+  return SUBAGENT_STATUS_PRESENTATION[known] ?? SUBAGENT_STATUS_PRESENTATION.idle;
 }
 
 /** Render the shared semantic symbol and color for one subagent status. */
@@ -402,9 +412,7 @@ function countDirectStatusAgents(agents: readonly RenderStatusAgent[]): DirectSt
 }
 
 function statusAgentPresentation(agent: RenderStatusAgent): string {
-  if (agent.availability === "unavailable") return "unavailable";
-  if (agent.state === "running") return "running";
-  return agent.latest_turn?.status ?? "idle";
+  return subagentStatusLadder(agent);
 }
 
 function renderDirectStatusRows(
@@ -577,7 +585,7 @@ function renderDeleteResult(
   const status = details.failures.length > 0 ? "failed" : "completed";
   const metrics = [
     `${details.deleted_agent_ids.length} agents deleted`,
-    `${details.tombstoned_agent_ids.length} tombstoned`,
+    `${details.deleted_agent_ids.length} tombstones`,
     details.failures.length > 0 ? `${details.failures.length} failed` : undefined,
   ].filter((metric): metric is string => metric !== undefined);
   const summary = renderSubagentSummary(theme, status, details.agent_id, metrics);
@@ -593,12 +601,6 @@ function renderDeleteResult(
     theme,
     "Deleted agents",
     details.deleted_agent_ids.join("\n") || "(none)",
-  );
-  appendTextSection(
-    container,
-    theme,
-    "Tombstones",
-    details.tombstoned_agent_ids.join("\n") || "(none)",
   );
   appendTextSection(
     container,
