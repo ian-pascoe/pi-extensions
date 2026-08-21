@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-bible-verses
 
+## 0.3.0
+
+### Minor Changes
+
+- 3ac2e1b: Remove the undocumented `staticEmbeddingAllowed` field from bible translation records. Translation identity, license attribution, passage text, and picker behavior are unchanged.
+
 ## 0.2.0
 
 ### Minor Changes

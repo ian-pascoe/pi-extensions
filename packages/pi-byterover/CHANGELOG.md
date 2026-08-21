@@ -1,5 +1,11 @@
 # pi-byterover
 
+## 0.2.7
+
+### Patch Changes
+
+- 3ac2e1b: Replace the `zod` dependency with TypeBox (already a peer dependency) for Byterover configuration parsing. Validation outcomes, defaults, and loader behavior are unchanged; unknown configuration keys are now rejected instead of silently stripped.
+
 ## 0.2.6
 
 ### Patch Changes
