@@ -95,10 +95,6 @@ function schemaRecord(value: CodeModeJsonValue | undefined): CodeModeJsonObject 
   return value !== undefined && isCodeModeJsonObject(value) ? value : undefined;
 }
 
-function jsonLiteral(value: CodeModeJsonValue): string | undefined {
-  return JSON.stringify(value);
-}
-
 function quotedName(name: string): string {
   return JSON.stringify(name);
 }
@@ -139,9 +135,11 @@ function schemaType(
 
   const constant = record.const;
   if (Object.hasOwn(record, "const") && constant !== undefined) {
-    return jsonLiteral(constant) ?? "unknown";
+    return JSON.stringify(constant) ?? "unknown";
   }
-  const enumValues = Array.isArray(record.enum) ? record.enum.map(jsonLiteral) : undefined;
+  const enumValues = Array.isArray(record.enum)
+    ? record.enum.map((value) => JSON.stringify(value))
+    : undefined;
   if (
     enumValues !== undefined &&
     enumValues.length > 0 &&

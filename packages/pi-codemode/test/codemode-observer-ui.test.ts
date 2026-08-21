@@ -8,20 +8,12 @@ import {
   type CodeModeObserverUiRuntime,
   type CodeModeObserverWidgetTheme,
 } from "../src/codemode-observer-ui.js";
-import type {
-  CodeModeObserverSnapshot,
-  CodeModeSessionId,
-} from "../src/codemode-session-coordinator.js";
+import type { CodeModeObserverSnapshot } from "../src/codemode-session-coordinator.js";
 
 const plainTheme = {
   bold: (text) => text,
   fg: (_color, text) => text,
 } satisfies CodeModeObserverWidgetTheme;
-
-function sessionId(value: string): CodeModeSessionId {
-  // SAFETY: Coordinator-created Session IDs are branded after validation; these fixtures use the same non-empty identifier shape.
-  return value as CodeModeSessionId;
-}
 
 function emptySnapshot(): CodeModeObserverSnapshot {
   return { sessions: [] };
@@ -83,7 +75,7 @@ describe("CodeMode Observer UI", () => {
   test("projects unique prefixes, active details, recency ordering, terminal states, and overflow", () => {
     const sessions: CodeModeObserverSnapshot["sessions"] = [
       {
-        sessionId: sessionId("aaaaaaaa-1111-running"),
+        sessionId: "aaaaaaaa-1111-running",
         lifecycle: "running",
         cell_count: 2,
         last_activity_at_ms: 9_000,
@@ -96,13 +88,13 @@ describe("CodeMode Observer UI", () => {
         },
       },
       {
-        sessionId: sessionId("aaaaaaaa-2222-idle"),
+        sessionId: "aaaaaaaa-2222-idle",
         lifecycle: "idle",
         cell_count: 3,
         last_activity_at_ms: 8_000,
       },
       {
-        sessionId: sessionId("bbbbbbbb-terminal-cancelled"),
+        sessionId: "bbbbbbbb-terminal-cancelled",
         lifecycle: "terminal",
         cell_count: 1,
         last_activity_at_ms: 7_000,
@@ -117,14 +109,14 @@ describe("CodeMode Observer UI", () => {
         },
       },
       {
-        sessionId: sessionId("reclaimed-terminal"),
+        sessionId: "reclaimed-terminal",
         lifecycle: "terminal",
         cell_count: 2,
         last_activity_at_ms: 6_500,
         terminal_error_code: "eviction",
       },
       ...Array.from({ length: 7 }, (_, index) => ({
-        sessionId: sessionId(`session-${index}-terminal`),
+        sessionId: `session-${index}-terminal`,
         lifecycle: "terminal" as const,
         cell_count: index + 1,
         last_activity_at_ms: 6_000 - index,
@@ -162,7 +154,7 @@ describe("CodeMode Observer UI", () => {
       {
         sessions: [
           {
-            sessionId: sessionId("12345678-running"),
+            sessionId: "12345678-running",
             lifecycle: "running",
             cell_count: 4,
             last_activity_at_ms: 1_000,
@@ -175,13 +167,13 @@ describe("CodeMode Observer UI", () => {
             },
           },
           {
-            sessionId: sessionId("abcdefgh-idle"),
+            sessionId: "abcdefgh-idle",
             lifecycle: "idle",
             cell_count: 2,
             last_activity_at_ms: 900,
           },
           {
-            sessionId: sessionId("terminal-failed"),
+            sessionId: "terminal-failed",
             lifecycle: "terminal",
             cell_count: 1,
             last_activity_at_ms: 800,
@@ -216,7 +208,7 @@ describe("CodeMode Observer UI", () => {
       {
         sessions: [
           {
-            sessionId: sessionId("expired-terminal"),
+            sessionId: "expired-terminal",
             lifecycle: "terminal",
             cell_count: 1,
             last_activity_at_ms: 1_000,
@@ -238,7 +230,7 @@ describe("CodeMode Observer UI", () => {
     const running: CodeModeObserverSnapshot = {
       sessions: [
         {
-          sessionId: sessionId("12345678-running"),
+          sessionId: "12345678-running",
           lifecycle: "running",
           cell_count: 1,
           last_activity_at_ms: 1_000,
@@ -269,7 +261,7 @@ describe("CodeMode Observer UI", () => {
     controller.onSnapshotChange({
       sessions: [
         {
-          sessionId: sessionId("12345678-running"),
+          sessionId: "12345678-running",
           lifecycle: "idle",
           cell_count: 1,
           last_activity_at_ms: 2_000,
@@ -290,7 +282,7 @@ describe("CodeMode Observer UI", () => {
     controller.onSnapshotChange({
       sessions: [
         {
-          sessionId: sessionId("12345678-running"),
+          sessionId: "12345678-running",
           lifecycle: "running",
           cell_count: 1,
           last_activity_at_ms: 0,
@@ -305,11 +297,11 @@ describe("CodeMode Observer UI", () => {
       ],
     });
     controller.onUnexpectedFailure({
-      sessionId: sessionId("12345678-running"),
+      sessionId: "12345678-running",
       message: "\u001b[31mworker died\u001b[0m\u0007",
     });
     controller.onUnexpectedFailure({
-      sessionId: sessionId("12345678-running"),
+      sessionId: "12345678-running",
       message: "worker died again",
     });
     expect(notify).toHaveBeenCalledOnce();
@@ -332,7 +324,7 @@ describe("CodeMode Observer UI", () => {
     const running: CodeModeObserverSnapshot = {
       sessions: [
         {
-          sessionId: sessionId("12345678-running"),
+          sessionId: "12345678-running",
           lifecycle: "running",
           cell_count: 1,
           last_activity_at_ms: 0,
@@ -368,7 +360,7 @@ describe("CodeMode Observer UI", () => {
     expect(() => throwingController.onSnapshotChange(running)).not.toThrow();
     expect(() =>
       throwingController.onUnexpectedFailure({
-        sessionId: sessionId("12345678-running"),
+        sessionId: "12345678-running",
         message: "worker failed",
       }),
     ).not.toThrow();
@@ -396,7 +388,7 @@ describe("CodeMode Observer UI", () => {
     const controller = new CodeModeObserverUiController(context, createTimerRuntime());
     controller.onSnapshotChange(emptySnapshot());
     controller.onUnexpectedFailure({
-      sessionId: sessionId("12345678-rpc"),
+      sessionId: "12345678-rpc",
       message: "worker died",
     });
     controller.dispose();

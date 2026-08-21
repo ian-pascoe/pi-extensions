@@ -21,6 +21,7 @@ import {
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { formatCodeModePresentationData } from "./codemode-presentation-output.js";
+import { formatCodeModeDuration } from "./codemode-session-coordinator.js";
 import {
   CodeModeCancelParametersSchema,
   CodeModeExecuteParametersSchema,
@@ -115,13 +116,6 @@ function shortCodeModeSessionId(sessionId: string): string {
 
 /** Resolves one Session ID to the shortest unambiguous CodeMode Transcript label. */
 export type CodeModeSessionPrefixFormatter = (sessionId: string) => string;
-
-function formatCodeModeDuration(elapsedMs: number): string {
-  if (elapsedMs < 1_000) return `${elapsedMs}ms`;
-  if (elapsedMs < 60_000) return `${(elapsedMs / 1_000).toFixed(1)}s`;
-  const seconds = Math.floor(elapsedMs / 1_000);
-  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-}
 
 function pluralizedCodeModeCount(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;

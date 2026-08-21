@@ -117,7 +117,7 @@ function expectSuccessData(
 }
 
 afterEach(async () => {
-  await Promise.all([...coordinators].map((coordinator) => coordinator.shutdown("test cleanup")));
+  await Promise.all([...coordinators].map((coordinator) => coordinator.shutdown()));
   coordinators.clear();
 });
 
@@ -402,7 +402,7 @@ describe("CodeModeSessionCoordinator", () => {
     );
     expect(recordedBatches).toEqual([["add"]]);
 
-    await coordinator.shutdown("vertical tracer complete");
+    await coordinator.shutdown();
   }, 30_000);
 
   test("awaits a Cell when wait is omitted", async () => {
@@ -584,7 +584,7 @@ describe("CodeModeSessionCoordinator", () => {
 
     await coordinator.execute({ script: "42", wait: false });
     await coordinator.cancel("starting-session");
-    await coordinator.shutdown("startup cancellation test");
+    await coordinator.shutdown();
 
     expect(activeTimers.size).toBe(0);
   }, 30_000);
