@@ -55,8 +55,8 @@ export type GitCheckpointMode = "repository" | "standalone";
 
 /** Source repository state recorded with a Worktree Checkpoint. */
 export type GitCheckpointSourceHead =
-  | { readonly kind: "head"; readonly commit: string; readonly branch?: string }
-  | { readonly kind: "unborn"; readonly branch?: string }
+  | { readonly kind: "head"; readonly commit: string }
+  | { readonly kind: "unborn" }
   | { readonly kind: "standalone" };
 
 /** A captured Worktree Checkpoint and paths excluded from that capture. */
@@ -101,7 +101,6 @@ export interface RestoreWorktreeCheckpointInput {
 /** Successful selective Restore result; unsupported paths remain untouched. */
 export interface RestoreWorktreeCheckpointResult {
   readonly restoredPaths: readonly string[];
-  readonly skippedPaths: readonly string[];
 }
 
 /** Persisted one-level undo information for the latest successful Restore. */
@@ -114,11 +113,7 @@ export interface GitCheckpointUndoRecord {
 /** Current undo comparison against the persisted restored tree. */
 export type GitCheckpointUndoInspection =
   | { readonly kind: "unavailable" }
-  | {
-      readonly kind: "ready";
-      readonly divergedPaths: readonly string[];
-      readonly record: GitCheckpointUndoRecord;
-    };
+  | { readonly kind: "ready"; readonly divergedPaths: readonly string[] };
 
 /** Input for one-level Worktree Checkpoint undo. */
 export interface UndoWorktreeCheckpointInput {
@@ -143,7 +138,6 @@ export interface CleanupGitCheckpointStoresInput {
 
 /** Store failure with a stable operation and exact rollback recovery paths. */
 export class GitCheckpointStoreError extends Error {
-  readonly _tag = "GitCheckpointStoreError" as const;
   readonly operation: "capture" | "cleanup" | "initialize" | "restore" | "undo";
   readonly unrecoveredPaths: readonly string[];
 
@@ -734,18 +728,12 @@ export class GitCheckpointStore {
 
   private async currentSourceHead(signal?: AbortSignal): Promise<GitCheckpointSourceHead> {
     if (!this.source) return { kind: "standalone" };
-    const [head, branch] = await Promise.all([
-      this.sourceGit(["rev-parse", "--verify", "HEAD"], { allowedExitCodes: [0, 128], signal }),
-      this.sourceGit(["symbolic-ref", "--quiet", "--short", "HEAD"], {
-        allowedExitCodes: [0, 1],
-        signal,
-      }),
-    ]);
-    const branchName = branch.stdout.trim() || undefined;
-    if (head.exitCode !== 0)
-      return branchName ? { branch: branchName, kind: "unborn" } : { kind: "unborn" };
-    const commit = head.stdout.trim();
-    return branchName ? { branch: branchName, commit, kind: "head" } : { commit, kind: "head" };
+    const head = await this.sourceGit(["rev-parse", "--verify", "HEAD"], {
+      allowedExitCodes: [0, 128],
+      signal,
+    });
+    if (head.exitCode !== 0) return { kind: "unborn" };
+    return { commit: head.stdout.trim(), kind: "head" };
   }
 
   private async captureUnserialized(signal?: AbortSignal): Promise<GitCheckpointCapture> {
@@ -1139,7 +1127,7 @@ export class GitCheckpointStore {
           });
         }
         await this.touchActivity();
-        return { restoredPaths, skippedPaths: result.skipped };
+        return { restoredPaths };
       } catch (cause) {
         const original = errorFrom(cause);
         const rollback = await this.writeTreePaths(
@@ -1174,7 +1162,7 @@ export class GitCheckpointStore {
         record.paths,
         signal,
       );
-      return { divergedPaths: changes.map((change) => change.path), kind: "ready", record };
+      return { divergedPaths: changes.map((change) => change.path), kind: "ready" };
     });
   }
 

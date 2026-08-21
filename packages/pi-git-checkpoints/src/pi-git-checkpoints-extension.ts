@@ -52,13 +52,6 @@ type PendingRestore = {
   readonly approvalTreeId: string;
 };
 
-/** Narrow environment seam for lifecycle tests; Git and filesystem behavior stays real. */
-export interface PiGitCheckpointsLifecycleEffects {
-  getAgentDirectory(): string;
-}
-
-const productionEffects: PiGitCheckpointsLifecycleEffects = { getAgentDirectory: getAgentDir };
-
 function sourceState(
   sourceHead: GitCheckpointSourceHead,
 ): ModelStepStartEntryPayload["source_state"] {
@@ -110,7 +103,7 @@ class PiGitCheckpointsLifecycle {
 
   constructor(
     private readonly pi: ExtensionAPI,
-    private readonly effects: PiGitCheckpointsLifecycleEffects,
+    private readonly getAgentDirectory: () => string = getAgentDir,
   ) {}
 
   register(): void {
@@ -135,7 +128,7 @@ class PiGitCheckpointsLifecycle {
     this.disabledReason = undefined;
     this.failureNotified = false;
     this.expiredWarnings.clear();
-    const agentDirectory = this.effects.getAgentDirectory();
+    const agentDirectory = this.getAgentDirectory();
     const settingsManager = SettingsManager.create(context.cwd, agentDirectory, {
       projectTrusted: context.isProjectTrusted(),
     });
@@ -432,9 +425,9 @@ class PiGitCheckpointsLifecycle {
 
 /** Creates the Git Checkpoints extension with a narrow agent-directory seam for tests. */
 export function createPiGitCheckpointsExtension(
-  effects: PiGitCheckpointsLifecycleEffects = productionEffects,
+  getAgentDirectory: () => string = getAgentDir,
 ): (pi: ExtensionAPI) => void {
-  return (pi) => new PiGitCheckpointsLifecycle(pi, effects).register();
+  return (pi) => new PiGitCheckpointsLifecycle(pi, getAgentDirectory).register();
 }
 
 /** Registers Git-backed Worktree Checkpoints at Pi lifecycle boundaries. */

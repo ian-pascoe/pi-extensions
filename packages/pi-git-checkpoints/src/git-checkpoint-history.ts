@@ -72,7 +72,6 @@ export type ModelStepCheckpoint = {
   readonly startEntryId: string;
   readonly endEntryId: string;
   readonly resultLeafId: string | null;
-  readonly startTreeId: string;
   readonly targetTreeId: string;
   readonly changedPaths: readonly string[];
   readonly skippedPaths: readonly string[];
@@ -89,17 +88,12 @@ export type GitCheckpointHistory = {
 export type GitCheckpointNavigationInput = {
   readonly oldLeafId: string | null;
   readonly selectedTargetId: string;
-  readonly availableTreeIds?: ReadonlySet<string>;
 };
-
-/** Deterministic movement direction through the Pi session tree. */
-export type GitCheckpointNavigationDirection = "backward" | "forward" | "sideways" | "none";
 
 /** Pure Navigation Transition plan or an explicit reason no Target Checkpoint is usable. */
 export type GitCheckpointNavigationPlan =
   | {
       readonly kind: "ready";
-      readonly direction: GitCheckpointNavigationDirection;
       readonly selectedTargetId: string;
       readonly targetPositionId: string | null;
       readonly commonAncestorId: string | null;
@@ -112,8 +106,7 @@ export type GitCheckpointNavigationPlan =
       readonly reason:
         | "selected-target-missing"
         | "current-checkpoint-missing"
-        | "target-checkpoint-missing"
-        | "target-checkpoint-expired";
+        | "target-checkpoint-missing";
       readonly targetPositionId?: string | null;
       readonly targetCheckpoint?: ModelStepCheckpoint;
     };
@@ -211,7 +204,6 @@ export function replayGitCheckpointHistory(
       startEntryId: entry.data.start_entry_id,
       endEntryId: entry.id,
       resultLeafId: entry.data.result_leaf_id,
-      startTreeId: start.tree_id,
       targetTreeId: entry.data.tree_id,
       changedPaths: entry.data.changed_paths,
       skippedPaths: entry.data.skipped_paths,
@@ -297,21 +289,6 @@ function findCommonAncestor(
   return ancestryIds(rightId, entriesById).find((entryId) => leftAncestors.has(entryId)) ?? null;
 }
 
-function navigationDirection(
-  oldLeafId: string | null,
-  targetPositionId: string | null,
-  entriesById: ReadonlyMap<string, SessionEntry>,
-): GitCheckpointNavigationDirection {
-  if (oldLeafId === targetPositionId) return "none";
-  if (targetPositionId === null || ancestryIds(oldLeafId, entriesById).includes(targetPositionId)) {
-    return "backward";
-  }
-  if (oldLeafId === null || ancestryIds(targetPositionId, entriesById).includes(oldLeafId)) {
-    return "forward";
-  }
-  return "sideways";
-}
-
 function transitionCheckpoints(
   current: ModelStepCheckpoint,
   target: ModelStepCheckpoint,
@@ -363,17 +340,6 @@ export function planGitCheckpointNavigation(
   if (targetCheckpoint === undefined) {
     return { kind: "unavailable", reason: "target-checkpoint-missing", targetPositionId };
   }
-  if (
-    input.availableTreeIds !== undefined &&
-    !input.availableTreeIds.has(targetCheckpoint.targetTreeId)
-  ) {
-    return {
-      kind: "unavailable",
-      reason: "target-checkpoint-expired",
-      targetPositionId,
-      targetCheckpoint,
-    };
-  }
   const currentCheckpoint = findCheckpointAtPosition(
     input.oldLeafId,
     history.checkpoints,
@@ -399,7 +365,6 @@ export function planGitCheckpointNavigation(
   ]);
   return {
     kind: "ready",
-    direction: navigationDirection(input.oldLeafId, targetPositionId, entriesById),
     selectedTargetId: input.selectedTargetId,
     targetPositionId,
     commonAncestorId: findCommonAncestor(input.oldLeafId, targetPositionId, entriesById),
