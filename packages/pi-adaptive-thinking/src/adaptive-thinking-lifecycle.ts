@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { open, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import lockfile from "proper-lockfile";
 import type {
   AgentEndEvent,
   AgentToolResult,
@@ -147,20 +147,45 @@ const agentDir = () => process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi",
 
 const globalSettingsPath = () => join(agentDir(), "settings.json");
 
+// ponytail: Node's wx exclusive-create plus an asynchronous fixed-delay retry loop replaces
+// proper-lockfile; the bound matches its previous policy (99 retries at a fixed 20 ms delay).
+// The .lock suffix distinguishes owned lock files from the legacy always-present marker the
+// previous implementation pre-created next to the settings document.
+const SETTINGS_LOCK_RETRY_DELAY_MS = 20;
+const SETTINGS_LOCK_RETRIES = 99;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+const acquireSettingsLock = async (lockPath: string): Promise<void> => {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.close();
+      return;
+    } catch (cause) {
+      if (
+        !(cause instanceof Error) ||
+        !("code" in cause) ||
+        cause.code !== "EEXIST" ||
+        attempt >= SETTINGS_LOCK_RETRIES
+      ) {
+        throw cause;
+      }
+    }
+    await sleep(SETTINGS_LOCK_RETRY_DELAY_MS);
+  }
+};
+
 const withSettingsLock = async <T>(settingsPath: string, fn: () => Promise<T> | T): Promise<T> => {
   mkdirSync(join(settingsPath, ".."), { recursive: true });
-  const lockPath = `${settingsPath}.adaptive-thinking`;
-  if (!existsSync(lockPath)) writeFileSync(lockPath, "");
-
-  const release = await lockfile.lock(lockPath, {
-    realpath: false,
-    retries: { retries: 99, factor: 1, minTimeout: 20, maxTimeout: 20 },
-  });
+  const lockPath = `${settingsPath}.adaptive-thinking.lock`;
+  await acquireSettingsLock(lockPath);
 
   try {
     return await fn();
   } finally {
-    await release();
+    await rm(lockPath, { force: true });
   }
 };
 
@@ -385,6 +410,8 @@ export default function adaptiveThinkingExtension(pi: ExtensionAPI) {
     onSessionStart: (handler) => pi.on("session_start", handler),
     onToolCall: (handler) => pi.on("tool_call", handler),
     onAgentEnd: (handler) => pi.on("agent_end", handler),
+    // ponytail: the branches look identical but narrow the union so registerTool's
+    // generics infer per concrete ToolDefinition instead of falling back to defaults.
     registerTool: (tool) => {
       if (isAdaptiveThinkingSetThinkingLevelTool(tool)) pi.registerTool(tool);
       else pi.registerTool(tool);

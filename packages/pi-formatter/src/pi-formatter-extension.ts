@@ -4,8 +4,6 @@ import { basename, dirname, extname, matchesGlob, resolve } from "node:path";
 import {
   getAgentDir,
   SettingsManager,
-  type ExtensionAPI,
-  type ExtensionContext,
   type ExtensionFactory,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -71,12 +69,6 @@ const WorkspaceEditApplyDetailsSchema = Type.Object(
 );
 const MAX_FORMATTER_STDERR_CHARACTERS = 50_000;
 
-/** Runtime construction effects kept narrow so tests can select an isolated Pi agent directory. */
-export interface PiFormatterLifecycleEffects {
-  /** Return Pi's trust-aware global settings directory. */
-  getAgentDirectory(): string;
-}
-
 type FormatterCommandFailure =
   | { readonly kind: "spawn_error"; readonly message: string }
   | { readonly kind: "timeout"; readonly timeoutMs: number }
@@ -91,10 +83,6 @@ interface ExistingFormatterPaths {
   readonly paths: readonly string[];
   readonly warnings: readonly string[];
 }
-
-const productionPiFormatterLifecycleEffects: PiFormatterLifecycleEffects = {
-  getAgentDirectory: getAgentDir,
-};
 
 function extractFormatterMutationPaths(event: ToolResultEvent): readonly string[] | undefined {
   if (event.toolName === "edit" || event.toolName === "write") {
@@ -329,54 +317,29 @@ async function formatMutationPaths(
   return warnings;
 }
 
-/** Own settings loading and post-mutation formatter execution for one extension instance. */
-export class PiFormatterLifecycleController {
-  private settings: ResolvedFormatterSettings | undefined;
-
-  /** Bind one formatter lifecycle controller to Pi. */
-  constructor(
-    private readonly pi: ExtensionAPI,
-    private readonly effects: PiFormatterLifecycleEffects,
-  ) {}
-
-  /** Register startup and tool-result formatting handlers. */
-  register(): void {
-    this.pi.on("session_start", (_event, context) => this.startSession(context));
-    this.pi.on("tool_result", (event, context) => this.handleToolResult(event, context));
-  }
-
-  private startSession(context: ExtensionContext): void {
-    const reader = SettingsManager.create(context.cwd, this.effects.getAgentDirectory(), {
-      projectTrusted: context.isProjectTrusted(),
-    });
-    this.settings = resolveFormatterSettings(reader);
-    if (this.settings.warnings.length > 0) {
-      context.ui.notify(
-        `Pi Formatter settings:\n- ${this.settings.warnings.join("\n- ")}`,
-        "warning",
-      );
-    }
-  }
-
-  private async handleToolResult(
-    event: ToolResultEvent,
-    context: ExtensionContext,
-  ): Promise<{ readonly content: ToolResultEvent["content"] } | undefined> {
-    const paths = extractFormatterMutationPaths(event);
-    if (paths === undefined || paths.length === 0 || this.settings === undefined) return undefined;
-    const warnings = await formatMutationPaths(paths, context.cwd, this.settings, context.signal);
-    if (warnings.length === 0) return undefined;
-    return {
-      content: [...event.content, { type: "text", text: warnings.join("\n") }],
-    };
-  }
-}
-
 /** Compose the source-TypeScript Pi Formatter extension without running commands at load time. */
 export function createPiFormatterExtension(
-  effects: PiFormatterLifecycleEffects = productionPiFormatterLifecycleEffects,
+  getAgentDirectory: () => string = getAgentDir,
 ): ExtensionFactory {
-  return (pi) => new PiFormatterLifecycleController(pi, effects).register();
+  let settings: ResolvedFormatterSettings | undefined;
+  return (pi) => {
+    pi.on("session_start", (_event, context) => {
+      const reader = SettingsManager.create(context.cwd, getAgentDirectory(), {
+        projectTrusted: context.isProjectTrusted(),
+      });
+      settings = resolveFormatterSettings(reader);
+      if (settings.warnings.length > 0) {
+        context.ui.notify(`Pi Formatter settings:\n- ${settings.warnings.join("\n- ")}`, "warning");
+      }
+    });
+    pi.on("tool_result", async (event, context) => {
+      const paths = extractFormatterMutationPaths(event);
+      if (paths === undefined || paths.length === 0 || settings === undefined) return undefined;
+      const warnings = await formatMutationPaths(paths, context.cwd, settings, context.signal);
+      if (warnings.length === 0) return undefined;
+      return { content: [...event.content, { type: "text", text: warnings.join("\n") }] };
+    });
+  };
 }
 
 const piFormatterExtension = createPiFormatterExtension();

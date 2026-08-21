@@ -77,7 +77,3 @@ export const parseAdaptiveThinkingConfig = (
 
   return { config, usedDeprecatedSystemPrompt: usesSystemPrompt };
 };
-
-/** Parses configuration at the public configuration seam. */
-export const parseConfig = (input: JsonValue | undefined): AdaptiveThinkingConfig =>
-  parseAdaptiveThinkingConfig(input).config;

@@ -1,4 +1,5 @@
-import * as z from "zod/v4";
+import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
 
 export const brvGitignoreBeginMarker = "# BEGIN pi-byterover";
 export const brvGitignoreEndMarker = "# END pi-byterover";
@@ -46,29 +47,39 @@ export const configDefaults = {
   maxRecallChars: 4096,
 };
 
-const positiveInteger = () => z.number().int().positive();
-const nonEmptyString = () => z.string().trim().min(1);
+/** Raw, partially-specified Byterover configuration document. */
+export type ByteroverConfigDocument = Static<typeof ConfigSchema>;
 
-export const ConfigSchema = z
-  .object({
-    enabled: z.boolean().default(configDefaults.enabled),
+/** Fully defaulted Byterover configuration. */
+export type ByteroverConfig = ByteroverConfigDocument & typeof configDefaults;
+
+/** Parses one Byterover configuration document, rejecting invalid values, then applies defaults. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- This function IS the untrusted-document parser boundary.
+export const parseConfigDocument = (value: unknown): ByteroverConfig => ({
+  ...configDefaults,
+  ...Value.Parse(ConfigSchema, value ?? {}),
+});
+
+export const ConfigSchema = Type.Object(
+  {
+    enabled: Type.Optional(Type.Boolean()),
     // BrvBridge options
-    brvPath: nonEmptyString().optional().default(configDefaults.brvPath),
-    searchTimeoutMs: positiveInteger().default(configDefaults.searchTimeoutMs),
-    recallTimeoutMs: positiveInteger().default(configDefaults.recallTimeoutMs),
-    persistTimeoutMs: positiveInteger().default(configDefaults.persistTimeoutMs),
+    brvPath: Type.Optional(Type.String({ minLength: 1 })),
+    searchTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
+    recallTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
+    persistTimeoutMs: Type.Optional(Type.Integer({ minimum: 1 })),
     // Plugin options
-    quiet: z.boolean().default(configDefaults.quiet),
-    autoRecall: z.boolean().default(configDefaults.autoRecall),
-    autoPersist: z.boolean().default(configDefaults.autoPersist),
-    manualTools: z.boolean().default(configDefaults.manualTools),
-    contextTagName: nonEmptyString()
-      .regex(/^[A-Za-z][A-Za-z0-9._-]*$/u)
-      .default(configDefaults.contextTagName),
-    recallPrompt: nonEmptyString().default(configDefaults.recallPrompt),
-    persistPrompt: nonEmptyString().default(configDefaults.persistPrompt),
-    maxRecallTurns: positiveInteger().default(configDefaults.maxRecallTurns),
-    maxRecallChars: positiveInteger().default(configDefaults.maxRecallChars),
-  })
-  .optional()
-  .default(configDefaults);
+    quiet: Type.Optional(Type.Boolean()),
+    autoRecall: Type.Optional(Type.Boolean()),
+    autoPersist: Type.Optional(Type.Boolean()),
+    manualTools: Type.Optional(Type.Boolean()),
+    contextTagName: Type.Optional(
+      Type.String({ minLength: 1, pattern: "^[A-Za-z][A-Za-z0-9._-]*$" }),
+    ),
+    recallPrompt: Type.Optional(Type.String({ minLength: 1 })),
+    persistPrompt: Type.Optional(Type.String({ minLength: 1 })),
+    maxRecallTurns: Type.Optional(Type.Integer({ minimum: 1 })),
+    maxRecallChars: Type.Optional(Type.Integer({ minimum: 1 })),
+  },
+  { additionalProperties: false },
+);

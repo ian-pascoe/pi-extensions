@@ -8,7 +8,6 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
-import lockfile from "proper-lockfile";
 import { describe, expect, test, vi } from "vitest";
 import {
   type AdaptiveThinkingContext,
@@ -472,19 +471,18 @@ describe("adaptiveThinking extension", () => {
   test("retries a contended settings lock without blocking the event loop", async () => {
     const agentDir = join(tmpdir(), `pi-adaptive-thinking-lock-${Date.now()}`);
     const settingsPath = join(agentDir, "settings.json");
-    const lockPath = `${settingsPath}.adaptive-thinking`;
+    const lockPath = `${settingsPath}.adaptive-thinking.lock`;
     mkdirSync(agentDir, { recursive: true });
+    // Hold the exclusive-create lock until a timer releases it mid-retry window.
     writeFileSync(lockPath, "");
+    let released = false;
+    const releaseTimer = setTimeout(() => {
+      released = true;
+      rmSync(lockPath, { force: true });
+    }, 50);
 
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = agentDir;
-    const release = await lockfile.lock(lockPath, { realpath: false });
-    let releasePromise: Promise<void> | undefined;
-    let releaseTimerRan = false;
-    const releaseTimer = setTimeout(() => {
-      releaseTimerRan = true;
-      releasePromise = release();
-    }, 50);
 
     try {
       const host = createPi();
@@ -500,13 +498,12 @@ describe("adaptiveThinking extension", () => {
         createCtx(),
       );
 
-      expect(releaseTimerRan).toBe(true);
+      expect(released).toBe(true);
       expect(toolResultText(result)).toBe("Thinking level set to high");
       expect(host.setThinkingLevel).toHaveBeenCalledWith("high");
     } finally {
       clearTimeout(releaseTimer);
-      if (releasePromise) await releasePromise;
-      else await release();
+      rmSync(lockPath, { force: true });
       if (previousAgentDir === undefined) {
         delete process.env.PI_CODING_AGENT_DIR;
       } else {

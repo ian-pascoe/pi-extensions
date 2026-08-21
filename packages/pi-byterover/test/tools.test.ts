@@ -1,14 +1,15 @@
 import type { SearchResultItem } from "@byterover/brv-bridge";
-import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, test, vi } from "vitest";
 import type { ByteRoverBridge, ByteRoverBridgeFactory } from "../src/byterover-bridge.js";
-import { ConfigSchema } from "../src/config.js";
 import {
   type ByteRoverManualToolDefinition,
   type ByteRoverManualToolHost,
   formatSearchResults,
   registerManualTools,
+  isByteRoverManualToolDefinition,
 } from "../src/tools.js";
 
 const text = <TDetails>(result: AgentToolResult<TDetails> | undefined) => {
@@ -38,8 +39,11 @@ class RecordingManualToolHost implements ByteRoverManualToolHost {
   private searchTool: Extract<ByteRoverManualToolDefinition, { name: "brv_search" }> | undefined;
   private persistTool: Extract<ByteRoverManualToolDefinition, { name: "brv_persist" }> | undefined;
 
-  registerTool(tool: ByteRoverManualToolDefinition): void {
+  registerTool<TParams extends TSchema = TSchema, TDetails = unknown, TState = unknown>(
+    tool: ToolDefinition<TParams, TDetails, TState>,
+  ): void {
     this.registeredToolNames.push(tool.name);
+    if (!isByteRoverManualToolDefinition(tool)) return;
     switch (tool.name) {
       case "brv_recall":
         this.recallTool = tool;
@@ -80,7 +84,6 @@ const register = (configure?: (bridge: RecordingByteRoverBridge) => void) => {
   registerManualTools({
     pi,
     bridge,
-    config: ConfigSchema.parse(undefined),
     createBridge,
   });
 

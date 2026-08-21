@@ -6,7 +6,6 @@ import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { BrvBridge } from "@byterover/brv-bridge";
 import { afterEach, describe, expect, test } from "vitest";
-import * as z from "zod/v4";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -33,8 +32,10 @@ describe("byterover-cli package smoke", () => {
     ]);
 
     const cliPackagePath = require.resolve("byterover-cli/package.json");
-    const cliPackageSchema = z.object({ bin: z.object({ brv: z.string() }) });
-    const cliPackage = cliPackageSchema.parse(JSON.parse(await readFile(cliPackagePath, "utf8")));
+    // SAFETY: the pinned CLI's own manifest declares its bin map; this boundary only reads it.
+    const cliPackage = JSON.parse(await readFile(cliPackagePath, "utf8")) as {
+      bin: { brv: string };
+    };
     const cliBin = cliPackage.bin.brv;
     expect(cliBin).toBeTypeOf("string");
 
