@@ -147,7 +147,9 @@ wait returns its terminal result with queued messages in `messages`. Pass
 optional `turn_id` to address an older retained turn exactly. Without it, waits
 select the oldest observable claimed or pending turn before the active/latest
 turn. A caller may have only one outstanding wait for the same source turn; a
-concurrent duplicate is rejected instead of competing for one Wait Event.
+concurrent duplicate is rejected instead of competing for one Wait Event. A
+wait remains pending until a Wait Event is available or its tool call is
+cancelled. Cancelling the wait does not cancel the Child Agent.
 
 The persisted Delivery Ledger records Coordination Messages, terminal results,
 globally increasing sequence, and wait ownership before delivery. Existing

@@ -22,6 +22,8 @@ Provide persistent, capability-bounded nested agents whose hierarchy, conversati
 
 An active direct-parent wait is the first delivery path for a child Coordination Message. Consuming a message wakes that wait without also enqueueing a duplicate Pi steer message, but claims only that message; later messages and the terminal result retain automatic fallback. When the source turn is already settled, one wait drains its queued Coordination Messages into the terminal Wait Event's `messages` field. An optional exact `turn_id` can address retained older work; the default selects the oldest observable turn. One caller cannot hold two concurrent waits for the same source turn.
 
+A wait remains active until it receives a Wait Event or is cancelled. Cancellation removes only the wait and does not cancel the Child Agent.
+
 Without a wait claim, Coordination Messages and terminal results use their persisted Delivery Ledger sequence and ordered recipient queue. New item sequences are unique and strictly increasing across both kinds but may contain gaps; updates preserve the item's sequence. Claims name only active, latest, or retained source turns. After the wait-claim grace period, automatic fallback batches queued messages from one source turn into one Pi steer. Root-bound messages remain batchable while the root turn is active, and a pending terminal result absorbs them into the same steer. Each batched item retains individual Delivery Evidence. Child sessions drain all available steers before their next model call. Wait-only terminal retention is capped at 20 items per source agent without pruning Coordination Messages. Deleting a complete live subtree prunes its orphaned ledger items and recent-message projections.
 
 ## Session lifecycle
