@@ -1,20 +1,18 @@
 import { expect, test } from "vitest";
+import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import {
   appendPostEditDiagnostics,
   extractPostEditDiagnosticPaths,
   formatPostEditDiagnostics,
   type PostEditDiagnosticsRunner,
-  type PostEditToolResult,
 } from "../src/lsp-post-edit-diagnostics.js";
 
-const noDiagnostics: PostEditDiagnosticsRunner = {
-  async runPostEditDiagnostics() {
-    return [];
-  },
-};
+const noDiagnostics: PostEditDiagnosticsRunner = async () => [];
 
-function mutationEvent(overrides: Partial<PostEditToolResult> = {}): PostEditToolResult {
-  return {
+function mutationEvent(overrides: Partial<ToolResultEvent> = {}): ToolResultEvent {
+  const event = {
+    type: "tool_result",
+    toolCallId: "call-1",
     toolName: "edit",
     input: { path: "src/example.ts" },
     details: { preserved: true },
@@ -22,6 +20,8 @@ function mutationEvent(overrides: Partial<PostEditToolResult> = {}): PostEditToo
     isError: false,
     ...overrides,
   };
+  // SAFETY: the fixture is a structurally valid CustomToolResultEvent; the union's literal branches need stricter details types.
+  return event as ToolResultEvent;
 }
 
 test("extracts successful native edit and write paths from the central input contract", () => {
@@ -111,47 +111,45 @@ test("appends diagnostics after a partial mutation without changing mutation fie
       },
     },
   });
-  const result = await appendPostEditDiagnostics(event, {
-    async runPostEditDiagnostics(paths) {
-      expect(paths).toEqual([{ path: "src/example.ts" }]);
-      return [
-        {
-          kind: "diagnostic" as const,
-          diagnostic: {
-            serverId: "z-server",
-            path: "z.ts",
-            line: 2,
-            character: 2,
-            severity: 2,
-            message: "warning",
-          },
+  const result = await appendPostEditDiagnostics(event, async (paths) => {
+    expect(paths).toEqual([{ path: "src/example.ts" }]);
+    return [
+      {
+        kind: "diagnostic" as const,
+        diagnostic: {
+          serverId: "z-server",
+          path: "z.ts",
+          line: 2,
+          character: 2,
+          severity: 2,
+          message: "warning",
         },
-        { kind: "timeout" as const, path: "src/example.ts", serverId: "typescript" },
-        { kind: "no_diagnostics" as const, path: "empty.ts" },
-        {
-          kind: "diagnostic" as const,
-          diagnostic: {
-            serverId: "a-server",
-            path: "a.ts",
-            line: 1,
-            character: 1,
-            severity: 1,
-            message: "error",
-          },
+      },
+      { kind: "timeout" as const, path: "src/example.ts", serverId: "typescript" },
+      { kind: "no_diagnostics" as const, path: "empty.ts" },
+      {
+        kind: "diagnostic" as const,
+        diagnostic: {
+          serverId: "a-server",
+          path: "a.ts",
+          line: 1,
+          character: 1,
+          severity: 1,
+          message: "error",
         },
-        {
-          kind: "diagnostic" as const,
-          diagnostic: {
-            serverId: "a-server",
-            path: "a.ts",
-            line: 1,
-            character: 1,
-            severity: 1,
-            message: "error",
-          },
+      },
+      {
+        kind: "diagnostic" as const,
+        diagnostic: {
+          serverId: "a-server",
+          path: "a.ts",
+          line: 1,
+          character: 1,
+          severity: 1,
+          message: "error",
         },
-      ];
-    },
+      },
+    ];
   });
 
   expect(result).toMatchObject({ details: event.details, isError: true });

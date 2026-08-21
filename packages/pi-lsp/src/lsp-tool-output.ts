@@ -32,6 +32,24 @@ export function formatLspToolValue(value: LSPAny): string {
   return text === undefined ? "null" : text;
 }
 
+/** Truncate model-visible text against Pi limits, spilling the complete text when truncated. */
+export async function truncateLspOutputText(
+  text: string,
+  sessionFiles: LspSessionFiles,
+  subject: string,
+): Promise<{ readonly text: string; readonly spillPath?: string }> {
+  const truncation = truncateHead(text, {
+    maxBytes: DEFAULT_MAX_BYTES,
+    maxLines: DEFAULT_MAX_LINES,
+  });
+  if (!truncation.truncated) return { text };
+  const spillPath = await sessionFiles.writeResultSpill(text);
+  return {
+    text: `${truncation.content}\n\n[Pi LSP: ${subject} truncated; complete Result Spill: ${spillPath}]`,
+    spillPath,
+  };
+}
+
 /** Validate normalized details, truncate model-visible text, and spill every complete oversized result. */
 export async function createLspToolOutput(
   text: string,
@@ -39,26 +57,20 @@ export async function createLspToolOutput(
   sessionFiles: LspSessionFiles,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   const normalizedDetails = Value.Parse(LspToolResultDetailsSchema, details);
-  const truncated = truncateHead(text, {
-    maxBytes: DEFAULT_MAX_BYTES,
-    maxLines: DEFAULT_MAX_LINES,
-  });
-  if (!truncated.truncated) {
+  const truncated = await truncateLspOutputText(text, sessionFiles, "output");
+  if (truncated.spillPath === undefined) {
     return { content: [{ type: "text", text }], details: normalizedDetails };
   }
 
-  const spillPath = await sessionFiles.writeResultSpill(text);
-  const notice = `\n\n[Pi LSP: output truncated; complete Result Spill: ${spillPath}]`;
-  const visibleText = `${truncated.content}${notice}`;
   const detailsWithSpill =
     normalizedDetails.kind === "operation"
       ? Value.Parse(LspToolResultDetailsSchema, {
           ...normalizedDetails,
-          spill_path: spillPath,
+          spill_path: truncated.spillPath,
         })
       : normalizedDetails;
   return {
-    content: [{ type: "text", text: visibleText }],
+    content: [{ type: "text", text: truncated.text }],
     details: detailsWithSpill,
   };
 }

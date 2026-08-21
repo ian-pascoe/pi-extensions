@@ -210,7 +210,6 @@ function serverDefinition(id: string): LspServerDefinition {
 
 function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
   return {
-    enabled: true,
     servers: new Map(serverIds.map((serverId) => [serverId, serverDefinition(serverId)])),
     timeouts: {
       diagnosticsMs: 3000,
@@ -244,7 +243,6 @@ describe("session-scoped LSP server manager", () => {
     });
 
     expect(manager.getStatus()).toEqual({
-      enabled: true,
       servers: [{ serverId: "typescript", state: "configured" }],
       warnings: [],
     });

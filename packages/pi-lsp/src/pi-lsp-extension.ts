@@ -1,11 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
   getAgentDir,
   SettingsManager,
-  truncateHead,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionFactory,
@@ -20,11 +17,10 @@ import {
   type Diagnostic,
 } from "vscode-languageserver-protocol/node";
 import {
-  appendPiPostEditDiagnostics,
+  appendPostEditDiagnostics,
   type PostEditDiagnosticOutcome,
   type PostEditDiagnosticPath,
   type PostEditDiagnosticsResultPatch,
-  type PostEditDiagnosticsRunner,
 } from "./lsp-post-edit-diagnostics.js";
 import {
   createPostEditDiagnosticsEntryData,
@@ -45,6 +41,7 @@ import {
   type LspWorkspaceEditPreviewRecord,
 } from "./lsp-tool-contract.js";
 import { registerLspTool } from "./lsp-tool.js";
+import { truncateLspOutputText } from "./lsp-tool-output.js";
 import { LspWorkspaceEditStore } from "./lsp-workspace-edit.js";
 import { resolveLspSettings } from "./pi-lsp-settings.js";
 
@@ -143,13 +140,13 @@ function failureDiagnosticOutcome(
   return { kind: "unavailable_server", path, serverId: failure.serverId };
 }
 
-class ManagerPostEditDiagnosticsRunner implements PostEditDiagnosticsRunner {
+class ManagerPostEditDiagnosticsRunner {
   constructor(
     private readonly session: ActivePiLspSession,
     private readonly signal: AbortSignal | undefined,
   ) {}
 
-  async runPostEditDiagnostics(
+  async run(
     paths: readonly PostEditDiagnosticPath[],
   ): Promise<readonly PostEditDiagnosticOutcome[]> {
     const outcomes: PostEditDiagnosticOutcome[] = [];
@@ -207,24 +204,20 @@ async function appendSessionPostEditDiagnostics(
   session: ActivePiLspSession,
   context: ExtensionContext,
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
-  const patch = await appendPiPostEditDiagnostics(
-    event,
-    new ManagerPostEditDiagnosticsRunner(session, context.signal),
+  const patch = await appendPostEditDiagnostics(event, (paths) =>
+    new ManagerPostEditDiagnosticsRunner(session, context.signal).run(paths),
   );
   if (patch === undefined) return undefined;
   const appendedValue = patch.content.at(-1);
   if (!Value.Check(AppendedTextContentSchema, appendedValue)) return undefined;
   let appended: Static<typeof AppendedTextContentSchema> = appendedValue;
-  const truncation = truncateHead(appended.text, {
-    maxBytes: DEFAULT_MAX_BYTES,
-    maxLines: DEFAULT_MAX_LINES,
-  });
-  if (truncation.truncated) {
-    const spillPath = await session.sessionFiles.writeResultSpill(appended.text);
-    appended = {
-      type: "text",
-      text: `${truncation.content}\n\n[Pi LSP: diagnostics truncated; complete Result Spill: ${spillPath}]`,
-    };
+  const truncation = await truncateLspOutputText(
+    appended.text,
+    session.sessionFiles,
+    "diagnostics",
+  );
+  if (truncation.spillPath !== undefined) {
+    appended = { type: "text", text: truncation.text };
   }
   const partialApplyFailure =
     event.toolName === "lsp" &&
@@ -280,9 +273,9 @@ export class PiLspLifecycleController {
     const replay = workspaceEdits.replayPreviewRecords(
       branchLspToolResultDetails(context.sessionManager.getBranch()),
     );
-    if (replay.rejected > 0) {
+    if (replay > 0) {
       context.ui.notify(
-        `Pi LSP ignored ${replay.rejected} invalid Workspace Edit Preview record${replay.rejected === 1 ? "" : "s"} on the active session branch.`,
+        `Pi LSP ignored ${replay} invalid Workspace Edit Preview record${replay === 1 ? "" : "s"} on the active session branch.`,
         "warning",
       );
     }

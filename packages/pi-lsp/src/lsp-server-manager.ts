@@ -82,8 +82,6 @@ export interface LspServerFailure {
   readonly code: LspServerFailureCode;
   /** Searchable caller-facing error prefixed with `Pi LSP:`. */
   readonly message: string;
-  /** Selected workspace root when routing reached a concrete Server Instance. */
-  readonly rootPath?: string;
   /** Configured server ID, or the requested missing ID. */
   readonly serverId: string;
 }
@@ -135,8 +133,6 @@ export interface LspServerStatusEntry {
 
 /** Reports configuration failures and session-scoped Server Instance states. */
 export interface LspServerManagerStatus {
-  /** False when either authored `lsp` settings layer was malformed. */
-  readonly enabled: boolean;
   /** Server entries ordered by ID and then root. */
   readonly servers: readonly LspServerStatusEntry[];
   /** Strict settings failures kept visible until Pi `/reload`. */
@@ -248,7 +244,6 @@ function unavailableFailure(route: LspServerRoute, error: string): LspServerFail
   return {
     code: "server-unavailable",
     message: `Pi LSP: server ${route.serverId} is unavailable for ${route.rootPath}: ${error}`,
-    rootPath: route.rootPath,
     serverId: route.serverId,
   };
 }
@@ -288,15 +283,12 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       }
     }
     return {
-      enabled: this.input.settings.enabled,
       servers,
       warnings: this.input.settings.warnings,
     };
   }
 
-  /** Resolve all matching Server Definitions and nearest roots without starting clients. */
-  async routeFile(filePath: string): Promise<readonly LspServerRoute[]> {
-    if (!this.input.settings.enabled) return [];
+  private async routeFile(filePath: string): Promise<readonly LspServerRoute[]> {
     const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
     const ancestors = await readLspAncestorDirectories(absolutePath);
     const definitions = [...this.input.settings.servers.values()].map((definition) => ({
@@ -339,7 +331,6 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
           return {
             code: "no-capable-server",
             message: `Pi LSP: server ${route.serverId} does not support the requested operation`,
-            rootPath: route.rootPath,
             serverId: route.serverId,
           };
         }
@@ -353,7 +344,6 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
           return {
             code: "request-failed",
             message: `Pi LSP: server ${route.serverId} request failed: ${describeLspError(error)}`,
-            rootPath: route.rootPath,
             serverId: route.serverId,
           };
         }

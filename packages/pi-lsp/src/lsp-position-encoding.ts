@@ -24,7 +24,8 @@ export function normalizeLspPositionEncoding(encoding: string | undefined): LspP
   return "utf-16";
 }
 
-function documentLines(documentText: string): readonly string[] {
+/** Split document text into lines on CRLF, LF, or CR separators. */
+export function documentLines(documentText: string): readonly string[] {
   return documentText.split(/\r\n|[\n\r]/u);
 }
 

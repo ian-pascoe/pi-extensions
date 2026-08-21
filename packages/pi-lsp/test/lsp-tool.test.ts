@@ -58,7 +58,6 @@ class RecordingLspClient implements LspToolServerClient {
   ): Promise<LspSynchronizedDocument> {
     const text = await readFile(filePath, "utf8");
     return {
-      filePath,
       uri: pathToFileURL(filePath).href,
       version: 1,
       text,
@@ -121,7 +120,6 @@ interface LspToolFixture {
 
 function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
   return {
-    enabled: true,
     warnings: [],
     timeouts: {
       diagnosticsMs: 100,
@@ -646,7 +644,6 @@ describe("registered LSP tool", () => {
     expect(result.details).toMatchObject({
       kind: "workspace_edit_apply",
       changed_paths: [fixture.filePath],
-      recovery_failure_paths: [fixture.filePath],
       state: "partial_failure",
     });
     await fixture.close();

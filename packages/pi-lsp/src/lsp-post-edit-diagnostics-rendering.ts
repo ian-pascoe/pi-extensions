@@ -68,7 +68,8 @@ function severityColor(severity: DiagnosticSeverity): ThemeColor {
   }
 }
 
-function pluralizedCount(count: number, singular: string, plural = `${singular}s`): string {
+/** Render one count with a pluralized noun, e.g. `3 files` or `1 file`. */
+export function pluralizedCount(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 

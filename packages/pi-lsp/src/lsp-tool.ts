@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentToolResult,
+  ExtensionContext,
+  ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -227,6 +231,23 @@ async function createLspToolOutput(
   );
 }
 
+async function readOutput(
+  operation: LspToolParameters["operation"],
+  result: Promise<LspServerReadResult<LSPAny>>,
+  dependencies: LspToolDependencies,
+) {
+  const resolved = await result;
+  requireReadSuccess(resolved);
+  return createLspToolOutput(
+    formatLspToolValue({
+      results: readOperationValue(resolved),
+      warnings: resolved.failures.map(({ message }) => message),
+    }),
+    operationDetails(operation, readOperationOutcomes(resolved)),
+    dependencies,
+  );
+}
+
 function parseLspToolParameters(input: LSPAny): LspToolParameters {
   try {
     return Value.Parse(LspToolParametersSchema, input);
@@ -440,15 +461,6 @@ async function normalizeProtocolResult(
   return Object.fromEntries(entries);
 }
 
-async function requestDocumentMethod(
-  prepared: PreparedDocument,
-  method: string,
-  parameters: LSPAny,
-  signal: AbortSignal | undefined,
-): Promise<LSPAny> {
-  return prepared.client.request<LSPAny>(method, parameters, signal);
-}
-
 function supportsResolveProvider(value: LSPAny): boolean {
   return protocolRecord(value)?.resolveProvider === true;
 }
@@ -545,9 +557,7 @@ async function workspacePreviewOutput(
   serverId: string,
   edit: WorkspaceEdit,
   positionEncoding: PositionEncodingKind,
-): Promise<
-  ReturnType<typeof createLspToolOutput> extends Promise<infer TResult> ? TResult : never
-> {
+): Promise<AgentToolResult<LspToolResultDetails>> {
   const preview = await dependencies.workspaceEdits.createPreview({
     edit,
     serverId,
@@ -617,8 +627,7 @@ async function executePositionRead(
           context: { includeDeclaration: parameters.include_declaration ?? true },
         };
       }
-      let value = await requestDocumentMethod(
-        prepared,
+      let value = await prepared.client.request<LSPAny>(
         capabilityMethod,
         requestParameters,
         signal,
@@ -1015,7 +1024,6 @@ async function executeApplyPreview(
         preview_id: parameters.preview_id,
         mutation_manifest: canonicalManifest,
         changed_paths: [...cause.recoveryFailures].sort((left, right) => left.localeCompare(right)),
-        recovery_failure_paths: [...cause.recoveryFailures],
         state: "partial_failure",
       },
       dependencies,
@@ -1127,72 +1135,42 @@ export function createLspToolDefinition(
         case "type_hierarchy":
         case "supertypes":
         case "subtypes":
-        case "prepare_rename": {
-          const result = await executePositionRead(dependencies, parameters, context, signal);
-          requireReadSuccess(result);
-          return createLspToolOutput(
-            formatLspToolValue({
-              results: readOperationValue(result),
-              warnings: result.failures.map(({ message }) => message),
-            }),
-            operationDetails(parameters.operation, readOperationOutcomes(result)),
+        case "prepare_rename":
+          return readOutput(
+            parameters.operation,
+            executePositionRead(dependencies, parameters, context, signal),
             dependencies,
           );
-        }
         case "diagnostics":
         case "document_symbols":
         case "document_links":
         case "folding_ranges":
         case "code_lenses":
-        case "document_colors": {
-          const result = await executeFileRead(dependencies, parameters, context, signal);
-          requireReadSuccess(result);
-          return createLspToolOutput(
-            formatLspToolValue({
-              results: readOperationValue(result),
-              warnings: result.failures.map(({ message }) => message),
-            }),
-            operationDetails(parameters.operation, readOperationOutcomes(result)),
+        case "document_colors":
+          return readOutput(
+            parameters.operation,
+            executeFileRead(dependencies, parameters, context, signal),
             dependencies,
           );
-        }
         case "workspace_diagnostics":
-        case "workspace_symbols": {
-          const result = await executeWorkspaceRead(dependencies, parameters, context, signal);
-          requireReadSuccess(result);
-          return createLspToolOutput(
-            formatLspToolValue({
-              results: readOperationValue(result),
-              warnings: result.failures.map(({ message }) => message),
-            }),
-            operationDetails(parameters.operation, readOperationOutcomes(result)),
+        case "workspace_symbols":
+          return readOutput(
+            parameters.operation,
+            executeWorkspaceRead(dependencies, parameters, context, signal),
             dependencies,
           );
-        }
-        case "selection_ranges": {
-          const result = await executeSelectionRanges(dependencies, parameters, context, signal);
-          requireReadSuccess(result);
-          return createLspToolOutput(
-            formatLspToolValue({
-              results: readOperationValue(result),
-              warnings: result.failures.map(({ message }) => message),
-            }),
-            operationDetails(parameters.operation, readOperationOutcomes(result)),
+        case "selection_ranges":
+          return readOutput(
+            parameters.operation,
+            executeSelectionRanges(dependencies, parameters, context, signal),
             dependencies,
           );
-        }
-        case "inlay_hints": {
-          const result = await executeInlayHints(dependencies, parameters, context, signal);
-          requireReadSuccess(result);
-          return createLspToolOutput(
-            formatLspToolValue({
-              results: readOperationValue(result),
-              warnings: result.failures.map(({ message }) => message),
-            }),
-            operationDetails(parameters.operation, readOperationOutcomes(result)),
+        case "inlay_hints":
+          return readOutput(
+            parameters.operation,
+            executeInlayHints(dependencies, parameters, context, signal),
             dependencies,
           );
-        }
         case "format_document":
         case "format_range":
         case "format_on_type":

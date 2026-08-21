@@ -96,7 +96,6 @@ export interface LspTimeouts {
 
 /** Reports resolved trusted configuration, retaining valid entries when other settings are invalid. */
 export interface ResolvedLspSettings {
-  readonly enabled: boolean;
   readonly servers: ReadonlyMap<string, LspServerDefinition>;
   readonly timeouts: LspTimeouts;
   readonly warnings: readonly string[];
@@ -337,7 +336,6 @@ export function resolveLspSettings(reader: LspSettingsReader): ResolvedLspSettin
   const globalLayer = readLspLayer(reader.getGlobalSettings(), "global");
   const projectLayer = readLspLayer(reader.getProjectSettings(), "project");
   return {
-    enabled: true,
     servers: mergeLspServers(globalLayer, projectLayer),
     timeouts: mergeLspTimeouts(globalLayer, projectLayer),
     warnings: [...globalLayer.warnings, ...projectLayer.warnings],

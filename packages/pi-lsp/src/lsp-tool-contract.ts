@@ -332,7 +332,6 @@ const RegularFileSnapshotSchema = Type.Object(
   {
     kind: Type.Literal("file"),
     content_base64: Type.String(),
-    hash: Type.String({ minLength: 64, maxLength: 64 }),
     mode: Type.Integer({ minimum: 0 }),
   },
   { additionalProperties: false },
@@ -345,13 +344,17 @@ const SymlinkSnapshotSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const FileSnapshotSchema = Type.Union([
+/** Canonical pre-mutation snapshot of one filesystem path used by guarded rollback. */
+export const FileSnapshotSchema = Type.Union([
   MissingFileSnapshotSchema,
   RegularFileSnapshotSchema,
   SymlinkSnapshotSchema,
 ]);
-const ExistingFileSnapshotSchema = Type.Union([RegularFileSnapshotSchema, SymlinkSnapshotSchema]);
-const WorkspaceEditOperationSchema = Type.Union([
+export const ExistingFileSnapshotSchema = Type.Union([
+  RegularFileSnapshotSchema,
+  SymlinkSnapshotSchema,
+]);
+export const WorkspaceEditOperationSchema = Type.Union([
   Type.Object(
     {
       kind: Type.Literal("modify"),
@@ -440,7 +443,6 @@ const WorkspaceEditApplyDetailsSchema = Type.Object(
     changed_paths: Type.Array(AbsolutePathSchema),
     preview_records: Type.Optional(Type.Array(LspWorkspaceEditPreviewRecordSchema)),
     state: Type.Union([Type.Literal("applied"), Type.Literal("partial_failure")]),
-    recovery_failure_paths: Type.Optional(Type.Array(AbsolutePathSchema)),
   },
   { additionalProperties: false },
 );
@@ -460,9 +462,3 @@ export type LspWorkspaceEditPreviewRecord = Static<typeof LspWorkspaceEditPrevie
 
 /** A normalized per-server outcome used when rendering an LSP read operation. */
 export type ServerOperationOutcome = Static<typeof ServerOperationOutcomeSchema>;
-
-/** A persisted Workspace Edit Preview that can be rebuilt from the active session branch. */
-export type WorkspaceEditPreviewDetails = Static<typeof WorkspaceEditPreviewDetailsSchema>;
-
-/** The result of applying one guarded Workspace Edit Preview. */
-export type WorkspaceEditApplyDetails = Static<typeof WorkspaceEditApplyDetailsSchema>;
