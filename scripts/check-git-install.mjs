@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { access, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,15 +71,6 @@ async function assertPackageExcludedFromProductionInstall(installDirectory, pack
   }
 }
 
-async function omitUnsupportedDevelopmentArchive(installDirectory) {
-  // npm resolves workspace devDependencies even with --omit=dev, but Microsoft's DAP archive
-  // has no package.json. Removing it models the production tree that --omit=dev should produce.
-  const manifestPath = resolve(installDirectory, "packages/pi-dap/package.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  delete manifest.devDependencies["vscode-js-debug"];
-  await writeFile(manifestPath, JSON.stringify(manifest));
-}
-
 async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory) {
   const manifest = await readJsonDocument(
     resolve(installDirectory, "package.json"),
@@ -120,7 +111,6 @@ try {
     recursive: true,
     filter: includeWorkingTreePath,
   });
-  await omitUnsupportedDevelopmentArchive(installDirectory);
   await runNpmProductionInstall(installDirectory);
   await assertPackageExcludedFromProductionInstall(installDirectory, "byterover-cli");
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");

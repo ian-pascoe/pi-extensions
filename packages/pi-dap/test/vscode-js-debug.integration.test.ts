@@ -85,7 +85,7 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
 
   const adapterPath = resolve(
     import.meta.dirname,
-    "../node_modules/vscode-js-debug/src/dapDebugServer.js",
+    "../../../tools/pi-dap-vscode-js-debug/node_modules/vscode-js-debug/src/dapDebugServer.js",
   );
   const baselineAdapterProcesses = await processIdsContaining(adapterPath);
   const files = await createDapSessionFiles(piSessionDirectory);
