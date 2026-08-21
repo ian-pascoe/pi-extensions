@@ -6,25 +6,21 @@ const nodeProcessErrorProperties = Type.Object({
   stderr: Type.Optional(Type.String()),
 });
 
-/** Parses an execFile failure while retaining its original Error cause. */
+/** Parses an execFile failure into its process error code and captured stderr, or null. */
 export function parseNodeProcessError(cause) {
-  if (!(cause instanceof Error) || !Value.Check(nodeProcessErrorProperties, cause)) {
-    return { kind: "unrecognized", cause };
-  }
-
-  const parsedError = { cause, kind: "process-error" };
-  if (Object.hasOwn(cause, "code") && cause.code !== undefined) parsedError.code = cause.code;
-  if (Object.hasOwn(cause, "stderr") && cause.stderr !== undefined)
-    parsedError.stderr = cause.stderr;
-  return parsedError;
+  if (!(cause instanceof Error) || !Value.Check(nodeProcessErrorProperties, cause)) return null;
+  const processError = {};
+  if (cause.code !== undefined) processError.code = cause.code;
+  if (cause.stderr !== undefined) processError.stderr = cause.stderr;
+  return Object.keys(processError).length > 0 ? processError : null;
 }
 
-/** Returns whether an execFile failure has the requested Node process error code. */
+/** Returns whether an execFile failure carries the requested Node process error code. */
 export function hasNodeProcessErrorCode(processError, code) {
-  return processError.kind === "process-error" && processError.code === code;
+  return processError?.code === code;
 }
 
 /** Returns execFile stderr without inventing output for failures that omit it. */
 export function getNodeProcessErrorStderr(processError) {
-  return processError.kind === "process-error" ? (processError.stderr ?? "") : "";
+  return processError?.stderr ?? "";
 }

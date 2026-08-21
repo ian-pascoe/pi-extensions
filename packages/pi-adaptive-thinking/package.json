@@ -35,10 +35,6 @@
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
-  "dependencies": {},
-  "devDependencies": {
-    "@types/proper-lockfile": "4.1.4"
-  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
