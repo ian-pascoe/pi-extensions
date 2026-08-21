@@ -36,8 +36,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@byterover/brv-bridge": "^1.2.0",
-    "zod": "^4.4.3"
+    "@byterover/brv-bridge": "^1.2.0"
   },
   "devDependencies": {
     "byterover-cli": "3.16.1"

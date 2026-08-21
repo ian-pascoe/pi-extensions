@@ -35,9 +35,6 @@ const CODEMODE_RESULT_PRESENTATION_MAX_LINES = 2_000;
 const CODEMODE_WATCHDOG_GRACE_MS = 100;
 const INVALID_CODEMODE_SESSION_ID = "invalid-session-id";
 
-/** Branded identifier for one retained CodeMode Session. */
-export type CodeModeSessionId = string & { readonly CodeModeSessionId: unique symbol };
-
 /** Observer state of one settled CodeMode Cell. */
 export type CodeModeObservedCellState = "completed" | "failed" | "cancelled" | "timed_out";
 
@@ -70,7 +67,7 @@ export type CodeModeObservedLastCell = {
 
 /** Immutable read-only facts for one CodeMode Session with at least one Cell. */
 export type CodeModeObservedSession = {
-  readonly sessionId: CodeModeSessionId;
+  readonly sessionId: string;
   readonly lifecycle: "running" | "idle" | "terminal";
   /** Number of Cells started in this CodeMode Session. */
   readonly cell_count: number;
@@ -88,7 +85,7 @@ export type CodeModeObserverSnapshot = {
 
 /** Read-only facts for one live CodeMode Session, ordered by admission priority. */
 export type CodeModeListedSession = {
-  readonly sessionId: CodeModeSessionId;
+  readonly sessionId: string;
   readonly state: "running" | "idle";
   readonly cellCount: number;
   /** Parent wall-clock time of the latest execution-visible transition in Unix-epoch milliseconds. */
@@ -97,7 +94,7 @@ export type CodeModeListedSession = {
 
 /** One idle CodeMode worker failure not represented by an active Cell result. */
 export type CodeModeUnexpectedFailure = {
-  readonly sessionId: CodeModeSessionId;
+  readonly sessionId: string;
   readonly message: string;
 };
 
@@ -122,7 +119,7 @@ export type CodeModeNestedToolUpdate = AgentToolResult<unknown>;
 
 /** One complete guest batch plus its Cell-scoped cancellation and update capabilities. */
 export type CodeModeNestedToolBatch = {
-  readonly sessionId: CodeModeSessionId;
+  readonly sessionId: string;
   readonly batchId: string;
   readonly calls: readonly CodeModeNestedToolCall[];
   readonly signal: AbortSignal;
@@ -187,14 +184,14 @@ type MutableCodeModeOuterToolMetadata = {
 
 type CreateActiveCodeModeCellOptions = {
   onUpdate?: (update: CodeModeNestedToolUpdate) => void;
-  reclaimedSessionId?: CodeModeSessionId;
+  reclaimedSessionId?: string;
 };
 
 type ActiveCodeModeCell = {
   readonly cellId: string;
   readonly ordinal: number;
   readonly startedAtMs: number;
-  readonly reclaimedSessionId?: CodeModeSessionId;
+  readonly reclaimedSessionId?: string;
   readonly abortController: AbortController;
   readonly completion: Promise<CodeModeResult>;
   readonly resolveCompletion: (result: CodeModeResult) => void;
@@ -213,7 +210,7 @@ type ActiveCodeModeCell = {
 
 type LiveCodeModeSession = {
   readonly state: "live";
-  readonly sessionId: CodeModeSessionId;
+  readonly sessionId: string;
   readonly worker: CodeModeWorkerProcess;
   lastAccess: number;
   lastActivityAtMs: number;
@@ -227,7 +224,7 @@ type LiveCodeModeSession = {
 
 type TerminalCodeModeSession = {
   readonly state: "terminal";
-  readonly sessionId: CodeModeSessionId;
+  readonly sessionId: string;
   lastAccess: number;
   readonly lastActivityAtMs: number;
   readonly cellCount: number;
@@ -242,7 +239,7 @@ type CodeModeSessionRecord = LiveCodeModeSession | TerminalCodeModeSession;
 type LocateCodeModeSessionResult =
   | {
       readonly record: CodeModeSessionRecord;
-      readonly reclaimedSessionId?: CodeModeSessionId;
+      readonly reclaimedSessionId?: string;
     }
   | { readonly failure: CodeModeResult };
 
@@ -251,14 +248,40 @@ type FatalCodeModeSessionFailure = {
   readonly message: string;
 };
 
-type ParseCodeModeSessionIdResult =
-  | { readonly ok: true; readonly value: CodeModeSessionId }
-  | { readonly ok: false };
+type ParsestringResult = { readonly ok: true; readonly value: string } | { readonly ok: false };
 
-function parseCodeModeSessionId(value: string): ParseCodeModeSessionIdResult {
-  if (value.length === 0) return { ok: false };
-  // SAFETY: This parser establishes the only CodeMode Session ID invariant (non-empty) before applying the domain brand.
-  return { ok: true, value: value as CodeModeSessionId };
+function parsestring(value: string): ParsestringResult {
+  return value.length === 0 ? { ok: false } : { ok: true, value };
+}
+
+/** Return the shortest prefix of the identifier that no candidate shares. */
+export function shortestUniqueCodeModeSessionPrefix(
+  identifier: string,
+  candidates: readonly string[],
+): string {
+  let length = Math.min(8, identifier.length);
+  while (
+    length < identifier.length &&
+    candidates.some((candidate) => candidate.startsWith(identifier.slice(0, length)))
+  ) {
+    length += 1;
+  }
+  return identifier.slice(0, length);
+}
+
+/** Render one elapsed duration as ms, seconds, or minutes + padded seconds. */
+export function formatCodeModeDuration(elapsedMs: number): string {
+  if (elapsedMs < 1_000) return `${elapsedMs}ms`;
+  if (elapsedMs < 60_000) return `${(elapsedMs / 1_000).toFixed(1)}s`;
+  const seconds = Math.floor(elapsedMs / 1_000);
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+/** Round one elapsed measurement and clamp it to a safe non-negative integer. */
+export function boundedCodeModeElapsedMs(startedAtMs: number, observedAtMs: number): number {
+  const elapsed = Math.round(observedAtMs - startedAtMs);
+  if (!Number.isFinite(elapsed)) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, elapsed));
 }
 
 function invalidCodeModeSessionResult(): CodeModeSessionOperationResult {
@@ -275,12 +298,11 @@ function emptyMetadataAccumulator(): CodeModeMetadataAccumulator {
   return { addedToolNames: new Set(), terminate: false };
 }
 
-function combineCodeModeUsage(left: Usage | undefined, right: Usage): Usage {
+/** Sums two Usage values; optional fields appear only when either side carries them. */
+export function addCodeModeUsage(left: Usage | undefined, right: Usage | undefined): Usage {
+  if (right === undefined) throw new Error("Pi CodeMode usage: missing increment");
   if (left === undefined) {
-    return {
-      ...right,
-      cost: { ...right.cost },
-    };
+    return { ...right, cost: { ...right.cost } };
   }
   const combined: Usage = {
     input: left.input + right.input,
@@ -310,7 +332,7 @@ function mergeCodeModeOuterMetadata(
   metadata: CodeModeOuterToolMetadata,
 ): void {
   if (metadata.usage !== undefined) {
-    accumulator.usage = combineCodeModeUsage(accumulator.usage, metadata.usage);
+    accumulator.usage = addCodeModeUsage(accumulator.usage, metadata.usage);
   }
   for (const name of metadata.addedToolNames ?? []) accumulator.addedToolNames.add(name);
   if (metadata.terminate === true) accumulator.terminate = true;
@@ -331,7 +353,7 @@ function finalizeCodeModeMetadata(
 
 /** Owns bounded CodeMode Session records and one isolated Deno process per live Session. */
 export class CodeModeSessionCoordinator {
-  private readonly records = new Map<CodeModeSessionId, CodeModeSessionRecord>();
+  private readonly records = new Map<string, CodeModeSessionRecord>();
   private readonly runtime: CodeModeRuntime;
   private accessSequence = 0;
   private cellSequence = 0;
@@ -357,7 +379,7 @@ export class CodeModeSessionCoordinator {
   ): Promise<CodeModeSessionOperationResult> {
     if (this.shuttingDown) {
       const candidateSessionId = input.sessionId ?? this.runtime.createSessionId();
-      const parsedSessionId = parseCodeModeSessionId(candidateSessionId);
+      const parsedSessionId = parsestring(candidateSessionId);
       if (!parsedSessionId.ok) return invalidCodeModeSessionResult();
       return {
         result: createCodeModeFailure(
@@ -373,7 +395,7 @@ export class CodeModeSessionCoordinator {
       let located: LocateCodeModeSessionResult;
       if (input.sessionId === undefined) located = await this.createLiveSession();
       else {
-        const parsedSessionId = parseCodeModeSessionId(input.sessionId);
+        const parsedSessionId = parsestring(input.sessionId);
         if (!parsedSessionId.ok) return invalidCodeModeSessionResult();
         located = this.findSession(parsedSessionId.value);
       }
@@ -446,7 +468,7 @@ export class CodeModeSessionCoordinator {
 
   /** Polls the latest retained Cell result without consuming that public result. */
   result(sessionIdValue: string): CodeModeSessionOperationResult {
-    const parsedSessionId = parseCodeModeSessionId(sessionIdValue);
+    const parsedSessionId = parsestring(sessionIdValue);
     if (!parsedSessionId.ok) return invalidCodeModeSessionResult();
     const sessionId = parsedSessionId.value;
     const record = this.records.get(sessionId);
@@ -495,25 +517,33 @@ export class CodeModeSessionCoordinator {
 
   /** Return the shortest currently unique Session prefix, or the full unknown historical ID. */
   formatSessionPrefix(sessionIdValue: string): string {
-    const parsed = parseCodeModeSessionId(sessionIdValue);
+    const parsed = parsestring(sessionIdValue);
     if (!parsed.ok || !this.records.has(parsed.value)) return sessionIdValue;
-    const sessionIds = [...this.records.keys()];
-    let length = Math.min(8, sessionIdValue.length);
-    while (
-      length < sessionIdValue.length &&
-      sessionIds.some(
-        (candidate) =>
-          candidate !== parsed.value && candidate.startsWith(sessionIdValue.slice(0, length)),
-      )
-    ) {
-      length += 1;
-    }
-    return sessionIdValue.slice(0, length);
+    const others = [...this.records.keys()].filter((candidate) => candidate !== parsed.value);
+    return shortestUniqueCodeModeSessionPrefix(sessionIdValue, others);
+  }
+
+  private closedCellPresentation(
+    cellState: CodeModePresentationSnapshot["cell_state"],
+  ): CodeModePresentationSnapshot {
+    return {
+      version: 1,
+      cell_state: cellState,
+      session_state: "closed",
+      elapsed_ms: 0,
+      active_tool_names: [],
+      active_tool_count: 0,
+      nested_tool_count: 0,
+      succeeded_nested_tool_count: 0,
+      failed_nested_tool_count: 0,
+      nested_tools: [],
+      omitted_nested_tool_count: 0,
+    };
   }
 
   /** Force-terminates one live CodeMode Session and retains its cancellation result. */
   async cancel(sessionIdValue: string): Promise<CodeModeSessionOperationResult> {
-    const parsedSessionId = parseCodeModeSessionId(sessionIdValue);
+    const parsedSessionId = parsestring(sessionIdValue);
     if (!parsedSessionId.ok) return invalidCodeModeSessionResult();
     const sessionId = parsedSessionId.value;
     const record = this.records.get(sessionId);
@@ -535,19 +565,7 @@ export class CodeModeSessionCoordinator {
       });
     } else {
       record.lastActivityAtMs = this.runtime.now();
-      record.latestPresentation = {
-        version: 1,
-        cell_state: "cancelled",
-        session_state: "closed",
-        elapsed_ms: 0,
-        active_tool_names: [],
-        active_tool_count: 0,
-        nested_tool_count: 0,
-        succeeded_nested_tool_count: 0,
-        failed_nested_tool_count: 0,
-        nested_tools: [],
-        omitted_nested_tool_count: 0,
-      };
+      record.latestPresentation = this.closedCellPresentation("cancelled");
       this.replaceWithTerminal(
         record,
         createCodeModeFailure(sessionId, "cancellation", "CodeMode Session was cancelled"),
@@ -564,7 +582,7 @@ export class CodeModeSessionCoordinator {
   }
 
   /** Releases every live Deno process; repeated shutdown calls share one completion. */
-  shutdown(_reason: string): Promise<void> {
+  shutdown(): Promise<void> {
     if (this.shutdownPromise !== undefined) return this.shutdownPromise;
     this.shuttingDown = true;
     this.shutdownPromise = this.shutdownAllSessions();
@@ -594,7 +612,7 @@ export class CodeModeSessionCoordinator {
   }
 
   private async createLiveSession(): Promise<LocateCodeModeSessionResult> {
-    const parsedSessionId = parseCodeModeSessionId(this.runtime.createSessionId());
+    const parsedSessionId = parsestring(this.runtime.createSessionId());
     if (!parsedSessionId.ok) {
       return {
         failure: createCodeModeFailure(
@@ -618,7 +636,7 @@ export class CodeModeSessionCoordinator {
     const liveRecords = [...this.records.values()].filter(
       (record): record is LiveCodeModeSession => record.state === "live",
     );
-    let reclaimedSessionId: CodeModeSessionId | undefined;
+    let reclaimedSessionId: string | undefined;
     if (liveRecords.length >= this.options.maxSessions) {
       const reclaimedRecord = liveRecords
         .filter((record) => record.currentCell === undefined)
@@ -698,7 +716,7 @@ export class CodeModeSessionCoordinator {
     return reclaimedSessionId === undefined ? { record } : { record, reclaimedSessionId };
   }
 
-  private findSession(sessionId: CodeModeSessionId): LocateCodeModeSessionResult {
+  private findSession(sessionId: string): LocateCodeModeSessionResult {
     const record = this.records.get(sessionId);
     return record === undefined
       ? { failure: createCodeModeFailure(sessionId, "unknown", "Unknown CodeMode Session") }
@@ -794,10 +812,7 @@ export class CodeModeSessionCoordinator {
     }
   }
 
-  private handleWorkerResponse(
-    sessionId: CodeModeSessionId,
-    response: CodeModeWorkerResponse,
-  ): void {
+  private handleWorkerResponse(sessionId: string, response: CodeModeWorkerResponse): void {
     const record = this.records.get(sessionId);
     if (record?.state !== "live" || record.currentCell === undefined) return;
     const cell = record.currentCell;
@@ -1247,26 +1262,14 @@ export class CodeModeSessionCoordinator {
     return stop;
   }
 
-  private handleWorkerFailure(sessionId: CodeModeSessionId, message: string): void {
+  private handleWorkerFailure(sessionId: string, message: string): void {
     const record = this.records.get(sessionId);
     if (record?.state !== "live") return;
     if (record.currentCell !== undefined) {
       this.fatalizeSession(record, record.currentCell, { code: "runtime", message });
     } else {
       record.lastActivityAtMs = this.runtime.now();
-      record.latestPresentation = {
-        version: 1,
-        cell_state: "failed",
-        session_state: "closed",
-        elapsed_ms: 0,
-        active_tool_names: [],
-        active_tool_count: 0,
-        nested_tool_count: 0,
-        succeeded_nested_tool_count: 0,
-        failed_nested_tool_count: 0,
-        nested_tools: [],
-        omitted_nested_tool_count: 0,
-      };
+      record.latestPresentation = this.closedCellPresentation("failed");
       this.replaceWithTerminal(record, createCodeModeFailure(sessionId, "runtime", message));
       try {
         this.options.onUnexpectedFailure?.(Object.freeze({ sessionId, message }));
@@ -1387,7 +1390,7 @@ export class CodeModeSessionCoordinator {
     }
   }
 
-  private retainTerminalFailure(sessionId: CodeModeSessionId, failure: CodeModeResult): void {
+  private retainTerminalFailure(sessionId: string, failure: CodeModeResult): void {
     this.records.set(sessionId, {
       state: "terminal",
       sessionId,

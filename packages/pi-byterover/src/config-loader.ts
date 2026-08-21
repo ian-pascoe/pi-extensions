@@ -1,10 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type * as z from "zod/v4";
-import { ConfigSchema } from "./config.js";
+import { parseConfigDocument, type ByteroverConfig } from "./config.js";
 
-export type ByteroverConfig = z.infer<typeof ConfigSchema>;
+export type { ByteroverConfig };
 
 export type LoadConfigOptions = {
   cwd: string;
@@ -21,7 +20,7 @@ const invalidConfig = (source: string, error: Error): LoadConfigResult => ({
   error: new Error(`Invalid Byterover configuration in ${source}: ${error.message}`),
 });
 
-/** Loads the highest-precedence ByteRover JSON configuration through its Zod boundary. */
+/** Loads the highest-precedence ByteRover JSON configuration through its TypeBox boundary. */
 export const loadConfig = async ({
   cwd,
   homeDir = homedir(),
@@ -41,11 +40,11 @@ export const loadConfig = async ({
     }
 
     try {
-      return { success: true, source, config: ConfigSchema.parse(JSON.parse(raw)) };
+      return { success: true, source, config: parseConfigDocument(JSON.parse(raw)) };
     } catch (cause) {
       return invalidConfig(source, cause instanceof Error ? cause : new Error(String(cause)));
     }
   }
 
-  return { success: true, config: ConfigSchema.parse(undefined) };
+  return { success: true, config: parseConfigDocument(undefined) };
 };

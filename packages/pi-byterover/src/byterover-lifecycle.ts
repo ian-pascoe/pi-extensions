@@ -343,22 +343,7 @@ export const createByteRoverExtension = (
 
     if (config.manualTools) {
       registerManualTools({
-        pi: {
-          registerTool: (tool) => {
-            switch (tool.name) {
-              case "brv_recall":
-                pi.registerTool(tool);
-                return;
-              case "brv_search":
-                pi.registerTool(tool);
-                return;
-              case "brv_persist":
-                pi.registerTool(tool);
-                return;
-            }
-          },
-        },
-        config,
+        pi,
         bridge,
         createBridge,
       });

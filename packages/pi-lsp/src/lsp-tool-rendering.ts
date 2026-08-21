@@ -16,6 +16,7 @@ import {
   type LspToolResultDetails,
   type ServerOperationOutcome,
 } from "./lsp-tool-contract.js";
+import { pluralizedCount } from "./lsp-post-edit-diagnostics-rendering.js";
 
 /** Theme operations used by Pi LSP tool transcript rendering. */
 export type LspRenderTheme = Pick<Theme, "bold" | "fg">;
@@ -137,10 +138,6 @@ function semanticLspOperationMetric(
   if (count === undefined) return undefined;
   const noun = semanticLspOperationNoun(operation);
   return pluralizedCount(count, noun);
-}
-
-function pluralizedCount(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function outcomeColor(outcome: ServerOperationOutcome["outcome"]): ThemeColor {

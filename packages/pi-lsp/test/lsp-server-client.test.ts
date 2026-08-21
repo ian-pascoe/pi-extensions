@@ -129,7 +129,6 @@ describe("LspServerClient", () => {
       failureReason: "Pi LSP: workspace edit captured as preview preview-1",
     });
     expect(previews).toHaveLength(1);
-    expect(client.recentProtocolMessages).toContain("fake server ready");
   });
 
   test("preserves BOM text, uses incremental sync/save, evicts the oldest document, and accepts empty pulls", async () => {

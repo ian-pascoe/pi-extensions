@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -27,6 +27,12 @@ import {
   convertLspProtocolPosition,
   normalizeLspPositionEncoding,
 } from "./lsp-position-encoding.js";
+import {
+  FileSnapshotSchema,
+  LspWorkspaceEditPreviewRecordSchema,
+  WorkspaceEditOperationSchema,
+} from "./lsp-tool-contract.js";
+import type { Static } from "typebox";
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -48,63 +54,19 @@ export interface LspMutationManifest {
   readonly entries: readonly LspMutationManifestEntry[];
 }
 
-type FileSnapshot =
-  | { readonly kind: "missing" }
-  | {
-      readonly kind: "file";
-      readonly content_base64: string;
-      readonly hash: string;
-      readonly mode: number;
-    }
-  | { readonly kind: "symlink"; readonly link_target: string; readonly mode: number };
+/** Canonical pre-mutation snapshot of one filesystem path used by guarded rollback. */
+type FileSnapshot = Static<typeof FileSnapshotSchema>;
 
-type ModifyOperation = {
-  readonly kind: "modify";
-  readonly named_path: string;
-  readonly path: string;
-  readonly named_before: FileSnapshot;
-  readonly before: FileSnapshot;
-  after_base64: string;
-  readonly mode: number;
-};
+/** Schema-derived operation with a writable `after_base64` for incremental document edits. */
+type Writable<T> = { -readonly [K in keyof T]: T[K] };
+type EditableOperation = Writable<
+  Extract<Static<typeof WorkspaceEditOperationSchema>, { kind: "modify" | "create" }>
+>;
 
-type CreateOperation = {
-  readonly kind: "create";
-  readonly named_path: string;
-  readonly before: FileSnapshot;
-  after_base64: string;
-  readonly mode: number;
-};
-
-type DeleteOperation = {
-  readonly kind: "delete";
-  readonly named_path: string;
-  readonly before: Exclude<FileSnapshot, { readonly kind: "missing" }>;
-};
-
-type RenameOperation = {
-  readonly kind: "rename";
-  readonly named_path: string;
-  readonly destination_path: string;
-  readonly before: Exclude<FileSnapshot, { readonly kind: "missing" }>;
-  readonly destination_before: FileSnapshot;
-};
-
-type NormalizedWorkspaceOperation =
-  | ModifyOperation
-  | CreateOperation
-  | DeleteOperation
-  | RenameOperation;
+type NormalizedWorkspaceOperation = Static<typeof WorkspaceEditOperationSchema>;
 
 /** Schema-friendly preview record persisted in LSP tool result details. */
-export interface LspWorkspaceEditPreview {
-  readonly kind: "workspace_edit_preview";
-  readonly preview_id: string;
-  readonly server_id: string;
-  readonly summary: string;
-  readonly state: "available" | "applied";
-  readonly operations: readonly NormalizedWorkspaceOperation[];
-}
+type LspWorkspaceEditPreview = Static<typeof LspWorkspaceEditPreviewRecordSchema>;
 
 /** Result of one guarded Workspace Edit application. */
 export interface LspWorkspaceEditApplyResult {
@@ -164,8 +126,6 @@ type WorkspaceEditErrorCode =
 
 /** Expected preview normalization, validation, apply, or rollback failure. */
 export class LspWorkspaceEditError extends Error {
-  readonly _tag = "LspWorkspaceEditError" as const;
-
   /** Construct a stable Workspace Edit failure with optional unrecovered paths. */
   constructor(
     readonly code: WorkspaceEditErrorCode,
@@ -192,16 +152,6 @@ interface CreateWorkspaceEditPreviewInput {
 interface DecodedUtf8Document {
   readonly bom: boolean;
   readonly text: string;
-}
-
-/** Counts accepted and rejected persisted Workspace Edit Preview records. */
-export interface LspWorkspaceEditReplayResult {
-  readonly accepted: number;
-  readonly rejected: number;
-}
-
-function hashContents(contents: Buffer): string {
-  return createHash("sha256").update(contents).digest("hex");
 }
 
 function contentsFromSnapshot(snapshot: FileSnapshot): Buffer {
@@ -236,7 +186,6 @@ async function snapshotNamedPath(path: string): Promise<FileSnapshot> {
   return {
     kind: "file",
     content_base64: contents.toString("base64"),
-    hash: hashContents(contents),
     mode,
   };
 }
@@ -424,10 +373,6 @@ async function restorePath(
   await symlink(snapshot.link_target, path);
 }
 
-function mutablePreview(preview: LspWorkspaceEditPreview): LspWorkspaceEditPreview {
-  return structuredClone(preview);
-}
-
 /** Own persisted Workspace Edit Preview state and guarded one-use application. */
 export class LspWorkspaceEditStore {
   private readonly previews = new Map<string, LspWorkspaceEditPreview>();
@@ -446,7 +391,7 @@ export class LspWorkspaceEditStore {
   /** Normalize and persist one language-server Workspace Edit without mutating files. */
   async createPreview(input: CreateWorkspaceEditPreviewInput): Promise<LspWorkspaceEditPreview> {
     const operations: NormalizedWorkspaceOperation[] = [];
-    const editableOperations = new Map<string, ModifyOperation | CreateOperation>();
+    const editableOperations = new Map<string, EditableOperation>();
     const resourceActions = new Map<string, string>();
     const destinations = new Set<string>();
     const encoding = input.positionEncoding ?? "utf-16";
@@ -500,7 +445,7 @@ export class LspWorkspaceEditStore {
       const current = contentsFromSnapshot(before);
       const decoded = decodeUtf8(current, targetPath);
       const after = encodeUtf8(applyTextEdits(decoded.text, edits, encoding), decoded.bom);
-      const operation: ModifyOperation = {
+      const operation: EditableOperation = {
         kind: "modify",
         named_path: namedPath,
         path: targetPath,
@@ -540,7 +485,7 @@ export class LspWorkspaceEditStore {
             `create destination exists: ${path}`,
           );
         }
-        const operation: CreateOperation = {
+        const operation: EditableOperation = {
           kind: "create",
           named_path: path,
           before,
@@ -649,18 +594,16 @@ export class LspWorkspaceEditStore {
   }
 
   /** Rebuild branch-local available/applied preview state from persisted tool result records. */
-  replayPreviewRecords(records: readonly LSPAny[]): LspWorkspaceEditReplayResult {
-    let accepted = 0;
+  replayPreviewRecords(records: readonly LSPAny[]): number {
     let rejected = 0;
     for (const record of records) {
       if (!isWorkspaceEditPreview(record)) {
         rejected++;
         continue;
       }
-      this.previews.set(record.preview_id, mutablePreview(record));
-      accepted++;
+      this.previews.set(record.preview_id, structuredClone(record));
     }
-    return { accepted, rejected };
+    return rejected;
   }
 
   /** Revalidate and apply one preview inside every sorted canonical mutation queue. */

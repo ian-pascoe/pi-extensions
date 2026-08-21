@@ -126,8 +126,6 @@ export interface DapProtocolEventWaitOptions {
   readonly signal?: AbortSignal | undefined;
   /** Override the configured ordinary request budget. */
   readonly timeoutMs?: number | undefined;
-  /** Accept only matching event payloads after matching the event name. */
-  readonly predicate?: (event: DebugProtocol.Event) => boolean;
 }
 
 /** Overrides used when a TCP Debug Adapter asks for its primary target channel. */
@@ -139,8 +137,6 @@ export interface DapProtocolTargetChannelOptions {
 
 /** Classified Debug Adapter process, transport, protocol, timeout, and cancellation failure. */
 export class DapProtocolClientError extends Error {
-  readonly _tag = "DapProtocolClientError" as const;
-
   /** Construct a searchable DAP client failure that always names its stderr capture. */
   constructor(
     readonly kind:
@@ -252,7 +248,8 @@ function isDapStartupCancelled(options: DapProtocolClientOptions): boolean {
   return options.startupSignal?.aborted ?? false;
 }
 
-function resolvedAdapterEnvironment(
+/** Merge configured environment overrides over the parent environment; null removes an inherited key. */
+export function resolvedAdapterEnvironment(
   configured: Readonly<Record<string, string | null>>,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...process.env };
@@ -468,7 +465,8 @@ function processExitPromise(child: ChildProcessWithoutNullStreams): Promise<void
   return new Promise((resolve) => child.once("exit", () => resolve()));
 }
 
-function signalOwnedProcessGroup(
+/** Signal one owned child's Linux process group (or the process itself elsewhere). */
+export function signalOwnedProcessGroup(
   child: ChildProcessWithoutNullStreams,
   signal: NodeJS.Signals,
 ): void {
@@ -724,11 +722,6 @@ export class DapProtocolClient {
     return this.options.stderrPath;
   }
 
-  /** Whether the transport has failed or shutdown has begun. */
-  get isClosed(): boolean {
-    return this.failure !== undefined || this.shuttingDown;
-  }
-
   /** Connect the primary adapter-owned target channel without spawning another process. */
   async connectTargetChannel(
     overrides: DapProtocolTargetChannelOptions = {},
@@ -787,7 +780,7 @@ export class DapProtocolClient {
         this.pendingEventWaitRejectors.delete(rejectWait);
       };
       const onEvent = (event: DebugProtocol.Event) => {
-        if (event.event !== eventName || options.predicate?.(event) === false) return;
+        if (event.event !== eventName) return;
         cleanup();
         // SAFETY: The caller chooses TEvent for the named DAP event; every envelope was parsed before this protocol boundary.
         resolve(event as TEvent);
@@ -918,7 +911,6 @@ export class DapProtocolClient {
     if (this.socket === undefined) this.child?.stdin.end();
 
     if (this.child === undefined) {
-      this.shuttingDown = true;
       this.reader.removeAllListeners();
       this.writer.destroy();
       return;

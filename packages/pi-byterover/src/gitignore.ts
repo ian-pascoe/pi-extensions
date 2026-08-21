@@ -7,7 +7,8 @@ import {
   brvGitignoreRules,
 } from "./config.js";
 
-const escapeRegExp = (value: string) => {
+/** Escape one string for verbatim interpolation into a regular expression. */
+export const escapeRegExp = (value: string) => {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 };
 

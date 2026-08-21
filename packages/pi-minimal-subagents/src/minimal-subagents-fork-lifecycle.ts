@@ -1,6 +1,5 @@
-import { existsSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
 import type { ForkSnapshot } from "./minimal-subagents-types.js";
+import { canonicalPath } from "./minimal-subagents-sessions.js";
 
 declare global {
   // eslint-disable-next-line no-var -- A process-global handoff must be visible to replacement extension instances.
@@ -12,11 +11,6 @@ function forkSnapshotStore(): Map<string, ForkSnapshot> {
   return globalThis.minimalSubagentsForkSnapshots;
 }
 
-function canonicalSessionFile(sessionFile: string): string {
-  const absolutePath = resolve(sessionFile);
-  return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
-}
-
 /** Prove a process-loss fork destination was derived from the expected canonical source file. */
 export function isForkDestinationForSource(
   destinationHeader: { parentSession?: string } | null,
@@ -24,14 +18,13 @@ export function isForkDestinationForSource(
 ): boolean {
   return (
     destinationHeader?.parentSession !== undefined &&
-    canonicalSessionFile(destinationHeader.parentSession) ===
-      canonicalSessionFile(previousSessionFile)
+    canonicalPath(destinationHeader.parentSession) === canonicalPath(previousSessionFile)
   );
 }
 
 /** Retain a complete pre-fork hierarchy across Pi extension-instance replacement. */
 export function rememberForkSnapshot(snapshot: ForkSnapshot): void {
-  const canonicalSourceFile = canonicalSessionFile(snapshot.source_root_session_file);
+  const canonicalSourceFile = canonicalPath(snapshot.source_root_session_file);
   const retained = structuredClone(snapshot);
   retained.source_root_session_file = canonicalSourceFile;
   forkSnapshotStore().set(canonicalSourceFile, retained);
@@ -39,7 +32,7 @@ export function rememberForkSnapshot(snapshot: ForkSnapshot): void {
 
 /** Consume the pre-fork hierarchy once when the destination root session starts. */
 export function takeForkSnapshot(previousSessionFile: string): ForkSnapshot | undefined {
-  const key = canonicalSessionFile(previousSessionFile);
+  const key = canonicalPath(previousSessionFile);
   const snapshot = forkSnapshotStore().get(key);
   if (snapshot) forkSnapshotStore().delete(key);
   return snapshot ? structuredClone(snapshot) : undefined;

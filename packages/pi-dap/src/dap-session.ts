@@ -7,15 +7,13 @@ import { Value } from "typebox/value";
 import {
   DapProtocolClient,
   DapProtocolClientError,
+  resolvedAdapterEnvironment,
+  signalOwnedProcessGroup,
   type DapProtocolRequestOptions,
   type DapProtocolTransport,
   type DapReverseRequestResult,
 } from "./dap-protocol-client.js";
-import {
-  createDapOutputBuffer,
-  type DapOutputBuffer,
-  type DapSessionFiles,
-} from "./dap-session-files.js";
+import { RetainedDapOutput, type DapSessionFiles } from "./dap-session-files.js";
 import type {
   DapAdapterDefinition,
   DapLaunchProfile,
@@ -162,8 +160,6 @@ const JsDebugPrimaryTargetArgumentsSchema = Type.Object(
 
 /** Classified configuration, state, protocol, or Debug Adapter failure. */
 export class DapSessionError extends Error {
-  readonly _tag = "DapSessionError" as const;
-
   /** Construct a stable Debug Session failure for the Pi tool boundary. */
   constructor(
     readonly kind: "adapter" | "configuration" | "protocol" | "state",
@@ -282,14 +278,6 @@ export interface DapSessionOptions {
   readonly onUnexpectedFailure?: (error: Error) => void;
 }
 
-type DapLaunchArgumentValue =
-  | null
-  | boolean
-  | number
-  | string
-  | readonly DapLaunchArgumentValue[]
-  | { readonly [key: string]: DapLaunchArgumentValue };
-
 interface ActiveDapSession {
   readonly adapter: DapAdapterDefinition;
   readonly profile: DapLaunchProfile;
@@ -308,19 +296,17 @@ interface ActiveDapSession {
   stopping: boolean;
 }
 
-interface TerminatedDapSessionState {
-  readonly kind: "terminated";
-  readonly adapterId: string;
-  readonly profileId: string;
-  readonly exitCode?: number;
-  readonly terminationReason?: string;
-  readonly cleanupPromise: Promise<void>;
-}
-
 type InternalDapSessionState =
   | { readonly kind: "idle" }
   | { readonly kind: "active"; readonly active: ActiveDapSession }
-  | TerminatedDapSessionState;
+  | {
+      readonly kind: "terminated";
+      readonly adapterId: string;
+      readonly profileId: string;
+      readonly exitCode?: number;
+      readonly terminationReason?: string;
+      readonly cleanupPromise: Promise<void>;
+    };
 
 interface ExecutionWait {
   readonly promise: Promise<"cancelled" | "timeout" | "transition">;
@@ -352,7 +338,8 @@ function supportsJsDebugPrimaryTarget(
   return adapter.transport.type === "tcp" && profile.arguments.type === "pwa-node";
 }
 
-function isProtocolCancellation(error: Error): boolean {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- The only check is an instanceof narrow against the classified protocol error.
+function isProtocolCancellation(error: unknown): boolean {
   return error instanceof DapProtocolClientError && error.kind === "cancelled";
 }
 
@@ -364,47 +351,6 @@ function dapRequestOptions(
   if (signal === undefined) return { timeoutMs };
   if (timeoutMs === undefined) return { signal };
   return { signal, timeoutMs };
-}
-
-function terminatedDapSessionState(
-  active: ActiveDapSession,
-  cleanupPromise: Promise<void>,
-  terminationReason: string,
-): TerminatedDapSessionState {
-  if (active.exitCode !== undefined && terminationReason.length > 0) {
-    return {
-      kind: "terminated",
-      adapterId: active.adapter.id,
-      profileId: active.profile.id,
-      cleanupPromise,
-      exitCode: active.exitCode,
-      terminationReason,
-    };
-  }
-  if (active.exitCode !== undefined) {
-    return {
-      kind: "terminated",
-      adapterId: active.adapter.id,
-      profileId: active.profile.id,
-      cleanupPromise,
-      exitCode: active.exitCode,
-    };
-  }
-  if (terminationReason.length > 0) {
-    return {
-      kind: "terminated",
-      adapterId: active.adapter.id,
-      profileId: active.profile.id,
-      cleanupPromise,
-      terminationReason,
-    };
-  }
-  return {
-    kind: "terminated",
-    adapterId: active.adapter.id,
-    profileId: active.profile.id,
-    cleanupPromise,
-  };
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -422,9 +368,8 @@ async function stopOwnedDebuggeeProcess(
 ): Promise<void> {
   const pid = child.pid;
   if (pid === undefined || !isProcessAlive(pid)) return;
-  const processId = process.platform === "linux" ? -pid : pid;
   try {
-    process.kill(processId, "SIGTERM");
+    signalOwnedProcessGroup(child, "SIGTERM");
   } catch {
     return;
   }
@@ -432,7 +377,7 @@ async function stopOwnedDebuggeeProcess(
   while (Date.now() < deadline && isProcessAlive(pid)) await delay(10);
   if (!isProcessAlive(pid)) return;
   try {
-    process.kill(processId, "SIGKILL");
+    signalOwnedProcessGroup(child, "SIGKILL");
   } catch {
     // The Debuggee exited between the liveness check and the signal.
   }
@@ -440,7 +385,7 @@ async function stopOwnedDebuggeeProcess(
 
 /** Own one configured Debug Session at a time and retain Desired Breakpoints across launches. */
 export class DapSession {
-  private readonly output: DapOutputBuffer = createDapOutputBuffer();
+  private readonly output = new RetainedDapOutput();
   private readonly desiredBreakpoints = new Map<string, readonly DapDesiredBreakpoint[]>();
   private readonly executionWaiters = new Set<() => void>();
   private state: InternalDapSessionState = { kind: "idle" };
@@ -465,9 +410,8 @@ export class DapSession {
         `Launch Profile ${profile.id} references unavailable Adapter Definition ${profile.adapterId}`,
       );
     }
-    const launchArguments: { [key: string]: DapLaunchArgumentValue } = structuredClone(
-      profile.arguments,
-    );
+    // ponytail: shallow copy suffices — only top-level launch keys are replaced below.
+    const launchArguments = { ...profile.arguments };
     const adapterProtocolId = Value.Check(DapAdapterProtocolIdSchema, profile.arguments.type)
       ? profile.arguments.type
       : adapter.id;
@@ -477,7 +421,7 @@ export class DapSession {
     if (input.cwd !== undefined) launchArguments.cwd = resolve(this.options.cwd, input.cwd);
 
     const debuggeeProcesses = new Set<ChildProcessWithoutNullStreams>();
-    const stderrPath = await this.options.sessionFiles.getAdapterStderrPath(adapter.id);
+    const stderrPath = await this.options.sessionFiles.getAdapterStderrPath();
     let active: ActiveDapSession | undefined;
     try {
       const client = await DapProtocolClient.start({
@@ -581,7 +525,6 @@ export class DapSession {
       return this.result();
     } catch (cause) {
       if (active !== undefined) {
-        active.stopping = true;
         await this.finishActiveSession(active, "launch failed");
       } else {
         await Promise.all(
@@ -592,7 +535,7 @@ export class DapSession {
         this.state = { kind: "idle" };
         this.publishSnapshot();
       }
-      if (cause instanceof Error && isProtocolCancellation(cause)) {
+      if (isProtocolCancellation(cause)) {
         throw new DapSessionError("adapter", "launch was cancelled and cleaned up", { cause });
       }
       if (cause instanceof DapSessionError) throw cause;
@@ -623,39 +566,27 @@ export class DapSession {
 
   /** Continue a stopped Debuggee and wait for its next stop or termination. */
   continue(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeStoppedRequest("continue", signal);
+    return this.executeLifecycleRequest("continue", signal);
   }
 
   /** Step over in a stopped Debuggee and wait for its next stop or termination. */
   next(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeStoppedRequest("next", signal);
+    return this.executeLifecycleRequest("next", signal);
   }
 
   /** Step into in a stopped Debuggee and wait for its next stop or termination. */
   stepIn(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeStoppedRequest("stepIn", signal);
+    return this.executeLifecycleRequest("stepIn", signal);
   }
 
   /** Step out in a stopped Debuggee and wait for its next stop or termination. */
   stepOut(signal?: AbortSignal): Promise<DapSessionResult> {
-    return this.executeStoppedRequest("stepOut", signal);
+    return this.executeLifecycleRequest("stepOut", signal);
   }
 
   /** Pause a running Debuggee and wait for its stopped event. */
-  async pause(signal?: AbortSignal): Promise<DapSessionResult> {
-    const active = this.requireActivePhase("running", "pause");
-    const threadId = await this.resolveThreadId(active, signal);
-    const wait = this.waitForExecutionTransition(signal);
-    try {
-      await active.client.request("pause", { threadId }, dapRequestOptions(signal));
-    } catch (cause) {
-      wait.cancel();
-      if (cause instanceof Error && isProtocolCancellation(cause)) return this.result();
-      throw cause;
-    }
-    await wait.promise;
-    await active.cleanupPromise;
-    return this.result();
+  pause(signal?: AbortSignal): Promise<DapSessionResult> {
+    return this.executeLifecycleRequest("pause", signal);
   }
 
   /** Retrieve a page of Stack Frames from the stopped thread. */
@@ -745,13 +676,12 @@ export class DapSession {
   }
 
   /** Idempotently stop the active Debug Session and preserve Desired Breakpoints. */
-  async stop(_signal?: AbortSignal): Promise<DapSessionResult> {
+  async stop(): Promise<DapSessionResult> {
     const active = this.currentActive();
     if (active === undefined) {
       if (this.state.kind === "terminated") await this.state.cleanupPromise;
       return this.result();
     }
-    active.stopping = true;
     await this.finishActiveSession(active, "stopped by request");
     return this.result();
   }
@@ -762,7 +692,6 @@ export class DapSession {
     this.shutdownPromise = (async () => {
       const active = this.currentActive();
       if (active !== undefined) {
-        active.stopping = true;
         await this.finishActiveSession(active, "Pi session shutdown");
       } else if (this.state.kind === "terminated") {
         await this.state.cleanupPromise;
@@ -824,19 +753,19 @@ export class DapSession {
     return response;
   }
 
-  private async executeStoppedRequest(
-    command: "continue" | "next" | "stepIn" | "stepOut",
+  private async executeLifecycleRequest(
+    command: "continue" | "next" | "stepIn" | "stepOut" | "pause",
     signal: AbortSignal | undefined,
   ): Promise<DapSessionResult> {
-    const active = this.requireActivePhase("stopped", command);
+    const active = this.requireActivePhase(command === "pause" ? "running" : "stopped", command);
     const threadId = await this.resolveThreadId(active, signal);
-    this.transitionActiveToRunning(active);
+    if (command !== "pause") this.transitionActiveToRunning(active);
     const wait = this.waitForExecutionTransition(signal);
     try {
       await active.client.request(command, { threadId }, dapRequestOptions(signal));
     } catch (cause) {
       wait.cancel();
-      if (cause instanceof Error && isProtocolCancellation(cause)) return this.result();
+      if (isProtocolCancellation(cause)) return this.result();
       throw cause;
     }
     await wait.promise;
@@ -1029,11 +958,7 @@ export class DapSession {
     argumentsValue: Static<typeof RunInTerminalArgumentsSchema>,
     debuggeeProcesses: Set<ChildProcessWithoutNullStreams>,
   ): Promise<DapReverseRequestResult> {
-    const environment: NodeJS.ProcessEnv = { ...process.env };
-    for (const [name, value] of Object.entries(argumentsValue.env ?? {})) {
-      if (value === null) delete environment[name];
-      else environment[name] = value;
-    }
+    const environment = resolvedAdapterEnvironment(argumentsValue.env ?? {});
     const interpretedByShell = argumentsValue.argsCanBeInterpretedByShell === true;
     const command = interpretedByShell ? argumentsValue.args.join(" ") : argumentsValue.args[0];
     if (command === undefined)
@@ -1121,7 +1046,14 @@ export class DapSession {
     })();
     active.cleanupPromise = cleanup;
     if (this.isCurrentActive(active)) {
-      this.state = terminatedDapSessionState(active, cleanup, terminationReason);
+      this.state = {
+        kind: "terminated",
+        adapterId: active.adapter.id,
+        profileId: active.profile.id,
+        cleanupPromise: cleanup,
+        ...(active.exitCode !== undefined && { exitCode: active.exitCode }),
+        ...(terminationReason.length > 0 && { terminationReason }),
+      };
       this.publishSnapshot();
     }
     this.settleExecutionWaiters();
@@ -1155,53 +1087,25 @@ export class DapSession {
   private snapshot(): DapSessionSnapshot {
     if (this.state.kind === "idle") return { state: "idle" };
     if (this.state.kind === "terminated") {
-      if (this.state.exitCode !== undefined && this.state.terminationReason !== undefined) {
-        return {
-          state: "terminated",
-          adapterId: this.state.adapterId,
-          profileId: this.state.profileId,
-          exitCode: this.state.exitCode,
-          terminationReason: this.state.terminationReason,
-        };
-      }
-      if (this.state.exitCode !== undefined) {
-        return {
-          state: "terminated",
-          adapterId: this.state.adapterId,
-          profileId: this.state.profileId,
-          exitCode: this.state.exitCode,
-        };
-      }
-      if (this.state.terminationReason !== undefined) {
-        return {
-          state: "terminated",
-          adapterId: this.state.adapterId,
-          profileId: this.state.profileId,
-          terminationReason: this.state.terminationReason,
-        };
-      }
+      const terminated = this.state;
       return {
         state: "terminated",
-        adapterId: this.state.adapterId,
-        profileId: this.state.profileId,
+        adapterId: terminated.adapterId,
+        profileId: terminated.profileId,
+        ...(terminated.exitCode !== undefined && { exitCode: terminated.exitCode }),
+        ...(terminated.terminationReason !== undefined && {
+          terminationReason: terminated.terminationReason,
+        }),
       };
     }
     const active = this.state.active;
     if (active.phase === "stopped") {
-      if (active.threadId !== undefined) {
-        return {
-          state: "stopped",
-          adapterId: active.adapter.id,
-          profileId: active.profile.id,
-          stopReason: active.stopReason ?? "unknown",
-          threadId: active.threadId,
-        };
-      }
       return {
         state: "stopped",
         adapterId: active.adapter.id,
         profileId: active.profile.id,
         stopReason: active.stopReason ?? "unknown",
+        ...(active.threadId !== undefined && { threadId: active.threadId }),
       };
     }
     return {

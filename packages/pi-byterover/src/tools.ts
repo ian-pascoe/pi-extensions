@@ -6,15 +6,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import type { ByteRoverBridge, ByteRoverBridgeFactory } from "./byterover-bridge.js";
-import type { ConfigSchema } from "./config.js";
 import { stripEchoedRecallQuery } from "./recall.js";
-
-type Config = ReturnType<typeof ConfigSchema.parse>;
 
 export type RegisterManualToolsInput = {
   pi: ByteRoverManualToolHost;
   bridge: ByteRoverBridge;
-  config: Config;
   createBridge: ByteRoverBridgeFactory;
 };
 
@@ -114,17 +110,27 @@ export type ByteRoverManualToolDefinition =
   | ManualToolDefinition<"brv_search", typeof SearchParameters>
   | ManualToolDefinition<"brv_persist", typeof PersistParameters>;
 
-/** Registers typed ByteRover manual tools with Pi or a faithful recording host. */
+/** Lists the three registered manual-memory tool names. */
+export const BYTE_ROVER_MANUAL_TOOL_NAMES = ["brv_recall", "brv_search", "brv_persist"] as const;
+
+/** Narrows any tool definition to one of the three ByteRover manual tools by name. */
+export const isByteRoverManualToolDefinition = (tool: {
+  readonly name: string;
+}): tool is ByteRoverManualToolDefinition =>
+  // SAFETY: widening the const tuple to readonly string[] only relaxes literal checking for includes().
+  (BYTE_ROVER_MANUAL_TOOL_NAMES as readonly string[]).includes(tool.name);
+
+/** Registers ByteRover manual tools with Pi or a faithful recording host. */
 export interface ByteRoverManualToolHost {
-  registerTool(tool: ByteRoverManualToolDefinition): void;
+  registerTool<TParams extends TSchema = TSchema, TDetails = unknown, TState = unknown>(
+    tool: ToolDefinition<TParams, TDetails, TState>,
+  ): void;
 }
 
 const textResult = (text: string): AgentToolResult<undefined> => ({
   content: [{ type: "text", text }],
   details: undefined,
 });
-
-const errorMessage = (error: Error) => error.message;
 
 export const formatSearchResults = (
   results: readonly SearchResultItem[],
@@ -158,11 +164,9 @@ export const formatSearchResults = (
 export const registerManualTools = ({
   pi,
   bridge,
-  config,
   createBridge,
-}: RegisterManualToolsInput) => {
-  if (!config.manualTools) return;
-
+}: Omit<RegisterManualToolsInput, "config">) => {
+  // ponytail: the session-start caller gates on config.manualTools before reaching this registration.
   pi.registerTool({
     name: "brv_recall",
     label: "ByteRover Recall",
@@ -185,7 +189,7 @@ export const registerManualTools = ({
         return textResult(content || "No relevant ByteRover context found.");
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));
-        return textResult(`ByteRover recall failed: ${errorMessage(error)}`);
+        return textResult(`ByteRover recall failed: ${error.message}`);
       }
     },
   });
@@ -214,7 +218,7 @@ export const registerManualTools = ({
         );
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));
-        return textResult(`ByteRover search failed: ${errorMessage(error)}`);
+        return textResult(`ByteRover search failed: ${error.message}`);
       }
     },
   });
@@ -243,7 +247,7 @@ export const registerManualTools = ({
         return textResult(`ByteRover persist ${brvResult.status}${suffix}`);
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));
-        return textResult(`ByteRover persist failed: ${errorMessage(error)}`);
+        return textResult(`ByteRover persist failed: ${error.message}`);
       }
     },
   });

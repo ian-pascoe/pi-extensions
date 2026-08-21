@@ -43,7 +43,6 @@ describe("resolveLspSettings", () => {
 
     const settings = resolveLspSettings(settingsManager);
 
-    expect(settings.enabled).toBe(true);
     expect(settings.warnings).toEqual([]);
     expect(settings.timeouts).toEqual({
       diagnosticsMs: 3000,
@@ -183,7 +182,6 @@ describe("resolveLspSettings", () => {
 
     const settings = resolveLspSettings(settingsManager);
 
-    expect(settings.enabled).toBe(true);
     expect([...settings.servers.keys()]).toEqual(["valid"]);
     expect(settings.warnings).toEqual([
       expect.stringContaining("global lsp.servers.invalid.unknownServerField"),
@@ -227,7 +225,6 @@ describe("resolveLspSettings", () => {
 
     const settings = resolveLspSettings(settingsManager);
 
-    expect(settings.enabled).toBe(true);
     expect(settings.timeouts).toEqual({
       diagnosticsMs: 100,
       initializeMs: 400,
@@ -263,7 +260,6 @@ describe("resolveLspSettings", () => {
 
     const settings = resolveLspSettings(settingsManager);
 
-    expect(settings.enabled).toBe(true);
     expect(settings.servers.get("valid")).toMatchObject({ command: "valid-lsp" });
     expect(settings.warnings).toEqual([expect.stringContaining("project lsp")]);
   });

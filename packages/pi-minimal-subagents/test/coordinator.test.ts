@@ -146,7 +146,6 @@ const caller: CallerSnapshot = {
   thinkingLevel: "medium",
   ordinaryTools: ["read"],
   capabilityCeiling: ["read"],
-  availableTools: ["read"],
   spawnEntryId: "entry",
 };
 
@@ -803,6 +802,37 @@ describe("minimal subagents coordinator", () => {
     expect(restored.queuedMessages[0]?.content).toContain("complete after reload");
   });
 
+  it("requeues branch-local deliveries when the same coordinator restores", async () => {
+    const fixture = coordinatorFixture();
+    await fixture.coordinator.restore({
+      agents: [persistedAgent("first", "root"), persistedAgent("second", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    fixture.setRootIdle(false);
+
+    await fixture.coordinator.sendAgentMessage(
+      "first",
+      { message: "first branch message" },
+      "first:turn",
+    );
+    await vi.waitFor(() => expect(fixture.root.isIdle).toHaveBeenCalled());
+    await fixture.coordinator.sendAgentMessage(
+      "second",
+      { message: "second branch message" },
+      "second:turn",
+    );
+
+    await fixture.coordinator.restore(fixture.coordinator.snapshot());
+    fixture.setRootIdle(true);
+
+    await vi.waitFor(() => expect(fixture.queuedMessages).toHaveLength(2));
+    expect(fixture.queuedMessages.map((message) => message.content)).toEqual([
+      expect.stringContaining("first branch message"),
+      expect.stringContaining("second branch message"),
+    ]);
+  });
+
   it("selects the oldest retained turn by default and supports an exact turn ID", async () => {
     const fixture = coordinatorFixture(childRuntime(), 200);
     const agent = persistedAgent("worker", "root");
@@ -1126,7 +1156,6 @@ describe("minimal subagents coordinator", () => {
     });
     const result = await coordinator.delete("root", "team", true);
     expect(result.deleted_agent_ids).toEqual(["team.worker", "team"]);
-    expect(result.tombstoned_agent_ids).toEqual(["team.worker", "team"]);
     expect(sessions.trashSession.mock.calls.map(([agent]) => agent.session_file)).toEqual([
       "/sessions/team.worker.jsonl",
       "/sessions/team.jsonl",

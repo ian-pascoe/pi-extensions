@@ -48,10 +48,12 @@ import {
   type WorkspaceEdit,
 } from "vscode-languageserver-protocol/node";
 import {
+  documentLines,
   measureLspPositionCharacters,
   normalizeLspPositionEncoding,
   type LspPositionEncoding,
 } from "./lsp-position-encoding.js";
+import type { LspTimeouts } from "./pi-lsp-settings.js";
 
 const MAX_OPEN_DOCUMENTS = 100;
 const MAX_STDERR_BYTES = 1024 * 1024;
@@ -79,16 +81,7 @@ const PrepareRenameProviderSchema = Type.Object(
 );
 
 /** Time budgets, in milliseconds, for one language-server process. */
-export interface LspServerClientTimeouts {
-  /** Initialize request budget. */
-  readonly initializeMs: number;
-  /** Ordinary request budget. */
-  readonly requestMs: number;
-  /** Fresh diagnostics budget. */
-  readonly diagnosticsMs: number;
-  /** Graceful shutdown budget before process termination. */
-  readonly shutdownMs: number;
-}
+export type LspServerClientTimeouts = LspTimeouts;
 
 /** Launch and protocol configuration for one language-server process. */
 export interface LspServerClientOptions {
@@ -118,8 +111,6 @@ export interface LspServerClientOptions {
 
 /** A valid UTF-8 document synchronized with one server instance. */
 export interface LspSynchronizedDocument {
-  /** Absolute file path. */
-  readonly filePath: string;
   /** File URI sent to the server. */
   readonly uri: string;
   /** Monotonic document version local to this server instance. */
@@ -148,8 +139,6 @@ export type LspWorkspaceDiagnosticResult =
 
 /** Classified process, protocol, timeout, cancellation, and UTF-8 client failure. */
 export class LspServerClientError extends Error {
-  readonly _tag = "LspServerClientError" as const;
-
   /** Construct a stable Pi LSP client failure that always names the stderr capture. */
   constructor(
     readonly kind:
@@ -218,7 +207,7 @@ function serverWantsSave(capabilities: ServerCapabilities): boolean {
 }
 
 function protocolLineEndPosition(text: string, encoding: LspPositionEncoding): Position {
-  const lines = text.split(/\r\n|\r|\n/);
+  const lines = documentLines(text);
   const lineText = lines.at(-1) ?? "";
   return {
     line: lines.length - 1,
@@ -273,9 +262,7 @@ export class LspServerClient {
   private readonly pullDiagnostics = new Map<string, PullDiagnosticsState>();
   private readonly dynamicRegistrations = new Map<string, Registration>();
   private readonly diagnosticWaiters = new Map<string, Set<() => void>>();
-  private readonly protocolMessages: string[] = [];
   private diagnosticsRevision = 0;
-  private diagnosticsRefreshRevision = 0;
   private stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   private stderrWrite = Promise.resolve();
   private closing = false;
@@ -380,11 +367,6 @@ export class LspServerClient {
   /** Session stderr capture path included in every client failure. */
   get stderrPath(): string {
     return this.options.stderrPath;
-  }
-
-  /** Most recent bounded protocol log/show messages, oldest first. */
-  get recentProtocolMessages(): readonly string[] {
-    return this.protocolMessages;
   }
 
   /** Whether a static or dynamically registered LSP method is available. */
@@ -577,7 +559,6 @@ export class LspServerClient {
       return existing;
     }
     const next: OpenDocumentState = {
-      filePath: absolutePath,
       uri,
       version: (existing?.version ?? 0) + 1,
       text,
@@ -652,7 +633,12 @@ export class LspServerClient {
     }
 
     try {
-      return await this.firstDiagnosticResult(candidates, signal);
+      return await this.raceBudget(
+        Promise.any(candidates),
+        this.options.timeouts.diagnosticsMs,
+        "diagnostics",
+        signal,
+      );
     } catch (cause) {
       if (cause instanceof LspServerClientError) {
         if (cause.kind === "cancelled") throw cause;
@@ -835,22 +821,13 @@ export class LspServerClient {
       }
     });
     this.connection.onRequest(WorkDoneProgressCreateRequest.type, () => undefined);
-    this.connection.onRequest(DiagnosticRefreshRequest.type, () => {
-      this.diagnosticsRefreshRevision++;
-    });
+    this.connection.onRequest(DiagnosticRefreshRequest.type, () => undefined);
     this.connection.onRequest(ApplyWorkspaceEditRequest.type, async (parameters) =>
       this.rejectServerWorkspaceEdit(parameters),
     );
-    this.connection.onRequest(ShowMessageRequest.type, (parameters) => {
-      this.rememberProtocolMessage(parameters.message);
-      return null;
-    });
-    this.connection.onNotification(LogMessageNotification.type, (parameters) => {
-      this.rememberProtocolMessage(parameters.message);
-    });
-    this.connection.onNotification(ShowMessageNotification.type, (parameters) => {
-      this.rememberProtocolMessage(parameters.message);
-    });
+    this.connection.onRequest(ShowMessageRequest.type, () => null);
+    this.connection.onNotification(LogMessageNotification.type, () => undefined);
+    this.connection.onNotification(ShowMessageNotification.type, () => undefined);
   }
 
   private async initialize(): Promise<void> {
@@ -953,30 +930,19 @@ export class LspServerClient {
     if (signal?.aborted === true) throw abortError(this.options);
 
     const cancellation = new CancellationTokenSource();
-    let timeout: NodeJS.Timeout | undefined;
-    let abortListener: (() => void) | undefined;
-    const request = this.connection.sendRequest<TResult>(method, parameters, cancellation.token);
-    const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      timeout = setTimeout(() => {
-        cancellation.cancel();
-        reject(timeoutError(this.options, operation));
-      }, budgetMs);
-      timeout.unref();
-    });
-    const abortPromise = new Promise<never>((_resolve, reject) => {
-      if (signal === undefined) return;
-      abortListener = () => {
-        cancellation.cancel();
-        reject(abortError(this.options));
-      };
-      signal.addEventListener("abort", abortListener, { once: true });
-    });
-    const terminalPromise = this.terminalErrorPromise.then((error) => {
-      throw error;
-    });
-
     try {
-      return await Promise.race([request, timeoutPromise, abortPromise, terminalPromise]);
+      return await Promise.race([
+        this.raceBudget(
+          this.connection.sendRequest<TResult>(method, parameters, cancellation.token),
+          budgetMs,
+          operation,
+          signal,
+          () => cancellation.cancel(),
+        ),
+        this.terminalErrorPromise.then((error) => {
+          throw error;
+        }),
+      ]);
     } catch (cause) {
       if (cause instanceof LspServerClientError) throw cause;
       throw new LspServerClientError(
@@ -987,10 +953,6 @@ export class LspServerClient {
         { cause },
       );
     } finally {
-      if (timeout !== undefined) clearTimeout(timeout);
-      if (signal !== undefined && abortListener !== undefined) {
-        signal.removeEventListener("abort", abortListener);
-      }
       cancellation.dispose();
     }
   }
@@ -1077,34 +1039,29 @@ export class LspServerClient {
     return { status: "fresh", source: "document_pull", diagnostics: report.items };
   }
 
-  private async firstDiagnosticResult(
-    candidates: readonly Promise<LspDocumentDiagnosticResult>[],
-    signal?: AbortSignal,
-  ): Promise<LspDocumentDiagnosticResult> {
-    return this.raceBudget(
-      Promise.any(candidates),
-      this.options.timeouts.diagnosticsMs,
-      "diagnostics",
-      signal,
-    );
-  }
-
   private async raceBudget<TResult>(
     value: Promise<TResult>,
     budgetMs: number,
     operation: string,
     signal?: AbortSignal,
+    onCancel?: () => void,
   ): Promise<TResult> {
     if (signal?.aborted === true) throw abortError(this.options);
     let timeout: NodeJS.Timeout | undefined;
     let abortListener: (() => void) | undefined;
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      timeout = setTimeout(() => reject(timeoutError(this.options, operation)), budgetMs);
+      timeout = setTimeout(() => {
+        onCancel?.();
+        reject(timeoutError(this.options, operation));
+      }, budgetMs);
       timeout.unref();
     });
     const abortPromise = new Promise<never>((_resolve, reject) => {
       if (signal === undefined) return;
-      abortListener = () => reject(abortError(this.options));
+      abortListener = () => {
+        onCancel?.();
+        reject(abortError(this.options));
+      };
       signal.addEventListener("abort", abortListener, { once: true });
     });
     try {
@@ -1195,11 +1152,6 @@ export class LspServerClient {
         failureReason: `Pi LSP: workspace edit preview rejected: ${message}`,
       };
     }
-  }
-
-  private rememberProtocolMessage(message: string): void {
-    this.protocolMessages.push(message);
-    if (this.protocolMessages.length > 100) this.protocolMessages.shift();
   }
 
   private async evictOldDocuments(): Promise<void> {

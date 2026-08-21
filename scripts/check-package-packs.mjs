@@ -112,15 +112,12 @@ function validatePackedManifest(sourceManifest, packedManifest) {
     JSON.stringify(packedManifest.pi?.extensions) === JSON.stringify(["./src/index.ts"]),
     `${packageName} has an invalid pi.extensions contract`,
   );
-  for (const forbiddenField of ["build", "main", "types", "exports"]) {
-    if (forbiddenField === "build") {
-      assertPackCondition(!packedManifest.scripts?.build, `${packageName} contains a build script`);
-    } else {
-      assertPackCondition(
-        !(forbiddenField in packedManifest),
-        `${packageName} contains ${forbiddenField}`,
-      );
-    }
+  assertPackCondition(!packedManifest.scripts?.build, `${packageName} contains a build script`);
+  for (const forbiddenField of ["main", "types", "exports"]) {
+    assertPackCondition(
+      !(forbiddenField in packedManifest),
+      `${packageName} contains ${forbiddenField}`,
+    );
   }
   if (packageName === "@ian-pascoe/pi-codemode") {
     assertPackCondition(

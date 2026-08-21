@@ -1,6 +1,4 @@
-const escapeRegExp = (value: string) => {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-};
+import { escapeRegExp } from "./gitignore.js";
 
 export const stripEchoedRecallQuery = (content: string, query: string) => {
   const trimmedContent = content.trim();

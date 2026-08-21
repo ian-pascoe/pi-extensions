@@ -4,10 +4,9 @@ import { execFileSync } from "node:child_process";
 const omittedDependencyKinds = new Set(
   (process.env.npm_config_omit ?? "").split(/\s+/).filter(Boolean),
 );
+// ponytail: npm>=7 and pnpm both express production installs through npm_config_omit.
 const productionInstall =
-  process.env.NODE_ENV === "production" ||
-  process.env.npm_config_production === "true" ||
-  omittedDependencyKinds.has("dev");
+  process.env.NODE_ENV === "production" || omittedDependencyKinds.has("dev");
 
 if (!productionInstall && existsSync(".git")) {
   execFileSync("bash", ["scripts/sync-reference-repos.sh"], { stdio: "inherit" });

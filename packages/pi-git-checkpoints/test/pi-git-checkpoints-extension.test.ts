@@ -69,7 +69,7 @@ async function createHarness(hasUI = true): Promise<GitCheckpointsHarness> {
     extensionFactories: [
       {
         name: "pi-git-checkpoints-lifecycle-test",
-        factory: createPiGitCheckpointsExtension({ getAgentDirectory: () => agentDirectory }),
+        factory: createPiGitCheckpointsExtension(() => agentDirectory),
       },
     ],
     noContextFiles: true,

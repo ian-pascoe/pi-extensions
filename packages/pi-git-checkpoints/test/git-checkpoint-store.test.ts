@@ -88,7 +88,7 @@ describe("Worktree Checkpoint capture", () => {
 
     expect(repositoryStore.mode).toBe("repository");
     expect(second.treeId).toBe(first.treeId);
-    expect(first.sourceHead).toEqual({ branch: beforeBranch, commit: beforeHead, kind: "head" });
+    expect(first.sourceHead).toEqual({ commit: beforeHead, kind: "head" });
     expect(await readFile(absoluteIndexPath)).toEqual(beforeIndex);
     expect(await git(repository, "rev-parse", "HEAD")).toBe(beforeHead);
     expect(await git(repository, "branch", "--show-current")).toBe(beforeBranch);
@@ -174,7 +174,6 @@ describe("selective Restore and one-level undo", () => {
       }),
     ).toEqual({
       restoredPaths: [],
-      skippedPaths: ["ignored-later.txt", "nested/inside.txt"],
     });
     expect(await readFile(join(repository, "nested", "inside.txt"), "utf8")).toBe("live nested\n");
     expect(await readFile(join(repository, "ignored-later.txt"), "utf8")).toBe("live ignored\n");
@@ -216,7 +215,7 @@ describe("selective Restore and one-level undo", () => {
       targetTreeId: target.treeId,
     });
 
-    expect(restored).toEqual({ restoredPaths: ["added.txt", "tracked.txt"], skippedPaths: [] });
+    expect(restored).toEqual({ restoredPaths: ["added.txt", "tracked.txt"] });
     expect(await readFile(join(repository, "tracked.txt"), "utf8")).toBe("one\n");
     await expect(lstat(join(repository, "added.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(join(repository, "unrelated.txt"), "utf8")).toBe("keep me\n");

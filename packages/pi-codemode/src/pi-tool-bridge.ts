@@ -12,6 +12,7 @@ import {
   parseCodeModeJsonValue,
   type CodeModeJsonValue,
 } from "./codemode-tool-contract.js";
+import { addCodeModeUsage, boundedCodeModeElapsedMs } from "./codemode-session-coordinator.js";
 import type { CapturedPiAgentSession } from "./pi-agent-session-capture.js";
 
 const PI_TOOL_BRIDGE_RESULT_LIMIT_BYTES = 8 * 1024 * 1024;
@@ -505,36 +506,6 @@ function translatePiToolResult(
   };
 }
 
-function addUsage(left: Usage | undefined, right: Usage | undefined): Usage | undefined {
-  if (right === undefined) return left;
-  if (left === undefined) return right;
-  const reasoning =
-    left.reasoning === undefined && right.reasoning === undefined
-      ? undefined
-      : (left.reasoning ?? 0) + (right.reasoning ?? 0);
-  const cacheWrite1h =
-    left.cacheWrite1h === undefined && right.cacheWrite1h === undefined
-      ? undefined
-      : (left.cacheWrite1h ?? 0) + (right.cacheWrite1h ?? 0);
-  const combined: Usage = {
-    input: left.input + right.input,
-    output: left.output + right.output,
-    cacheRead: left.cacheRead + right.cacheRead,
-    cacheWrite: left.cacheWrite + right.cacheWrite,
-    totalTokens: left.totalTokens + right.totalTokens,
-    cost: {
-      input: left.cost.input + right.cost.input,
-      output: left.cost.output + right.cost.output,
-      cacheRead: left.cost.cacheRead + right.cost.cacheRead,
-      cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
-      total: left.cost.total + right.cost.total,
-    },
-  };
-  if (cacheWrite1h !== undefined) combined.cacheWrite1h = cacheWrite1h;
-  if (reasoning !== undefined) combined.reasoning = reasoning;
-  return combined;
-}
-
 function terminatedPiToolCall(callId: string): FinalizedPiToolCall {
   return createBridgeFailure(
     callId,
@@ -553,12 +524,6 @@ function presentationOutcome(
     : "failed";
 }
 
-function elapsedMilliseconds(startedAt: number, finishedAt: number): number {
-  const elapsed = Math.round(finishedAt - startedAt);
-  if (!Number.isFinite(elapsed)) return 0;
-  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, elapsed));
-}
-
 function timedFinalizedPiToolCall(
   call: PiToolBridgeCall,
   finalized: FinalizedPiToolCall,
@@ -569,7 +534,7 @@ function timedFinalizedPiToolCall(
     finalized,
     presentation: {
       callId: call.callId,
-      elapsedMs: elapsedMilliseconds(startedAt, now()),
+      elapsedMs: boundedCodeModeElapsedMs(startedAt, now()),
       name: call.name,
       outcome: presentationOutcome(finalized.outcome),
     },
@@ -590,7 +555,9 @@ function collectPiToolBridgeBatch(
   const addedToolNames: string[] = [];
   const seenToolNames = new Set<string>();
   for (const { finalized } of timedCalls) {
-    usage = addUsage(usage, finalized.usage);
+    if (finalized.usage !== undefined) {
+      usage = addCodeModeUsage(usage, finalized.usage);
+    }
     for (const toolName of finalized.addedToolNames) {
       if (seenToolNames.has(toolName)) continue;
       seenToolNames.add(toolName);

@@ -347,7 +347,7 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
       serverId: "typescript",
     });
     const replayedStore = new LspWorkspaceEditStore();
-    expect(replayedStore.replayPreviewRecords([preview])).toEqual({ accepted: 1, rejected: 0 });
+    expect(replayedStore.replayPreviewRecords([preview])).toBe(0);
     const manifest = replayedStore.prepareMutationManifest(preview.preview_id);
     await expectWorkspaceEditCode(
       replayedStore.applyPreview(preview.preview_id, {

@@ -109,7 +109,6 @@ type ParsedDapAdapter =
   | { readonly kind: "excluded" }
   | {
       readonly kind: "valid";
-      readonly scope: SettingsScope;
       readonly value: DapAdapterDefinitionWire;
       readonly transport: DapAdapterTransport;
     };
@@ -216,7 +215,6 @@ function parseDapAdapters(
     }
     adapters.set(id, {
       kind: "valid",
-      scope,
       transport: parsedTransport.transport,
       value: adapter,
     });
@@ -329,32 +327,22 @@ function readDapLayer(settings: DapSettingsDocumentInput, scope: SettingsScope):
   };
 }
 
-function mergeDapAdapters(
-  globalEntries: ReadonlyMap<string, ParsedDapAdapter>,
-  projectEntries: ReadonlyMap<string, ParsedDapAdapter>,
-): ReadonlyMap<string, Extract<ParsedDapAdapter, { readonly kind: "valid" }>> {
-  const entries = new Map<string, Extract<ParsedDapAdapter, { readonly kind: "valid" }>>();
+/** Merge one settings layer over another by map key, keeping only valid entries in sorted order. */
+function mergeValidDapEntries<
+  Entry extends { readonly kind: "excluded" } | { readonly kind: "valid" },
+>(
+  globalEntries: ReadonlyMap<string, Entry>,
+  projectEntries: ReadonlyMap<string, Entry>,
+): ReadonlyMap<string, Extract<Entry, { readonly kind: "valid" }>> {
+  type Valid = Extract<Entry, { readonly kind: "valid" }>;
+  const isValid = (entry: Entry): entry is Valid => entry.kind === "valid";
+  const entries = new Map<string, Valid>();
   for (const [id, entry] of globalEntries) {
-    if (entry.kind === "valid") entries.set(id, entry);
+    if (isValid(entry)) entries.set(id, entry);
   }
   for (const [id, entry] of projectEntries) {
     entries.delete(id);
-    if (entry.kind === "valid") entries.set(id, entry);
-  }
-  return new Map([...entries].sort(([left], [right]) => left.localeCompare(right)));
-}
-
-function mergeDapProfiles(
-  globalEntries: ReadonlyMap<string, ParsedDapProfile>,
-  projectEntries: ReadonlyMap<string, ParsedDapProfile>,
-): ReadonlyMap<string, Extract<ParsedDapProfile, { readonly kind: "valid" }>> {
-  const entries = new Map<string, Extract<ParsedDapProfile, { readonly kind: "valid" }>>();
-  for (const [id, entry] of globalEntries) {
-    if (entry.kind === "valid") entries.set(id, entry);
-  }
-  for (const [id, entry] of projectEntries) {
-    entries.delete(id);
-    if (entry.kind === "valid") entries.set(id, entry);
+    if (isValid(entry)) entries.set(id, entry);
   }
   return new Map([...entries].sort(([left], [right]) => left.localeCompare(right)));
 }
@@ -376,8 +364,8 @@ function resolveDapAdapter(
 export function resolveDapSettings(reader: DapSettingsReader): ResolvedDapSettings {
   const globalLayer = readDapLayer(reader.getGlobalSettings(), "global");
   const projectLayer = readDapLayer(reader.getProjectSettings(), "project");
-  const mergedAdapters = mergeDapAdapters(globalLayer.adapters, projectLayer.adapters);
-  const mergedProfiles = mergeDapProfiles(globalLayer.profiles, projectLayer.profiles);
+  const mergedAdapters = mergeValidDapEntries(globalLayer.adapters, projectLayer.adapters);
+  const mergedProfiles = mergeValidDapEntries(globalLayer.profiles, projectLayer.profiles);
   const adapters = new Map(
     [...mergedAdapters].map(([id, adapter]) => [id, resolveDapAdapter(id, adapter)]),
   );

@@ -98,28 +98,9 @@ export const PostEditDiagnosticOutcomeSchema = Type.Union([
 export type PostEditDiagnosticOutcome = Static<typeof PostEditDiagnosticOutcomeSchema>;
 
 /** Runs fresh Post-edit Diagnostics for changed paths after a Supported Mutation Tool result. */
-export interface PostEditDiagnosticsRunner {
-  /** Return every fresh diagnostic and explicit non-diagnostic outcome for the supplied paths. */
-  runPostEditDiagnostics(
-    paths: readonly PostEditDiagnosticPath[],
-  ): Promise<readonly PostEditDiagnosticOutcome[]>;
-}
-
-/** Minimal Tool Result shape accepted by the structural post-edit adapters. */
-export interface PostEditToolResult {
-  /** Tool name supplied by Pi's central tool-result event. */
-  readonly toolName: string;
-  /** Original tool arguments supplied to the central event. */
-  readonly input: ToolResultEvent["input"];
-  /** Tool-result details owned by the mutation implementation. */
-  readonly details: ToolResultEvent["details"];
-  /** Existing Pi content, retained verbatim before the appended LSP section. */
-  readonly content: ToolResultEvent["content"];
-  /** Existing tool failure state, which diagnostics must not change. */
-  readonly isError: boolean;
-  /** Existing usage accounting, which diagnostics must not change. */
-  readonly usage?: ToolResultEvent["usage"];
-}
+export type PostEditDiagnosticsRunner = (
+  paths: readonly PostEditDiagnosticPath[],
+) => Promise<readonly PostEditDiagnosticOutcome[]>;
 
 /** Tool-result fields returned by Post-edit Diagnostics middleware without changing mutation state. */
 export interface PostEditDiagnosticsResultPatch {
@@ -174,7 +155,7 @@ function pathsAfterMutation(result: ReturnType<typeof mutationResult>): PostEdit
 
 /** Extract exact changed destination paths from one Supported Mutation Tool result. */
 export function extractPostEditDiagnosticPaths(
-  event: Pick<PostEditToolResult, "toolName" | "input" | "details" | "isError">,
+  event: Pick<ToolResultEvent, "toolName" | "input" | "details" | "isError">,
 ): ExtractedMutation | undefined {
   if (event.toolName === "edit" || event.toolName === "write") {
     if (event.isError || !Value.Check(NativeMutationInputSchema, event.input)) return undefined;
@@ -261,7 +242,7 @@ export function formatPostEditDiagnostics(outcomes: readonly PostEditDiagnosticO
 
 /** Append fresh Post-edit Diagnostics while preserving every mutation-result field Pi already owns. */
 export async function appendPostEditDiagnostics(
-  event: PostEditToolResult,
+  event: ToolResultEvent,
   diagnostics: PostEditDiagnosticsRunner,
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
   const extracted = extractPostEditDiagnosticPaths(event);
@@ -271,7 +252,7 @@ export async function appendPostEditDiagnostics(
       kind: "warning",
       message,
     })),
-    ...(await diagnostics.runPostEditDiagnostics(extracted.paths)),
+    ...(await diagnostics(extracted.paths)),
   ];
   if (outcomes.length === 0) return undefined;
   const patch: PostEditDiagnosticsResultPatch = {
@@ -281,12 +262,4 @@ export async function appendPostEditDiagnostics(
     outcomes,
   };
   return event.usage === undefined ? patch : { ...patch, usage: event.usage };
-}
-
-/** Adapt Pi's central ToolResultEvent shape to Post-edit Diagnostics middleware. */
-export async function appendPiPostEditDiagnostics(
-  event: ToolResultEvent,
-  diagnostics: PostEditDiagnosticsRunner,
-): Promise<PostEditDiagnosticsResultPatch | undefined> {
-  return appendPostEditDiagnostics(event, diagnostics);
 }

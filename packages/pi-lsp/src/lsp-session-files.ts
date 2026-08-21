@@ -1,9 +1,6 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-/** The maximum retained byte length for one language server's stderr log. */
-export const MAX_SERVER_STDERR_BYTES = 1024 * 1024;
-
 /** Owns private Result Spill and bounded stderr files for one Pi session. */
 export interface LspSessionFiles {
   /** Private directory removed when the Pi session shuts down. */
@@ -12,15 +9,12 @@ export interface LspSessionFiles {
   writeResultSpill(output: string): Promise<string>;
   /** Create or return the bounded stderr file path for one language server. */
   getServerStderrPath(serverId: string): Promise<string>;
-  /** Retain the latest one megabyte of one language server's stderr stream. */
-  appendServerStderr(serverId: string, chunk: Uint8Array): Promise<string>;
   /** Remove all session files after queued writes finish. */
   close(): Promise<void>;
 }
 
 interface ServerStderrFile {
   readonly path: string;
-  content: Buffer;
 }
 
 class LspSessionFileStore implements LspSessionFiles {
@@ -45,22 +39,7 @@ class LspSessionFileStore implements LspSessionFiles {
   getServerStderrPath(serverId: string): Promise<string> {
     const stderrFile = this.serverStderrFile(serverId);
     return this.enqueueSessionFileWrite(async () => {
-      await writeFile(stderrFile.path, stderrFile.content, { mode: 0o600 });
-      await chmod(stderrFile.path, 0o600);
-      return stderrFile.path;
-    });
-  }
-
-  appendServerStderr(serverId: string, chunk: Uint8Array): Promise<string> {
-    const stderrFile = this.serverStderrFile(serverId);
-    const copiedChunk = Buffer.from(chunk);
-    return this.enqueueSessionFileWrite(async () => {
-      const combined = Buffer.concat([stderrFile.content, copiedChunk]);
-      stderrFile.content =
-        combined.length <= MAX_SERVER_STDERR_BYTES
-          ? combined
-          : Buffer.from(combined.subarray(combined.length - MAX_SERVER_STDERR_BYTES));
-      await writeFile(stderrFile.path, stderrFile.content, { mode: 0o600 });
+      await writeFile(stderrFile.path, "", { mode: 0o600 });
       await chmod(stderrFile.path, 0o600);
       return stderrFile.path;
     });
@@ -81,7 +60,6 @@ class LspSessionFileStore implements LspSessionFiles {
     if (existing !== undefined) return existing;
     const stderrFile = {
       path: join(this.directoryPath, `server-stderr-${this.nextFileIndex++}.log`),
-      content: Buffer.alloc(0),
     };
     this.stderrFiles.set(serverId, stderrFile);
     return stderrFile;

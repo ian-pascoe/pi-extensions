@@ -132,19 +132,7 @@ function hasString(values: readonly string[], candidate: string): boolean {
 function hasExactKeys(value: CodeModeProtocolObject, expected: readonly string[]): boolean {
   const keys = objectKeys(value);
   if (keys.length !== expected.length) return false;
-  for (let expectedIndex = 0; expectedIndex < expected.length; expectedIndex += 1) {
-    const expectedKey = expected[expectedIndex];
-    if (expectedKey === undefined) return false;
-    let found = false;
-    for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
-      if (keys[keyIndex] === expectedKey) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) return false;
-  }
-  return true;
+  return expected.every((expectedKey) => expectedKey !== undefined && keys.includes(expectedKey));
 }
 
 function parseProtocolJson(

@@ -8,14 +8,8 @@ import {
 import { DapSession } from "./dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "./dap-session-files.js";
 import { DapObserverUiController } from "./dap-observer-ui.js";
-import { registerDapTool, type DapToolRuntime } from "./dap-tool.js";
+import { createDapToolDefinition, type DapToolRuntime } from "./dap-tool.js";
 import { resolveDapSettings } from "./pi-dap-settings.js";
-
-/** Runtime construction effect kept narrow so lifecycle tests use an isolated Pi agent directory. */
-export interface PiDapLifecycleEffects {
-  /** Return Pi's trust-aware global settings directory. */
-  getAgentDirectory(): string;
-}
 
 interface ActivePiDapSession extends DapToolRuntime {
   readonly observer: DapObserverUiController;
@@ -23,20 +17,16 @@ interface ActivePiDapSession extends DapToolRuntime {
   readonly sessionFiles: DapSessionFiles;
 }
 
-const productionPiDapLifecycleEffects: PiDapLifecycleEffects = {
-  getAgentDirectory: getAgentDir,
-};
-
 /** Own settings, one Debug Session, one registered tool, and cleanup for a Pi conversation session. */
 export class PiDapLifecycleController {
   private activeSession: ActivePiDapSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private toolRegistered = false;
 
-  /** Bind lifecycle handlers to Pi without starting a Debug Adapter. */
+  /** Bind lifecycle handlers to Pi; `getAgentDirectory` may be overridden by tests to isolate settings. */
   constructor(
     private readonly pi: ExtensionAPI,
-    private readonly effects: PiDapLifecycleEffects,
+    private readonly getAgentDirectory: () => string = getAgentDir,
   ) {}
 
   /** Register the Pi conversation session start and shutdown handlers. */
@@ -47,7 +37,7 @@ export class PiDapLifecycleController {
 
   private async startSession(context: ExtensionContext): Promise<void> {
     await this.shutdownSession();
-    const settingsManager = SettingsManager.create(context.cwd, this.effects.getAgentDirectory(), {
+    const settingsManager = SettingsManager.create(context.cwd, this.getAgentDirectory(), {
       projectTrusted: context.isProjectTrusted(),
     });
     const settings = resolveDapSettings(settingsManager);
@@ -69,7 +59,7 @@ export class PiDapLifecycleController {
       sessionFiles,
     };
     if (!this.toolRegistered) {
-      registerDapTool(this.pi, () => this.activeSession);
+      this.pi.registerTool(createDapToolDefinition(() => this.activeSession));
       this.toolRegistered = true;
     }
   }
@@ -100,9 +90,9 @@ export class PiDapLifecycleController {
 
 /** Compose the source-TypeScript Pi DAP extension without starting a Debug Adapter at load time. */
 export function createPiDapExtension(
-  effects: PiDapLifecycleEffects = productionPiDapLifecycleEffects,
+  getAgentDirectory: () => string = getAgentDir,
 ): ExtensionFactory {
-  return (pi) => new PiDapLifecycleController(pi, effects).register();
+  return (pi) => new PiDapLifecycleController(pi, getAgentDirectory).register();
 }
 
 const piDapExtension = createPiDapExtension();

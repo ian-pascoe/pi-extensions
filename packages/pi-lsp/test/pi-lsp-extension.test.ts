@@ -334,7 +334,6 @@ describe("Pi LSP extension lifecycle", () => {
         preview_id: "partial-preview",
         mutation_manifest: [{ operation: "modify", path: filePath }],
         changed_paths: [filePath],
-        recovery_failure_paths: [filePath],
         state: "partial_failure",
       },
       isError: false,

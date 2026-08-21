@@ -20,23 +20,16 @@ test("writes complete Result Spill output to a private session directory", async
   }
 });
 
-test("keeps only the latest 1 MB of server stderr and removes session files on shutdown", async () => {
+test("reserves empty mode-safe stderr paths and removes session files on shutdown", async () => {
   const sessionDirectory = await mkdtemp(join(tmpdir(), "pi-lsp-session-"));
   const files = await createLspSessionFiles(sessionDirectory);
   try {
-    const firstChunk = Buffer.alloc(800 * 1024, 0x61);
-    const secondChunk = Buffer.alloc(800 * 1024, 0x62);
     const emptyStderrPath = await files.getServerStderrPath("empty-server");
     const traversalStderrPath = await files.getServerStderrPath("../../outside-session-files");
-    const stderrPath = await files.appendServerStderr("typescript", firstChunk);
-    await files.appendServerStderr("typescript", secondChunk);
 
     expect(await readFile(emptyStderrPath)).toEqual(Buffer.alloc(0));
     expect(dirname(traversalStderrPath)).toBe(files.directoryPath);
-    expect(await readFile(stderrPath)).toEqual(
-      Buffer.concat([Buffer.alloc(224 * 1024, 0x61), secondChunk]),
-    );
-    expect((await stat(stderrPath)).mode & 0o777).toBe(0o600);
+    expect((await stat(emptyStderrPath)).mode & 0o777).toBe(0o600);
 
     await files.close();
     await expect(stat(files.directoryPath)).rejects.toMatchObject({ code: "ENOENT" });

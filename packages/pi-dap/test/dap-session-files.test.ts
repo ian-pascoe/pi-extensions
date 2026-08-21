@@ -3,13 +3,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
 import {
-  createDapOutputBuffer,
   createDapSessionFiles,
   MAX_DAP_RETAINED_BYTES,
+  RetainedDapOutput,
 } from "../src/dap-session-files.js";
 
 test("retains the newest unread Debuggee output and reports discarded bytes", () => {
-  const output = createDapOutputBuffer();
+  const output = new RetainedDapOutput();
 
   output.append("a".repeat(MAX_DAP_RETAINED_BYTES));
   output.append("tail");
@@ -26,8 +26,8 @@ test("writes private Result Spills and adapter stderr paths, then removes the se
   const files = await createDapSessionFiles(sessionDirectory);
   try {
     const spillPath = await files.writeResultSpill("complete output");
-    const traversalPath = await files.getAdapterStderrPath("../../outside");
-    const stderrPath = await files.getAdapterStderrPath("node");
+    const traversalPath = await files.getAdapterStderrPath();
+    const stderrPath = await files.getAdapterStderrPath();
 
     expect(await readFile(spillPath, "utf8")).toBe("complete output");
     expect(dirname(traversalPath)).toBe(files.directoryPath);

@@ -143,7 +143,6 @@ describe("persisted Worktree Checkpoint history", () => {
       startEntryId: step.startEntryId,
       endEntryId: step.endEntryId,
       resultLeafId: step.resultLeafId,
-      startTreeId: checkpointTreeId("same-tree"),
       targetTreeId: checkpointTreeId("same-tree"),
       toolCallIds: ["call-a", "call-b"],
     });
@@ -282,7 +281,7 @@ describe("Target Checkpoint mapping", () => {
     );
   });
 
-  test("reports unavailable selected, root, and expired Target Checkpoints", () => {
+  test("reports unavailable selected and root Target Checkpoints", () => {
     const { sessionManager, identity } = createHistorySession();
     const rootUserId = sessionManager.appendMessage({
       role: "user",
@@ -310,17 +309,6 @@ describe("Target Checkpoint mapping", () => {
         selectedTargetId: rootUserId,
       }),
     ).toMatchObject({ kind: "unavailable", reason: "target-checkpoint-missing" });
-    expect(
-      planGitCheckpointNavigation(history, {
-        oldLeafId: step.endEntryId,
-        selectedTargetId: step.assistantId,
-        availableTreeIds: new Set(),
-      }),
-    ).toMatchObject({
-      kind: "unavailable",
-      reason: "target-checkpoint-expired",
-      targetCheckpoint: { skippedPaths: ["large.bin"] },
-    });
   });
 });
 
@@ -359,7 +347,6 @@ describe("Navigation Transition planning", () => {
       }),
     ).toMatchObject({
       kind: "ready",
-      direction: "backward",
       commonAncestorId: first.assistantId,
       changedPaths: ["second.ts", "shared.ts"],
     });
@@ -370,7 +357,6 @@ describe("Navigation Transition planning", () => {
       }),
     ).toMatchObject({
       kind: "ready",
-      direction: "forward",
       changedPaths: ["second.ts", "shared.ts"],
     });
     expect(
@@ -380,7 +366,6 @@ describe("Navigation Transition planning", () => {
       }),
     ).toMatchObject({
       kind: "ready",
-      direction: "sideways",
       changedPaths: ["second.ts", "shared.ts"],
       skippedPaths: ["ignored.log", "sibling.ts"],
     });

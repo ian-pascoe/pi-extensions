@@ -1,24 +1,24 @@
 import { describe, expect, test } from "vitest";
-import { configDefaults, defaultGuidance, parseConfig } from "../src/config.js";
+import { configDefaults, defaultGuidance, parseAdaptiveThinkingConfig } from "../src/config.js";
 
-describe("parseConfig", () => {
+describe("parseAdaptiveThinkingConfig", () => {
   test("uses defaults when input is undefined", () => {
-    expect(parseConfig(undefined)).toEqual(configDefaults);
+    expect(parseAdaptiveThinkingConfig(undefined).config).toEqual(configDefaults);
   });
 
   test("merges partial config with defaults", () => {
-    expect(parseConfig({ toolName: "think_harder" })).toEqual({
+    expect(parseAdaptiveThinkingConfig({ toolName: "think_harder" }).config).toEqual({
       ...configDefaults,
       toolName: "think_harder",
     });
   });
 
   test("rejects invalid config types", () => {
-    expect(() => parseConfig({ enabled: "yes" })).toThrow();
+    expect(() => parseAdaptiveThinkingConfig({ enabled: "yes" })).toThrow();
   });
 
   test("rejects additional config properties", () => {
-    expect(() => parseConfig({ unknown: true })).toThrow();
+    expect(() => parseAdaptiveThinkingConfig({ unknown: true })).toThrow();
   });
 
   test("default guidance requires active thinking-level management", () => {
@@ -27,7 +27,7 @@ describe("parseConfig", () => {
   });
 
   test("normalizes the deprecated systemPrompt alias to guidance", () => {
-    expect(parseConfig({ systemPrompt: "Legacy guidance" })).toEqual({
+    expect(parseAdaptiveThinkingConfig({ systemPrompt: "Legacy guidance" }).config).toEqual({
       ...configDefaults,
       guidance: "Legacy guidance",
     });
@@ -35,12 +35,12 @@ describe("parseConfig", () => {
 
   test("rejects guidance together with its deprecated alias", () => {
     expect(() =>
-      parseConfig({ guidance: "New guidance", systemPrompt: "Legacy guidance" }),
+      parseAdaptiveThinkingConfig({ guidance: "New guidance", systemPrompt: "Legacy guidance" }),
     ).toThrow("cannot contain both guidance and systemPrompt");
   });
 
   test("rejects duplicate setter and status tool names", () => {
-    expect(() => parseConfig({ statusToolName: "set_thinking_level" })).toThrow(
+    expect(() => parseAdaptiveThinkingConfig({ statusToolName: "set_thinking_level" })).toThrow(
       "toolName and statusToolName must be different",
     );
   });

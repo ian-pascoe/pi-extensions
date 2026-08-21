@@ -126,11 +126,11 @@ class PiCodeModeLifecycleController {
     this.pi.on("session_start", async (_event, context) => this.startSession(context));
     this.pi.on("before_agent_start", () => this.synchronizeCurrentGeneration());
     this.pi.on("tool_execution_end", () => this.synchronizeCurrentGeneration());
-    this.pi.on("session_shutdown", async (event) => this.shutdownSession(event.reason));
+    this.pi.on("session_shutdown", async () => this.shutdownSession());
   }
 
   private async startSession(context: ExtensionContext): Promise<void> {
-    await this.shutdownSession("replacement");
+    await this.shutdownSession();
     const capturedResult = capturePiAgentSession(this.pi);
     if (!capturedResult.ok) {
       this.notifyWarning(context, capturedResult.warning);
@@ -247,7 +247,7 @@ class PiCodeModeLifecycleController {
       } catch {
         // Observer cleanup is presentation-only; execution resources still require release.
       }
-      await coordinator.shutdown("startup failure");
+      await coordinator.shutdown();
       await sessionFiles.close();
       if (this.generation === generation) this.generation = undefined;
       this.notifyWarning(
@@ -389,12 +389,8 @@ class PiCodeModeLifecycleController {
       now: CODEMODE_SYSTEM_RUNTIME.now,
       signal: AbortSignal.any([batch.signal, terminationController.signal]),
       onTerminate: () => terminationController.abort(),
-    };
-    if (outerAssistantMessage !== undefined) {
-      Object.assign(bridgeOptions, { outerAssistantMessage });
-    }
-    if (batch.onUpdate !== undefined) {
-      Object.assign(bridgeOptions, {
+      ...(outerAssistantMessage !== undefined && { outerAssistantMessage }),
+      ...(batch.onUpdate !== undefined && {
         onUpdate: (_callId: string, update: AgentToolResult<unknown>) => {
           const outerUpdate: AgentToolResult<CodeModeResultDetails> = {
             content: update.content,
@@ -402,8 +398,8 @@ class PiCodeModeLifecycleController {
           };
           batch.onUpdate?.(outerUpdate);
         },
-      });
-    }
+      }),
+    };
     const bridged = await executePiToolBridgeBatch(bridgeCaptured, bridgeOptions);
     const bridgedResults = new Map<string, CodeModeNestedToolResult>(
       bridged.calls.map((outcome) => [
@@ -431,16 +427,16 @@ class PiCodeModeLifecycleController {
           "Pi CodeMode nested tool returned no result",
         ),
     );
-    const batchResult = { results, presentation: bridged.presentation };
-    if (bridged.usage !== undefined) Object.assign(batchResult, { usage: bridged.usage });
-    if (bridged.addedToolNames.length > 0) {
-      Object.assign(batchResult, { addedToolNames: bridged.addedToolNames });
-    }
-    if (bridged.terminate) Object.assign(batchResult, { terminate: true });
-    return batchResult;
+    return {
+      results,
+      presentation: bridged.presentation,
+      ...(bridged.usage !== undefined && { usage: bridged.usage }),
+      ...(bridged.addedToolNames.length > 0 && { addedToolNames: bridged.addedToolNames }),
+      ...(bridged.terminate && { terminate: true }),
+    };
   }
 
-  private async shutdownSession(reason: string): Promise<void> {
+  private async shutdownSession(): Promise<void> {
     const generation = this.generation;
     if (generation === undefined || !generation.active) return;
     generation.active = false;
@@ -450,7 +446,7 @@ class PiCodeModeLifecycleController {
       // Observer cleanup is presentation-only; execution resources still require release.
     }
     try {
-      await generation.coordinator.shutdown(reason);
+      await generation.coordinator.shutdown();
     } finally {
       try {
         await generation.sessionFiles.close();

@@ -131,9 +131,33 @@ export function buildDepthBoundSubagentPrompt(
   });
 }
 
-function canonicalPath(path: string): string {
+/** Canonicalize one path, resolving symlinks only when the target exists. */
+export function canonicalPath(path: string): string {
   const absolutePath = resolve(path);
   return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
+}
+
+/** Build the shared unavailable-agent projection used by fork recovery and ownership binding. */
+export function unavailableAgent(
+  agent: PersistedAgent,
+  error: string,
+  latestActivityAt?: string,
+): PersistedAgent {
+  // SAFETY: the spread preserves every required PersistedAgent field; only optional session fields are cleared.
+  const unavailable = {
+    ...structuredClone(agent),
+    session_file: undefined,
+    session_id: undefined,
+    session_leaf_id: undefined,
+    clone_error: error,
+    active_turn_id: undefined,
+    active_turn_started_at: undefined,
+    availability: "unavailable",
+    missing_dependencies: [error],
+    unavailable_reason: error,
+  } as PersistedAgent;
+  if (latestActivityAt !== undefined) unavailable.latest_activity_at = latestActivityAt;
+  return unavailable;
 }
 
 function appendImportedMessage(sessionManager: SessionManager, message: AgentMessage): void {
@@ -439,54 +463,40 @@ function assistantText(message: AgentMessage | undefined): string {
     .join("\n");
 }
 
-/** Collects finalized turn messages without relying on mutable post-compaction session state. */
-export class ChildTurnOutcomeCollector {
-  private readonly messages: AgentMessage[] = [];
-  private readonly unsubscribe: () => void;
-
-  constructor(session: Pick<AgentSession, "subscribe">) {
-    this.unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-      if (event.type === "message_end") this.messages.push(event.message);
-    });
-  }
-
-  dispose(): void {
-    this.unsubscribe();
-  }
-
-  toOutcome(aborted: boolean): RuntimeTurnOutcome {
-    const finalAssistant = [...this.messages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    if (!finalAssistant || finalAssistant.role !== "assistant") {
-      return {
-        status: aborted ? "cancelled" : "failed",
-        output: "",
-        error: "No terminal assistant response",
-      };
-    }
-    if (finalAssistant.stopReason === "aborted") {
-      return {
-        status: "cancelled",
-        output: assistantText(finalAssistant),
-        error: finalAssistant.errorMessage,
-        usage: sumUsage(this.messages),
-      };
-    }
-    if (finalAssistant.stopReason === "error") {
-      return {
-        status: "failed",
-        output: assistantText(finalAssistant),
-        error: finalAssistant.errorMessage ?? "Provider request failed",
-        usage: sumUsage(this.messages),
-      };
-    }
+/** Collect finalized turn messages and reduce them to one runtime outcome. */
+function collectChildTurnOutcome(
+  messages: readonly AgentMessage[],
+  aborted: boolean,
+): RuntimeTurnOutcome {
+  const finalAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  if (!finalAssistant || finalAssistant.role !== "assistant") {
     return {
-      status: "completed",
-      output: assistantText(finalAssistant),
-      usage: sumUsage(this.messages),
+      status: aborted ? "cancelled" : "failed",
+      output: "",
+      error: "No terminal assistant response",
     };
   }
+  if (finalAssistant.stopReason === "aborted") {
+    return {
+      status: "cancelled",
+      output: assistantText(finalAssistant),
+      error: finalAssistant.errorMessage,
+      usage: sumUsage(messages),
+    };
+  }
+  if (finalAssistant.stopReason === "error") {
+    return {
+      status: "failed",
+      output: assistantText(finalAssistant),
+      error: finalAssistant.errorMessage ?? "Provider request failed",
+      usage: sumUsage(messages),
+    };
+  }
+  return {
+    status: "completed",
+    output: assistantText(finalAssistant),
+    usage: sumUsage(messages),
+  };
 }
 
 /** Run one child operation while retaining its finalized outcome across compaction. */
@@ -495,10 +505,13 @@ export async function captureChildTurnOutcome(
   operation: () => Promise<void>,
   isAborted: () => boolean,
 ): Promise<RuntimeTurnOutcome> {
-  const collector = new ChildTurnOutcomeCollector(session);
+  const messages: AgentMessage[] = [];
+  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+    if (event.type === "message_end") messages.push(event.message);
+  });
   try {
     await operation();
-    return collector.toOutcome(isAborted());
+    return collectChildTurnOutcome(messages, isAborted());
   } catch (error) {
     return {
       status: isAborted() ? "cancelled" : "failed",
@@ -506,7 +519,7 @@ export async function captureChildTurnOutcome(
       error: error instanceof Error ? error.message : String(error),
     };
   } finally {
-    collector.dispose();
+    unsubscribe();
   }
 }
 

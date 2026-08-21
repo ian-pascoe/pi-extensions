@@ -4,7 +4,6 @@ import {
   DEFAULT_MAX_LINES,
   truncateHead,
   type AgentToolResult,
-  type ExtensionAPI,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
@@ -14,7 +13,6 @@ import type {
   DapSession,
   DapSessionResult,
   DapStackInput,
-  DapVariablesInput,
 } from "./dap-session.js";
 import type { DapSessionFiles } from "./dap-session-files.js";
 import {
@@ -288,13 +286,14 @@ async function dispatchDapOperation(
 ): Promise<DapSessionResult> {
   switch (parameters.operation) {
     case "launch": {
-      let input: DapLaunchInput = {};
-      if (parameters.profile !== undefined) input = { ...input, profile: parameters.profile };
-      if (parameters.program !== undefined) {
-        input = { ...input, program: resolve(cwd, parameters.program) };
-      }
-      if (parameters.args !== undefined) input = { ...input, args: parameters.args };
-      if (parameters.cwd !== undefined) input = { ...input, cwd: resolve(cwd, parameters.cwd) };
+      const input: DapLaunchInput = {
+        ...(parameters.profile !== undefined && { profile: parameters.profile }),
+        ...(parameters.program !== undefined && {
+          program: resolve(cwd, parameters.program),
+        }),
+        ...(parameters.args !== undefined && { args: parameters.args }),
+        ...(parameters.cwd !== undefined && { cwd: resolve(cwd, parameters.cwd) }),
+      };
       return session.launch(input, signal);
     }
     case "set_breakpoints":
@@ -313,16 +312,18 @@ async function dispatchDapOperation(
     case "pause":
       return session.pause(signal);
     case "stack": {
-      let input: DapStackInput = {};
-      if (parameters.thread_id !== undefined) input = { ...input, threadId: parameters.thread_id };
-      if (parameters.start !== undefined) input = { ...input, start: parameters.start };
-      if (parameters.count !== undefined) input = { ...input, count: parameters.count };
+      const input: DapStackInput = {
+        ...(parameters.thread_id !== undefined && { threadId: parameters.thread_id }),
+        ...(parameters.start !== undefined && { start: parameters.start }),
+        ...(parameters.count !== undefined && { count: parameters.count }),
+      };
       return session.stack(input, signal);
     }
     case "variables": {
-      let page: Pick<DapVariablesInput, "start" | "count"> = {};
-      if (parameters.start !== undefined) page = { ...page, start: parameters.start };
-      if (parameters.count !== undefined) page = { ...page, count: parameters.count };
+      const page = {
+        ...(parameters.start !== undefined && { start: parameters.start }),
+        ...(parameters.count !== undefined && { count: parameters.count }),
+      };
       return "frame_id" in parameters
         ? session.variables({ ...page, frameId: parameters.frame_id }, signal)
         : session.variables(
@@ -331,8 +332,10 @@ async function dispatchDapOperation(
           );
     }
     case "evaluate": {
-      let input: DapEvaluateInput = { expression: parameters.expression };
-      if (parameters.frame_id !== undefined) input = { ...input, frameId: parameters.frame_id };
+      const input: DapEvaluateInput = {
+        expression: parameters.expression,
+        ...(parameters.frame_id !== undefined && { frameId: parameters.frame_id }),
+      };
       return session.evaluate(input, signal);
     }
     case "status":
@@ -409,12 +412,4 @@ export function createDapToolDefinition(
       }
     },
   };
-}
-
-/** Register exactly one strict `dap` tool whose runtime follows Pi session reloads. */
-export function registerDapTool(
-  pi: Pick<ExtensionAPI, "registerTool">,
-  getRuntime: () => DapToolRuntime | undefined,
-): void {
-  pi.registerTool(createDapToolDefinition(getRuntime));
 }

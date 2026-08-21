@@ -29,6 +29,7 @@ import {
   type DeliveryLedgerTransition,
 } from "./minimal-subagents-delivery-ledger.js";
 import { addCoordinatorMessageEnvelope } from "./minimal-subagents-message-envelope.js";
+import { unavailableAgent } from "./minimal-subagents-sessions.js";
 import { createRegistryEvent } from "./minimal-subagents-registry.js";
 import type {
   AgentDetail,
@@ -51,7 +52,6 @@ import type {
   SpawnParameters,
   SpawnResult,
   StatusResult,
-  TurnId,
   TurnResult,
   WaitMessageResult,
   WaitResult,
@@ -203,7 +203,6 @@ export class MinimalSubagentsCoordinator {
     const ordinaryTools = resolveOrdinaryToolSelection(parameters.tools, {
       ordinaryTools: excludeCoordinatorTools(caller.ordinaryTools),
       capabilityCeiling: excludeCoordinatorTools(caller.capabilityCeiling),
-      availableTools: excludeCoordinatorTools(caller.availableTools),
     });
     const committedMessages = structuredClone(caller.messages);
     const imported = assembleImportedContext(sessionContext, committedMessages);
@@ -296,7 +295,6 @@ export class MinimalSubagentsCoordinator {
       thinkingLevel: agent.launch_contract.thinking_level,
       ordinaryTools: [...agent.launch_contract.ordinary_tools],
       capabilityCeiling: [...agent.capability_ceiling],
-      availableTools: [...agent.capability_ceiling],
       spawnEntryId,
     };
   }
@@ -492,7 +490,6 @@ export class MinimalSubagentsCoordinator {
       agent_id: agentId,
       recursive,
       deleted_agent_ids: [],
-      tombstoned_agent_ids: [],
       trashed_session_files: [],
       failures: [],
     };
@@ -520,7 +517,6 @@ export class MinimalSubagentsCoordinator {
         this.pruneRecentMessageProjectionsForDeletedAgent(agent.agent_id);
         this.tombstones.add(agent.agent_id);
         result.deleted_agent_ids.push(agent.agent_id);
-        result.tombstoned_agent_ids.push(agent.agent_id);
         this.dependencies.registry.append(
           createRegistryEvent(this.dependencies.registry.rootSessionId, "agent-deleted", {
             agent_ids: [agent.agent_id],
@@ -567,12 +563,8 @@ export class MinimalSubagentsCoordinator {
     this.runtimeInitializations.clear();
     this.pendingAgentIds.clear();
     this.tombstones.clear();
-    this.deliveryLedger = createDeliveryLedger();
     this.waiters.clear();
-    this.pendingParentMessages.clear();
     this.waitHandedDeliveryIds.clear();
-    this.recipientQueues.clear();
-    this.backgroundOperations.clear();
     this.automaticDeliveryKeys.clear();
     this.automaticCoordinationDeliveryIds.clear();
     this.deliveryLedger = createDeliveryLedger({
@@ -916,9 +908,8 @@ export class MinimalSubagentsCoordinator {
     return initialization;
   }
 
-  private beginTurn(agent: PersistedAgent): TurnId {
-    // SAFETY: The generated value embeds the canonical agent ID and a fresh turn UUID before branding.
-    const turnId = `${agent.agent_id}:turn-${randomUUID()}` as TurnId;
+  private beginTurn(agent: PersistedAgent): string {
+    const turnId = `${agent.agent_id}:turn-${randomUUID()}`;
     const startedAt = this.now().toISOString();
     agent.active_turn_id = turnId;
     agent.active_turn_started_at = startedAt;
@@ -1022,11 +1013,6 @@ export class MinimalSubagentsCoordinator {
           if (!this.isTerminalDeliveryCurrent(delivery)) return;
         }
         if (graceMs > 0) await new Promise((resolve) => setTimeout(resolve, graceMs));
-        if (!this.acceptingOperations || this.shouldStopAutomaticTerminalDelivery(delivery)) return;
-        if (this.hasDeliveryEvidence(delivery)) {
-          this.settleDelivery(delivery);
-          return;
-        }
         if (!this.acceptingOperations || this.shouldStopAutomaticTerminalDelivery(delivery)) return;
         if (this.hasDeliveryEvidence(delivery)) {
           this.settleDelivery(delivery);
@@ -1478,11 +1464,6 @@ export class MinimalSubagentsCoordinator {
       elapsed_ms: elapsed ?? agent.latest_result?.elapsed_ms,
       latest_activity_at: agent.latest_activity_at ?? agent.created_at,
       task: agent.task,
-      latest_activity: agent.active_turn_id
-        ? "turn running"
-        : agent.latest_result
-          ? `turn ${agent.latest_result.status}`
-          : "created",
       child_count: directChildren.length,
       children,
     };
@@ -1621,19 +1602,7 @@ export class MinimalSubagentsCoordinator {
   }
 
   private createForkPlaceholder(agent: PersistedAgent, cloneError: string): PersistedAgent {
-    return {
-      ...structuredClone(agent),
-      session_file: undefined,
-      session_id: undefined,
-      session_leaf_id: undefined,
-      clone_error: cloneError,
-      active_turn_id: undefined,
-      active_turn_started_at: undefined,
-      latest_activity_at: this.now().toISOString(),
-      availability: "unavailable",
-      missing_dependencies: [cloneError],
-      unavailable_reason: cloneError,
-    };
+    return unavailableAgent(agent, cloneError, this.now().toISOString());
   }
 
   private rejectAllWaiters(error: Error): void {

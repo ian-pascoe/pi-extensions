@@ -12,6 +12,11 @@ import type {
   CodeModeObserverSnapshot,
   CodeModeUnexpectedFailure,
 } from "./codemode-session-coordinator.js";
+import {
+  boundedCodeModeElapsedMs,
+  formatCodeModeDuration,
+  shortestUniqueCodeModeSessionPrefix,
+} from "./codemode-session-coordinator.js";
 
 const CODEMODE_OBSERVER_UI_KEY = "codemode-observer";
 const CODEMODE_OBSERVER_ROW_LIMIT = 8;
@@ -131,25 +136,12 @@ function shortestUniqueCodeModeSessionPrefixes(
     const safe = sanitizeCodeModeObserverText(session.sessionId);
     return safe.length === 0 ? "unknown" : safe;
   });
-  return identifiers.map((identifier, index) => {
-    let length = Math.min(8, identifier.length);
-    while (
-      length < identifier.length &&
-      identifiers.some(
-        (candidate, candidateIndex) =>
-          candidateIndex !== index && candidate.startsWith(identifier.slice(0, length)),
-      )
-    ) {
-      length += 1;
-    }
-    return identifier.slice(0, length);
-  });
-}
-
-function boundedElapsedMilliseconds(nowMs: number, startedAtMs: number): number {
-  const elapsed = Math.round(nowMs - startedAtMs);
-  if (!Number.isFinite(elapsed)) return 0;
-  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, elapsed));
+  return identifiers.map((identifier, index) =>
+    shortestUniqueCodeModeSessionPrefix(
+      identifier,
+      identifiers.filter((_candidate, candidateIndex) => candidateIndex !== index),
+    ),
+  );
 }
 
 function codeModeTerminalObserverState(
@@ -182,7 +174,7 @@ function projectCodeModeObserverRow(
       sessionPrefix,
       state: "running",
       cellOrdinal: session.current_cell.ordinal,
-      elapsedMs: boundedElapsedMilliseconds(nowMs, session.current_cell.started_at_ms),
+      elapsedMs: boundedCodeModeElapsedMs(session.current_cell.started_at_ms, nowMs),
       activeToolNames,
       activeToolCount: Math.max(session.current_cell.active_tool_count, activeToolNames.length),
     };
@@ -232,13 +224,6 @@ export function buildCodeModeObserverView(
   };
 }
 
-function formatCodeModeObserverDuration(elapsedMs: number): string {
-  if (elapsedMs < 1_000) return `${elapsedMs}ms`;
-  if (elapsedMs < 60_000) return `${(elapsedMs / 1_000).toFixed(1)}s`;
-  const seconds = Math.floor(elapsedMs / 1_000);
-  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
-}
-
 function formatCodeModeObserverToolActivity(
   row: Extract<CodeModeObserverRow, { state: "running" }>,
 ): string | undefined {
@@ -256,10 +241,6 @@ function codeModeObserverRowDetail(row: CodeModeObserverRow): string {
     : `Cell ${row.cellOrdinal}`;
 }
 
-function joinCodeModeObserverRow(parts: readonly string[], separator: string): string {
-  return parts.join(separator);
-}
-
 function renderCodeModeObserverRow(
   row: CodeModeObserverRow,
   width: number,
@@ -270,9 +251,7 @@ function renderCodeModeObserverRow(
   const status = theme.fg(presentation.color, presentation.label);
   const detail = theme.fg("muted", codeModeObserverRowDetail(row));
   const duration =
-    row.state === "running"
-      ? theme.fg("muted", formatCodeModeObserverDuration(row.elapsedMs))
-      : undefined;
+    row.state === "running" ? theme.fg("muted", formatCodeModeDuration(row.elapsedMs)) : undefined;
   const toolActivity =
     row.state === "running" ? formatCodeModeObserverToolActivity(row) : undefined;
   const themedToolActivity =
@@ -285,13 +264,13 @@ function renderCodeModeObserverRow(
     [identity, status],
   ].map((parts) => parts.filter((part): part is string => part !== undefined));
   for (const parts of candidates) {
-    const line = joinCodeModeObserverRow(parts, separator);
+    const line = parts.join(separator);
     if (visibleWidth(line) <= width) return line;
   }
 
   const compactSeparator = theme.fg("dim", CODEMODE_OBSERVER_COMPACT_SEPARATOR_TEXT);
   const compactIdentity = `${theme.fg(presentation.color, presentation.symbol)} ${theme.bold(row.sessionPrefix)}`;
-  const compact = joinCodeModeObserverRow([compactIdentity, status], compactSeparator);
+  const compact = [compactIdentity, status].join(compactSeparator);
   if (visibleWidth(compact) <= width) return compact;
   return truncateToWidth(compact, width, CODEMODE_OBSERVER_ELLIPSIS);
 }

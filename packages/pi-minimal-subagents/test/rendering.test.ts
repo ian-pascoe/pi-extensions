@@ -151,7 +151,6 @@ describe("minimal subagents rendering", () => {
           agent_id: "child",
           recursive: true,
           deleted_agent_ids: ["child"],
-          tombstoned_agent_ids: ["child"],
           trashed_session_files: ["/sessions/child.jsonl"],
           failures: [],
         },

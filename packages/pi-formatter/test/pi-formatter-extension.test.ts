@@ -50,7 +50,7 @@ async function createFormatterHarness(
     extensionFactories: [
       {
         name: "pi-formatter-lifecycle-test",
-        factory: createPiFormatterExtension({ getAgentDirectory: () => agentDirectory }),
+        factory: createPiFormatterExtension(() => agentDirectory),
       },
     ],
     noContextFiles: true,
