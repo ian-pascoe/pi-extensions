@@ -38,9 +38,6 @@
   "dependencies": {
     "@vscode/debugprotocol": "^1.68.0"
   },
-  "devDependencies": {
-    "vscode-js-debug": "https://github.com/microsoft/vscode-js-debug/releases/download/v1.117.0/js-debug-dap-v1.117.0.tar.gz"
-  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
