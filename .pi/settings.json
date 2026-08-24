@@ -79,6 +79,13 @@
       ]
     },
     {
+      "source": "npm:@ian-pascoe/pi-mcp",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ]
+    },
+    {
       "source": "npm:@ian-pascoe/pi-minimal-subagents",
       "autoload": false,
       "extensions": [
