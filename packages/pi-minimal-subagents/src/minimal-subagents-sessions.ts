@@ -613,6 +613,11 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     return snapshotCommittedContext(this.session.messages, this.session.isStreaming);
   }
 
+  snapshotActivityMessages(): AgentMessage[] {
+    const streamingMessage = this.session.state.streamingMessage;
+    return [...this.session.messages, ...(streamingMessage ? [streamingMessage] : [])];
+  }
+
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean {
     return findDeliveryEvidence(
       this.session.sessionManager.getBranch(),

@@ -1,8 +1,14 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  ToolResultMessage,
+  Usage,
+  UserMessage,
+} from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import {
   assembleImportedContext,
+  buildRecentAgentActivity,
   buildSubagentSystemPrompt,
   contextContainsImages,
   snapshotCommittedContext,
@@ -48,6 +54,49 @@ describe("minimal subagents context", () => {
     expect(assembleImportedContext("inherit", messages)).toEqual({ messages, compact: false });
     expect(assembleImportedContext("compact", messages)).toEqual({ messages, compact: true });
     expect(assembleImportedContext("omit", messages)).toEqual({ messages: [], compact: false });
+  });
+
+  it("builds a bounded recent activity tail with reasoning and message text", () => {
+    const assistant: AssistantMessage = {
+      ...assistantMessage("unused"),
+      content: [
+        { type: "thinking", thinking: "private reasoning" },
+        { type: "text", text: "Inspecting the source" },
+        { type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/index.ts" } },
+      ],
+    };
+    const toolResult: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "read",
+      content: [{ type: "image", data: "private image", mimeType: "image/png" }],
+      isError: false,
+      timestamp: 3,
+    };
+    const activity = buildRecentAgentActivity([userMessage("task"), assistant, toolResult]);
+    expect(activity).toMatchObject([
+      { label: "user message", content: "task" },
+      { label: "reasoning", content: "private reasoning" },
+      { label: "assistant message", content: "Inspecting the source" },
+      { label: "tool call read" },
+      { label: "tool result read", content: "(no text content)" },
+    ]);
+    expect(JSON.stringify(activity)).toContain("private reasoning");
+    expect(JSON.stringify(activity)).not.toContain("private image");
+
+    const largeResults: ToolResultMessage[] = Array.from({ length: 13 }, (_, index) => ({
+      role: "toolResult",
+      toolCallId: `call-${index}`,
+      toolName: "exec_command",
+      content: [{ type: "text", text: `${"x".repeat(200)}\n`.repeat(25) }],
+      isError: false,
+      timestamp: index,
+    }));
+    const bounded = buildRecentAgentActivity(largeResults);
+    expect(bounded).toHaveLength(12);
+    expect(bounded[0]).toMatchObject({ label: "tool result exec_command", truncated: true });
+    expect(Buffer.byteLength(bounded[0]?.content ?? "", "utf8")).toBeLessThanOrEqual(2 * 1024);
+    expect(bounded[0]?.content.split("\n").length ?? 0).toBeLessThanOrEqual(20);
   });
 
   it("detects image blocks and writes delegation boundaries into the child prompt", () => {

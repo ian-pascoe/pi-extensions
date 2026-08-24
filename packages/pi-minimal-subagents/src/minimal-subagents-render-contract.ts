@@ -49,6 +49,11 @@ const RenderRecentMessageSchema = Type.Object({
   source_agent_id: Type.Optional(Type.String()),
   content: Type.Optional(Type.String()),
 });
+const RenderRecentActivitySchema = Type.Object({
+  label: Type.String(),
+  content: Type.String(),
+  truncated: Type.Boolean(),
+});
 
 /** Structurally parsed hierarchy status used only by transcript presentation. */
 export const RenderStatusAgentSchema = Type.Object({
@@ -74,6 +79,7 @@ export const RenderStatusAgentSchema = Type.Object({
   capability_ceiling: Type.Optional(Type.Array(Type.String())),
   spawn_entry_id: Type.Optional(Type.String()),
   recent_messages: Type.Optional(Type.Array(RenderRecentMessageSchema)),
+  recent_activity: Type.Optional(Type.Array(RenderRecentActivitySchema)),
   latest_result: Type.Optional(RenderTurnResultSchema),
   missing_dependencies: Type.Optional(Type.Array(Type.String())),
   unavailable_reason: Type.Optional(Type.String()),
@@ -142,6 +148,13 @@ const WaitTurnDetailsSchema = Type.Object({
   usage: Type.Optional(RenderUsageSchema),
   messages: Type.Optional(Type.Array(WaitMessageDetailsSchema)),
 });
+const WaitTimeoutDetailsSchema = Type.Object({
+  event: Type.Literal("timeout"),
+  agent_id: Type.String(),
+  turn_id: Type.String(),
+  timeout_ms: Type.Number(),
+  agent: RenderStatusAgentSchema,
+});
 const StatusDetailsSchema = Type.Union([
   Type.Object({
     parent_id: Type.Optional(Type.String()),
@@ -172,7 +185,11 @@ const MessageRenderDetailsSchema = Type.Union([
   CurrentMessageDetailsSchema,
   LegacyMessageDetailsSchema,
 ]);
-const WaitRenderDetailsSchema = Type.Union([WaitMessageDetailsSchema, WaitTurnDetailsSchema]);
+const WaitRenderDetailsSchema = Type.Union([
+  WaitMessageDetailsSchema,
+  WaitTurnDetailsSchema,
+  WaitTimeoutDetailsSchema,
+]);
 
 export type SpawnCallArguments = Static<typeof SpawnCallArgumentsSchema>;
 export type MessageCallArguments = Static<typeof MessageCallArgumentsSchema>;

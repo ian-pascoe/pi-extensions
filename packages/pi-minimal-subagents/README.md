@@ -130,6 +130,11 @@ children: `subagent`, `agent_message`, `subagent_wait`, `subagent_status`,
 only the three adjacent-coordination tools: `agent_message`, `subagent_wait`,
 and `subagent_status`.
 
+Targeted `subagent_status` includes `recent_activity`, a bounded tail of message
+text, reasoning, tool calls, and tool results. It includes the current streaming
+assistant message but omits image data. Timeout Wait Events include the same
+detailed status snapshot.
+
 The `subagent` `tools` argument distinguishes capability presets from exact
 lists: `"read"` grants `read`, `grep`, `find`, and `ls`; `"modify"` adds
 `bash`, `edit`, and `write`; an array such as `["read"]` grants exactly the
@@ -148,6 +153,10 @@ optional `turn_id` to address an older retained turn exactly. Without it, waits
 select the oldest observable claimed or pending turn before the active/latest
 turn. A caller may have only one outstanding wait for the same source turn; a
 concurrent duplicate is rejected instead of competing for one Wait Event.
+When `timeout_ms` expires, the wait returns an observational `event: "timeout"`
+with the requested turn identity and the same detailed Child Agent status used
+by targeted `subagent_status`. It removes only the waiter, leaving the child
+running and all pending delivery unclaimed. Abort signals remain errors.
 
 The persisted Delivery Ledger records Coordination Messages, terminal results,
 globally increasing sequence, and wait ownership before delivery. Existing

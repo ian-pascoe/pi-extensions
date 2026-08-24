@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { assembleImportedContext, contextContainsImages } from "./minimal-subagents-context.js";
+import {
+  assembleImportedContext,
+  buildRecentAgentActivity,
+  contextContainsImages,
+} from "./minimal-subagents-context.js";
 import {
   canAgentContractSpawn,
   DEFAULT_MAX_SUBAGENT_DEPTH,
@@ -352,7 +356,7 @@ export class MinimalSubagentsCoordinator {
     }
   }
 
-  /** Wait for one exact turn and claim its message/result delivery from automatic fallback. */
+  /** Wait for one exact turn, returning detailed child status if the waiter times out. */
   wait(
     callerId: string,
     agentId: string,
@@ -403,13 +407,16 @@ export class MinimalSubagentsCoordinator {
         reject(error);
       };
       if (timeoutMs !== undefined) {
-        waiter.timeout = setTimeout(
-          () =>
-            stopWaiting(
-              new Error(`Minimal subagents wait timed out for ${agentId} after ${timeoutMs}ms`),
-            ),
-          timeoutMs,
-        );
+        waiter.timeout = setTimeout(() => {
+          this.removeWaiter(key, waiter);
+          resolve({
+            event: "timeout",
+            agent_id: agentId,
+            turn_id: turnId,
+            timeout_ms: timeoutMs,
+            agent: this.buildAgentDetail(agent, false),
+          });
+        }, timeoutMs);
       }
       if (signal) {
         waiter.abortListener = () =>
@@ -1471,7 +1478,8 @@ export class MinimalSubagentsCoordinator {
 
   private buildAgentDetail(agent: PersistedAgent, includeDescendants = true): AgentDetail {
     const summary = this.buildAgentSummary(agent, includeDescendants);
-    const runtimeUsage = this.runtimes.get(agent.agent_id)?.getUsage();
+    const runtime = this.runtimes.get(agent.agent_id);
+    const runtimeUsage = runtime?.getUsage();
     return {
       ...summary,
       session_file: agent.session_file,
@@ -1479,6 +1487,7 @@ export class MinimalSubagentsCoordinator {
       capability_ceiling: [...agent.capability_ceiling],
       spawn_entry_id: agent.spawn_entry_id,
       recent_messages: structuredClone(agent.recent_messages),
+      recent_activity: buildRecentAgentActivity(runtime?.snapshotActivityMessages() ?? []),
       latest_result: agent.latest_result ? structuredClone(agent.latest_result) : undefined,
       missing_dependencies: [...agent.missing_dependencies],
       unavailable_reason: agent.unavailable_reason,

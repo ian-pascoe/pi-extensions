@@ -62,7 +62,8 @@ type SubagentPresentationStatus =
   | "delivered"
   | "delivered-via-wait"
   | "queued"
-  | "message";
+  | "message"
+  | "timed out";
 
 type SubagentStatusPresentation = { readonly symbol: string; readonly color: ThemeColor };
 
@@ -79,6 +80,7 @@ const SUBAGENT_STATUS_PRESENTATION = {
   "delivered-via-wait": { symbol: "→", color: "accent" },
   queued: { symbol: "↗", color: "accent" },
   message: { symbol: "→", color: "accent" },
+  "timed out": { symbol: "!", color: "warning" },
 } satisfies { readonly [Status in SubagentPresentationStatus]: SubagentStatusPresentation };
 
 function coordinatorMessageText(content: RenderableCoordinatorMessage["content"]): string {
@@ -348,10 +350,19 @@ function renderWaitResult(
     ? "waiting"
     : details.event === "message"
       ? "message"
-      : details.status;
-  const duration = formatSubagentDuration(details.elapsed_ms);
-  const tokens = formatSubagentTokenCount(details.usage?.totalTokens);
-  const drainedMessageCount = details.event === "message" ? 0 : (details.messages?.length ?? 0);
+      : details.event === "timeout"
+        ? "timed out"
+        : details.status;
+  const duration = formatSubagentDuration(
+    details.event === "timeout" ? details.timeout_ms : details.elapsed_ms,
+  );
+  const tokens = formatSubagentTokenCount(
+    details.event === "timeout" ? undefined : details.usage?.totalTokens,
+  );
+  const drainedMessageCount =
+    details.event === "message" || details.event === "timeout"
+      ? 0
+      : (details.messages?.length ?? 0);
   const metrics = [
     duration,
     tokens ? `${tokens} tokens` : undefined,
@@ -367,6 +378,15 @@ function renderWaitResult(
   if (details.event === "message") {
     appendTextSection(container, theme, "Message", details.message);
     container.addChild(renderLabelValue(theme, "Message ID", details.message_id));
+    return container;
+  }
+  if (details.event === "timeout") {
+    appendComponentSection(
+      container,
+      theme,
+      "Child status",
+      renderDetailedStatusAgent(details.agent, options, theme),
+    );
     return container;
   }
   if (details.messages && details.messages.length > 0) {
@@ -491,6 +511,20 @@ function renderDetailedStatusAgent(
   }
   if (agent.unavailable_reason) {
     appendTextSection(container, theme, "Unavailable reason", agent.unavailable_reason);
+  }
+  const recentActivity = agent.recent_activity ?? [];
+  if (recentActivity.length > 0) {
+    appendTextSection(
+      container,
+      theme,
+      "Recent activity",
+      recentActivity
+        .map(
+          (activity) =>
+            `${activity.label}${activity.truncated ? " (truncated)" : ""}\n${activity.content}`,
+        )
+        .join("\n\n"),
+    );
   }
   const recentMessages = agent.recent_messages ?? [];
   if (recentMessages.length > 0) {
