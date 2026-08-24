@@ -84,6 +84,47 @@ describe("CodeMode tool contract", () => {
     ).toBe(false);
   });
 
+  test("accepts Console output only on terminal results", () => {
+    const consoleEntries = [
+      { method: "log", text: "answer: 42" },
+      { method: "warn", text: "first\nsecond" },
+    ] as const;
+    const success = createCodeModeSuccess("s", 42, consoleEntries);
+    const failed = createCodeModeFailure("s", "script", "failed", consoleEntries);
+
+    expect(Value.Check(CodeModeResultSchema, success)).toBe(true);
+    expect(Value.Check(CodeModeResultDetailsSchema, success)).toBe(true);
+    expect(Value.Check(CodeModeResultSchema, failed)).toBe(true);
+    expect(Value.Check(CodeModeResultDetailsSchema, failed)).toBe(true);
+    expect(createCodeModeSuccess("s", 42, [])).toEqual({
+      result: "success",
+      sessionId: "s",
+      data: 42,
+    });
+    expect(createCodeModeFailure("s", "script", "failed", [])).toEqual({
+      result: "failed",
+      sessionId: "s",
+      error: { code: "script", message: "failed" },
+    });
+
+    for (const malformed of [
+      { result: "success", sessionId: "s", console: [{ method: "trace", text: "x" }] },
+      { result: "success", sessionId: "s", console: [{ method: "log" }] },
+      {
+        result: "failed",
+        sessionId: "s",
+        error: { code: "script", message: "failed" },
+        console: [{ method: "log", text: "x", extra: true }],
+      },
+      { result: "pending", sessionId: "s", console: consoleEntries },
+      { result: "success", sessions: [], console: consoleEntries },
+    ]) {
+      expect(Value.Check(CodeModeResultSchema, malformed)).toBe(false);
+      expect(Value.Check(CodeModeResultDetailsSchema, malformed)).toBe(false);
+      expect(Value.Check(CodeModeSessionsResultSchema, malformed)).toBe(false);
+    }
+  });
+
   test("inspects hostile values without invoking accessors or toJSON", () => {
     let getterCalled = false;
     const hostile = {};
@@ -339,5 +380,61 @@ describe("CodeMode tool contract", () => {
       expect(Value.Check(CodeModeResultDetailsSchema, output.details)).toBe(true);
     }
     expect(Value.Check(CodeModeSessionsResultSchema, outputs[3]?.details)).toBe(true);
+  });
+
+  test("serializes returned data before Console output without changing old JSON", async () => {
+    const consoleEntries = [
+      { method: "info", text: "answer: 42" },
+      { method: "error", text: "diagnostic" },
+    ] as const;
+    const operations = {
+      execute: async () => ({
+        result: createCodeModeSuccess("with-console", { answer: 42 }, consoleEntries),
+      }),
+      result: async () => ({ result: createCodeModeSuccess("without-console", 42) }),
+      cancel: async () => ({ result: createCodeModeFailure("failed", "script" as const, "bad") }),
+      sessions: async () => ({ result: "success" as const, sessions: [] }),
+    };
+    const [executeTool, resultTool] = createCodeModeToolDefinitions(operations);
+    const unusedContext = Object.create(null);
+
+    expect(
+      await executeTool.execute(
+        "tool-call-1",
+        { script: "42" },
+        undefined,
+        undefined,
+        unusedContext,
+      ),
+    ).toMatchObject({
+      content: [
+        {
+          type: "text",
+          text: '{"result":"success","sessionId":"with-console","data":{"answer":42},"console":[{"method":"info","text":"answer: 42"},{"method":"error","text":"diagnostic"}]}',
+        },
+      ],
+      details: {
+        result: "success",
+        sessionId: "with-console",
+        data: { answer: 42 },
+        console: consoleEntries,
+      },
+    });
+    expect(
+      await resultTool.execute(
+        "tool-call-2",
+        { sessionId: "without-console" },
+        undefined,
+        undefined,
+        unusedContext,
+      ),
+    ).toMatchObject({
+      content: [
+        {
+          type: "text",
+          text: '{"result":"success","sessionId":"without-console","data":42}',
+        },
+      ],
+    });
   });
 });

@@ -1,3 +1,4 @@
+import { CODEMODE_CONSOLE_METHODS, type CodeModeConsoleEntry } from "./codemode-console-output.ts";
 import {
   CODEMODE_WORKER_MESSAGE_LIMIT_BYTES,
   parseCodeModeWorkerRequest,
@@ -9,13 +10,27 @@ import {
 } from "./codemode-worker-protocol.ts";
 
 const CODEMODE_WORKER_READ_BUFFER_BYTES = 64 * 1024;
+const CODEMODE_CONSOLE_RESPONSE_RESERVE_BYTES = 512;
 
 type DenoByteReader = { read(buffer: Uint8Array): Promise<number | null> };
 type DenoByteWriter = { write(buffer: Uint8Array): Promise<number> };
+type DenoInspectOptions = {
+  readonly colors: false;
+  readonly getters: false;
+  readonly customInspect: false;
+};
 type CodeModeDenoNamespace = {
   readonly args: readonly string[];
   readonly stdin: DenoByteReader;
   readonly stdout: DenoByteWriter;
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Deno.inspect is the captured hostile-value formatter; coordinator tests cover getters, coercion hooks, custom inspectors, and Proxies.
+  readonly inspect: (value: unknown, options: DenoInspectOptions) => string;
+  readonly internal: symbol;
+  readonly [key: symbol]:
+    | {
+        readonly inspectArgs: (args: readonly unknown[], options: DenoInspectOptions) => string;
+      }
+    | undefined;
   readonly version: {
     readonly deno: string;
     readonly v8: string;
@@ -26,6 +41,11 @@ type CodeModeDenoNamespace = {
 declare const Deno: CodeModeDenoNamespace;
 
 const denoProcess = Deno;
+const denoInspect = denoProcess.inspect;
+const denoInternal = denoProcess[denoProcess.internal];
+if (denoInternal === undefined)
+  throw new Error("Pi CodeMode: Deno Console formatter is unavailable");
+const denoInspectArgs = denoInternal.inspectArgs;
 const arrayIsArray = Array.isArray;
 const arrayPrototype = Array.prototype;
 const blobConstructor = Blob;
@@ -43,6 +63,11 @@ const numberFrom = Number;
 const numberIsFinite = Number.isFinite;
 const numberIsSafeInteger = Number.isSafeInteger;
 const objectFreeze = Object.freeze;
+const SAFE_DENO_INSPECT_OPTIONS = objectFreeze({
+  colors: false,
+  getters: false,
+  customInspect: false,
+} as const);
 const objectPrototype = Object.prototype;
 const ownKeys = Reflect.ownKeys;
 const queueRuntimeMicrotask = queueMicrotask.bind(globalThis);
@@ -159,6 +184,9 @@ type ActiveWorkerCell = {
   readonly sessionId: string;
   readonly cellId: string;
   readonly pendingCalls: PendingGuestToolCall[];
+  readonly consoleEntries: CodeModeConsoleEntry[];
+  consoleBytes: number;
+  consoleOverflow: boolean;
   batchSequence: number;
   callSequence: number;
   batchScheduled: boolean;
@@ -204,6 +232,113 @@ function isReservedNotebookBindingName(name: string): boolean {
     if (name === reserved) return true;
   }
   return false;
+}
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Cell Console calls accept arbitrary guest values; captured Deno.inspect disables getters and custom inspection, while coordinator hostile-value tests cover coercion hooks and Proxies.
+function inspectGuestConsoleValue(value: unknown): string {
+  try {
+    return denoInspect(value, SAFE_DENO_INSPECT_OPTIONS);
+  } catch {
+    return "[Uninspectable value]";
+  }
+}
+
+function formatGuestConsoleArguments(args: readonly unknown[]): string | undefined {
+  if (args.length === 0) return "";
+  const first = args[0];
+  const maximumTextLength =
+    CODEMODE_WORKER_MESSAGE_LIMIT_BYTES - CODEMODE_CONSOLE_RESPONSE_RESERVE_BYTES;
+  if (isGuestString(first) && first.length >= maximumTextLength) return undefined;
+  if (args.length === 1 && isGuestString(first)) return first;
+  if (isGuestString(first) && !first.includes("%")) {
+    let text = first;
+    for (let index = 1; index < args.length; index += 1) {
+      const value = args[index];
+      const rendered = isGuestString(value) ? value : inspectGuestConsoleValue(value);
+      if (text.length + rendered.length + 1 >= maximumTextLength) return undefined;
+      text += ` ${rendered}`;
+    }
+    return text;
+  }
+  if (!isGuestString(first)) {
+    let text = "";
+    for (let index = 0; index < args.length; index += 1) {
+      const value = args[index];
+      const rendered = isGuestString(value) ? value : inspectGuestConsoleValue(value);
+      const separatorLength = index === 0 ? 0 : 1;
+      if (text.length + rendered.length + separatorLength >= maximumTextLength) return undefined;
+      if (separatorLength > 0) text += " ";
+      text += rendered;
+    }
+    return text;
+  }
+
+  const safeArgs: unknown[] = [first];
+  for (let index = 1; index < args.length; index += 1) safeArgs[index] = args[index];
+  let format = "";
+  let argumentIndex = 1;
+  for (let index = 0; index < first.length; index += 1) {
+    const character = first[index];
+    if (character !== "%" || index + 1 >= first.length) {
+      format += character;
+      continue;
+    }
+    const token = first[index + 1];
+    if (token === "%") {
+      format += "%%";
+      index += 1;
+      continue;
+    }
+    if (
+      token !== "s" &&
+      token !== "d" &&
+      token !== "i" &&
+      token !== "f" &&
+      token !== "j" &&
+      token !== "o" &&
+      token !== "O" &&
+      token !== "c"
+    ) {
+      format += `%${token}`;
+      index += 1;
+      continue;
+    }
+    const value = safeArgs[argumentIndex];
+    if (value !== undefined || argumentIndex < safeArgs.length) {
+      if (isGuestReference(value)) {
+        const inspected = inspectGuestConsoleValue(value);
+        if (inspected.length >= maximumTextLength) return undefined;
+        safeArgs[argumentIndex] = inspected;
+        format += token === "c" ? "%c" : "%s";
+      } else {
+        format += `%${token}`;
+      }
+      argumentIndex += 1;
+    } else {
+      format += `%${token}`;
+    }
+    index += 1;
+  }
+  safeArgs[0] = format;
+  for (let index = argumentIndex; index < safeArgs.length; index += 1) {
+    const value = safeArgs[index];
+    if (isGuestReference(value)) {
+      const inspected = inspectGuestConsoleValue(value);
+      if (inspected.length >= maximumTextLength) return undefined;
+      safeArgs[index] = inspected;
+    }
+  }
+  let minimumFormattedBytes = 0;
+  for (const value of safeArgs) {
+    if (isGuestString(value)) minimumFormattedBytes += value.length;
+    if (
+      minimumFormattedBytes + CODEMODE_CONSOLE_RESPONSE_RESERVE_BYTES >=
+      CODEMODE_WORKER_MESSAGE_LIMIT_BYTES
+    ) {
+      return undefined;
+    }
+  }
+  return denoInspectArgs(safeArgs, SAFE_DENO_INSPECT_OPTIONS);
 }
 
 function assertNotebookBindingNameAvailable(name: string): void {
@@ -396,6 +531,35 @@ const notebookDeclarationHelper: CodeModeNotebookDeclarationHelper = objectFreez
 
 function utf8ByteLength(value: string): number {
   return encodeUtf8(value).byteLength;
+}
+
+function utf8JsonStringByteLength(value: string): number {
+  let bytes = 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit === 0x22 || codeUnit === 0x5c) bytes += 2;
+    else if (codeUnit <= 0x1f) {
+      bytes +=
+        codeUnit === 0x08 ||
+        codeUnit === 0x09 ||
+        codeUnit === 0x0a ||
+        codeUnit === 0x0c ||
+        codeUnit === 0x0d
+          ? 2
+          : 6;
+    } else if (codeUnit <= 0x7f) bytes += 1;
+    else if (codeUnit <= 0x7ff) bytes += 2;
+    else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const lowSurrogate = value.charCodeAt(index + 1);
+      if (lowSurrogate >= 0xdc00 && lowSurrogate <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 6;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) bytes += 6;
+    else bytes += 3;
+    if (bytes >= CODEMODE_WORKER_MESSAGE_LIMIT_BYTES) return bytes;
+  }
+  return bytes;
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: This is arbitrary guest ingress; descriptor-only traversal avoids invoking accessors, coercion, and guest-mutated methods. Coordinator hostile JSON tests cover the boundary.
@@ -715,6 +879,50 @@ defineProperty(globalThis, "tools", {
   value: tools,
   writable: false,
 });
+const guestConsole = createObject(null);
+for (const method of CODEMODE_CONSOLE_METHODS) {
+  defineProperty(guestConsole, method, {
+    configurable: false,
+    enumerable: true,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Cell Console calls accept arbitrary guest values; formatGuestConsoleArguments safely inspects them before capture.
+    value: (...args: unknown[]): undefined => {
+      const cell = activeCell;
+      if (cell !== undefined && !cell.consoleOverflow) {
+        const text = formatGuestConsoleArguments(args);
+        if (text === undefined) {
+          cell.consoleEntries.length = 0;
+          cell.consoleOverflow = true;
+          return undefined;
+        }
+        const entryBytes = 19 + utf8JsonStringByteLength(method) + utf8JsonStringByteLength(text);
+        const nextConsoleBytes =
+          cell.consoleBytes + (cell.consoleEntries.length === 0 ? 0 : 1) + entryBytes;
+        if (
+          nextConsoleBytes + CODEMODE_CONSOLE_RESPONSE_RESERVE_BYTES >=
+          CODEMODE_WORKER_MESSAGE_LIMIT_BYTES
+        ) {
+          cell.consoleEntries.length = 0;
+          cell.consoleOverflow = true;
+          return undefined;
+        }
+        cell.consoleEntries[cell.consoleEntries.length] = {
+          method,
+          text,
+        };
+        cell.consoleBytes = nextConsoleBytes;
+      }
+      return undefined;
+    },
+    writable: false,
+  });
+}
+objectFreeze(guestConsole);
+defineProperty(globalThis, "console", {
+  configurable: false,
+  enumerable: false,
+  value: guestConsole,
+  writable: false,
+});
 
 function disableGuestGlobal(name: string, value?: Readonly<typeof safeDenoIdentity>): void {
   const descriptor = getOwnPropertyDescriptor(globalThis, name);
@@ -770,7 +978,6 @@ const safeDenoIdentity = objectFreeze({
 disableGuestGlobal("Deno", safeDenoIdentity);
 for (const unsafeGlobal of [
   "process",
-  "console",
   "alert",
   "confirm",
   "prompt",
@@ -889,42 +1096,97 @@ function scheduleCellFinish(cell: ActiveWorkerCell): void {
       return;
     }
     activeCell = undefined;
+    const consoleEntries = cell.consoleEntries.length === 0 ? undefined : [...cell.consoleEntries];
     let response: CodeModeWorkerResponse;
-    if (cell.mainFailed) {
-      const error = describeGuestError(cell.mainError);
-      const serializationFailure =
-        isGuestReference(cell.mainError) &&
-        (hasSerializationErrorInstance(cell.mainError) ||
-          internalToolErrorCode(cell.mainError) === "serialization");
+    if (cell.consoleOverflow) {
       response = {
         version: 1,
         type: "cell-error",
         sessionId: cell.sessionId,
         cellId: cell.cellId,
-        error: {
-          code: serializationFailure ? "serialization" : "script",
-          message: renderGuestError(error),
-        },
+        error: { code: "serialization", message: "CodeMode worker response exceeds 8 MiB" },
       };
-    } else {
-      try {
-        const resultJson = serializeGuestJson(cell.mainResult, true);
-        const responseBase = {
-          version: 1,
-          type: "cell-result",
-          sessionId: cell.sessionId,
-          cellId: cell.cellId,
-        } as const;
-        response = resultJson === undefined ? responseBase : { ...responseBase, resultJson };
-      } catch (cause) {
-        const error = describeGuestError(cause);
+    } else if (cell.mainFailed) {
+      const error = describeGuestError(cell.mainError);
+      const serializationFailure =
+        isGuestReference(cell.mainError) &&
+        (hasSerializationErrorInstance(cell.mainError) ||
+          internalToolErrorCode(cell.mainError) === "serialization");
+      const message = renderGuestError(error);
+      if (
+        consoleEntries !== undefined &&
+        cell.consoleBytes +
+          utf8JsonStringByteLength(message) +
+          CODEMODE_CONSOLE_RESPONSE_RESERVE_BYTES >=
+          CODEMODE_WORKER_MESSAGE_LIMIT_BYTES
+      ) {
         response = {
           version: 1,
           type: "cell-error",
           sessionId: cell.sessionId,
           cellId: cell.cellId,
-          error: { code: "serialization", message: renderGuestError(error) },
+          error: { code: "serialization", message: "CodeMode worker response exceeds 8 MiB" },
         };
+      } else {
+        const responseBase = {
+          version: 1,
+          type: "cell-error",
+          sessionId: cell.sessionId,
+          cellId: cell.cellId,
+          error: {
+            code: serializationFailure ? "serialization" : "script",
+            message,
+          },
+        } as const;
+        response =
+          consoleEntries === undefined
+            ? responseBase
+            : { ...responseBase, console: consoleEntries };
+      }
+    } else {
+      try {
+        const resultJson = serializeGuestJson(cell.mainResult, true);
+        if (
+          consoleEntries !== undefined &&
+          cell.consoleBytes +
+            (resultJson === undefined ? 0 : utf8JsonStringByteLength(resultJson)) +
+            CODEMODE_CONSOLE_RESPONSE_RESERVE_BYTES >=
+            CODEMODE_WORKER_MESSAGE_LIMIT_BYTES
+        ) {
+          response = {
+            version: 1,
+            type: "cell-error",
+            sessionId: cell.sessionId,
+            cellId: cell.cellId,
+            error: { code: "serialization", message: "CodeMode worker response exceeds 8 MiB" },
+          };
+        } else {
+          const responseBase = {
+            version: 1,
+            type: "cell-result",
+            sessionId: cell.sessionId,
+            cellId: cell.cellId,
+          } as const;
+          const resultResponse =
+            resultJson === undefined ? responseBase : { ...responseBase, resultJson };
+          response =
+            consoleEntries === undefined
+              ? resultResponse
+              : { ...resultResponse, console: consoleEntries };
+        }
+      } catch (cause) {
+        const error = describeGuestError(cause);
+        const responseBase = {
+          version: 1,
+          type: "cell-error",
+          sessionId: cell.sessionId,
+          cellId: cell.cellId,
+          error: { code: "serialization", message: renderGuestError(error) },
+        } as const;
+        response =
+          consoleEntries === undefined
+            ? responseBase
+            : { ...responseBase, console: consoleEntries };
       }
     }
     void enqueueWorkerResponse(response);
@@ -939,6 +1201,9 @@ function startWorkerCell(
     sessionId: request.sessionId,
     cellId: request.cellId,
     pendingCalls: [],
+    consoleEntries: [],
+    consoleBytes: 2,
+    consoleOverflow: false,
     batchSequence: 0,
     callSequence: 0,
     batchScheduled: false,

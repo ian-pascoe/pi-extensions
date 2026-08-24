@@ -2,6 +2,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { transformCodeModeCell } from "./codemode-cell-transform.js";
+import type { CodeModeConsoleEntry } from "./codemode-console-output.js";
 import { CodeModeWorkerProcess } from "./codemode-deno-process.js";
 import { formatCodeModePresentationData } from "./codemode-presentation-output.js";
 import type { CodeModeRuntime, CodeModeTimerHandle } from "./codemode-runtime.js";
@@ -246,6 +247,7 @@ type LocateCodeModeSessionResult =
 type FatalCodeModeSessionFailure = {
   readonly code: Extract<CodeModeErrorCode, "timeout" | "cancellation" | "termination" | "runtime">;
   readonly message: string;
+  readonly console?: readonly CodeModeConsoleEntry[];
 };
 
 type ParsestringResult = { readonly ok: true; readonly value: string } | { readonly ok: false };
@@ -825,7 +827,11 @@ export class CodeModeSessionCoordinator {
         return;
       }
       if (response.resultJson === undefined) {
-        this.settleReusableCell(record, cell, createCodeModeSuccess(sessionId));
+        this.settleReusableCell(
+          record,
+          cell,
+          createCodeModeSuccess(sessionId, undefined, response.console),
+        );
         return;
       }
       const data = this.parseJsonString(response.resultJson, { allowUndefined: true });
@@ -833,11 +839,15 @@ export class CodeModeSessionCoordinator {
         this.settleReusableCell(
           record,
           cell,
-          createCodeModeFailure(sessionId, "serialization", data.message),
+          createCodeModeFailure(sessionId, "serialization", data.message, response.console),
         );
         return;
       }
-      this.settleReusableCell(record, cell, createCodeModeSuccess(sessionId, data.value));
+      this.settleReusableCell(
+        record,
+        cell,
+        createCodeModeSuccess(sessionId, data.value, response.console),
+      );
       return;
     }
     if (response.type === "cell-error") {
@@ -849,15 +859,25 @@ export class CodeModeSessionCoordinator {
         return;
       }
       if (response.error.code === "runtime") {
-        this.fatalizeSession(record, cell, {
+        const failure = {
           code: response.error.code,
           message: response.error.message,
-        });
+        } as const;
+        this.fatalizeSession(
+          record,
+          cell,
+          response.console === undefined ? failure : { ...failure, console: response.console },
+        );
       } else {
         this.settleReusableCell(
           record,
           cell,
-          createCodeModeFailure(sessionId, response.error.code, response.error.message),
+          createCodeModeFailure(
+            sessionId,
+            response.error.code,
+            response.error.message,
+            response.console,
+          ),
         );
       }
       return;
@@ -1185,10 +1205,19 @@ export class CodeModeSessionCoordinator {
   ): void {
     if (!this.isCurrentCell(record, cell)) return;
     this.clearCellResources(cell);
-    const retainedResult =
-      result.result === "success" && cell.reclaimedSessionId !== undefined
-        ? { ...result, reclaimedSessionId: cell.reclaimedSessionId }
-        : result;
+    let retainedResult = result;
+    if (result.result === "success" && cell.reclaimedSessionId !== undefined) {
+      if (result.console === undefined) {
+        retainedResult = { ...result, reclaimedSessionId: cell.reclaimedSessionId };
+      } else {
+        const { console: consoleEntries, ...resultWithoutConsole } = result;
+        retainedResult = {
+          ...resultWithoutConsole,
+          reclaimedSessionId: cell.reclaimedSessionId,
+          console: consoleEntries,
+        };
+      }
+    }
     const presentation = this.settledCellPresentation(cell, retainedResult, "live");
     const settledAtMs = this.runtime.now();
     record.latestResult = retainedResult;
@@ -1214,7 +1243,12 @@ export class CodeModeSessionCoordinator {
     if (failure.code === "termination") cell.metadata.terminate = true;
     cell.abortController.abort();
     this.clearCellResources(cell);
-    const result = createCodeModeFailure(record.sessionId, failure.code, failure.message);
+    const result = createCodeModeFailure(
+      record.sessionId,
+      failure.code,
+      failure.message,
+      failure.console,
+    );
     const settledAtMs = this.runtime.now();
     record.latestPresentation = this.cellPresentation(
       cell,

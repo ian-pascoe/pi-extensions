@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { CODEMODE_CONSOLE_METHODS, type CodeModeConsoleEntry } from "./codemode-console-output.ts";
 
 /** Maximum UTF-8 bytes in one CodeMode worker protocol line, excluding its newline. */
 export const CODEMODE_WORKER_MESSAGE_LIMIT_BYTES = 8 * 1024 * 1024;
@@ -76,6 +77,7 @@ export type CodeModeWorkerResponse =
       readonly sessionId: string;
       readonly cellId: string;
       readonly resultJson?: string;
+      readonly console?: readonly CodeModeConsoleEntry[];
     }
   | {
       readonly version: 1;
@@ -83,6 +85,7 @@ export type CodeModeWorkerResponse =
       readonly sessionId: string;
       readonly cellId: string;
       readonly error: { readonly code: CodeModeWorkerCellErrorCode; readonly message: string };
+      readonly console?: readonly CodeModeConsoleEntry[];
     }
   | {
       readonly version: 1;
@@ -135,6 +138,60 @@ function hasExactKeys(value: CodeModeProtocolObject, expected: readonly string[]
   return expected.every((expectedKey) => expectedKey !== undefined && keys.includes(expectedKey));
 }
 
+function hasDuplicateJsonObjectKeys(message: string): boolean {
+  const objectKeysByDepth: (string[] | undefined)[] = [];
+  for (let index = 0; index < message.length; index += 1) {
+    const character = message[index];
+    if (character === "{") {
+      objectKeysByDepth.push([]);
+      continue;
+    }
+    if (character === "[") {
+      objectKeysByDepth.push(undefined);
+      continue;
+    }
+    if (character === "}" || character === "]") {
+      objectKeysByDepth.pop();
+      continue;
+    }
+    if (character !== '"') continue;
+
+    let endIndex = index + 1;
+    for (; endIndex < message.length; endIndex += 1) {
+      if (message[endIndex] === "\\") {
+        endIndex += 1;
+        continue;
+      }
+      if (message[endIndex] === '"') break;
+    }
+    if (endIndex >= message.length) return false;
+    let nextIndex = endIndex + 1;
+    while (
+      message[nextIndex] === " " ||
+      message[nextIndex] === "\n" ||
+      message[nextIndex] === "\r" ||
+      message[nextIndex] === "\t"
+    ) {
+      nextIndex += 1;
+    }
+    const keys = objectKeysByDepth[objectKeysByDepth.length - 1];
+    if (message[nextIndex] === ":" && keys !== undefined) {
+      try {
+        // SAFETY: This slice is one syntactically bounded JSON string token; the string refinement below rejects every other JSON value.
+        const key = jsonParse(message.slice(index, endIndex + 1)) as CodeModeProtocolValue;
+        if (isString(key)) {
+          if (hasString(keys, key)) return true;
+          keys.push(key);
+        }
+      } catch {
+        return false;
+      }
+    }
+    index = endIndex;
+  }
+  return false;
+}
+
 function parseProtocolJson(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Raw process input is untrusted until the string and JSON checks below establish the protocol representation.
   message: unknown,
@@ -145,6 +202,9 @@ function parseProtocolJson(
     return { ok: false, message: `CodeMode worker ${subject} must be JSON text` };
   if (Buffer.byteLength(message, "utf8") > CODEMODE_WORKER_MESSAGE_LIMIT_BYTES) {
     return { ok: false, message: `CodeMode worker ${subject} exceeds 8 MiB` };
+  }
+  if (hasDuplicateJsonObjectKeys(message)) {
+    return { ok: false, message: `CodeMode worker ${subject} contains duplicate object keys` };
   }
   try {
     // SAFETY: Successful JSON.parse output is exactly the recursive JSON representation modeled by CodeModeProtocolValue.
@@ -296,6 +356,30 @@ function parseWorkerError(
   return { code: value.code, message: value.message };
 }
 
+function parseConsoleOutput(
+  value: CodeModeProtocolSlot,
+): readonly CodeModeConsoleEntry[] | undefined {
+  if (!arrayIsArray(value) || value.length === 0) return undefined;
+  const entries: CodeModeConsoleEntry[] = [];
+  for (const candidate of value) {
+    if (
+      !isRecord(candidate) ||
+      !hasExactKeys(candidate, ["method", "text"]) ||
+      !isString(candidate.method) ||
+      !hasString(CODEMODE_CONSOLE_METHODS, candidate.method) ||
+      !isString(candidate.text)
+    ) {
+      return undefined;
+    }
+    entries.push({
+      // SAFETY: The literal-membership check above refines the protocol string to a supported Console method.
+      method: candidate.method as CodeModeConsoleEntry["method"],
+      text: candidate.text,
+    });
+  }
+  return entries;
+}
+
 function parseToolBatchResponse(
   decoded: CodeModeProtocolObject,
 ): CodeModeWorkerResponse | undefined {
@@ -389,43 +473,58 @@ export function parseCodeModeWorkerResponse(
   }
   if (
     decoded.type === "cell-result" &&
-    hasExactKeys(
-      decoded,
-      decoded.resultJson === undefined
-        ? ["cellId", "sessionId", "type", "version"]
-        : ["cellId", "resultJson", "sessionId", "type", "version"],
-    ) &&
     isNonEmptyString(decoded.cellId) &&
     (decoded.resultJson === undefined || isString(decoded.resultJson))
   ) {
+    const expectedKeys = ["cellId", "sessionId", "type", "version"];
+    if (decoded.resultJson !== undefined) expectedKeys.push("resultJson");
+    if (decoded.console !== undefined) expectedKeys.push("console");
+    if (!hasExactKeys(decoded, expectedKeys)) {
+      return { ok: false, message: "CodeMode worker response has an invalid protocol shape" };
+    }
+    const consoleEntries =
+      decoded.console === undefined ? undefined : parseConsoleOutput(decoded.console);
+    if (decoded.console !== undefined && consoleEntries === undefined) {
+      return { ok: false, message: "CodeMode worker response has an invalid protocol shape" };
+    }
     const value = {
       version: CODEMODE_WORKER_PROTOCOL_VERSION,
       type: "cell-result",
       sessionId: decoded.sessionId,
       cellId: decoded.cellId,
     } as const;
-    return decoded.resultJson === undefined
-      ? { ok: true, value }
-      : { ok: true, value: { ...value, resultJson: decoded.resultJson } };
+    const resultValue =
+      decoded.resultJson === undefined ? value : { ...value, resultJson: decoded.resultJson };
+    return consoleEntries === undefined
+      ? { ok: true, value: resultValue }
+      : { ok: true, value: { ...resultValue, console: consoleEntries } };
   }
-  if (
-    decoded.type === "cell-error" &&
-    hasExactKeys(decoded, ["cellId", "error", "sessionId", "type", "version"]) &&
-    isNonEmptyString(decoded.cellId)
-  ) {
+  if (decoded.type === "cell-error" && isNonEmptyString(decoded.cellId)) {
+    const expectedKeys = ["cellId", "error", "sessionId", "type", "version"];
+    if (decoded.console !== undefined) expectedKeys.push("console");
+    if (!hasExactKeys(decoded, expectedKeys)) {
+      return { ok: false, message: "CodeMode worker response has an invalid protocol shape" };
+    }
     const error = parseWorkerError(decoded.error);
-    if (error !== undefined && ["script", "serialization", "runtime"].includes(error.code)) {
+    const consoleEntries =
+      decoded.console === undefined ? undefined : parseConsoleOutput(decoded.console);
+    if (
+      error !== undefined &&
+      ["script", "serialization", "runtime"].includes(error.code) &&
+      (decoded.console === undefined || consoleEntries !== undefined)
+    ) {
       // SAFETY: The literal-membership check above refines the protocol string to the closed worker error code union.
       const code = error.code as CodeModeWorkerCellErrorCode;
+      const value = {
+        version: CODEMODE_WORKER_PROTOCOL_VERSION,
+        type: "cell-error",
+        sessionId: decoded.sessionId,
+        cellId: decoded.cellId,
+        error: { code, message: error.message },
+      } as const;
       return {
         ok: true,
-        value: {
-          version: CODEMODE_WORKER_PROTOCOL_VERSION,
-          type: "cell-error",
-          sessionId: decoded.sessionId,
-          cellId: decoded.cellId,
-          error: { code, message: error.message },
-        },
+        value: consoleEntries === undefined ? value : { ...value, console: consoleEntries },
       };
     }
   }
@@ -444,7 +543,28 @@ export function serializeCodeModeWorkerRequest(
 
 /** Serializes one worker response, replacing oversized Cell output with a bounded error. */
 export function serializeCodeModeWorkerResponse(response: CodeModeWorkerResponse): string {
-  const message = jsonStringify(response);
+  let message: string;
+  if (response.type === "cell-result" && response.console?.length === 0) {
+    const responseBase = {
+      version: response.version,
+      type: response.type,
+      sessionId: response.sessionId,
+      cellId: response.cellId,
+    } as const;
+    message = jsonStringify(
+      response.resultJson === undefined
+        ? responseBase
+        : { ...responseBase, resultJson: response.resultJson },
+    );
+  } else if (response.type === "cell-error" && response.console?.length === 0) {
+    message = jsonStringify({
+      version: response.version,
+      type: response.type,
+      sessionId: response.sessionId,
+      cellId: response.cellId,
+      error: response.error,
+    });
+  } else message = jsonStringify(response);
   if (Buffer.byteLength(message, "utf8") <= CODEMODE_WORKER_MESSAGE_LIMIT_BYTES) return message;
   if (
     response.type === "cell-result" ||

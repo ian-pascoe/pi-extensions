@@ -87,12 +87,18 @@ type CodeModeSessionsResult = {
 The execute, result, and cancel tools return:
 
 ```ts
+type CodeModeConsoleEntry = {
+  method: "log" | "info" | "warn" | "error" | "debug";
+  text: string;
+};
+
 type CodeModeResult =
   | {
       result: "success";
       sessionId: string;
       data?: JsonValue;
       reclaimedSessionId?: string;
+      console?: CodeModeConsoleEntry[];
     }
   | { result: "pending"; sessionId: string }
   | {
@@ -112,6 +118,7 @@ type CodeModeResult =
           | "runtime";
         message: string;
       };
+      console?: CodeModeConsoleEntry[];
     };
 ```
 
@@ -119,15 +126,41 @@ type CodeModeResult =
 result text returned to the model. Pi retains additional bounded Presentation
 Snapshots in tool-result details for Transcript replay and the TUI.
 
+Cells may call `console.log`, `console.info`, `console.warn`, `console.error`,
+and `console.debug`. One call creates one ordered entry without a trailing
+newline, while embedded newlines remain intact:
+
+```ts
+console.log("answer:", 42);
+return 42;
+```
+
+```json
+{
+  "result": "success",
+  "sessionId": "...",
+  "data": 42,
+  "console": [{ "method": "log", "text": "answer: 42" }]
+}
+```
+
+Formatting matches the pinned Deno Console for format tokens, primitives,
+spacing, and multiline inspection. Getters, coercion hooks, and custom
+inspectors do not run; CodeMode uses safe inspection instead when that differs
+from Deno. Console output arrives only with terminal results. Ordinary script,
+serialization, and worker-reported runtime failures retain prior calls. A
+timeout, cancellation, termination, or process death may omit them because the
+parent kills the worker before it can reply.
+
 ## Transcript and Observer UI
 
 The CodeMode Transcript gives all four tools semantic collapsed and expanded
 rendering. Collapsed rows prioritize Cell lifecycle, a short Session ID, Cell
-Ordinal, returned-value shape, nested-tool count, and elapsed time. Expanded
-rows show the full Session ID, explicit call arguments, TypeScript source,
-structured returned data or error, and bounded nested-tool names, outcomes, and
-durations. Nested arguments and raw nested outputs are never copied into the
-presentation.
+Ordinal, returned-value shape, Console-call count, nested-tool count, and elapsed
+time. Expanded rows show the full Session ID, explicit call arguments,
+TypeScript source, bounded Console output before structured returned data or the
+error, and bounded nested-tool names, outcomes, and durations. Nested arguments
+and raw nested outputs are never copied into the presentation.
 
 Status always uses a symbol and text together:
 
@@ -255,13 +288,16 @@ generated helper source out of ordinary source locations. Every operating-system
 permission class is denied: filesystem read/write, network, environment, system
 information, subprocesses, FFI, and remote imports.
 
-Guest code receives ECMAScript built-ins, a read-only `tools` object, and only a
-frozen `Deno.version` identity. Raw process and standard-stream access,
-`console`, `Worker`, timers, filesystem/network APIs, and module loading are
-withheld. The parent watchdog terminates the subprocess for timeout or an
-infinite loop. Deno/V8 bounds each Session to a 128 MiB old-space heap and a
-1 MiB stack. Protocol inputs, tool results, and Cell results remain JSON-only
-and limited to 8 MiB of UTF-8.
+Guest code receives ECMAScript built-ins, a read-only `tools` object, a frozen
+five-method Console facade, and only a frozen `Deno.version` identity. Raw
+process and standard-stream access, `Worker`, timers, filesystem/network APIs,
+and module loading are withheld. Console calls never write to worker streams and
+do not include output from registered Pi tool handlers. The parent watchdog
+terminates the subprocess for timeout or an infinite loop. Deno/V8 bounds each
+Session to a 128 MiB old-space heap and a 1 MiB stack. Protocol inputs, tool
+results, returned data, and Console entries share one 8 MiB UTF-8 worker-message
+limit. An oversized response becomes the bounded `serialization` failure and
+may omit its Console entries.
 
 Registered Pi tools still execute in Pi's parent process with their normal
 permissions and lifecycle hooks. Cancellation aborts them through Pi's

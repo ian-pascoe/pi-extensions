@@ -546,7 +546,7 @@ describe("CodeModeSessionCoordinator", () => {
       deno: "2.9.5",
       typescript: "6.0.3",
       process: "undefined",
-      console: "undefined",
+      console: "object",
       alert: "undefined",
       confirm: "undefined",
       prompt: "undefined",
@@ -559,6 +559,139 @@ describe("CodeModeSessionCoordinator", () => {
       functionConstructor: "undefined",
       asyncFunctionConstructor: "undefined",
       runtimePrimordialsFrozen: true,
+    });
+  }, 30_000);
+
+  test("captures the frozen Deno Console facade without replacing returned data", async () => {
+    const coordinator = createCoordinator();
+    const result = await coordinator.execute({
+      script: `
+        const extracted = console.debug;
+        const circular = {};
+        circular.self = circular;
+        const returnsUndefined = [
+          console.log("plain"),
+          console.info(),
+          console.warn("args", 42, true, null, undefined, 42n, Symbol("s"), function named() {}),
+          console.error("tokens %s %d %i %f %o %O %c %% %j", "x", "2.5", "3.9", "4.25", { a: 1 }, { b: 2 }, "color:red", "tail"),
+          console.log([1, { nested: [2, 3] }]),
+          console.log(circular),
+          console.log(new Error("boom")),
+          extracted({ alpha: 1, nested: { beta: [2, 3] } }),
+        ].every((value) => value === undefined);
+        ({
+          type: typeof console,
+          frozen: Object.isFrozen(console),
+          methods: Object.keys(console),
+          dir: typeof console.dir,
+          returnsUndefined,
+        })
+      `,
+      wait: true,
+    });
+
+    expect(result.result).toEqual({
+      result: "success",
+      sessionId: "session-1",
+      data: {
+        type: "object",
+        frozen: true,
+        methods: ["log", "info", "warn", "error", "debug"],
+        dir: "undefined",
+        returnsUndefined: true,
+      },
+      console: [
+        { method: "log", text: "plain" },
+        { method: "info", text: "" },
+        {
+          method: "warn",
+          text: "args 42 true null undefined 42n Symbol(s) [Function: named]",
+        },
+        {
+          method: "error",
+          text: 'tokens x 2 3 4.25 { a: 1 } { b: 2 }  % "tail"',
+        },
+        { method: "log", text: "[ 1, { nested: [ 2, 3 ] } ]" },
+        { method: "log", text: "<ref *1> { self: [Circular *1] }" },
+        { method: "log", text: expect.stringContaining("Error: boom\n    at blob:") },
+        { method: "debug", text: "{ alpha: 1, nested: { beta: [ 2, 3 ] } }" },
+      ],
+    });
+
+    const reserved = await coordinator.execute({
+      script: "let console = {}; 42",
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(reserved.result).toMatchObject({
+      result: "failed",
+      error: { code: "script", message: expect.stringContaining("'console' is reserved") },
+    });
+  }, 30_000);
+
+  test("retains Console output on reusable failures and never invokes guest inspection hooks", async () => {
+    const coordinator = createCoordinator();
+    const pending = await coordinator.execute({
+      script: 'console.log("before failure"); throw new Error("boom")',
+      wait: false,
+    });
+    expect(pending.result).toEqual({ result: "pending", sessionId: "session-1" });
+    const failed = await pollTerminal(coordinator, "session-1");
+    expect(failed.result).toMatchObject({
+      result: "failed",
+      error: { code: "script" },
+      console: [{ method: "log", text: "before failure" }],
+    });
+    expect(coordinator.result("session-1").result).toEqual(failed.result);
+
+    const serializationFailure = await coordinator.execute({
+      script: 'console.info("before serialization"); const cycle = {}; cycle.self = cycle; cycle',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(serializationFailure.result).toMatchObject({
+      result: "failed",
+      error: { code: "serialization" },
+      console: [{ method: "info", text: "before serialization" }],
+    });
+
+    const hostile = await coordinator.execute({
+      script: `
+        let hookCalls = 0;
+        const value = {
+          get secret() { hookCalls += 1; return 1; },
+          toString() { hookCalls += 1; return "bad"; },
+          valueOf() { hookCalls += 1; return 2; },
+          [Symbol.for("Deno.customInspect")]() { hookCalls += 1; return "custom"; },
+        };
+        const proxy = new Proxy({}, {
+          ownKeys() { hookCalls += 1; throw new Error("ownKeys trap"); },
+          getOwnPropertyDescriptor() { hookCalls += 1; throw new Error("descriptor trap"); },
+          getPrototypeOf() { hookCalls += 1; throw new Error("prototype trap"); },
+        });
+        Object.getOwnPropertyDescriptor = () => { hookCalls += 1; throw new Error("mutated"); };
+        console.log("safe %s %d %i %f %j %o %O", value, value, value, value, value, value, proxy);
+        hookCalls
+      `,
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(hostile.result).toMatchObject({
+      result: "success",
+      data: 0,
+      console: [{ method: "log", text: expect.stringContaining("[Getter]") }],
+    });
+
+    const next = await coordinator.execute({
+      script: 'console.debug("next"); 42',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(next.result).toEqual({
+      result: "success",
+      sessionId: "session-1",
+      data: 42,
+      console: [{ method: "debug", text: "next" }],
     });
   }, 30_000);
 
@@ -920,6 +1053,61 @@ describe("CodeModeSessionCoordinator", () => {
       result: "failed",
       error: { code: "serialization" },
     });
+
+    const combinedResult = await coordinator.execute({
+      script: 'console.log("prefix", "x".repeat(8 * 1024 * 1024)); 42',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(combinedResult.result, JSON.stringify(combinedResult.result)).toMatchObject({
+      result: "failed",
+      error: { code: "serialization" },
+    });
+    expect("console" in combinedResult.result).toBe(false);
+
+    const formattedConsoleResult = await coordinator.execute({
+      script: 'console.log("prefix %s", "x".repeat(8 * 1024 * 1024)); 42',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(formattedConsoleResult.result).toMatchObject({
+      result: "failed",
+      error: { code: "serialization" },
+    });
+    expect("console" in formattedConsoleResult.result).toBe(false);
+
+    const escapedConsoleResult = await coordinator.execute({
+      script: 'console.log("\\x00".repeat(2 * 1024 * 1024)); 42',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(escapedConsoleResult.result).toMatchObject({
+      result: "failed",
+      error: { code: "serialization" },
+    });
+    expect("console" in escapedConsoleResult.result).toBe(false);
+
+    const balancedCombinedResult = await coordinator.execute({
+      script: 'const chunk = "x".repeat(4 * 1024 * 1024); console.log(chunk); chunk',
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(balancedCombinedResult.result).toMatchObject({
+      result: "failed",
+      error: { code: "serialization" },
+    });
+    expect("console" in balancedCombinedResult.result).toBe(false);
+
+    const manyEmptyCallsResult = await coordinator.execute({
+      script: "for (let index = 0; index < 350_000; index += 1) console.log(); 42",
+      sessionId: "session-1",
+      wait: true,
+    });
+    expect(manyEmptyCallsResult.result).toMatchObject({
+      result: "failed",
+      error: { code: "serialization" },
+    });
+    expect("console" in manyEmptyCallsResult.result).toBe(false);
 
     const guestInput = await coordinator.execute({
       script: 'await tools.large("x".repeat(8 * 1024 * 1024))',

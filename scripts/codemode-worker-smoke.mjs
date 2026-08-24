@@ -25,6 +25,7 @@ if (
 await ${CODEMODE_WORKER_SMOKE_PLACEHOLDER}.declare([["answer", "const"]], async () => {
   ${CODEMODE_WORKER_SMOKE_PLACEHOLDER}.init["answer"] = 6 * 7 satisfies Answer;
 });
+console.log("answer:", answer);
 return answer;
 `;
 
@@ -114,7 +115,9 @@ export async function assertCodeModeDenoProcessSmoke(workerPath, label) {
         assertProtocolEnvelope(message, "cell-result");
         if (
           message.cellId !== CODEMODE_WORKER_SMOKE_CELL_ID ||
-          message.resultJson !== JSON.stringify(CODEMODE_WORKER_SMOKE_RESULT)
+          message.resultJson !== JSON.stringify(CODEMODE_WORKER_SMOKE_RESULT) ||
+          JSON.stringify(message.console) !==
+            JSON.stringify([{ method: "log", text: "answer: 42" }])
         ) {
           throw new Error(`unexpected native TypeScript result ${JSON.stringify(message)}`);
         }
