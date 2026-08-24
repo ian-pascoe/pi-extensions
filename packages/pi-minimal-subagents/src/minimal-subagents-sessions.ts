@@ -24,7 +24,6 @@ import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import {
   buildSubagentSystemPrompt,
-  snapshotActivityContext,
   snapshotCommittedContext,
 } from "./minimal-subagents-context.js";
 import {
@@ -615,7 +614,8 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
   }
 
   snapshotActivityMessages(): AgentMessage[] {
-    return snapshotActivityContext(this.session.messages, this.session.state.streamingMessage);
+    const streamingMessage = this.session.state.streamingMessage;
+    return [...this.session.messages, ...(streamingMessage ? [streamingMessage] : [])];
   }
 
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean {

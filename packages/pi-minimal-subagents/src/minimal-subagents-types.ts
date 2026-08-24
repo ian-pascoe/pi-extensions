@@ -115,36 +115,12 @@ export interface RecentAgentMessage {
   content: string;
 }
 
-interface RecentAgentActivityBase {
-  timestamp: number;
+/** Reports one labeled, bounded child activity item without image data. */
+export interface RecentAgentActivity {
+  label: string;
   content: string;
   truncated: boolean;
 }
-
-/** Reports bounded message, reasoning, and tool work without image data. */
-export type RecentAgentActivity =
-  | (RecentAgentActivityBase & {
-      type: "message";
-      role:
-        | "user"
-        | "assistant"
-        | "custom"
-        | "branchSummary"
-        | "compactionSummary"
-        | "bashExecution";
-    })
-  | (RecentAgentActivityBase & { type: "reasoning" })
-  | (RecentAgentActivityBase & {
-      type: "tool_call";
-      tool_name: string;
-      tool_call_id: string;
-    })
-  | (RecentAgentActivityBase & {
-      type: "tool_result";
-      tool_name: string;
-      tool_call_id: string;
-      is_error: boolean;
-    });
 
 /** Extends summary status with launch, dependency, recent-message, and recent-work diagnostics. */
 export interface AgentDetail extends AgentSummary {

@@ -519,15 +519,10 @@ function renderDetailedStatusAgent(
       theme,
       "Recent activity",
       recentActivity
-        .map((activity) => {
-          const label =
-            activity.type === "message"
-              ? `${activity.role ?? "unknown"} message`
-              : activity.type === "reasoning"
-                ? "reasoning"
-                : `${activity.type === "tool_call" ? "tool call" : "tool result"} ${activity.tool_name ?? "unknown"}${activity.is_error ? " (error)" : ""}`;
-          return `${label}${activity.truncated ? " (truncated)" : ""}\n${activity.content}`;
-        })
+        .map(
+          (activity) =>
+            `${activity.label}${activity.truncated ? " (truncated)" : ""}\n${activity.content}`,
+        )
         .join("\n\n"),
     );
   }

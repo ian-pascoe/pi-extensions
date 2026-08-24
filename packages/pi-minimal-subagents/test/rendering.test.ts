@@ -151,12 +151,9 @@ describe("minimal subagents rendering", () => {
             launch_contract: { model: "provider/model" },
             recent_activity: [
               {
-                type: "tool_call",
-                timestamp: 1,
+                label: "tool call read",
                 content: '{"path":"src/index.ts"}',
                 truncated: false,
-                tool_name: "read",
-                tool_call_id: "call-1",
               },
             ],
           },

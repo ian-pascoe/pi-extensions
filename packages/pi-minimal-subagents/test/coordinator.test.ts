@@ -267,8 +267,7 @@ describe("minimal subagents coordinator", () => {
         },
         recent_activity: [
           {
-            type: "tool_result",
-            tool_name: "read",
+            label: "tool result read",
             content: "committed child work",
           },
         ],

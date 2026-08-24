@@ -11,7 +11,6 @@ import {
   buildRecentAgentActivity,
   buildSubagentSystemPrompt,
   contextContainsImages,
-  snapshotActivityContext,
   snapshotCommittedContext,
 } from "../src/minimal-subagents-context.js";
 
@@ -48,7 +47,6 @@ describe("minimal subagents context", () => {
     expect(snapshot).toEqual([messages[0]]);
     expect(snapshot[0]).not.toBe(messages[0]);
     expect(snapshotCommittedContext(messages, false)).toHaveLength(2);
-    expect(snapshotActivityContext([messages[0]!], messages[1])).toEqual(messages);
   });
 
   it("selects inherited, compact, and omitted imported context", () => {
@@ -77,11 +75,11 @@ describe("minimal subagents context", () => {
     };
     const activity = buildRecentAgentActivity([userMessage("task"), assistant, toolResult]);
     expect(activity).toMatchObject([
-      { type: "message", role: "user", content: "task" },
-      { type: "reasoning", content: "private reasoning" },
-      { type: "message", role: "assistant", content: "Inspecting the source" },
-      { type: "tool_call", tool_name: "read", tool_call_id: "call-1" },
-      { type: "tool_result", content: "(no text content)" },
+      { label: "user message", content: "task" },
+      { label: "reasoning", content: "private reasoning" },
+      { label: "assistant message", content: "Inspecting the source" },
+      { label: "tool call read" },
+      { label: "tool result read", content: "(no text content)" },
     ]);
     expect(JSON.stringify(activity)).toContain("private reasoning");
     expect(JSON.stringify(activity)).not.toContain("private image");
@@ -96,7 +94,7 @@ describe("minimal subagents context", () => {
     }));
     const bounded = buildRecentAgentActivity(largeResults);
     expect(bounded).toHaveLength(12);
-    expect(bounded[0]).toMatchObject({ tool_call_id: "call-1", truncated: true });
+    expect(bounded[0]).toMatchObject({ label: "tool result exec_command", truncated: true });
     expect(Buffer.byteLength(bounded[0]?.content ?? "", "utf8")).toBeLessThanOrEqual(2 * 1024);
     expect(bounded[0]?.content.split("\n").length ?? 0).toBeLessThanOrEqual(20);
   });

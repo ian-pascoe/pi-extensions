@@ -50,19 +50,9 @@ const RenderRecentMessageSchema = Type.Object({
   content: Type.Optional(Type.String()),
 });
 const RenderRecentActivitySchema = Type.Object({
-  type: Type.Union([
-    Type.Literal("message"),
-    Type.Literal("reasoning"),
-    Type.Literal("tool_call"),
-    Type.Literal("tool_result"),
-  ]),
-  role: Type.Optional(Type.String()),
-  timestamp: Type.Number(),
+  label: Type.String(),
   content: Type.String(),
   truncated: Type.Boolean(),
-  tool_name: Type.Optional(Type.String()),
-  tool_call_id: Type.Optional(Type.String()),
-  is_error: Type.Optional(Type.Boolean()),
 });
 
 /** Structurally parsed hierarchy status used only by transcript presentation. */
