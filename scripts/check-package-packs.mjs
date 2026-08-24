@@ -118,7 +118,7 @@ function validatePackedManifest(sourceManifest, packedManifest) {
   );
   if (packageName === piMcpPackageName) {
     assertPackCondition(
-      packedManifest.bin?.["pi-mcp"] === "./dist/pi-mcp-cli.js",
+      packedManifest.bin?.["pi-mcp"] === "dist/pi-mcp-cli.js",
       `${packageName} has an invalid pi-mcp bin`,
     );
     assertPackCondition(

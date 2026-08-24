@@ -22,7 +22,7 @@
     "directory": "packages/pi-mcp"
   },
   "bin": {
-    "pi-mcp": "./dist/pi-mcp-cli.js"
+    "pi-mcp": "dist/pi-mcp-cli.js"
   },
   "files": [
     "src",
