@@ -10,7 +10,6 @@ import type {
   ElicitResult,
   JSONValue,
   JsonSchemaType,
-  LoggingLevel,
   TextContent,
   ToolUseContent,
 } from "@modelcontextprotocol/client";
@@ -26,7 +25,6 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { McpAuthStore } from "./mcp-auth-store.js";
-import type { McpCommandAdapterResult, McpCommandJsonValue } from "./mcp-command.js";
 import { runMcpCommandLine } from "./mcp-command.js";
 import {
   createMcpContentResult,
@@ -111,26 +109,7 @@ interface McpPromptMessageDetails {
   readonly version: 1;
 }
 
-function mcpLoggingLevel(value: string | undefined): LoggingLevel | undefined {
-  if (value === undefined) return undefined;
-  const levels: readonly LoggingLevel[] = [
-    "debug",
-    "info",
-    "notice",
-    "warning",
-    "error",
-    "critical",
-    "alert",
-    "emergency",
-  ];
-  return levels.find((level) => level === value);
-}
-
-function commandAdapterFailure(message: string): McpCommandAdapterResult {
-  return { category: "runtime", message, ok: false };
-}
-
-function commandJson(value: unknown): McpCommandJsonValue {
+function toMcpJsonValue(value: unknown): JSONValue {
   if (
     value === null ||
     typeof value === "boolean" ||
@@ -139,9 +118,11 @@ function commandJson(value: unknown): McpCommandJsonValue {
   ) {
     return value;
   }
-  if (Array.isArray(value)) return value.map(commandJson);
+  if (Array.isArray(value)) return value.map(toMcpJsonValue);
   if (typeof value !== "object") return "unsupported value";
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, commandJson(item)]));
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, toMcpJsonValue(item)]),
+  );
 }
 
 function parseSubscriptionEntry(data: unknown): readonly McpHostResourceSubscription[] | undefined {
@@ -320,20 +301,6 @@ async function mapPromptResult(
   return replay;
 }
 
-function toolJson(value: unknown): JSONValue {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "string" ||
-    (typeof value === "number" && Number.isFinite(value))
-  ) {
-    return value;
-  }
-  if (Array.isArray(value)) return value.map(toolJson);
-  if (typeof value !== "object") return "unsupported value";
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toolJson(item)]));
-}
-
 function selectedResourceServer(parameters: McpListResourcesParameters): string | undefined {
   return typeof parameters.server === "string" ? parameters.server : undefined;
 }
@@ -341,7 +308,7 @@ function selectedResourceServer(parameters: McpListResourcesParameters): string 
 function toolProgressUpdate(execution: McpToolExecution, progress: unknown): void {
   execution.onUpdate?.({
     content: [{ text: `MCP progress: ${JSON.stringify(progress)}`, type: "text" }],
-    details: { progress: toolJson(progress) },
+    details: { progress: toMcpJsonValue(progress) },
   });
 }
 
@@ -512,25 +479,12 @@ async function fulfilMcpElicitation(
   if (input === undefined) return { action: "cancel" };
   try {
     const content: unknown = JSON.parse(input.slice(input.lastIndexOf("\n\n") + 2));
-    if (content === null || typeof content !== "object" || Array.isArray(content)) {
-      return { action: "decline" };
-    }
-    const form: Record<string, string | number | boolean | string[]> = {};
-    for (const [key, value] of Object.entries(content)) {
-      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-        form[key] = value;
-      } else if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
-        form[key] = value;
-      } else {
-        return { action: "decline" };
-      }
-    }
     // SAFETY: The official MCP Client parsed requestedSchema as the flat elicitation JSON Schema before invoking this Host callback; the cast only reconciles exact-optional SDK declarations.
     const requestedSchema = request.params.requestedSchema as JsonSchemaType;
     const validation =
       await fromJsonSchema<Record<string, string | number | boolean | string[]>>(requestedSchema)[
         "~standard"
-      ].validate(form);
+      ].validate(content);
     return validation.issues === undefined
       ? { action: "accept", content: validation.value }
       : { action: "decline" };
@@ -573,7 +527,7 @@ function createMcpToolCatalogRuntime(
       undefined,
       sessionFiles,
     );
-    return { content: [...mapped.content], details: toolJson(mapped.details) };
+    return { content: [...mapped.content], details: toMcpJsonValue(mapped.details) };
   };
   const requestContext = (execution: McpToolExecution): McpHostRequestContext<ExtensionContext> =>
     createMcpRequestContext(execution, pi);
@@ -581,11 +535,13 @@ function createMcpToolCatalogRuntime(
     callServerTool: async (serverId, toolName, arguments_, execution) => {
       const result = await host.callTool(serverId, toolName, arguments_, requestContext(execution));
       const structuredContent =
-        result.structuredContent === undefined ? undefined : toolJson(result.structuredContent);
+        result.structuredContent === undefined
+          ? undefined
+          : toMcpJsonValue(result.structuredContent);
       const mapped = await createMcpContentResult(result.content, structuredContent, sessionFiles);
       return {
         content: [...mapped.content],
-        details: toolJson(mapped.details),
+        details: toMcpJsonValue(mapped.details),
         ...(result.isError === undefined ? {} : { isError: result.isError }),
         ...(structuredContent === undefined ? {} : { structuredContent }),
       };
@@ -605,7 +561,7 @@ function createMcpToolCatalogRuntime(
         undefined,
         sessionFiles,
       );
-      return { content: [...mapped.content], details: toolJson(mapped.details) };
+      return { content: [...mapped.content], details: toMcpJsonValue(mapped.details) };
     },
   };
 }
@@ -856,13 +812,9 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
       },
       disconnect: applyPersistedServer,
       logs: async (options) => {
-        const level = mcpLoggingLevel(options.level);
-        if (options.level !== undefined && level === undefined) {
-          return commandAdapterFailure(`Unknown MCP logging level ${options.level}`);
-        }
-        const tails = await host.readLogs(options.server, level);
+        const tails = await host.readLogs(options.server, options.level);
         return {
-          data: commandJson(tails),
+          data: toMcpJsonValue(tails),
           message:
             tails.length === 0
               ? "No MCP logs retained"
@@ -908,7 +860,7 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
       status: async () => {
         const statuses = Object.fromEntries(host.listStatuses());
         return {
-          data: commandJson(statuses),
+          data: toMcpJsonValue(statuses),
           message:
             Object.keys(statuses).length === 0
               ? "No MCP Server Definitions configured"

@@ -134,16 +134,6 @@ export interface McpToolCatalogRuntime {
   ): Promise<McpToolOperationResult>;
 }
 
-/** One diagnostic retaining the MCP names and untrusted annotations behind a Pi tool. */
-export interface McpToolCatalogDiagnostic {
-  readonly annotations?: ToolAnnotations;
-  readonly message?: string;
-  readonly originalServerId: string;
-  readonly originalToolName: string;
-  readonly piToolName?: string;
-  readonly status: "invalid_schema" | "registered";
-}
-
 interface ServerCatalog {
   active: boolean;
   tools: readonly McpServerToolDefinition[];
@@ -174,7 +164,6 @@ interface McpResultDetails {
 
 /** Expected invalid-input failure raised through Pi's required throwing tool boundary. */
 export class McpServerToolInputError extends Error {
-  /** Stable error discriminator. */
   readonly _tag = "McpServerToolInputError" as const;
 
   /** Build an actionable error without including call values. */
@@ -237,7 +226,6 @@ function execution(
 export class McpToolCatalog {
   private readonly ownedToolNames = new Set<string>();
   private readonly serverCatalogs = new Map<string, ServerCatalog>();
-  private diagnostics: readonly McpToolCatalogDiagnostic[] = [];
   private resourceToolsActive = false;
 
   /** Register inert fixed tools and the MCP error-result bridge. */
@@ -276,13 +264,7 @@ export class McpToolCatalog {
     this.rebuildServerTools();
   }
 
-  /** Return current diagnostics as an immutable snapshot. */
-  getDiagnostics(): readonly McpToolCatalogDiagnostic[] {
-    return structuredClone(this.diagnostics);
-  }
-
   private rebuildServerTools(): void {
-    const diagnostics: McpToolCatalogDiagnostic[] = [];
     const compiledTools: CompiledServerTool[] = [];
     for (const [serverId, catalog] of this.serverCatalogs) {
       for (const definition of catalog.tools) {
@@ -308,18 +290,8 @@ export class McpToolCatalog {
             compiled = { definition, inputValidator, serverId };
           }
           compiledTools.push(compiled);
-        } catch (cause) {
-          const diagnosticBase = {
-            message: cause instanceof Error ? cause.message : String(cause),
-            originalServerId: serverId,
-            originalToolName: definition.name,
-            status: "invalid_schema" as const,
-          };
-          diagnostics.push(
-            definition.annotations === undefined
-              ? diagnosticBase
-              : { ...diagnosticBase, annotations: structuredClone(definition.annotations) },
-          );
+        } catch {
+          continue;
         }
       }
     }
@@ -346,23 +318,8 @@ export class McpToolCatalog {
       occupiedNames.add(piToolName);
       this.ownedToolNames.add(piToolName);
       this.pi.registerTool(this.serverToolDefinition(compiled, piToolName));
-      const diagnosticBase = {
-        originalServerId: compiled.serverId,
-        originalToolName: compiled.definition.name,
-        piToolName,
-        status: "registered" as const,
-      };
-      diagnostics.push(
-        compiled.definition.annotations === undefined
-          ? diagnosticBase
-          : {
-              ...diagnosticBase,
-              annotations: structuredClone(compiled.definition.annotations),
-            },
-      );
       if (this.serverCatalogs.get(compiled.serverId)?.active === true) activeNames.push(piToolName);
     }
-    this.diagnostics = diagnostics;
     this.syncActiveTools(activeNames);
   }
 

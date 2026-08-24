@@ -1,3 +1,10 @@
+import { fileURLToPath } from "node:url";
+import {
+  ProtocolError,
+  ProtocolErrorCode,
+  SdkError,
+  SdkErrorCode,
+} from "@modelcontextprotocol/client";
 import { expect, test, vi } from "vitest";
 import {
   McpHost,
@@ -46,11 +53,6 @@ class FakeClock implements McpHostClock {
   }
 }
 
-interface FakePage<Item> {
-  readonly items: readonly Item[];
-  readonly nextCursor?: string;
-}
-
 class FakeClient implements McpHostClient {
   readonly callTool = vi.fn(async () => ({ content: [{ text: "called", type: "text" as const }] }));
   readonly close = vi.fn(async () => undefined);
@@ -63,11 +65,14 @@ class FakeClient implements McpHostClient {
   readonly setLoggingLevel = vi.fn(async () => undefined);
   readonly subscribeResource = vi.fn(async () => undefined);
   readonly unsubscribeResource = vi.fn(async () => undefined);
-  readonly pageCalls = { prompts: 0, resources: 0, templates: 0, tools: 0 };
-  promptPages: FakePage<{ name: string; description?: string }>[] = [{ items: [] }];
-  resourcePages: FakePage<{ name: string; uri: string }>[] = [{ items: [] }];
-  templatePages: FakePage<{ name: string; uriTemplate: string }>[] = [{ items: [] }];
-  toolPages: FakePage<McpHostServerTool>[] = [{ items: [] }];
+  readonly listPrompts = vi.fn(async () => this.prompts);
+  readonly listResources = vi.fn(async () => this.resources);
+  readonly listResourceTemplates = vi.fn(async () => this.resourceTemplates);
+  readonly listTools = vi.fn(async () => this.tools);
+  prompts: Array<{ name: string; description?: string }> = [];
+  resources: Array<{ name: string; uri: string }> = [];
+  resourceTemplates: Array<{ name: string; uriTemplate: string }> = [];
+  tools: McpHostServerTool[] = [];
   readonly instructions: string | undefined;
 
   constructor(
@@ -75,34 +80,6 @@ class FakeClient implements McpHostClient {
     instructions?: string,
   ) {
     this.instructions = instructions;
-  }
-
-  listPromptsPage(cursor: string | undefined) {
-    return this.page(this.promptPages, "prompts", cursor);
-  }
-
-  listResourcesPage(cursor: string | undefined) {
-    return this.page(this.resourcePages, "resources", cursor);
-  }
-
-  listResourceTemplatesPage(cursor: string | undefined) {
-    return this.page(this.templatePages, "templates", cursor);
-  }
-
-  listToolsPage(cursor: string | undefined) {
-    return this.page(this.toolPages, "tools", cursor);
-  }
-
-  private async page<Item>(
-    pages: readonly FakePage<Item>[],
-    kind: keyof FakeClient["pageCalls"],
-    cursor: string | undefined,
-  ): Promise<FakePage<Item>> {
-    this.pageCalls[kind] += 1;
-    const index = cursor === undefined ? 0 : Number(cursor);
-    const page = pages[index];
-    if (page === undefined) throw new Error(`missing fake ${kind} page ${String(cursor)}`);
-    return page;
   }
 }
 
@@ -131,7 +108,10 @@ class FakeFactory implements McpHostClientFactory {
   }
 }
 
-function stdioDefinition(id: string, enabled = true): McpServerDefinition {
+function stdioDefinition(
+  id: string,
+  enabled = true,
+): Extract<McpServerDefinition, { transport: "stdio" }> {
   return {
     args: [],
     command: id,
@@ -184,7 +164,6 @@ function sessionFiles(
     appendServerLog,
     close,
     directoryPath: "/tmp/pi-mcp-test",
-    getServerLogPath: vi.fn(async () => "/tmp/pi-mcp-test/server.log"),
     readServerLog: vi.fn(async (serverId) => `${serverId} log`),
     writeResultSpill: vi.fn(async () => "/tmp/pi-mcp-test/spill"),
     writeUnsupportedContent: vi.fn(async () => "/tmp/pi-mcp-test/content"),
@@ -229,6 +208,39 @@ test("starts without blocking, isolates failures, and retries with capped expone
   expect(factory.attempts.get("flaky")).toBe(3);
 });
 
+const terminalMcpFailures: ReadonlyArray<readonly [string, Error]> = [
+  ["ProtocolError", new ProtocolError(ProtocolErrorCode.InternalError, "invalid protocol")],
+  ...[
+    SdkErrorCode.CapabilityNotSupported,
+    SdkErrorCode.InvalidResult,
+    SdkErrorCode.UnsupportedResultType,
+    SdkErrorCode.MethodNotSupportedByProtocolVersion,
+    SdkErrorCode.EraNegotiationFailed,
+    SdkErrorCode.ClientHttpNotImplemented,
+    SdkErrorCode.ClientHttpUnexpectedContent,
+  ].map((code) => [code, new SdkError(code, "terminal SDK failure")] as const),
+];
+
+test.each(terminalMcpFailures)("does not retry terminal MCP failure %s", async (_name, failure) => {
+  const clock = new FakeClock();
+  const factory = new FakeFactory();
+  factory.queue("invalid", failure);
+  const host = new McpHost({
+    clientFactory: factory,
+    clock,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("invalid")]),
+  });
+
+  host.start();
+  await host.waitForInitialConnections();
+
+  expect(host.getStatus("invalid")).toMatchObject({ attempts: 1, state: "failed" });
+  expect(factory.attempts.get("invalid")).toBe(1);
+  expect(clock.sleeps).toEqual([]);
+});
+
 test("resolves and forwards an OAuth provider before connecting a remote Server", async () => {
   const factory = new FakeFactory();
   const definition = remoteDefinition("oauth");
@@ -251,44 +263,67 @@ test("resolves and forwards an OAuth provider before connecting a remote Server"
   expect(host.getStatus("oauth")?.state).toBe("connected");
 });
 
-test("aggregates bounded catalogs, rejects duplicate cursors, and refreshes invalidated caches", async () => {
-  const factory = new FakeFactory();
-  const client = new FakeClient({
-    prompts: true,
-    resources: true,
-    resourceTemplates: true,
-    tools: true,
-  });
-  client.toolPages = [
-    { items: [{ inputSchema: { type: "object" }, name: "first" }], nextCursor: "1" },
-    { items: [{ inputSchema: { type: "object" }, name: "second" }] },
-  ];
-  client.resourcePages = [
-    { items: [{ name: "bad", uri: "file:///bad" }], nextCursor: "1" },
-    { items: [], nextCursor: "1" },
-  ];
-  factory.queue("catalog", client);
-  const catalogChanged = vi.fn();
+test("refreshes native SDK catalogs after real list-change notifications", async () => {
+  let resolveTemplatesChanged = (): void => undefined;
+  let resolveToolsChanged = (): void => undefined;
+  const forwarded = new Set<string>();
+  const definition: McpServerDefinition = {
+    ...stdioDefinition("catalog"),
+    args: [
+      fileURLToPath(new URL("./fixtures/mcp-server-client-stdio.mjs", import.meta.url)),
+      "list-change",
+    ],
+    command: process.execPath,
+  };
   const host = new McpHost({
-    clientFactory: factory,
-    onCatalogChanged: catalogChanged,
-    piCwd: "/project",
+    onCatalogChanged: (serverId, kind) => {
+      if (serverId !== "catalog") return;
+      forwarded.add(kind);
+      if (kind === "resourceTemplates") resolveTemplatesChanged();
+      if (kind === "tools") resolveToolsChanged();
+    },
+    piCwd: process.cwd(),
     sessionFiles: sessionFiles(),
-    settings: settings([stdioDefinition("catalog")]),
+    settings: settings([definition]),
   });
 
-  host.start();
-  await host.waitForInitialConnections();
-  expect((await host.listTools()).map(({ tool }) => tool.name)).toEqual(["first", "second"]);
-  expect(client.pageCalls.tools).toBe(2);
-  await host.listTools();
-  expect(client.pageCalls.tools).toBe(2);
-  await expect(host.listResources("catalog")).rejects.toThrow("duplicate cursor");
+  try {
+    host.start();
+    await host.waitForInitialConnections();
+    expect(host.getStatus("catalog")?.state).toBe("connected");
+    expect(host.hasConnectedCapability("tools", "catalog")).toBe(true);
+    expect((await host.listTools()).map(({ tool }) => tool.name)).toEqual([
+      "revision-0",
+      "trigger",
+    ]);
+    expect(
+      (await host.listResourceTemplates()).map(({ resourceTemplate }) => resourceTemplate.name),
+    ).toEqual(["template-0-0"]);
+    expect(
+      (await host.listResourceTemplates()).map(({ resourceTemplate }) => resourceTemplate.name),
+    ).toEqual(["template-0-0"]);
 
-  client.toolPages = [{ items: [{ inputSchema: { type: "object" }, name: "replacement" }] }];
-  await host.invalidateCatalog("catalog", "tools");
-  expect((await host.listTools()).map(({ tool }) => tool.name)).toEqual(["replacement"]);
-  expect(catalogChanged).toHaveBeenCalledWith("catalog", "tools");
+    forwarded.clear();
+    const templatesChanged = Promise.withResolvers<void>();
+    const toolsChanged = Promise.withResolvers<void>();
+    resolveTemplatesChanged = templatesChanged.resolve;
+    resolveToolsChanged = toolsChanged.resolve;
+    await host.callTool("catalog", "trigger", {});
+    await Promise.all([templatesChanged.promise, toolsChanged.promise]);
+
+    expect([...forwarded]).toEqual(
+      expect.arrayContaining(["resources", "resourceTemplates", "tools"]),
+    );
+    expect((await host.listTools()).map(({ tool }) => tool.name)).toEqual([
+      "revision-1",
+      "trigger",
+    ]);
+    expect(
+      (await host.listResourceTemplates()).map(({ resourceTemplate }) => resourceTemplate.name),
+    ).toEqual(["template-1-1"]);
+  } finally {
+    await host.shutdown();
+  }
 });
 
 test("owns resources, prompts, desired subscriptions, and provenance-only update notices", async () => {
@@ -301,9 +336,9 @@ test("owns resources, prompts, desired subscriptions, and provenance-only update
     resourceTemplates: true,
     tools: true,
   });
-  client.promptPages = [{ items: [{ description: "A prompt", name: "review" }] }];
-  client.resourcePages = [{ items: [{ name: "Guide", uri: "file:///guide" }] }];
-  client.templatePages = [{ items: [{ name: "Issue", uriTemplate: "issue://{id}" }] }];
+  client.prompts = [{ description: "A prompt", name: "review" }];
+  client.resources = [{ name: "Guide", uri: "file:///guide" }];
+  client.resourceTemplates = [{ name: "Issue", uriTemplate: "issue://{id}" }];
   factory.queue("docs", client);
   const persisted = vi.fn(async () => undefined);
   const resourceUpdated = vi.fn();
@@ -363,39 +398,90 @@ test("updates, disables, reconnects, and removes Server Definitions without dist
   const factory = new FakeFactory();
   const first = new FakeClient();
   const second = new FakeClient();
-  factory.queue("mutable", first, second);
+  const third = new FakeClient();
+  const catalogStates: Array<string | undefined> = [];
+  let activeHost: McpHost | undefined;
+  factory.queue("mutable", first, second, third);
   const host = new McpHost({
     clientFactory: factory,
+    onCatalogChanged: (serverId) => {
+      catalogStates.push(activeHost?.getStatus(serverId)?.state);
+    },
     piCwd: "/project",
     sessionFiles: sessionFiles(),
     settings: settings([stdioDefinition("mutable")]),
   });
+  activeHost = host;
 
   host.start();
   await host.waitForInitialConnections();
+  expect(catalogStates).toEqual(["connected"]);
+  catalogStates.length = 0;
+
   await host.disableServer("mutable");
-  expect(host.getStatus("mutable")?.state).toBe("disabled");
+  expect(catalogStates).toEqual(["disabled"]);
   expect(first.close).toHaveBeenCalledTimes(1);
+  catalogStates.length = 0;
 
   await host.upsertServer(stdioDefinition("mutable"));
-  expect(host.getStatus("mutable")?.state).toBe("connected");
-  expect(factory.attempts.get("mutable")).toBe(2);
+  expect(catalogStates).toEqual(["disabled", "connected"]);
+  catalogStates.length = 0;
+
+  await host.reconnect("mutable");
+  expect(catalogStates).toEqual(["disabled", "connected"]);
+  expect(factory.attempts.get("mutable")).toBe(3);
+  catalogStates.length = 0;
+
   await host.removeServer("mutable");
+  expect(catalogStates).toEqual(["disabled"]);
   expect(host.getStatus("mutable")).toBeUndefined();
   expect(second.close).toHaveBeenCalledTimes(1);
+  expect(third.close).toHaveBeenCalledTimes(1);
+});
+
+test("signals catalog deactivation and activation across an automatic reconnect", async () => {
+  const clock = new FakeClock();
+  const factory = new FakeFactory();
+  const catalogStates: Array<string | undefined> = [];
+  let activeHost: McpHost | undefined;
+  factory.queue("unstable", new FakeClient(), new FakeClient());
+  const host = new McpHost({
+    clientFactory: factory,
+    clock,
+    onCatalogChanged: (serverId) => {
+      catalogStates.push(activeHost?.getStatus(serverId)?.state);
+    },
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("unstable")]),
+  });
+  activeHost = host;
+
+  host.start();
+  await host.waitForInitialConnections();
+  catalogStates.length = 0;
+  factory.events.get("unstable")?.onClose();
+  expect(host.getStatus("unstable")?.state).toBe("retrying");
+  expect(catalogStates).toEqual(["retrying"]);
+
+  clock.wakeNext();
+  await flush();
+  expect(host.getStatus("unstable")?.state).toBe("connected");
+  expect(catalogStates).toEqual(["retrying", "connected"]);
+  await host.shutdown();
 });
 
 test("freezes the first-request Instruction Snapshot after the bounded deadline", async () => {
   const clock = new FakeClock();
   const factory = new FakeFactory();
   const fast = new FakeClient({ tools: true }, "Fast instructions");
-  fast.toolPages = [{ items: [{ inputSchema: { type: "object" }, name: "fast_tool" }] }];
+  fast.tools = [{ inputSchema: { type: "object" }, name: "fast_tool" }];
   let resolveSlow: ((client: McpHostClient) => void) | undefined;
   const slowConnection = new Promise<McpHostClient>((resolve) => {
     resolveSlow = resolve;
   });
   const slow = new FakeClient({ tools: true }, "Late instructions");
-  slow.toolPages = [{ items: [{ inputSchema: { type: "object" }, name: "late_tool" }] }];
+  slow.tools = [{ inputSchema: { type: "object" }, name: "late_tool" }];
   factory.queue("fast", fast);
   factory.queue("slow", slowConnection);
   const host = new McpHost({

@@ -76,21 +76,16 @@ export interface McpServerClientConnectOptions {
   readonly connectTimeoutMs: number;
   readonly definition: McpConnectableServerDefinition;
   readonly onConnectionClose?: () => void;
+  readonly listChanged?: ClientOptions["listChanged"];
   readonly onError?: (error: Error) => void;
   readonly onStderr?: (text: string) => void;
   readonly piCwd: string;
   readonly requestTimeoutMs: number;
-  readonly serverId: string;
 }
 
 interface ActiveMcpRunContext {
   callbacks?: McpServerRequestCallbacks<unknown>;
   piContext?: unknown;
-}
-
-interface McpPaginatedPage<Item> {
-  readonly items: readonly Item[];
-  readonly nextCursor?: string;
 }
 
 function requestHeaders(
@@ -201,7 +196,6 @@ export class McpServerClient {
     private readonly client: Client,
     private readonly transport: McpClientTransport,
     private readonly requestTimeoutMs: number,
-    readonly serverId: string,
   ) {}
 
   /** Connect one MCP Client with automatic current/legacy protocol negotiation. */
@@ -226,13 +220,9 @@ export class McpServerClient {
         probe: { timeoutMs: options.connectTimeoutMs },
       },
     };
+    if (options.listChanged !== undefined) clientOptions.listChanged = options.listChanged;
     const client = new Client(options.clientInfo, clientOptions);
-    const owner = new McpServerClient(
-      client,
-      transport,
-      options.requestTimeoutMs,
-      options.serverId,
-    );
+    const owner = new McpServerClient(client, transport, options.requestTimeoutMs);
     if (options.onError !== undefined) client.onerror = options.onError;
     client.onclose = () => {
       const wasUnexpected = owner.connected && !owner.closing;
@@ -252,16 +242,6 @@ export class McpServerClient {
       await owner.close();
       throw cause;
     }
-  }
-
-  /** Capabilities advertised by the connected MCP Server. */
-  get serverCapabilities(): ReturnType<Client["getServerCapabilities"]> {
-    return this.client.getServerCapabilities();
-  }
-
-  /** Identity advertised by the connected MCP Server. */
-  get serverVersion(): ReturnType<Client["getServerVersion"]> {
-    return this.client.getServerVersion();
   }
 
   /** Negotiated protocol revision for the connected MCP Server. */
@@ -331,33 +311,6 @@ export class McpServerClient {
     } finally {
       if (options.callbacks !== undefined) this.activeRuns.delete(context);
     }
-  }
-
-  /** Aggregate at most 1,000 protocol pages and reject repeated cursors. */
-  paginate<Item, PiContext = undefined>(
-    fetchPage: (
-      client: Client,
-      cursor: string | undefined,
-      requestOptions: RequestOptions,
-    ) => Promise<McpPaginatedPage<Item>>,
-    options: McpServerRunOptions<PiContext> = {},
-  ): Promise<readonly Item[]> {
-    return this.run(async (client, requestOptions) => {
-      const items: Item[] = [];
-      const cursors = new Set<string>();
-      let cursor: string | undefined;
-      for (let pageNumber = 0; pageNumber < MAX_MCP_LIST_PAGES; pageNumber += 1) {
-        const page = await fetchPage(client, cursor, requestOptions);
-        items.push(...page.items);
-        if (page.nextCursor === undefined) return items;
-        if (cursors.has(page.nextCursor)) {
-          throw new Error(`Pi MCP pagination returned duplicate cursor: ${page.nextCursor}`);
-        }
-        cursors.add(page.nextCursor);
-        cursor = page.nextCursor;
-      }
-      throw new Error(`Pi MCP pagination exceeded ${MAX_MCP_LIST_PAGES} pages`);
-    }, options);
   }
 
   /** Close the Client once, forcing its owned stdio process after five seconds. */

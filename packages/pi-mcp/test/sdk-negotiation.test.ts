@@ -49,16 +49,4 @@ describe("MCP v2 public client seams", () => {
       await client.close();
     }
   }, 10_000);
-
-  test("auto negotiation falls back to a 2025-era server", async () => {
-    const client = await connectToFixture("legacy-server.mjs");
-    try {
-      expect(client.getProtocolEra()).toBe("legacy");
-      expect(client.getNegotiatedProtocolVersion()).not.toBe("2026-07-28");
-      expect(client.getDiscoverResult()).toBeUndefined();
-      expect(client.getServerVersion()?.name).toBe("pi-mcp-legacy-fixture");
-    } finally {
-      await client.close();
-    }
-  }, 10_000);
 });

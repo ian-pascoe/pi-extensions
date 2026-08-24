@@ -2,6 +2,8 @@ import { createInterface } from "node:readline";
 
 const mode = process.argv[2] ?? "serve";
 let cancellations = 0;
+let templateListCalls = 0;
+let toolRevision = 0;
 const pending = new Map();
 const pendingSamples = new Map();
 
@@ -38,7 +40,10 @@ lines.on("line", (line) => {
     if (mode === "hang") return;
     respond(message.id, {
       protocolVersion: "2025-06-18",
-      capabilities: { tools: {} },
+      capabilities:
+        mode === "list-change"
+          ? { resources: { listChanged: true }, tools: { listChanged: true } }
+          : { tools: {} },
       serverInfo: { name: "pi-mcp-client-fixture", version: "1.0.0" },
       instructions: "fixture instructions",
     });
@@ -48,17 +53,43 @@ lines.on("line", (line) => {
     respond(message.id, {});
     return;
   }
+  if (mode === "list-change" && message.method === "resources/list") {
+    respond(message.id, {
+      resources: [
+        {
+          name: `resource-${toolRevision}`,
+          uri: `fixture://resource-${toolRevision}`,
+        },
+      ],
+    });
+    return;
+  }
+  if (mode === "list-change" && message.method === "resources/templates/list") {
+    respond(message.id, {
+      cacheScope: "private",
+      resourceTemplates: [
+        {
+          name: `template-${toolRevision}-${templateListCalls++}`,
+          uriTemplate: `fixture://template-${toolRevision}/{id}`,
+        },
+      ],
+      ttlMs: 60_000,
+    });
+    return;
+  }
   if (message.method === "tools/list") {
-    const cursor = message.params?.cursor;
-    if (mode === "duplicate-pages") {
+    if (mode === "list-change") {
       respond(message.id, {
         tools: [
           {
-            name: `page-${cursor ?? "first"}`,
+            name: "trigger",
+            inputSchema: { type: "object", properties: {}, additionalProperties: false },
+          },
+          {
+            name: `revision-${toolRevision}`,
             inputSchema: { type: "object", properties: {}, additionalProperties: false },
           },
         ],
-        nextCursor: "repeat",
       });
       return;
     }
@@ -95,6 +126,13 @@ lines.on("line", (line) => {
     return;
   }
   if (message.method === "tools/call") {
+    if (mode === "list-change" && message.params.name === "trigger") {
+      toolRevision += 1;
+      respond(message.id, { content: [{ type: "text", text: "changed" }] });
+      send({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+      send({ jsonrpc: "2.0", method: "notifications/resources/list_changed" });
+      return;
+    }
     if (message.params.name === "sample") {
       const samplingRequestId = `sampling-${message.id}`;
       pendingSamples.set(samplingRequestId, message.id);

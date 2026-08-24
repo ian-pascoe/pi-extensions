@@ -31,7 +31,10 @@ export const MCP_COMMAND_NAMES = [
 /** Persistent and offline commands available through the standalone executable. */
 export const MCP_STANDALONE_COMMAND_NAMES = MCP_COMMAND_NAMES.slice(0, 8);
 
+/** Command entrypoint that owns parsing and adapter execution. */
 export type McpCommandSurface = "runtime" | "standalone";
+
+/** Stable categories used for command results and process exit codes. */
 export type McpCommandExitCategory =
   | "success"
   | "usage"
@@ -39,8 +42,10 @@ export type McpCommandExitCategory =
   | "authentication"
   | "connection"
   | "runtime";
+/** Settings layer targeted by a mutating command. */
 export type McpCommandSettingsScope = "global" | "project";
 
+/** Enabled Server Definition accepted by the `add` command. */
 export type McpAddServerDefinition =
   | {
       readonly args: readonly string[];
@@ -67,6 +72,7 @@ export type McpAddServerDefinition =
       readonly url: string;
     };
 
+/** Parsed command and its normalized options. */
 export type McpCommand =
   | { readonly json: boolean; readonly kind: "list" }
   | {
@@ -115,6 +121,7 @@ export type McpCommand =
   | { readonly kind: "unsubscribe"; readonly server: string; readonly uri: string }
   | { readonly kind: "logs"; readonly level?: McpLoggingLevel; readonly server?: string };
 
+/** Usage failure returned when command tokens cannot be parsed. */
 export interface McpCommandParseFailure {
   readonly category: "usage";
   readonly message: string;
@@ -122,29 +129,35 @@ export interface McpCommandParseFailure {
   readonly usage: string;
 }
 
+/** Successful parsed command or a usage failure. */
 export type McpCommandParseResult =
   | { readonly command: McpCommand; readonly ok: true }
   | McpCommandParseFailure;
 
+/** Successful adapter outcome and optional JSON payload. */
 export interface McpCommandAdapterSuccess {
   readonly data?: McpCommandJsonValue;
   readonly message: string;
   readonly ok: true;
 }
 
+/** Adapter outcome for settings, authentication, connection, or runtime failure. */
 export interface McpCommandAdapterFailure {
   readonly category: Exclude<McpCommandExitCategory, "success" | "usage">;
   readonly message: string;
   readonly ok: false;
 }
 
+/** Result returned by a command adapter. */
 export type McpCommandAdapterResult = McpCommandAdapterSuccess | McpCommandAdapterFailure;
 
+/** Options for one command variant, excluding its discriminant. */
 export type McpCommandOptions<Kind extends McpCommand["kind"]> = Omit<
   Extract<McpCommand, { kind: Kind }>,
   "kind"
 >;
 
+/** Adapter implementations shared by runtime and standalone command surfaces. */
 export interface McpCommandAdapters {
   auth: {
     authenticate(options: McpCommandOptions<"auth">): Promise<McpCommandAdapterResult>;
@@ -163,6 +176,7 @@ export interface McpCommandAdapters {
   };
 }
 
+/** Runtime-only adapter for live MCP Host operations. */
 export interface McpLiveCommandAdapter {
   connectInBackground(server: string): void;
   disconnect(server: string): Promise<void>;
@@ -174,6 +188,7 @@ export interface McpLiveCommandAdapter {
   unsubscribe(options: McpCommandOptions<"unsubscribe">): Promise<McpCommandAdapterResult>;
 }
 
+/** Rendered command outcome with its process exit code. */
 export interface McpCommandExecutionResult {
   readonly category: McpCommandExitCategory;
   readonly data?: McpCommandJsonValue;
@@ -853,19 +868,26 @@ export function tokenizeMcpCommandLine(line: string): string[] {
   return tokens;
 }
 
+/** Parse and execute one pre-tokenized MCP command without reinterpreting argument contents. */
+export async function runMcpCommandTokens(
+  tokens: readonly string[],
+  surface: McpCommandSurface,
+  adapters: McpCommandAdapters,
+): Promise<McpCommandExecutionResult> {
+  const parsed = parseMcpCommand(tokens, surface);
+  if (!parsed.ok) return adapterFailure("usage", parsed.message, parsed.usage);
+  return executeMcpCommand(parsed.command, adapters, surface);
+}
+
 /** Tokenize, parse, and execute one shared command line without throwing through its caller. */
 export async function runMcpCommandLine(
   line: string,
   surface: McpCommandSurface,
   adapters: McpCommandAdapters,
 ): Promise<McpCommandExecutionResult> {
-  let tokens: string[];
   try {
-    tokens = tokenizeMcpCommandLine(line);
+    return runMcpCommandTokens(tokenizeMcpCommandLine(line), surface, adapters);
   } catch {
     return adapterFailure("usage", "invalid quoting", GENERAL_USAGE);
   }
-  const parsed = parseMcpCommand(tokens, surface);
-  if (!parsed.ok) return adapterFailure("usage", parsed.message, parsed.usage);
-  return executeMcpCommand(parsed.command, adapters, surface);
 }

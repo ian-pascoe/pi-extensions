@@ -1,17 +1,34 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import {
+  ProtocolError,
   RegistrationRejectedError,
+  SdkError,
+  SdkErrorCode,
   UnauthorizedError,
   type AuthProvider,
   type Client,
   type LoggingLevel,
   type OAuthClientProvider,
 } from "@modelcontextprotocol/client";
-import { McpServerClient, type McpServerRunOptions } from "./mcp-server-client.js";
+import {
+  McpServerClient,
+  type McpServerClientConnectOptions,
+  type McpServerRunOptions,
+} from "./mcp-server-client.js";
 import type { McpSessionFiles } from "./mcp-session-files.js";
 import type { McpServerDefinition, ResolvedMcpSettings } from "./pi-mcp-settings.js";
 
-const MCP_HOST_MAX_LIST_PAGES = 1_000;
 const DEFAULT_INSTRUCTION_DEADLINE_MS = 10_000;
+
+const TERMINAL_MCP_SDK_ERROR_CODES: ReadonlySet<SdkErrorCode> = new Set([
+  SdkErrorCode.CapabilityNotSupported,
+  SdkErrorCode.InvalidResult,
+  SdkErrorCode.UnsupportedResultType,
+  SdkErrorCode.MethodNotSupportedByProtocolVersion,
+  SdkErrorCode.EraNegotiationFailed,
+  SdkErrorCode.ClientHttpNotImplemented,
+  SdkErrorCode.ClientHttpUnexpectedContent,
+]);
 
 /** Clock boundary used for retry and first-request deadlines. */
 export interface McpHostClock {
@@ -23,18 +40,7 @@ const systemClock: McpHostClock = {
   get now() {
     return Date.now();
   },
-  sleep: (milliseconds, signal) =>
-    new Promise<void>((resolveSleep, rejectSleep) => {
-      const timeout = setTimeout(resolveSleep, milliseconds);
-      signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timeout);
-          rejectSleep(signal.reason);
-        },
-        { once: true },
-      );
-    }),
+  sleep: (milliseconds, signal) => sleep(milliseconds, undefined, { signal }),
 };
 
 /** Core capabilities negotiated with one MCP Server. */
@@ -64,12 +70,6 @@ export type McpHostResourceTemplate = Awaited<
 /** One advertised MCP Prompt. */
 export type McpHostPrompt = Awaited<ReturnType<Client["listPrompts"]>>["prompts"][number];
 
-/** One protocol list page consumed by the Host's bounded paginator. */
-export interface McpHostListPage<Item> {
-  readonly items: readonly Item[];
-  readonly nextCursor?: string;
-}
-
 /** Arguments accepted by one Server Tool call. */
 export type McpHostToolArguments = NonNullable<Parameters<Client["callTool"]>[0]["arguments"]>;
 
@@ -90,7 +90,7 @@ export type McpHostCompletionResult = Awaited<ReturnType<Client["complete"]>>["c
 
 /** Notifications and transport signals delivered to the owning Host. */
 export interface McpHostClientEvents {
-  onCatalogChanged(kind: McpHostCatalogKind): Promise<void> | void;
+  onCatalogChanged(kind: McpHostCatalogKind, toolNames?: readonly string[]): Promise<void> | void;
   onClose(): void;
   onError(error: Error): void;
   onLog(message: string): Promise<void> | void;
@@ -117,12 +117,10 @@ export interface McpHostClient {
     args?: Readonly<Record<string, string>>,
     context?: McpHostRequestContext<PiContext>,
   ): Promise<McpHostGetPromptResult>;
-  listPromptsPage(cursor: string | undefined): Promise<McpHostListPage<McpHostPrompt>>;
-  listResourcesPage(cursor: string | undefined): Promise<McpHostListPage<McpHostResource>>;
-  listResourceTemplatesPage(
-    cursor: string | undefined,
-  ): Promise<McpHostListPage<McpHostResourceTemplate>>;
-  listToolsPage(cursor: string | undefined): Promise<McpHostListPage<McpHostServerTool>>;
+  listPrompts(): Promise<readonly McpHostPrompt[]>;
+  listResources(): Promise<readonly McpHostResource[]>;
+  listResourceTemplates(): Promise<readonly McpHostResourceTemplate[]>;
+  listTools(): Promise<readonly McpHostServerTool[]>;
   readResource<PiContext = undefined>(
     uri: string,
     context?: McpHostRequestContext<PiContext>,
@@ -148,7 +146,7 @@ export interface McpHostClientFactory {
   connect(options: McpHostClientConnectOptions): Promise<McpHostClient>;
 }
 
-/** Catalog whose cache can be invalidated by its matching MCP notification. */
+/** Catalog refreshed by its matching MCP notification. */
 export type McpHostCatalogKind = "prompts" | "resources" | "resourceTemplates" | "tools";
 
 /** Live status of one configured MCP Server. */
@@ -233,17 +231,9 @@ export interface McpHostOptions {
   readonly settings: ResolvedMcpSettings;
 }
 
-interface McpHostCatalogCache {
-  prompts?: readonly McpHostPrompt[];
-  resources?: readonly McpHostResource[];
-  resourceTemplates?: readonly McpHostResourceTemplate[];
-  tools?: readonly McpHostServerTool[];
-}
-
 interface McpHostServerEntry {
-  readonly catalog: McpHostCatalogCache;
-  readonly catalogLoads: Partial<Record<McpHostCatalogKind, Promise<void>>>;
   definition: McpServerDefinition;
+  instructionToolNames: readonly string[];
   client?: McpHostClient;
   failures: number;
   generation: number;
@@ -256,13 +246,6 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function pageResult<Item>(
-  items: readonly Item[],
-  nextCursor: string | undefined,
-): McpHostListPage<Item> {
-  return nextCursor === undefined ? { items } : { items, nextCursor };
-}
-
 class SdkMcpHostClient implements McpHostClient {
   private constructor(
     private readonly owner: McpServerClient,
@@ -273,37 +256,61 @@ class SdkMcpHostClient implements McpHostClient {
   static async connect(
     definition: McpServerDefinition,
     events: McpHostClientEvents,
-    options: Pick<McpHostOptions, "piCwd" | "sessionFiles" | "settings">,
+    options: Pick<McpHostOptions, "piCwd" | "settings">,
     authProvider: McpHostAuthProvider | undefined,
   ): Promise<SdkMcpHostClient> {
+    const notifyCatalogChanged = (
+      error: Error | null,
+      kind: McpHostCatalogKind,
+      toolNames?: readonly string[],
+    ): void => {
+      if (error !== null) {
+        events.onError(error);
+        return;
+      }
+      void events.onCatalogChanged(kind, toolNames);
+    };
+    const listChanged = {
+      prompts: {
+        autoRefresh: true,
+        debounceMs: 0,
+        onChanged: (error) => notifyCatalogChanged(error, "prompts"),
+      },
+      resources: {
+        autoRefresh: true,
+        debounceMs: 0,
+        onChanged: (error) => {
+          notifyCatalogChanged(error, "resources");
+          if (error === null) notifyCatalogChanged(null, "resourceTemplates");
+        },
+      },
+      tools: {
+        autoRefresh: true,
+        debounceMs: 0,
+        onChanged: (error, tools) =>
+          notifyCatalogChanged(
+            error,
+            "tools",
+            tools?.map((tool) => tool.name),
+          ),
+      },
+    } satisfies NonNullable<McpServerClientConnectOptions["listChanged"]>;
     const connectOptions = {
       clientInfo: { name: "@ian-pascoe/pi-mcp", version: "0.1.0" },
       connectTimeoutMs: options.settings.connectTimeoutMs,
       definition,
+      listChanged,
       onConnectionClose: () => events.onClose(),
       onError: (error: Error) => events.onError(error),
       onStderr: (text: string) => void events.onLog(text),
       piCwd: options.piCwd,
       requestTimeoutMs: options.settings.requestTimeoutMs,
-      serverId: definition.id,
     };
     const owner = await McpServerClient.connect(
       authProvider === undefined ? connectOptions : { ...connectOptions, authProvider },
     );
     const capabilities = await owner.run(async (client) => {
       const advertised = client.getServerCapabilities();
-      client.setNotificationHandler("notifications/tools/list_changed", () =>
-        events.onCatalogChanged("tools"),
-      );
-      client.setNotificationHandler("notifications/resources/list_changed", () =>
-        Promise.all([
-          events.onCatalogChanged("resources"),
-          events.onCatalogChanged("resourceTemplates"),
-        ]).then(() => undefined),
-      );
-      client.setNotificationHandler("notifications/prompts/list_changed", () =>
-        events.onCatalogChanged("prompts"),
-      );
       client.setNotificationHandler("notifications/resources/updated", (notification) =>
         events.onResourceUpdated(notification.params.uri),
       );
@@ -368,37 +375,29 @@ class SdkMcpHostClient implements McpHostClient {
     }, context);
   }
 
-  listPromptsPage(cursor: string | undefined): Promise<McpHostListPage<McpHostPrompt>> {
-    return this.listPage(cursor, (client, params, requestOptions) =>
-      client
-        .listPrompts(params, requestOptions)
-        .then((result) => pageResult(result.prompts, result.nextCursor)),
+  listPrompts(): Promise<readonly McpHostPrompt[]> {
+    return this.owner.run((client, requestOptions) =>
+      client.listPrompts(undefined, requestOptions).then((result) => result.prompts),
     );
   }
 
-  listResourcesPage(cursor: string | undefined): Promise<McpHostListPage<McpHostResource>> {
-    return this.listPage(cursor, (client, params, requestOptions) =>
-      client
-        .listResources(params, requestOptions)
-        .then((result) => pageResult(result.resources, result.nextCursor)),
+  listResources(): Promise<readonly McpHostResource[]> {
+    return this.owner.run((client, requestOptions) =>
+      client.listResources(undefined, requestOptions).then((result) => result.resources),
     );
   }
 
-  listResourceTemplatesPage(
-    cursor: string | undefined,
-  ): Promise<McpHostListPage<McpHostResourceTemplate>> {
-    return this.listPage(cursor, (client, params, requestOptions) =>
+  listResourceTemplates(): Promise<readonly McpHostResourceTemplate[]> {
+    return this.owner.run((client, requestOptions) =>
       client
-        .listResourceTemplates(params, requestOptions)
-        .then((result) => pageResult(result.resourceTemplates, result.nextCursor)),
+        .listResourceTemplates(undefined, requestOptions)
+        .then((result) => result.resourceTemplates),
     );
   }
 
-  listToolsPage(cursor: string | undefined): Promise<McpHostListPage<McpHostServerTool>> {
-    return this.listPage(cursor, (client, params, requestOptions) =>
-      client
-        .listTools(params, requestOptions)
-        .then((result) => pageResult(result.tools, result.nextCursor)),
+  listTools(): Promise<readonly McpHostServerTool[]> {
+    return this.owner.run((client, requestOptions) =>
+      client.listTools(undefined, requestOptions).then((result) => result.tools),
     );
   }
 
@@ -429,32 +428,6 @@ class SdkMcpHostClient implements McpHostClient {
       await client.unsubscribeResource({ uri }, requestOptions);
     });
   }
-
-  private listPage<Item>(
-    cursor: string | undefined,
-    list: (
-      client: Client,
-      params: { cursor?: string },
-      requestOptions: Parameters<Client["listTools"]>[1],
-    ) => Promise<McpHostListPage<Item>>,
-  ): Promise<McpHostListPage<Item>> {
-    const params = cursor === undefined ? {} : { cursor };
-    return this.owner.run((client, requestOptions) => list(client, params, requestOptions));
-  }
-}
-
-class SdkMcpHostClientFactory implements McpHostClientFactory {
-  constructor(
-    private readonly options: Pick<McpHostOptions, "piCwd" | "sessionFiles" | "settings">,
-  ) {}
-
-  connect({
-    authProvider,
-    definition,
-    events,
-  }: McpHostClientConnectOptions): Promise<McpHostClient> {
-    return SdkMcpHostClient.connect(definition, events, this.options, authProvider);
-  }
 }
 
 /** Session-owned MCP server registry, catalogs, subscriptions, retries, and cleanup. */
@@ -471,13 +444,15 @@ export class McpHost {
 
   constructor(private readonly options: McpHostOptions) {
     this.clock = options.clock ?? systemClock;
-    this.clientFactory = options.clientFactory ?? new SdkMcpHostClientFactory(options);
+    this.clientFactory = options.clientFactory ?? {
+      connect: ({ authProvider, definition, events }) =>
+        SdkMcpHostClient.connect(definition, events, options, authProvider),
+    };
     for (const definition of options.settings.servers.values()) {
       this.entries.set(definition.id, {
-        catalog: {},
-        catalogLoads: {},
         definition,
         failures: 0,
+        instructionToolNames: [],
         generation: 0,
         status: { state: "disabled" },
       });
@@ -538,42 +513,36 @@ export class McpHost {
     return client.callTool(name, args, context);
   }
 
-  /** Return cached or freshly listed Server Tools with provenance. */
+  /** Return native SDK-listed Server Tools with provenance. */
   async listTools(serverId?: string): Promise<readonly McpHostToolItem[]> {
-    const entries = this.connectedEntries(serverId);
-    await Promise.all(entries.map((entry) => this.ensureCatalog(entry, "tools")));
-    return entries
-      .flatMap((entry) =>
-        (entry.catalog.tools ?? []).map((tool) => ({ serverId: entry.definition.id, tool })),
-      )
-      .sort(
-        (left, right) =>
-          left.serverId.localeCompare(right.serverId) ||
-          left.tool.name.localeCompare(right.tool.name),
-      );
-  }
-
-  /** Return cached or freshly listed Resources with provenance. */
-  async listResources(serverId?: string): Promise<readonly McpHostResourceItem[]> {
-    return (await this.listCatalog("resources", serverId)).map(({ item, serverId: id }) => ({
-      resource: item,
-      serverId: id,
-    }));
-  }
-
-  /** Return cached or freshly listed Resource Templates with provenance. */
-  async listResourceTemplates(serverId?: string): Promise<readonly McpHostResourceTemplateItem[]> {
-    return (await this.listCatalog("resourceTemplates", serverId)).map(
-      ({ item, serverId: id }) => ({ resourceTemplate: item, serverId: id }),
+    return (await this.listCatalog("tools", (client) => client.listTools(), serverId)).map(
+      ({ item, serverId: id }) => ({ serverId: id, tool: item }),
     );
   }
 
-  /** Return cached or freshly listed Prompts with provenance. */
+  /** Return native SDK-listed Resources with provenance. */
+  async listResources(serverId?: string): Promise<readonly McpHostResourceItem[]> {
+    return (await this.listCatalog("resources", (client) => client.listResources(), serverId)).map(
+      ({ item, serverId: id }) => ({ resource: item, serverId: id }),
+    );
+  }
+
+  /** Return native SDK-listed Resource Templates with provenance. */
+  async listResourceTemplates(serverId?: string): Promise<readonly McpHostResourceTemplateItem[]> {
+    return (
+      await this.listCatalog(
+        "resourceTemplates",
+        (client) => client.listResourceTemplates(),
+        serverId,
+      )
+    ).map(({ item, serverId: id }) => ({ resourceTemplate: item, serverId: id }));
+  }
+
+  /** Return native SDK-listed Prompts with provenance. */
   async listPrompts(serverId?: string): Promise<readonly McpHostPromptItem[]> {
-    return (await this.listCatalog("prompts", serverId)).map(({ item, serverId: id }) => ({
-      prompt: item,
-      serverId: id,
-    }));
+    return (await this.listCatalog("prompts", (client) => client.listPrompts(), serverId)).map(
+      ({ item, serverId: id }) => ({ prompt: item, serverId: id }),
+    );
   }
 
   /** Read bounded stderr and MCP logging tails without adding them to model context. */
@@ -599,14 +568,6 @@ export class McpHost {
           text: await this.options.sessionFiles.readServerLog(entry.definition.id),
         })),
     );
-  }
-
-  /** Invalidate and eagerly refresh one catalog after a matching list-changed notification. */
-  async invalidateCatalog(serverId: string, kind: McpHostCatalogKind): Promise<void> {
-    const entry = this.requireEntry(serverId);
-    delete entry.catalog[kind];
-    await this.ensureCatalog(entry, kind);
-    this.options.onCatalogChanged?.(serverId, kind);
   }
 
   /** Read one Resource without injecting it into the model through a background path. */
@@ -662,11 +623,10 @@ export class McpHost {
   async upsertServer(definition: McpServerDefinition): Promise<void> {
     const existing = this.entries.get(definition.id);
     const entry = existing ?? {
-      catalog: {},
-      catalogLoads: {},
       definition,
       failures: 0,
       generation: 0,
+      instructionToolNames: [],
       status: { state: "disabled" as const },
     };
     if (existing !== undefined) await this.stopEntry(existing, "MCP Server Definition replaced");
@@ -727,7 +687,7 @@ export class McpHost {
       .sort((left, right) => left.definition.id.localeCompare(right.definition.id))
       .flatMap((entry) => {
         const instructions = entry.client?.instructions?.trim();
-        const toolNames = (entry.catalog.tools ?? []).map((tool) => tool.name).sort();
+        const toolNames = [...entry.instructionToolNames].sort();
         if (instructions === undefined && toolNames.length === 0) return [];
         return [
           [
@@ -766,12 +726,11 @@ export class McpHost {
         const connectOptions: McpHostClientConnectOptions = {
           definition: entry.definition,
           events: {
-            onCatalogChanged: async (kind) => {
-              try {
-                await this.invalidateCatalog(entry.definition.id, kind);
-              } catch (cause) {
-                await this.recordLog(entry.definition.id, errorMessage(cause));
+            onCatalogChanged: async (kind, toolNames) => {
+              if (kind === "tools" && toolNames !== undefined) {
+                entry.instructionToolNames = [...toolNames];
               }
+              await this.notifyCatalogChanged(entry, kind);
             },
             onClose: () => this.handleUnexpectedClose(entry, generation),
             onError: (error) => void this.recordLog(entry.definition.id, error.message),
@@ -799,7 +758,7 @@ export class McpHost {
         entry.failures = 0;
         entry.status = { state: "connected" };
         const initialized = await Promise.allSettled([
-          this.ensureCatalog(entry, "tools"),
+          this.loadInstructionToolNames(entry, client),
           this.restoreSubscriptions(entry),
         ]);
         for (const result of initialized) {
@@ -807,6 +766,7 @@ export class McpHost {
             await this.recordLog(entry.definition.id, errorMessage(result.reason));
           }
         }
+        await this.notifyCatalogChanged(entry, "tools");
       })
       .catch((cause: unknown) => {
         if (this.shuttingDown || generation !== entry.generation) return;
@@ -820,155 +780,77 @@ export class McpHost {
     const message = this.options.settings.secrets.redact(errorMessage(cause));
     if (cause instanceof UnauthorizedError) {
       entry.status = { error: message, state: "needs_auth" };
-      return;
-    }
-    if (cause instanceof RegistrationRejectedError) {
+    } else if (cause instanceof RegistrationRejectedError) {
       entry.status = { error: message, state: "needs_client_registration" };
-      return;
+    } else {
+      entry.failures += 1;
+      const terminal =
+        cause instanceof ProtocolError ||
+        (cause instanceof SdkError && TERMINAL_MCP_SDK_ERROR_CODES.has(cause.code));
+      if (terminal || entry.failures > this.options.settings.retry.maxRetries) {
+        entry.status = { attempts: entry.failures, error: message, state: "failed" };
+      } else {
+        const delayMs = Math.min(
+          this.options.settings.retry.maxDelayMs,
+          Math.round(
+            this.options.settings.retry.initialDelayMs *
+              this.options.settings.retry.backoffFactor ** (entry.failures - 1),
+          ),
+        );
+        const retryAbort = new AbortController();
+        entry.retryAbort = retryAbort;
+        entry.status = {
+          attempt: entry.failures + 1,
+          delayMs,
+          error: message,
+          retryAt: this.clock.now + delayMs,
+          state: "retrying",
+        };
+        void this.clock.sleep(delayMs, retryAbort.signal).then(
+          () => {
+            if (!this.shuttingDown && entry.retryAbort === retryAbort)
+              void this.connectEntry(entry);
+          },
+          () => undefined,
+        );
+      }
     }
-    entry.failures += 1;
-    if (entry.failures > this.options.settings.retry.maxRetries) {
-      entry.status = { attempts: entry.failures, error: message, state: "failed" };
-      return;
-    }
-    const delayMs = Math.min(
-      this.options.settings.retry.maxDelayMs,
-      Math.round(
-        this.options.settings.retry.initialDelayMs *
-          this.options.settings.retry.backoffFactor ** (entry.failures - 1),
-      ),
-    );
-    const retryAbort = new AbortController();
-    entry.retryAbort = retryAbort;
-    entry.status = {
-      attempt: entry.failures + 1,
-      delayMs,
-      error: message,
-      retryAt: this.clock.now + delayMs,
-      state: "retrying",
-    };
-    void this.clock.sleep(delayMs, retryAbort.signal).then(
-      () => {
-        if (!this.shuttingDown && entry.retryAbort === retryAbort) void this.connectEntry(entry);
-      },
-      () => undefined,
-    );
+    void this.notifyCatalogChanged(entry, "tools");
   }
 
   private handleUnexpectedClose(entry: McpHostServerEntry, generation: number): void {
     if (this.shuttingDown || generation !== entry.generation) return;
     delete entry.client;
-    this.clearCatalog(entry);
+    entry.instructionToolNames = [];
     this.handleConnectionFailure(entry, new Error("MCP connection closed unexpectedly"));
   }
 
-  private async ensureCatalog(entry: McpHostServerEntry, kind: McpHostCatalogKind): Promise<void> {
-    if (entry.catalog[kind] !== undefined) return;
-    const activeLoad = entry.catalogLoads[kind];
-    if (activeLoad !== undefined) return activeLoad;
-    const client = entry.client;
-    if (client === undefined || entry.status.state !== "connected") {
-      throw new Error(`MCP Server ${entry.definition.id} is not connected`);
-    }
-    const load = this.loadCatalog(entry, client, kind);
-    entry.catalogLoads[kind] = load;
-    try {
-      await load;
-    } finally {
-      delete entry.catalogLoads[kind];
-    }
-  }
-
-  private async loadAllPages<Item>(
-    serverId: string,
-    loadPage: (cursor: string | undefined) => Promise<McpHostListPage<Item>>,
-  ): Promise<readonly Item[]> {
-    const items: Item[] = [];
-    const seen = new Set<string>();
-    let cursor: string | undefined;
-    for (let page = 0; page < MCP_HOST_MAX_LIST_PAGES; page += 1) {
-      const result = await loadPage(cursor);
-      items.push(...result.items);
-      if (result.nextCursor === undefined) return items;
-      if (seen.has(result.nextCursor)) {
-        throw new Error(
-          `MCP list pagination: ${serverId} returned duplicate cursor ${JSON.stringify(result.nextCursor)}`,
-        );
-      }
-      seen.add(result.nextCursor);
-      cursor = result.nextCursor;
-    }
-    throw new Error(`MCP list pagination: ${serverId} exceeded ${MCP_HOST_MAX_LIST_PAGES} pages`);
-  }
-
-  private async loadCatalog(
+  private async loadInstructionToolNames(
     entry: McpHostServerEntry,
     client: McpHostClient,
-    kind: McpHostCatalogKind,
   ): Promise<void> {
-    switch (kind) {
-      case "prompts":
-        entry.catalog.prompts =
-          client.capabilities.prompts === true
-            ? await this.loadAllPages(entry.definition.id, (cursor) =>
-                client.listPromptsPage(cursor),
-              )
-            : [];
-        return;
-      case "resources":
-        entry.catalog.resources =
-          client.capabilities.resources === true
-            ? await this.loadAllPages(entry.definition.id, (cursor) =>
-                client.listResourcesPage(cursor),
-              )
-            : [];
-        return;
-      case "resourceTemplates":
-        entry.catalog.resourceTemplates =
-          client.capabilities.resourceTemplates === true
-            ? await this.loadAllPages(entry.definition.id, (cursor) =>
-                client.listResourceTemplatesPage(cursor),
-              )
-            : [];
-        return;
-      case "tools":
-        entry.catalog.tools =
-          client.capabilities.tools === true
-            ? await this.loadAllPages(entry.definition.id, (cursor) => client.listToolsPage(cursor))
-            : [];
-    }
+    entry.instructionToolNames =
+      client.capabilities.tools === true ? (await client.listTools()).map((tool) => tool.name) : [];
   }
 
-  private async listCatalog(
-    kind: "prompts",
+  private async listCatalog<Item extends { readonly name: string }>(
+    capability: McpHostCapabilityName,
+    list: (client: McpHostClient) => Promise<readonly Item[]>,
     serverId?: string,
-  ): Promise<readonly McpHostCatalogItem<McpHostPrompt>[]>;
-  private async listCatalog(
-    kind: "resources",
-    serverId?: string,
-  ): Promise<readonly McpHostCatalogItem<McpHostResource>[]>;
-  private async listCatalog(
-    kind: "resourceTemplates",
-    serverId?: string,
-  ): Promise<readonly McpHostCatalogItem<McpHostResourceTemplate>[]>;
-  private async listCatalog(
-    kind: "prompts" | "resources" | "resourceTemplates",
-    serverId?: string,
-  ): Promise<
-    readonly McpHostCatalogItem<McpHostPrompt | McpHostResource | McpHostResourceTemplate>[]
-  > {
-    const entries = this.connectedEntries(serverId);
-    await Promise.all(entries.map((entry) => this.ensureCatalog(entry, kind)));
-    return entries
-      .flatMap((entry) =>
-        (entry.catalog[kind] ?? []).map((item) => ({ item, serverId: entry.definition.id })),
-      )
+  ): Promise<readonly McpHostCatalogItem<Item>[]> {
+    const catalogs = await Promise.all(
+      this.connectedEntries(serverId).map(async (entry) => {
+        const client = entry.client;
+        if (client === undefined || client.capabilities[capability] !== true) return [];
+        return (await list(client)).map((item) => ({ item, serverId: entry.definition.id }));
+      }),
+    );
+    return catalogs
+      .flat()
       .sort(
         (left, right) =>
           left.serverId.localeCompare(right.serverId) ||
-          ("name" in left.item ? left.item.name : "").localeCompare(
-            "name" in right.item ? right.item.name : "",
-          ),
+          left.item.name.localeCompare(right.item.name),
       );
   }
 
@@ -1038,10 +920,23 @@ export class McpHost {
     entry.retryAbort?.abort(new Error(reason));
     delete entry.retryAbort;
     entry.generation += 1;
-    this.clearCatalog(entry);
+    entry.instructionToolNames = [];
     const client = entry.client;
     delete entry.client;
+    entry.status = { state: "disabled" };
+    await this.notifyCatalogChanged(entry, "tools");
     await client?.close();
+  }
+
+  private async notifyCatalogChanged(
+    entry: McpHostServerEntry,
+    kind: McpHostCatalogKind,
+  ): Promise<void> {
+    try {
+      this.options.onCatalogChanged?.(entry.definition.id, kind);
+    } catch (cause) {
+      await this.recordLog(entry.definition.id, errorMessage(cause));
+    }
   }
 
   private async recordLog(serverId: string, message: string): Promise<void> {
@@ -1053,13 +948,6 @@ export class McpHost {
     } catch {
       // Logging must not change protocol lifecycle behavior.
     }
-  }
-
-  private clearCatalog(entry: McpHostServerEntry): void {
-    delete entry.catalog.prompts;
-    delete entry.catalog.resources;
-    delete entry.catalog.resourceTemplates;
-    delete entry.catalog.tools;
   }
 
   private async shutdownOwnedResources(): Promise<void> {

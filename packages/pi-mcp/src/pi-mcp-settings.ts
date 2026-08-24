@@ -149,7 +149,6 @@ export interface McpServerMask {
 
 /** Path-qualified, non-sensitive MCP settings failure. */
 export class McpSettingsError extends Error {
-  /** Stable error discriminator for configuration failure handling. */
   readonly _tag = "McpSettingsError" as const;
 
   constructor(

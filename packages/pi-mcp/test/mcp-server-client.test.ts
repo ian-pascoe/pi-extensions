@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { specTypeSchemas } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, test } from "vitest";
 import { McpServerClient } from "../src/mcp-server-client.js";
 
@@ -59,7 +58,6 @@ async function connectStdioClient(
     },
     piCwd: cwd,
     requestTimeoutMs: options.requestTimeoutMs ?? 200,
-    serverId: "fixture",
   };
   const client = await McpServerClient.connect(
     options.onStderr === undefined
@@ -159,7 +157,6 @@ describe("McpServerClient", () => {
         onStderr: (text) => stderr.push(text),
         piCwd: cwd,
         requestTimeoutMs: 100,
-        serverId: "hanging-fixture",
       }),
     ).rejects.toThrow(/timed out|abort/i);
     const processId = Number(/pid:(\d+)/.exec(stderr.join(""))?.[1]);
@@ -230,7 +227,6 @@ describe("McpServerClient", () => {
       onConnectionClose: () => notifyClosed?.(),
       piCwd: cwd,
       requestTimeoutMs: 100,
-      serverId: "closing-fixture",
     });
     clients.push(client);
 
@@ -238,27 +234,6 @@ describe("McpServerClient", () => {
     await expect(client.run((sdk, requestOptions) => sdk.ping(requestOptions))).rejects.toThrow(
       "Pi MCP Client is not connected",
     );
-  });
-
-  test("rejects duplicate cursors and the 1,000-page bound", async () => {
-    const client = await connectStdioClient("duplicate-pages");
-    await expect(
-      client.paginate(async (sdk, cursor, requestOptions) => {
-        const page = await sdk.request(
-          { method: "tools/list", params: cursor === undefined ? {} : { cursor } },
-          specTypeSchemas.ListToolsResult,
-          requestOptions,
-        );
-        return page.nextCursor === undefined
-          ? { items: page.tools }
-          : { items: page.tools, nextCursor: page.nextCursor };
-      }),
-    ).rejects.toThrow("Pi MCP pagination returned duplicate cursor: repeat");
-
-    let page = 0;
-    await expect(
-      client.paginate(async () => ({ items: [], nextCursor: `cursor-${page++}` })),
-    ).rejects.toThrow("Pi MCP pagination exceeded 1000 pages");
   });
 
   test("connects Streamable HTTP as modern and explicit SSE as legacy without fallback", async () => {
@@ -269,7 +244,6 @@ describe("McpServerClient", () => {
       definition: { headers: { "x-fixture": "http-header" }, transport: "http", url: httpUrl },
       piCwd: process.cwd(),
       requestTimeoutMs: 1_000,
-      serverId: "http-fixture",
     });
     clients.push(httpClient);
     expect(httpClient.protocolEra).toBe("modern");
@@ -289,7 +263,6 @@ describe("McpServerClient", () => {
       },
       piCwd: process.cwd(),
       requestTimeoutMs: 1_000,
-      serverId: "sse-fixture",
     });
     clients.push(sseClient);
     expect(sseClient.protocolEra).toBe("legacy");
@@ -306,7 +279,6 @@ describe("McpServerClient", () => {
         definition: { headers: {}, transport: "http", url: `${sseUrl}/sse` },
         piCwd: process.cwd(),
         requestTimeoutMs: 100,
-        serverId: "no-fallback-fixture",
       }),
     ).rejects.toThrow();
   });

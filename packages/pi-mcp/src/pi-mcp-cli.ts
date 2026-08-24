@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional command data requires omitting absent fields at the shared command boundary.
-// oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This entrypoint owns recursive JSON and trust-store parsing before values reach typed settings adapters.
+// oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This entrypoint owns trust-store parsing before values reach typed settings adapters.
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import {
-  runMcpCommandLine,
+  runMcpCommandTokens,
   type McpCommandAdapterResult,
   type McpCommandAdapters,
   type McpCommandJsonValue,
@@ -19,12 +20,7 @@ import {
   McpOAuthProvider,
 } from "./mcp-oauth.js";
 import { McpServerClient } from "./mcp-server-client.js";
-import {
-  McpSettingsStore,
-  type McpSettingsScope,
-  type McpStoreJsonObject,
-  type McpStoreJsonValue,
-} from "./mcp-settings-store.js";
+import { McpSettingsStore, type McpSettingsScope } from "./mcp-settings-store.js";
 import {
   resolveMcpSettings,
   type McpServerDefinition,
@@ -70,47 +66,6 @@ function commandFailure(
   return { category, message, ok: false };
 }
 
-function parseMcpStoreJsonValue(value: unknown): McpStoreJsonValue | undefined {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "string" ||
-    (typeof value === "number" && Number.isFinite(value))
-  ) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    const values: McpStoreJsonValue[] = [];
-    for (const item of value) {
-      const parsed = parseMcpStoreJsonValue(item);
-      if (parsed === undefined) return undefined;
-      values.push(parsed);
-    }
-    return values;
-  }
-  if (typeof value !== "object") return undefined;
-  const object: Record<string, McpStoreJsonValue> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item === undefined) continue;
-    const parsed = parseMcpStoreJsonValue(item);
-    if (parsed === undefined) return undefined;
-    object[key] = parsed;
-  }
-  return object;
-}
-
-function parseMcpStoreJsonObject(value: unknown): McpStoreJsonObject | undefined {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const object: Record<string, McpStoreJsonValue> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item === undefined) continue;
-    const parsed = parseMcpStoreJsonValue(item);
-    if (parsed === undefined) return undefined;
-    object[key] = parsed;
-  }
-  return object;
-}
-
 async function readSavedProjectTrust(agentDirectory: string, cwd: string): Promise<boolean> {
   let document: unknown;
   try {
@@ -132,37 +87,13 @@ async function readSavedProjectTrust(agentDirectory: string, cwd: string): Promi
   }
 }
 
-function readPiMcpCliOAuthPaste(signal: AbortSignal): Promise<string> {
-  return new Promise<string>((resolveInput, rejectInput) => {
-    let input = "";
-    const cleanup = (): void => {
-      process.stdin.off("data", onData);
-      process.stdin.off("end", onEnd);
-      process.stdin.off("error", onError);
-      signal.removeEventListener("abort", onAbort);
-      process.stdin.pause();
-    };
-    const onData = (chunk: Buffer | string): void => {
-      input += chunk.toString();
-    };
-    const onEnd = (): void => {
-      cleanup();
-      resolveInput(input.trim());
-    };
-    const onError = (): void => {
-      cleanup();
-      rejectInput(new Error("Pi MCP OAuth callback input failed"));
-    };
-    const onAbort = (): void => {
-      cleanup();
-      rejectInput(signal.reason);
-    };
-    process.stdin.on("data", onData);
-    process.stdin.once("end", onEnd);
-    process.stdin.once("error", onError);
-    signal.addEventListener("abort", onAbort, { once: true });
-    process.stdin.resume();
-  });
+async function readPiMcpCliOAuthPaste(signal: AbortSignal): Promise<string> {
+  const lineReader = createInterface({ input: process.stdin, terminal: false });
+  try {
+    return (await lineReader.question("", { signal })).trim();
+  } finally {
+    lineReader.close();
+  }
 }
 
 function authClientIdentity(definition: McpServerDefinition): string {
@@ -451,19 +382,15 @@ export async function createStandaloneMcpCommandAdapters(
     },
     live: undefined,
     settings: {
-      add: async (options) => {
-        const definition = parseMcpStoreJsonObject(options.definition);
-        if (definition === undefined)
-          return commandFailure("settings", "invalid Server Definition");
-        return settingsMutationResult(
+      add: async (options) =>
+        settingsMutationResult(
           await state.settingsStore.setServerDefinition(
             scope(options.scope),
             options.name,
-            definition,
+            options.definition,
           ),
           `MCP Server ${options.name}`,
-        );
-      },
+        ),
       disable: async (options) => {
         const resolved = await readStandaloneSettings(state);
         if (resolved.failure !== undefined) return resolved.failure;
@@ -510,12 +437,6 @@ export async function createStandaloneMcpCommandAdapters(
       },
     },
   };
-}
-
-function mcpCommandLineFromArgv(args: readonly string[]): string {
-  return args
-    .map((argument) => `"${argument.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`)
-    .join(" ");
 }
 
 interface PiMcpTrustOverride {
@@ -567,11 +488,7 @@ export async function runPiMcpCli(
             : { projectTrusted: parsedTrust.projectTrusted },
         )
       : await options.createAdapters(parsedTrust.projectTrusted);
-  const result = await runMcpCommandLine(
-    mcpCommandLineFromArgv(parsedTrust.args),
-    "standalone",
-    adapters,
-  );
+  const result = await runMcpCommandTokens(parsedTrust.args, "standalone", adapters);
   (result.ok ? writeStdout : writeStderr)(result.output);
   return result.exitCode;
 }

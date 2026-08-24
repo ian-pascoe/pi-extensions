@@ -3,11 +3,12 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Type, type Static } from "typebox";
+import { Value } from "typebox/value";
 import {
   forceReplaceLockedMcpJsonDocument,
   McpStoreError,
   type McpStoreJsonObject,
-  type McpStoreJsonValue,
   type McpStoreResult,
   mutateLockedMcpJsonDocument,
 } from "./mcp-settings-store.js";
@@ -16,6 +17,94 @@ const AUTH_DOCUMENT_VERSION = 1;
 const AUTH_FILE_MODE = 0o600;
 const SHA_256_HEX = /^[a-f0-9]{64}$/;
 
+const McpAuthJsonValueSchema = Type.Cyclic(
+  {
+    McpAuthJsonValue: Type.Union([
+      Type.Null(),
+      Type.Boolean(),
+      Type.Number(),
+      Type.String(),
+      Type.Array(Type.Ref("McpAuthJsonValue")),
+      Type.Record(Type.String(), Type.Ref("McpAuthJsonValue"), { additionalProperties: false }),
+    ]),
+  },
+  "McpAuthJsonValue",
+);
+const McpAuthJsonObjectSchema = Type.Unsafe<McpStoreJsonObject>(
+  Type.Record(Type.String(), McpAuthJsonValueSchema, { additionalProperties: false }),
+);
+const McpStoredOAuthTokensSchema = Type.Object(
+  {
+    accessToken: Type.String(),
+    expiresAt: Type.Optional(Type.Number()),
+    refreshToken: Type.Optional(Type.String()),
+    scope: Type.Optional(Type.String()),
+    tokenType: Type.String(),
+  },
+  { additionalProperties: false },
+);
+const McpStoredOAuthClientInformationSchema = Type.Object(
+  {
+    clientId: Type.String(),
+    clientIdIssuedAt: Type.Optional(Type.Number()),
+    clientSecret: Type.Optional(Type.String()),
+    clientSecretExpiresAt: Type.Optional(Type.Number()),
+    metadataDocumentUrl: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+const McpStoredOAuthAuthorizationStateSchema = Type.Object(
+  {
+    codeVerifier: Type.Optional(Type.String()),
+    state: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+const McpStoredOAuthDiscoverySchema = Type.Object(
+  {
+    authorizationServerMetadata: Type.Optional(McpAuthJsonObjectSchema),
+    authorizationServerUrl: Type.Optional(Type.String()),
+    protectedResourceMetadata: Type.Optional(McpAuthJsonObjectSchema),
+    resourceMetadataUrl: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+const McpAuthEntryProperties = {
+  authorization: Type.Optional(McpStoredOAuthAuthorizationStateSchema),
+  clientInformation: Type.Optional(McpStoredOAuthClientInformationSchema),
+  discovery: Type.Optional(McpStoredOAuthDiscoverySchema),
+  tokens: Type.Optional(McpStoredOAuthTokensSchema),
+};
+const McpAuthEntrySchema = Type.Object(McpAuthEntryProperties, { additionalProperties: false });
+const McpAuthEntryPatchSchema = Type.Object(
+  {
+    authorization: Type.Optional(Type.Union([McpStoredOAuthAuthorizationStateSchema, Type.Null()])),
+    clientInformation: Type.Optional(
+      Type.Union([McpStoredOAuthClientInformationSchema, Type.Null()]),
+    ),
+    discovery: Type.Optional(Type.Union([McpStoredOAuthDiscoverySchema, Type.Null()])),
+    tokens: Type.Optional(Type.Union([McpStoredOAuthTokensSchema, Type.Null()])),
+  },
+  { additionalProperties: false },
+);
+const McpAuthStoredEntrySchema = Type.Object(
+  {
+    ...McpAuthEntryProperties,
+    clientIdentityHash: Type.String({ pattern: SHA_256_HEX.source }),
+    serverUrlHash: Type.String({ pattern: SHA_256_HEX.source }),
+  },
+  { additionalProperties: false },
+);
+const McpAuthDocumentSchema = Type.Object(
+  {
+    entries: Type.Record(Type.String({ pattern: SHA_256_HEX.source }), McpAuthStoredEntrySchema, {
+      additionalProperties: false,
+    }),
+    version: Type.Literal(AUTH_DOCUMENT_VERSION),
+  },
+  { additionalProperties: false },
+);
+
 /** URL and OAuth client identity that jointly own one stored credential entry. */
 export interface McpAuthBinding {
   readonly clientIdentity: string;
@@ -23,66 +112,33 @@ export interface McpAuthBinding {
 }
 
 /** OAuth tokens persisted exactly across refreshes and process restarts. */
-export interface McpStoredOAuthTokens {
-  readonly accessToken: string;
-  readonly expiresAt?: number;
-  readonly refreshToken?: string;
-  readonly scope?: string;
-  readonly tokenType: string;
-}
+export type McpStoredOAuthTokens = Readonly<Static<typeof McpStoredOAuthTokensSchema>>;
 
 /** OAuth client registration or configured client identity persisted for reuse. */
-export interface McpStoredOAuthClientInformation {
-  readonly clientId: string;
-  readonly clientIdIssuedAt?: number;
-  readonly clientSecret?: string;
-  readonly clientSecretExpiresAt?: number;
-  readonly metadataDocumentUrl?: string;
-}
+export type McpStoredOAuthClientInformation = Readonly<
+  Static<typeof McpStoredOAuthClientInformationSchema>
+>;
 
 /** PKCE verifier and authorization state persisted between remote callback steps. */
-export interface McpStoredOAuthAuthorizationState {
-  readonly codeVerifier?: string;
-  readonly state?: string;
-}
+export type McpStoredOAuthAuthorizationState = Readonly<
+  Static<typeof McpStoredOAuthAuthorizationStateSchema>
+>;
 
 /** OAuth discovery documents retained without interpreting RFC extension fields. */
-export interface McpStoredOAuthDiscovery {
-  readonly authorizationServerMetadata?: McpStoreJsonObject;
-  readonly authorizationServerUrl?: string;
-  readonly protectedResourceMetadata?: McpStoreJsonObject;
-  readonly resourceMetadataUrl?: string;
-}
+export type McpStoredOAuthDiscovery = Readonly<Static<typeof McpStoredOAuthDiscoverySchema>>;
 
 /** Complete authentication data associated with one URL/client binding. */
-export interface McpAuthEntry {
-  readonly authorization?: McpStoredOAuthAuthorizationState;
-  readonly clientInformation?: McpStoredOAuthClientInformation;
-  readonly discovery?: McpStoredOAuthDiscovery;
-  readonly tokens?: McpStoredOAuthTokens;
-}
+export type McpAuthEntry = Readonly<Static<typeof McpAuthEntrySchema>>;
 
 /** Top-level authentication fields changed under one locked read-modify-write. */
-export interface McpAuthEntryPatch {
-  readonly authorization?: McpStoredOAuthAuthorizationState | null;
-  readonly clientInformation?: McpStoredOAuthClientInformation | null;
-  readonly discovery?: McpStoredOAuthDiscovery | null;
-  readonly tokens?: McpStoredOAuthTokens | null;
-}
+export type McpAuthEntryPatch = Readonly<Static<typeof McpAuthEntryPatchSchema>>;
 
-interface McpAuthStoredEntry extends McpAuthEntry {
-  readonly clientIdentityHash: string;
-  readonly serverUrlHash: string;
-}
+type McpAuthStoredEntry = Readonly<Static<typeof McpAuthStoredEntrySchema>>;
+type McpAuthDocument = Readonly<Static<typeof McpAuthDocumentSchema>>;
 
 type MutableMcpAuthStoredEntry = {
   -readonly [Field in keyof McpAuthStoredEntry]?: McpAuthStoredEntry[Field];
 } & Pick<McpAuthStoredEntry, "clientIdentityHash" | "serverUrlHash">;
-
-interface McpAuthDocument {
-  readonly entries: Readonly<Record<string, McpAuthStoredEntry>>;
-  readonly version: 1;
-}
 
 function ok<Value>(value: Value): McpStoreResult<Value> {
   return { ok: true, value };
@@ -133,309 +189,30 @@ function parseMcpAuthBinding(binding: McpAuthBinding):
   };
 }
 
-function isJsonValue(value: unknown): value is McpStoreJsonValue {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "string" ||
-    (typeof value === "number" && Number.isFinite(value))
-  ) {
-    return true;
-  }
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  if (typeof value !== "object") return false;
-  return Object.values(value).every(isJsonValue);
-}
-
-function isJsonObject(value: unknown): value is McpStoreJsonObject {
-  return isJsonValue(value) && value !== null && !Array.isArray(value);
-}
-
-function hasOnlyFields(value: McpStoreJsonObject, fields: readonly string[]): boolean {
-  const allowed = new Set(fields);
-  return Object.keys(value).every((field) => allowed.has(field));
-}
-
-function optionalString(value: McpStoreJsonValue | undefined): string | undefined | false {
-  return value === undefined || typeof value === "string" ? value : false;
-}
-
-function optionalNumber(value: McpStoreJsonValue | undefined): number | undefined | false {
-  return value === undefined || (typeof value === "number" && Number.isFinite(value))
-    ? value
-    : false;
-}
-
-function parseStoredTokens(value: McpStoreJsonValue | undefined): McpStoredOAuthTokens | undefined {
-  if (
-    !isJsonObject(value) ||
-    !hasOnlyFields(value, ["accessToken", "expiresAt", "refreshToken", "scope", "tokenType"]) ||
-    typeof value.accessToken !== "string" ||
-    typeof value.tokenType !== "string"
-  ) {
-    return undefined;
-  }
-  const expiresAt = optionalNumber(value.expiresAt);
-  const refreshToken = optionalString(value.refreshToken);
-  const scope = optionalString(value.scope);
-  if (expiresAt === false || refreshToken === false || scope === false) return undefined;
-  return {
-    accessToken: value.accessToken,
-    ...(expiresAt === undefined ? {} : { expiresAt }),
-    ...(refreshToken === undefined ? {} : { refreshToken }),
-    ...(scope === undefined ? {} : { scope }),
-    tokenType: value.tokenType,
-  };
-}
-
-function parseClientInformation(
-  value: McpStoreJsonValue | undefined,
-): McpStoredOAuthClientInformation | undefined {
-  if (
-    !isJsonObject(value) ||
-    !hasOnlyFields(value, [
-      "clientId",
-      "clientIdIssuedAt",
-      "clientSecret",
-      "clientSecretExpiresAt",
-      "metadataDocumentUrl",
-    ]) ||
-    typeof value.clientId !== "string"
-  ) {
-    return undefined;
-  }
-  const clientIdIssuedAt = optionalNumber(value.clientIdIssuedAt);
-  const clientSecret = optionalString(value.clientSecret);
-  const clientSecretExpiresAt = optionalNumber(value.clientSecretExpiresAt);
-  const metadataDocumentUrl = optionalString(value.metadataDocumentUrl);
-  if (
-    clientIdIssuedAt === false ||
-    clientSecret === false ||
-    clientSecretExpiresAt === false ||
-    metadataDocumentUrl === false
-  ) {
-    return undefined;
-  }
-  return {
-    clientId: value.clientId,
-    ...(clientIdIssuedAt === undefined ? {} : { clientIdIssuedAt }),
-    ...(clientSecret === undefined ? {} : { clientSecret }),
-    ...(clientSecretExpiresAt === undefined ? {} : { clientSecretExpiresAt }),
-    ...(metadataDocumentUrl === undefined ? {} : { metadataDocumentUrl }),
-  };
-}
-
-function parseAuthorizationState(
-  value: McpStoreJsonValue | undefined,
-): McpStoredOAuthAuthorizationState | undefined {
-  if (!isJsonObject(value) || !hasOnlyFields(value, ["codeVerifier", "state"])) {
-    return undefined;
-  }
-  const codeVerifier = optionalString(value.codeVerifier);
-  const state = optionalString(value.state);
-  if (codeVerifier === false || state === false) return undefined;
-  return {
-    ...(codeVerifier === undefined ? {} : { codeVerifier }),
-    ...(state === undefined ? {} : { state }),
-  };
-}
-
-function parseDiscovery(value: McpStoreJsonValue | undefined): McpStoredOAuthDiscovery | undefined {
-  if (
-    !isJsonObject(value) ||
-    !hasOnlyFields(value, [
-      "authorizationServerMetadata",
-      "authorizationServerUrl",
-      "protectedResourceMetadata",
-      "resourceMetadataUrl",
-    ])
-  ) {
-    return undefined;
-  }
-  const authorizationServerUrl = optionalString(value.authorizationServerUrl);
-  const resourceMetadataUrl = optionalString(value.resourceMetadataUrl);
-  if (authorizationServerUrl === false || resourceMetadataUrl === false) return undefined;
-  const authorizationServerMetadata = value.authorizationServerMetadata;
-  const protectedResourceMetadata = value.protectedResourceMetadata;
-  if (
-    (authorizationServerMetadata !== undefined && !isJsonObject(authorizationServerMetadata)) ||
-    (protectedResourceMetadata !== undefined && !isJsonObject(protectedResourceMetadata))
-  ) {
-    return undefined;
-  }
-  return {
-    ...(authorizationServerMetadata === undefined ? {} : { authorizationServerMetadata }),
-    ...(authorizationServerUrl === undefined ? {} : { authorizationServerUrl }),
-    ...(protectedResourceMetadata === undefined ? {} : { protectedResourceMetadata }),
-    ...(resourceMetadataUrl === undefined ? {} : { resourceMetadataUrl }),
-  };
-}
-
-function parseStoredEntry(value: McpStoreJsonValue, key: string): McpAuthStoredEntry | undefined {
-  if (
-    !isJsonObject(value) ||
-    !hasOnlyFields(value, [
-      "authorization",
-      "clientIdentityHash",
-      "clientInformation",
-      "discovery",
-      "serverUrlHash",
-      "tokens",
-    ]) ||
-    typeof value.clientIdentityHash !== "string" ||
-    typeof value.serverUrlHash !== "string" ||
-    !SHA_256_HEX.test(value.clientIdentityHash) ||
-    !SHA_256_HEX.test(value.serverUrlHash) ||
-    sha256(`${value.serverUrlHash}\0${value.clientIdentityHash}`) !== key
-  ) {
-    return undefined;
-  }
-
-  const tokens = value.tokens === undefined ? undefined : parseStoredTokens(value.tokens);
-  const clientInformation =
-    value.clientInformation === undefined
-      ? undefined
-      : parseClientInformation(value.clientInformation);
-  const authorization =
-    value.authorization === undefined ? undefined : parseAuthorizationState(value.authorization);
-  const discovery = value.discovery === undefined ? undefined : parseDiscovery(value.discovery);
-  if (
-    (value.tokens !== undefined && tokens === undefined) ||
-    (value.clientInformation !== undefined && clientInformation === undefined) ||
-    (value.authorization !== undefined && authorization === undefined) ||
-    (value.discovery !== undefined && discovery === undefined)
-  ) {
-    return undefined;
-  }
-  return {
-    ...(authorization === undefined ? {} : { authorization }),
-    clientIdentityHash: value.clientIdentityHash,
-    ...(clientInformation === undefined ? {} : { clientInformation }),
-    ...(discovery === undefined ? {} : { discovery }),
-    serverUrlHash: value.serverUrlHash,
-    ...(tokens === undefined ? {} : { tokens }),
-  };
-}
-
 function parseAuthEntryPatch(value: McpAuthEntryPatch): McpAuthEntryPatch | undefined {
-  if (
-    !isJsonObject(value) ||
-    !hasOnlyFields(value, ["authorization", "clientInformation", "discovery", "tokens"])
-  ) {
+  if (!Value.Check(McpAuthEntryPatchSchema, value)) return undefined;
+  try {
+    const json: unknown = JSON.parse(JSON.stringify(value));
+    return Value.Check(McpAuthEntryPatchSchema, json) ? json : undefined;
+  } catch {
     return undefined;
   }
-  const authorization =
-    value.authorization === null ? null : parseAuthorizationState(value.authorization);
-  const clientInformation =
-    value.clientInformation === null ? null : parseClientInformation(value.clientInformation);
-  const discovery = value.discovery === null ? null : parseDiscovery(value.discovery);
-  const tokens = value.tokens === null ? null : parseStoredTokens(value.tokens);
-  if (
-    (value.authorization !== undefined && authorization === undefined) ||
-    (value.clientInformation !== undefined && clientInformation === undefined) ||
-    (value.discovery !== undefined && discovery === undefined) ||
-    (value.tokens !== undefined && tokens === undefined)
-  ) {
-    return undefined;
-  }
-  return {
-    ...(authorization === undefined ? {} : { authorization }),
-    ...(clientInformation === undefined ? {} : { clientInformation }),
-    ...(discovery === undefined ? {} : { discovery }),
-    ...(tokens === undefined ? {} : { tokens }),
-  };
 }
 
 function parseAuthDocument(value: unknown): McpAuthDocument | undefined {
-  if (
-    !isJsonObject(value) ||
-    !hasOnlyFields(value, ["entries", "version"]) ||
-    value.version !== AUTH_DOCUMENT_VERSION ||
-    !isJsonObject(value.entries)
-  ) {
-    return undefined;
-  }
-  const entries: Record<string, McpAuthStoredEntry> = {};
+  if (!Value.Check(McpAuthDocumentSchema, value)) return undefined;
   for (const [key, entry] of Object.entries(value.entries)) {
-    if (!SHA_256_HEX.test(key)) return undefined;
-    const parsed = parseStoredEntry(entry, key);
-    if (parsed === undefined) return undefined;
-    entries[key] = parsed;
+    if (sha256(`${entry.serverUrlHash}\0${entry.clientIdentityHash}`) !== key) return undefined;
   }
-  return { entries, version: AUTH_DOCUMENT_VERSION };
-}
-
-function storedTokensDocument(tokens: McpStoredOAuthTokens): McpStoreJsonObject {
-  return {
-    accessToken: tokens.accessToken,
-    ...(tokens.expiresAt === undefined ? {} : { expiresAt: tokens.expiresAt }),
-    ...(tokens.refreshToken === undefined ? {} : { refreshToken: tokens.refreshToken }),
-    ...(tokens.scope === undefined ? {} : { scope: tokens.scope }),
-    tokenType: tokens.tokenType,
-  };
-}
-
-function clientInformationDocument(client: McpStoredOAuthClientInformation): McpStoreJsonObject {
-  return {
-    clientId: client.clientId,
-    ...(client.clientIdIssuedAt === undefined ? {} : { clientIdIssuedAt: client.clientIdIssuedAt }),
-    ...(client.clientSecret === undefined ? {} : { clientSecret: client.clientSecret }),
-    ...(client.clientSecretExpiresAt === undefined
-      ? {}
-      : { clientSecretExpiresAt: client.clientSecretExpiresAt }),
-    ...(client.metadataDocumentUrl === undefined
-      ? {}
-      : { metadataDocumentUrl: client.metadataDocumentUrl }),
-  };
-}
-
-function authorizationDocument(
-  authorization: McpStoredOAuthAuthorizationState,
-): McpStoreJsonObject {
-  return {
-    ...(authorization.codeVerifier === undefined
-      ? {}
-      : { codeVerifier: authorization.codeVerifier }),
-    ...(authorization.state === undefined ? {} : { state: authorization.state }),
-  };
-}
-
-function discoveryDocument(discovery: McpStoredOAuthDiscovery): McpStoreJsonObject {
-  return {
-    ...(discovery.authorizationServerMetadata === undefined
-      ? {}
-      : { authorizationServerMetadata: discovery.authorizationServerMetadata }),
-    ...(discovery.authorizationServerUrl === undefined
-      ? {}
-      : { authorizationServerUrl: discovery.authorizationServerUrl }),
-    ...(discovery.protectedResourceMetadata === undefined
-      ? {}
-      : { protectedResourceMetadata: discovery.protectedResourceMetadata }),
-    ...(discovery.resourceMetadataUrl === undefined
-      ? {}
-      : { resourceMetadataUrl: discovery.resourceMetadataUrl }),
-  };
-}
-
-function entryDocument(entry: McpAuthStoredEntry): McpStoreJsonObject {
-  return {
-    ...(entry.authorization === undefined
-      ? {}
-      : { authorization: authorizationDocument(entry.authorization) }),
-    clientIdentityHash: entry.clientIdentityHash,
-    ...(entry.clientInformation === undefined
-      ? {}
-      : { clientInformation: clientInformationDocument(entry.clientInformation) }),
-    ...(entry.discovery === undefined ? {} : { discovery: discoveryDocument(entry.discovery) }),
-    serverUrlHash: entry.serverUrlHash,
-    ...(entry.tokens === undefined ? {} : { tokens: storedTokensDocument(entry.tokens) }),
-  };
+  return value;
 }
 
 function authDocumentJson(document: McpAuthDocument): McpStoreJsonObject {
-  const entries: Record<string, McpStoreJsonValue> = {};
-  for (const [key, entry] of Object.entries(document.entries)) entries[key] = entryDocument(entry);
-  return { entries, version: AUTH_DOCUMENT_VERSION };
+  const json: unknown = JSON.parse(JSON.stringify(document));
+  if (!Value.Check(McpAuthJsonObjectSchema, json)) {
+    throw new Error("Authentication document serialization produced non-JSON data");
+  }
+  return json;
 }
 
 function publicEntry(entry: McpAuthStoredEntry): McpAuthEntry {

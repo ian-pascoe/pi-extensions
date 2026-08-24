@@ -94,6 +94,28 @@ describe("McpAuthStore", () => {
     expect(expectOk(await store.readEntry(aliasBinding))?.tokens?.accessToken).toBe("shared");
   });
 
+  test("rejects stored entries whose hashes do not match their compound key", async () => {
+    const store = await createStore();
+    const key = "a".repeat(64);
+    await writeFile(
+      store.path,
+      JSON.stringify({
+        entries: {
+          [key]: {
+            clientIdentityHash: "b".repeat(64),
+            serverUrlHash: "c".repeat(64),
+          },
+        },
+        version: 1,
+      }),
+    );
+
+    const result = await store.readEntry(primaryBinding);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected a mismatched compound hash failure");
+    expect(result.error.code).toBe("invalid_document");
+  });
+
   test("URL or client identity changes invalidate stored credentials", async () => {
     const store = await createStore();
     expectOk(
@@ -118,6 +140,25 @@ describe("McpAuthStore", () => {
         }),
       ),
     ).toBeUndefined();
+  });
+
+  test("omits undefined fields and snapshots patches before acquiring the lock", async () => {
+    const store = await createStore();
+    const metadata = { issuer: "https://auth.example" };
+    const patch = {
+      discovery: { authorizationServerMetadata: metadata },
+      tokens: { accessToken: "saved", tokenType: "Bearer" },
+    };
+    Object.defineProperty(patch.tokens, "refreshToken", { enumerable: true, value: undefined });
+    const update = store.updateEntry(primaryBinding, patch);
+    metadata.issuer = "https://changed.example";
+
+    const saved = expectOk(await update);
+    expect(saved.discovery?.authorizationServerMetadata).toEqual({
+      issuer: "https://auth.example",
+    });
+    expect(Object.hasOwn(saved.tokens ?? {}, "refreshToken")).toBe(false);
+    expect(await readFile(store.path, "utf8")).not.toContain("refreshToken");
   });
 
   test("serializes concurrent refresh and client writers without dropping unrelated fields", async () => {

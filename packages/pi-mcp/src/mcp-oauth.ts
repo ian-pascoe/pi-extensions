@@ -40,7 +40,6 @@ export interface McpOAuthProviderOptions {
 
 /** Safe persistence failure raised only inside the SDK OAuth provider boundary. */
 export class McpOAuthPersistenceError extends Error {
-  /** Stable error discriminator. */
   readonly _tag = "McpOAuthPersistenceError" as const;
 
   constructor(readonly operation: string) {
@@ -94,7 +93,6 @@ export interface AuthenticateMcpOAuthOptions {
 
 /** Safe expected failure from an explicit OAuth authorization operation. */
 export class McpOAuthError extends Error {
-  /** Stable error discriminator. */
   readonly _tag = "McpOAuthError" as const;
 
   constructor(
@@ -149,15 +147,10 @@ function parseJsonValue(input: unknown): McpStoreJsonValue | undefined {
 }
 
 function parseJsonObject(input: unknown): McpStoreJsonObject | undefined {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) return undefined;
-  const parsed: Record<string, McpStoreJsonValue> = {};
-  for (const [key, item] of Object.entries(input)) {
-    if (item === undefined) continue;
-    const value = parseJsonValue(item);
-    if (value === undefined) return undefined;
-    parsed[key] = value;
-  }
-  return parsed;
+  const parsed = parseJsonValue(input);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  // SAFETY: parseJsonValue returned a JSON object after null and array rejection.
+  return parsed as McpStoreJsonObject;
 }
 
 function discoveryIssuer(entry: McpAuthEntry): string | undefined {
@@ -599,28 +592,27 @@ function statesMatch(received: string, expected: string): boolean {
   );
 }
 
-function abortReason(signal: AbortSignal, serverId: string): McpOAuthError {
-  return new McpOAuthError(signal.reason === "timeout" ? "timeout" : "cancelled", serverId);
-}
-
-function waitForAbort(signal: AbortSignal, serverId: string): Promise<never> {
-  return new Promise((_, rejectAbort) => {
-    if (signal.aborted) {
-      rejectAbort(abortReason(signal, serverId));
-      return;
-    }
-    signal.addEventListener("abort", () => rejectAbort(abortReason(signal, serverId)), {
-      once: true,
-    });
-  });
-}
-
-async function raceInteraction<Value>(
-  interaction: Promise<Value>,
+function mcpOAuthAbortError(
   signal: AbortSignal,
+  timeoutSignal: AbortSignal,
   serverId: string,
-): Promise<Value> {
-  return Promise.race([interaction, waitForAbort(signal, serverId)]);
+): McpOAuthError {
+  return new McpOAuthError(
+    signal.reason === timeoutSignal.reason ? "timeout" : "cancelled",
+    serverId,
+  );
+}
+
+function waitForAbort(
+  signal: AbortSignal,
+  timeoutSignal: AbortSignal,
+  serverId: string,
+): Promise<never> {
+  return new Promise((_, rejectAbort) => {
+    const reject = (): void => rejectAbort(mcpOAuthAbortError(signal, timeoutSignal, serverId));
+    if (signal.aborted) reject();
+    else signal.addEventListener("abort", reject, { once: true });
+  });
 }
 
 /** Run one explicit OAuth authorization through SDK discovery, DCR/CIMD, and token exchange. */
@@ -640,11 +632,14 @@ export async function authenticateMcpOAuth(
 
   authorizationActive = true;
   const controller = new AbortController();
+  const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? 5 * 60_000);
+  const signal = AbortSignal.any([
+    controller.signal,
+    timeoutSignal,
+    ...(options.signal === undefined ? [] : [options.signal]),
+  ]);
   const authCalls: Promise<unknown>[] = [];
-  const fetchFn: FetchLike = (input, init) => fetch(input, { ...init, signal: controller.signal });
-  const timeout = setTimeout(() => controller.abort("timeout"), options.timeoutMs ?? 5 * 60_000);
-  const abort = () => controller.abort("cancelled");
-  options.signal?.addEventListener("abort", abort, { once: true });
+  const fetchFn: FetchLike = (input, init) => fetch(input, { ...init, signal });
   let resolveLoopback: (parameters: OAuthCallbackParameters) => void = () => undefined;
   const loopback = new Promise<OAuthCallbackParameters>((resolveCallback) => {
     resolveLoopback = resolveCallback;
@@ -686,17 +681,17 @@ export async function authenticateMcpOAuth(
       ...(scope === undefined || scope.length === 0 ? {} : { scope }),
     });
     authCalls.push(firstAuth);
-    const first = await raceInteraction(firstAuth, controller.signal, options.serverId);
+    const abortFailure = waitForAbort(signal, timeoutSignal, options.serverId);
+    const first = await Promise.race([firstAuth, abortFailure]);
     if (first === "AUTHORIZED") return { ok: true };
 
     const pasted = options
-      .waitForPaste?.(controller.signal)
+      .waitForPaste?.(signal)
       .then((input) => parseCallbackInput(input, redirectUrl));
-    const parameters = await raceInteraction(
-      pasted === undefined ? loopback : Promise.race([loopback, pasted]).then((value) => value),
-      controller.signal,
-      options.serverId,
-    );
+    const parameters = await Promise.race([
+      pasted === undefined ? loopback : Promise.race([loopback, pasted]),
+      abortFailure,
+    ]);
     if (parameters === undefined) {
       return { error: new McpOAuthError("invalid_callback", options.serverId), ok: false };
     }
@@ -718,13 +713,16 @@ export async function authenticateMcpOAuth(
       ...(scope === undefined || scope.length === 0 ? {} : { scope }),
     });
     authCalls.push(completionAuth);
-    const completed = await raceInteraction(completionAuth, controller.signal, options.serverId);
+    const completed = await Promise.race([completionAuth, abortFailure]);
     if (completed !== "AUTHORIZED") {
       return { error: new McpOAuthError("authorization_failed", options.serverId), ok: false };
     }
     await provider.invalidateCredentials("verifier");
     return { ok: true };
   } catch (cause) {
+    if (signal.aborted) {
+      return { error: mcpOAuthAbortError(signal, timeoutSignal, options.serverId), ok: false };
+    }
     if (cause instanceof McpOAuthError) return { error: cause, ok: false };
     return {
       error: new McpOAuthError(
@@ -734,9 +732,7 @@ export async function authenticateMcpOAuth(
       ok: false,
     };
   } finally {
-    clearTimeout(timeout);
-    options.signal?.removeEventListener("abort", abort);
-    controller.abort("cancelled");
+    controller.abort();
     await Promise.allSettled(authCalls);
     await closeServer(callbackServer);
     authorizationActive = false;

@@ -8,6 +8,7 @@ import {
   executeMcpCommand,
   parseMcpCommand,
   runMcpCommandLine,
+  runMcpCommandTokens,
   tokenizeMcpCommandLine,
   type McpCommandAdapterResult,
   type McpCommandAdapters,
@@ -396,6 +397,23 @@ describe("MCP command execution", () => {
     expect(result.output).toContain("status complete");
     expect(result.output).toContain("Commands: list, add, remove");
     expect(adapters.calls).toEqual([{ operation: "status", value: undefined }]);
+  });
+
+  test("executes a token array without interpreting argument contents", async () => {
+    const adapters = createAdapters();
+    const result = await runMcpCommandTokens(
+      ["add", "local", "--", "printf", 'literal "quotes" and spaces'],
+      "standalone",
+      adapters,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(adapters.calls).toContainEqual({
+      operation: "add",
+      value: expect.objectContaining({
+        definition: expect.objectContaining({ args: ['literal "quotes" and spaces'] }),
+      }),
+    });
   });
 
   test("contains usage, missing adapters, and unexpected failures without throwing", async () => {

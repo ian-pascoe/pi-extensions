@@ -193,23 +193,9 @@ describe("McpToolCatalog", () => {
         tool.description === "Look up docs",
     );
     expect(exactTool?.parameters).toBe(exactInputSchema);
+    expect(exactTool?.label).toBe("Lookup");
     expect(pi.tools.has("mcp__docs_server__clean-name")).toBe(true);
     expect([...pi.tools.keys()].some((name) => name.includes("broken"))).toBe(false);
-    expect(catalog.getDiagnostics()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          annotations: { destructiveHint: false, title: "Lookup" },
-          originalServerId: "docs server",
-          originalToolName: "lookup",
-          status: "registered",
-        }),
-        expect.objectContaining({
-          originalServerId: "broken",
-          originalToolName: "invalid",
-          status: "invalid_schema",
-        }),
-      ]),
-    );
     expect([...pi.tools.keys()].filter((name) => name.includes("mcp_task"))).toEqual([]);
   });
 

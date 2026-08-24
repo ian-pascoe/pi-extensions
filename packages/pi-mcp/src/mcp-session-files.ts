@@ -25,7 +25,6 @@ export class RetainedMcpServerLog {
 interface McpServerLogFile {
   readonly log: RetainedMcpServerLog;
   readonly path: string;
-  created: boolean;
 }
 
 /** Private Result Spill, unsupported-content, and per-server log files owned by one Pi session. */
@@ -36,8 +35,6 @@ export interface McpSessionFiles {
   writeResultSpill(output: string): Promise<string>;
   /** Write unsupported MCP binary or audio bytes to a private session file. */
   writeUnsupportedContent(content: Uint8Array, mimeType: string): Promise<string>;
-  /** Create or return the mode-safe bounded log file for one MCP Server. */
-  getServerLogPath(serverName: string): Promise<string>;
   /** Append stderr or logging bytes, retaining only the newest 256 KB for that server. */
   appendServerLog(serverName: string, chunk: string | Uint8Array): Promise<void>;
   /** Read the current bounded stderr and logging tail for one MCP Server. */
@@ -74,25 +71,12 @@ class McpSessionFileStore implements McpSessionFiles {
     });
   }
 
-  getServerLogPath(serverName: string): Promise<string> {
-    const serverLog = this.getMcpServerLogFile(serverName);
-    return this.enqueueMcpSessionFileWrite(async () => {
-      if (!serverLog.created) {
-        await writeFile(serverLog.path, "", { mode: 0o600 });
-        await chmod(serverLog.path, 0o600);
-        serverLog.created = true;
-      }
-      return serverLog.path;
-    });
-  }
-
   appendServerLog(serverName: string, chunk: string | Uint8Array): Promise<void> {
     const serverLog = this.getMcpServerLogFile(serverName);
     return this.enqueueMcpSessionFileWrite(async () => {
       serverLog.log.append(chunk);
       await writeFile(serverLog.path, serverLog.log.read(), { encoding: "utf8", mode: 0o600 });
       await chmod(serverLog.path, 0o600);
-      serverLog.created = true;
     });
   }
 
@@ -118,7 +102,6 @@ class McpSessionFileStore implements McpSessionFiles {
     const serverLog = {
       log: new RetainedMcpServerLog(),
       path: join(this.directoryPath, `server-log-${this.nextFileIndex++}.log`),
-      created: false,
     };
     this.serverLogs.set(serverName, serverLog);
     return serverLog;

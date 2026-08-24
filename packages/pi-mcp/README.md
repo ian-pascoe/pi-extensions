@@ -139,7 +139,7 @@ Every advertised MCP **Server Tool** becomes an individual Pi tool named:
 mcp__<server>__<tool>
 ```
 
-Names are sanitized for Pi and get a deterministic hash suffix only when they collide. The original server/tool names and annotations remain diagnostics; annotations do not grant permission or alter execution.
+Names are sanitized for Pi and get a deterministic hash suffix only when they collide. Annotations are untrusted metadata; they do not grant permission or alter execution.
 
 Pi also registers these fixed tools, only when a connected server supports Resources:
 

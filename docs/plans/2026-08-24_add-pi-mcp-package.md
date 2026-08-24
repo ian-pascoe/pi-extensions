@@ -60,7 +60,7 @@ Start with these owners. Merge only when the result remains cohesive; add no gen
 | `src/mcp-auth-store.ts`     | Mode-`0600` OAuth state, URL/client binding, locked atomic persistence, and corruption handling              |
 | `src/mcp-oauth.ts`          | SDK OAuth provider, discovery, loopback callback, pasted callback validation, and browser launch             |
 | `src/mcp-server-client.ts`  | One Server Definition's SDK Client, transport, callbacks, capability calls, cancellation, and close          |
-| `src/mcp-host.ts`           | Session-owned server registry, statuses, retries, catalogs, caches, subscriptions, and shutdown              |
+| `src/mcp-host.ts`           | Session-owned server registry, statuses, retries, catalog access, subscriptions, and shutdown                |
 | `src/mcp-tool-catalog.ts`   | Server Tool naming/activation, fixed resource tools, exact schemas, and operation dispatch                   |
 | `src/mcp-content.ts`        | MCP-to-Pi content conversion, structured output, truncation, and Result Spill presentation                   |
 | `src/mcp-session-files.ts`  | Private Result Spills, unsupported binary content, and bounded per-server stderr/log tails                   |
@@ -87,8 +87,8 @@ Create:
 - `packages/pi-mcp/package.json` for public `@ian-pascoe/pi-mcp@0.1.0`, with the repository's metadata, Node engine, `pi.extensions: ["./src/index.ts"]`, and `bin.pi-mcp: "./dist/pi-mcp-cli.js"`;
 - package files limited to `src`, generated `dist`, `README.md`, `LICENSE`, and `package.json`;
 - runtime `@modelcontextprotocol/client@^2.0.0` and the existing Pi/TypeBox wildcard peers;
-- development-only `@modelcontextprotocol/server@^2.0.0` for current-protocol fixtures and `@modelcontextprotocol/sdk@^1.30.0` for legacy fixtures;
-- strict package `tsconfig.json`, emitting `tsconfig.cli.json`, MIT `LICENSE`, README shell, thin `src/index.ts`, and inert lifecycle shell;
+- development-only `@modelcontextprotocol/server@^2.0.0` for current-protocol fixtures;
+- strict package `tsconfig.json`, MIT `LICENSE`, README shell, thin `src/index.ts`, and inert lifecycle shell;
 - `build:cli` and `prepack` scripts that emit only the CLI entrypoint's dependency graph into ignored `dist/`.
 
 Before building runtime behavior, inspect the installed v2 package's exports and declaration files. Write tracer tests that prove:
@@ -173,7 +173,7 @@ Implement `mcp-tool-catalog.ts`, `mcp-content.ts`, and the corresponding Host ca
 Server Tools:
 
 - register `mcp__<server>__<tool>` names, sanitize provider-invalid characters, and add deterministic hashes only to collisions;
-- preserve original names and untrusted annotations in diagnostics;
+- treat Server Tool annotations as untrusted metadata that does not grant permission or alter execution;
 - pass exact JSON Schema 2020-12 definitions without external-reference dereferencing or lossy rewriting;
 - recompute activation on initial catalog load, `tools/list_changed`, and server reconnect/disconnect;
 - register additions/replacements immediately and deactivate removals/dormant definitions through `setActiveTools()` without changing other extensions' active tools; include already-registered foreign names in deterministic collision handling;
@@ -260,7 +260,7 @@ Complete `packages/pi-mcp/README.md` as the caller-facing authority for installa
 Update every repository authority:
 
 - root `package.json` extension order;
-- `.pi/settings.json` workspace/Git filters, enabling only the workspace copy and adding no configured MCP Server; defer the `npm:@ian-pascoe/pi-mcp` filter until the package is published;
+- `.pi/settings.json` workspace/Git filters, enabling only the workspace copy; an approved follow-up adds the pinned Everything stdio test server, while the `npm:@ian-pascoe/pi-mcp` filter remains deferred until publication;
 - root README package table, selectable Git path, and focused checks;
 - `test/extension-entrypoints.test.ts` expected path/order/count from eleven to twelve;
 - `scripts/check-package-packs.mjs` workspace count and package-specific allowance for `dist/pi-mcp-cli.js`, `bin`, `build:cli`, and `prepack`, while retaining the source-only contract for every other package;

@@ -45,7 +45,6 @@
     "@modelcontextprotocol/client": "^2.0.0"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "esbuild": "0.27.7"
   },

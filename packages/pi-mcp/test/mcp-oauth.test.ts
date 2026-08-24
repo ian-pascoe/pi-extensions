@@ -389,7 +389,7 @@ test("reports loopback port collisions, timeout, cancellation, and one-active-fl
       writeAuthorizationUrl: () => undefined,
     }),
   ).resolves.toMatchObject({ error: { code: "already_active" }, ok: false });
-  activeAbort.abort();
+  activeAbort.abort(new DOMException("Parent deadline", "TimeoutError"));
   await expect(active).resolves.toMatchObject({ error: { code: "cancelled" }, ok: false });
 });
 
