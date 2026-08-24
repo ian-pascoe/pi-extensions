@@ -368,6 +368,111 @@ describe("session-scoped LSP server manager", () => {
     ]);
   });
 
+  test("omits incapable servers from automatic reads", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory(
+      async ({ definition }) => new RecordingLspClient(definition.id === "typescript"),
+    );
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: factory.start,
+    });
+
+    const result = await manager.runRead(
+      filePath,
+      undefined,
+      (client) => client.supported,
+      async (_client, route) => route.serverId,
+    );
+
+    expect(result).toEqual({
+      failures: [],
+      successes: [
+        {
+          rootPath: resolve(cwd, "packages/example"),
+          serverId: "typescript",
+          value: "typescript",
+        },
+      ],
+    });
+  });
+
+  test("reports one failure when no automatic read server is capable", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory(async () => new RecordingLspClient(false));
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: factory.start,
+    });
+
+    const result = await manager.runRead(
+      filePath,
+      undefined,
+      (client) => client.supported,
+      async () => "unused",
+    );
+
+    expect(result).toEqual({
+      failures: [
+        {
+          code: "no-capable-server",
+          message: "Pi LSP: no matching server supports the requested read operation",
+          serverId: "*",
+        },
+      ],
+      successes: [],
+    });
+  });
+
+  test("reports an explicitly selected incapable read server", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory(async () => new RecordingLspClient(false));
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: factory.start,
+    });
+
+    const result = await manager.runRead(
+      filePath,
+      "lint",
+      (client) => client.supported,
+      async () => "unused",
+    );
+
+    expect(result).toMatchObject({
+      failures: [{ code: "no-capable-server", serverId: "lint" }],
+      successes: [],
+    });
+  });
+
+  test("preserves startup failures while omitting incapable automatic read servers", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory(async ({ definition }) => {
+      if (definition.id === "typescript") throw new Error("fixture startup failed");
+      return new RecordingLspClient(false);
+    });
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: factory.start,
+    });
+
+    const result = await manager.runRead(
+      filePath,
+      undefined,
+      (client) => client.supported,
+      async () => "unused",
+    );
+
+    expect(result).toMatchObject({
+      failures: [{ code: "server-unavailable", serverId: "typescript" }],
+      successes: [],
+    });
+  });
+
   test("requires exactly one capable instance when mutation server_id is omitted", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory(async () => new RecordingLspClient(true));
