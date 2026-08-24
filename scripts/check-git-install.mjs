@@ -15,7 +15,7 @@ import { readJsonDocument, rootPiManifestSchema } from "./root-project-contract.
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const excludedDirectoryNames = new Set([".git", "coverage", "dist", "node_modules"]);
+const excludedDirectoryNames = new Set([".git", ".repos", "coverage", "dist", "node_modules"]);
 
 function assertGitInstallCondition(condition, message) {
   if (!condition) throw new Error(`Git install check failed: ${message}`);
