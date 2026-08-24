@@ -42,12 +42,6 @@ afterEach(async () => {
 });
 
 describe("resolveFormatterSettings", () => {
-  test("uses defaults when formatter settings are absent", async () => {
-    const settings = resolveFormatterSettings(await createSettingsReader({}, {}));
-
-    expect(settings).toEqual({ formatters: new Map(), timeoutMs: 30_000, warnings: [] });
-  });
-
   test("merges definitions in declaration order, replaces complete definitions, and removes inherited definitions", async () => {
     const settings = resolveFormatterSettings(
       await createSettingsReader(

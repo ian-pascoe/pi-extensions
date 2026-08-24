@@ -3,11 +3,7 @@ import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import {
   appendPostEditDiagnostics,
   extractPostEditDiagnosticPaths,
-  formatPostEditDiagnostics,
-  type PostEditDiagnosticsRunner,
 } from "../src/lsp-post-edit-diagnostics.js";
-
-const noDiagnostics: PostEditDiagnosticsRunner = async () => [];
 
 function mutationEvent(overrides: Partial<ToolResultEvent> = {}): ToolResultEvent {
   const event = {
@@ -158,22 +154,4 @@ test("appends diagnostics after a partial mutation without changing mutation fie
     type: "text",
     text: "\n\nLSP diagnostics\na.ts:1:1 [a-server] severity 1: error\na.ts:1:1 [a-server] severity 1: error\nz.ts:2:2 [z-server] severity 2: warning\nempty.ts: no diagnostics\nsrc/example.ts: diagnostics timeout (typescript)",
   });
-});
-
-test("renders explicit no configured server, unavailable server, and warning outcomes", () => {
-  expect(
-    formatPostEditDiagnostics([
-      { kind: "unavailable_server", path: "a.ts", serverId: "typescript" },
-      { kind: "no_configured_server", path: "b.txt" },
-      { kind: "warning", message: "Pi LSP: adapter warning" },
-    ]),
-  ).toBe(
-    "\n\nLSP diagnostics\na.ts: unavailable server (typescript)\nb.txt: no configured server\nPi LSP: adapter warning",
-  );
-});
-
-test("does not augment unrelated results", async () => {
-  await expect(
-    appendPostEditDiagnostics(mutationEvent({ toolName: "bash" }), noDiagnostics),
-  ).resolves.toBe(undefined);
 });

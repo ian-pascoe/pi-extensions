@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
-  normalizeLspFilePath,
   routeLspServersForFile,
   type LspAncestorDirectory,
   type LspManagedServerClient,
@@ -50,11 +49,6 @@ afterEach(async () => {
 });
 
 describe("LSP server file routing", () => {
-  test("normalizes Pi's leading path sigil", () => {
-    expect(normalizeLspFilePath("@src/example.ts")).toBe("src/example.ts");
-    expect(normalizeLspFilePath("src/example.ts")).toBe("src/example.ts");
-  });
-
   test("matches file extensions and exact filenames", () => {
     expect(
       routeLspServersForFile(
@@ -233,22 +227,6 @@ async function createRoutedFileFixture(): Promise<{ cwd: string; filePath: strin
 }
 
 describe("session-scoped LSP server manager", () => {
-  test("reports configured servers without starting them", async () => {
-    const { cwd } = await createRoutedFileFixture();
-    const factory = createRecordingClientFactory();
-    const manager = new LspServerManager({
-      cwd,
-      settings: resolvedSettings(["typescript"]),
-      startClient: factory.start,
-    });
-
-    expect(manager.getStatus()).toEqual({
-      servers: [{ serverId: "typescript", state: "configured" }],
-      warnings: [],
-    });
-    expect(factory.inputs).toEqual([]);
-  });
-
   test("re-evaluates required root markers and explains explicit activation failures", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory();

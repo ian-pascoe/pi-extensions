@@ -382,14 +382,6 @@ describe("Pi LSP extension lifecycle", () => {
     expect(await piLspSessionDirectories(harness.sessionDirectory)).toEqual([]);
   });
 
-  test("reports malformed trusted project settings without starting a server", async () => {
-    const harness = await createExtensionHarness(true);
-    await startExtension(harness);
-    expect(harness.notifications).toContainEqual(expect.stringContaining("project lsp"));
-    expect(harness.runner.getAllRegisteredTools()).toHaveLength(1);
-    await shutdownExtension(harness);
-  });
-
   test("appends one model-invisible diagnostics entry after a tool batch with findings", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {

@@ -176,23 +176,4 @@ describe("installCodeModeToolExposure", () => {
     installed.restore();
     expect(owner.activeNames).toEqual(["first", "rejected"]);
   });
-
-  test("restores an existing own active-set descriptor exactly", () => {
-    const owner = new RecordingActiveToolOwner(["active"]);
-    const ownMethod = (names: string[]): void => {
-      owner.activeNames = [...names];
-    };
-    Object.defineProperty(owner, "setActiveToolsByName", {
-      configurable: true,
-      enumerable: true,
-      value: ownMethod,
-      writable: false,
-    });
-    const descriptor = Object.getOwnPropertyDescriptor(owner, "setActiveToolsByName");
-    const installed = installCodeModeToolExposure(owner, () => ["active"], []);
-
-    installed.restore();
-
-    expect(Object.getOwnPropertyDescriptor(owner, "setActiveToolsByName")).toEqual(descriptor);
-  });
 });

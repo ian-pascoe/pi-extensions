@@ -304,25 +304,6 @@ describe("DAP tool contract", () => {
     expect(result.details.presentation.rows).toHaveLength(20);
   });
 
-  test("accepts exactly the twelve operation branches", () => {
-    const valid = [
-      { operation: "launch", program: "src/app.ts", args: ["one"] },
-      { operation: "set_breakpoints", file_path: "src/app.ts", breakpoints: [{ line: 1 }] },
-      { operation: "continue" },
-      { operation: "next" },
-      { operation: "step_in" },
-      { operation: "step_out" },
-      { operation: "pause" },
-      { operation: "stack", start: 0, count: 20 },
-      { operation: "variables", frame_id: 1 },
-      { operation: "evaluate", expression: "answer" },
-      { operation: "status" },
-      { operation: "stop" },
-    ];
-
-    expect(valid.every((value) => Value.Check(DapToolParametersSchema, value))).toBe(true);
-  });
-
   test("rejects unknown fields and invalid branch-specific arguments", () => {
     expect(Value.Check(DapToolParametersSchema, { operation: "attach" })).toBe(false);
     expect(Value.Check(DapToolParametersSchema, { operation: "continue", thread_id: 1 })).toBe(

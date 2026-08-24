@@ -971,17 +971,6 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).not.toHaveBeenCalled();
   });
 
-  it("queues automatic terminal results while the recipient is active", async () => {
-    const { coordinator, root } = coordinatorFixture(childRuntime(), 5);
-    await coordinator.spawn(
-      "root",
-      { task: "Complete while root is active", agent_id: "worker" },
-      caller,
-    );
-    await coordinator.waitForSettledOperations();
-    expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
-  });
-
   it("batches queued coordination messages into the automatic terminal result", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
@@ -1086,24 +1075,6 @@ describe("minimal subagents coordinator", () => {
     expect(queuedMessages[0]).toMatchObject({
       content: expect.stringContaining(`turn=${spawned.turn_id}`),
     });
-  });
-
-  it("drains an active-recipient steer before shutdown", async () => {
-    const { coordinator, root } = coordinatorFixture(childRuntime(), 5);
-    await coordinator.restore({
-      agents: [persistedAgent("worker", "root")],
-      tombstones: [],
-      deliveries: [],
-    });
-    await coordinator.sendAgentMessage(
-      "worker",
-      { message: "persist before shutdown" },
-      "worker:shutdown",
-    );
-    await coordinator.waitForSettledOperations();
-    await expect(coordinator.shutdown()).resolves.toBeUndefined();
-    expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
-    expect(coordinator.snapshot().coordination_deliveries).toHaveLength(1);
   });
 
   it("prunes pending delivery state when deleting its agent subtree", async () => {

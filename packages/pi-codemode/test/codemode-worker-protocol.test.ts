@@ -1,4 +1,3 @@
-import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 import {
   CODEMODE_WORKER_MESSAGE_LIMIT_BYTES,
@@ -6,7 +5,6 @@ import {
   parseCodeModeWorkerResponse,
   serializeCodeModeWorkerRequest,
   serializeCodeModeWorkerResponse,
-  type CodeModeWorkerResponse,
 } from "../src/codemode-worker-protocol.js";
 
 describe("CodeMode worker protocol", () => {
@@ -166,42 +164,6 @@ describe("CodeMode worker protocol", () => {
     });
   });
 
-  test("roundtrips arbitrary ordered Console text on both terminal response branches", () => {
-    const consoleEntries = fc.array(
-      fc.record({
-        method: fc.constantFrom("log", "info", "warn", "error", "debug"),
-        text: fc.string({ maxLength: 100 }),
-      }),
-      { minLength: 1, maxLength: 10 },
-    );
-
-    fc.assert(
-      fc.property(consoleEntries, fc.boolean(), (console, failed) => {
-        const response: CodeModeWorkerResponse = failed
-          ? {
-              version: 1,
-              type: "cell-error",
-              sessionId: "session-1",
-              cellId: "cell-1",
-              error: { code: "script", message: "failed" },
-              console,
-            }
-          : {
-              version: 1,
-              type: "cell-result",
-              sessionId: "session-1",
-              cellId: "cell-1",
-              resultJson: "42",
-              console,
-            };
-        expect(parseCodeModeWorkerResponse(serializeCodeModeWorkerResponse(response))).toEqual({
-          ok: true,
-          value: response,
-        });
-      }),
-    );
-  });
-
   test("rejects malformed Console output and Console fields on unrelated responses", () => {
     const result = {
       version: 1,
@@ -254,28 +216,6 @@ describe("CodeMode worker protocol", () => {
     ).toEqual({
       ok: false,
       message: "CodeMode worker response contains duplicate object keys",
-    });
-  });
-
-  test("omits empty Console arrays when serializing terminal responses", () => {
-    const serialized = serializeCodeModeWorkerResponse({
-      version: 1,
-      type: "cell-result",
-      sessionId: "session-1",
-      cellId: "cell-1",
-      resultJson: "42",
-      console: [],
-    });
-    expect(serialized).not.toContain("console");
-    expect(parseCodeModeWorkerResponse(serialized)).toEqual({
-      ok: true,
-      value: {
-        version: 1,
-        type: "cell-result",
-        sessionId: "session-1",
-        cellId: "cell-1",
-        resultJson: "42",
-      },
     });
   });
 

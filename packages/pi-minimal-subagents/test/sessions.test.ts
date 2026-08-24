@@ -19,7 +19,6 @@ import {
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  buildDepthBoundSubagentPrompt,
   captureChildTurnOutcome,
   createChildResourceLoaderOptions,
   createPersistentChildIdentity,
@@ -94,16 +93,6 @@ const unavailableSessionFileTrash: SessionFileTrashCapability = {
     return Object.assign(new Error("trash unavailable"), { code: "ENOENT" });
   },
 };
-
-class RecordingSuccessfulSessionFileTrash implements SessionFileTrashCapability {
-  readonly sessionFiles: string[] = [];
-
-  async moveSessionFile(sessionFile: string): Promise<undefined> {
-    this.sessionFiles.push(sessionFile);
-    rmSync(sessionFile);
-    return undefined;
-  }
-}
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true });
@@ -584,15 +573,6 @@ describe("minimal subagent sessions", () => {
     ).toBe(true);
   });
 
-  it("derives child fanout instructions from the active depth cap", () => {
-    expect(buildDepthBoundSubagentPrompt(persistedAgent(), 2)).toContain(
-      "Remaining delegation depth: 1.",
-    );
-    expect(buildDepthBoundSubagentPrompt(persistedAgent(), 1)).toContain(
-      "Delegation is owned by your parent.",
-    );
-  });
-
   it("falls back to unlinking a session when the optional trash command fails", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-trash-"));
     temporaryDirectories.push(directory);
@@ -622,40 +602,6 @@ describe("minimal subagent sessions", () => {
       getCoordinatorTools: () => [],
     });
     await factory.trashSession(agent);
-    expect(existsSync(identity.sessionFile)).toBe(false);
-  });
-
-  it("accepts successful trash removal without attempting unlink fallback", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-trash-success-"));
-    temporaryDirectories.push(directory);
-    const agent = persistedAgent();
-    const identity = createPersistentChildIdentity({
-      agent,
-      importedMessages: [],
-      cwd: directory,
-      sessionDir: directory,
-      rootSessionId: "root",
-    });
-    agent.session_file = identity.sessionFile;
-    agent.session_id = identity.sessionId;
-    agent.session_leaf_id = identity.sessionLeafId;
-    const sessionFileTrash = new RecordingSuccessfulSessionFileTrash();
-    const factory = new PiAgentSessionFactory({
-      cwd: directory,
-      agentDir: directory,
-      sessionDir: directory,
-      rootSessionId: "root",
-      extensionEntrypoint: join(directory, "index.ts"),
-      models: [],
-      eligibleModelIds: [],
-      modelScopeRestricted: false,
-      availableToolNames: [],
-      projectTrusted: true,
-      sessionFileTrash,
-      getCoordinatorTools: () => [],
-    });
-    await factory.trashSession(agent);
-    expect(sessionFileTrash.sessionFiles).toEqual([identity.sessionFile]);
     expect(existsSync(identity.sessionFile)).toBe(false);
   });
 

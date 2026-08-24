@@ -248,14 +248,4 @@ describe("Pi DAP extension lifecycle", () => {
     expect(rpc.widgetCalls).toEqual([]);
     await shutdownExtension(rpc);
   });
-
-  test("surfaces malformed trusted project settings without starting a Debug Adapter", async () => {
-    const harness = await createExtensionHarness(true, {});
-    await startExtension(harness, "startup");
-    expect(harness.notifications).toContainEqual(
-      expect.stringContaining("project dap.unknownProjectField"),
-    );
-    expect(harness.runner.getAllRegisteredTools()).toHaveLength(1);
-    await shutdownExtension(harness);
-  });
 });

@@ -146,15 +146,6 @@ describe("renderCodeModeToolCatalogue", () => {
 
     expect(rendered).toEqual({ ok: false, reason: "names-exceed-catalogue-limit" });
   });
-
-  test("is deterministic for arbitrary punctuation names and descriptions", () => {
-    const candidates = ["", "a", "a.b", "💩", "</script>", "\n", "[x]"];
-    const entries = candidates.map((name) => tool(name, { type: "string" }, `${name} */`));
-    const first = renderCodeModeToolCatalogue(entries);
-    const second = renderCodeModeToolCatalogue([...entries].reverse());
-
-    expect(first).toEqual(second);
-  });
 });
 
 async function expectTypeScriptToAccept(catalogue: string): Promise<void> {

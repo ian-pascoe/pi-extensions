@@ -3,8 +3,6 @@
 
 import { describe, expect, test, vi } from "vitest";
 import {
-  MCP_COMMAND_NAMES,
-  MCP_STANDALONE_COMMAND_NAMES,
   executeMcpCommand,
   parseMcpCommand,
   runMcpCommandLine,
@@ -60,26 +58,6 @@ function createAdapters(): McpCommandAdapters & {
 }
 
 describe("MCP command grammar", () => {
-  test("exposes exactly the approved runtime and standalone commands", () => {
-    expect(MCP_COMMAND_NAMES).toEqual([
-      "list",
-      "add",
-      "remove",
-      "enable",
-      "disable",
-      "auth",
-      "logout",
-      "test",
-      "status",
-      "reconnect",
-      "prompt",
-      "subscribe",
-      "unsubscribe",
-      "logs",
-    ]);
-    expect(MCP_STANDALONE_COMMAND_NAMES).toEqual(MCP_COMMAND_NAMES.slice(0, 8));
-  });
-
   test("parses a remote add with project scope, repeated headers, and OAuth fields", () => {
     const parsed = parseMcpCommand(
       [

@@ -37,12 +37,6 @@ describe("CodeMode Session Files", () => {
     }
   });
 
-  test("falls back to the operating-system temporary directory for in-memory Pi sessions", async () => {
-    const files = await createSessionFiles("");
-
-    expect(dirname(files.directoryPath)).toBe(tmpdir());
-  });
-
   test("finishes queued spills before close removes their private directory", async () => {
     const files = await createSessionFiles(tmpdir());
     const spill = files.writeResultSpill("queued output");

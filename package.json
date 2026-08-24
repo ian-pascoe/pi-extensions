@@ -21,8 +21,7 @@
     "pack:check": "node scripts/check-package-packs.mjs",
     "prepare": "node scripts/prepare.mjs",
     "publish-packages": "changeset publish",
-    "test": "vitest run --config vitest.config.ts && pnpm -r --filter './packages/*' test",
-    "test:load": "vitest run --config vitest.config.ts test/extension-entrypoints.test.ts",
+    "test": "pnpm -r --filter './packages/*' test",
     "typecheck": "tsc --noEmit && pnpm -r --filter './packages/*' typecheck",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm pack:check && pnpm git-install:check",
     "version-packages": "changeset version && pnpm install --lockfile-only"

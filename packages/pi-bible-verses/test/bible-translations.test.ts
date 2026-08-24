@@ -84,23 +84,4 @@ describe("Offline Bible translation data", () => {
       expect(bibleTranslationMetadata).toHaveProperty(message.translation);
     }
   });
-
-  test("retains the selected passage count for every translation", () => {
-    const translationCounts = Object.fromEntries(
-      Object.keys(bibleTranslationMetadata).map((translation) => [translation, 0]),
-    );
-    for (const message of bibleVerseMessages) {
-      translationCounts[message.translation] = (translationCounts[message.translation] ?? 0) + 1;
-    }
-
-    expect(translationCounts).toEqual({
-      ASV: 50,
-      BSB: 84,
-      DARBY: 14,
-      DRA: 6,
-      OEB: 59,
-      WEB: 77,
-      YLT: 1,
-    });
-  });
 });

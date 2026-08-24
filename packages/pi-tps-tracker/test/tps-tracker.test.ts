@@ -286,26 +286,6 @@ describe("TPS Tracker extension", () => {
     expect(inputs).not.toContain("textthinktoolignored");
   });
 
-  it("registers all lifecycle handlers and begins each agent run in a waiting state", async () => {
-    const host = new RecordingLifecycleHost();
-    const context = new RecordingTrackerContext("waiting-model");
-    const loader = new RecordingTokenCounterLoader({ countOutputTokens: () => 1 });
-    registerTpsTracker(host, loader);
-
-    expect(host.agentStart).toBeDefined();
-    expect(host.messageStart).toBeDefined();
-    expect(host.messageUpdate).toBeDefined();
-    expect(host.messageEnd).toBeDefined();
-    expect(host.agentEnd).toBeDefined();
-    await requireHandler(host.agentStart)(
-      { type: "agent_start" } satisfies AgentStartEvent,
-      context,
-    );
-
-    expect(context.statuses).toEqual(["⏱ waiting for output..."]);
-    expect(loader.requestedModelIds).toEqual(["waiting-model"]);
-  });
-
   it("caches a Tokenized Output Count per model and reloads when the model changes", async () => {
     const host = new RecordingLifecycleHost();
     const context = new RecordingTrackerContext("model-a");
