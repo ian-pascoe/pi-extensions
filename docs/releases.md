@@ -11,8 +11,8 @@ This is the release procedure. Migration implementation publishes nothing.
 - `@ian-pascoe/pi-minimal-subagents`,
   `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
   `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-git-checkpoints`,
-  `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`, and
-  `@ian-pascoe/pi-codemode` bootstrap
+  `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
+  `@ian-pascoe/pi-codemode`, and `@ian-pascoe/pi-mcp` bootstrap
   manually at `0.1.0`; do not add bootstrap Changesets.
 - Use `pnpm changeset` for releasable changes and inspect them with
   `pnpm changeset:status`. The workflow creates version PRs with
@@ -31,7 +31,7 @@ and the Git-install check. It must pass before a version PR or publish.
 
 ## Initial scoped-package bootstrap
 
-After approval and merge, a human publishes the nine scoped packages at `0.1.0`
+After approval and merge, a human publishes the ten scoped packages at `0.1.0`
 from each package directory:
 
 ```bash
@@ -41,13 +41,13 @@ npm publish --access public --provenance=false
 Publish only `@ian-pascoe/pi-minimal-subagents`,
 `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
 `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-git-checkpoints`,
-`@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`, and
-`@ian-pascoe/pi-codemode`. Verify each name, version, and tarball first. This is
+`@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
+`@ian-pascoe/pi-codemode`, and `@ian-pascoe/pi-mcp`. Verify each name, version, and tarball first. This is
 the one-time provenance exception; later releases use OIDC.
 
 ## Trusted publishing and guarded automation
 
-Configure npm Trusted Publishing for all eleven packages with repository
+Configure npm Trusted Publishing for all twelve packages with repository
 `ian-pascoe/pi-extensions`, workflow `.github/workflows/release.yml`, and
 protected GitHub environment `npm`. Then set repository variable
 `NPM_PUBLISH_ENABLED=true`.

@@ -61,7 +61,8 @@
       "./packages/pi-formatter/src/index.ts",
       "./packages/pi-lsp/src/index.ts",
       "./packages/pi-dap/src/index.ts",
-      "./packages/pi-codemode/src/index.ts"
+      "./packages/pi-codemode/src/index.ts",
+      "./packages/pi-mcp/src/index.ts"
     ]
   }
 }

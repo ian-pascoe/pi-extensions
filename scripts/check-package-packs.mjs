@@ -15,6 +15,7 @@ import { readJsonDocument, workspacePackageManifestSchema } from "./root-project
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const piMcpPackageName = "@ian-pascoe/pi-mcp";
 
 function assertPackCondition(condition, message) {
   if (!condition) throw new Error(`Package pack check failed: ${message}`);
@@ -55,8 +56,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 11,
-    `expected 11 workspace manifests, found ${manifests.length}`,
+    manifests.length === 12,
+    `expected 12 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -77,7 +78,9 @@ function parsePackJson(stdout, packageName) {
 
 function validatePackedFileList(packageName, files) {
   const paths = files.map((file) => file.path).sort();
-  for (const requiredPath of ["LICENSE", "README.md", "package.json", "src/index.ts"]) {
+  const requiredPaths = ["LICENSE", "README.md", "package.json", "src/index.ts"];
+  if (packageName === piMcpPackageName) requiredPaths.push("dist/pi-mcp-cli.js");
+  for (const requiredPath of requiredPaths) {
     assertPackCondition(paths.includes(requiredPath), `${packageName} omits ${requiredPath}`);
   }
   for (const path of paths) {
@@ -85,7 +88,8 @@ function validatePackedFileList(packageName, files) {
       path === "LICENSE" ||
       path === "README.md" ||
       path === "package.json" ||
-      path.startsWith("src/");
+      path.startsWith("src/") ||
+      (packageName === piMcpPackageName && path === "dist/pi-mcp-cli.js");
     assertPackCondition(allowed, `${packageName} unexpectedly packs ${path}`);
   }
 }
@@ -112,7 +116,28 @@ function validatePackedManifest(sourceManifest, packedManifest) {
     JSON.stringify(packedManifest.pi?.extensions) === JSON.stringify(["./src/index.ts"]),
     `${packageName} has an invalid pi.extensions contract`,
   );
-  assertPackCondition(!packedManifest.scripts?.build, `${packageName} contains a build script`);
+  if (packageName === piMcpPackageName) {
+    assertPackCondition(
+      packedManifest.bin?.["pi-mcp"] === "dist/pi-mcp-cli.js",
+      `${packageName} has an invalid pi-mcp bin`,
+    );
+    assertPackCondition(
+      packedManifest.scripts?.["build:cli"],
+      `${packageName} omits its build:cli script`,
+    );
+    assertPackCondition(packedManifest.scripts?.prepack, `${packageName} omits its prepack script`);
+  } else {
+    assertPackCondition(!("bin" in packedManifest), `${packageName} contains a bin`);
+    assertPackCondition(!packedManifest.scripts?.build, `${packageName} contains a build script`);
+    assertPackCondition(
+      !packedManifest.scripts?.["build:cli"],
+      `${packageName} contains a build:cli script`,
+    );
+    assertPackCondition(
+      !packedManifest.scripts?.prepack,
+      `${packageName} contains a prepack script`,
+    );
+  }
   for (const forbiddenField of ["main", "types", "exports"]) {
     assertPackCondition(
       !(forbiddenField in packedManifest),
@@ -130,6 +155,16 @@ function validatePackedManifest(sourceManifest, packedManifest) {
       `${packageName} still depends on QuickJS`,
     );
   }
+}
+
+async function assertTarballRunsPiMcpCli(packageName, installDirectory) {
+  if (packageName !== piMcpPackageName) return;
+  const { stdout } = await runCommand(
+    resolve(installDirectory, "node_modules", ".bin", "pi-mcp"),
+    ["--help"],
+    { cwd: installDirectory },
+  );
+  assertPackCondition(stdout.startsWith("Usage: pi-mcp "), `${packageName} CLI omits help output`);
 }
 
 async function assertTarballLoads(packageName, tarballPath) {
@@ -177,6 +212,7 @@ async function assertTarballLoads(packageName, tarballPath) {
         "installed package tarball",
       );
     }
+    await assertTarballRunsPiMcpCli(packageName, installDirectory);
   } finally {
     await Promise.all([
       rm(installDirectory, { recursive: true, force: true }),
@@ -216,4 +252,4 @@ try {
   await rm(packDirectory, { recursive: true, force: true });
 }
 
-console.log("Validated eleven package tarballs and installed source entrypoints.");
+console.log("Validated twelve package tarballs, installed source entrypoints, and the Pi MCP CLI.");

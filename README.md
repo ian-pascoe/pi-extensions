@@ -22,6 +22,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                             | Configured language-server tools and post-edit diagnostics.   | `pi install npm:@ian-pascoe/pi-lsp`               |
 | [`@ian-pascoe/pi-dap`](packages/pi-dap)                             | Configured Debug Adapter Protocol sessions.                   | `pi install npm:@ian-pascoe/pi-dap`               |
 | [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.     | `pi install npm:@ian-pascoe/pi-codemode`          |
+| [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                             | Model Context Protocol hosting for configured MCP servers.    | `pi install npm:@ian-pascoe/pi-mcp`               |
 
 ## Install the collection from Git
 
@@ -60,6 +61,7 @@ packages/pi-formatter/src/index.ts
 packages/pi-lsp/src/index.ts
 packages/pi-dap/src/index.ts
 packages/pi-codemode/src/index.ts
+packages/pi-mcp/src/index.ts
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -115,6 +117,9 @@ pnpm --filter @ian-pascoe/pi-formatter test
 pnpm --filter @ian-pascoe/pi-lsp test
 pnpm --filter @ian-pascoe/pi-dap test
 pnpm --filter @ian-pascoe/pi-codemode test
+pnpm --filter @ian-pascoe/pi-mcp typecheck
+pnpm --filter @ian-pascoe/pi-mcp test
+pnpm --filter @ian-pascoe/pi-mcp build:cli
 ```
 
 Read [`CONTEXT-MAP.md`](CONTEXT-MAP.md), ADRs, and

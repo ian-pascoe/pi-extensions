@@ -12,6 +12,7 @@
         "+packages/pi-git-checkpoints/src/index.ts",
         "+packages/pi-git-status-widget/src/index.ts",
         "+packages/pi-lsp/src/index.ts",
+        "+packages/pi-mcp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts",
         "+packages/pi-codemode/src/index.ts"
@@ -29,6 +30,7 @@
         "-packages/pi-git-checkpoints/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
         "-packages/pi-lsp/src/index.ts",
+        "-packages/pi-mcp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts",
         "-packages/pi-codemode/src/index.ts"
@@ -98,6 +100,14 @@
       ]
     }
   ],
+  "mcp": {
+    "servers": {
+      "everything": {
+        "command": "pnpm",
+        "args": ["dlx", "@modelcontextprotocol/server-everything@2026.8.18"]
+      }
+    }
+  },
   "formatter": {
     "formatters": {
       "oxfmt": {

@@ -1,0 +1,64 @@
+{
+  "name": "@ian-pascoe/pi-mcp",
+  "version": "0.1.1",
+  "private": false,
+  "description": "A complete Model Context Protocol Host for Pi",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "pi",
+    "pi-extension",
+    "pi-package"
+  ],
+  "homepage": "https://github.com/ian-pascoe/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/ian-pascoe/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
+    "directory": "packages/pi-mcp"
+  },
+  "bin": {
+    "pi-mcp": "dist/pi-mcp-cli.js"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build:cli": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/pi-mcp-cli.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/pi-mcp-cli.js --external:@modelcontextprotocol/client --external:@modelcontextprotocol/client/*",
+    "prepack": "pnpm build:cli",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "esbuild": "0.27.7"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
