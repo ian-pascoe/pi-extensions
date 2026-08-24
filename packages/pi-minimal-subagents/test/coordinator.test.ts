@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import type { RegistryEventV2 } from "../src/minimal-subagents-registry.js";
@@ -61,7 +62,8 @@ function childRuntime(
     abort: vi.fn<() => Promise<void>>(async () => undefined),
     dispose: vi.fn(),
     getRuntimeProfile: vi.fn<() => RuntimeProfile | undefined>(() => runtimeProfile),
-    snapshotCommittedMessages: vi.fn(() => []),
+    snapshotCommittedMessages: vi.fn<() => AgentMessage[]>(() => []),
+    snapshotActivityMessages: vi.fn<() => AgentMessage[]>(() => []),
     hasDeliveryEvidence: vi.fn<
       (sourceAgentId: string, sourceTurnId: string, deliveryId?: string) => boolean
     >(() => false),
@@ -226,6 +228,16 @@ describe("minimal subagents coordinator", () => {
       model: "live/provider/model:variant",
       thinking_level: "high",
     });
+    runtime.snapshotActivityMessages.mockReturnValue([
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read",
+        content: [{ type: "text", text: "committed child work" }],
+        isError: false,
+        timestamp: 1,
+      },
+    ]);
 
     expect(coordinator.status("root")).toMatchObject({
       agents: [
@@ -253,6 +265,13 @@ describe("minimal subagents coordinator", () => {
           model: "provider/model",
           thinking_level: "medium",
         },
+        recent_activity: [
+          {
+            type: "tool_result",
+            tool_name: "read",
+            content: "committed child work",
+          },
+        ],
       },
     });
     expect(coordinator.inspectStatus("worker")).toMatchObject({
@@ -364,7 +383,7 @@ describe("minimal subagents coordinator", () => {
     await coordinator.cancel("root", "worker");
   });
 
-  it("times out one waiter without cancelling the child turn", async () => {
+  it("returns detailed child status when one waiter times out without cancelling", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
     runtime.runPrompt.mockImplementation(
@@ -374,12 +393,27 @@ describe("minimal subagents coordinator", () => {
       finishPrompt({ status: "cancelled", output: "" });
     });
     const { coordinator } = coordinatorFixture(runtime);
-    await coordinator.spawn("root", { task: "Wait", agent_id: "worker" }, caller);
-    await expect(coordinator.wait("root", "worker", 1)).rejects.toThrow(
-      "Minimal subagents wait timed out for worker after 1ms",
-    );
+    const spawned = await coordinator.spawn("root", { task: "Wait", agent_id: "worker" }, caller);
+    await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+      event: "timeout",
+      agent_id: "worker",
+      turn_id: spawned.turn_id,
+      timeout_ms: 1,
+      agent: {
+        agent_id: "worker",
+        state: "running",
+        active_turn_id: spawned.turn_id,
+        launch_contract: { model: "provider/model" },
+      },
+    });
     expect(runtime.abort).not.toHaveBeenCalled();
-    await coordinator.cancel("root", "worker");
+    finishPrompt({ status: "completed", output: "completed after timeout" });
+    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      event: "turn",
+      turn_id: spawned.turn_id,
+      status: "completed",
+      output: "completed after timeout",
+    });
   });
 
   it("allows fanout only within the configured depth and denies non-fanout callers", async () => {

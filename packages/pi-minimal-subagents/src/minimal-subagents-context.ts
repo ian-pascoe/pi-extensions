@@ -1,5 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { SessionContextMode } from "./minimal-subagents-types.js";
+import { contentText, type ImageContent, type TextContent } from "@earendil-works/pi-ai";
+import { truncateTail } from "@earendil-works/pi-coding-agent";
+import type { RecentAgentActivity, SessionContextMode } from "./minimal-subagents-types.js";
+
+const RECENT_AGENT_ACTIVITY_LIMIT = 12;
+const RECENT_AGENT_ACTIVITY_MAX_LINES = 20;
+const RECENT_AGENT_ACTIVITY_MAX_BYTES = 2 * 1024;
 
 /** Clone committed caller messages and exclude only the currently streaming assistant message. */
 export function snapshotCommittedContext(
@@ -9,6 +15,95 @@ export function snapshotCommittedContext(
   const committed = [...messages];
   if (callerIsStreaming && committed.at(-1)?.role === "assistant") committed.pop();
   return structuredClone(committed);
+}
+
+/** Clone transcript messages and append the current streaming assistant message when present. */
+export function snapshotActivityContext(
+  messages: readonly AgentMessage[],
+  streamingMessage: AgentMessage | undefined,
+): AgentMessage[] {
+  return structuredClone([...messages, ...(streamingMessage ? [streamingMessage] : [])]);
+}
+
+function boundedRecentActivityContent(
+  content: string,
+): Pick<RecentAgentActivity, "content" | "truncated"> {
+  const bounded = truncateTail(content, {
+    maxLines: RECENT_AGENT_ACTIVITY_MAX_LINES,
+    maxBytes: RECENT_AGENT_ACTIVITY_MAX_BYTES,
+  });
+  return { content: bounded.content, truncated: bounded.truncated };
+}
+
+function visibleMessageContent(content: string | readonly (TextContent | ImageContent)[]): string {
+  return contentText(content, "\n\n") || "(no text content)";
+}
+
+/** Build a bounded recent activity tail from message text, reasoning, and tool work. */
+export function buildRecentAgentActivity(messages: readonly AgentMessage[]): RecentAgentActivity[] {
+  const activity: RecentAgentActivity[] = [];
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const content of message.content) {
+        if (content.type === "text" && content.text) {
+          activity.push({
+            type: "message",
+            role: "assistant",
+            timestamp: message.timestamp,
+            ...boundedRecentActivityContent(content.text),
+          });
+        } else if (content.type === "thinking") {
+          activity.push({
+            type: "reasoning",
+            timestamp: message.timestamp,
+            ...boundedRecentActivityContent(
+              content.thinking ||
+                (content.redacted ? "[redacted reasoning]" : "(no reasoning text)"),
+            ),
+          });
+        } else if (content.type === "toolCall") {
+          activity.push({
+            type: "tool_call",
+            timestamp: message.timestamp,
+            tool_name: content.name,
+            tool_call_id: content.id,
+            ...boundedRecentActivityContent(JSON.stringify(content.arguments, null, 2)),
+          });
+        }
+      }
+    } else if (message.role === "toolResult") {
+      activity.push({
+        type: "tool_result",
+        timestamp: message.timestamp,
+        tool_name: message.toolName,
+        tool_call_id: message.toolCallId,
+        is_error: message.isError,
+        ...boundedRecentActivityContent(visibleMessageContent(message.content)),
+      });
+    } else if (message.role === "user" || message.role === "custom") {
+      activity.push({
+        type: "message",
+        role: message.role,
+        timestamp: message.timestamp,
+        ...boundedRecentActivityContent(visibleMessageContent(message.content)),
+      });
+    } else if (message.role === "branchSummary" || message.role === "compactionSummary") {
+      activity.push({
+        type: "message",
+        role: message.role,
+        timestamp: message.timestamp,
+        ...boundedRecentActivityContent(message.summary),
+      });
+    } else if (message.role === "bashExecution") {
+      activity.push({
+        type: "message",
+        role: message.role,
+        timestamp: message.timestamp,
+        ...boundedRecentActivityContent(`$ ${message.command}\n${message.output || "(no output)"}`),
+      });
+    }
+  }
+  return activity.slice(-RECENT_AGENT_ACTIVITY_LIMIT);
 }
 
 /** Carries the selected caller messages and whether child preparation should compact them. */

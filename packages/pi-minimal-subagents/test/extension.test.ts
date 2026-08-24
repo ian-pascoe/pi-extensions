@@ -106,6 +106,10 @@ class RecordingChildRuntime implements ChildAgentRuntime {
     return [];
   }
 
+  snapshotActivityMessages(): AgentMessage[] {
+    return [];
+  }
+
   hasDeliveryEvidence(): boolean {
     return false;
   }

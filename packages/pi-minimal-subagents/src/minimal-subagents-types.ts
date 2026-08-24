@@ -78,8 +78,19 @@ export interface WaitTurnResult extends TurnResult {
   messages?: WaitMessageResult[];
 }
 
-/** Reports one terminal child turn returned by subagent_wait. */
-export type WaitResult = WaitMessageResult | WaitTurnResult;
+/** Reports an observational wait timeout with the current detailed child status. */
+export interface WaitTimeoutResult {
+  event: "timeout";
+  agent_id: string;
+  turn_id: string;
+  /** Requested timeout duration that expired. */
+  timeout_ms: number;
+  /** Detailed child status captured when the timeout callback won. */
+  agent: AgentDetail;
+}
+
+/** Reports one message, terminal turn, or timeout returned by subagent_wait. */
+export type WaitResult = WaitMessageResult | WaitTurnResult | WaitTimeoutResult;
 
 /** Provides bounded hierarchy, usage, and best-known Runtime Profile data for one persistent agent. */
 export interface AgentSummary extends RuntimeProfile {
@@ -104,13 +115,46 @@ export interface RecentAgentMessage {
   content: string;
 }
 
-/** Extends summary status with launch, dependency, and recent-message diagnostics. */
+interface RecentAgentActivityBase {
+  timestamp: number;
+  content: string;
+  truncated: boolean;
+}
+
+/** Reports bounded message, reasoning, and tool work without image data. */
+export type RecentAgentActivity =
+  | (RecentAgentActivityBase & {
+      type: "message";
+      role:
+        | "user"
+        | "assistant"
+        | "custom"
+        | "branchSummary"
+        | "compactionSummary"
+        | "bashExecution";
+    })
+  | (RecentAgentActivityBase & { type: "reasoning" })
+  | (RecentAgentActivityBase & {
+      type: "tool_call";
+      tool_name: string;
+      tool_call_id: string;
+    })
+  | (RecentAgentActivityBase & {
+      type: "tool_result";
+      tool_name: string;
+      tool_call_id: string;
+      is_error: boolean;
+    });
+
+/** Extends summary status with launch, dependency, recent-message, and recent-work diagnostics. */
 export interface AgentDetail extends AgentSummary {
   session_file?: string;
   launch_contract: LaunchContract;
   capability_ceiling: string[];
   spawn_entry_id: string;
   recent_messages: RecentAgentMessage[];
+  /** The 12 most recent work items, each capped at 20 lines and 2 KiB. */
+  recent_activity: RecentAgentActivity[];
   latest_result?: TurnResult;
   missing_dependencies: string[];
   unavailable_reason?: string;
@@ -203,7 +247,10 @@ export interface ChildAgentRuntime {
   dispose(): void;
   /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
   getRuntimeProfile(): RuntimeProfile | undefined;
+  /** Clone committed child transcript messages while excluding the streaming assistant tail. */
   snapshotCommittedMessages(): AgentMessage[];
+  /** Clone child transcript messages including the current streaming assistant tail. */
+  snapshotActivityMessages(): AgentMessage[];
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
   getUsage(): Usage | undefined;
 }

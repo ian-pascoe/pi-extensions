@@ -101,6 +101,26 @@ describe("minimal subagents rendering", () => {
         expected: "terminal failure",
       },
       {
+        toolName: "subagent_wait",
+        args: { agent_id: "child" },
+        details: {
+          event: "timeout",
+          agent_id: "child",
+          turn_id: "child:turn-1",
+          timeout_ms: 1_000,
+          agent: {
+            agent_id: "child",
+            state: "running",
+            availability: "available",
+            active_turn_id: "child:turn-1",
+            child_count: 0,
+            tools: ["read"],
+            launch_contract: { model: "provider/model" },
+          },
+        },
+        expected: "timed out",
+      },
+      {
         toolName: "subagent_status",
         args: {},
         details: {
@@ -129,9 +149,19 @@ describe("minimal subagents rendering", () => {
             child_count: 0,
             tools: ["read"],
             launch_contract: { model: "provider/model" },
+            recent_activity: [
+              {
+                type: "tool_call",
+                timestamp: 1,
+                content: '{"path":"src/index.ts"}',
+                truncated: false,
+                tool_name: "read",
+                tool_call_id: "call-1",
+              },
+            ],
           },
         },
-        expected: "provider/model",
+        expected: "src/index.ts",
       },
       {
         toolName: "subagent_cancel",
