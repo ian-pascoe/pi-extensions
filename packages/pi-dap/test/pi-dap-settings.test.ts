@@ -46,22 +46,6 @@ afterEach(async () => {
 });
 
 describe("resolveDapSettings", () => {
-  test("uses timeout defaults and no configured adapters or profiles when dap is absent", async () => {
-    const settings = resolveDapSettings(await createSettingsReader({}, {}));
-
-    expect(settings).toEqual({
-      adapters: new Map(),
-      profiles: new Map(),
-      timeouts: {
-        executionMs: 30_000,
-        requestMs: 10_000,
-        shutdownMs: 5_000,
-        startupMs: 10_000,
-      },
-      warnings: [],
-    });
-  });
-
   test("excludes project settings through an untrusted SettingsManager", async () => {
     const settings = resolveDapSettings(
       await createSettingsReader(

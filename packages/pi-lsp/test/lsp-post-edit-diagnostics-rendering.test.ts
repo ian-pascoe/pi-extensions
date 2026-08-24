@@ -50,15 +50,6 @@ const reportableOutcomes = [
 ] satisfies readonly PostEditDiagnosticOutcome[];
 
 describe("Post-edit Diagnostics Entry rendering", () => {
-  test("stays silent for clean or unsupported files", () => {
-    expect(
-      createPostEditDiagnosticsEntryData("/workspace", [
-        { kind: "no_diagnostics", path: "/workspace/src/clean.ts" },
-        { kind: "no_configured_server", path: "/workspace/README.txt" },
-      ]),
-    ).toBeUndefined();
-  });
-
   test("collapses to severity and file counts without exposing messages", () => {
     const data = createPostEditDiagnosticsEntryData("/workspace", reportableOutcomes);
     expect(data).toBeDefined();

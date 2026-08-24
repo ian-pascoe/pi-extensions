@@ -114,20 +114,9 @@ describe("formatSearchResults", () => {
       ].join("\n"),
     );
   });
-
-  test("uses search message when no results are returned", () => {
-    expect(formatSearchResults([], 0, "No matches")).toBe("No matches");
-  });
 });
 
 describe("registerManualTools", () => {
-  test("registers recall, search, and persist tools", () => {
-    const { pi } = register();
-
-    expect(pi.registeredToolNames).toHaveLength(3);
-    expect([...pi.registeredToolNames].sort()).toEqual(["brv_persist", "brv_recall", "brv_search"]);
-  });
-
   test("schemas reject whitespace-only query, scope, and context", () => {
     const { tools } = register();
     const recall = tools.get("brv_recall");

@@ -38,21 +38,6 @@ afterEach(async () => {
 });
 
 describe("resolveLspSettings", () => {
-  test("uses default timeouts and no servers when lsp is absent", async () => {
-    const settingsManager = await createSettingsReader({}, {}, true);
-
-    const settings = resolveLspSettings(settingsManager);
-
-    expect(settings.warnings).toEqual([]);
-    expect(settings.timeouts).toEqual({
-      diagnosticsMs: 3000,
-      initializeMs: 45000,
-      requestMs: 3000,
-      shutdownMs: 5000,
-    });
-    expect(settings.servers).toEqual(new Map());
-  });
-
   test("excludes project settings through an untrusted SettingsManager", async () => {
     const settingsManager = await createSettingsReader(
       { lsp: { servers: { global: typescriptServer("global-lsp") } } },

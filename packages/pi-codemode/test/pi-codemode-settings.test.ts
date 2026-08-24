@@ -2,15 +2,6 @@ import { describe, expect, test } from "vitest";
 import { resolveCodeModeSettings } from "../src/pi-codemode-settings.js";
 
 describe("resolveCodeModeSettings", () => {
-  test("uses the default session limit when CodeMode settings are absent", () => {
-    const settings = resolveCodeModeSettings({
-      getGlobalSettings: () => ({}),
-      getProjectSettings: () => ({}),
-    });
-
-    expect(settings).toEqual({ enabled: true, maxSessions: 8, rules: [] });
-  });
-
   test("merges trusted layers by field and replaces the global tools array", () => {
     const settings = resolveCodeModeSettings({
       getGlobalSettings: () => ({

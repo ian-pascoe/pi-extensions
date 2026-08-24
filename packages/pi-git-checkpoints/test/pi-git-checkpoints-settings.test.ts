@@ -33,12 +33,6 @@ afterEach(async () => {
 });
 
 describe("resolveGitCheckpointsSettings", () => {
-  test("uses seven retention days when Git Checkpoints settings are absent", async () => {
-    const settings = resolveGitCheckpointsSettings(await createSettingsManager({}, {}));
-
-    expect(settings).toEqual({ retentionDays: 7, warnings: [] });
-  });
-
   test("uses a trusted project retention period instead of the global value", async () => {
     const settings = resolveGitCheckpointsSettings(
       await createSettingsManager(

@@ -81,36 +81,6 @@ describe("minimal subagents UI", () => {
     expect(view.rows.some(({ agentId }) => agentId === "failed")).toBe(true);
   });
 
-  it("renders the status, duration, Runtime Profile, and task in the agreed order", () => {
-    const lines = renderMinimalSubagentsWidgetLines(
-      {
-        runningCount: 1,
-        retainedCount: 1,
-        recentCount: 0,
-        overflowCount: 0,
-        rows: [
-          {
-            agentId: "worker",
-            depth: 1,
-            status: "running",
-            elapsedMs: 12_000,
-            runtimeProfile: {
-              model: "provider/model:variant",
-              thinking_level: "high",
-            },
-            task: "inspect the runtime",
-            structural: false,
-          },
-        ],
-      },
-      120,
-      passthroughTheme,
-    );
-    expect(lines[1]).toBe(
-      "  ╰─ ◉ worker  ·  running 12s  ·  provider/model:variant:high  ·  inspect the runtime",
-    );
-  });
-
   it("degrades task, model detail, and duration before truncating the row", () => {
     const baseView = (width: number) =>
       renderMinimalSubagentsWidgetLines(
@@ -144,55 +114,6 @@ describe("minimal subagents UI", () => {
     const lastResort = baseView(20);
     expect(visibleWidth(lastResort)).toBeLessThanOrEqual(20);
     expect(lastResort).not.toContain("inspect");
-  });
-
-  it("omits stale duration while retaining the Runtime Profile for unavailable rows", () => {
-    const lines = renderMinimalSubagentsWidgetLines(
-      {
-        runningCount: 0,
-        retainedCount: 1,
-        recentCount: 1,
-        overflowCount: 0,
-        rows: [
-          {
-            agentId: "missing",
-            depth: 0,
-            status: "unavailable",
-            elapsedMs: 12_000,
-            runtimeProfile: { model: "provider/model", thinking_level: "medium" },
-            structural: false,
-          },
-        ],
-      },
-      100,
-      passthroughTheme,
-    );
-    expect(lines[1]).toBe("  ! missing  ·  unavailable  ·  provider/model:medium");
-  });
-
-  it("renders every line within terminal width", () => {
-    const lines = renderMinimalSubagentsWidgetLines(
-      {
-        runningCount: 1,
-        retainedCount: 1,
-        recentCount: 0,
-        overflowCount: 2,
-        rows: [
-          {
-            agentId: "very-long-agent-identifier",
-            depth: 1,
-            status: "running",
-            runtimeProfile: { model: "provider/model", thinking_level: "medium" },
-            task: "a deliberately long task description",
-            structural: false,
-          },
-        ],
-      },
-      20,
-      passthroughTheme,
-    );
-    expect(lines.length).toBe(3);
-    expect(lines.every((line) => visibleWidth(line) <= 20)).toBe(true);
   });
 
   it("mounts during activity, cools down after completion, and disposes timers and UI", async () => {

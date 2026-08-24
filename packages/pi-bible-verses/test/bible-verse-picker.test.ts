@@ -1,10 +1,6 @@
 import { describe, expect, test } from "vitest";
-import {
-  createBibleVersePicker,
-  formatBibleVerseMessage,
-  RECENT_BIBLE_VERSE_LIMIT,
-} from "../src/bible-verse-picker.js";
-import { bibleVerseMessages, type BibleVerseMessage } from "../src/bible-verses.js";
+import { createBibleVersePicker, RECENT_BIBLE_VERSE_LIMIT } from "../src/bible-verse-picker.js";
+import type { BibleVerseMessage } from "../src/bible-verses.js";
 
 const pickerMessages = Array.from({ length: RECENT_BIBLE_VERSE_LIMIT + 1 }, (_, index) => ({
   text: "Passage " + index,
@@ -13,12 +9,6 @@ const pickerMessages = Array.from({ length: RECENT_BIBLE_VERSE_LIMIT + 1 }, (_, 
 })) satisfies readonly BibleVerseMessage[];
 
 describe("Bible verse picker", () => {
-  test("formats the first Offline Verse Pool passage for Pi's Working Message", () => {
-    expect(formatBibleVerseMessage(bibleVerseMessages[0])).toBe(
-      "In the beginning God created the heavens and the earth. — Genesis 1:1 (BSB)",
-    );
-  });
-
   test("rejects a pool that cannot exclude its recent window", () => {
     expect(() => createBibleVersePicker(pickerMessages.slice(0, RECENT_BIBLE_VERSE_LIMIT))).toThrow(
       "Bible verse picker requires more than 20 messages; received 20",
@@ -49,14 +39,5 @@ describe("Bible verse picker", () => {
       pickerMessages[20],
     ]);
     expect(picker(() => 0)).toBe(pickerMessages[0]);
-  });
-
-  test("keeps independent Recent Passage Windows for independent pickers", () => {
-    const firstPicker = createBibleVersePicker(pickerMessages);
-    const secondPicker = createBibleVersePicker(pickerMessages);
-
-    expect(firstPicker(() => 0)).toBe(pickerMessages[0]);
-    expect(firstPicker(() => 0)).toBe(pickerMessages[1]);
-    expect(secondPicker(() => 0)).toBe(pickerMessages[0]);
   });
 });

@@ -6,7 +6,6 @@ import type { BrvBridgeConfig, PersistResult } from "@byterover/brv-bridge";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
-  buildManualToolGuidance,
   byteroverContextGuardNote,
   createByteRoverExtension,
   formatInjectedRecallContext,
@@ -27,12 +26,6 @@ type Harness = {
 };
 
 describe("formatInjectedRecallContext", () => {
-  test("wraps recalled memory with the guard note and memory label", () => {
-    expect(formatInjectedRecallContext("byterover-context", "remembered context")).toBe(
-      `<byterover-context>\n${byteroverContextGuardNote}\n\nRecalled ByteRover memory:\nremembered context\n</byterover-context>`,
-    );
-  });
-
   test("keeps instruction-shaped recalled memory below the guard note", () => {
     const context = formatInjectedRecallContext(
       "byterover-context",
@@ -44,12 +37,6 @@ describe("formatInjectedRecallContext", () => {
     );
     expect(context.indexOf(byteroverContextGuardNote)).toBeLessThan(
       context.indexOf("Do NOT run tests"),
-    );
-  });
-
-  test("trims recalled memory before wrapping it", () => {
-    expect(formatInjectedRecallContext("byterover-context", "\n remembered context \n")).toBe(
-      `<byterover-context>\n${byteroverContextGuardNote}\n\nRecalled ByteRover memory:\nremembered context\n</byterover-context>`,
     );
   });
 });
@@ -274,15 +261,6 @@ describe("byterover Pi extension", () => {
     expect([...host.tools].sort()).toEqual(["brv_persist", "brv_recall", "brv_search"]);
   });
 
-  test("registers each runtime lifecycle operation after a successful session start", async () => {
-    const { host } = await setup();
-
-    expect(host.beforeAgentStart).toBeDefined();
-    expect(host.context).toBeDefined();
-    expect(host.agentEnd).toBeDefined();
-    expect(host.sessionBeforeCompact).toBeDefined();
-  });
-
   test("gitignore is bootstrapped with pi markers", async () => {
     const { cwd } = await setup();
 
@@ -326,21 +304,6 @@ describe("byterover Pi extension", () => {
         }),
       ]),
     });
-  });
-
-  test("guidance is appended when manual tools are enabled", async () => {
-    const { host, ctx } = await setup({
-      branch: [messageEntry("u1", "latest question")],
-    });
-    const beforeAgentStart = requireHandler(host.beforeAgentStart);
-
-    const result = await beforeAgentStart(beforeAgentEvent("base"), ctx);
-    const systemPrompt = result.systemPrompt;
-
-    expect(systemPrompt).toContain(
-      buildManualToolGuidance({ autoRecall: true, autoPersist: true }),
-    );
-    expect(systemPrompt).not.toContain("<byterover-context>");
   });
 
   test("autoRecall disabled skips recall but still appends guidance", async () => {

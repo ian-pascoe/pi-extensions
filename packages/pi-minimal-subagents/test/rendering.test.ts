@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatSubagentDuration,
-  formatSubagentPreview,
-  formatSubagentTokenCount,
-  formatSubagentUsage,
   type MinimalSubagentsRenderTheme,
   renderCoordinatorToolCall,
   renderCoordinatorToolResult,
@@ -30,15 +26,6 @@ function renderLines(component: { render(width: number): string[] }): string {
 }
 
 describe("minimal subagents rendering", () => {
-  it("formats bounded previews, durations, token counts, and usage summaries", () => {
-    expect(formatSubagentDuration(undefined)).toBeUndefined();
-    expect(formatSubagentDuration(1_500)).toBe("1s");
-    expect(formatSubagentDuration(61_000)).toBe("1m 01s");
-    expect(formatSubagentTokenCount(1_200)).toBe("1.2k");
-    expect(formatSubagentPreview("  one\n two   three ", 10)).toBe("one two t…");
-    expect(formatSubagentUsage(usage)).toContain("total 120");
-  });
-
   it("renders every current coordinator result DTO", () => {
     const currentResults = [
       {

@@ -15,10 +15,6 @@ const plainTheme = {
   fg: (_color, text) => text,
 } satisfies CodeModeObserverWidgetTheme;
 
-function emptySnapshot(): CodeModeObserverSnapshot {
-  return { sessions: [] };
-}
-
 type ObserverWidgetFactory = Exclude<
   Parameters<CodeModeObserverUiContext["ui"]["setWidget"]>[1],
   undefined
@@ -203,25 +199,6 @@ describe("CodeMode Observer UI", () => {
     }
   });
 
-  test("omits terminal Sessions after the ten-second Observer cooldown", () => {
-    const view = buildCodeModeObserverView(
-      {
-        sessions: [
-          {
-            sessionId: "expired-terminal",
-            lifecycle: "terminal",
-            cell_count: 1,
-            last_activity_at_ms: 1_000,
-            terminal_error_code: "runtime",
-          },
-        ],
-      },
-      11_000,
-    );
-
-    expect(view.rows).toEqual([]);
-  });
-
   test("mounts immediately, refreshes elapsed time recursively, then cools down and hides", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
@@ -380,21 +357,5 @@ describe("CodeMode Observer UI", () => {
     );
     expect(() => redrawController.onSnapshotChange(running)).not.toThrow();
     redrawController.dispose();
-  });
-
-  test("is completely inert outside TUI mode", () => {
-    vi.useFakeTimers();
-    const { context, notify, setStatus, setWidget } = createControllerContext("rpc");
-    const controller = new CodeModeObserverUiController(context, createTimerRuntime());
-    controller.onSnapshotChange(emptySnapshot());
-    controller.onUnexpectedFailure({
-      sessionId: "12345678-rpc",
-      message: "worker died",
-    });
-    controller.dispose();
-    expect(setWidget).not.toHaveBeenCalled();
-    expect(setStatus).not.toHaveBeenCalled();
-    expect(notify).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
   });
 });

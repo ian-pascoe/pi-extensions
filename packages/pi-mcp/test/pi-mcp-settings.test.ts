@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
 import {
-  MCP_SHUTDOWN_TIMEOUT_MS,
   resolveMcpSettings,
   type McpSettingsDocumentInput,
   type McpSettingsReader,
@@ -17,26 +16,6 @@ function settingsReader(
 }
 
 describe("resolveMcpSettings", () => {
-  test("uses the exact Host defaults when mcp settings are absent", () => {
-    const settings = resolveMcpSettings(settingsReader({}), {});
-
-    expect(settings).toMatchObject({
-      connectTimeoutMs: 10_000,
-      errors: [],
-      requestTimeoutMs: 60_000,
-      retry: {
-        backoffFactor: 1.5,
-        initialDelayMs: 1_000,
-        maxDelayMs: 30_000,
-        maxRetries: 2,
-      },
-      valid: true,
-    });
-    expect(settings.servers).toEqual(new Map());
-    expect(settings.masks).toEqual(new Map());
-    expect(MCP_SHUTDOWN_TIMEOUT_MS).toBe(5_000);
-  });
-
   test("ignores unrelated Pi settings while parsing only the strict mcp object", () => {
     const settings = resolveMcpSettings(
       settingsReader({

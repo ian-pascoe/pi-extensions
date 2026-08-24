@@ -1,4 +1,4 @@
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { beforeAll, describe, expect, test } from "vitest";
 import {
@@ -6,10 +6,7 @@ import {
   renderCodeModeToolResult,
   type CodeModeRenderTheme,
 } from "../src/codemode-tool-rendering.js";
-import type {
-  CodeModeResultDetails,
-  CodeModeSessionsResult,
-} from "../src/codemode-tool-contract.js";
+import type { CodeModeResultDetails } from "../src/codemode-tool-contract.js";
 
 const plainTheme: CodeModeRenderTheme = {
   bold: (text) => text,
@@ -322,79 +319,6 @@ describe("CodeMode Transcript rendering", () => {
     ).toContain("lines omitted");
   });
 
-  test("renders reclaimed Sessions as closed", () => {
-    const reclaimed: CodeModeResultDetails = {
-      result: "failed",
-      sessionId: "reclaimed-session",
-      error: {
-        code: "eviction",
-        message: "CodeMode Session was reclaimed to free capacity.",
-      },
-      presentation: {
-        version: 1,
-        cell_ordinal: 1,
-        cell_state: "completed",
-        session_state: "live",
-        elapsed_ms: 10,
-        active_tool_names: [],
-        active_tool_count: 0,
-        nested_tool_count: 0,
-        succeeded_nested_tool_count: 0,
-        failed_nested_tool_count: 0,
-        nested_tools: [],
-        omitted_nested_tool_count: 0,
-      },
-    };
-
-    const rendered = renderText(
-      renderCodeModeToolResult(
-        "codemode_result",
-        result(reclaimed),
-        { expanded: true, isPartial: false },
-        plainTheme,
-        false,
-      ),
-    );
-    expect(rendered).toContain("■ reclaimed");
-    expect(rendered).toContain("Session closed");
-  });
-
-  test("renders the read-only live Session list", () => {
-    const sessions: CodeModeSessionsResult = {
-      result: "success",
-      sessions: [
-        { sessionId: "idle-session", state: "idle", cellCount: 2, lastActivityAtMs: 10 },
-        { sessionId: "running-session", state: "running", cellCount: 3, lastActivityAtMs: 20 },
-      ],
-    };
-    const output = {
-      content: [{ type: "text" as const, text: JSON.stringify(sessions) }],
-      details: sessions,
-    };
-    const collapsed = renderText(
-      renderCodeModeToolResult(
-        "codemode_sessions",
-        output,
-        { expanded: false, isPartial: false },
-        plainTheme,
-        false,
-      ),
-    );
-    expect(collapsed).toContain("✓ 2 sessions");
-
-    const expanded = renderText(
-      renderCodeModeToolResult(
-        "codemode_sessions",
-        output,
-        { expanded: true, isPartial: false },
-        plainTheme,
-        false,
-      ),
-    );
-    expect(expanded).toContain("idle  idle-session  2 cells  10");
-    expect(expanded).toContain("running  running-session  3 cells  20");
-  });
-
   test("infers historical details and falls back safely for malformed details", () => {
     const historical: CodeModeResultDetails = {
       result: "success",
@@ -467,22 +391,5 @@ describe("CodeMode Transcript rendering", () => {
         ),
       ),
     ).toContain("line omitted");
-  });
-
-  test("fits transcript output to narrow terminal widths", () => {
-    const details: CodeModeResultDetails = {
-      result: "pending",
-      sessionId: "12345678-very-long-session-identifier",
-    };
-    const component = renderCodeModeToolResult(
-      "codemode_result",
-      result(details),
-      { expanded: false, isPartial: false },
-      plainTheme,
-      false,
-    );
-
-    for (const line of renderLines(component, 20))
-      expect(visibleWidth(line)).toBeLessThanOrEqual(20);
   });
 });

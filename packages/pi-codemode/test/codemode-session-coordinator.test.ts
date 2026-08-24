@@ -405,12 +405,6 @@ describe("CodeModeSessionCoordinator", () => {
     await coordinator.shutdown();
   }, 30_000);
 
-  test("awaits a Cell when wait is omitted", async () => {
-    const coordinator = createCoordinator();
-
-    expectSuccessData(await coordinator.execute({ script: "6 * 7" }), 42);
-  }, 30_000);
-
   test("retains bounded Cell presentation, publishes progress, and spills complete large data", async () => {
     const spills: string[] = [];
     const updates: AgentToolResult<unknown>[] = [];

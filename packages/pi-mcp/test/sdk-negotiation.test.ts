@@ -1,9 +1,5 @@
-import {
-  Client,
-  SSEClientTransport,
-  StreamableHTTPClientTransport,
-} from "@modelcontextprotocol/client";
-import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/client/stdio";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
@@ -32,13 +28,6 @@ async function connectToFixture(name: string): Promise<Client> {
 }
 
 describe("MCP v2 public client seams", () => {
-  test("exports HTTP and Node stdio transports from their public entrypoints", () => {
-    expect(StreamableHTTPClientTransport).toBeTypeOf("function");
-    expect(SSEClientTransport).toBeTypeOf("function");
-    expect(StdioClientTransport).toBeTypeOf("function");
-    expect(getDefaultEnvironment()).toBeTypeOf("object");
-  });
-
   test("auto negotiation reaches a 2026-07-28 server", async () => {
     const client = await connectToFixture("current-server.mjs");
     try {

@@ -14,7 +14,7 @@ This repository uses multi-context domain documentation organized by package. Se
 
 ## Reference repositories
 
-The `pnpm install` bootstrap command materializes these read-only references in `.repos/`.
+A local `pnpm install` materializes these read-only references in `.repos/`; CI skips them.
 Run `./scripts/sync-reference-repos.sh` to refresh them directly.
 
 | Repository                                                    | Path              | Useful for                                                                                           |

@@ -8,7 +8,7 @@ const omittedDependencyKinds = new Set(
 const productionInstall =
   process.env.NODE_ENV === "production" || omittedDependencyKinds.has("dev");
 
-if (!productionInstall && existsSync(".git")) {
+if (!productionInstall && !process.env.CI && existsSync(".git")) {
   execFileSync("bash", ["scripts/sync-reference-repos.sh"], { stdio: "inherit" });
 
   try {

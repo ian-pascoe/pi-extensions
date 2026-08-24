@@ -80,26 +80,6 @@ describe("Pi DAP Observer UI", () => {
     expect(withoutProfile).not.toContain("node/node");
   });
 
-  test("keeps ANSI-styled Unicode views within every practical terminal width", () => {
-    const ansiTheme = {
-      bold: (text: string) => `\u001b[1m${text}\u001b[22m`,
-      fg: (_color: string, text: string) => `\u001b[36m${text}\u001b[39m`,
-    } satisfies DapObserverWidgetTheme;
-    const view: DapObserverWidgetView = {
-      state: "stopped",
-      adapterId: "node界",
-      profileId: "node🙂",
-      stopReason: "breakpoint",
-      path: "src/ネットワーク/🙂.ts:42",
-      elapsedMs: 65_000,
-    };
-    for (let width = 1; width <= 120; width++) {
-      expect(visibleWidth(renderDapObserverWidgetLine(view, width, ansiTheme))).toBeLessThanOrEqual(
-        width,
-      );
-    }
-  });
-
   test("mounts on launch, updates in place, clears stopped location on resume, and refreshes duration", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

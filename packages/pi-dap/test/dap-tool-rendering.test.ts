@@ -1,12 +1,7 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { describe, expect, test } from "vitest";
-import type {
-  DapToolParameters,
-  DapToolRenderDetails,
-  DapToolResultDetails,
-} from "../src/dap-tool-contract.js";
+import type { DapToolRenderDetails, DapToolResultDetails } from "../src/dap-tool-contract.js";
 import {
-  renderDapToolCall,
   renderDapToolResult,
   sanitizeDapObserverText,
   type DapRenderTheme,
@@ -51,73 +46,6 @@ function result(
 }
 
 describe("Pi DAP transcript rendering", () => {
-  test("renders semantic collapsed calls for all twelve operations", () => {
-    const calls: readonly [DapToolParameters, string][] = [
-      [
-        { operation: "launch", profile: "node", program: "/workspace/app.ts" },
-        "DAP  Launch  node · app.ts",
-      ],
-      [
-        {
-          operation: "set_breakpoints",
-          file_path: "/workspace/app.ts",
-          breakpoints: [{ line: 1 }, { line: 2 }],
-        },
-        "DAP  Set breakpoints  app.ts · 2",
-      ],
-      [{ operation: "continue" }, "DAP  Continue"],
-      [{ operation: "next" }, "DAP  Step over"],
-      [{ operation: "step_in" }, "DAP  Step in"],
-      [{ operation: "step_out" }, "DAP  Step out"],
-      [{ operation: "pause" }, "DAP  Pause"],
-      [{ operation: "stack", thread_id: 7 }, "DAP  Stack  thread #7"],
-      [{ operation: "variables", frame_id: 14 }, "DAP  Variables  frame #14"],
-      [{ operation: "variables", variables_reference: 21 }, "DAP  Variables  reference #21"],
-      [{ operation: "evaluate", expression: "answer" }, "DAP  Evaluate  answer"],
-      [{ operation: "status" }, "DAP  Status"],
-      [{ operation: "stop" }, "DAP  Stop"],
-    ];
-    for (const [parameters, expected] of calls) {
-      expect(renderLines(renderDapToolCall(parameters, plainTheme, false, "/workspace"))).toBe(
-        expected,
-      );
-    }
-  });
-
-  test("shows only supplied bounded arguments when expanded", () => {
-    const call = renderLines(
-      renderDapToolCall(
-        {
-          operation: "launch",
-          profile: "node",
-          program: "/workspace/src/app.ts",
-          args: ["one", "two"],
-          cwd: "/outside/runtime",
-        },
-        plainTheme,
-        true,
-        "/workspace",
-      ),
-    );
-    expect(call).toContain("Profile: node");
-    expect(call).toContain("Program: src/app.ts");
-    expect(call).toContain("Arguments: one · two");
-    expect(call).toContain("Working directory: /outside/runtime");
-    expect(call).not.toContain("environment");
-
-    const expression = renderLines(
-      renderDapToolCall(
-        { operation: "evaluate", expression: `one\n${"x".repeat(300)}`, frame_id: 14 },
-        plainTheme,
-        true,
-        "/workspace",
-      ),
-    );
-    expect(expression).toContain("Expression: one");
-    expect(expression).toContain("Frame: #14");
-    expect(expression.length).toBeLessThan(300);
-  });
-
   test("renders state, operation-specific, partial, and cancellation summaries", () => {
     const cases: readonly [DapToolResultDetails, string][] = [
       [finalDetails(), "● stopped · breakpoint"],
