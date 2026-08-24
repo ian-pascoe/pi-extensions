@@ -21,6 +21,7 @@ const expectedExtensionPaths = [
   "./packages/pi-lsp/src/index.ts",
   "./packages/pi-dap/src/index.ts",
   "./packages/pi-codemode/src/index.ts",
+  "./packages/pi-mcp/src/index.ts",
 ];
 
 afterEach(async () => {
@@ -47,7 +48,7 @@ describe("root Pi extension entrypoints", () => {
     const result = await discoverAndLoadExtensions(expectedResolvedPaths, cwd, agentDir);
 
     expect(result.errors).toEqual([]);
-    expect(result.extensions).toHaveLength(11);
+    expect(result.extensions).toHaveLength(12);
     expect(result.extensions.map((extension) => extension.resolvedPath)).toEqual(
       expectedResolvedPaths,
     );

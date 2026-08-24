@@ -14,7 +14,8 @@
         "+packages/pi-lsp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts",
-        "+packages/pi-codemode/src/index.ts"
+        "+packages/pi-codemode/src/index.ts",
+        "+packages/pi-mcp/src/index.ts"
       ]
     },
     {
@@ -31,7 +32,8 @@
         "-packages/pi-lsp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts",
-        "-packages/pi-codemode/src/index.ts"
+        "-packages/pi-codemode/src/index.ts",
+        "-packages/pi-mcp/src/index.ts"
       ]
     },
     {

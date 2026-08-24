@@ -16,6 +16,7 @@ context relevant to the work:
 | `@ian-pascoe/pi-lsp`               | [`packages/pi-lsp/CONTEXT.md`](packages/pi-lsp/CONTEXT.md)                             | Language-server tools and edit feedback |
 | `@ian-pascoe/pi-dap`               | [`packages/pi-dap/CONTEXT.md`](packages/pi-dap/CONTEXT.md)                             | Interactive debug sessions              |
 | `@ian-pascoe/pi-codemode`          | [`packages/pi-codemode/CONTEXT.md`](packages/pi-codemode/CONTEXT.md)                   | Persistent TypeScript tool composition  |
+| `@ian-pascoe/pi-mcp`               | [`packages/pi-mcp/CONTEXT.md`](packages/pi-mcp/CONTEXT.md)                             | Model Context Protocol hosting          |
 
 The contexts are package-local vocabulary authorities. Repository-wide decisions
 live in [`docs/adr/`](docs/adr/).
