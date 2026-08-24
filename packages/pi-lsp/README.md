@@ -102,8 +102,9 @@ UTF-32 encoding. `selection_ranges` accepts a `positions` array. `find_reference
 `workspace_symbols` requires `query` and a root-anchor `file_path`. `workspace_diagnostics`,
 `capabilities`, and `restart` require `server_id` and a root-anchor `file_path`. Other reads query
 every matching capable server unless narrowed by `server_id`; successful responses remain visible
-when another server fails. A mutation may omit `server_id` only when exactly one matching capable
-server exists.
+when another server fails. Automatic reads omit matching incapable servers and fail once if none
+are capable; explicitly selecting an incapable server reports that the operation is unsupported. A
+mutation may omit `server_id` only when exactly one matching capable server exists.
 
 Formatting requires `tab_size` and `insert_spaces`. It optionally accepts
 `trim_trailing_whitespace`, `insert_final_newline`, and `trim_final_newlines`. Range formatting also

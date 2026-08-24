@@ -98,7 +98,7 @@ export interface LspServerSuccess<T> {
 
 /** Keeps successful multi-server reads useful when independent servers fail. */
 export interface LspServerReadResult<T> {
-  /** Labeled failures in deterministic route order. */
+  /** Labeled operational failures in deterministic route order. */
   readonly failures: readonly LspServerFailure[];
   /** Labeled successful values in deterministic route order. */
   readonly successes: readonly LspServerSuccess<T>[];
@@ -308,7 +308,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     );
   }
 
-  /** Query every matching capable instance while retaining independent successes and failures. */
+  /** Query matching capable instances while retaining independent operational failures. */
   async runRead<T>(
     filePath: string,
     serverId: string | undefined,
@@ -324,10 +324,11 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     }
 
     const outcomes = await Promise.all(
-      routes.map(async (route): Promise<LspServerSuccess<T> | LspServerFailure> => {
+      routes.map(async (route): Promise<LspServerSuccess<T> | LspServerFailure | undefined> => {
         const resolution = await this.ensureClient(route);
         if (resolution.kind === "failure") return resolution.failure;
         if (!isCapable(resolution.instance.client)) {
+          if (serverId === undefined) return undefined;
           return {
             code: "no-capable-server",
             message: `Pi LSP: server ${route.serverId} does not support the requested operation`,
@@ -353,8 +354,16 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     const failures: LspServerFailure[] = [];
     const successes: LspServerSuccess<T>[] = [];
     for (const outcome of outcomes) {
+      if (outcome === undefined) continue;
       if ("code" in outcome) failures.push(outcome);
       else successes.push(outcome);
+    }
+    if (failures.length === 0 && successes.length === 0) {
+      failures.push({
+        code: "no-capable-server",
+        message: "Pi LSP: no matching server supports the requested read operation",
+        serverId: "*",
+      });
     }
     return { failures, successes };
   }

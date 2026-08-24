@@ -12,6 +12,7 @@
 - **Result Spill** — the complete LSP operation output referenced when the model-visible result reaches Pi's standard output limit.
 - **Server Definition** — a configured language-server command, language mapping, workspace-root policy, Activation Gate, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID; an invalid project replacement shadows the global definition and is quarantined.
 - **Server Instance** — one running language-server process for a Server Definition and a detected workspace root.
+- **Capable Server Instance** — a Server Instance that currently advertises support for the requested operation through static or dynamic capabilities.
 - **Mutation Manifest** — the exact file operations and absolute paths of a Validated Workspace Edit exposed to Pi's pre-execution tool hooks.
 
 ## Behavior boundary
