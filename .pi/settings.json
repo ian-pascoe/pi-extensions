@@ -100,6 +100,14 @@
       ]
     }
   ],
+  "mcp": {
+    "servers": {
+      "everything": {
+        "command": "pnpm",
+        "args": ["dlx", "@modelcontextprotocol/server-everything@2026.8.18"]
+      }
+    }
+  },
   "formatter": {
     "formatters": {
       "oxfmt": {
