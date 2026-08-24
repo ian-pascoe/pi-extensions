@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.3.0
+
+### Minor Changes
+
+- ea05c8e: Return detailed child status from timed-out waits and expose bounded recent activity with live reasoning, message text, and tool work.
+
 ## 0.2.3
 
 ### Patch Changes
