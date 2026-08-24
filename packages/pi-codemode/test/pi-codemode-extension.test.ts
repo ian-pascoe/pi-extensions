@@ -344,9 +344,15 @@ describe("Pi CodeMode extension", () => {
     );
     expect(fixture.session.getActiveToolNames()).not.toContain("closure_echo");
     expect(executeDescription(fixture.session)).toContain('readonly ["closure_echo"]');
+    expect(
+      executeDescription(fixture.session).split("\n\nCurrent CodeMode tool declarations:")[0],
+    ).toBe(
+      "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; a new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Cells may call console.log, console.info, console.warn, console.error, and console.debug; captured output arrives only with terminal results.",
+    );
 
     const started = await executeTool(fixture.session, "codemode_execute", {
-      script: "type Count = number; let value: Count = 2; return value;",
+      script:
+        'type Count = number; let value: Count = 2; console.log("value:", value); return value;',
       wait: false,
     });
     const pending = codeModeResult(started);
@@ -356,6 +362,7 @@ describe("Pi CodeMode extension", () => {
       result: "success",
       sessionId: pending.sessionId,
       data: 2,
+      console: [{ method: "log", text: "value: 2" }],
     });
 
     const updates: AgentToolResult<unknown>[] = [];
@@ -402,6 +409,18 @@ describe("Pi CodeMode extension", () => {
     });
     expect(updates[2]?.details).toMatchObject({
       presentation: { active_tool_names: [], nested_tool_count: 1 },
+    });
+
+    const failed = await executeTool(fixture.session, "codemode_execute", {
+      script: 'console.warn("before failure"); throw new Error("failed")',
+      sessionId: pending.sessionId,
+      wait: true,
+    });
+    expect(codeModeResult(failed)).toMatchObject({
+      result: "failed",
+      sessionId: pending.sessionId,
+      error: { code: "script" },
+      console: [{ method: "warn", text: "before failure" }],
     });
 
     const cancelled = await executeTool(fixture.session, "codemode_cancel", {

@@ -8,6 +8,11 @@ import type {
 import type { Usage } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import {
+  CODEMODE_CONSOLE_METHODS,
+  type CodeModeConsoleEntry,
+  type CodeModeConsoleMethod,
+} from "./codemode-console-output.js";
 
 const CODEMODE_TOOL_NAMES = {
   execute: "codemode_execute",
@@ -170,6 +175,15 @@ const CodeModeErrorCodeSchema = Type.Unsafe<CodeModeErrorCode>({
   type: "string",
   enum: [...CODEMODE_ERROR_CODES],
 });
+const CodeModeConsoleMethodSchema = Type.Unsafe<CodeModeConsoleMethod>({
+  type: "string",
+  enum: [...CODEMODE_CONSOLE_METHODS],
+});
+const CodeModeConsoleEntrySchema = Type.Object(
+  { method: CodeModeConsoleMethodSchema, text: Type.String() },
+  { additionalProperties: false },
+);
+const CodeModeConsoleOutputSchema = Type.Array(CodeModeConsoleEntrySchema, { minItems: 1 });
 
 /** Stable error retained by a failed CodeMode result. */
 export const CodeModeErrorSchema = Type.Object(
@@ -186,6 +200,7 @@ const CodeModeSuccessSchema = Type.Object(
     sessionId: SessionIdSchema,
     data: Type.Optional(CodeModeJsonValueSchema),
     reclaimedSessionId: Type.Optional(SessionIdSchema),
+    console: Type.Optional(CodeModeConsoleOutputSchema),
   },
   { additionalProperties: false },
 );
@@ -225,6 +240,7 @@ const CodeModeFailedSchema = Type.Object(
     result: Type.Literal("failed"),
     sessionId: SessionIdSchema,
     error: CodeModeErrorSchema,
+    console: Type.Optional(CodeModeConsoleOutputSchema),
   },
   { additionalProperties: false },
 );
@@ -245,6 +261,7 @@ const CodeModeSuccessDetailsSchema = Type.Object(
     sessionId: SessionIdSchema,
     data: Type.Optional(CodeModeJsonValueSchema),
     reclaimedSessionId: Type.Optional(SessionIdSchema),
+    console: Type.Optional(CodeModeConsoleOutputSchema),
     presentation: Type.Optional(CodeModePresentationSnapshotSchema),
   },
   { additionalProperties: false },
@@ -262,6 +279,7 @@ const CodeModeFailedDetailsSchema = Type.Object(
     result: Type.Literal("failed"),
     sessionId: SessionIdSchema,
     error: CodeModeErrorSchema,
+    console: Type.Optional(CodeModeConsoleOutputSchema),
     presentation: Type.Optional(CodeModePresentationSnapshotSchema),
   },
   { additionalProperties: false },
@@ -276,11 +294,19 @@ export const CodeModeResultDetailsSchema = Type.Union([
 /** Schema-derived details retained by one session-scoped CodeMode operation. */
 export type CodeModeResultDetails = Static<typeof CodeModeResultDetailsSchema>;
 
-/** A successful result with optional JSON data. */
-export function createCodeModeSuccess(sessionId: string, data?: CodeModeJsonValue): CodeModeResult {
-  return data === undefined
-    ? { result: "success", sessionId }
-    : { result: "success", sessionId, data };
+/** A success with optional data and non-empty Cell Console output; empty Console lists are omitted. */
+export function createCodeModeSuccess(
+  sessionId: string,
+  data?: CodeModeJsonValue,
+  consoleEntries?: readonly CodeModeConsoleEntry[],
+): CodeModeResult {
+  const result =
+    data === undefined
+      ? { result: "success" as const, sessionId }
+      : { result: "success" as const, sessionId, data };
+  return consoleEntries === undefined || consoleEntries.length === 0
+    ? result
+    : { ...result, console: [...consoleEntries] };
 }
 
 /** A polling result for a live Cell. */
@@ -288,13 +314,17 @@ export function createCodeModePending(sessionId: string): CodeModeResult {
   return { result: "pending", sessionId };
 }
 
-/** A stable expected failure result. */
+/** A stable expected failure with non-empty Cell Console output; empty Console lists are omitted. */
 export function createCodeModeFailure(
   sessionId: string,
   code: CodeModeErrorCode,
   message: string,
+  consoleEntries?: readonly CodeModeConsoleEntry[],
 ): CodeModeResult {
-  return { result: "failed", sessionId, error: { code, message } };
+  const result = { result: "failed" as const, sessionId, error: { code, message } };
+  return consoleEntries === undefined || consoleEntries.length === 0
+    ? result
+    : { ...result, console: [...consoleEntries] };
 }
 
 /** A bounded JSON compatibility parse that never invokes getters or `toJSON`. */

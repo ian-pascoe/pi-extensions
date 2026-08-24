@@ -246,6 +246,7 @@ function renderCodeModeSummary(
   formatSessionPrefix: CodeModeSessionPrefixFormatter,
 ): string {
   const presentation = details.presentation;
+  const consoleEntries = details.result === "pending" ? undefined : details.console;
   const state = codeModeCellState(toolName, details);
   const status =
     details.result === "failed" && details.error.code === "eviction"
@@ -273,6 +274,9 @@ function renderCodeModeSummary(
       : undefined,
     details.result === "failed" ? theme.fg("muted", details.error.code) : undefined,
     details.result === "failed" ? boundedCodeModePreview(details.error.message, 64) : undefined,
+    consoleEntries === undefined
+      ? undefined
+      : theme.fg("muted", pluralizedCodeModeCount(consoleEntries.length, "console call")),
     state !== "running" && presentation !== undefined && presentation.nested_tool_count > 0
       ? theme.fg("muted", pluralizedCodeModeCount(presentation.nested_tool_count, "tool"))
       : undefined,
@@ -408,6 +412,7 @@ export function renderCodeModeToolResult(
     return renderCodeModeFallback(result, options, theme, isError);
   }
   const details = result.details;
+  const consoleEntries = details.result === "pending" ? undefined : details.console;
   const summary = renderCodeModeSummary(details, toolName, theme, formatSessionPrefix);
   if (!options.expanded) {
     const hint = options.isPartial ? "" : `  ·  ${keyText("app.tools.expand")} to expand`;
@@ -454,6 +459,13 @@ export function renderCodeModeToolResult(
         ),
       );
     }
+  }
+
+  if (consoleEntries !== undefined) {
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(theme.fg("muted", theme.bold("Console")), 0, 0));
+    const output = consoleEntries.map((entry) => `${entry.method}: ${entry.text}`).join("\n");
+    container.addChild(new Text(theme.fg("toolOutput", boundedCodeModeText(output, 2_000)), 0, 0));
   }
 
   if (details.result === "success") {

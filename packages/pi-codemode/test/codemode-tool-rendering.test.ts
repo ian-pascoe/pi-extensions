@@ -249,6 +249,79 @@ describe("CodeMode Transcript rendering", () => {
     ).toContain("line omitted");
   });
 
+  test("renders bounded sanitized Console output before returned data or errors", () => {
+    const success: CodeModeResultDetails = {
+      result: "success",
+      sessionId: "console1-1234",
+      data: 42,
+      console: [
+        { method: "log", text: "first\nsecond" },
+        { method: "warn", text: "\u001b[31mwarning\u001b[0m" },
+      ],
+    };
+    const collapsed = renderText(
+      renderCodeModeToolResult(
+        "codemode_execute",
+        result(success),
+        { expanded: false, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+    expect(collapsed).toContain("✓ completed");
+    expect(collapsed).toContain("2 console calls");
+
+    const expanded = renderText(
+      renderCodeModeToolResult(
+        "codemode_execute",
+        result(success),
+        { expanded: true, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+    expect(expanded).toContain("Console");
+    expect(expanded).toContain("log: first\nsecond");
+    expect(expanded).toContain("warn: warning");
+    expect(expanded).not.toContain("\u001b");
+    expect(expanded.indexOf("Console")).toBeLessThan(expanded.indexOf("Result"));
+
+    const failed: CodeModeResultDetails = {
+      result: "failed",
+      sessionId: "console2-1234",
+      error: { code: "script", message: "failed" },
+      console: [{ method: "error", text: "diagnostic" }],
+    };
+    const failedOutput = renderText(
+      renderCodeModeToolResult(
+        "codemode_result",
+        result(failed),
+        { expanded: true, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+    expect(failedOutput).toContain("× failed");
+    expect(failedOutput).toContain("1 console call");
+    expect(failedOutput.indexOf("Console")).toBeLessThan(failedOutput.indexOf("Error"));
+
+    const oversized: CodeModeResultDetails = {
+      ...success,
+      console: [{ method: "debug", text: Array.from({ length: 2_100 }, () => "line").join("\n") }],
+    };
+    expect(
+      renderText(
+        renderCodeModeToolResult(
+          "codemode_execute",
+          result(oversized),
+          { expanded: true, isPartial: false },
+          plainTheme,
+          false,
+        ),
+      ),
+    ).toContain("lines omitted");
+  });
+
   test("renders reclaimed Sessions as closed", () => {
     const reclaimed: CodeModeResultDetails = {
       result: "failed",

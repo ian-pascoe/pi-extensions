@@ -48,6 +48,11 @@ A private file containing complete returned data when the expanded CodeMode
 Transcript reaches its display limit.
 _Avoid_: log, cache
 
+**Cell Console Output**:
+Ordered diagnostic text emitted through a Cell's supported `console` methods,
+distinct from the Cell's returned data.
+_Avoid_: log, standard output
+
 **Session Reclamation**:
 Capacity-pressure shutdown of the least-recently-used idle CodeMode Session.
 It releases the Deno process and discards that Session's Notebook Bindings.

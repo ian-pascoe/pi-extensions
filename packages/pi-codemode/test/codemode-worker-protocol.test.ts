@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 import {
   CODEMODE_WORKER_MESSAGE_LIMIT_BYTES,
@@ -5,6 +6,7 @@ import {
   parseCodeModeWorkerResponse,
   serializeCodeModeWorkerRequest,
   serializeCodeModeWorkerResponse,
+  type CodeModeWorkerResponse,
 } from "../src/codemode-worker-protocol.js";
 
 describe("CodeMode worker protocol", () => {
@@ -133,6 +135,150 @@ describe("CodeMode worker protocol", () => {
     });
   });
 
+  test("roundtrips ordered Console output on Cell results and failures", () => {
+    const result = {
+      version: 1 as const,
+      type: "cell-result" as const,
+      sessionId: "session-1",
+      cellId: "cell-1",
+      resultJson: "42",
+      console: [
+        { method: "log" as const, text: "answer: 42" },
+        { method: "warn" as const, text: "first\nsecond" },
+      ],
+    };
+    const failure = {
+      version: 1 as const,
+      type: "cell-error" as const,
+      sessionId: "session-1",
+      cellId: "cell-2",
+      error: { code: "script" as const, message: "failed" },
+      console: [{ method: "error" as const, text: "before failure" }],
+    };
+
+    expect(parseCodeModeWorkerResponse(serializeCodeModeWorkerResponse(result))).toEqual({
+      ok: true,
+      value: result,
+    });
+    expect(parseCodeModeWorkerResponse(serializeCodeModeWorkerResponse(failure))).toEqual({
+      ok: true,
+      value: failure,
+    });
+  });
+
+  test("roundtrips arbitrary ordered Console text on both terminal response branches", () => {
+    const consoleEntries = fc.array(
+      fc.record({
+        method: fc.constantFrom("log", "info", "warn", "error", "debug"),
+        text: fc.string({ maxLength: 100 }),
+      }),
+      { minLength: 1, maxLength: 10 },
+    );
+
+    fc.assert(
+      fc.property(consoleEntries, fc.boolean(), (console, failed) => {
+        const response: CodeModeWorkerResponse = failed
+          ? {
+              version: 1,
+              type: "cell-error",
+              sessionId: "session-1",
+              cellId: "cell-1",
+              error: { code: "script", message: "failed" },
+              console,
+            }
+          : {
+              version: 1,
+              type: "cell-result",
+              sessionId: "session-1",
+              cellId: "cell-1",
+              resultJson: "42",
+              console,
+            };
+        expect(parseCodeModeWorkerResponse(serializeCodeModeWorkerResponse(response))).toEqual({
+          ok: true,
+          value: response,
+        });
+      }),
+    );
+  });
+
+  test("rejects malformed Console output and Console fields on unrelated responses", () => {
+    const result = {
+      version: 1,
+      type: "cell-result",
+      sessionId: "session-1",
+      cellId: "cell-1",
+    };
+    for (const consoleEntries of [
+      [],
+      [{ method: "trace", text: "x" }],
+      [{ method: "log" }],
+      [{ method: "log", text: 1 }],
+      [{ method: "log", text: "x", extra: true }],
+    ]) {
+      expect(
+        parseCodeModeWorkerResponse(JSON.stringify({ ...result, console: consoleEntries })).ok,
+      ).toBe(false);
+    }
+    for (const response of [
+      {
+        version: 1,
+        type: "ready",
+        sessionId: "session-1",
+        console: [{ method: "log", text: "x" }],
+      },
+      {
+        version: 1,
+        type: "protocol-error",
+        sessionId: "session-1",
+        message: "failed",
+        console: [{ method: "log", text: "x" }],
+      },
+      {
+        version: 1,
+        type: "tool-batch",
+        sessionId: "session-1",
+        cellId: "cell-1",
+        batchId: "batch-1",
+        calls: [{ callId: "call-1", toolName: "read", inputJson: "{}" }],
+        console: [{ method: "log", text: "x" }],
+      },
+    ]) {
+      expect(parseCodeModeWorkerResponse(JSON.stringify(response)).ok).toBe(false);
+    }
+
+    expect(
+      parseCodeModeWorkerResponse(
+        '{"version":1,"type":"cell-result","sessionId":"session-1","cellId":"cell-1","console":[{"method":"log","method":"warn","text":"x"}]}',
+      ),
+    ).toEqual({
+      ok: false,
+      message: "CodeMode worker response contains duplicate object keys",
+    });
+  });
+
+  test("omits empty Console arrays when serializing terminal responses", () => {
+    const serialized = serializeCodeModeWorkerResponse({
+      version: 1,
+      type: "cell-result",
+      sessionId: "session-1",
+      cellId: "cell-1",
+      resultJson: "42",
+      console: [],
+    });
+    expect(serialized).not.toContain("console");
+    expect(parseCodeModeWorkerResponse(serialized)).toEqual({
+      ok: true,
+      value: {
+        version: 1,
+        type: "cell-result",
+        sessionId: "session-1",
+        cellId: "cell-1",
+        resultJson: "42",
+      },
+    });
+  });
+
   test("rejects malformed, removed diagnostics, empty batches, unknown versions, and over-limit lines", () => {
     expect(parseCodeModeWorkerRequest("not json")).toEqual({
       ok: false,
@@ -188,6 +334,7 @@ describe("CodeMode worker protocol", () => {
       sessionId: "session-1",
       cellId: "cell-1",
       resultJson: JSON.stringify("x".repeat(CODEMODE_WORKER_MESSAGE_LIMIT_BYTES)),
+      console: [{ method: "log", text: "must be omitted" }],
     });
     const parsed = parseCodeModeWorkerResponse(serialized);
     expect(parsed).toMatchObject({
@@ -199,5 +346,6 @@ describe("CodeMode worker protocol", () => {
         error: { code: "serialization" },
       },
     });
+    expect(serialized).not.toContain("must be omitted");
   });
 });
