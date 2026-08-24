@@ -2,11 +2,12 @@
 
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional command data requires omitting absent fields at the shared command boundary.
 // oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This entrypoint owns trust-store parsing before values reach typed settings adapters.
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import {
   runMcpCommandTokens,
   type McpCommandAdapterResult,
@@ -494,7 +495,7 @@ export async function runPiMcpCli(
 }
 
 const entrypoint = process.argv[1];
-if (entrypoint !== undefined && import.meta.url === pathToFileURL(entrypoint).href) {
+if (entrypoint !== undefined && fileURLToPath(import.meta.url) === realpathSync(entrypoint)) {
   void runPiMcpCli(process.argv.slice(2)).then(
     (exitCode) => {
       process.exitCode = exitCode;

@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "A complete Model Context Protocol Host for Pi",
   "keywords": [

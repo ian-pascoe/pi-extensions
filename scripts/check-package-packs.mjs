@@ -159,9 +159,12 @@ function validatePackedManifest(sourceManifest, packedManifest) {
 
 async function assertTarballRunsPiMcpCli(packageName, installDirectory) {
   if (packageName !== piMcpPackageName) return;
-  await runCommand(resolve(installDirectory, "node_modules", ".bin", "pi-mcp"), ["--help"], {
-    cwd: installDirectory,
-  });
+  const { stdout } = await runCommand(
+    resolve(installDirectory, "node_modules", ".bin", "pi-mcp"),
+    ["--help"],
+    { cwd: installDirectory },
+  );
+  assertPackCondition(stdout.startsWith("Usage: pi-mcp "), `${packageName} CLI omits help output`);
 }
 
 async function assertTarballLoads(packageName, tarballPath) {
