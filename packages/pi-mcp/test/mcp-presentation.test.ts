@@ -5,7 +5,7 @@ import {
   type AgentToolResult,
   type MessageRenderOptions,
 } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { Box, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, test } from "vitest";
 import {
   parseMcpPromptReplayMessages,
@@ -193,6 +193,36 @@ describe("MCP Transcript Presentation", () => {
     expect(renderText(renderMcpToolResult(cancelled, collapsed, plainTheme, true))).toContain(
       "■ cancelled",
     );
+  });
+
+  test("keeps the tool card background behind a truncation ellipsis", () => {
+    const ansiTheme = {
+      bg: (_color: string, text: string) => `\u001b[48;5;22m${text}\u001b[49m`,
+      bold: (text: string) => `\u001b[1m${text}\u001b[22m`,
+      fg: (_color: string, text: string) => `\u001b[31m${text}\u001b[39m`,
+    } satisfies McpRenderTheme;
+    const box = new Box(1, 1, (text) => ansiTheme.bg("toolSuccessBg", text));
+    box.addChild(
+      renderMcpServerToolCall(
+        "server-with-a-very-long-name",
+        "tool-with-a-very-long-name",
+        {},
+        ansiTheme,
+        false,
+      ),
+    );
+
+    const ellipsisLine = box.render(24).find((line) => line.includes("…"));
+    expect(ellipsisLine).toBeDefined();
+    expect(ellipsisLine).not.toContain("\u001b[0m…");
+
+    const previewBox = new Box(1, 1, (text) => ansiTheme.bg("toolSuccessBg", text));
+    previewBox.addChild(
+      renderMcpServerToolCall("server", "tool", { query: "x".repeat(200) }, ansiTheme, false),
+    );
+    const previewLine = previewBox.render(120).find((line) => line.includes("…"));
+    expect(previewLine).toBeDefined();
+    expect(previewLine).not.toContain("\u001b[0m…");
   });
 
   test("keeps expanded result text within Pi display bounds", () => {

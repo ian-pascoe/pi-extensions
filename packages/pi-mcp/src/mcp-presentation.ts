@@ -27,6 +27,8 @@ import type { McpModelContent } from "./mcp-content.js";
 
 const MCP_DETAILS_OWNER = "pi-mcp";
 const MCP_PRESENTATION_ELLIPSIS = "…";
+const MCP_PRESENTATION_FULL_RESET = "\u001b[0m";
+const MCP_PRESENTATION_TEXT_STYLE_RESET = "\u001b[22;39m";
 const MCP_PRESENTATION_METADATA_LIMIT = 20;
 const MCP_PRESENTATION_RESERVED_BYTES = 8 * 1024;
 const MCP_PRESENTATION_RESERVED_LINES = 64;
@@ -97,13 +99,23 @@ export type McpResourcePresentationOperation =
 
 const identityRedactor: McpPresentationRedactor = (text) => text;
 
+function truncateMcpPresentationToWidth(text: string, width: number): string {
+  const availableWidth = Math.max(1, width);
+  if (visibleWidth(text) <= availableWidth) return text;
+  const truncated = truncateToWidth(text, availableWidth - 1, "");
+  const prefix = truncated.endsWith(MCP_PRESENTATION_FULL_RESET)
+    ? truncated.slice(0, -MCP_PRESENTATION_FULL_RESET.length)
+    : truncated;
+  return `${prefix}${MCP_PRESENTATION_TEXT_STYLE_RESET}${MCP_PRESENTATION_ELLIPSIS}${MCP_PRESENTATION_TEXT_STYLE_RESET}`;
+}
+
 class McpSingleLine implements Component {
   constructor(private readonly text: string) {}
 
   invalidate(): void {}
 
   render(width: number): string[] {
-    return [truncateToWidth(this.text, Math.max(1, width), MCP_PRESENTATION_ELLIPSIS)];
+    return [truncateMcpPresentationToWidth(this.text, width)];
   }
 }
 
@@ -125,7 +137,7 @@ function presentationText(text: string, redact: McpPresentationRedactor): string
 function boundedMcpPreview(text: string, redact: McpPresentationRedactor, width = 160): string {
   const safe = presentationText(text, redact).replace(/\s+/g, " ").trim();
   if (visibleWidth(safe) <= width) return safe;
-  return truncateToWidth(safe, width, MCP_PRESENTATION_ELLIPSIS);
+  return truncateMcpPresentationToWidth(safe, width);
 }
 
 function boundedMcpMetadataText(
@@ -134,10 +146,9 @@ function boundedMcpMetadataText(
   width: number,
   maxBytes: number,
 ): string {
-  const columns = truncateToWidth(
+  const columns = truncateMcpPresentationToWidth(
     presentationText(text, redact).replace(/\s+/g, " ").trim(),
     width,
-    MCP_PRESENTATION_ELLIPSIS,
   );
   const bytes = truncateHead(columns, { maxBytes: maxBytes - 3, maxLines: 1 });
   return bytes.truncated ? `${bytes.content}${MCP_PRESENTATION_ELLIPSIS}` : columns;
