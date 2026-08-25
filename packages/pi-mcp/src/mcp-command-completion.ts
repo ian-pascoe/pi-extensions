@@ -1,11 +1,16 @@
 /* oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional completion descriptions are included only when their source supplies one. */
 import {
   MCP_ADD_LOCAL_VALUE_OPTIONS,
+  MCP_ADD_OAUTH_VALUE_OPTIONS,
   MCP_ADD_REMOTE_VALUE_OPTIONS,
   MCP_COMMAND_NAMES,
   MCP_COMMAND_OPTIONS,
+  classifyMcpAddAuthentication,
+  classifyMcpAddTransportMode,
   scanMcpCommandOptions,
   tokenizeMcpCommandCompletionPrefix,
+  type McpAddAuthenticationMode,
+  type McpAddTransportMode,
   type McpCommandCompletionPrefix,
   type McpCommandName,
   type McpCommandScannedOptions,
@@ -67,8 +72,11 @@ export type McpCommandCompletionHost = Pick<
 
 /** One Pi autocomplete row whose value replaces the complete `/mcp` argument prefix. */
 export interface McpCommandCompletionItem {
+  /** Optional explanatory text shown beside the candidate. */
   readonly description?: string;
+  /** Human-readable candidate text. */
   readonly label: string;
+  /** Complete `/mcp` argument prefix inserted by Pi. */
   readonly value: string;
 }
 
@@ -166,10 +174,6 @@ function completeServerAndOptions(
   ]);
 }
 
-function lastOptionValue(parsed: McpCommandScannedOptions, name: string): string | undefined {
-  return parsed.values.get(name)?.at(-1);
-}
-
 function enumCompletion(
   prefix: McpCommandCompletionPrefix,
   option: string,
@@ -189,61 +193,19 @@ function enumCompletion(
   return completionItems(prefix, values);
 }
 
-type AddCompletionMode = "both" | "invalid" | "local" | "remote";
-type AddAuthenticationMode = "bearer" | "invalid" | "none" | "oauth" | undefined;
-
-function addAuthenticationMode(parsed: McpCommandScannedOptions): AddAuthenticationMode {
-  const configured = lastOptionValue(parsed, "auth");
-  if (
-    configured !== undefined &&
-    configured !== "bearer" &&
-    configured !== "none" &&
-    configured !== "oauth"
-  )
-    return "invalid";
-  const bearer = parsed.values.has("token");
-  const oauth = ["client-id", "client-secret", "redirect-uri", "scope"].some((name) =>
-    parsed.values.has(name),
-  );
-  if (bearer && oauth) return "invalid";
-  if (
-    (configured === "none" && (bearer || oauth)) ||
-    (configured === "bearer" && oauth) ||
-    (configured === "oauth" && bearer)
-  ) {
-    return "invalid";
-  }
-  return configured ?? (bearer ? "bearer" : oauth ? "oauth" : undefined);
-}
-
-function addCompletionMode(parsed: McpCommandScannedOptions): AddCompletionMode {
-  const transport = lastOptionValue(parsed, "transport");
-  if (transport !== undefined && !["http", "sse", "stdio"].includes(transport)) return "invalid";
-  if (parsed.positionals.length > 2) return "invalid";
-  const local =
-    transport === "stdio" || [...LOCAL_ADD_OPTIONS].some((name) => parsed.values.has(name));
-  const remote =
-    parsed.positionals.length > 1 ||
-    transport === "http" ||
-    transport === "sse" ||
-    [...REMOTE_ADD_OPTIONS].some((name) => parsed.values.has(name));
-  return local && remote ? "invalid" : local ? "local" : remote ? "remote" : "both";
-}
-
 function addOptionCandidates(
   parsed: McpCommandScannedOptions,
-  mode: Exclude<AddCompletionMode, "invalid">,
-  auth: Exclude<AddAuthenticationMode, "invalid">,
+  mode: Exclude<McpAddTransportMode, "invalid">,
+  auth: McpAddAuthenticationMode,
 ): CompletionCandidate[] {
   const allowed = new Set<string>(["local", "transport"]);
   if (mode !== "remote") for (const name of LOCAL_ADD_OPTIONS) allowed.add(name);
   if (mode !== "local") for (const name of REMOTE_ADD_OPTIONS) allowed.add(name);
   if (auth === "none") {
-    for (const name of ["client-id", "client-secret", "redirect-uri", "scope", "token"])
-      allowed.delete(name);
+    for (const name of MCP_ADD_OAUTH_VALUE_OPTIONS) allowed.delete(name);
+    allowed.delete("token");
   } else if (auth === "bearer") {
-    for (const name of ["client-id", "client-secret", "redirect-uri", "scope"])
-      allowed.delete(name);
+    for (const name of MCP_ADD_OAUTH_VALUE_OPTIONS) allowed.delete(name);
   } else if (auth === "oauth") {
     allowed.delete("token");
   }
@@ -264,9 +226,10 @@ function completeAddCommand(
   parsed: McpCommandScannedOptions,
 ): McpCommandCompletionItem[] | null {
   if (parsed.tail !== undefined) return null;
-  const mode = addCompletionMode(parsed);
-  const auth = addAuthenticationMode(parsed);
-  if (mode === "invalid" || auth === "invalid") return null;
+  const mode = classifyMcpAddTransportMode(parsed);
+  const authentication = classifyMcpAddAuthentication(parsed, "completion");
+  if (mode === "invalid" || !authentication.ok) return null;
+  const auth = authentication.type;
   const pending = parsed.pendingValue;
   const inline = prefix.current.value.match(/^--(auth|transport)=(.*)$/u);
   if (pending === "auth" || inline?.[1] === "auth") {

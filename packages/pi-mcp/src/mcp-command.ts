@@ -35,14 +35,19 @@ export type McpCommandName = (typeof MCP_COMMAND_NAMES)[number];
 /** Value options valid only for local stdio Server Definitions. */
 export const MCP_ADD_LOCAL_VALUE_OPTIONS = ["cwd", "environment"] as const;
 
+/** OAuth credential options accepted by remote Server Definitions. */
+export const MCP_ADD_OAUTH_VALUE_OPTIONS = [
+  "client-id",
+  "client-secret",
+  "redirect-uri",
+  "scope",
+] as const;
+
 /** Value options valid only for remote HTTP or SSE Server Definitions. */
 export const MCP_ADD_REMOTE_VALUE_OPTIONS = [
   "auth",
-  "client-id",
-  "client-secret",
+  ...MCP_ADD_OAUTH_VALUE_OPTIONS,
   "header",
-  "redirect-uri",
-  "scope",
   "token",
 ] as const;
 
@@ -286,17 +291,36 @@ function usageFailure(
 
 /** Tokenized command options, including an unfinished completion value when requested. */
 export interface McpCommandScannedOptions {
+  /** Normalized flag names present before the stdio delimiter. */
   readonly flags: ReadonlySet<string>;
+  /** Value option awaiting the current completion token. */
   readonly pendingValue?: string;
+  /** Non-option tokens present before the stdio delimiter. */
   readonly positionals: readonly string[];
+  /** Unparsed stdio command tokens after `--`, or `undefined` when no delimiter exists. */
   readonly tail: readonly string[] | undefined;
+  /** Normalized value-option names and their supplied values. */
   readonly values: ReadonlyMap<string, readonly string[]>;
 }
 
+/** Failed command option scan before semantic validation. */
+export interface McpCommandOptionScanFailure {
+  /** Human-readable grammar failure. */
+  readonly message: string;
+  /** Discriminant for a failed scan. */
+  readonly ok: false;
+}
+
+/** Successful command option scan before semantic validation. */
+export interface McpCommandOptionScanSuccess {
+  /** Discriminant for a successful scan. */
+  readonly ok: true;
+  /** Parsed option structure. */
+  readonly options: McpCommandScannedOptions;
+}
+
 /** Result of scanning command options before command-specific semantic validation. */
-export type McpCommandOptionScanResult =
-  | { readonly message: string; readonly ok: false }
-  | { readonly ok: true; readonly options: McpCommandScannedOptions };
+export type McpCommandOptionScanResult = McpCommandOptionScanFailure | McpCommandOptionScanSuccess;
 
 function normalizeOptionName(rawName: string): string {
   switch (rawName) {
@@ -402,6 +426,85 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/** Authentication mode inferred from `add` options. */
+export type McpAddAuthenticationMode = "bearer" | "none" | "oauth" | undefined;
+
+/** Invalid combination of MCP `add` authentication options. */
+export interface McpAddAuthenticationFailure {
+  /** Parser-compatible explanation of the incompatible options. */
+  readonly message: string;
+  /** Discriminant for incompatible authentication options. */
+  readonly ok: false;
+}
+
+/** Compatible MCP `add` authentication options. */
+export interface McpAddAuthenticationSuccess {
+  /** Discriminant for compatible authentication options. */
+  readonly ok: true;
+  /** Explicit or inferred authentication mode. */
+  readonly type: McpAddAuthenticationMode;
+}
+
+/** Compatibility result for MCP `add` authentication options. */
+export type McpAddAuthenticationResult = McpAddAuthenticationFailure | McpAddAuthenticationSuccess;
+
+/** Classify MCP `add` authentication options for strict parsing or partial completion. */
+export function classifyMcpAddAuthentication(
+  options: McpCommandScannedOptions,
+  mode: "completion" | "strict",
+): McpAddAuthenticationResult {
+  const configuredType = oneValue(options, "auth");
+  const token = oneValue(options, "token");
+  const oauth = MCP_ADD_OAUTH_VALUE_OPTIONS.some((name) => options.values.has(name));
+  const type = configuredType ?? (token !== undefined ? "bearer" : oauth ? "oauth" : undefined);
+  if (type === undefined) return { ok: true, type };
+  if (type === "none") {
+    return token === undefined && !oauth
+      ? { ok: true, type }
+      : { message: "auth type none cannot include credential options", ok: false };
+  }
+  if (type === "bearer") {
+    if (mode === "strict" && (token === undefined || token.length === 0))
+      return { message: "bearer auth requires --token", ok: false };
+    if (oauth) return { message: "bearer auth cannot include OAuth options", ok: false };
+    return { ok: true, type };
+  }
+  if (type === "oauth") {
+    return token === undefined
+      ? { ok: true, type }
+      : { message: "OAuth auth cannot include --token", ok: false };
+  }
+  return { message: "--auth must be none, bearer, or oauth", ok: false };
+}
+
+/** Local, remote, undecided, or incompatible MCP `add` transport form. */
+export type McpAddTransportMode = "both" | "invalid" | "local" | "remote";
+
+/** Classify local and remote MCP `add` option signals without performing I/O. */
+export function classifyMcpAddTransportMode(
+  options: McpCommandScannedOptions,
+): McpAddTransportMode {
+  const transport = oneValue(options, "transport");
+  if (
+    transport !== undefined &&
+    transport !== "http" &&
+    transport !== "sse" &&
+    transport !== "stdio"
+  )
+    return "invalid";
+  if (options.positionals.length > 2) return "invalid";
+  const local =
+    options.tail !== undefined ||
+    transport === "stdio" ||
+    MCP_ADD_LOCAL_VALUE_OPTIONS.some((name) => options.values.has(name));
+  const remote =
+    options.positionals.length > 1 ||
+    transport === "http" ||
+    transport === "sse" ||
+    MCP_ADD_REMOTE_VALUE_OPTIONS.some((name) => options.values.has(name));
+  return local && remote ? "invalid" : local ? "local" : remote ? "remote" : "both";
+}
+
 function parseRemoteAuth(
   options: McpCommandScannedOptions,
 ): McpAddServerDefinition extends infer _Definition
@@ -410,49 +513,20 @@ function parseRemoteAuth(
       | undefined
       | string
   : never {
-  const configuredType = oneValue(options, "auth");
   const token = oneValue(options, "token");
   const clientId = oneValue(options, "client-id");
   const clientSecret = oneValue(options, "client-secret");
   const redirectUri = oneValue(options, "redirect-uri");
   const scopes = options.values.get("scope") ?? [];
-  const inferredType =
-    token !== undefined
-      ? "bearer"
-      : clientId !== undefined ||
-          clientSecret !== undefined ||
-          redirectUri !== undefined ||
-          scopes.length > 0
-        ? "oauth"
-        : undefined;
-  const type = configuredType ?? inferredType;
+  const compatibility = classifyMcpAddAuthentication(options, "strict");
+  if (!compatibility.ok) return compatibility.message;
+  const type = compatibility.type;
   if (type === undefined) return undefined;
-  if (type === "none") {
-    if (
-      token !== undefined ||
-      clientId !== undefined ||
-      clientSecret !== undefined ||
-      redirectUri !== undefined ||
-      scopes.length > 0
-    ) {
-      return "auth type none cannot include credential options";
-    }
-    return { type: "none" };
-  }
+  if (type === "none") return { type: "none" };
   if (type === "bearer") {
-    if (token === undefined || token.length === 0) return "bearer auth requires --token";
-    if (
-      clientId !== undefined ||
-      clientSecret !== undefined ||
-      redirectUri !== undefined ||
-      scopes.length > 0
-    ) {
-      return "bearer auth cannot include OAuth options";
-    }
+    if (token === undefined) return "bearer auth requires --token";
     return { token, type: "bearer" };
   }
-  if (type !== "oauth") return "--auth must be none, bearer, or oauth";
-  if (token !== undefined) return "OAuth auth cannot include --token";
   return {
     ...(clientId === undefined ? {} : { clientId }),
     ...(clientSecret === undefined ? {} : { clientSecret }),
@@ -468,6 +542,7 @@ function parseAdd(args: readonly string[]): McpCommandParseResult {
   const name = options.positionals[0];
   if (name === undefined || name.length === 0)
     return usageFailure("add", "server name is required");
+  const transportMode = classifyMcpAddTransportMode(options);
   if (options.tail !== undefined) {
     if (options.positionals.length !== 1)
       return usageFailure("add", "a local add cannot also include a URL");
@@ -479,7 +554,7 @@ function parseAdd(args: readonly string[]): McpCommandParseResult {
         return usageFailure("add", `local add cannot include --${remoteOption}`);
     }
     const transport = oneValue(options, "transport");
-    if (transport !== undefined && transport !== "stdio") {
+    if (transport !== undefined && transportMode !== "local") {
       return usageFailure("add", "local transport must be stdio");
     }
     const environment = parseAssignments(options.values.get("environment") ?? [], "environment");
@@ -510,7 +585,7 @@ function parseAdd(args: readonly string[]): McpCommandParseResult {
   const url = options.positionals[1] ?? "";
   if (!isHttpUrl(url)) return usageFailure("add", "remote URL must be absolute HTTP or HTTPS");
   const transport = oneValue(options, "transport") ?? "http";
-  if (transport !== "http" && transport !== "sse")
+  if (transportMode !== "remote" || (transport !== "http" && transport !== "sse"))
     return usageFailure("add", "remote transport must be http or sse");
   const headers = parseAssignments(options.values.get("header") ?? [], "header");
   if (typeof headers === "string") return usageFailure("add", headers);
@@ -849,17 +924,25 @@ export async function executeMcpCommand(
 
 /** Current token and replacement boundary for an unfinished MCP command. */
 export interface McpCommandCompletionToken {
+  /** Opening quote style to preserve when replacing the token. */
   readonly quote: "'" | '"' | undefined;
+  /** Zero-based source offset where replacement begins. */
   readonly start: number;
+  /** Decoded token value before the cursor. */
   readonly value: string;
 }
 
 /** Tolerant tokenization of a complete or unfinished MCP command prefix. */
 export interface McpCommandCompletionPrefix {
+  /** Source text preserved before replacing the current token. */
   readonly beforeCurrent: string;
+  /** Decoded tokens completed before the current token. */
   readonly completed: readonly string[];
+  /** Token being completed at the cursor. */
   readonly current: McpCommandCompletionToken;
+  /** Whether the source ends inside a token rather than after whitespace. */
   readonly currentStarted: boolean;
+  /** Whether the source ends before its opening quote closes. */
   readonly incompleteQuote: boolean;
 }
 
