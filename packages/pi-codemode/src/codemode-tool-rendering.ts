@@ -15,7 +15,6 @@ import {
   Spacer,
   stripTerminalSequences,
   Text,
-  truncateToWidth,
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
@@ -201,6 +200,12 @@ function highlightedCodeModeSource(source: string): string {
     .join("\n");
 }
 
+function truncateHighlightedCodeModeSourceLine(line: string, width: number): string {
+  if (visibleWidth(line) <= width) return line;
+  const prefix = sliceByColumn(line, 0, Math.max(0, width - 1), true);
+  return `${prefix}\u001b[22;23;24;25;27;28;29;39m…`;
+}
+
 class CodeModeCollapsedSourceComponent implements Component {
   private readonly lines: readonly string[];
 
@@ -210,7 +215,7 @@ class CodeModeCollapsedSourceComponent implements Component {
 
   render(width: number): string[] {
     if (width <= 0) return [];
-    return this.lines.map((line) => truncateToWidth(line, width, "…"));
+    return this.lines.map((line) => truncateHighlightedCodeModeSourceLine(line, width));
   }
 
   invalidate(): void {}
@@ -228,7 +233,9 @@ class CodeModeCollapsedInlineSourceComponent implements Component {
     const sourceWidth = width - visibleWidth(this.prefix) - visibleWidth(this.suffix);
     if (visibleWidth(this.source) === 0 || sourceWidth <= 0)
       return new Text(`${this.prefix.trimEnd()}${this.suffix}`, 0, 0).render(width);
-    return [`${this.prefix}${truncateToWidth(this.source, sourceWidth, "…")}${this.suffix}`];
+    return [
+      `${this.prefix}${truncateHighlightedCodeModeSourceLine(this.source, sourceWidth)}${this.suffix}`,
+    ];
   }
 
   invalidate(): void {}

@@ -111,11 +111,15 @@ describe("CodeMode Transcript rendering", () => {
       script: 'const longVariableName = "a very long value";\nreturn longVariableName;',
     };
 
-    const collapsed = renderLines(
-      renderCodeModeToolCall("codemode_execute", execute, plainTheme, false),
-      24,
+    const collapsedComponent = renderCodeModeToolCall(
+      "codemode_execute",
+      execute,
+      plainTheme,
+      false,
     );
+    const collapsed = renderLines(collapsedComponent, 24);
     expect(collapsed.slice(1, 3)).toEqual(["  const longVariableNam…", "  return longVariableNa…"]);
+    expect(collapsedComponent.render(24)[1]).not.toContain("\u001b[0m");
 
     const expanded = renderText(
       renderCodeModeToolCall("codemode_execute", execute, plainTheme, true),
