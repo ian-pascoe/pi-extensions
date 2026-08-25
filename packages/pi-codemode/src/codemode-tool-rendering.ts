@@ -15,6 +15,7 @@ import {
   Spacer,
   stripTerminalSequences,
   Text,
+  truncateToWidth,
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
@@ -200,6 +201,39 @@ function highlightedCodeModeSource(source: string): string {
     .join("\n");
 }
 
+class CodeModeCollapsedSourceComponent implements Component {
+  private readonly lines: readonly string[];
+
+  constructor(source: string) {
+    this.lines = highlightedCodeModeSource(source).split("\n");
+  }
+
+  render(width: number): string[] {
+    if (width <= 0) return [];
+    return this.lines.map((line) => truncateToWidth(line, width, "…"));
+  }
+
+  invalidate(): void {}
+}
+
+class CodeModeCollapsedInlineSourceComponent implements Component {
+  constructor(
+    private readonly prefix: string,
+    private readonly source: string,
+    private readonly suffix: string,
+  ) {}
+
+  render(width: number): string[] {
+    if (width <= 0) return [];
+    const sourceWidth = width - visibleWidth(this.prefix) - visibleWidth(this.suffix);
+    if (visibleWidth(this.source) === 0 || sourceWidth <= 0)
+      return new Text(`${this.prefix.trimEnd()}${this.suffix}`, 0, 0).render(width);
+    return [`${this.prefix}${truncateToWidth(this.source, sourceWidth, "…")}${this.suffix}`];
+  }
+
+  invalidate(): void {}
+}
+
 function appendHighlightedCodeModeSource(container: Container, source: string): void {
   container.addChild(new Text(highlightedCodeModeSource(source), 0, 0));
 }
@@ -319,30 +353,27 @@ export function renderCodeModeToolCall(
   const oneLineSource = source !== undefined && !source.includes("\n") ? source : undefined;
   const expansionHint = `${keyText("app.tools.expand")} to expand`;
   const container = new Container();
-  container.addChild(
-    new Text(
-      [
-        theme.fg("toolTitle", theme.bold("CodeMode")),
-        theme.fg("accent", operation),
-        theme.fg("muted", sessionId === undefined ? "new" : formatSessionPrefix(sessionId)),
-        !expanded && oneLineSource !== undefined
-          ? highlightCode(oneLineSource, "typescript")[0]
-          : undefined,
-        !expanded && oneLineSource !== undefined
-          ? theme.fg("dim", `·  ${expansionHint}`)
-          : undefined,
-      ]
-        .filter((part): part is string => part !== undefined)
-        .join("  "),
-      0,
-      0,
-    ),
-  );
+  const header = [
+    theme.fg("toolTitle", theme.bold("CodeMode")),
+    theme.fg("accent", operation),
+    theme.fg("muted", sessionId === undefined ? "new" : formatSessionPrefix(sessionId)),
+  ].join("  ");
+  if (!expanded && oneLineSource !== undefined) {
+    container.addChild(
+      new CodeModeCollapsedInlineSourceComponent(
+        `${header}  `,
+        highlightCode(oneLineSource, "typescript")[0] ?? "",
+        `  ${theme.fg("dim", `·  ${expansionHint}`)}`,
+      ),
+    );
+  } else {
+    container.addChild(new Text(header, 0, 0));
+  }
   if (!expanded) {
     if (source === undefined || oneLineSource !== undefined) return container;
     const sourceLines = source.split("\n");
     const visibleSource = sourceLines.slice(0, CODEMODE_COLLAPSED_SCRIPT_LINES).join("\n");
-    appendHighlightedCodeModeSource(container, visibleSource);
+    container.addChild(new CodeModeCollapsedSourceComponent(visibleSource));
     const omittedLines = Math.max(0, sourceLines.length - CODEMODE_COLLAPSED_SCRIPT_LINES);
     const omitted =
       omittedLines === 0 ? "" : `… ${pluralizedCodeModeCount(omittedLines, "line")} omitted  ·  `;

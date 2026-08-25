@@ -106,6 +106,60 @@ describe("CodeMode Transcript rendering", () => {
     ).toBe("CodeMode  Poll  aaaaaaaa-1");
   });
 
+  test("truncates collapsed multiline source without truncating expanded source", () => {
+    const execute = {
+      script: 'const longVariableName = "a very long value";\nreturn longVariableName;',
+    };
+
+    const collapsed = renderLines(
+      renderCodeModeToolCall("codemode_execute", execute, plainTheme, false),
+      24,
+    );
+    expect(collapsed.slice(1, 3)).toEqual(["  const longVariableNam…", "  return longVariableNa…"]);
+
+    const expanded = renderText(
+      renderCodeModeToolCall("codemode_execute", execute, plainTheme, true),
+      24,
+    );
+    expect(expanded).toContain("very long value");
+    expect(expanded).not.toContain("…");
+  });
+
+  test("truncates collapsed single-line source before wrapping fixed header content", () => {
+    const execute = { script: 'const longVariableName = "a very long value";' };
+
+    const collapsed = renderLines(
+      renderCodeModeToolCall("codemode_execute", execute, plainTheme, false),
+      60,
+    );
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed[0]).toMatch(/^CodeMode  Run Cell  new  const .*…  ·/);
+    expect(collapsed[0]).toContain("to expand");
+    expect(collapsed[0]).not.toContain("very long value");
+
+    const emptySource = renderLines(
+      renderCodeModeToolCall("codemode_execute", { script: "" }, plainTheme, false),
+    );
+    expect(emptySource).toHaveLength(1);
+    expect(emptySource[0]).toMatch(/^CodeMode  Run Cell  new  ·/);
+
+    const fixedHeaderOnly = renderLines(
+      renderCodeModeToolCall("codemode_execute", execute, plainTheme, false),
+      38,
+    );
+    expect(fixedHeaderOnly).toHaveLength(1);
+    expect(fixedHeaderOnly[0]).toContain("to expand");
+    expect(fixedHeaderOnly[0]).not.toContain("longVariableName");
+
+    const veryNarrow = renderText(
+      renderCodeModeToolCall("codemode_execute", execute, plainTheme, false),
+      20,
+    );
+    expect(veryNarrow).toContain("CodeMode");
+    expect(veryNarrow).toContain("to expand");
+    expect(veryNarrow).not.toContain("longVariableName");
+  });
+
   test("renders lifecycle, value shape, nested tools, spill, and reusable state", () => {
     const details: CodeModeResultDetails = {
       result: "success",
