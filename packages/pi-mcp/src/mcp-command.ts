@@ -26,7 +26,55 @@ export const MCP_COMMAND_NAMES = [
   "subscribe",
   "unsubscribe",
   "logs",
+  "help",
 ] as const;
+
+/** One command name accepted by the MCP command parser. */
+export type McpCommandName = (typeof MCP_COMMAND_NAMES)[number];
+
+/** Value options valid only for local stdio Server Definitions. */
+export const MCP_ADD_LOCAL_VALUE_OPTIONS = ["cwd", "environment"] as const;
+
+/** OAuth credential options accepted by remote Server Definitions. */
+export const MCP_ADD_OAUTH_VALUE_OPTIONS = [
+  "client-id",
+  "client-secret",
+  "redirect-uri",
+  "scope",
+] as const;
+
+/** Value options valid only for remote HTTP or SSE Server Definitions. */
+export const MCP_ADD_REMOTE_VALUE_OPTIONS = [
+  "auth",
+  ...MCP_ADD_OAUTH_VALUE_OPTIONS,
+  "header",
+  "token",
+] as const;
+
+/** Option names accepted by the MCP command parser, without leading dashes. */
+export const MCP_COMMAND_OPTIONS = {
+  add: {
+    flags: ["local"],
+    values: [...MCP_ADD_LOCAL_VALUE_OPTIONS, ...MCP_ADD_REMOTE_VALUE_OPTIONS, "transport"],
+  },
+  auth: { flags: ["no-open"], values: ["callback", "code", "state"] },
+  disable: { flags: ["local"], values: [] },
+  enable: { flags: ["local"], values: [] },
+  help: { flags: [], values: [] },
+  list: { flags: ["json"], values: [] },
+  logout: { flags: ["all", "force"], values: [] },
+  logs: { flags: [], values: [] },
+  prompt: { flags: [], values: ["arg"] },
+  reconnect: { flags: [], values: [] },
+  remove: { flags: ["local", "logout"], values: [] },
+  status: { flags: [], values: [] },
+  subscribe: { flags: [], values: [] },
+  test: { flags: ["all", "json"], values: [] },
+  unsubscribe: { flags: [], values: [] },
+} as const satisfies Record<
+  McpCommandName,
+  { readonly flags: readonly string[]; readonly values: readonly string[] }
+>;
 
 /** Persistent and offline commands available through the standalone executable. */
 export const MCP_STANDALONE_COMMAND_NAMES = MCP_COMMAND_NAMES.slice(0, 8);
@@ -119,7 +167,8 @@ export type McpCommand =
     }
   | { readonly kind: "subscribe"; readonly server: string; readonly uri: string }
   | { readonly kind: "unsubscribe"; readonly server: string; readonly uri: string }
-  | { readonly kind: "logs"; readonly level?: McpLoggingLevel; readonly server?: string };
+  | { readonly kind: "logs"; readonly server?: string }
+  | { readonly kind: "help" };
 
 /** Usage failure returned when command tokens cannot be parsed. */
 export interface McpCommandParseFailure {
@@ -208,23 +257,6 @@ const EXIT_CODES = {
 
 const GENERAL_USAGE = `Usage: pi-mcp <command> [options]
 Commands: ${MCP_STANDALONE_COMMAND_NAMES.join(", ")}`;
-const MCP_LOG_LEVELS = [
-  "debug",
-  "info",
-  "notice",
-  "warning",
-  "error",
-  "critical",
-  "alert",
-  "emergency",
-] as const;
-
-/** MCP logging levels accepted by the shared `/mcp logs` grammar. */
-export type McpLoggingLevel = (typeof MCP_LOG_LEVELS)[number];
-
-function isMcpLoggingLevel(value: string): value is McpLoggingLevel {
-  return MCP_LOG_LEVELS.some((candidate) => candidate === value);
-}
 const RUNTIME_HELP = `Commands: ${MCP_COMMAND_NAMES.join(", ")}`;
 
 const COMMAND_USAGE = {
@@ -234,7 +266,8 @@ const COMMAND_USAGE = {
   enable: "Usage: pi-mcp enable [-l|--local] <server>",
   list: "Usage: pi-mcp list [--json]",
   logout: "Usage: pi-mcp logout <server> | --all --force",
-  logs: "Usage: /mcp logs [server] [--level LEVEL]",
+  logs: "Usage: /mcp logs [server]",
+  help: "Usage: /mcp help",
   prompt: "Usage: /mcp prompt <server> <prompt> [--arg NAME=VALUE]...",
   reconnect: "Usage: /mcp reconnect <server>",
   remove: "Usage: pi-mcp remove [-l|--local] [--logout] <server>",
@@ -256,12 +289,38 @@ function usageFailure(
   };
 }
 
-interface ParsedOptions {
+/** Tokenized command options, including an unfinished completion value when requested. */
+export interface McpCommandScannedOptions {
+  /** Normalized flag names present before the stdio delimiter. */
   readonly flags: ReadonlySet<string>;
+  /** Value option awaiting the current completion token. */
+  readonly pendingValue?: string;
+  /** Non-option tokens present before the stdio delimiter. */
   readonly positionals: readonly string[];
+  /** Unparsed stdio command tokens after `--`, or `undefined` when no delimiter exists. */
   readonly tail: readonly string[] | undefined;
+  /** Normalized value-option names and their supplied values. */
   readonly values: ReadonlyMap<string, readonly string[]>;
 }
+
+/** Failed command option scan before semantic validation. */
+export interface McpCommandOptionScanFailure {
+  /** Human-readable grammar failure. */
+  readonly message: string;
+  /** Discriminant for a failed scan. */
+  readonly ok: false;
+}
+
+/** Successful command option scan before semantic validation. */
+export interface McpCommandOptionScanSuccess {
+  /** Discriminant for a successful scan. */
+  readonly ok: true;
+  /** Parsed option structure. */
+  readonly options: McpCommandScannedOptions;
+}
+
+/** Result of scanning command options before command-specific semantic validation. */
+export type McpCommandOptionScanResult = McpCommandOptionScanFailure | McpCommandOptionScanSuccess;
 
 function normalizeOptionName(rawName: string): string {
   switch (rawName) {
@@ -275,21 +334,24 @@ function normalizeOptionName(rawName: string): string {
   }
 }
 
-function parseOptions(
+/** Scan MCP command options in strict parser mode or tolerant completion mode. */
+export function scanMcpCommandOptions(
   tokens: readonly string[],
-  flagNames: ReadonlySet<string>,
-  valueNames: ReadonlySet<string>,
-  allowDelimiter = false,
-): ParsedOptions | string {
+  command: McpCommandName,
+  mode: "completion" | "strict",
+): McpCommandOptionScanResult {
   const flags = new Set<string>();
   const positionals: string[] = [];
   const values = new Map<string, string[]>();
+  const accepted = MCP_COMMAND_OPTIONS[command];
+  const flagNames = new Set<string>(accepted.flags);
+  const valueNames = new Set<string>(accepted.values);
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token === undefined) continue;
     if (token === "--") {
-      if (!allowDelimiter) return "unexpected -- delimiter";
-      return { flags, positionals, tail: tokens.slice(index + 1), values };
+      if (command !== "add") return { message: "unexpected -- delimiter", ok: false };
+      return { ok: true, options: { flags, positionals, tail: tokens.slice(index + 1), values } };
     }
     if (!token.startsWith("-")) {
       positionals.push(token);
@@ -299,23 +361,37 @@ function parseOptions(
     const rawName = equalsIndex < 0 ? token : token.slice(0, equalsIndex);
     const name = normalizeOptionName(rawName);
     if (flagNames.has(name)) {
-      if (equalsIndex >= 0) return `option ${rawName} does not accept a value`;
+      if (equalsIndex >= 0)
+        return { message: `option ${rawName} does not accept a value`, ok: false };
       flags.add(name);
       continue;
     }
-    if (!valueNames.has(name)) return `unknown option ${rawName}`;
+    if (!valueNames.has(name)) return { message: `unknown option ${rawName}`, ok: false };
     const value = equalsIndex < 0 ? tokens[index + 1] : token.slice(equalsIndex + 1);
     if (value === undefined || (equalsIndex < 0 && value.startsWith("--"))) {
-      return `option ${rawName} requires a value`;
+      return mode === "completion" && value === undefined
+        ? {
+            ok: true,
+            options: { flags, pendingValue: name, positionals, tail: undefined, values },
+          }
+        : { message: `option ${rawName} requires a value`, ok: false };
     }
     if (equalsIndex < 0) index += 1;
     const existing = values.get(name) ?? [];
     values.set(name, [...existing, value]);
   }
-  return { flags, positionals, tail: undefined, values };
+  return { ok: true, options: { flags, positionals, tail: undefined, values } };
 }
 
-function oneValue(options: ParsedOptions, name: string): string | undefined {
+function parseOptions(
+  tokens: readonly string[],
+  command: McpCommandName,
+): McpCommandScannedOptions | string {
+  const result = scanMcpCommandOptions(tokens, command, "strict");
+  return result.ok ? result.options : result.message;
+}
+
+function oneValue(options: McpCommandScannedOptions, name: string): string | undefined {
   return options.values.get(name)?.at(-1);
 }
 
@@ -337,7 +413,7 @@ function parseAssignments(
   return result;
 }
 
-function parseScope(options: ParsedOptions): McpCommandSettingsScope {
+function parseScope(options: McpCommandScannedOptions): McpCommandSettingsScope {
   return options.flags.has("local") ? "project" : "global";
 }
 
@@ -350,57 +426,107 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/** Authentication mode inferred from `add` options. */
+export type McpAddAuthenticationMode = "bearer" | "none" | "oauth" | undefined;
+
+/** Invalid combination of MCP `add` authentication options. */
+export interface McpAddAuthenticationFailure {
+  /** Parser-compatible explanation of the incompatible options. */
+  readonly message: string;
+  /** Discriminant for incompatible authentication options. */
+  readonly ok: false;
+}
+
+/** Compatible MCP `add` authentication options. */
+export interface McpAddAuthenticationSuccess {
+  /** Discriminant for compatible authentication options. */
+  readonly ok: true;
+  /** Explicit or inferred authentication mode. */
+  readonly type: McpAddAuthenticationMode;
+}
+
+/** Compatibility result for MCP `add` authentication options. */
+export type McpAddAuthenticationResult = McpAddAuthenticationFailure | McpAddAuthenticationSuccess;
+
+/** Classify MCP `add` authentication options for strict parsing or partial completion. */
+export function classifyMcpAddAuthentication(
+  options: McpCommandScannedOptions,
+  mode: "completion" | "strict",
+): McpAddAuthenticationResult {
+  const configuredType = oneValue(options, "auth");
+  const token = oneValue(options, "token");
+  const oauth = MCP_ADD_OAUTH_VALUE_OPTIONS.some((name) => options.values.has(name));
+  const type = configuredType ?? (token !== undefined ? "bearer" : oauth ? "oauth" : undefined);
+  if (type === undefined) return { ok: true, type };
+  if (type === "none") {
+    return token === undefined && !oauth
+      ? { ok: true, type }
+      : { message: "auth type none cannot include credential options", ok: false };
+  }
+  if (type === "bearer") {
+    if (mode === "strict" && (token === undefined || token.length === 0))
+      return { message: "bearer auth requires --token", ok: false };
+    if (oauth) return { message: "bearer auth cannot include OAuth options", ok: false };
+    return { ok: true, type };
+  }
+  if (type === "oauth") {
+    return token === undefined
+      ? { ok: true, type }
+      : { message: "OAuth auth cannot include --token", ok: false };
+  }
+  return { message: "--auth must be none, bearer, or oauth", ok: false };
+}
+
+/** Local, remote, undecided, or incompatible MCP `add` transport form. */
+export type McpAddTransportMode = "both" | "invalid" | "local" | "remote";
+
+/** Classify local and remote MCP `add` option signals without performing I/O. */
+export function classifyMcpAddTransportMode(
+  options: McpCommandScannedOptions,
+): McpAddTransportMode {
+  const transport = oneValue(options, "transport");
+  if (
+    transport !== undefined &&
+    transport !== "http" &&
+    transport !== "sse" &&
+    transport !== "stdio"
+  )
+    return "invalid";
+  if (options.positionals.length > 2) return "invalid";
+  const local =
+    options.tail !== undefined ||
+    transport === "stdio" ||
+    MCP_ADD_LOCAL_VALUE_OPTIONS.some((name) => options.values.has(name));
+  const remote =
+    options.positionals.length > 1 ||
+    transport === "http" ||
+    transport === "sse" ||
+    MCP_ADD_REMOTE_VALUE_OPTIONS.some((name) => options.values.has(name));
+  return local && remote ? "invalid" : local ? "local" : remote ? "remote" : "both";
+}
+
 function parseRemoteAuth(
-  options: ParsedOptions,
+  options: McpCommandScannedOptions,
 ): McpAddServerDefinition extends infer _Definition
   ?
       | Exclude<Extract<McpAddServerDefinition, { url: string }>["auth"], undefined>
       | undefined
       | string
   : never {
-  const configuredType = oneValue(options, "auth");
   const token = oneValue(options, "token");
   const clientId = oneValue(options, "client-id");
   const clientSecret = oneValue(options, "client-secret");
   const redirectUri = oneValue(options, "redirect-uri");
   const scopes = options.values.get("scope") ?? [];
-  const inferredType =
-    token !== undefined
-      ? "bearer"
-      : clientId !== undefined ||
-          clientSecret !== undefined ||
-          redirectUri !== undefined ||
-          scopes.length > 0
-        ? "oauth"
-        : undefined;
-  const type = configuredType ?? inferredType;
+  const compatibility = classifyMcpAddAuthentication(options, "strict");
+  if (!compatibility.ok) return compatibility.message;
+  const type = compatibility.type;
   if (type === undefined) return undefined;
-  if (type === "none") {
-    if (
-      token !== undefined ||
-      clientId !== undefined ||
-      clientSecret !== undefined ||
-      redirectUri !== undefined ||
-      scopes.length > 0
-    ) {
-      return "auth type none cannot include credential options";
-    }
-    return { type: "none" };
-  }
+  if (type === "none") return { type: "none" };
   if (type === "bearer") {
-    if (token === undefined || token.length === 0) return "bearer auth requires --token";
-    if (
-      clientId !== undefined ||
-      clientSecret !== undefined ||
-      redirectUri !== undefined ||
-      scopes.length > 0
-    ) {
-      return "bearer auth cannot include OAuth options";
-    }
+    if (token === undefined) return "bearer auth requires --token";
     return { token, type: "bearer" };
   }
-  if (type !== "oauth") return "--auth must be none, bearer, or oauth";
-  if (token !== undefined) return "OAuth auth cannot include --token";
   return {
     ...(clientId === undefined ? {} : { clientId }),
     ...(clientSecret === undefined ? {} : { clientSecret }),
@@ -411,47 +537,24 @@ function parseRemoteAuth(
 }
 
 function parseAdd(args: readonly string[]): McpCommandParseResult {
-  const options = parseOptions(
-    args,
-    new Set(["local"]),
-    new Set([
-      "auth",
-      "client-id",
-      "client-secret",
-      "cwd",
-      "environment",
-      "header",
-      "redirect-uri",
-      "scope",
-      "token",
-      "transport",
-    ]),
-    true,
-  );
+  const options = parseOptions(args, "add");
   if (typeof options === "string") return usageFailure("add", options);
   const name = options.positionals[0];
   if (name === undefined || name.length === 0)
     return usageFailure("add", "server name is required");
+  const transportMode = classifyMcpAddTransportMode(options);
   if (options.tail !== undefined) {
     if (options.positionals.length !== 1)
       return usageFailure("add", "a local add cannot also include a URL");
     const command = options.tail[0];
     if (command === undefined || command.length === 0)
       return usageFailure("add", "local command is required after --");
-    for (const remoteOption of [
-      "auth",
-      "client-id",
-      "client-secret",
-      "header",
-      "redirect-uri",
-      "scope",
-      "token",
-    ]) {
+    for (const remoteOption of MCP_ADD_REMOTE_VALUE_OPTIONS) {
       if (options.values.has(remoteOption))
         return usageFailure("add", `local add cannot include --${remoteOption}`);
     }
     const transport = oneValue(options, "transport");
-    if (transport !== undefined && transport !== "stdio") {
+    if (transport !== undefined && transportMode !== "local") {
       return usageFailure("add", "local transport must be stdio");
     }
     const environment = parseAssignments(options.values.get("environment") ?? [], "environment");
@@ -476,13 +579,13 @@ function parseAdd(args: readonly string[]): McpCommandParseResult {
   }
   if (options.positionals.length !== 2)
     return usageFailure("add", "remote add requires a name and URL");
-  if (options.values.has("cwd") || options.values.has("environment")) {
+  if (MCP_ADD_LOCAL_VALUE_OPTIONS.some((name) => options.values.has(name))) {
     return usageFailure("add", "remote add cannot include local process options");
   }
   const url = options.positionals[1] ?? "";
   if (!isHttpUrl(url)) return usageFailure("add", "remote URL must be absolute HTTP or HTTPS");
   const transport = oneValue(options, "transport") ?? "http";
-  if (transport !== "http" && transport !== "sse")
+  if (transportMode !== "remote" || (transport !== "http" && transport !== "sse"))
     return usageFailure("add", "remote transport must be http or sse");
   const headers = parseAssignments(options.values.get("header") ?? [], "header");
   if (typeof headers === "string") return usageFailure("add", headers);
@@ -509,11 +612,7 @@ function parseScopedServer(
   kind: "remove" | "enable" | "disable",
   args: readonly string[],
 ): McpCommandParseResult {
-  const options = parseOptions(
-    args,
-    new Set(kind === "remove" ? ["local", "logout"] : ["local"]),
-    new Set(),
-  );
+  const options = parseOptions(args, kind);
   if (typeof options === "string") return usageFailure(kind, options);
   if (options.positionals.length !== 1)
     return usageFailure(kind, "exactly one server name is required");
@@ -553,7 +652,7 @@ export function parseMcpCommand(
   if (commandName === "remove" || commandName === "enable" || commandName === "disable")
     return parseScopedServer(commandName, rest);
   if (commandName === "list") {
-    const options = parseOptions(rest, new Set(["json"]), new Set());
+    const options = parseOptions(rest, "list");
     if (typeof options === "string" || options.positionals.length > 0)
       return usageFailure(
         "list",
@@ -564,11 +663,7 @@ export function parseMcpCommand(
     return { command: { json: options.flags.has("json"), kind: "list" }, ok: true };
   }
   if (commandName === "auth") {
-    const options = parseOptions(
-      rest,
-      new Set(["no-open"]),
-      new Set(["callback", "code", "state"]),
-    );
+    const options = parseOptions(rest, "auth");
     if (typeof options === "string") return usageFailure("auth", options);
     if (options.positionals.length !== 1)
       return usageFailure(
@@ -595,7 +690,7 @@ export function parseMcpCommand(
     };
   }
   if (commandName === "logout") {
-    const options = parseOptions(rest, new Set(["all", "force"]), new Set());
+    const options = parseOptions(rest, "logout");
     if (typeof options === "string") return usageFailure("logout", options);
     const all = options.flags.has("all");
     const force = options.flags.has("force");
@@ -612,7 +707,7 @@ export function parseMcpCommand(
     };
   }
   if (commandName === "test") {
-    const options = parseOptions(rest, new Set(["all", "json"]), new Set());
+    const options = parseOptions(rest, "test");
     if (typeof options === "string") return usageFailure("test", options);
     if (surface === "runtime" && options.flags.has("json"))
       return usageFailure("test", "--json is standalone-only");
@@ -633,12 +728,16 @@ export function parseMcpCommand(
     if (rest.length > 0) return usageFailure("status", "status accepts no arguments");
     return { command: { includeHelp: false, kind: "status" }, ok: true };
   }
+  if (commandName === "help") {
+    if (rest.length > 0) return usageFailure("help", "help accepts no arguments");
+    return { command: { kind: "help" }, ok: true };
+  }
   if (commandName === "reconnect") {
     if (rest.length !== 1) return usageFailure("reconnect", "exactly one server name is required");
     return { command: { kind: "reconnect", server: rest[0] ?? "" }, ok: true };
   }
   if (commandName === "prompt") {
-    const options = parseOptions(rest, new Set(), new Set(["arg"]));
+    const options = parseOptions(rest, "prompt");
     if (typeof options === "string") return usageFailure("prompt", options);
     if (options.positionals.length !== 2)
       return usageFailure("prompt", "server and prompt names are required");
@@ -658,20 +757,15 @@ export function parseMcpCommand(
     if (rest.length !== 2) return usageFailure(commandName, "server and resource URI are required");
     return { command: { kind: commandName, server: rest[0] ?? "", uri: rest[1] ?? "" }, ok: true };
   }
-  const options = parseOptions(rest, new Set(), new Set(["level"]));
+  const options = parseOptions(rest, "logs");
   if (typeof options === "string" || options.positionals.length > 1)
     return usageFailure(
       "logs",
       typeof options === "string" ? options : "logs accepts at most one server name",
     );
-  const level = oneValue(options, "level");
-  if (level !== undefined && !isMcpLoggingLevel(level)) {
-    return usageFailure("logs", `unknown logging level ${level}`);
-  }
   return {
     command: {
       kind: "logs",
-      ...(level === undefined ? {} : { level }),
       ...(options.positionals[0] === undefined ? {} : { server: options.positionals[0] }),
     },
     ok: true,
@@ -813,12 +907,11 @@ export async function executeMcpCommand(
       case "logs": {
         const live = liveAdapter(adapters);
         if ("exitCode" in live) return live;
-        result = await live.logs({
-          ...(command.level === undefined ? {} : { level: command.level }),
-          ...(command.server === undefined ? {} : { server: command.server }),
-        });
+        result = await live.logs(command.server === undefined ? {} : { server: command.server });
         break;
       }
+      case "help":
+        return successResult({ message: RUNTIME_HELP, ok: true }, false);
     }
     if (!result.ok) return adapterFailure(result.category, result.message);
     const json = (command.kind === "list" || command.kind === "test") && command.json;
@@ -829,43 +922,91 @@ export async function executeMcpCommand(
   }
 }
 
-/** Split a `/mcp` argument string without invoking a shell or expanding variables. */
-export function tokenizeMcpCommandLine(line: string): string[] {
-  const tokens: string[] = [];
+/** Current token and replacement boundary for an unfinished MCP command. */
+export interface McpCommandCompletionToken {
+  /** Opening quote style to preserve when replacing the token. */
+  readonly quote: "'" | '"' | undefined;
+  /** Zero-based source offset where replacement begins. */
+  readonly start: number;
+  /** Decoded token value before the cursor. */
+  readonly value: string;
+}
+
+/** Tolerant tokenization of a complete or unfinished MCP command prefix. */
+export interface McpCommandCompletionPrefix {
+  /** Source text preserved before replacing the current token. */
+  readonly beforeCurrent: string;
+  /** Decoded tokens completed before the current token. */
+  readonly completed: readonly string[];
+  /** Token being completed at the cursor. */
+  readonly current: McpCommandCompletionToken;
+  /** Whether the source ends inside a token rather than after whitespace. */
+  readonly currentStarted: boolean;
+  /** Whether the source ends before its opening quote closes. */
+  readonly incompleteQuote: boolean;
+}
+
+/** Tokenize an unfinished MCP command while retaining its current replacement boundary. */
+export function tokenizeMcpCommandCompletionPrefix(line: string): McpCommandCompletionPrefix {
+  const tokens: McpCommandCompletionToken[] = [];
   let current = "";
   let quote: "'" | '"' | undefined;
+  let quoteAtStart: "'" | '"' | undefined;
   let escaping = false;
+  let start = line.length;
   let tokenStarted = false;
-  for (const character of line) {
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index] ?? "";
     if (escaping) {
       current += character;
-      tokenStarted = true;
       escaping = false;
     } else if (character === "\\" && quote !== "'") {
+      if (!tokenStarted) start = index;
       escaping = true;
       tokenStarted = true;
     } else if (quote !== undefined) {
       if (character === quote) quote = undefined;
       else current += character;
-      tokenStarted = true;
     } else if (character === "'" || character === '"') {
+      if (!tokenStarted) {
+        quoteAtStart = character;
+        start = index;
+      }
       quote = character;
       tokenStarted = true;
     } else if (/\s/u.test(character)) {
       if (tokenStarted) {
-        tokens.push(current);
+        tokens.push({ quote: quoteAtStart, start, value: current });
         current = "";
+        quoteAtStart = undefined;
         tokenStarted = false;
       }
     } else {
+      if (!tokenStarted) start = index;
       current += character;
       tokenStarted = true;
     }
   }
-  if (quote !== undefined) throw new Error("MCP command has an unterminated quote");
   if (escaping) current += "\\";
-  if (tokenStarted) tokens.push(current);
-  return tokens;
+  if (tokenStarted) tokens.push({ quote: quoteAtStart, start, value: current });
+  else tokens.push({ quote: undefined, start: line.length, value: "" });
+  const active = tokens.at(-1) ?? { quote: undefined, start: line.length, value: "" };
+  return {
+    beforeCurrent: line.slice(0, active.start),
+    completed: tokens.slice(0, -1).map(({ value }) => value),
+    current: active,
+    currentStarted: tokenStarted,
+    incompleteQuote: quote !== undefined,
+  };
+}
+
+/** Split a `/mcp` argument string without invoking a shell or expanding variables. */
+export function tokenizeMcpCommandLine(line: string): string[] {
+  const prefix = tokenizeMcpCommandCompletionPrefix(line);
+  if (prefix.incompleteQuote) throw new Error("MCP command has an unterminated quote");
+  return prefix.currentStarted
+    ? [...prefix.completed, prefix.current.value]
+    : [...prefix.completed];
 }
 
 /** Parse and execute one pre-tokenized MCP command without reinterpreting argument contents. */

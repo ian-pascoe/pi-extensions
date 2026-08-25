@@ -1,3 +1,4 @@
+/* oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional MCP result marker fields are present only when supplied by the protocol operation. */
 import { createHash } from "node:crypto";
 import {
   fromJsonSchema,
@@ -12,27 +13,22 @@ import type {
   ToolDefinition,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type TSchema } from "typebox";
-import { Value } from "typebox/value";
+import type { TSchema } from "typebox";
+import {
+  parseMcpResultDetails,
+  renderMcpResourceToolCall,
+  renderMcpServerToolCall,
+  renderMcpToolResult,
+  type McpPresentationRedactor,
+  type McpResultDetails,
+  type McpResultMarker,
+} from "./mcp-presentation.js";
 
 const RESOURCE_TOOL_NAMES = [
   "list_mcp_resources",
   "list_mcp_resource_templates",
   "read_mcp_resource",
 ] as const;
-const MCP_DETAILS_OWNER = "pi-mcp";
-const McpResultDetailsMarkerSchema = Type.Object(
-  {
-    mcp: Type.Object(
-      {
-        isError: Type.Boolean(),
-        owner: Type.Literal(MCP_DETAILS_OWNER),
-      },
-      { additionalProperties: true },
-    ),
-  },
-  { additionalProperties: true },
-);
 
 const ListResourcesSchema = {
   type: "object",
@@ -147,21 +143,6 @@ interface CompiledServerTool {
   readonly serverId: string;
 }
 
-interface McpResultMarker {
-  isError: boolean;
-  operation: string;
-  outputSchemaError?: string;
-  outputSchemaValid?: boolean;
-  owner: typeof MCP_DETAILS_OWNER;
-  serverId?: string;
-  toolName?: string;
-}
-
-interface McpResultDetails {
-  readonly mcp: McpResultMarker;
-  readonly result: JSONValue | undefined;
-}
-
 /** Expected invalid-input failure raised through Pi's required throwing tool boundary. */
 export class McpServerToolInputError extends Error {
   readonly _tag = "McpServerToolInputError" as const;
@@ -202,13 +183,6 @@ function collisionName(
   throw new Error(`Pi MCP Server Tool name hash collision for ${baseName}`);
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- This parser owns Pi's untyped custom tool-result details boundary.
-function parseMcpResultDetails(input: unknown): McpResultDetails | undefined {
-  if (!Value.Check(McpResultDetailsMarkerSchema, input)) return undefined;
-  // SAFETY: The marker schema established the fields read by the result hook; this module created all matching details objects.
-  return input as McpResultDetails;
-}
-
 function execution(
   toolCallId: string,
   signal: AbortSignal | undefined,
@@ -232,6 +206,7 @@ export class McpToolCatalog {
   constructor(
     private readonly pi: McpToolCatalogPi,
     private readonly runtime: McpToolCatalogRuntime,
+    private readonly redact: McpPresentationRedactor = (text) => text,
   ) {
     this.registerResourceTools();
     this.pi.on("tool_result", (event) => {
@@ -335,6 +310,17 @@ export class McpToolCatalog {
       description:
         compiled.definition.description ?? `Call MCP Server Tool ${compiled.definition.name}.`,
       parameters,
+      renderCall: (arguments_, theme, context) =>
+        renderMcpServerToolCall(
+          compiled.serverId,
+          compiled.definition.name,
+          arguments_,
+          theme,
+          context.expanded,
+          this.redact,
+        ),
+      renderResult: (result, options, theme, context) =>
+        renderMcpToolResult(result, options, theme, context.isError, this.redact),
       execute: async (toolCallId, arguments_, signal, onUpdate, context) => {
         const parsed = await compiled.inputValidator["~standard"].validate(arguments_);
         if (parsed.issues !== undefined) {
@@ -385,14 +371,13 @@ export class McpToolCatalog {
     const mcp: McpResultMarker = {
       isError: result.isError ?? false,
       operation,
-      owner: MCP_DETAILS_OWNER,
+      ...(outputSchemaError === undefined ? {} : { outputSchemaError }),
+      ...(outputSchemaValid === undefined ? {} : { outputSchemaValid }),
+      owner: "pi-mcp",
+      ...(compiled === undefined
+        ? {}
+        : { serverId: compiled.serverId, toolName: compiled.definition.name }),
     };
-    if (outputSchemaError !== undefined) mcp.outputSchemaError = outputSchemaError;
-    if (outputSchemaValid !== undefined) mcp.outputSchemaValid = outputSchemaValid;
-    if (compiled !== undefined) {
-      mcp.serverId = compiled.serverId;
-      mcp.toolName = compiled.definition.name;
-    }
     return { content, details: { mcp, result: result.details } };
   }
 
@@ -402,6 +387,16 @@ export class McpToolCatalog {
       label: "List MCP Resources",
       description: "List Resources advertised by connected MCP Servers.",
       parameters: ListResourcesSchema,
+      renderCall: (parameters, theme, context) =>
+        renderMcpResourceToolCall(
+          "list_resources",
+          parameters,
+          theme,
+          context.expanded,
+          this.redact,
+        ),
+      renderResult: (result, options, theme, context) =>
+        renderMcpToolResult(result, options, theme, context.isError, this.redact),
       execute: async (toolCallId, parameters, signal, onUpdate, context) =>
         this.mapOperationResult(
           await this.runtime.listResources(
@@ -416,6 +411,16 @@ export class McpToolCatalog {
       label: "List MCP Resource Templates",
       description: "List Resource Templates advertised by connected MCP Servers.",
       parameters: ListResourcesSchema,
+      renderCall: (parameters, theme, context) =>
+        renderMcpResourceToolCall(
+          "list_resource_templates",
+          parameters,
+          theme,
+          context.expanded,
+          this.redact,
+        ),
+      renderResult: (result, options, theme, context) =>
+        renderMcpToolResult(result, options, theme, context.isError, this.redact),
       execute: async (toolCallId, parameters, signal, onUpdate, context) =>
         this.mapOperationResult(
           await this.runtime.listResourceTemplates(
@@ -430,6 +435,16 @@ export class McpToolCatalog {
       label: "Read MCP Resource",
       description: "Read one Resource from a connected MCP Server.",
       parameters: ReadResourceSchema,
+      renderCall: (parameters, theme, context) =>
+        renderMcpResourceToolCall(
+          "read_resource",
+          parameters,
+          theme,
+          context.expanded,
+          this.redact,
+        ),
+      renderResult: (result, options, theme, context) =>
+        renderMcpToolResult(result, options, theme, context.isError, this.redact),
       execute: async (toolCallId, parameters, signal, onUpdate, context) =>
         this.mapOperationResult(
           await this.runtime.readResource(

@@ -15,7 +15,8 @@ function standaloneAdapters(): McpCommandAdapters {
       enable: async () => ({ message: "enabled", ok: true }),
       list: async () => ({
         data: { servers: [{ enabled: true, name: "docs", provenance: "global" }] },
-        message: "docs (global, enabled)",
+        message:
+          "docs (provenance=global, enabled, transport=http, auth=anonymous, stored-auth=absent)",
         ok: true,
       }),
       remove: async () => ({ message: "removed", ok: true }),

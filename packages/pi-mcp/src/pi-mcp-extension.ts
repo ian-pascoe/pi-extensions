@@ -1,7 +1,13 @@
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional protocol and Pi fields must be omitted when absent at this composition boundary.
 // oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This Pi composition root parses persisted custom-entry and custom-message replay data before restoring it.
 import { pathToFileURL } from "node:url";
-import { fromJsonSchema } from "@modelcontextprotocol/client";
+import {
+  fromJsonSchema,
+  ProtocolError,
+  RegistrationRejectedError,
+  SdkError,
+  UnauthorizedError,
+} from "@modelcontextprotocol/client";
 import type {
   CreateMessageRequest,
   CreateMessageResult,
@@ -16,8 +22,11 @@ import type {
 import type { AssistantMessage, Message, UserMessage } from "@earendil-works/pi-ai";
 import type { TSchema } from "typebox";
 import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   getAgentDir,
   SettingsManager,
+  truncateTail,
   type ContextEvent,
   type ExtensionAPI,
   type ExtensionCommandContext,
@@ -25,20 +34,36 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { McpAuthStore } from "./mcp-auth-store.js";
-import { runMcpCommandLine } from "./mcp-command.js";
 import {
-  createMcpContentResult,
-  type McpContentBlock,
-  type McpModelContent,
-} from "./mcp-content.js";
+  completeMcpCommandArguments,
+  type McpCommandCompletionItem,
+} from "./mcp-command-completion.js";
+import {
+  runMcpCommandLine,
+  type McpCommandAdapterResult,
+  type McpCommandExitCategory,
+} from "./mcp-command.js";
+import { createMcpContentResult, type McpContentBlock } from "./mcp-content.js";
 import {
   McpHost,
   type McpHostGetPromptResult,
+  type McpHostLogTail,
+  McpHostOperationError,
   type McpHostRequestContext,
   type McpHostResourceSubscription,
   type McpHostServerTool,
+  type McpServerStatus,
 } from "./mcp-host.js";
 import { McpOAuthProvider } from "./mcp-oauth.js";
+import { McpObserverUiController } from "./mcp-observer-ui.js";
+import {
+  parseMcpPromptReplayMessages,
+  renderMcpPromptMessage,
+  renderMcpResourceUpdateMessage,
+  sanitizeMcpPresentationText,
+  type McpPromptMessageDetails,
+  type McpPromptReplayMessage,
+} from "./mcp-presentation.js";
 import { createMcpSessionFiles, type McpSessionFiles } from "./mcp-session-files.js";
 import {
   McpToolCatalog,
@@ -58,17 +83,13 @@ export interface PiMcpExtensionCommandResult {
 }
 
 /** Slash-command completion item returned without importing Pi TUI internals. */
-export interface PiMcpAutocompleteItem {
-  readonly description?: string;
-  readonly label: string;
-  readonly value: string;
-}
+export type PiMcpAutocompleteItem = McpCommandCompletionItem;
 
 /** Session-owned MCP Host behavior consumed by the Pi lifecycle adapter. */
 export interface PiMcpExtensionSession {
   /** Close all processes, transports, subscriptions, listeners, timers, and session files once. */
   close(): Promise<void>;
-  /** Complete `/mcp prompt` server, prompt, and argument values through the live Host. */
+  /** Complete `/mcp` commands and arguments through the live Host. */
   completeCommandArguments?(prefix: string): Promise<PiMcpAutocompleteItem[] | null>;
   /** Execute one `/mcp` command without throwing an expected failure through Pi. */
   executeCommand(
@@ -77,6 +98,8 @@ export interface PiMcpExtensionSession {
   ): Promise<PiMcpExtensionCommandResult>;
   /** Return the bounded, immutable Server Instructions snapshot for this Pi session. */
   instructionSnapshot(): Promise<string | undefined>;
+  /** Redact exact configured values from human-only MCP presentation copy. */
+  redactPresentationText(text: string): string;
   /** Start enabled MCP Servers without making `session_start` await their connections. */
   start(): Promise<void>;
   /** Expand persisted MCP Prompt custom messages at their active-branch positions. */
@@ -95,19 +118,8 @@ interface ActivePiMcpSession {
 }
 
 const MCP_PROMPT_MESSAGE_TYPE = "pi-mcp-prompt";
+const MCP_RESOURCE_UPDATE_MESSAGE_TYPE = "pi-mcp-resource-update";
 const MCP_SUBSCRIPTIONS_ENTRY_TYPE = "pi-mcp-subscriptions";
-
-interface McpPromptReplayMessage {
-  readonly content: readonly McpModelContent[];
-  readonly role: "assistant" | "user";
-  readonly timestamp: number;
-}
-
-interface McpPromptMessageDetails {
-  readonly mcpMessages: readonly unknown[];
-  readonly replayMessages: readonly McpPromptReplayMessage[];
-  readonly version: 1;
-}
 
 function toMcpJsonValue(value: unknown): JSONValue {
   if (
@@ -123,6 +135,104 @@ function toMcpJsonValue(value: unknown): JSONValue {
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [key, toMcpJsonValue(item)]),
   );
+}
+
+function formatMcpServerStatus(status: McpServerStatus): string {
+  const safeError = "error" in status ? sanitizeMcpPresentationText(status.error) : undefined;
+  switch (status.state) {
+    case "disabled":
+    case "connected":
+      return status.state;
+    case "connecting":
+      return `connecting (attempt ${status.attempt})`;
+    case "needs_auth":
+      return `needs_auth (${safeError})`;
+    case "needs_client_registration":
+      return `needs_client_registration (${safeError})`;
+    case "retrying":
+      return `retrying (attempt ${status.attempt}, retryAt ${status.retryAt}, delay ${status.delayMs} ms, ${safeError})`;
+    case "failed":
+      return `failed (${status.attempts} attempts, ${safeError})`;
+  }
+}
+
+function formatMcpStatus(
+  statuses: ReadonlyMap<string, McpServerStatus>,
+  subscriptions: readonly McpHostResourceSubscription[],
+  invalidSettings: readonly string[],
+): string {
+  const sections: string[] = [];
+  if (invalidSettings.length > 0) {
+    sections.push(
+      `Invalid MCP settings:\n- ${invalidSettings.map(sanitizeMcpPresentationText).join("\n- ")}`,
+    );
+  } else if (statuses.size === 0) {
+    sections.push("No MCP Server Definitions configured");
+  } else {
+    sections.push(
+      [...statuses]
+        .map(
+          ([serverId, status]) =>
+            `${sanitizeMcpPresentationText(serverId)}: ${formatMcpServerStatus(status)}`,
+        )
+        .join("\n"),
+    );
+  }
+  if (subscriptions.length > 0) {
+    sections.push(
+      `Active Resource subscriptions:\n${subscriptions
+        .map(
+          ({ serverId, uri }) =>
+            `- ${sanitizeMcpPresentationText(serverId)}: ${sanitizeMcpPresentationText(uri)}`,
+        )
+        .join("\n")}`,
+    );
+  }
+  return sections.join("\n\n");
+}
+
+function formatMcpLogs(tails: readonly McpHostLogTail[]): string {
+  if (tails.length === 0) return "No MCP logs retained";
+  const complete = sanitizeMcpPresentationText(
+    tails.map(({ serverId, text }) => `## ${serverId}\n${text || "(empty)"}`).join("\n\n"),
+  );
+  const limits = { maxBytes: DEFAULT_MAX_BYTES - 1, maxLines: DEFAULT_MAX_LINES - 1 };
+  const visible = truncateTail(complete, limits);
+  if (!visible.truncated) return visible.content;
+  const retainedPaths = sanitizeMcpPresentationText(
+    tails.map(({ path, serverId }) => `${serverId}: ${path}`).join(", "),
+  );
+  return truncateTail(
+    `${visible.content}\n\n[Combined logs truncated; complete retained tails: ${retainedPaths}]`,
+    limits,
+  ).content;
+}
+
+async function runExpectedMcpLiveCommand(
+  operation: () => Promise<McpCommandAdapterResult>,
+  category: Exclude<McpCommandExitCategory, "success" | "usage">,
+  redact: (value: string) => string,
+): Promise<McpCommandAdapterResult> {
+  try {
+    return await operation();
+  } catch (cause) {
+    if (
+      !(
+        cause instanceof ProtocolError ||
+        cause instanceof RegistrationRejectedError ||
+        cause instanceof SdkError ||
+        cause instanceof UnauthorizedError ||
+        cause instanceof McpHostOperationError
+      )
+    ) {
+      throw cause;
+    }
+    return {
+      category,
+      message: sanitizeMcpPresentationText(redact(cause.message)),
+      ok: false,
+    };
+  }
 }
 
 function parseSubscriptionEntry(data: unknown): readonly McpHostResourceSubscription[] | undefined {
@@ -155,55 +265,6 @@ function replaySubscriptions(context: ExtensionContext): readonly McpHostResourc
     if (parsed !== undefined) subscriptions = parsed;
   }
   return subscriptions;
-}
-
-function parseReplayMessage(value: unknown): McpPromptReplayMessage | undefined {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    !("role" in value) ||
-    (value.role !== "user" && value.role !== "assistant") ||
-    !("timestamp" in value) ||
-    typeof value.timestamp !== "number" ||
-    !("content" in value) ||
-    !Array.isArray(value.content)
-  ) {
-    return undefined;
-  }
-  const content: McpModelContent[] = [];
-  for (const block of value.content) {
-    if (block === null || typeof block !== "object" || !("type" in block)) return undefined;
-    if (block.type === "text" && "text" in block && typeof block.text === "string") {
-      content.push({ text: block.text, type: "text" });
-      continue;
-    }
-    if (
-      block.type === "image" &&
-      "data" in block &&
-      typeof block.data === "string" &&
-      "mimeType" in block &&
-      typeof block.mimeType === "string"
-    ) {
-      content.push({ data: block.data, mimeType: block.mimeType, type: "image" });
-      continue;
-    }
-    return undefined;
-  }
-  return { content, role: value.role, timestamp: value.timestamp };
-}
-
-function promptReplayMessages(value: unknown): readonly McpPromptReplayMessage[] | undefined {
-  if (value === null || typeof value !== "object" || !("version" in value) || value.version !== 1) {
-    return undefined;
-  }
-  if (!("replayMessages" in value) || !Array.isArray(value.replayMessages)) return undefined;
-  const messages: McpPromptReplayMessage[] = [];
-  for (const item of value.replayMessages) {
-    const parsed = parseReplayMessage(item);
-    if (parsed === undefined) return undefined;
-    messages.push(parsed);
-  }
-  return messages;
 }
 
 function agentPromptReplayMessage(
@@ -244,7 +305,7 @@ function transformPromptMessages(messages: ContextEvent["messages"]): ContextEve
     if (message.role !== "custom" || message.customType !== MCP_PROMPT_MESSAGE_TYPE) {
       return [message];
     }
-    return (promptReplayMessages(message.details) ?? []).map(agentPromptReplayMessage);
+    return (parseMcpPromptReplayMessages(message.details) ?? []).map(agentPromptReplayMessage);
   });
 }
 
@@ -584,69 +645,24 @@ function catalogServerTool(tool: McpHostServerTool): McpServerToolDefinition {
 class ProductionPiMcpSession implements PiMcpExtensionSession {
   constructor(
     private readonly host: McpHost,
+    private readonly observer: McpObserverUiController,
+    private readonly redact: (text: string) => string,
     private readonly adapters: Awaited<ReturnType<typeof createStandaloneMcpCommandAdapters>>,
     private readonly synchronizeInitialCatalog: () => Promise<void>,
     private readonly interactionContext: { current: ExtensionContext },
   ) {}
 
   close(): Promise<void> {
+    this.observer.dispose();
     return this.host.shutdown();
   }
 
+  redactPresentationText(text: string): string {
+    return this.redact(text);
+  }
+
   async completeCommandArguments(prefix: string): Promise<PiMcpAutocompleteItem[] | null> {
-    const endsWithSpace = prefix.endsWith(" ");
-    const words = prefix.trim().split(/\s+/u);
-    if (words[0] !== "prompt") return null;
-    const prompts = await this.host.listPrompts();
-    if (words.length === 1 || (words.length === 2 && !endsWithSpace)) {
-      const serverPrefix = words[1] ?? "";
-      return [...new Set(prompts.map(({ serverId }) => serverId))]
-        .filter((serverId) => serverId.startsWith(serverPrefix))
-        .map((serverId) => ({ label: serverId, value: serverId }));
-    }
-    const serverId = words[1] ?? "";
-    if (words.length === 2 || (words.length === 3 && !endsWithSpace)) {
-      const promptPrefix = words[2] ?? "";
-      return prompts
-        .filter(
-          ({ prompt, serverId: owner }) =>
-            owner === serverId && prompt.name.startsWith(promptPrefix),
-        )
-        .map(({ prompt }) => ({
-          ...(prompt.description === undefined ? {} : { description: prompt.description }),
-          label: prompt.name,
-          value: prompt.name,
-        }));
-    }
-    const promptName = words[2] ?? "";
-    const argumentMarker = words.lastIndexOf("--arg");
-    if (argumentMarker === -1) return null;
-    const argument = words[argumentMarker + 1] ?? "";
-    const separator = argument.indexOf("=");
-    if (separator === -1) {
-      const definition = prompts.find(
-        ({ prompt, serverId: owner }) => owner === serverId && prompt.name === promptName,
-      )?.prompt;
-      return (definition?.arguments ?? [])
-        .filter(({ name }) => name.startsWith(argument))
-        .map(({ description, name }) => ({
-          ...(description === undefined ? {} : { description }),
-          label: name,
-          value: `${name}=`,
-        }));
-    }
-    const argumentName = argument.slice(0, separator);
-    const valuePrefix = argument.slice(separator + 1);
-    const completion = await this.host.completePromptArgument(
-      serverId,
-      promptName,
-      argumentName,
-      valuePrefix,
-    );
-    return completion.values.map((value) => ({
-      label: value,
-      value: `${argumentName}=${value}`,
-    }));
+    return completeMcpCommandArguments(prefix, this.host);
   }
 
   async executeCommand(
@@ -685,100 +701,9 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
       projectTrusted: context.isProjectTrusted(),
     });
     const settings = resolveMcpSettings(settingsManager);
-    if (!settings.valid && context.hasUI) {
-      context.ui.notify(
-        `Pi MCP settings:\n- ${settings.errors.map((error) => error.message).join("\n- ")}`,
-        "warning",
-      );
-    }
-    const sessionFiles = await createMcpSessionFiles(context.sessionManager.getSessionDir());
-    const authStore = new McpAuthStore(agentDirectory);
-    const resourceServers = new Set<string>();
-    let catalog: McpToolCatalog | undefined;
-    const host = new McpHost({
-      initialSubscriptions: replaySubscriptions(context),
-      onCatalogChanged: (serverId, kind) => {
-        if (kind === "tools") void synchronizeServerCatalog(serverId);
-        else if (kind === "resources" || kind === "resourceTemplates") {
-          void synchronizeServerCatalog(serverId);
-        }
-      },
-      onResourceUpdated: ({ serverId, uri }) => {
-        pi.sendMessage(
-          {
-            content: `MCP Resource updated on ${serverId}: ${uri}. Read it explicitly before using the new content.`,
-            customType: "pi-mcp-resource-update",
-            display: true,
-          },
-          { deliverAs: "nextTurn" },
-        );
-      },
-      persistSubscriptions: (subscriptions) => {
-        pi.appendEntry(MCP_SUBSCRIPTIONS_ENTRY_TYPE, { subscriptions, version: 1 });
-      },
-      piCwd: context.cwd,
-      resolveAuthProvider: (definition) => {
-        if (definition.auth?.type === "none" || definition.auth?.type === "bearer") {
-          return undefined;
-        }
-        const oauth = definition.auth?.type === "oauth" ? definition.auth : undefined;
-        return new McpOAuthProvider({
-          authStore,
-          clientIdentity: oauth?.clientId ?? "@ian-pascoe/pi-mcp",
-          ...(oauth?.clientId === undefined ? {} : { clientId: oauth.clientId }),
-          ...(oauth?.clientSecret === undefined ? {} : { clientSecret: oauth.clientSecret }),
-          onAuthorizationUrl: () => undefined,
-          redirectUrl: oauth?.redirectUri ?? "http://127.0.0.1:19876/mcp/oauth/callback",
-          scopes: oauth?.scopes ?? [],
-          serverUrl: definition.url,
-        });
-      },
-      sessionFiles,
-      settings,
-    });
-    const synchronizeServerCatalog = async (serverId: string): Promise<void> => {
-      const activeCatalog = catalog;
-      if (activeCatalog === undefined) return;
-      if (host.getStatus(serverId)?.state !== "connected") {
-        activeCatalog.setServerActive(serverId, false);
-        resourceServers.delete(serverId);
-        activeCatalog.setResourceToolsActive(resourceServers.size > 0);
-        return;
-      }
-      try {
-        const tools = await host.listTools(serverId);
-        activeCatalog.replaceServerTools(
-          serverId,
-          tools.map(({ tool }) => catalogServerTool(tool)),
-        );
-        if (host.hasConnectedCapability("resources", serverId)) resourceServers.add(serverId);
-        else resourceServers.delete(serverId);
-        activeCatalog.setResourceToolsActive(resourceServers.size > 0);
-      } catch {
-        activeCatalog.setServerActive(serverId, false);
-        resourceServers.delete(serverId);
-        activeCatalog.setResourceToolsActive(resourceServers.size > 0);
-      }
-    };
-    catalog = new McpToolCatalog(pi, createMcpToolCatalogRuntime(host, sessionFiles, pi));
-    const resolveCurrentSettings = () =>
-      resolveMcpSettings(
-        SettingsManager.create(context.cwd, agentDirectory, {
-          projectTrusted: context.isProjectTrusted(),
-        }),
-      );
-    const applyPersistedServer = async (serverId: string): Promise<void> => {
-      const definition = resolveCurrentSettings().servers.get(serverId);
-      if (definition === undefined) {
-        if (host.getStatus(serverId) !== undefined) await host.removeServer(serverId);
-        catalog?.setServerActive(serverId, false);
-        resourceServers.delete(serverId);
-        catalog?.setResourceToolsActive(resourceServers.size > 0);
-        return;
-      }
-      await host.upsertServer(definition);
-      await synchronizeServerCatalog(serverId);
-    };
+    const invalidSettings = settings.valid
+      ? []
+      : settings.errors.map((error) => settings.secrets.redact(error.message));
     const adapters = await createStandaloneMcpCommandAdapters({
       agentDirectory,
       cwd: context.cwd,
@@ -797,96 +722,222 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
         if (context.hasUI) context.ui.notify(`MCP OAuth authorization URL: ${url}`, "info");
       },
     });
-    const persistentAuth = adapters.auth;
-    adapters.auth = {
-      ...persistentAuth,
-      authenticate: async (options) => {
-        const result = await persistentAuth.authenticate(options);
-        if (result.ok) void host.reconnect(options.server).catch(() => undefined);
-        return result;
-      },
-    };
-    adapters.live = {
-      connectInBackground: (server) => {
-        void applyPersistedServer(server).catch(() => undefined);
-      },
-      disconnect: applyPersistedServer,
-      logs: async (options) => {
-        const tails = await host.readLogs(options.server, options.level);
-        return {
-          data: toMcpJsonValue(tails),
-          message:
-            tails.length === 0
-              ? "No MCP logs retained"
-              : tails
-                  .map(({ serverId, text }) => `## ${serverId}\n${text || "(empty)"}`)
-                  .join("\n\n"),
-          ok: true,
-        };
-      },
-      prompt: async (options) => {
-        const promptExecution: McpToolExecution = {
-          context: interactionContext.current,
-          onUpdate: undefined,
-          signal: interactionContext.current.signal,
-          toolCallId: "mcp-prompt",
-        };
-        const result = await host.getPrompt(
-          options.server,
-          options.prompt,
-          options.arguments,
-          createMcpRequestContext(promptExecution, pi),
+    const sessionFiles = await createMcpSessionFiles(context.sessionManager.getSessionDir());
+    const authStore = new McpAuthStore(agentDirectory);
+    const resourceServers = new Set<string>();
+    let catalog: McpToolCatalog | undefined;
+    let observer: McpObserverUiController | undefined;
+    let ownedHost: McpHost | undefined;
+    try {
+      const host = new McpHost({
+        initialSubscriptions: replaySubscriptions(context),
+        onCatalogChanged: (serverId, kind) => {
+          if (kind === "tools") void synchronizeServerCatalog(serverId);
+          else if (kind === "resources" || kind === "resourceTemplates") {
+            void synchronizeServerCatalog(serverId);
+          }
+        },
+        onResourceUpdated: ({ serverId, uri }) => {
+          pi.sendMessage(
+            {
+              content: `MCP Resource updated on ${serverId}: ${uri}. Read it explicitly before using the new content.`,
+              customType: MCP_RESOURCE_UPDATE_MESSAGE_TYPE,
+              display: true,
+            },
+            { deliverAs: "nextTurn" },
+          );
+        },
+        onStatusChange: (statuses) => observer?.update(statuses, invalidSettings),
+        persistSubscriptions: (subscriptions) => {
+          pi.appendEntry(MCP_SUBSCRIPTIONS_ENTRY_TYPE, { subscriptions, version: 1 });
+        },
+        piCwd: context.cwd,
+        resolveAuthProvider: (definition) => {
+          if (definition.auth?.type === "none" || definition.auth?.type === "bearer") {
+            return undefined;
+          }
+          const oauth = definition.auth?.type === "oauth" ? definition.auth : undefined;
+          return new McpOAuthProvider({
+            authStore,
+            clientIdentity: oauth?.clientId ?? "@ian-pascoe/pi-mcp",
+            ...(oauth?.clientId === undefined ? {} : { clientId: oauth.clientId }),
+            ...(oauth?.clientSecret === undefined ? {} : { clientSecret: oauth.clientSecret }),
+            onAuthorizationUrl: () => undefined,
+            redirectUrl: oauth?.redirectUri ?? "http://127.0.0.1:19876/mcp/oauth/callback",
+            scopes: oauth?.scopes ?? [],
+            serverUrl: definition.url,
+          });
+        },
+        sessionFiles,
+        settings,
+      });
+      ownedHost = host;
+      observer = new McpObserverUiController(context, (value) => settings.secrets.redact(value));
+      observer.update(host.listStatuses(), invalidSettings);
+      const synchronizeServerCatalog = async (serverId: string): Promise<void> => {
+        const activeCatalog = catalog;
+        if (activeCatalog === undefined) return;
+        if (host.getStatus(serverId)?.state !== "connected") {
+          activeCatalog.setServerActive(serverId, false);
+          resourceServers.delete(serverId);
+          activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          return;
+        }
+        try {
+          const tools = await host.listTools(serverId);
+          activeCatalog.replaceServerTools(
+            serverId,
+            tools.map(({ tool }) => catalogServerTool(tool)),
+          );
+          if (host.hasConnectedCapability("resources", serverId)) resourceServers.add(serverId);
+          else resourceServers.delete(serverId);
+          activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+        } catch {
+          activeCatalog.setServerActive(serverId, false);
+          resourceServers.delete(serverId);
+          activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+        }
+      };
+      catalog = new McpToolCatalog(
+        pi,
+        createMcpToolCatalogRuntime(host, sessionFiles, pi),
+        (text) => settings.secrets.redact(text),
+      );
+      const resolveCurrentSettings = () =>
+        resolveMcpSettings(
+          SettingsManager.create(context.cwd, agentDirectory, {
+            projectTrusted: context.isProjectTrusted(),
+          }),
         );
-        const replayMessages = await mapPromptResult(result, sessionFiles);
-        pi.sendMessage(
-          {
-            content: `MCP Prompt ${options.server}/${options.prompt}`,
-            customType: MCP_PROMPT_MESSAGE_TYPE,
-            details: {
-              mcpMessages: result.messages,
-              replayMessages,
-              version: 1,
-            } satisfies McpPromptMessageDetails,
-            display: true,
-          },
-          { triggerTurn: true },
-        );
-        return { message: `Expanded MCP Prompt ${options.server}/${options.prompt}`, ok: true };
-      },
-      reconnect: async (server) => {
-        await host.reconnect(server);
-        return { message: `Reconnected MCP Server ${server}`, ok: true };
-      },
-      status: async () => {
-        const statuses = Object.fromEntries(host.listStatuses());
-        return {
-          data: toMcpJsonValue(statuses),
-          message:
-            Object.keys(statuses).length === 0
-              ? "No MCP Server Definitions configured"
-              : Object.entries(statuses)
-                  .map(([server, status]) => `${server}: ${status.state}`)
-                  .join("\n"),
-          ok: true,
-        };
-      },
-      subscribe: async (options) => {
-        await host.subscribeResource(options.server, options.uri);
-        return { message: `Subscribed to ${options.server}: ${options.uri}`, ok: true };
-      },
-      unsubscribe: async (options) => {
-        await host.unsubscribeResource(options.server, options.uri);
-        return { message: `Unsubscribed from ${options.server}: ${options.uri}`, ok: true };
-      },
-    };
-    return new ProductionPiMcpSession(
-      host,
-      adapters,
-      async () => {
-        await Promise.all([...settings.servers.keys()].map(synchronizeServerCatalog));
-      },
-      interactionContext,
-    );
+      const applyPersistedServer = async (serverId: string): Promise<void> => {
+        const definition = resolveCurrentSettings().servers.get(serverId);
+        if (definition === undefined) {
+          if (host.getStatus(serverId) !== undefined) await host.removeServer(serverId);
+          catalog?.setServerActive(serverId, false);
+          resourceServers.delete(serverId);
+          catalog?.setResourceToolsActive(resourceServers.size > 0);
+          return;
+        }
+        await host.upsertServer(definition);
+        await synchronizeServerCatalog(serverId);
+      };
+      const persistentAuth = adapters.auth;
+      adapters.auth = {
+        ...persistentAuth,
+        authenticate: async (options) => {
+          const result = await persistentAuth.authenticate(options);
+          if (result.ok) void host.reconnect(options.server).catch(() => undefined);
+          return result;
+        },
+      };
+      adapters.live = {
+        connectInBackground: (server) => {
+          void applyPersistedServer(server).catch(() => undefined);
+        },
+        disconnect: applyPersistedServer,
+        logs: (options) =>
+          runExpectedMcpLiveCommand(
+            async () => {
+              const tails = await host.readLogs(options.server);
+              return { data: toMcpJsonValue(tails), message: formatMcpLogs(tails), ok: true };
+            },
+            "connection",
+            (value) => settings.secrets.redact(value),
+          ),
+        prompt: (options) =>
+          runExpectedMcpLiveCommand(
+            async () => {
+              const promptExecution: McpToolExecution = {
+                context: interactionContext.current,
+                onUpdate: undefined,
+                signal: interactionContext.current.signal,
+                toolCallId: "mcp-prompt",
+              };
+              const result = await host.getPrompt(
+                options.server,
+                options.prompt,
+                options.arguments,
+                createMcpRequestContext(promptExecution, pi),
+              );
+              const replayMessages = await mapPromptResult(result, sessionFiles);
+              pi.sendMessage(
+                {
+                  content: `MCP Prompt ${options.server}/${options.prompt}`,
+                  customType: MCP_PROMPT_MESSAGE_TYPE,
+                  details: {
+                    mcpMessages: result.messages,
+                    replayMessages,
+                    version: 1,
+                  } satisfies McpPromptMessageDetails,
+                  display: true,
+                },
+                { triggerTurn: true },
+              );
+              return {
+                message: `Expanded MCP Prompt ${options.server}/${options.prompt}`,
+                ok: true,
+              };
+            },
+            "runtime",
+            (value) => settings.secrets.redact(value),
+          ),
+        reconnect: (server) =>
+          runExpectedMcpLiveCommand(
+            async () => {
+              await host.reconnect(server);
+              return { message: `Reconnected MCP Server ${server}`, ok: true };
+            },
+            "connection",
+            (value) => settings.secrets.redact(value),
+          ),
+        status: async () => {
+          const statuses = host.listStatuses();
+          const subscriptions = host.listSubscriptions();
+          return {
+            data: toMcpJsonValue({
+              invalidSettings,
+              servers: Object.fromEntries(statuses),
+              subscriptions,
+            }),
+            message: formatMcpStatus(statuses, subscriptions, invalidSettings),
+            ok: true,
+          };
+        },
+        subscribe: (options) =>
+          runExpectedMcpLiveCommand(
+            async () => {
+              await host.subscribeResource(options.server, options.uri);
+              return { message: `Subscribed to ${options.server}: ${options.uri}`, ok: true };
+            },
+            "connection",
+            (value) => settings.secrets.redact(value),
+          ),
+        unsubscribe: (options) =>
+          runExpectedMcpLiveCommand(
+            async () => {
+              await host.unsubscribeResource(options.server, options.uri);
+              return { message: `Unsubscribed from ${options.server}: ${options.uri}`, ok: true };
+            },
+            "connection",
+            (value) => settings.secrets.redact(value),
+          ),
+      };
+      return new ProductionPiMcpSession(
+        host,
+        observer,
+        (text) => settings.secrets.redact(text),
+        adapters,
+        async () => {
+          await Promise.all([...settings.servers.keys()].map(synchronizeServerCatalog));
+        },
+        interactionContext,
+      );
+    } catch (cause) {
+      observer?.dispose();
+      if (ownedHost === undefined) await sessionFiles.close();
+      else await ownedHost.shutdown();
+      throw cause;
+    }
   },
 };
 
@@ -903,6 +954,14 @@ export class PiMcpLifecycleController {
 
   /** Register inert handlers and the `/mcp` command without opening external resources. */
   register(): void {
+    const redact = (text: string) =>
+      this.activeSession?.runtime.redactPresentationText(text) ?? text;
+    this.pi.registerMessageRenderer(MCP_PROMPT_MESSAGE_TYPE, (message, options, theme) =>
+      renderMcpPromptMessage(message, options, theme, redact),
+    );
+    this.pi.registerMessageRenderer(MCP_RESOURCE_UPDATE_MESSAGE_TYPE, (message, options, theme) =>
+      renderMcpResourceUpdateMessage(message, options, theme, redact),
+    );
     this.pi.registerCommand("mcp", {
       description: "Configure and inspect MCP Servers",
       getArgumentCompletions: (prefix) =>

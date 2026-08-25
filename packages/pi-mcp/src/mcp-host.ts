@@ -7,7 +7,6 @@ import {
   UnauthorizedError,
   type AuthProvider,
   type Client,
-  type LoggingLevel,
   type OAuthClientProvider,
 } from "@modelcontextprotocol/client";
 import {
@@ -125,7 +124,6 @@ export interface McpHostClient {
     uri: string,
     context?: McpHostRequestContext<PiContext>,
   ): Promise<McpHostReadResourceResult>;
-  setLoggingLevel(level: LoggingLevel): Promise<void>;
   subscribeResource(uri: string): Promise<void>;
   unsubscribeResource(uri: string): Promise<void>;
 }
@@ -165,6 +163,9 @@ export type McpServerStatus =
     }
   | { readonly attempts: number; readonly error: string; readonly state: "failed" };
 
+/** Expected live MCP Host lookup or capability failure returned to command adapters. */
+export class McpHostOperationError extends Error {}
+
 interface McpHostCatalogItem<Item> {
   readonly item: Item;
   readonly serverId: string;
@@ -196,6 +197,8 @@ export interface McpHostToolItem {
 
 /** One bounded human-facing stderr and MCP logging tail. */
 export interface McpHostLogTail {
+  /** Private session path containing the complete retained tail for this Server. */
+  readonly path: string;
   readonly serverId: string;
   readonly text: string;
 }
@@ -220,6 +223,8 @@ export interface McpHostOptions {
   readonly instructionDeadlineMs?: number;
   readonly onCatalogChanged?: (serverId: string, kind: McpHostCatalogKind) => void;
   readonly onResourceUpdated?: (update: McpHostResourceSubscription) => void;
+  /** Observe copied, sorted status after each status or Server Definition change. */
+  readonly onStatusChange?: (statuses: ReadonlyMap<string, McpServerStatus>) => void;
   readonly persistSubscriptions?: (
     subscriptions: readonly McpHostResourceSubscription[],
   ) => Promise<void> | void;
@@ -411,12 +416,6 @@ class SdkMcpHostClient implements McpHostClient {
     );
   }
 
-  setLoggingLevel(level: LoggingLevel): Promise<void> {
-    return this.owner.run(async (client, requestOptions) => {
-      await client.setLoggingLevel(level, requestOptions);
-    });
-  }
-
   subscribeResource(uri: string): Promise<void> {
     return this.owner.run(async (client, requestOptions) => {
       await client.subscribeResource({ uri }, requestOptions);
@@ -460,6 +459,7 @@ export class McpHost {
     for (const subscription of options.initialSubscriptions ?? []) {
       this.subscriptions.add(this.subscriptionKey(subscription.serverId, subscription.uri));
     }
+    this.publishStatuses();
   }
 
   /** Launch enabled Server connections without awaiting network or process startup. */
@@ -468,7 +468,7 @@ export class McpHost {
     this.started = true;
     this.initialConnections = [...this.entries.values()].flatMap((entry) => {
       if (!entry.definition.enabled) {
-        entry.status = { state: "disabled" };
+        this.setEntryStatus(entry, { state: "disabled" });
         return [];
       }
       return [this.connectEntry(entry)];
@@ -493,6 +493,19 @@ export class McpHost {
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([serverId, entry]) => [serverId, { ...entry.status }]),
     );
+  }
+
+  /** Return desired Resource subscriptions without sending an MCP request. */
+  listSubscriptions(): readonly McpHostResourceSubscription[] {
+    return [...this.subscriptions]
+      .map((key) => {
+        const separator = key.indexOf("\0");
+        return { serverId: key.slice(0, separator), uri: key.slice(separator + 1) };
+      })
+      .sort(
+        (left, right) =>
+          left.serverId.localeCompare(right.serverId) || left.uri.localeCompare(right.uri),
+      );
   }
 
   /** Whether one or any connected MCP Server advertises a core capability. */
@@ -546,26 +559,15 @@ export class McpHost {
   }
 
   /** Read bounded stderr and MCP logging tails without adding them to model context. */
-  async readLogs(serverId?: string, level?: LoggingLevel): Promise<readonly McpHostLogTail[]> {
+  async readLogs(serverId?: string): Promise<readonly McpHostLogTail[]> {
     const entries =
       serverId === undefined ? [...this.entries.values()] : [this.requireEntry(serverId)];
-    if (level !== undefined) {
-      const connected = entries.filter((entry) => entry.client !== undefined);
-      if (serverId !== undefined && connected[0]?.client?.capabilities.logging !== true) {
-        throw new Error(`MCP Server ${serverId} does not advertise logging`);
-      }
-      await Promise.all(
-        connected.flatMap((entry) =>
-          entry.client?.capabilities.logging === true ? [entry.client.setLoggingLevel(level)] : [],
-        ),
-      );
-    }
     return Promise.all(
       entries
         .sort((left, right) => left.definition.id.localeCompare(right.definition.id))
         .map(async (entry) => ({
+          ...(await this.options.sessionFiles.readServerLog(entry.definition.id)),
           serverId: entry.definition.id,
-          text: await this.options.sessionFiles.readServerLog(entry.definition.id),
         })),
     );
   }
@@ -634,7 +636,7 @@ export class McpHost {
     entry.failures = 0;
     this.entries.set(definition.id, entry);
     if (!this.started || !definition.enabled || this.shuttingDown) {
-      entry.status = { state: "disabled" };
+      this.setEntryStatus(entry, { state: "disabled" });
       return;
     }
     await this.connectEntry(entry);
@@ -646,7 +648,6 @@ export class McpHost {
     await this.stopEntry(entry, "MCP Server disabled");
     entry.definition = { ...entry.definition, enabled: false };
     entry.failures = 0;
-    entry.status = { state: "disabled" };
   }
 
   /** Remove one Server Definition and every ephemeral runtime value it owns. */
@@ -654,6 +655,7 @@ export class McpHost {
     const entry = this.requireEntry(serverId);
     await this.stopEntry(entry, "MCP Server removed");
     this.entries.delete(serverId);
+    this.publishStatuses();
     const prefix = `${serverId}\0`;
     for (const subscription of this.subscriptions) {
       if (subscription.startsWith(prefix)) this.subscriptions.delete(subscription);
@@ -666,10 +668,7 @@ export class McpHost {
     const entry = this.requireEntry(serverId);
     await this.stopEntry(entry, "MCP reconnect requested");
     entry.failures = 0;
-    if (!entry.definition.enabled) {
-      entry.status = { state: "disabled" };
-      return;
-    }
+    if (!entry.definition.enabled) return;
     await this.connectEntry(entry);
   }
 
@@ -716,7 +715,7 @@ export class McpHost {
     const generation = ++entry.generation;
     entry.retryAbort?.abort(new Error("MCP connection attempt replaced"));
     delete entry.retryAbort;
-    entry.status = { attempt: entry.failures + 1, state: "connecting" };
+    this.setEntryStatus(entry, { attempt: entry.failures + 1, state: "connecting" });
     const pending = Promise.resolve()
       .then(async () => {
         const authProvider =
@@ -756,7 +755,7 @@ export class McpHost {
         }
         entry.client = client;
         entry.failures = 0;
-        entry.status = { state: "connected" };
+        this.setEntryStatus(entry, { state: "connected" });
         const initialized = await Promise.allSettled([
           this.loadInstructionToolNames(entry, client),
           this.restoreSubscriptions(entry),
@@ -779,16 +778,20 @@ export class McpHost {
   private handleConnectionFailure(entry: McpHostServerEntry, cause: unknown): void {
     const message = this.options.settings.secrets.redact(errorMessage(cause));
     if (cause instanceof UnauthorizedError) {
-      entry.status = { error: message, state: "needs_auth" };
+      this.setEntryStatus(entry, { error: message, state: "needs_auth" });
     } else if (cause instanceof RegistrationRejectedError) {
-      entry.status = { error: message, state: "needs_client_registration" };
+      this.setEntryStatus(entry, { error: message, state: "needs_client_registration" });
     } else {
       entry.failures += 1;
       const terminal =
         cause instanceof ProtocolError ||
         (cause instanceof SdkError && TERMINAL_MCP_SDK_ERROR_CODES.has(cause.code));
       if (terminal || entry.failures > this.options.settings.retry.maxRetries) {
-        entry.status = { attempts: entry.failures, error: message, state: "failed" };
+        this.setEntryStatus(entry, {
+          attempts: entry.failures,
+          error: message,
+          state: "failed",
+        });
       } else {
         const delayMs = Math.min(
           this.options.settings.retry.maxDelayMs,
@@ -799,13 +802,13 @@ export class McpHost {
         );
         const retryAbort = new AbortController();
         entry.retryAbort = retryAbort;
-        entry.status = {
+        this.setEntryStatus(entry, {
           attempt: entry.failures + 1,
           delayMs,
           error: message,
           retryAt: this.clock.now + delayMs,
           state: "retrying",
-        };
+        });
         void this.clock.sleep(delayMs, retryAbort.signal).then(
           () => {
             if (!this.shuttingDown && entry.retryAbort === retryAbort)
@@ -874,17 +877,17 @@ export class McpHost {
     const entry = this.requireEntry(serverId);
     const client = entry.client;
     if (client === undefined || entry.status.state !== "connected") {
-      throw new Error(`MCP Server ${serverId} is not connected`);
+      throw new McpHostOperationError(`MCP Server ${serverId} is not connected`);
     }
     if (client.capabilities[capability] !== true) {
-      throw new Error(`MCP Server ${serverId} does not support ${capability}`);
+      throw new McpHostOperationError(`MCP Server ${serverId} does not support ${capability}`);
     }
     return client;
   }
 
   private requireEntry(serverId: string): McpHostServerEntry {
     const entry = this.entries.get(serverId);
-    if (entry === undefined) throw new Error(`Unknown MCP Server ${serverId}`);
+    if (entry === undefined) throw new McpHostOperationError(`Unknown MCP Server ${serverId}`);
     return entry;
   }
 
@@ -904,16 +907,7 @@ export class McpHost {
   }
 
   private async persistSubscriptions(): Promise<void> {
-    const subscriptions = [...this.subscriptions]
-      .map((key) => {
-        const separator = key.indexOf("\0");
-        return { serverId: key.slice(0, separator), uri: key.slice(separator + 1) };
-      })
-      .sort(
-        (left, right) =>
-          left.serverId.localeCompare(right.serverId) || left.uri.localeCompare(right.uri),
-      );
-    await this.options.persistSubscriptions?.(subscriptions);
+    await this.options.persistSubscriptions?.(this.listSubscriptions());
   }
 
   private async stopEntry(entry: McpHostServerEntry, reason: string): Promise<void> {
@@ -923,7 +917,7 @@ export class McpHost {
     entry.instructionToolNames = [];
     const client = entry.client;
     delete entry.client;
-    entry.status = { state: "disabled" };
+    this.setEntryStatus(entry, { state: "disabled" });
     await this.notifyCatalogChanged(entry, "tools");
     await client?.close();
   }
@@ -936,6 +930,19 @@ export class McpHost {
       this.options.onCatalogChanged?.(entry.definition.id, kind);
     } catch (cause) {
       await this.recordLog(entry.definition.id, errorMessage(cause));
+    }
+  }
+
+  private setEntryStatus(entry: McpHostServerEntry, status: McpServerStatus): void {
+    entry.status = status;
+    this.publishStatuses();
+  }
+
+  private publishStatuses(): void {
+    try {
+      this.options.onStatusChange?.(this.listStatuses());
+    } catch {
+      // Observer failures cannot change MCP Host lifecycle behavior.
     }
   }
 

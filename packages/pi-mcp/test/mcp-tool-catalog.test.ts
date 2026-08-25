@@ -194,6 +194,8 @@ describe("McpToolCatalog", () => {
     );
     expect(exactTool?.parameters).toBe(exactInputSchema);
     expect(exactTool?.label).toBe("Lookup");
+    expect(exactTool?.renderCall).toEqual(expect.any(Function));
+    expect(exactTool?.renderResult).toEqual(expect.any(Function));
     expect(pi.tools.has("mcp__docs_server__clean-name")).toBe(true);
     expect([...pi.tools.keys()].some((name) => name.includes("broken"))).toBe(false);
     expect([...pi.tools.keys()].filter((name) => name.includes("mcp_task"))).toEqual([]);
@@ -313,6 +315,12 @@ describe("McpToolCatalog", () => {
     ];
 
     expect(resourceToolNames.every((name) => pi.tools.has(name))).toBe(true);
+    expect(
+      resourceToolNames.every((name) => {
+        const tool = pi.tools.get(name);
+        return tool?.renderCall !== undefined && tool.renderResult !== undefined;
+      }),
+    ).toBe(true);
     expect(pi.getActiveTools()).toEqual(["read"]);
     catalog.setResourceToolsActive(true);
     expect(pi.getActiveTools()).toEqual(["read", ...resourceToolNames]);
