@@ -35,6 +35,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { McpAuthStore } from "./mcp-auth-store.js";
 import {
+  completeMcpCommandArguments,
+  type McpCommandCompletionItem,
+} from "./mcp-command-completion.js";
+import {
   runMcpCommandLine,
   type McpCommandAdapterResult,
   type McpCommandExitCategory,
@@ -79,17 +83,13 @@ export interface PiMcpExtensionCommandResult {
 }
 
 /** Slash-command completion item returned without importing Pi TUI internals. */
-export interface PiMcpAutocompleteItem {
-  readonly description?: string;
-  readonly label: string;
-  readonly value: string;
-}
+export type PiMcpAutocompleteItem = McpCommandCompletionItem;
 
 /** Session-owned MCP Host behavior consumed by the Pi lifecycle adapter. */
 export interface PiMcpExtensionSession {
   /** Close all processes, transports, subscriptions, listeners, timers, and session files once. */
   close(): Promise<void>;
-  /** Complete `/mcp prompt` server, prompt, and argument values through the live Host. */
+  /** Complete `/mcp` commands and arguments through the live Host. */
   completeCommandArguments?(prefix: string): Promise<PiMcpAutocompleteItem[] | null>;
   /** Execute one `/mcp` command without throwing an expected failure through Pi. */
   executeCommand(
@@ -662,59 +662,7 @@ class ProductionPiMcpSession implements PiMcpExtensionSession {
   }
 
   async completeCommandArguments(prefix: string): Promise<PiMcpAutocompleteItem[] | null> {
-    const endsWithSpace = prefix.endsWith(" ");
-    const words = prefix.trim().split(/\s+/u);
-    if (words[0] !== "prompt") return null;
-    const prompts = await this.host.listPrompts();
-    if (words.length === 1 || (words.length === 2 && !endsWithSpace)) {
-      const serverPrefix = words[1] ?? "";
-      return [...new Set(prompts.map(({ serverId }) => serverId))]
-        .filter((serverId) => serverId.startsWith(serverPrefix))
-        .map((serverId) => ({ label: serverId, value: serverId }));
-    }
-    const serverId = words[1] ?? "";
-    if (words.length === 2 || (words.length === 3 && !endsWithSpace)) {
-      const promptPrefix = words[2] ?? "";
-      return prompts
-        .filter(
-          ({ prompt, serverId: owner }) =>
-            owner === serverId && prompt.name.startsWith(promptPrefix),
-        )
-        .map(({ prompt }) => ({
-          ...(prompt.description === undefined ? {} : { description: prompt.description }),
-          label: prompt.name,
-          value: prompt.name,
-        }));
-    }
-    const promptName = words[2] ?? "";
-    const argumentMarker = words.lastIndexOf("--arg");
-    if (argumentMarker === -1) return null;
-    const argument = words[argumentMarker + 1] ?? "";
-    const separator = argument.indexOf("=");
-    if (separator === -1) {
-      const definition = prompts.find(
-        ({ prompt, serverId: owner }) => owner === serverId && prompt.name === promptName,
-      )?.prompt;
-      return (definition?.arguments ?? [])
-        .filter(({ name }) => name.startsWith(argument))
-        .map(({ description, name }) => ({
-          ...(description === undefined ? {} : { description }),
-          label: name,
-          value: `${name}=`,
-        }));
-    }
-    const argumentName = argument.slice(0, separator);
-    const valuePrefix = argument.slice(separator + 1);
-    const completion = await this.host.completePromptArgument(
-      serverId,
-      promptName,
-      argumentName,
-      valuePrefix,
-    );
-    return completion.values.map((value) => ({
-      label: value,
-      value: `${argumentName}=${value}`,
-    }));
+    return completeMcpCommandArguments(prefix, this.host);
   }
 
   async executeCommand(

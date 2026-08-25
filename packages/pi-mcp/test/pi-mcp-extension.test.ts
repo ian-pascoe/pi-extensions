@@ -12,7 +12,7 @@ import {
   type SessionStartEvent,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createPiMcpExtension, type PiMcpExtensionSession } from "../src/pi-mcp-extension.js";
 
 const temporaryDirectories: string[] = [];
@@ -107,6 +107,28 @@ afterEach(async () => {
 });
 
 describe("Pi MCP extension lifecycle", () => {
+  test("forwards the complete MCP argument prefix through the registered command", async () => {
+    const completeCommandArguments = vi.fn(async (_prefix: string) => [
+      { description: "Reconnect an MCP Server", label: "reconnect", value: "reconnect " },
+    ]);
+    const session: PiMcpExtensionSession = {
+      close: async () => undefined,
+      completeCommandArguments,
+      executeCommand: async () => ({ level: "info", message: "ok" }),
+      instructionSnapshot: async () => undefined,
+      redactPresentationText: (text) => text,
+      start: async () => undefined,
+      transformContext: (messages) => messages,
+    };
+    const runner = await createRunner(session);
+    await runner.emit({ type: "session_start", reason: "startup" } satisfies SessionStartEvent);
+
+    await expect(runner.getCommand("mcp")?.getArgumentCompletions?.("rec")).resolves.toEqual([
+      { description: "Reconnect an MCP Server", label: "reconnect", value: "reconnect " },
+    ]);
+    expect(completeCommandArguments).toHaveBeenCalledWith("rec");
+  });
+
   test("starts in the background, freezes instructions before the first turn, and closes once", async () => {
     let releaseStart: (() => void) | undefined;
     const startBlocked = new Promise<void>((resolveStart) => {
