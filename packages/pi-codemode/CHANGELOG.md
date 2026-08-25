@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.3.1
+
+### Patch Changes
+
+- 980de19: Truncate collapsed CodeMode Transcript source lines instead of wrapping them.
+
 ## 0.3.0
 
 ### Minor Changes
