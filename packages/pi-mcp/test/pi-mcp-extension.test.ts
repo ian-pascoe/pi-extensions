@@ -10,11 +10,18 @@ import {
   type ExtensionCommandContext,
   type SessionShutdownEvent,
   type SessionStartEvent,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { createPiMcpExtension, type PiMcpExtensionSession } from "../src/pi-mcp-extension.js";
 
 const temporaryDirectories: string[] = [];
+// SAFETY: The registered MCP message renderers use only fg, bg, and bold; this inert theme supplies those complete operations.
+const plainTheme = {
+  bg: (_color: string, text: string) => text,
+  bold: (text: string) => text,
+  fg: (_color: string, text: string) => text,
+} as Theme;
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(resolve(tmpdir(), prefix));
@@ -115,6 +122,7 @@ describe("Pi MCP extension lifecycle", () => {
         message: "ok",
       }),
       instructionSnapshot: async () => "Server Instructions\n- fixture: keep exact bytes",
+      redactPresentationText: (text) => text,
       start: () => startBlocked,
       transformContext: (messages) => messages,
     };
@@ -146,5 +154,62 @@ describe("Pi MCP extension lifecycle", () => {
     await runner.emit({ type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent);
     await runner.emit({ type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent);
     expect(closeCalls).toBe(1);
+  });
+
+  test("registers inert Prompt and Resource Update renderers with the active session redactor", async () => {
+    const session: PiMcpExtensionSession = {
+      close: async () => undefined,
+      executeCommand: async () => ({ level: "info", message: "ok" }),
+      instructionSnapshot: async () => undefined,
+      redactPresentationText: (text) => text.replaceAll("secret", "[REDACTED]"),
+      start: async () => undefined,
+      transformContext: (messages) => messages,
+    };
+    const runner = await createRunner(session);
+    const promptRenderer = runner.getMessageRenderer("pi-mcp-prompt");
+    const resourceRenderer = runner.getMessageRenderer("pi-mcp-resource-update");
+    expect(promptRenderer).toEqual(expect.any(Function));
+    expect(resourceRenderer).toEqual(expect.any(Function));
+
+    await runner.emit({ type: "session_start", reason: "startup" } satisfies SessionStartEvent);
+    const prompt = {
+      content: "MCP Prompt docs/review",
+      customType: "pi-mcp-prompt",
+      details: {
+        mcpMessages: [],
+        replayMessages: [
+          {
+            content: [{ text: "secret body", type: "text" as const }],
+            role: "user" as const,
+            timestamp: 1,
+          },
+        ],
+        version: 1 as const,
+      },
+      display: true,
+      role: "custom" as const,
+      timestamp: 1,
+    };
+    const before = structuredClone(prompt);
+    const renderedPrompt = promptRenderer?.(prompt, { expanded: true, outputPad: 1 }, plainTheme);
+    expect(renderedPrompt?.render(120).join("\n")).toContain("[REDACTED] body");
+    expect(prompt).toEqual(before);
+
+    const renderedUpdate = resourceRenderer?.(
+      {
+        content:
+          "MCP Resource updated on docs: file:///secret. Read it explicitly before using the new content.",
+        customType: "pi-mcp-resource-update",
+        display: true,
+        role: "custom",
+        timestamp: 1,
+      },
+      { expanded: true, outputPad: 1 },
+      plainTheme,
+    );
+    expect(renderedUpdate?.render(120).join("\n")).toContain(
+      "The Resource remains unread until the agent explicitly reads it.",
+    );
+    expect(renderedUpdate?.render(120).join("\n")).not.toContain("secret");
   });
 });

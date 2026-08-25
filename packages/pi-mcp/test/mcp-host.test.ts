@@ -62,7 +62,6 @@ class FakeClient implements McpHostClient {
   }));
   readonly completePromptArgument = vi.fn(async () => ({ hasMore: false, values: ["one", "two"] }));
   readonly readResource = vi.fn(async (uri: string) => ({ contents: [{ uri, text: "body" }] }));
-  readonly setLoggingLevel = vi.fn(async () => undefined);
   readonly subscribeResource = vi.fn(async () => undefined);
   readonly unsubscribeResource = vi.fn(async () => undefined);
   readonly listPrompts = vi.fn(async () => this.prompts);
@@ -164,7 +163,10 @@ function sessionFiles(
     appendServerLog,
     close,
     directoryPath: "/tmp/pi-mcp-test",
-    readServerLog: vi.fn(async (serverId) => `${serverId} log`),
+    readServerLog: vi.fn(async (serverId) => ({
+      path: `/tmp/pi-mcp-test/${serverId}.log`,
+      text: `${serverId} log`,
+    })),
     writeResultSpill: vi.fn(async () => "/tmp/pi-mcp-test/spill"),
     writeUnsupportedContent: vi.fn(async () => "/tmp/pi-mcp-test/content"),
   };
@@ -206,6 +208,41 @@ test("starts without blocking, isolates failures, and retries with capped expone
   await flush();
   expect(host.getStatus("flaky")?.state).toBe("connected");
   expect(factory.attempts.get("flaky")).toBe(3);
+});
+
+test("publishes copied sorted status snapshots without letting observers affect lifecycle", async () => {
+  const clock = new FakeClock();
+  const factory = new FakeFactory();
+  factory.queue("alpha", new Error("offline"), new FakeClient());
+  const snapshots: Array<readonly (readonly [string, string])[]> = [];
+  const host = new McpHost({
+    clientFactory: factory,
+    clock,
+    onStatusChange: (statuses) => {
+      snapshots.push([...statuses].map(([serverId, status]) => [serverId, status.state]));
+      if (statuses.get("alpha")?.state === "retrying") throw new Error("observer failed");
+    },
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("zulu", false), stdioDefinition("alpha")]),
+  });
+
+  host.start();
+  await host.waitForInitialConnections();
+  expect(host.getStatus("alpha")?.state).toBe("retrying");
+  expect(
+    snapshots.every((snapshot) => snapshot.map(([serverId]) => serverId).join() === "alpha,zulu"),
+  ).toBe(true);
+
+  clock.wakeNext();
+  await flush();
+  expect(host.getStatus("alpha")?.state).toBe("connected");
+
+  factory.queue("bravo", new FakeClient());
+  await host.upsertServer(stdioDefinition("bravo"));
+  expect(snapshots.at(-1)?.map(([serverId]) => serverId)).toEqual(["alpha", "bravo", "zulu"]);
+  await host.removeServer("bravo");
+  expect(snapshots.at(-1)?.map(([serverId]) => serverId)).toEqual(["alpha", "zulu"]);
 });
 
 const terminalMcpFailures: ReadonlyArray<readonly [string, Error]> = [
@@ -355,6 +392,7 @@ test("owns resources, prompts, desired subscriptions, and provenance-only update
   host.start();
   await host.waitForInitialConnections();
   expect(client.subscribeResource).toHaveBeenCalledWith("file:///persisted");
+  expect(host.listSubscriptions()).toEqual([{ serverId: "docs", uri: "file:///persisted" }]);
   const operationContext = { piContext: { requestId: "pi-request" } };
   await expect(
     host.callTool("docs", "search", { query: "MCP" }, operationContext),
@@ -367,10 +405,9 @@ test("owns resources, prompts, desired subscriptions, and provenance-only update
   ]);
   expect(await host.listResourceTemplates()).toHaveLength(1);
   expect(await host.listPrompts()).toHaveLength(1);
-  await expect(host.readLogs("docs", "warning")).resolves.toEqual([
-    { serverId: "docs", text: "docs log" },
+  await expect(host.readLogs("docs")).resolves.toEqual([
+    { path: "/tmp/pi-mcp-test/docs.log", serverId: "docs", text: "docs log" },
   ]);
-  expect(client.setLoggingLevel).toHaveBeenCalledWith("warning");
   await expect(host.readResource("docs", "file:///guide")).resolves.toMatchObject({
     contents: [{ text: "body" }],
   });
@@ -383,6 +420,10 @@ test("owns resources, prompts, desired subscriptions, and provenance-only update
   });
 
   await host.subscribeResource("docs", "file:///new");
+  expect(host.listSubscriptions()).toEqual([
+    { serverId: "docs", uri: "file:///new" },
+    { serverId: "docs", uri: "file:///persisted" },
+  ]);
   expect(persisted).toHaveBeenLastCalledWith([
     { serverId: "docs", uri: "file:///new" },
     { serverId: "docs", uri: "file:///persisted" },

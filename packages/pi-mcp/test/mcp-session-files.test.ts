@@ -37,9 +37,10 @@ test("writes private Result Spills, binary content, and bounded per-server log t
     expect(await readFile(spillPath, "utf8")).toBe("complete MCP output");
     expect(await readFile(binaryPath)).toEqual(Buffer.from([0, 255, 7]));
     expect(await readFile(logPath, "utf8")).toBe(`${"a".repeat(MAX_MCP_SERVER_LOG_BYTES - 4)}tail`);
-    expect(await files.readServerLog("../../untrusted-server-name")).toBe(
-      `${"a".repeat(MAX_MCP_SERVER_LOG_BYTES - 4)}tail`,
-    );
+    await expect(files.readServerLog("../../untrusted-server-name")).resolves.toEqual({
+      path: logPath,
+      text: `${"a".repeat(MAX_MCP_SERVER_LOG_BYTES - 4)}tail`,
+    });
     expect((await stat(files.directoryPath)).mode & 0o777).toBe(0o700);
     expect((await stat(spillPath)).mode & 0o777).toBe(0o600);
     expect((await stat(binaryPath)).mode & 0o777).toBe(0o600);

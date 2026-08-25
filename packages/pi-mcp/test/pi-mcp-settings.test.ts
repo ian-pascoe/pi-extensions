@@ -160,6 +160,11 @@ describe("resolveMcpSettings", () => {
     ["unknown package field", { unknown: true }, "global mcp.unknown"],
     ["unknown retry field", { retry: { unknown: 1 } }, "global mcp.retry"],
     [
+      "terminal control in Server Definition name",
+      { servers: { "invalid\u001b[31m": { command: "server" } } },
+      "global mcp.servers",
+    ],
+    [
       "unknown Server Definition field",
       { servers: { invalid: { command: "server", unknown: true } } },
       "global mcp.servers.invalid",

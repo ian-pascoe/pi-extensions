@@ -16,6 +16,10 @@ export const MCP_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 const JsonValueSchema = Type.Any();
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
+const McpServerIdSchema = Type.String({
+  minLength: 1,
+  pattern: "^[^\\u0000-\\u001F\\u007F-\\u009F]+$",
+});
 const PositiveSafeIntegerSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const RetryCountSchema = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
 const BackoffFactorSchema = Type.Number({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
@@ -60,7 +64,7 @@ const McpLayerWireSchema = Type.Object(
     requestTimeoutMs: Type.Optional(PositiveSafeIntegerSchema),
     retry: Type.Optional(McpRetryWireSchema),
     servers: Type.Optional(
-      Type.Record(Type.String(), Type.Union([McpServerDefinitionWireSchema, Type.Null()])),
+      Type.Record(McpServerIdSchema, Type.Union([McpServerDefinitionWireSchema, Type.Null()])),
     ),
   },
   { additionalProperties: false },
@@ -328,6 +332,22 @@ function parseMcpLayer(
   if (!Value.Check(McpLayerWireSchema, document.mcp)) {
     return {
       errors: [schemaSettingsError(McpLayerWireSchema, document.mcp, `${scope} mcp`)],
+      scope,
+      value: {},
+    };
+  }
+  if (
+    Object.keys(document.mcp.servers ?? {}).some(
+      (serverId) => !Value.Check(McpServerIdSchema, serverId),
+    )
+  ) {
+    return {
+      errors: [
+        new McpSettingsError(
+          `${scope} mcp.servers`,
+          "Server Definition names must be non-empty and contain no terminal controls",
+        ),
+      ],
       scope,
       value: {},
     };

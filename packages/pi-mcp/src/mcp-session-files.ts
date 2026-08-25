@@ -27,6 +27,14 @@ interface McpServerLogFile {
   readonly path: string;
 }
 
+/** Bounded retained server log text and its private complete-tail path. */
+export interface McpRetainedServerLog {
+  /** Private session path containing the complete 256-KB retained server tail. */
+  readonly path: string;
+  /** Current bounded stderr and logging tail text. */
+  readonly text: string;
+}
+
 /** Private Result Spill, unsupported-content, and per-server log files owned by one Pi session. */
 export interface McpSessionFiles {
   /** Private directory removed when the Pi session shuts down. */
@@ -37,8 +45,8 @@ export interface McpSessionFiles {
   writeUnsupportedContent(content: Uint8Array, mimeType: string): Promise<string>;
   /** Append stderr or logging bytes, retaining only the newest 256 KB for that server. */
   appendServerLog(serverName: string, chunk: string | Uint8Array): Promise<void>;
-  /** Read the current bounded stderr and logging tail for one MCP Server. */
-  readServerLog(serverName: string): Promise<string>;
+  /** Read the current bounded stderr and logging tail plus its private retained path. */
+  readServerLog(serverName: string): Promise<McpRetainedServerLog>;
   /** Remove all session files after queued writes finish. */
   close(): Promise<void>;
 }
@@ -80,10 +88,11 @@ class McpSessionFileStore implements McpSessionFiles {
     });
   }
 
-  readServerLog(serverName: string): Promise<string> {
-    return this.enqueueMcpSessionFileWrite(
-      async () => this.serverLogs.get(serverName)?.log.read() ?? "",
-    );
+  readServerLog(serverName: string): Promise<McpRetainedServerLog> {
+    return this.enqueueMcpSessionFileWrite(async () => {
+      const serverLog = this.getMcpServerLogFile(serverName);
+      return { path: serverLog.path, text: serverLog.log.read() };
+    });
   }
 
   close(): Promise<void> {

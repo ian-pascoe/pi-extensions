@@ -152,7 +152,7 @@ async function listStandaloneServers(state: StandaloneMcpState): Promise<McpComm
       transport: definition.transport,
     });
     messages.push(
-      `${definition.id} (${definition.provenance}, ${definition.enabled ? "enabled" : "disabled"})`,
+      `${definition.id} (provenance=${definition.provenance}, ${definition.enabled ? "enabled" : "disabled"}, transport=${definition.transport}, auth=${definition.transport === "stdio" ? "none" : (definition.auth?.type ?? "anonymous")}, stored-auth=${storedAuth ? "present" : "absent"})`,
     );
   }
   for (const mask of settings.masks.values()) {
@@ -163,7 +163,9 @@ async function listStandaloneServers(state: StandaloneMcpState): Promise<McpComm
       name: mask.id,
       provenance: mask.provenance,
     });
-    messages.push(`${mask.id} (${mask.provenance}, disabled mask)`);
+    messages.push(
+      `${mask.id} (provenance=${mask.provenance}, masked, inherited=${mask.inherited ? "yes" : "no"})`,
+    );
   }
   const message =
     messages.length === 0 ? "No MCP Server Definitions configured" : messages.join("\n");

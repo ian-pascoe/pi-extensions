@@ -119,17 +119,30 @@ Global and project `mcp` objects merge top-level timeout and retry fields. A pro
 | `auth <server> [--no-open] [--callback URL \| --code CODE --state STATE]` | both    | Run an explicit OAuth authorization flow.                                                                                                               |
 | `logout <server>` / `logout --all --force`                                | both    | Remove one server's credentials, or explicitly reset corrupt auth storage.                                                                              |
 | `test <server> \| --all [--json]`                                         | both    | Connect temporary clients and close them without disturbing live connections; `--json` is standalone-only.                                              |
-| `status`                                                                  | `/mcp`  | Show live connection state.                                                                                                                             |
+| `help`                                                                    | `/mcp`  | Show concise runtime command help without querying an MCP Server.                                                                                       |
+| `status`                                                                  | `/mcp`  | Show live connection state, retry details, and active Resource subscriptions.                                                                           |
 | `reconnect <server>`                                                      | `/mcp`  | Reconnect one live server.                                                                                                                              |
 | `prompt <server> <prompt> [--arg NAME=VALUE]…`                            | `/mcp`  | Run an MCP Prompt.                                                                                                                                      |
 | `subscribe <server> <uri>` / `unsubscribe <server> <uri>`                 | `/mcp`  | Manage Resource subscriptions.                                                                                                                          |
-| `logs [server] [--level LEVEL]`                                           | `/mcp`  | Read retained server logs.                                                                                                                              |
+| `logs [server]`                                                           | `/mcp`  | Read retained server logs without sending an MCP logging-level request.                                                                                 |
 
 Mutations default to global scope. `-l` or `--local` selects project scope and is allowed only when Pi has saved trust for that project. The standalone CLI also accepts `--approve`/`-a` or `--no-approve`/`-na` to override project trust for one invocation. In a running Pi session, add/enable persists first and then connects in the background; disable/remove persists first and then disconnects. A failed connection never rolls back the setting.
 
 For a remote server, `add` accepts repeated `--header NAME=VALUE`, `--transport http|sse`, and the OAuth/bearer flags `--auth`, `--token`, `--client-id`, `--client-secret`, `--redirect-uri`, and repeated `--scope`. For a local server, use repeated `--environment NAME=VALUE` (or `--env`) and optional `--cwd` before `--`.
 
 OAuth is always explicit: the authorization URL is printed before a best-effort browser launch. Use `--no-open` for remote/headless use, then provide a full callback URL with `--callback`, or a verified `--code` and `--state` pair. The host permits one active authorization flow per process and validates callback state, issuer, resource, and loopback redirect values.
+
+## MCP Observer UI
+
+The MCP Transcript Presentation gives every Server Tool and fixed Resource tool a compact row with its original MCP Server and operation names, argument previews, content counts, and text-backed success, warning, failure, or cancellation state. Expanding a row shows bounded structured arguments, model-visible text, stored-content metadata, output-schema failures, and Result Spill paths. Progress replaces the current row instead of adding transcript entries. Pi still renders native result images separately.
+
+Prompt messages show their MCP Server, Prompt name, message roles, text, and image metadata. Resource Update Notices show their MCP Server and URI, and state that the Resource remains unread until the agent explicitly reads it. These renderers use the existing persisted content and details. They do not invoke a Prompt, read a Resource, or change replay and next-turn delivery.
+
+In TUI mode, the MCP Observer UI uses Pi's footer status to show connected, connecting, retrying, authentication, registration, and failed counts. It sends one MCP Attention Notice when invalid settings, authentication, client registration, or terminal failure needs a command. `/mcp status` reports invalid settings separately from an empty configuration and includes attempts, retry timing, redacted causes, and sorted active Resource subscriptions.
+
+Interactive TUI and HTML exports use the semantic tool renderers. Prompt and Resource Update custom rendering, footer health, and Attention Notices are TUI-only. Print, JSON, and RPC modes receive no Observer-only output. HTML custom messages keep their durable content-based representation.
+
+Observer copy strips terminal controls and applies exact-value redaction for values resolved from settings. It does not guess secrets from field names, and arbitrary Server Tool data remains faithful in model-visible content and stored session data.
 
 ## What the model can use
 
@@ -176,7 +189,7 @@ Catalog lists are cached for the session, aggregate at most 1,000 pages, reject 
 
 Text and images map to Pi-native content. Embedded text Resources and Resource Links become provenance-labelled text. Structured content is visible as labelled JSON and retained in tool details. Unsupported audio and binary Resources are saved as private, mode-safe session files rather than discarded.
 
-All model-facing text uses Pi's 2,000-line / 50-KB limit. Oversized complete output is retained in a private Result Spill and the returned content includes its path. Per-server stderr and MCP logging retain only the newest 256 KB. Stdio stdout is protocol framing only; stderr and MCP logs do not write directly to TUI, JSON, or RPC output.
+All model-facing text uses Pi's 2,000-line / 50-KB limit. Oversized complete output is retained in a private Result Spill and the returned content includes its path. Per-server stderr and MCP logging retain only the newest 256 KB. `/mcp logs` keeps the newest combined text within Pi's display limit and identifies the private retained-log path when it truncates. Stdio stdout is protocol framing only; stderr and MCP logs do not write directly to TUI, JSON, or RPC output.
 
 Desired Resource subscriptions and expanded Prompt messages are persisted as versioned Pi custom entries and replay only on the active session branch. Connections and logs are ephemeral. Reload closes the old session generation and its dormant tool definitions, then creates a clean generation; shutdown awaits owned cleanup.
 

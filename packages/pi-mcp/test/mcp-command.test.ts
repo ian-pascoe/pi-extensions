@@ -227,9 +227,17 @@ describe("MCP command grammar", () => {
       ok: true,
       command: { kind: "unsubscribe", server: "docs", uri: "file:///readme" },
     });
-    expect(parseMcpCommand(["logs", "docs", "--level", "warning"], "runtime")).toEqual({
+    expect(parseMcpCommand(["logs", "docs"], "runtime")).toEqual({
       ok: true,
-      command: { kind: "logs", level: "warning", server: "docs" },
+      command: { kind: "logs", server: "docs" },
+    });
+    expect(parseMcpCommand(["logs", "--level", "warning"], "runtime")).toMatchObject({
+      category: "usage",
+      ok: false,
+    });
+    expect(parseMcpCommand(["help"], "runtime")).toEqual({
+      command: { kind: "help" },
+      ok: true,
     });
     expect(parseMcpCommand(["status"], "standalone")).toMatchObject({
       category: "usage",
@@ -365,6 +373,15 @@ describe("MCP command execution", () => {
       ok: false,
       output: "Pi MCP: settings are invalid\n",
     });
+  });
+
+  test("runtime help returns concise help without dispatching an adapter", async () => {
+    const adapters = createAdapters();
+    const result = await runMcpCommandLine("help", "runtime", adapters);
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("Commands: list, add, remove");
+    expect(adapters.calls).toEqual([]);
   });
 
   test("bare runtime command shows status followed by concise help", async () => {

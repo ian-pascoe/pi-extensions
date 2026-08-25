@@ -26,6 +26,7 @@ export const MCP_COMMAND_NAMES = [
   "subscribe",
   "unsubscribe",
   "logs",
+  "help",
 ] as const;
 
 /** Persistent and offline commands available through the standalone executable. */
@@ -119,7 +120,8 @@ export type McpCommand =
     }
   | { readonly kind: "subscribe"; readonly server: string; readonly uri: string }
   | { readonly kind: "unsubscribe"; readonly server: string; readonly uri: string }
-  | { readonly kind: "logs"; readonly level?: McpLoggingLevel; readonly server?: string };
+  | { readonly kind: "logs"; readonly server?: string }
+  | { readonly kind: "help" };
 
 /** Usage failure returned when command tokens cannot be parsed. */
 export interface McpCommandParseFailure {
@@ -208,23 +210,6 @@ const EXIT_CODES = {
 
 const GENERAL_USAGE = `Usage: pi-mcp <command> [options]
 Commands: ${MCP_STANDALONE_COMMAND_NAMES.join(", ")}`;
-const MCP_LOG_LEVELS = [
-  "debug",
-  "info",
-  "notice",
-  "warning",
-  "error",
-  "critical",
-  "alert",
-  "emergency",
-] as const;
-
-/** MCP logging levels accepted by the shared `/mcp logs` grammar. */
-export type McpLoggingLevel = (typeof MCP_LOG_LEVELS)[number];
-
-function isMcpLoggingLevel(value: string): value is McpLoggingLevel {
-  return MCP_LOG_LEVELS.some((candidate) => candidate === value);
-}
 const RUNTIME_HELP = `Commands: ${MCP_COMMAND_NAMES.join(", ")}`;
 
 const COMMAND_USAGE = {
@@ -234,7 +219,8 @@ const COMMAND_USAGE = {
   enable: "Usage: pi-mcp enable [-l|--local] <server>",
   list: "Usage: pi-mcp list [--json]",
   logout: "Usage: pi-mcp logout <server> | --all --force",
-  logs: "Usage: /mcp logs [server] [--level LEVEL]",
+  logs: "Usage: /mcp logs [server]",
+  help: "Usage: /mcp help",
   prompt: "Usage: /mcp prompt <server> <prompt> [--arg NAME=VALUE]...",
   reconnect: "Usage: /mcp reconnect <server>",
   remove: "Usage: pi-mcp remove [-l|--local] [--logout] <server>",
@@ -633,6 +619,10 @@ export function parseMcpCommand(
     if (rest.length > 0) return usageFailure("status", "status accepts no arguments");
     return { command: { includeHelp: false, kind: "status" }, ok: true };
   }
+  if (commandName === "help") {
+    if (rest.length > 0) return usageFailure("help", "help accepts no arguments");
+    return { command: { kind: "help" }, ok: true };
+  }
   if (commandName === "reconnect") {
     if (rest.length !== 1) return usageFailure("reconnect", "exactly one server name is required");
     return { command: { kind: "reconnect", server: rest[0] ?? "" }, ok: true };
@@ -658,20 +648,15 @@ export function parseMcpCommand(
     if (rest.length !== 2) return usageFailure(commandName, "server and resource URI are required");
     return { command: { kind: commandName, server: rest[0] ?? "", uri: rest[1] ?? "" }, ok: true };
   }
-  const options = parseOptions(rest, new Set(), new Set(["level"]));
+  const options = parseOptions(rest, new Set(), new Set());
   if (typeof options === "string" || options.positionals.length > 1)
     return usageFailure(
       "logs",
       typeof options === "string" ? options : "logs accepts at most one server name",
     );
-  const level = oneValue(options, "level");
-  if (level !== undefined && !isMcpLoggingLevel(level)) {
-    return usageFailure("logs", `unknown logging level ${level}`);
-  }
   return {
     command: {
       kind: "logs",
-      ...(level === undefined ? {} : { level }),
       ...(options.positionals[0] === undefined ? {} : { server: options.positionals[0] }),
     },
     ok: true,
@@ -813,12 +798,11 @@ export async function executeMcpCommand(
       case "logs": {
         const live = liveAdapter(adapters);
         if ("exitCode" in live) return live;
-        result = await live.logs({
-          ...(command.level === undefined ? {} : { level: command.level }),
-          ...(command.server === undefined ? {} : { server: command.server }),
-        });
+        result = await live.logs(command.server === undefined ? {} : { server: command.server });
         break;
       }
+      case "help":
+        return successResult({ message: RUNTIME_HELP, ok: true }, false);
     }
     if (!result.ok) return adapterFailure(result.category, result.message);
     const json = (command.kind === "list" || command.kind === "test") && command.json;
