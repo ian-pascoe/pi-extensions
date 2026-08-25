@@ -171,7 +171,8 @@ Status always uses a symbol and text together:
 
 Awaited Cells publish a presentation update immediately and once per second.
 Collapsed calls show one highlighted line inline or the first eight highlighted
-lines of a multi-line Cell. Expanded calls show the complete TypeScript source.
+lines of a multi-line Cell, truncating long lines to the viewport width. Expanded
+calls wrap long lines and show the complete TypeScript source.
 Returned-data display uses Pi's 2,000-line/50-KB limit; complete oversized data
 is written to a private Result Spill while the model-facing result remains
 unchanged. Result Spill files last for the live Pi session. Replayed history

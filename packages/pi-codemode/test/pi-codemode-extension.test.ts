@@ -347,7 +347,7 @@ describe("Pi CodeMode extension", () => {
     expect(
       executeDescription(fixture.session).split("\n\nCurrent CodeMode tool declarations:")[0],
     ).toBe(
-      "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; a new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Cells may call console.log, console.info, console.warn, console.error, and console.debug; captured output arrives only with terminal results.",
+      "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; a new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.",
     );
 
     const started = await executeTool(fixture.session, "codemode_execute", {
