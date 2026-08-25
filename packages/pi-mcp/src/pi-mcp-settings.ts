@@ -547,9 +547,7 @@ function mergeServerDefinitions(
   const masks = new Map<string, McpServerMask>();
   const errors: McpSettingsError[] = [];
   for (const [id, wire] of Object.entries(globalLayer.value.servers ?? {})) {
-    if (id.length === 0) {
-      errors.push(new McpSettingsError("global mcp.servers", "Server Definition ID is empty"));
-    } else if (wire === null || (wire.enabled === false && Object.keys(wire).length === 1)) {
+    if (wire === null || (wire.enabled === false && Object.keys(wire).length === 1)) {
       errors.push(
         new McpSettingsError(
           `global mcp.servers.${id}`,
@@ -564,9 +562,7 @@ function mergeServerDefinitions(
     const inherited = definitions.has(id);
     definitions.delete(id);
     masks.delete(id);
-    if (id.length === 0) {
-      errors.push(new McpSettingsError("project mcp.servers", "Server Definition ID is empty"));
-    } else if (wire === null || (wire.enabled === false && Object.keys(wire).length === 1)) {
+    if (wire === null || (wire.enabled === false && Object.keys(wire).length === 1)) {
       masks.set(id, { id, inherited, provenance: "project" });
     } else {
       definitions.set(id, { scope: "project", wire });

@@ -60,18 +60,11 @@ function actionableNotice(
     : JSON.stringify(commandServerId);
   switch (status.state) {
     case "needs_auth":
-      return {
-        action: `/mcp auth ${commandArgument}`,
-        cause: status.error,
-        condition: "needs_auth",
-        level: "warning",
-        serverId,
-      };
     case "needs_client_registration":
       return {
         action: `/mcp auth ${commandArgument}`,
         cause: status.error,
-        condition: "needs_client_registration",
+        condition: status.state,
         level: "warning",
         serverId,
       };

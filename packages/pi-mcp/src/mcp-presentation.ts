@@ -438,7 +438,6 @@ function renderMcpFallback(
 function resultMetadata(value: unknown): {
   readonly spillPath?: string;
   readonly storedContent: readonly Record<string, unknown>[];
-  readonly summary?: string;
 } {
   if (!isRecord(value)) return { storedContent: [] };
   const storedContent = Array.isArray(value.storedContent)
@@ -447,7 +446,6 @@ function resultMetadata(value: unknown): {
   return {
     ...(typeof value.spillPath === "string" ? { spillPath: value.spillPath } : {}),
     storedContent,
-    ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
   };
 }
 
@@ -596,14 +594,13 @@ export function renderMcpPromptMessage(
   if (!options.expanded) return box;
   const expandedMessages: string[] = [];
   for (const entry of replay) {
-    expandedMessages.push(entry.role === "user" ? "User" : "Assistant");
+    const role = entry.role === "user" ? "User" : "Assistant";
+    expandedMessages.push(role);
     for (const block of entry.content) {
       if (block.type === "text") {
         expandedMessages.push(block.text);
       } else {
-        expandedMessages.push(
-          `${entry.role === "user" ? "User" : "Assistant"} image: ${block.mimeType}`,
-        );
+        expandedMessages.push(`${role} image: ${block.mimeType}`);
       }
     }
   }
