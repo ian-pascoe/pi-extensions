@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultPackageManager,
+  discoverAndLoadExtensions,
+  loadSkills,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import {
   getNodeProcessErrorStderr,
   hasNodeProcessErrorCode,
@@ -78,7 +83,14 @@ function parsePackJson(stdout, packageName) {
 
 function validatePackedFileList(packageName, files) {
   const paths = files.map((file) => file.path).sort();
-  const requiredPaths = ["LICENSE", "README.md", "package.json", "src/index.ts"];
+  const packageSlug = packageName.split("/").at(-1);
+  const requiredPaths = [
+    "LICENSE",
+    "README.md",
+    "package.json",
+    `skills/${packageSlug}/SKILL.md`,
+    "src/index.ts",
+  ];
   if (packageName === piMcpPackageName) requiredPaths.push("dist/pi-mcp-cli.js");
   for (const requiredPath of requiredPaths) {
     assertPackCondition(paths.includes(requiredPath), `${packageName} omits ${requiredPath}`);
@@ -88,6 +100,7 @@ function validatePackedFileList(packageName, files) {
       path === "LICENSE" ||
       path === "README.md" ||
       path === "package.json" ||
+      path.startsWith("skills/") ||
       path.startsWith("src/") ||
       (packageName === piMcpPackageName && path === "dist/pi-mcp-cli.js");
     assertPackCondition(allowed, `${packageName} unexpectedly packs ${path}`);
@@ -115,6 +128,10 @@ function validatePackedManifest(sourceManifest, packedManifest) {
   assertPackCondition(
     JSON.stringify(packedManifest.pi?.extensions) === JSON.stringify(["./src/index.ts"]),
     `${packageName} has an invalid pi.extensions contract`,
+  );
+  assertPackCondition(
+    JSON.stringify(packedManifest.pi?.skills) === JSON.stringify(["./skills"]),
+    `${packageName} has an invalid pi.skills contract`,
   );
   if (packageName === piMcpPackageName) {
     assertPackCondition(
@@ -206,6 +223,29 @@ async function assertTarballLoads(packageName, tarballPath) {
       result.extensions[0]?.resolvedPath === entrypoint,
       `${packageName} resolved the wrong installed entrypoint`,
     );
+    const resources = await new DefaultPackageManager({
+      agentDir: agentDirectory,
+      cwd: installDirectory,
+      settingsManager: SettingsManager.inMemory(),
+    }).resolveExtensionSources([installedPackageDirectory], { temporary: true });
+    assertPackCondition(
+      resources.skills.length === 1 &&
+        resources.skills[0]?.path ===
+          resolve(installedPackageDirectory, "skills", packageName.split("/").at(-1), "SKILL.md"),
+      `${packageName} installed package did not expose its configuration skill`,
+    );
+    const loadedSkills = loadSkills({
+      agentDir: agentDirectory,
+      cwd: installDirectory,
+      includeDefaults: false,
+      skillPaths: resources.skills.map(({ path }) => path),
+    });
+    assertPackCondition(
+      loadedSkills.diagnostics.length === 0 &&
+        loadedSkills.skills.length === 1 &&
+        loadedSkills.skills[0]?.name === packageName.split("/").at(-1),
+      `${packageName} installed configuration skill did not load cleanly`,
+    );
     if (packageName === "@ian-pascoe/pi-codemode") {
       await assertCodeModeDenoProcessSmoke(
         resolve(installedPackageDirectory, "src/codemode-worker.ts"),
@@ -252,4 +292,6 @@ try {
   await rm(packDirectory, { recursive: true, force: true });
 }
 
-console.log("Validated twelve package tarballs, installed source entrypoints, and the Pi MCP CLI.");
+console.log(
+  "Validated twelve package tarballs, source entrypoints, configuration skills, and the Pi MCP CLI.",
+);

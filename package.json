@@ -62,6 +62,20 @@
       "./packages/pi-dap/src/index.ts",
       "./packages/pi-codemode/src/index.ts",
       "./packages/pi-mcp/src/index.ts"
+    ],
+    "skills": [
+      "./packages/pi-adaptive-thinking/skills",
+      "./packages/pi-byterover/skills",
+      "./packages/pi-minimal-subagents/skills",
+      "./packages/pi-bible-verses/skills",
+      "./packages/pi-tps-tracker/skills",
+      "./packages/pi-git-status-widget/skills",
+      "./packages/pi-git-checkpoints/skills",
+      "./packages/pi-formatter/skills",
+      "./packages/pi-lsp/skills",
+      "./packages/pi-dap/skills",
+      "./packages/pi-codemode/skills",
+      "./packages/pi-mcp/skills"
     ]
   }
 }
