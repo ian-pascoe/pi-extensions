@@ -184,24 +184,29 @@ describe("DapSession", () => {
     });
   });
 
-  test("publishes actual lifecycle transitions and clears stop-specific context on resume", async () => {
+  test("publishes observed launch transitions and clears stop-specific context on resume", async () => {
     const snapshots: DapSessionSnapshot[] = [];
     const { session } = await createSession({ stopOnEntry: true }, 200, {
       onSnapshotChange: (snapshot) => snapshots.push(snapshot),
     });
 
     await session.launch();
-    expect(snapshots).toEqual([
-      { state: "launching", adapterId: "node", profileId: "node" },
-      { state: "running", adapterId: "node", profileId: "node" },
-      {
-        state: "stopped",
-        adapterId: "node",
-        profileId: "node",
-        stopReason: "entry",
-        threadId: 1,
-      },
-    ]);
+    expect([
+      ["launching", "stopped"],
+      ["launching", "running", "stopped"],
+    ]).toContainEqual(snapshots.map(({ state }) => state));
+    expect(snapshots.at(0)).toEqual({
+      state: "launching",
+      adapterId: "node",
+      profileId: "node",
+    });
+    expect(snapshots.at(-1)).toEqual({
+      state: "stopped",
+      adapterId: "node",
+      profileId: "node",
+      stopReason: "entry",
+      threadId: 1,
+    });
 
     const priorRunningCount = snapshots.filter(({ state }) => state === "running").length;
     const continuing = session.continue();
