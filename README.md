@@ -31,7 +31,7 @@ pi install git:github.com/ian-pascoe/pi-extensions
 ```
 
 Use `-l` for a project-local installation. To filter the collection, use a Pi
-package entry with extension paths relative to the repository root:
+package entry with resource paths relative to the repository root:
 
 ```json
 {
@@ -41,13 +41,17 @@ package entry with extension paths relative to the repository root:
       "extensions": [
         "packages/pi-adaptive-thinking/src/index.ts",
         "packages/pi-byterover/src/index.ts"
+      ],
+      "skills": [
+        "packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md",
+        "packages/pi-byterover/skills/pi-byterover/SKILL.md"
       ]
     }
   ]
 }
 ```
 
-Every selectable path is:
+Every selectable extension path is:
 
 ```text
 packages/pi-adaptive-thinking/src/index.ts
@@ -62,6 +66,23 @@ packages/pi-lsp/src/index.ts
 packages/pi-dap/src/index.ts
 packages/pi-codemode/src/index.ts
 packages/pi-mcp/src/index.ts
+```
+
+Every selectable configuration skill path is:
+
+```text
+packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md
+packages/pi-byterover/skills/pi-byterover/SKILL.md
+packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md
+packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md
+packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md
+packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md
+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md
+packages/pi-formatter/skills/pi-formatter/SKILL.md
+packages/pi-lsp/skills/pi-lsp/SKILL.md
+packages/pi-dap/skills/pi-dap/SKILL.md
+packages/pi-codemode/skills/pi-codemode/SKILL.md
+packages/pi-mcp/skills/pi-mcp/SKILL.md
 ```
 
 Pin a tag or commit for reproducible Git installs:

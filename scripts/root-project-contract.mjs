@@ -5,18 +5,27 @@ import { Value } from "typebox/value";
 export const packageSettingsSourceSchema = Type.Object({
   autoload: Type.Optional(Type.Boolean()),
   extensions: Type.Optional(Type.Array(Type.String())),
+  skills: Type.Optional(Type.Array(Type.String())),
   source: Type.String(),
 });
 
 /** Parses the root manifest fields that define the authoritative Pi extension order. */
 export const rootPiManifestSchema = Type.Object({
-  pi: Type.Object({ extensions: Type.Array(Type.String()) }),
+  pi: Type.Object({
+    extensions: Type.Array(Type.String()),
+    skills: Type.Array(Type.String()),
+  }),
 });
 
 /** Parses the package-manifest fields used by root package checks. */
 export const workspacePackageManifestSchema = Type.Object({
   name: Type.String(),
-  pi: Type.Optional(Type.Object({ extensions: Type.Array(Type.String()) })),
+  pi: Type.Optional(
+    Type.Object({
+      extensions: Type.Array(Type.String()),
+      skills: Type.Array(Type.String()),
+    }),
+  ),
 });
 
 /** Parses Pi's string and object package settings entries before callers inspect them. */

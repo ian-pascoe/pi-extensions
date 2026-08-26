@@ -4,14 +4,23 @@ import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultPackageManager,
+  discoverAndLoadExtensions,
+  loadSkills,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import {
   getNodeProcessErrorStderr,
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
 import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
-import { readJsonDocument, rootPiManifestSchema } from "./root-project-contract.mjs";
+import {
+  piSettingsDocumentSchema,
+  readJsonDocument,
+  rootPiManifestSchema,
+} from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,6 +86,7 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     rootPiManifestSchema,
   );
   const configuredPaths = manifest.pi.extensions;
+  const configuredSkillPaths = manifest.pi.skills;
   assertGitInstallCondition(
     configuredPaths.length === 12,
     "temporary root manifest does not contain twelve extension paths",
@@ -84,6 +94,30 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   assertGitInstallCondition(
     configuredPaths.every((configuredPath) => configuredPath.endsWith("/src/index.ts")),
     "temporary root manifest contains a non-source extension path",
+  );
+  assertGitInstallCondition(
+    configuredSkillPaths.length === 12 &&
+      configuredSkillPaths.every((configuredPath) => configuredPath.endsWith("/skills")),
+    "temporary root manifest does not contain twelve skill paths",
+  );
+  const resources = await new DefaultPackageManager({
+    agentDir: agentDirectory,
+    cwd: installDirectory,
+    settingsManager: SettingsManager.inMemory(),
+  }).resolveExtensionSources([installDirectory], { temporary: true });
+  assertGitInstallCondition(
+    resources.skills.length === 12,
+    "temporary install did not expose twelve configuration skills",
+  );
+  const loadedSkills = loadSkills({
+    agentDir: agentDirectory,
+    cwd: installDirectory,
+    includeDefaults: false,
+    skillPaths: resources.skills.map(({ path }) => path),
+  });
+  assertGitInstallCondition(
+    loadedSkills.diagnostics.length === 0 && loadedSkills.skills.length === 12,
+    "temporary install did not load twelve valid configuration skills",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
@@ -108,6 +142,36 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   );
 }
 
+async function assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory) {
+  const projectSettings = await readJsonDocument(
+    resolve(installDirectory, ".pi/settings.json"),
+    piSettingsDocumentSchema,
+  );
+  const localPackage = projectSettings.packages?.find((entry) => entry.source === "..");
+  assertGitInstallCondition(
+    localPackage && localPackage.autoload === false,
+    "project settings do not contain the filtered local collection",
+  );
+
+  const settingsManager = SettingsManager.inMemory();
+  settingsManager.setProjectPackages([localPackage]);
+  const resources = await new DefaultPackageManager({
+    agentDir: agentDirectory,
+    cwd: installDirectory,
+    settingsManager,
+  }).resolve();
+  const enabledSkills = resources.skills.filter(
+    ({ enabled, path }) => enabled && path.startsWith(resolve(installDirectory, "packages/")),
+  );
+  const selectedSkills = localPackage.skills
+    ?.filter((path) => path.startsWith("+"))
+    .map((path) => resolve(installDirectory, path.slice(1)));
+  assertGitInstallCondition(
+    JSON.stringify(enabledSkills.map(({ path }) => path)) === JSON.stringify(selectedSkills),
+    "filtered project package did not enable its selected configuration skills",
+  );
+}
+
 const installDirectory = await mkdtemp(resolve(tmpdir(), "pi-git-install-"));
 const agentDirectory = await mkdtemp(resolve(tmpdir(), "pi-git-install-agent-"));
 try {
@@ -119,6 +183,7 @@ try {
   await assertPackageExcludedFromProductionInstall(installDirectory, "byterover-cli");
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
+  await assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory);
 } finally {
   await Promise.all([
     rm(installDirectory, { recursive: true, force: true }),
@@ -126,4 +191,6 @@ try {
   ]);
 }
 
-console.log("Validated the clean npm production Git-install path.");
+console.log(
+  "Validated the clean npm production Git-install path with twelve configuration skills.",
+);

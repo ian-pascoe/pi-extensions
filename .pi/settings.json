@@ -16,6 +16,20 @@
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts",
         "+packages/pi-codemode/src/index.ts"
+      ],
+      "skills": [
+        "-packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md",
+        "+packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
+        "-packages/pi-byterover/skills/pi-byterover/SKILL.md",
+        "+packages/pi-dap/skills/pi-dap/SKILL.md",
+        "+packages/pi-formatter/skills/pi-formatter/SKILL.md",
+        "+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
+        "+packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md",
+        "+packages/pi-lsp/skills/pi-lsp/SKILL.md",
+        "+packages/pi-mcp/skills/pi-mcp/SKILL.md",
+        "+packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
+        "+packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
+        "+packages/pi-codemode/skills/pi-codemode/SKILL.md"
       ]
     },
     {
@@ -34,6 +48,40 @@
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts",
         "-packages/pi-codemode/src/index.ts"
+      ],
+      "skills": [
+        "-packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md",
+        "-packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
+        "-packages/pi-byterover/skills/pi-byterover/SKILL.md",
+        "-packages/pi-dap/skills/pi-dap/SKILL.md",
+        "-packages/pi-formatter/skills/pi-formatter/SKILL.md",
+        "-packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
+        "-packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md",
+        "-packages/pi-lsp/skills/pi-lsp/SKILL.md",
+        "-packages/pi-mcp/skills/pi-mcp/SKILL.md",
+        "-packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
+        "-packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
+        "-packages/pi-codemode/skills/pi-codemode/SKILL.md"
+      ]
+    },
+    {
+      "source": "npm:pi-adaptive-thinking",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-adaptive-thinking/SKILL.md"
+      ]
+    },
+    {
+      "source": "npm:pi-byterover",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-byterover/SKILL.md"
       ]
     },
     {
@@ -41,6 +89,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-bible-verses/SKILL.md"
       ]
     },
     {
@@ -48,6 +99,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-dap/SKILL.md"
       ]
     },
     {
@@ -55,6 +109,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-formatter/SKILL.md"
       ]
     },
     {
@@ -62,6 +119,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-git-checkpoints/SKILL.md"
       ]
     },
     {
@@ -69,6 +129,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-git-status-widget/SKILL.md"
       ]
     },
     {
@@ -76,6 +139,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-lsp/SKILL.md"
       ]
     },
     {
@@ -83,6 +149,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-mcp/SKILL.md"
       ]
     },
     {
@@ -90,6 +159,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-minimal-subagents/SKILL.md"
       ]
     },
     {
@@ -97,6 +169,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-tps-tracker/SKILL.md"
       ]
     },
     {
@@ -104,6 +179,9 @@
       "autoload": false,
       "extensions": [
         "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-codemode/SKILL.md"
       ]
     }
   ],
@@ -144,20 +222,13 @@
           ]
         },
         "rootMarkers": [
-          ".oxfmtrc.json",
-          "package.json",
-          ".git"
-        ]
+          ".oxfmtrc.json"
+        ],
+        "requireRootMarker": true
       }
     }
   },
   "dap": {
-    "timeouts": {
-      "startupMs": 10000,
-      "requestMs": 10000,
-      "executionMs": 30000,
-      "shutdownMs": 5000
-    },
     "adapters": {
       "node": {
         "command": "node",
@@ -207,10 +278,9 @@
           }
         ],
         "rootMarkers": [
-          "tsconfig.json",
-          "package.json",
-          ".git"
-        ]
+          "tsconfig.json"
+        ],
+        "requireRootMarker": true
       },
       "oxlint": {
         "command": "pnpm",
@@ -250,10 +320,9 @@
           }
         ],
         "rootMarkers": [
-          ".oxlintrc.json",
-          "package.json",
-          ".git"
-        ]
+          ".oxlintrc.json"
+        ],
+        "requireRootMarker": true
       }
     }
   }
