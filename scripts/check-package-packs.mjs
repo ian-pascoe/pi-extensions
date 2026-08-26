@@ -21,6 +21,8 @@ import { readJsonDocument, workspacePackageManifestSchema } from "./root-project
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const piMcpPackageName = "@ian-pascoe/pi-mcp";
+const npmChildProcessEnvironment = { ...process.env };
+delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
 
 function assertPackCondition(condition, message) {
   if (!condition) throw new Error(`Package pack check failed: ${message}`);
@@ -53,6 +55,7 @@ async function discoverWorkspaceManifests() {
     try {
       manifests.push({
         manifest: await readJsonDocument(manifestPath, workspacePackageManifestSchema),
+        packageDirectory: dirname(manifestPath),
       });
     } catch (cause) {
       if (hasNodeProcessErrorCode(parseNodeProcessError(cause), "ENOENT")) continue;
@@ -164,7 +167,7 @@ function validatePackedManifest(sourceManifest, packedManifest) {
   if (packageName === "@ian-pascoe/pi-codemode") {
     assertPackCondition(
       packedManifest.dependencies?.deno === "2.9.5" &&
-        packedManifest.dependencies?.typescript === "6.0.3",
+        packedManifest.dependencies?.["runtime-typescript"] === "npm:typescript@6.0.3",
       `${packageName} does not pin its Deno-native TypeScript runtime`,
     );
     assertPackCondition(
@@ -202,7 +205,7 @@ async function assertTarballLoads(packageName, tarballPath) {
         "--no-audit",
         "--no-fund",
       ],
-      { cwd: installDirectory },
+      { cwd: installDirectory, env: npmChildProcessEnvironment },
     );
     const installedPackageDirectory = resolve(
       installDirectory,
@@ -264,18 +267,21 @@ async function assertTarballLoads(packageName, tarballPath) {
 const packDirectory = await mkdtemp(resolve(tmpdir(), "pi-package-packs-"));
 try {
   const workspaces = await discoverWorkspaceManifests();
-  for (const { manifest } of workspaces) {
+  for (const { manifest, packageDirectory } of workspaces) {
     const packed = parsePackJson(
       (
-        await runCommand("npm", [
-          "pack",
-          "--workspace",
-          manifest.name,
-          "--json",
-          "--package-lock=false",
-          "--pack-destination",
-          packDirectory,
-        ])
+        await runCommand(
+          "npm",
+          [
+            "pack",
+            packageDirectory,
+            "--json",
+            "--package-lock=false",
+            "--pack-destination",
+            packDirectory,
+          ],
+          { cwd: packDirectory, env: npmChildProcessEnvironment },
+        )
       ).stdout,
       manifest.name,
     );

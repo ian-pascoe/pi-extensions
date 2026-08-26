@@ -25,6 +25,8 @@ import {
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const excludedDirectoryNames = new Set([".git", ".repos", "coverage", "dist", "node_modules"]);
+const npmChildProcessEnvironment = { ...process.env };
+delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
 
 function assertGitInstallCondition(condition, message) {
   if (!condition) throw new Error(`Git install check failed: ${message}`);
@@ -41,13 +43,13 @@ async function runNpmProductionInstall(installDirectory) {
   try {
     await execFile(
       "npm",
-      ["install", "--omit=dev", "--package-lock=false", "--no-audit", "--no-fund"],
+      ["install", "--force", "--omit=dev", "--package-lock=false", "--no-audit", "--no-fund"],
       {
         cwd: installDirectory,
         encoding: "utf8",
         maxBuffer: 20 * 1024 * 1024,
         env: {
-          ...process.env,
+          ...npmChildProcessEnvironment,
           NODE_ENV: "production",
           npm_config_omit: "dev",
         },

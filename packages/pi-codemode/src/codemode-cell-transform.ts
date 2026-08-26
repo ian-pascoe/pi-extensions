@@ -1,4 +1,4 @@
-import ts from "typescript";
+import ts from "runtime-typescript";
 
 /** Successful pure transform output consumed only by the worker-owned Notebook runtime. */
 export type TransformedCodeModeCell = {
