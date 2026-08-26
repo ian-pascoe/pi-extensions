@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.4.0
+
+### Minor Changes
+
+- 706d063: Add package skills that guide Pi through extension configuration and diagnosis.
+
 ## 0.3.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-git-checkpoints",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Git-backed worktree checkpoints for Pi tree navigation",
   "keywords": [
