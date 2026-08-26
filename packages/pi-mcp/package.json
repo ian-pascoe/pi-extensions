@@ -47,7 +47,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
-    "esbuild": "0.27.7"
+    "esbuild": "0.28.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

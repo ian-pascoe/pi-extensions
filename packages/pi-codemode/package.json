@@ -39,8 +39,9 @@
   },
   "dependencies": {
     "deno": "2.9.5",
-    "minimatch": "^10.2.5",
-    "typescript": "6.0.3"
+    "minimatch": "^10.2.6",
+    "runtime-typescript": "npm:typescript@6.0.3",
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

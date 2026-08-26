@@ -164,7 +164,7 @@ function validatePackedManifest(sourceManifest, packedManifest) {
   if (packageName === "@ian-pascoe/pi-codemode") {
     assertPackCondition(
       packedManifest.dependencies?.deno === "2.9.5" &&
-        packedManifest.dependencies?.typescript === "6.0.3",
+        packedManifest.dependencies?.["runtime-typescript"] === "npm:typescript@6.0.3",
       `${packageName} does not pin its Deno-native TypeScript runtime`,
     );
     assertPackCondition(
