@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-formatter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "Configured automatic post-edit formatting for Pi",
   "keywords": [
