@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.4.1
+
+### Patch Changes
+
+- 4e356a8: Bump dependencies
+
 ## 0.4.0
 
 ### Minor Changes

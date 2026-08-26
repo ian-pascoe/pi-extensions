@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-mcp
 
+## 0.3.1
+
+### Patch Changes
+
+- 4e356a8: Bump dependencies
+
 ## 0.3.0
 
 ### Minor Changes
