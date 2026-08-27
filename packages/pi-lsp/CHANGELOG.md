@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-lsp
 
+## 0.2.1
+
+### Patch Changes
+
+- 4e356a8: Bump dependencies
+
 ## 0.2.0
 
 ### Minor Changes
