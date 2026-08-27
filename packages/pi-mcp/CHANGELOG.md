@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-mcp
 
+## 0.3.2
+
+### Patch Changes
+
+- ec033d7: Restore OAuth discovery for MCP server URLs that include query parameters.
+
 ## 0.3.1
 
 ### Patch Changes
