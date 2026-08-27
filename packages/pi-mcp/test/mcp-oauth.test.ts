@@ -190,6 +190,28 @@ test("persists SDK OAuth provider state through the URL-bound auth store", async
   });
 });
 
+test("restores OAuth discovery when resource metadata allows a query-bearing server URL", async () => {
+  const agentDirectory = await mkdtemp(join(tmpdir(), "pi-mcp-oauth-"));
+  temporaryDirectories.push(agentDirectory);
+  const provider = new McpOAuthProvider({
+    authStore: new McpAuthStore(agentDirectory),
+    clientIdentity: "pi-mcp",
+    onAuthorizationUrl: () => undefined,
+    redirectUrl: "http://127.0.0.1:19876/callback",
+    serverUrl: "https://mcp.example.test/rpc?search_tools=true",
+  });
+
+  await provider.saveDiscoveryState({
+    authorizationServerUrl: "https://auth.example.test/",
+    resourceMetadata: { resource: "https://mcp.example.test/rpc" },
+  });
+
+  await expect(provider.discoveryState()).resolves.toMatchObject({
+    authorizationServerUrl: "https://auth.example.test/",
+    resourceMetadata: { resource: "https://mcp.example.test/rpc" },
+  });
+});
+
 test("runs explicit SDK discovery, DCR, loopback state validation, and token exchange", async () => {
   const fixture = await createOAuthFixture();
   const callbackPort = await availablePort();
