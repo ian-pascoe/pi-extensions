@@ -12,7 +12,7 @@ import type {
   StoredOAuthClientInformation,
   StoredOAuthTokens,
 } from "@modelcontextprotocol/client";
-import { auth, resourceUrlFromServerUrl } from "@modelcontextprotocol/client";
+import { auth, checkResourceAllowed, resourceUrlFromServerUrl } from "@modelcontextprotocol/client";
 import { type McpAuthBinding, type McpAuthEntry, McpAuthStore } from "./mcp-auth-store.js";
 import type { McpStoreJsonObject, McpStoreJsonValue } from "./mcp-settings-store.js";
 
@@ -384,7 +384,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
       resource !== undefined &&
       (typeof resource !== "string" ||
         !URL.canParse(resource) ||
-        new URL(resource).href !== resourceUrlFromServerUrl(this.options.serverUrl).href)
+        !checkResourceAllowed({
+          configuredResource: resource,
+          requestedResource: resourceUrlFromServerUrl(this.options.serverUrl),
+        }))
     ) {
       return undefined;
     }
