@@ -405,6 +405,19 @@ describe("Pi CodeMode extension", () => {
         },
       ],
     });
+    const discovered = codeModeToolSearchPage(
+      await executeTool(fixture.session, "codemode_search", { query: "closure" }),
+    );
+    expect(discovered).toMatchObject({
+      total: 1,
+      items: [
+        {
+          name: "closure_echo",
+          description: "Returns a distinctive registered extension closure.",
+        },
+      ],
+    });
+    expect(discovered.items[0]).not.toHaveProperty("declaration");
     expect(
       codeModeSessionsResult(await executeTool(fixture.session, "codemode_sessions", {})).sessions,
     ).toEqual([]);

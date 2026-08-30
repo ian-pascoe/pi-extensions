@@ -164,9 +164,10 @@ error, and bounded nested-tool names, outcomes, and durations. Nested arguments
 and raw nested outputs are never copied into the presentation.
 
 Search rows show the query, result range, and next offset without exposing raw
-JSON. Expanding a search shows each exact tool name, display group, highlighted
-TypeScript declaration, and any declaration-size failure. Search declarations
-are bounded only in the Transcript; the model-facing result remains unchanged.
+JSON. Expanding a discovery search shows each exact tool name, display group,
+and description. An exact-name search instead shows the highlighted TypeScript
+declaration or its declaration-size failure. Search declarations are bounded
+only in the Transcript; the model-facing result remains unchanged.
 
 Status always uses a symbol and text together:
 
@@ -249,12 +250,12 @@ const page = await tools.codemode_search({
 ```
 
 Search returns stable pages with `items`, `total`, `hasMore`, and `nextOffset`.
-Each item contains its exact flat `name`, display-only `group`, bounded
-`description`, and complete `declaration`. A pathological declaration above the
-search response bound instead has an explicit `declarationError`, without
-stalling pagination. Call a discovered tool with `tools[item.name](input)`;
-every exposed name remains callable even when its declaration is omitted from
-the inline catalogue.
+Empty or fuzzy queries return compact items containing the exact flat `name`,
+display-only `group`, and bounded `description`. Search that exact `name` to get
+its complete `declaration`. A pathological declaration above the search response
+bound instead has an explicit `declarationError`. Call a discovered tool with
+`tools[item.name](input)`; every exposed name remains callable even when its
+declaration is omitted from the inline catalogue.
 
 `codemode_search` is also a direct Pi tool, so declarations can be discovered
 before starting a Cell. Direct search reads the current exposure catalogue;

@@ -76,7 +76,7 @@ type PiCodeModeGeneration = {
 function catalogueDescription(catalogue: CodeModeToolCatalogue): string {
   const coverage = catalogue.complete
     ? `COMPLETE: all ${catalogue.totalCount} declarations are shown.`
-    : `PARTIAL: ${catalogue.shownCount} of ${catalogue.totalCount} declarations are shown. Use \`tools.${CODEMODE_SEARCH_TOOL_NAME}({ query: "<intent or exact name>" })\` to find the rest; each result contains the exact flat name and its complete declaration when within the search response bound.`;
+    : `PARTIAL: ${catalogue.shownCount} of ${catalogue.totalCount} declarations are shown. Use \`tools.${CODEMODE_SEARCH_TOOL_NAME}({ query: "<intent>" })\` to discover exact flat names, then search the exact name for its complete declaration.`;
   return `${CODEMODE_EXECUTE_DESCRIPTION}\n\nCurrent CodeMode tool declarations:\n\n${coverage}\n\n\`\`\`ts\n${catalogue.text}\`\`\``;
 }
 

@@ -252,8 +252,9 @@ const CodeModeToolSearchItemBaseSchema = {
   description: Type.Optional(Type.String()),
 };
 
-/** One exact CodeMode tool declaration, or an explicit size-bound failure for that declaration. */
+/** One CodeMode tool summary, exact declaration, or explicit declaration-size failure. */
 export const CodeModeToolSearchItemSchema = Type.Union([
+  Type.Object(CodeModeToolSearchItemBaseSchema, { additionalProperties: false }),
   Type.Object(
     { ...CodeModeToolSearchItemBaseSchema, declaration: Type.String({ minLength: 1 }) },
     { additionalProperties: false },
@@ -637,7 +638,7 @@ export function createCodeModeToolDefinitions(
     name: CODEMODE_TOOL_NAMES.search,
     label: "Search CodeMode Tools",
     description:
-      "Search CodeMode-exposed Pi tools and return exact flat names with complete TypeScript declarations.",
+      "Search CodeMode-exposed Pi tools. Discovery results are compact; an exact-name query returns its complete TypeScript declaration.",
     parameters: CodeModeToolSearchParametersSchema,
     outputSchema: CodeModeToolSearchPageSchema,
     async execute(_toolCallId, input) {

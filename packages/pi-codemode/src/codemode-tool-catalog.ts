@@ -517,7 +517,19 @@ function searchScore(entry: CodeModeToolSearchEntry, terms: readonly string[]): 
   return score;
 }
 
-function searchItem(entry: CodeModeToolSearchEntry): CodeModeToolSearchPage["items"][number] {
+function summarySearchItem(
+  entry: CodeModeToolSearchEntry,
+): CodeModeToolSearchPage["items"][number] {
+  return {
+    name: entry.name,
+    group: entry.group,
+    ...(entry.description !== undefined && { description: entry.description }),
+  };
+}
+
+function declarationSearchItem(
+  entry: CodeModeToolSearchEntry,
+): CodeModeToolSearchPage["items"][number] {
   return entry.description === undefined
     ? {
         name: entry.name,
@@ -546,12 +558,13 @@ function unavailableDeclarationSearchItem(
 function createSearchPage(
   ranked: readonly CodeModeToolSearchEntry[],
   input: CodeModeToolSearchParameters,
+  includeDeclarations = false,
 ): CodeModeToolSearchResult {
   const offset = input.offset ?? 0;
   const limit = input.limit ?? CODEMODE_SEARCH_DEFAULT_LIMIT;
   const items: CodeModeToolSearchPage["items"][number][] = [];
   for (const entry of ranked.slice(offset, offset + limit)) {
-    let item = searchItem(entry);
+    let item = includeDeclarations ? declarationSearchItem(entry) : summarySearchItem(entry);
     let nextItems = [...items, item];
     const consumed = offset + nextItems.length;
     let candidate: CodeModeToolSearchPage = {
@@ -560,7 +573,10 @@ function createSearchPage(
       hasMore: consumed < ranked.length,
       nextOffset: consumed < ranked.length ? consumed : null,
     };
-    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > CODEMODE_SEARCH_RESULT_LIMIT_BYTES) {
+    if (
+      "declaration" in item &&
+      Buffer.byteLength(JSON.stringify(candidate), "utf8") > CODEMODE_SEARCH_RESULT_LIMIT_BYTES
+    ) {
       if (items.length > 0) break;
       item = unavailableDeclarationSearchItem(entry);
       nextItems = [...items, item];
@@ -587,7 +603,7 @@ function createSearchPage(
   };
 }
 
-/** Searches complete declarations for the exact flat names exposed to one CodeMode Cell. */
+/** Searches compact tool summaries and returns a complete declaration only for an exact name. */
 export function searchCodeModeToolCatalogue(
   entries: readonly CodeModeToolSearchEntry[],
   input: CodeModeJsonValue,
@@ -606,7 +622,7 @@ export function searchCodeModeToolCatalogue(
   const exact = scoped.find(
     (entry) => entry.name === query || `tools[${quotedName(entry.name)}]` === query,
   );
-  if (exact !== undefined) return createSearchPage([exact], input);
+  if (exact !== undefined) return createSearchPage([exact], input, true);
   const terms = searchTerms(query);
   const ranked =
     terms.length === 0
