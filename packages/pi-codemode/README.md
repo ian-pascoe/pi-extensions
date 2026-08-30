@@ -34,7 +34,8 @@ codemode_execute({
 ```
 
 `wait` defaults to `true`. `timeoutMs` has no default. Omitting `sessionId`
-creates a new CodeMode Session; supplying an unknown ID fails.
+creates a Session with a generated ID; supplying an unknown ID creates a Session
+under that exact ID.
 
 ```ts
 const result = await tools.read({ path: "README.md" });
@@ -303,10 +304,10 @@ Patterns are case-sensitive minimatch globs over exact registered names; the
 last match wins. Project `tools` replaces the global array, while project
 `maxSessions` overrides only that field. `/reload` rereads settings.
 
-An unmatched active tool defaults to `direct-and-codemode`; an unmatched
-inactive tool remains unavailable. An explicit rule may expose an inactive tool
-or activate direct access. The five registered `codemode_*` tools are always
-direct-only.
+An unmatched active tool defaults to `direct-and-codemode`; an inactive tool
+remains unavailable even when it matches a rule. Exposure rules redistribute
+Pi's active tools but never reactivate tools disabled by Pi or another extension.
+The five registered `codemode_*` tools are always direct-only.
 Pi's global allowed/excluded registry remains authoritative. Invalid fields or
 patterns disable CodeMode for that session without changing Pi's active tools.
 

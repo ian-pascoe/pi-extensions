@@ -48,7 +48,7 @@ import {
 } from "./pi-tool-bridge.js";
 
 const CODEMODE_EXECUTE_DESCRIPTION =
-  "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; a new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.";
+  "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; an unknown supplied ID creates that Session. A new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.";
 const CODEMODE_SEARCH_BATCH_LIMIT = 20;
 const CodeModeToolSchemaMetadataSchema = Type.Union([
   Type.Boolean(),

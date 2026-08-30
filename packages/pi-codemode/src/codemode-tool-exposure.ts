@@ -24,7 +24,7 @@ export interface CodeModeToolExposureDecision {
   readonly unavailableNames: readonly string[];
 }
 
-/** Classifies registered tools from Pi's pre-policy requested names and last-matching settings rule. */
+/** Applies exposure rules only to requested tools; unrequested tools stay unavailable. */
 export function decideCodeModeToolExposure(
   registryNames: Iterable<string>,
   requestedNames: Iterable<string>,
@@ -40,9 +40,11 @@ export function decideCodeModeToolExposure(
       continue;
     }
 
-    let exposure: CodeModeExposureRule["exposure"] | "unavailable" = requested.has(toolName)
-      ? "direct-and-codemode"
-      : "unavailable";
+    if (!requested.has(toolName)) {
+      unavailableNames.push(toolName);
+      continue;
+    }
+    let exposure: CodeModeExposureRule["exposure"] = "direct-and-codemode";
     for (const rule of rules) {
       if (rule.matches(toolName)) exposure = rule.exposure;
     }
@@ -53,7 +55,6 @@ export function decideCodeModeToolExposure(
     if (exposure === "codemode-only" || exposure === "direct-and-codemode") {
       codeModeNames.push(toolName);
     }
-    if (exposure === "unavailable") unavailableNames.push(toolName);
   }
   return { codeModeNames, directNames, unavailableNames };
 }

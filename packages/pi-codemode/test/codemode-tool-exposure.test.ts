@@ -54,7 +54,37 @@ describe("decideCodeModeToolExposure", () => {
     });
   });
 
-  test("applies case-sensitive minimatch rules in last-match order to inactive tools", () => {
+  test("does not reactivate a replaced shell tool through an exposure rule", () => {
+    const settings = resolveCodeModeSettings({
+      getGlobalSettings: () => ({
+        codemode: {
+          tools: [
+            { pattern: "*", exposure: "codemode-only" },
+            { pattern: "bash", exposure: "direct-and-codemode" },
+            { pattern: "exec_command", exposure: "direct-and-codemode" },
+            { pattern: "write_stdin", exposure: "direct-and-codemode" },
+          ],
+        },
+      }),
+      getProjectSettings: () => ({}),
+    });
+    expect(settings.enabled).toBe(true);
+    if (!settings.enabled) return;
+
+    expect(
+      decideCodeModeToolExposure(
+        ["bash", "exec_command", "write_stdin", "read"],
+        ["exec_command", "write_stdin", "read"],
+        settings.rules,
+      ),
+    ).toEqual({
+      codeModeNames: ["exec_command", "write_stdin", "read"],
+      directNames: ["exec_command", "write_stdin"],
+      unavailableNames: ["bash"],
+    });
+  });
+
+  test("applies case-sensitive minimatch rules in last-match order to active tools", () => {
     const settings = resolveCodeModeSettings({
       getGlobalSettings: () => ({
         codemode: {
@@ -71,7 +101,11 @@ describe("decideCodeModeToolExposure", () => {
     if (!settings.enabled) return;
 
     expect(
-      decideCodeModeToolExposure(["bash", "Bash", "browser_open", "read"], [], settings.rules),
+      decideCodeModeToolExposure(
+        ["bash", "Bash", "browser_open", "read"],
+        ["bash", "Bash", "browser_open", "read"],
+        settings.rules,
+      ),
     ).toEqual({
       codeModeNames: ["bash", "Bash", "read"],
       directNames: ["bash", "browser_open"],
@@ -82,7 +116,7 @@ describe("decideCodeModeToolExposure", () => {
 
 describe("installCodeModeToolExposure", () => {
   test("wraps an inherited active-set method and restores pre-policy requested names", () => {
-    const owner = new RecordingActiveToolOwner(["active"]);
+    const owner = new RecordingActiveToolOwner(["active", "forced"]);
     const registryNames = ["active", "forced", "inactive"];
     const settings = resolveCodeModeSettings({
       getGlobalSettings: () => ({
@@ -103,11 +137,11 @@ describe("installCodeModeToolExposure", () => {
     expect(Object.hasOwn(owner, "setActiveToolsByName")).toBe(true);
     expect(owner.activeNames).toEqual(["forced"]);
     owner.setActiveToolsByName(["inactive"]);
-    expect(owner.activeNames).toEqual(["forced", "inactive"]);
+    expect(owner.activeNames).toEqual(["inactive"]);
     expect(installed.getDecision()).toEqual({
-      codeModeNames: ["active", "inactive"],
-      directNames: ["forced", "inactive"],
-      unavailableNames: [],
+      codeModeNames: ["inactive"],
+      directNames: ["inactive"],
+      unavailableNames: ["active", "forced"],
     });
 
     installed.restore();

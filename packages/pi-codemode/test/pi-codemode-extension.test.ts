@@ -411,16 +411,17 @@ describe("Pi CodeMode extension", () => {
     expect(
       executeDescription(fixture.session).split("\n\nCurrent CodeMode tool declarations:")[0],
     ).toBe(
-      "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; a new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.",
+      "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; an unknown supplied ID creates that Session. A new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.",
     );
 
     const started = await executeTool(fixture.session, "codemode_execute", {
       script:
         'type Count = number; let value: Count = 2; const [closure, read, write] = await Promise.all([tools.codemode_search({ query: "closure_echo" }), tools.codemode_search({ query: "read" }), tools.codemode_search({ query: "write" })]); console.log("value:", value); return { value, hasSearch: Object.keys(tools).includes("codemode_search"), closure: closure.items[0], readDeclaration: read.items[0]?.declaration, writeDeclaration: write.items[0]?.declaration };',
+      sessionId: "named-session",
       wait: false,
     });
     const pending = codeModeResult(started);
-    expect(pending.result).toBe("pending");
+    expect(pending).toEqual({ result: "pending", sessionId: "named-session" });
     const first = await pollCodeModeSession(fixture.session, pending.sessionId);
     expect(codeModeResult(first)).toMatchObject({
       result: "success",
@@ -692,6 +693,37 @@ describe("Pi CodeMode extension", () => {
     await executeTool(fixture.session, "codemode_cancel", { sessionId: pending.sessionId });
     expect(statusEvents.at(-1)).toBeUndefined();
   }, 30_000);
+
+  test("does not reactivate a tool disabled before exposure policy installs", async () => {
+    const fixture = await createCodeModeExtensionFixture(
+      {
+        tools: [
+          { pattern: "*", exposure: "codemode-only" },
+          { pattern: "bash", exposure: "direct-and-codemode" },
+        ],
+      },
+      false,
+    );
+    fixture.extensionApi.setActiveTools(
+      fixture.extensionApi.getActiveTools().filter((name) => name !== "bash"),
+    );
+
+    await fixture.session.bindExtensions({
+      mode: "rpc",
+      uiContext: fixture.session.extensionRunner.getUIContext(),
+    });
+
+    expect(fixture.session.getActiveToolNames()).not.toContain("bash");
+    expect(executeDescription(fixture.session)).not.toContain('readonly ["bash"]');
+    const result = await executeTool(fixture.session, "codemode_execute", {
+      script: 'return { hasBash: Object.hasOwn(tools, "bash") };',
+      wait: true,
+    });
+    expect(codeModeResult(result)).toMatchObject({
+      result: "success",
+      data: { hasBash: false },
+    });
+  });
 
   test("keeps direct exposure, guest exposure, and the dynamic catalogue coherent", async () => {
     const fixture = await createCodeModeExtensionFixture();
