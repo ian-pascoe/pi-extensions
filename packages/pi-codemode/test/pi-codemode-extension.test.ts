@@ -694,6 +694,37 @@ describe("Pi CodeMode extension", () => {
     expect(statusEvents.at(-1)).toBeUndefined();
   }, 30_000);
 
+  test("does not reactivate a tool disabled before exposure policy installs", async () => {
+    const fixture = await createCodeModeExtensionFixture(
+      {
+        tools: [
+          { pattern: "*", exposure: "codemode-only" },
+          { pattern: "bash", exposure: "direct-and-codemode" },
+        ],
+      },
+      false,
+    );
+    fixture.extensionApi.setActiveTools(
+      fixture.extensionApi.getActiveTools().filter((name) => name !== "bash"),
+    );
+
+    await fixture.session.bindExtensions({
+      mode: "rpc",
+      uiContext: fixture.session.extensionRunner.getUIContext(),
+    });
+
+    expect(fixture.session.getActiveToolNames()).not.toContain("bash");
+    expect(executeDescription(fixture.session)).not.toContain('readonly ["bash"]');
+    const result = await executeTool(fixture.session, "codemode_execute", {
+      script: 'return { hasBash: Object.hasOwn(tools, "bash") };',
+      wait: true,
+    });
+    expect(codeModeResult(result)).toMatchObject({
+      result: "success",
+      data: { hasBash: false },
+    });
+  });
+
   test("keeps direct exposure, guest exposure, and the dynamic catalogue coherent", async () => {
     const fixture = await createCodeModeExtensionFixture();
     expect(executeDescription(fixture.session)).not.toContain('readonly ["dynamic_later"]');
