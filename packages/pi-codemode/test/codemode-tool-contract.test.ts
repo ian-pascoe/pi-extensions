@@ -8,6 +8,8 @@ import {
   CodeModeResultSchema,
   CodeModeSessionsParametersSchema,
   CodeModeSessionsResultSchema,
+  CodeModeToolSearchPageSchema,
+  CodeModeToolSearchParametersSchema,
   createCodeModeFailure,
   createCodeModeSuccess,
   parseCodeModeJsonValue,
@@ -35,6 +37,40 @@ describe("CodeMode tool contract", () => {
     expect(Value.Check(CodeModeCancelParametersSchema, { sessionId: "s", extra: 1 })).toBe(false);
     expect(Value.Check(CodeModeSessionsParametersSchema, {})).toBe(true);
     expect(Value.Check(CodeModeSessionsParametersSchema, { extra: true })).toBe(false);
+    expect(
+      Value.Check(CodeModeToolSearchParametersSchema, {
+        query: "issues",
+        group: "mcp:github",
+        limit: 20,
+        offset: Number.MAX_SAFE_INTEGER,
+      }),
+    ).toBe(true);
+    expect(Value.Check(CodeModeToolSearchParametersSchema, { limit: 21 })).toBe(false);
+    expect(Value.Check(CodeModeToolSearchParametersSchema, { unexpected: true })).toBe(false);
+  });
+
+  test("accepts complete and explicitly unavailable declaration search items", () => {
+    const page = {
+      items: [
+        { name: "read", group: "builtin", declaration: 'readonly ["read"]: unknown;' },
+        {
+          name: "huge",
+          group: "mcp:huge",
+          description: "Huge schema",
+          declarationError: "Declaration exceeds the result limit",
+        },
+      ],
+      total: 2,
+      hasMore: false,
+      nextOffset: null,
+    };
+    expect(Value.Check(CodeModeToolSearchPageSchema, page)).toBe(true);
+    expect(
+      Value.Check(CodeModeToolSearchPageSchema, {
+        ...page,
+        items: [{ name: "invalid", group: "test" }],
+      }),
+    ).toBe(false);
   });
 
   test("accepts Console output only on terminal results", () => {

@@ -7,7 +7,9 @@ import { CodeModeWorkerProcess } from "./codemode-deno-process.js";
 import { formatCodeModePresentationData } from "./codemode-presentation-output.js";
 import type { CodeModeRuntime, CodeModeTimerHandle } from "./codemode-runtime.js";
 import type { CodeModeResultSpillWriter } from "./codemode-session-files.js";
+import type { CodeModeToolSearchEntry } from "./codemode-tool-catalog.js";
 import {
+  CODEMODE_SEARCH_TOOL_NAME,
   createCodeModeFailure,
   createCodeModePending,
   createCodeModeSuccess,
@@ -123,6 +125,10 @@ export type CodeModeNestedToolBatch = {
   readonly sessionId: string;
   readonly batchId: string;
   readonly calls: readonly CodeModeNestedToolCall[];
+  /** Exact guest-callable name snapshot installed for this Cell. */
+  readonly exposedToolNames: readonly string[];
+  /** Immutable searchable declaration snapshot installed with this Cell's names. */
+  readonly searchEntries: readonly CodeModeToolSearchEntry[];
   readonly signal: AbortSignal;
   readonly onUpdate?: (update: CodeModeNestedToolUpdate) => void;
 };
@@ -159,7 +165,11 @@ export type CodeModeSessionOperationResult = {
 /** Construction capabilities and limits for one CodeMode Session coordinator. */
 export type CodeModeSessionCoordinatorOptions = {
   readonly maxSessions: number;
-  readonly getToolNames: () => readonly string[];
+  /** Captures guest-callable names and searchable declarations atomically for each Cell. */
+  readonly getToolSnapshot: () => {
+    readonly names: readonly string[];
+    readonly searchEntries: readonly CodeModeToolSearchEntry[];
+  };
   readonly executeToolBatch: ExecuteCodeModeNestedToolBatch;
   /** Private Result Spill storage for complete oversized presentation data. */
   readonly resultSpillWriter: CodeModeResultSpillWriter;
@@ -198,6 +208,8 @@ type ActiveCodeModeCell = {
   readonly resolveCompletion: (result: CodeModeResult) => void;
   readonly metadata: CodeModeMetadataAccumulator;
   readonly nestedTools: CodeModePresentationSnapshot["nested_tools"];
+  exposedToolNames: readonly string[];
+  searchEntries: readonly CodeModeToolSearchEntry[];
   activeToolNames: readonly string[];
   activeToolCount: number;
   failedNestedToolCount: number;
@@ -739,6 +751,8 @@ export class CodeModeSessionCoordinator {
       resolveCompletion: completion.resolve,
       metadata: emptyMetadataAccumulator(),
       nestedTools: [],
+      exposedToolNames: [],
+      searchEntries: [],
       activeToolNames: [],
       activeToolCount: 0,
       failedNestedToolCount: 0,
@@ -789,7 +803,13 @@ export class CodeModeSessionCoordinator {
       }, input.timeoutMs + CODEMODE_WATCHDOG_GRACE_MS);
     }
     try {
-      const toolNames = [...new Set(this.options.getToolNames())];
+      const toolSnapshot = this.options.getToolSnapshot();
+      const toolNames = [...new Set(toolSnapshot.names)];
+      cell.exposedToolNames = toolNames;
+      const exposedNames = new Set(toolNames);
+      cell.searchEntries = toolSnapshot.searchEntries.filter((entry) =>
+        exposedNames.has(entry.name),
+      );
       const requestBase = {
         version: 1,
         type: "execute",
@@ -900,9 +920,12 @@ export class CodeModeSessionCoordinator {
     cell: ActiveCodeModeCell,
     response: Extract<CodeModeWorkerResponse, { readonly type: "tool-batch" }>,
   ): Promise<void> {
-    cell.activeToolNames = [...new Set(response.calls.map((call) => call.toolName))];
-    cell.activeToolCount = response.calls.length;
-    cell.nestedToolCount += response.calls.length;
+    const piToolCalls = response.calls.filter(
+      (call) => call.toolName !== CODEMODE_SEARCH_TOOL_NAME,
+    );
+    cell.activeToolNames = [...new Set(piToolCalls.map((call) => call.toolName))];
+    cell.activeToolCount = piToolCalls.length;
+    cell.nestedToolCount += piToolCalls.length;
     record.lastActivityAtMs = this.runtime.now();
     this.publishObserverSnapshot();
 
@@ -927,6 +950,8 @@ export class CodeModeSessionCoordinator {
         sessionId: record.sessionId,
         batchId: response.batchId,
         calls: parsedCalls,
+        exposedToolNames: cell.exposedToolNames,
+        searchEntries: cell.searchEntries,
         signal: cell.abortController.signal,
       } as const;
       const onUpdate = (_update: CodeModeNestedToolUpdate): void => {
@@ -951,7 +976,7 @@ export class CodeModeSessionCoordinator {
       };
     }
     if (!this.isCurrentCell(record, cell)) return;
-    this.recordNestedToolPresentation(cell, response.calls, batchResult);
+    this.recordNestedToolPresentation(cell, piToolCalls, batchResult);
     cell.activeToolNames = [];
     cell.activeToolCount = 0;
     record.lastActivityAtMs = this.runtime.now();

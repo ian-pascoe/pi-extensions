@@ -5,7 +5,15 @@ import type {
   ExtensionContext,
   ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
-import { renderCodeModeToolCatalogue } from "./codemode-tool-catalog.js";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+import { resolveKnownToolOutputSchema } from "./codemode-known-output-schemas.js";
+import {
+  renderCodeModeToolCatalogue,
+  searchCodeModeToolCatalogue,
+  type CodeModeToolCatalogue,
+  type CodeModeToolSchema,
+} from "./codemode-tool-catalog.js";
 import { CodeModeObserverUiController } from "./codemode-observer-ui.js";
 import {
   CodeModeSessionCoordinator,
@@ -16,6 +24,7 @@ import {
 import { CODEMODE_SYSTEM_RUNTIME } from "./codemode-runtime.js";
 import { createCodeModeSessionFiles, type CodeModeSessionFiles } from "./codemode-session-files.js";
 import {
+  CODEMODE_SEARCH_TOOL_NAME,
   createCodeModeFailure,
   createCodeModePending,
   isCodeModeJsonObject,
@@ -40,6 +49,11 @@ import {
 
 const CODEMODE_EXECUTE_DESCRIPTION =
   "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; a new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.";
+const CODEMODE_SEARCH_BATCH_LIMIT = 20;
+const CodeModeToolSchemaMetadataSchema = Type.Union([
+  Type.Boolean(),
+  Type.Object({}, { additionalProperties: true }),
+]);
 
 type PiCodeModeGeneration = {
   readonly captured: CapturedPiAgentSession;
@@ -50,6 +64,7 @@ type PiCodeModeGeneration = {
   readonly operations: CodeModeToolOperations;
   exposure?: InstalledCodeModeToolExposure;
   decision: CodeModeToolExposureDecision;
+  catalogue: CodeModeToolCatalogue;
   executeDescription: string;
   active: boolean;
   toolsRegistered: boolean;
@@ -58,8 +73,33 @@ type PiCodeModeGeneration = {
   catalogueWarningShown: boolean;
 };
 
-function catalogueDescription(catalogue: string): string {
-  return `${CODEMODE_EXECUTE_DESCRIPTION}\n\nCurrent CodeMode tool declarations:\n\n\`\`\`ts\n${catalogue}\`\`\``;
+function catalogueDescription(catalogue: CodeModeToolCatalogue): string {
+  const coverage = catalogue.complete
+    ? `COMPLETE: all ${catalogue.totalCount} declarations are shown.`
+    : `PARTIAL: ${catalogue.shownCount} of ${catalogue.totalCount} declarations are shown. Use \`tools.${CODEMODE_SEARCH_TOOL_NAME}({ query: "<intent or exact name>" })\` to find the rest; each result contains the exact flat name and its complete declaration when within the search response bound.`;
+  return `${CODEMODE_EXECUTE_DESCRIPTION}\n\nCurrent CodeMode tool declarations:\n\n${coverage}\n\n\`\`\`ts\n${catalogue.text}\`\`\``;
+}
+
+type RegisteredToolDefinition = ReturnType<CapturedPiAgentSession["session"]["getToolDefinition"]>;
+
+function codeModeToolCatalogueGroup(name: string, source: string | undefined): string {
+  const mcpPrefix = "mcp__";
+  if (name.startsWith(mcpPrefix)) {
+    const serverEnd = name.indexOf("__", mcpPrefix.length);
+    if (serverEnd > mcpPrefix.length) return `mcp:${name.slice(mcpPrefix.length, serverEnd)}`;
+  }
+  return source === undefined || source.length === 0 ? "registered" : source;
+}
+
+function registeredOutputSchema(
+  definition: RegisteredToolDefinition,
+): CodeModeToolSchema | undefined {
+  if (definition === undefined) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(definition, "outputSchema");
+  if (descriptor === undefined || !("value" in descriptor)) return undefined;
+  return Value.Check(CodeModeToolSchemaMetadataSchema, descriptor.value)
+    ? descriptor.value
+    : undefined;
 }
 
 function renderGenerationCatalogue(
@@ -67,12 +107,27 @@ function renderGenerationCatalogue(
   decision: CodeModeToolExposureDecision,
 ) {
   const registry = captured.getToolRegistry();
+  const toolInfoByName = new Map(
+    captured.session.getAllTools().map((toolInfo) => [toolInfo.name, toolInfo]),
+  );
   return renderCodeModeToolCatalogue(
     decision.codeModeNames.flatMap((name) => {
       const tool = registry.get(name);
+      const toolInfo = toolInfoByName.get(name);
+      const outputSchema =
+        registeredOutputSchema(captured.session.getToolDefinition(name)) ??
+        (toolInfo === undefined ? undefined : resolveKnownToolOutputSchema(toolInfo));
       return tool === undefined
         ? []
-        : [{ name, description: tool.description, inputSchema: tool.parameters }];
+        : [
+            {
+              name,
+              group: codeModeToolCatalogueGroup(name, toolInfo?.sourceInfo.source),
+              description: tool.description,
+              inputSchema: tool.parameters,
+              ...(outputSchema !== undefined && { outputSchema }),
+            },
+          ];
     }),
   );
 }
@@ -153,7 +208,7 @@ class PiCodeModeLifecycleController {
     if (!initialCatalogue.ok) {
       this.notifyWarning(
         context,
-        "Pi CodeMode disabled: registered tool names exceed the 1 MiB catalogue limit",
+        "Pi CodeMode disabled: generated tool catalogue exceeds the 1 MiB outer limit",
       );
       return;
     }
@@ -177,10 +232,13 @@ class PiCodeModeLifecycleController {
       resultSpillWriter: sessionFiles,
       onSnapshotChange: (snapshot) => observer.onSnapshotChange(snapshot),
       onUnexpectedFailure: (failure) => observer.onUnexpectedFailure(failure),
-      getToolNames: () =>
+      getToolSnapshot: () =>
         generation.active && this.generation === generation
-          ? generation.decision.codeModeNames
-          : [],
+          ? {
+              names: [CODEMODE_SEARCH_TOOL_NAME, ...generation.decision.codeModeNames],
+              searchEntries: generation.catalogue.searchEntries,
+            }
+          : { names: [], searchEntries: [] },
       executeToolBatch: (batch) => this.executeNestedToolBatch(generation, batch),
     });
     const operations: CodeModeToolOperations = {
@@ -211,6 +269,14 @@ class PiCodeModeLifecycleController {
         result: "success",
         sessions: [...coordinator.listSessions()],
       }),
+      search: async (input) => {
+        if (!generation.active || this.generation !== generation) {
+          throw new Error("Pi CodeMode session generation is inactive");
+        }
+        const searched = searchCodeModeToolCatalogue(generation.catalogue.searchEntries, input);
+        if (!searched.ok) throw new Error(searched.message);
+        return searched.page;
+      },
     };
     generation = {
       captured,
@@ -220,7 +286,8 @@ class PiCodeModeLifecycleController {
       sessionFiles,
       operations,
       decision: initialDecision,
-      executeDescription: catalogueDescription(initialCatalogue.text),
+      catalogue: initialCatalogue,
+      executeDescription: catalogueDescription(initialCatalogue),
       active: true,
       toolsRegistered: false,
       synchronizing: false,
@@ -257,7 +324,7 @@ class PiCodeModeLifecycleController {
       return;
     }
 
-    const [executeTool, resultTool, cancelTool, sessionsTool] =
+    const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
       createRenderedCodeModeToolDefinitions(
         operations,
         generation.executeDescription,
@@ -267,6 +334,7 @@ class PiCodeModeLifecycleController {
     this.pi.registerTool(resultTool);
     this.pi.registerTool(cancelTool);
     this.pi.registerTool(sessionsTool);
+    this.pi.registerTool(searchTool);
     generation.toolsRegistered = true;
     this.synchronizeGeneration(generation);
   }
@@ -282,7 +350,7 @@ class PiCodeModeLifecycleController {
       generation.catalogueWarningShown = true;
       this.notifyWarning(
         generation.context,
-        "Pi CodeMode retained its previous exposure because registered tool names exceed the 1 MiB catalogue limit",
+        "Pi CodeMode retained its previous exposure because the generated tool catalogue exceeds the 1 MiB outer limit",
       );
     }
     return false;
@@ -307,7 +375,8 @@ class PiCodeModeLifecycleController {
         const catalogue = renderGenerationCatalogue(generation.captured, decision);
         if (!catalogue.ok) continue;
         generation.decision = decision;
-        const description = catalogueDescription(catalogue.text);
+        generation.catalogue = catalogue;
+        const description = catalogueDescription(catalogue);
         if (description === generation.executeDescription) continue;
         generation.executeDescription = description;
         if (!generation.toolsRegistered) continue;
@@ -343,8 +412,29 @@ class PiCodeModeLifecycleController {
     const registry = generation.captured.getToolRegistry();
     const earlyResults = new Map<string, CodeModeNestedToolResult>();
     const bridgeCalls: PiToolBridgeCall[] = [];
+    let searchCallCount = 0;
     for (const call of batch.calls) {
-      if (!exposedNames.has(call.toolName) || !registry.has(call.toolName)) {
+      if (call.toolName === CODEMODE_SEARCH_TOOL_NAME) {
+        searchCallCount += 1;
+        if (searchCallCount > CODEMODE_SEARCH_BATCH_LIMIT) {
+          earlyResults.set(
+            call.callId,
+            unavailableNestedResult(
+              call.callId,
+              "validation",
+              `Pi CodeMode accepts at most ${CODEMODE_SEARCH_BATCH_LIMIT} searches in one batch`,
+            ),
+          );
+        } else {
+          const searched = searchCodeModeToolCatalogue(batch.searchEntries, call.input);
+          earlyResults.set(
+            call.callId,
+            searched.ok
+              ? { callId: call.callId, outcome: "success", result: searched.page }
+              : unavailableNestedResult(call.callId, searched.code, searched.message),
+          );
+        }
+      } else if (!exposedNames.has(call.toolName) || !registry.has(call.toolName)) {
         earlyResults.set(
           call.callId,
           unavailableNestedResult(
@@ -400,9 +490,12 @@ class PiCodeModeLifecycleController {
         },
       }),
     };
-    const bridged = await executePiToolBridgeBatch(bridgeCaptured, bridgeOptions);
+    const bridged =
+      bridgeCalls.length === 0
+        ? undefined
+        : await executePiToolBridgeBatch(bridgeCaptured, bridgeOptions);
     const bridgedResults = new Map<string, CodeModeNestedToolResult>(
-      bridged.calls.map((outcome) => [
+      (bridged?.calls ?? []).map((outcome) => [
         outcome.callId,
         outcome.ok
           ? {
@@ -429,10 +522,12 @@ class PiCodeModeLifecycleController {
     );
     return {
       results,
-      presentation: bridged.presentation,
-      ...(bridged.usage !== undefined && { usage: bridged.usage }),
-      ...(bridged.addedToolNames.length > 0 && { addedToolNames: bridged.addedToolNames }),
-      ...(bridged.terminate && { terminate: true }),
+      ...(bridged !== undefined &&
+        bridged.presentation.length > 0 && { presentation: bridged.presentation }),
+      ...(bridged?.usage !== undefined && { usage: bridged.usage }),
+      ...(bridged !== undefined &&
+        bridged.addedToolNames.length > 0 && { addedToolNames: bridged.addedToolNames }),
+      ...(bridged?.terminate === true && { terminate: true }),
     };
   }
 

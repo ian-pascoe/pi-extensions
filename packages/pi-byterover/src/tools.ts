@@ -90,11 +90,14 @@ const PersistParameters = Type.Object(
 
 type PersistParameters = Static<typeof PersistParameters>;
 
+const ManualToolOutputSchema = Type.Undefined();
+
 type ManualToolDefinition<TName extends string, TParams extends TSchema> = Omit<
   ToolDefinition<TParams, undefined>,
   "name" | "execute"
 > & {
   name: TName;
+  outputSchema: typeof ManualToolOutputSchema;
   execute(
     toolCallId: string,
     params: Static<TParams>,
@@ -123,7 +126,7 @@ export const isByteRoverManualToolDefinition = (tool: {
 /** Registers ByteRover manual tools with Pi or a faithful recording host. */
 export interface ByteRoverManualToolHost {
   registerTool<TParams extends TSchema = TSchema, TDetails = unknown, TState = unknown>(
-    tool: ToolDefinition<TParams, TDetails, TState>,
+    tool: ToolDefinition<TParams, TDetails, TState> & { outputSchema?: TSchema },
   ): void;
 }
 
@@ -172,6 +175,7 @@ export const registerManualTools = ({
     label: "ByteRover Recall",
     description: "Recall relevant context from ByteRover memory for a raw query.",
     parameters: RecallParameters,
+    outputSchema: ManualToolOutputSchema,
     execute: async (_toolCallId, params: RecallParameters, signal, _onUpdate, ctx) => {
       const query = params.query.trim();
 
@@ -199,6 +203,7 @@ export const registerManualTools = ({
     label: "ByteRover Search",
     description: "Search ByteRover memory for ranked file-level context results.",
     parameters: SearchParameters,
+    outputSchema: ManualToolOutputSchema,
     execute: async (_toolCallId, params: SearchParameters, _signal, _onUpdate, ctx) => {
       const query = params.query.trim();
 
@@ -228,6 +233,7 @@ export const registerManualTools = ({
     label: "ByteRover Persist",
     description: "Persist raw memory text into ByteRover without automatic curation wrapping.",
     parameters: PersistParameters,
+    outputSchema: ManualToolOutputSchema,
     execute: async (_toolCallId, params: PersistParameters, _signal, _onUpdate, ctx) => {
       const memory = params.context.trim();
 

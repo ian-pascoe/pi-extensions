@@ -29,6 +29,8 @@ import {
   CodeModeResultParametersSchema,
   CodeModeSessionsParametersSchema,
   CodeModeSessionsResultSchema,
+  CodeModeToolSearchPageSchema,
+  CodeModeToolSearchParametersSchema,
   createCodeModeToolDefinitions,
   type CodeModeCancelParameters,
   type CodeModeErrorCode,
@@ -41,6 +43,8 @@ import {
   type CodeModeSessionsParameters,
   type CodeModeSessionsResult,
   type CodeModeToolOperations,
+  type CodeModeToolSearchPage,
+  type CodeModeToolSearchParameters,
 } from "./codemode-tool-contract.js";
 
 /** Names of the four CodeMode tools with semantic Transcript rendering. */
@@ -75,6 +79,7 @@ const CODEMODE_STATUS_PRESENTATION = {
 } satisfies Record<CodeModeCellState, CodeModeStatusPresentation>;
 const CODEMODE_COLLAPSED_SCRIPT_LINES = 8;
 const CODEMODE_PRESENTATION_MAX_BYTES = 50 * 1024;
+const CODEMODE_SEARCH_DECLARATION_MAX_LINES = 2_000;
 const CodeModeJsonStringSchema = Type.String();
 
 function sanitizeCodeModeText(text: string): string {
@@ -434,6 +439,162 @@ function renderCodeModeSessionsResult(
   return container;
 }
 
+function parseCodeModeToolSearchParameters(
+  parameters: CodeModeJsonValue,
+): CodeModeToolSearchParameters | undefined {
+  return Value.Check(CodeModeToolSearchParametersSchema, parameters) ? parameters : undefined;
+}
+
+/** Render a direct CodeMode tool search call with its query and explicit page controls. */
+export function renderCodeModeToolSearchCall(
+  parameters: CodeModeJsonValue,
+  theme: CodeModeRenderTheme,
+  expanded: boolean,
+): Component {
+  const parsed = parseCodeModeToolSearchParameters(parameters);
+  const query = parsed?.query?.trim();
+  const container = new Container();
+  container.addChild(
+    new Text(
+      [
+        theme.fg("toolTitle", theme.bold("CodeMode")),
+        theme.fg("accent", "Search Tools"),
+        theme.fg(
+          "muted",
+          query ? boundedCodeModePreview(JSON.stringify(query), 72) : "all exposed",
+        ),
+      ].join("  "),
+      0,
+      0,
+    ),
+  );
+  if (!expanded || parsed === undefined) return container;
+  if (parsed.group === undefined && parsed.limit === undefined && parsed.offset === undefined) {
+    return container;
+  }
+  container.addChild(new Spacer(1));
+  if (parsed.group !== undefined) appendCodeModeField(container, theme, "Group", parsed.group);
+  if (parsed.limit !== undefined) appendCodeModeField(container, theme, "Limit", parsed.limit);
+  if (parsed.offset !== undefined) appendCodeModeField(container, theme, "Offset", parsed.offset);
+  return container;
+}
+
+function codeModeToolSearchOffset(
+  page: CodeModeToolSearchPage,
+  parameters: CodeModeJsonValue,
+): number {
+  const explicitOffset = parseCodeModeToolSearchParameters(parameters)?.offset;
+  if (explicitOffset !== undefined) return explicitOffset;
+  if (page.nextOffset !== null) return Math.max(0, page.nextOffset - page.items.length);
+  return Math.max(0, page.total - page.items.length);
+}
+
+function renderCodeModeToolSearchSummary(
+  page: CodeModeToolSearchPage,
+  parameters: CodeModeJsonValue,
+  theme: CodeModeRenderTheme,
+): string {
+  const offset = codeModeToolSearchOffset(page, parameters);
+  if (page.items.length === 0) {
+    return page.total === 0
+      ? theme.fg("dim", "No matching tools")
+      : `${theme.fg("warning", "! No tools on this page")}  ${theme.fg("muted", `${pluralizedCodeModeCount(page.total, "match")} · offset ${offset}`)}`;
+  }
+  const unavailableCount = page.items.filter((item) => "declarationError" in item).length;
+  const status = unavailableCount === 0 ? theme.fg("success", "✓") : theme.fg("warning", "!");
+  const range =
+    page.items.length === page.total
+      ? pluralizedCodeModeCount(page.total, "tool")
+      : `${offset + 1}–${offset + page.items.length} of ${page.total} tools`;
+  return [
+    `${status} ${range}`,
+    unavailableCount === 0
+      ? undefined
+      : theme.fg(
+          "warning",
+          `${unavailableCount} declaration${unavailableCount === 1 ? "" : "s"} unavailable`,
+        ),
+    page.nextOffset === null ? undefined : theme.fg("muted", `next offset ${page.nextOffset}`),
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(theme.fg("dim", "  ·  "));
+}
+
+function boundedCodeModeToolSearchDeclaration(
+  declaration: string,
+  declarationCount: number,
+): string {
+  const safe = sanitizeCodeModeText(declaration);
+  const truncated = truncateHead(safe, {
+    maxBytes: Math.max(1, Math.floor(CODEMODE_PRESENTATION_MAX_BYTES / declarationCount)),
+    maxLines: Math.max(1, Math.floor(CODEMODE_SEARCH_DECLARATION_MAX_LINES / declarationCount)),
+  });
+  return truncated.truncated
+    ? `${truncated.content}\n… declaration truncated in Transcript`
+    : truncated.content;
+}
+
+/** Render direct CodeMode tool search results as a compact page or expanded declaration list. */
+export function renderCodeModeToolSearchResult(
+  result: AgentToolResult<unknown>,
+  options: ToolRenderResultOptions,
+  theme: CodeModeRenderTheme,
+  isError: boolean,
+  parameters: CodeModeJsonValue,
+): Component {
+  if (options.isPartial) return new Text(theme.fg("accent", "Searching…"), 0, 0);
+  if (isError || !Value.Check(CodeModeToolSearchPageSchema, result.details)) {
+    return renderCodeModeFallback(result, options, theme, isError);
+  }
+  const page = result.details;
+  const summary = renderCodeModeToolSearchSummary(page, parameters, theme);
+  if (!options.expanded || page.items.length === 0) {
+    const hint =
+      options.expanded || page.items.length === 0
+        ? ""
+        : `  ·  ${keyText("app.tools.expand")} to expand`;
+    return new Text(`${summary}${theme.fg("dim", hint)}`, 0, 0);
+  }
+
+  const container = new Container();
+  container.addChild(new Text(summary, 0, 0));
+  const declarationCount = Math.max(1, page.items.filter((item) => "declaration" in item).length);
+  for (const item of page.items) {
+    container.addChild(new Spacer(1));
+    container.addChild(
+      new Text(
+        `${theme.fg("toolOutput", theme.bold(boundedCodeModePreview(item.name, 256)))}  ${theme.fg("muted", boundedCodeModePreview(item.group, 128))}`,
+        0,
+        0,
+      ),
+    );
+    if ("declaration" in item) {
+      appendHighlightedCodeModeSource(
+        container,
+        boundedCodeModeToolSearchDeclaration(item.declaration, declarationCount),
+      );
+    } else {
+      if (item.description !== undefined) {
+        container.addChild(
+          new Text(theme.fg("muted", boundedCodeModePreview(item.description, 240)), 0, 0),
+        );
+      }
+      container.addChild(
+        new Text(
+          theme.fg("warning", `! ${boundedCodeModePreview(item.declarationError, 240)}`),
+          0,
+          0,
+        ),
+      );
+    }
+  }
+  if (page.nextOffset !== null) {
+    container.addChild(new Spacer(1));
+    appendCodeModeField(container, theme, "Next offset", page.nextOffset);
+  }
+  return container;
+}
+
 /** Render one CodeMode result in collapsed, expanded, partial, or historical form. */
 export function renderCodeModeToolResult(
   toolName: CodeModeRenderedToolName,
@@ -529,16 +690,14 @@ export function renderCodeModeToolResult(
   return container;
 }
 
-/** Create the four CodeMode tools with semantic call and result Transcript renderers. */
+/** Create five CodeMode tools with semantic call and result Transcript rendering. */
 export function createRenderedCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
   executeDescription?: string,
   formatSessionPrefix: CodeModeSessionPrefixFormatter = shortCodeModeSessionId,
 ): ReturnType<typeof createCodeModeToolDefinitions> {
-  const [executeTool, resultTool, cancelTool, sessionsTool] = createCodeModeToolDefinitions(
-    operations,
-    executeDescription,
-  );
+  const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
+    createCodeModeToolDefinitions(operations, executeDescription);
   return [
     {
       ...executeTool,
@@ -619,6 +778,13 @@ export function createRenderedCodeModeToolDefinitions(
           context.isError,
           formatSessionPrefix,
         ),
+    },
+    {
+      ...searchTool,
+      renderCall: (args, theme, context) =>
+        renderCodeModeToolSearchCall(args, theme, context.expanded),
+      renderResult: (result, options, theme, context) =>
+        renderCodeModeToolSearchResult(result, options, theme, context.isError, context.args),
     },
   ];
 }

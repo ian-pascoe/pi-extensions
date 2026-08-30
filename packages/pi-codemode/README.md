@@ -154,13 +154,18 @@ parent kills the worker before it can reply.
 
 ## Transcript and Observer UI
 
-The CodeMode Transcript gives all four tools semantic collapsed and expanded
-rendering. Collapsed rows prioritize Cell lifecycle, a short Session ID, Cell
+The CodeMode Transcript gives all five tools semantic collapsed and expanded
+rendering. Session rows prioritize Cell lifecycle, a short Session ID, Cell
 Ordinal, returned-value shape, Console-call count, nested-tool count, and elapsed
 time. Expanded rows show the full Session ID, explicit call arguments,
 TypeScript source, bounded Console output before structured returned data or the
 error, and bounded nested-tool names, outcomes, and durations. Nested arguments
 and raw nested outputs are never copied into the presentation.
+
+Search rows show the query, result range, and next offset without exposing raw
+JSON. Expanding a search shows each exact tool name, display group, highlighted
+TypeScript declaration, and any declaration-size failure. Search declarations
+are bounded only in the Transcript; the model-facing result remains unchanged.
 
 Status always uses a symbol and text together:
 
@@ -228,17 +233,49 @@ termination, or process failure destroys that session's heap.
 
 ## Registered tools
 
-The `codemode_execute` description contains generated TypeScript declarations
-for the currently exposed registered tools. Guest calls resolve to:
+The `codemode_execute` description contains a token-bounded catalogue of
+complete generated TypeScript declarations for currently exposed registered
+tools. It marks the catalogue `COMPLETE` or `PARTIAL`; a partial catalogue keeps
+the remaining declarations available through:
 
 ```ts
-type PiToolResult = {
+const page = await tools.codemode_search({
+  query: "intent or exact registered name",
+  group: "optional display group",
+  limit: 10,
+  offset: 0,
+});
+```
+
+Search returns stable pages with `items`, `total`, `hasMore`, and `nextOffset`.
+Each item contains its exact flat `name`, display-only `group`, bounded
+`description`, and complete `declaration`. A pathological declaration above the
+search response bound instead has an explicit `declarationError`, without
+stalling pagination. Call a discovered tool with `tools[item.name](input)`;
+every exposed name remains callable even when its declaration is omitted from
+the inline catalogue.
+
+`codemode_search` is also a direct Pi tool, so declarations can be discovered
+before starting a Cell. Direct search reads the current exposure catalogue;
+in-Cell search reads the Cell's frozen exposure snapshot. Both expose only
+CodeMode-callable tools and use the same search implementation.
+
+Ordinary guest tool calls resolve to:
+
+```ts
+type PiToolResult<Output = unknown> = {
   content: Array<
     { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
   >;
-  details?: unknown;
+  details?: Output;
 };
 ```
+
+Each declaration derives its input from `parameters` and its `details` type
+from the registered definition's optional `outputSchema`. Source-gated fallback
+schemas cover Pi's built-in tools and `@howaboua/pi-codex-conversion` 3.0.23;
+tool-provided schemas take precedence. Other missing or unsupported output
+schemas remain `unknown`.
 
 Ordinary tool failures reject with a catchable `CodeModeToolError`. A Pi result
 that requests termination stops the complete CodeMode Session and cannot be
@@ -268,7 +305,8 @@ last match wins. Project `tools` replaces the global array, while project
 
 An unmatched active tool defaults to `direct-and-codemode`; an unmatched
 inactive tool remains unavailable. An explicit rule may expose an inactive tool
-or activate direct access. The four `codemode_*` tools are always direct-only.
+or activate direct access. The five registered `codemode_*` tools are always
+direct-only.
 Pi's global allowed/excluded registry remains authoritative. Invalid fields or
 patterns disable CodeMode for that session without changing Pi's active tools.
 

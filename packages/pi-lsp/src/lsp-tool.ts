@@ -71,6 +71,7 @@ import {
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import {
   LspToolParametersSchema,
+  LspToolResultDetailsSchema,
   LspWorkspaceEditPreviewRecordSchema,
   MutationManifestSchema,
   type LspToolParameters,
@@ -184,6 +185,10 @@ export interface LspToolDependencies {
   /** Private Result Spill storage for complete truncated output. */
   readonly sessionFiles: LspSessionFiles;
 }
+
+type LspToolDefinition = ToolDefinition<typeof LspToolParametersSchema, LspToolResultDetails> & {
+  readonly outputSchema: typeof LspToolResultDetailsSchema;
+};
 
 interface LspReadValue {
   readonly root_path: string;
@@ -1051,9 +1056,7 @@ async function executeApplyPreview(
 }
 
 /** Create the single strict Pi LSP ToolDefinition bound to one session's runtime owners. */
-export function createLspToolDefinition(
-  dependencies: LspToolDependencies,
-): ToolDefinition<typeof LspToolParametersSchema, LspToolResultDetails> {
+export function createLspToolDefinition(dependencies: LspToolDependencies): LspToolDefinition {
   return {
     name: "lsp",
     label: "LSP",
@@ -1064,6 +1067,7 @@ export function createLspToolDefinition(
       "Use lsp read operations for semantic source navigation and diagnostics; use preview-producing lsp operations followed by lsp apply for language-server mutations.",
     ],
     parameters: LspToolParametersSchema,
+    outputSchema: LspToolResultDetailsSchema,
     renderCall: (argumentsValue, theme, context) =>
       renderLspToolCall(argumentsValue, theme, context.expanded, context.cwd),
     renderResult: (result, options, theme, context) =>

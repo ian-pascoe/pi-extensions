@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { open, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   AgentEndEvent,
   AgentToolResult,
@@ -12,10 +13,11 @@ import type {
   ToolCallEventResult,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { Parse } from "typebox/value";
 import { loadConfig, type AdaptiveThinkingConfig } from "./config-loader.js";
 import {
+  fallbackThinkingLevels,
   isThinkingLevel,
   resolveSupportedThinkingLevels,
   type PiThinkingLevel,
@@ -53,9 +55,26 @@ type ToolParameters = Static<typeof ToolParameters>;
 
 const StatusToolParameters = Type.Object({}, { additionalProperties: false });
 
-type ThinkingLevelStatus = {
-  currentLevel: PiThinkingLevel | "unknown";
-  supportedLevels: PiThinkingLevel[];
+const ThinkingLevelSchema = StringEnum(fallbackThinkingLevels);
+
+/** Exact final-details schema returned by the Thinking Level Status tool. */
+export const ThinkingLevelStatusSchema = Type.Object(
+  {
+    currentLevel: Type.Union([ThinkingLevelSchema, Type.Literal("unknown")]),
+    supportedLevels: Type.Array(ThinkingLevelSchema),
+  },
+  { additionalProperties: false },
+);
+
+const UndefinedToolOutputSchema = Type.Undefined();
+
+type ThinkingLevelStatus = Static<typeof ThinkingLevelStatusSchema>;
+
+type ToolDefinitionWithOutputSchema<
+  TParameters extends TSchema,
+  TOutputSchema extends TSchema,
+> = ToolDefinition<TParameters, Static<TOutputSchema>> & {
+  outputSchema: TOutputSchema;
 };
 
 /** The extension-context fields Adaptive Thinking reads at its lifecycle and tool seams. */
@@ -85,11 +104,14 @@ export type AdaptiveThinkingSetThinkingLevelParameters = Static<typeof ToolParam
 /** Current and supported thinking levels returned by the status tool. */
 export type AdaptiveThinkingLevelStatus = ThinkingLevelStatus;
 
-type SetThinkingLevelTool = Omit<ToolDefinition<typeof ToolParameters, undefined>, "execute"> & {
+type SetThinkingLevelTool = Omit<
+  ToolDefinitionWithOutputSchema<typeof ToolParameters, typeof UndefinedToolOutputSchema>,
+  "execute"
+> & {
   execute: AdaptiveThinkingToolExecution<AdaptiveThinkingSetThinkingLevelParameters, undefined>;
 };
 type GetThinkingLevelTool = Omit<
-  ToolDefinition<typeof StatusToolParameters, ThinkingLevelStatus>,
+  ToolDefinitionWithOutputSchema<typeof StatusToolParameters, typeof ThinkingLevelStatusSchema>,
   "execute"
 > & {
   execute: AdaptiveThinkingToolExecution<Record<string, never>, ThinkingLevelStatus>;
@@ -337,6 +359,7 @@ export function registerAdaptiveThinking(pi: AdaptiveThinkingExtensionHost) {
         `Do not call ${config.toolName} twice in a row; reassess only after new evidence from other tool calls or user input.`,
       ],
       parameters: ToolParameters,
+      outputSchema: UndefinedToolOutputSchema,
       execute: async (toolCallId, params: ToolParameters, _signal, _onUpdate, ctx) => {
         const state = runtime;
         if (!state) return textResult("Adaptive Thinking is not enabled for this session.");
@@ -399,6 +422,7 @@ export function registerAdaptiveThinking(pi: AdaptiveThinkingExtensionHost) {
         `Use ${config.statusToolName} only when thinking-level state is uncertain; do not poll it routinely.`,
       ],
       parameters: StatusToolParameters,
+      outputSchema: ThinkingLevelStatusSchema,
       execute: async (_toolCallId, _params, _signal, _onUpdate, ctx) => {
         const currentLevel = pi.getThinkingLevel();
         return thinkingLevelStatusResult(

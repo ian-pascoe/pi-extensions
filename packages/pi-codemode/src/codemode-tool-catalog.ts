@@ -2,39 +2,77 @@ import { Buffer } from "node:buffer";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  CODEMODE_SEARCH_TOOL_NAME,
   isCodeModeJsonObject,
   isReservedCodeModeToolName,
   type CodeModeJsonObject,
   type CodeModeJsonValue,
+  type CodeModeToolSearchPage,
+  type CodeModeToolSearchParameters,
+  CodeModeToolSearchParametersSchema,
 } from "./codemode-tool-contract.js";
 
 const CODEMODE_CATALOGUE_LIMIT_BYTES = 1024 * 1024;
+const CODEMODE_CATALOGUE_TOKEN_BUDGET = 2_000;
+const CODEMODE_CATALOGUE_GROUP_SUMMARY_TOKEN_BUDGET = 256;
 const CODEMODE_JSDOC_LIMIT_BYTES = 2 * 1024;
+const CODEMODE_GROUP_LIMIT_BYTES = 512;
 const CODEMODE_SCHEMA_DEPTH_LIMIT = 16;
+const CODEMODE_SEARCH_DEFAULT_LIMIT = 10;
+const CODEMODE_SEARCH_INDEX_LIMIT_BYTES = 8 * 1024;
+const CODEMODE_SEARCH_RESULT_LIMIT_BYTES = 1024 * 1024;
 
 /** A structural JSON Schema document accepted from TypeBox or another producer. */
-export type CodeModeToolInputSchema = boolean | object;
+export type CodeModeToolSchema = boolean | object;
 
-/** One CodeMode-callable Pi tool and its structural input schema. */
+/** One CodeMode-callable Pi tool and its structural input/output schemas. */
 export type CodeModeToolCatalogueTool = {
   readonly name: string;
-  readonly inputSchema: CodeModeToolInputSchema;
+  /** Stable display-only source group; it never changes the exact flat tool name. */
+  readonly group: string;
+  readonly inputSchema: CodeModeToolSchema;
+  readonly outputSchema?: CodeModeToolSchema;
   readonly description?: string;
 };
 
-/** A complete catalogue or an explicit refusal before exposure changes. */
-export type CodeModeToolCatalogueResult =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly reason: "names-exceed-catalogue-limit" };
+/** One complete declaration retained for progressive CodeMode tool search. */
+export type CodeModeToolSearchEntry = {
+  readonly name: string;
+  readonly group: string;
+  readonly description?: string;
+  readonly declaration: string;
+  /** Pre-normalized bounded terms used only by the parent-side search index. */
+  readonly searchIndex?: string;
+};
 
-type ParsedCodeModeToolInputSchema = boolean | CodeModeJsonObject;
+/** A bounded inline catalogue plus every searchable complete declaration. */
+export type CodeModeToolCatalogueResult =
+  | {
+      readonly ok: true;
+      readonly text: string;
+      readonly complete: boolean;
+      readonly shownCount: number;
+      readonly totalCount: number;
+      readonly searchEntries: readonly CodeModeToolSearchEntry[];
+    }
+  | { readonly ok: false; readonly reason: "catalogue-exceeds-outer-limit" };
+
+/** Successfully rendered progressive CodeMode tool catalogue. */
+export type CodeModeToolCatalogue = Extract<CodeModeToolCatalogueResult, { readonly ok: true }>;
+
+/** Expected progressive declaration search outcome at the guest input boundary. */
+export type CodeModeToolSearchResult =
+  | { readonly ok: true; readonly page: CodeModeToolSearchPage }
+  | { readonly ok: false; readonly code: "validation" | "serialization"; readonly message: string };
+
+type ParsedCodeModeToolSchema = boolean | CodeModeJsonObject;
 type RenderedTool = {
   readonly name: string;
+  readonly group: string;
   readonly description: string | undefined;
   readonly input: string;
+  readonly output: string;
 };
-type CodeModeCatalogueDescriptionMode = "include-descriptions" | "omit-descriptions";
-
 const JsonStringSchema = Type.String();
 const JsonNumberSchema = Type.Number();
 const JsonBooleanSchema = Type.Boolean();
@@ -102,11 +140,38 @@ function quotedName(name: string): string {
 function boundedDescription(description: string | undefined): string | undefined {
   if (description === undefined) return undefined;
   let output = "";
+  let bytes = 0;
   for (const character of description) {
-    if (Buffer.byteLength(output + character, "utf8") > CODEMODE_JSDOC_LIMIT_BYTES) break;
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > CODEMODE_JSDOC_LIMIT_BYTES) break;
     output += character;
+    bytes += characterBytes;
   }
   return output.replaceAll("*/", "*\\/");
+}
+
+function boundedGroup(group: string): string {
+  let output = "";
+  let bytes = 0;
+  for (const character of group) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > CODEMODE_GROUP_LIMIT_BYTES) break;
+    output += character;
+    bytes += characterBytes;
+  }
+  return output;
+}
+
+function boundedSearchIndex(value: string): string {
+  let output = "";
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > CODEMODE_SEARCH_INDEX_LIMIT_BYTES) break;
+    output += character;
+    bytes += characterBytes;
+  }
+  return normalizeSearchText(output);
 }
 
 function jsdoc(description: string | undefined): string {
@@ -220,6 +285,8 @@ function primitiveOrStructuredType(
       return "boolean";
     case "null":
       return "null";
+    case "undefined":
+      return "undefined";
     case "object":
       return objectType(record, root, seen, depth);
     case "array":
@@ -286,63 +353,314 @@ function arrayType(
   return `readonly ${schemaType(record.items, root, seen, depth + 1)}[]`;
 }
 
-function renderTool(tool: RenderedTool, descriptionMode: CodeModeCatalogueDescriptionMode): string {
-  return `${descriptionMode === "include-descriptions" ? jsdoc(tool.description) : ""}  readonly [${quotedName(tool.name)}]: (input: ${tool.input}) => Promise<PiToolResult>;\n`;
-}
-
-function renderCatalogue(
-  tools: readonly RenderedTool[],
-  descriptionMode: CodeModeCatalogueDescriptionMode,
-): string {
-  return `type PiToolResult = {\n  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> ;\n  details?: unknown;\n};\n\ndeclare const tools: Readonly<{\n${tools.map((tool) => renderTool(tool, descriptionMode)).join("")}}>;\n`;
+function renderTool(tool: RenderedTool): string {
+  return `${jsdoc(tool.description)}  readonly [${quotedName(tool.name)}]: (input: ${tool.input}) => Promise<PiToolResult<${tool.output}>>;\n`;
 }
 
 function isWithinCatalogueLimit(text: string): boolean {
   return Buffer.byteLength(text, "utf8") <= CODEMODE_CATALOGUE_LIMIT_BYTES;
 }
 
-/** Renders all guest-callable names once or refuses a name-only overflow. */
+function renderSchema(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Registered schema metadata is parsed structurally here before catalogue rendering.
+  schema: unknown,
+): string {
+  const parsed = parseStructuralJsonValue(schema);
+  const structural: ParsedCodeModeToolSchema | undefined =
+    parsed === true || parsed === false || isStructuralJsonObject(parsed) ? parsed : undefined;
+  return schemaType(structural, schemaRecord(structural), new Set(), 0);
+}
+
+function estimatedTokens(text: string): number {
+  return Math.ceil(Buffer.byteLength(text, "utf8") / 4);
+}
+
+type CodeModeToolGroupSelection = {
+  readonly group: string;
+  readonly tools: readonly RenderedTool[];
+  readonly selectedNames: ReadonlySet<string>;
+};
+
+function selectInlineToolNames(tools: readonly RenderedTool[]): ReadonlySet<string> {
+  const groups = new Map<string, RenderedTool[]>();
+  for (const tool of tools) {
+    const group = groups.get(tool.group) ?? [];
+    group.push(tool);
+    groups.set(tool.group, group);
+  }
+  const queues = [...groups]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([group, groupedTools]) => ({
+      group,
+      tools: groupedTools
+        .map((tool) => ({ tool, declaration: renderTool(tool) }))
+        .sort(
+          (left, right) =>
+            estimatedTokens(left.declaration) - estimatedTokens(right.declaration) ||
+            left.tool.name.localeCompare(right.tool.name),
+        ),
+    }));
+  const selected = new Set<string>();
+  const selectionOrder: string[] = [];
+  let usedTokens = estimatedTokens(renderCatalogue(tools, selected));
+  let active = queues.filter(({ tools: groupedTools }) => groupedTools.length > 0);
+  while (active.length > 0) {
+    const nextActive: typeof active = [];
+    for (const queue of active) {
+      const candidate = queue.tools[0];
+      if (candidate === undefined) continue;
+      const cost = estimatedTokens(candidate.declaration);
+      if (usedTokens + cost > CODEMODE_CATALOGUE_TOKEN_BUDGET) continue;
+      queue.tools.shift();
+      selected.add(candidate.tool.name);
+      selectionOrder.push(candidate.tool.name);
+      usedTokens += cost;
+      if (queue.tools.length > 0) nextActive.push(queue);
+    }
+    active = nextActive;
+  }
+  while (estimatedTokens(renderCatalogue(tools, selected)) > CODEMODE_CATALOGUE_TOKEN_BUDGET) {
+    const removed = selectionOrder.pop();
+    if (removed === undefined) break;
+    selected.delete(removed);
+  }
+  return selected;
+}
+
+function groupSelections(
+  tools: readonly RenderedTool[],
+  selectedNames: ReadonlySet<string>,
+): readonly CodeModeToolGroupSelection[] {
+  const groups = new Map<string, RenderedTool[]>();
+  for (const tool of tools) {
+    const group = groups.get(tool.group) ?? [];
+    group.push(tool);
+    groups.set(tool.group, group);
+  }
+  return [...groups]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([group, groupedTools]) => ({
+      group,
+      tools: groupedTools,
+      selectedNames: new Set(
+        groupedTools.filter((tool) => selectedNames.has(tool.name)).map((tool) => tool.name),
+      ),
+    }));
+}
+
+function groupSummaryLines(selections: readonly CodeModeToolGroupSelection[]): readonly string[] {
+  const lines = ["// Groups:"];
+  let shownGroups = 0;
+  for (const { group, tools, selectedNames } of selections) {
+    const line = `// - ${JSON.stringify(group)}: ${selectedNames.size} of ${tools.length} shown`;
+    const remaining = selections.length - shownGroups - 1;
+    const candidate = [
+      ...lines,
+      line,
+      ...(remaining > 0 ? [`// - ... ${remaining} more groups`] : []),
+    ].join("\n");
+    if (estimatedTokens(candidate) > CODEMODE_CATALOGUE_GROUP_SUMMARY_TOKEN_BUDGET) break;
+    lines.push(line);
+    shownGroups += 1;
+  }
+  const omittedGroups = selections.length - shownGroups;
+  if (omittedGroups > 0) lines.push(`// - ... ${omittedGroups} more groups`);
+  return lines;
+}
+
+function renderCatalogue(
+  tools: readonly RenderedTool[],
+  selectedNames: ReadonlySet<string>,
+): string {
+  const selectedTools = tools.filter((tool) => selectedNames.has(tool.name));
+  const complete = selectedTools.length === tools.length;
+  const groups = groupSelections(tools, selectedNames);
+  const summary = [
+    `// CodeMode tool catalogue: ${complete ? "COMPLETE" : "PARTIAL"} (${selectedTools.length} of ${tools.length} declarations shown).`,
+    ...(complete
+      ? []
+      : [
+          '// Find omitted tools with tools.codemode_search({ query: "<intent or exact name>" }).',
+          "// Call a returned exact flat name with tools[result.name](input); groups are display-only.",
+        ]),
+    ...groupSummaryLines(groups),
+  ].join("\n");
+  return `${summary}\n\ntype PiToolResult<Output = unknown> = {\n  content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> ;\n  details?: Output;\n};\n\ntype CodeModeToolSearchItem = {\n  readonly name: string;\n  readonly group: string;\n  readonly description?: string;\n  readonly declaration?: string;\n  readonly declarationError?: string;\n};\n\ntype CodeModeToolSearchPage = {\n  readonly items: readonly CodeModeToolSearchItem[];\n  readonly total: number;\n  readonly hasMore: boolean;\n  readonly nextOffset: number | null;\n};\n\ndeclare const tools: Readonly<{\n  /** Search every CodeMode-exposed Pi tool and return complete declarations for exact flat names. */\n  readonly [${quotedName(CODEMODE_SEARCH_TOOL_NAME)}]: (input: { readonly query?: string; readonly group?: string; readonly limit?: number; readonly offset?: number }) => Promise<CodeModeToolSearchPage>;\n${selectedTools.map((tool) => renderTool(tool)).join("")}}>;\n`;
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .toLowerCase()
+    .trim();
+}
+
+function searchTerms(query: string): readonly string[] {
+  return normalizeSearchText(query).split(" ").filter(Boolean);
+}
+
+function searchScore(entry: CodeModeToolSearchEntry, terms: readonly string[]): number {
+  const name = normalizeSearchText(entry.name);
+  const group = normalizeSearchText(entry.group);
+  const description = normalizeSearchText(entry.description ?? "");
+  const declaration = entry.searchIndex ?? boundedSearchIndex(entry.declaration);
+  let score = 0;
+  for (const term of terms) {
+    if (name === term) score += 20;
+    else if (name.split(" ").includes(term)) score += 12;
+    else if (name.includes(term)) score += 8;
+    if (description.includes(term)) score += 4;
+    if (group.includes(term)) score += 2;
+    if (declaration.includes(term)) score += 1;
+  }
+  return score;
+}
+
+function searchItem(entry: CodeModeToolSearchEntry): CodeModeToolSearchPage["items"][number] {
+  return entry.description === undefined
+    ? {
+        name: entry.name,
+        group: entry.group,
+        declaration: entry.declaration,
+      }
+    : {
+        name: entry.name,
+        group: entry.group,
+        description: entry.description,
+        declaration: entry.declaration,
+      };
+}
+
+function unavailableDeclarationSearchItem(
+  entry: CodeModeToolSearchEntry,
+): CodeModeToolSearchPage["items"][number] {
+  return {
+    name: entry.name,
+    group: entry.group,
+    ...(entry.description !== undefined && { description: entry.description }),
+    declarationError: "Complete declaration exceeds the 1 MiB CodeMode search result limit",
+  };
+}
+
+function createSearchPage(
+  ranked: readonly CodeModeToolSearchEntry[],
+  input: CodeModeToolSearchParameters,
+): CodeModeToolSearchResult {
+  const offset = input.offset ?? 0;
+  const limit = input.limit ?? CODEMODE_SEARCH_DEFAULT_LIMIT;
+  const items: CodeModeToolSearchPage["items"][number][] = [];
+  for (const entry of ranked.slice(offset, offset + limit)) {
+    let item = searchItem(entry);
+    let nextItems = [...items, item];
+    const consumed = offset + nextItems.length;
+    let candidate: CodeModeToolSearchPage = {
+      items: nextItems,
+      total: ranked.length,
+      hasMore: consumed < ranked.length,
+      nextOffset: consumed < ranked.length ? consumed : null,
+    };
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > CODEMODE_SEARCH_RESULT_LIMIT_BYTES) {
+      if (items.length > 0) break;
+      item = unavailableDeclarationSearchItem(entry);
+      nextItems = [...items, item];
+      candidate = { ...candidate, items: nextItems };
+    }
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") > CODEMODE_SEARCH_RESULT_LIMIT_BYTES) {
+      return {
+        ok: false,
+        code: "serialization",
+        message: `Pi CodeMode search metadata exceeds the 1 MiB result limit: ${entry.name}`,
+      };
+    }
+    items.push(item);
+  }
+  const consumed = offset + items.length;
+  return {
+    ok: true,
+    page: {
+      items,
+      total: ranked.length,
+      hasMore: consumed < ranked.length,
+      nextOffset: consumed < ranked.length ? consumed : null,
+    },
+  };
+}
+
+/** Searches complete declarations for the exact flat names exposed to one CodeMode Cell. */
+export function searchCodeModeToolCatalogue(
+  entries: readonly CodeModeToolSearchEntry[],
+  input: CodeModeJsonValue,
+): CodeModeToolSearchResult {
+  if (!Value.Check(CodeModeToolSearchParametersSchema, input)) {
+    return {
+      ok: false,
+      code: "validation",
+      message:
+        "Pi CodeMode search input must be an object with optional query, group, limit (1-20), and offset fields",
+    };
+  }
+  const scoped =
+    input.group === undefined ? entries : entries.filter((entry) => entry.group === input.group);
+  const query = input.query?.trim() ?? "";
+  const exact = scoped.find(
+    (entry) => entry.name === query || `tools[${quotedName(entry.name)}]` === query,
+  );
+  if (exact !== undefined) return createSearchPage([exact], input);
+  const terms = searchTerms(query);
+  const ranked =
+    terms.length === 0
+      ? [...scoped].sort((left, right) => left.name.localeCompare(right.name))
+      : scoped
+          .map((entry) => ({ entry, score: searchScore(entry, terms) }))
+          .filter(({ score }) => score > 0)
+          .sort(
+            (left, right) =>
+              right.score - left.score || left.entry.name.localeCompare(right.entry.name),
+          )
+          .map(({ entry }) => entry);
+  return createSearchPage(ranked, input);
+}
+
+/** Renders a token-budgeted inline catalogue and retains complete declarations for search. */
 export function renderCodeModeToolCatalogue(
   tools: readonly CodeModeToolCatalogueTool[],
 ): CodeModeToolCatalogueResult {
   const candidates = tools
     .filter((tool) => !isReservedCodeModeToolName(tool.name))
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort(
+      (left, right) => left.name.localeCompare(right.name) || left.group.localeCompare(right.group),
+    );
   const unique = candidates.filter(
     (tool, index) => index === 0 || tool.name !== candidates[index - 1]?.name,
   );
-  const rendered = unique.map((tool) => {
-    const parsed = parseStructuralJsonValue(tool.inputSchema);
-    const inputSchema: ParsedCodeModeToolInputSchema | undefined =
-      parsed === true || parsed === false || isStructuralJsonObject(parsed) ? parsed : undefined;
-    return {
-      name: tool.name,
-      description: boundedDescription(tool.description),
-      input: schemaType(inputSchema, schemaRecord(inputSchema), new Set(), 0),
-    };
-  });
-
-  let text = renderCatalogue(rendered, "include-descriptions");
-  if (isWithinCatalogueLimit(text)) return { ok: true, text };
-
-  const simplified = [...rendered];
-  const schemaOrder = simplified
-    .map((tool, index) => ({
-      index,
-      bytes: Buffer.byteLength(tool.input, "utf8"),
-      name: tool.name,
-    }))
-    .sort((left, right) => right.bytes - left.bytes || left.name.localeCompare(right.name));
-  for (const candidate of schemaOrder) {
-    const current = simplified[candidate.index];
-    if (current === undefined) continue;
-    simplified[candidate.index] = { ...current, input: "unknown" };
-    text = renderCatalogue(simplified, "include-descriptions");
-    if (isWithinCatalogueLimit(text)) return { ok: true, text };
+  const rendered = unique.map((tool) => ({
+    name: tool.name,
+    group: boundedGroup(tool.group),
+    description: boundedDescription(tool.description),
+    input: renderSchema(tool.inputSchema),
+    output: renderSchema(tool.outputSchema),
+  }));
+  const selectedNames = selectInlineToolNames(rendered);
+  const text = renderCatalogue(rendered, selectedNames);
+  if (!isWithinCatalogueLimit(text)) {
+    return { ok: false, reason: "catalogue-exceeds-outer-limit" };
   }
-
-  text = renderCatalogue(simplified, "omit-descriptions");
-  return isWithinCatalogueLimit(text)
-    ? { ok: true, text }
-    : { ok: false, reason: "names-exceed-catalogue-limit" };
+  const searchEntries = rendered.map((tool) => ({
+    name: tool.name,
+    group: tool.group,
+    ...(tool.description !== undefined && { description: tool.description }),
+    declaration: renderTool(tool),
+    searchIndex: boundedSearchIndex(
+      `${tool.name}\n${tool.group}\n${tool.description ?? ""}\n${tool.input}\n${tool.output}`,
+    ),
+  }));
+  return {
+    ok: true,
+    text,
+    complete: selectedNames.size === rendered.length,
+    shownCount: selectedNames.size,
+    totalCount: rendered.length,
+    searchEntries,
+  };
 }

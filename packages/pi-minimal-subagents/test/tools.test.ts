@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
+import { CoordinatorToolOutputSchemas } from "../src/minimal-subagents-render-contract.js";
 import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import {
   createCoordinatorToolDefinitions,
@@ -91,6 +92,17 @@ describe("minimal subagents coordinator tools", () => {
     expect(
       createCoordinatorToolDefinitions(toolOptions("child", false)).map(({ name }) => name),
     ).toEqual(["agent_message", "subagent_wait", "subagent_status"]);
+  });
+
+  it("attaches each coordinator tool's final details schema", () => {
+    const outputSchemas = Object.fromEntries(
+      createCoordinatorToolDefinitions(toolOptions("root", true)).map(({ name, outputSchema }) => [
+        name,
+        outputSchema,
+      ]),
+    );
+
+    expect(outputSchemas).toEqual(CoordinatorToolOutputSchemas);
   });
 
   it("forwards an exact retained turn ID through subagent_wait", async () => {

@@ -2,11 +2,16 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { beforeAll, describe, expect, test } from "vitest";
 import {
+  renderCodeModeToolSearchCall,
+  renderCodeModeToolSearchResult,
   renderCodeModeToolCall,
   renderCodeModeToolResult,
   type CodeModeRenderTheme,
 } from "../src/codemode-tool-rendering.js";
-import type { CodeModeResultDetails } from "../src/codemode-tool-contract.js";
+import type {
+  CodeModeResultDetails,
+  CodeModeToolSearchPage,
+} from "../src/codemode-tool-contract.js";
 
 const plainTheme: CodeModeRenderTheme = {
   bold: (text) => text,
@@ -27,7 +32,157 @@ function result(details: CodeModeResultDetails, text = JSON.stringify(details)) 
   return { content: [{ type: "text" as const, text }], details };
 }
 
+function searchResult(details: CodeModeToolSearchPage, text = JSON.stringify(details)) {
+  return { content: [{ type: "text" as const, text }], details };
+}
+
 describe("CodeMode Transcript rendering", () => {
+  test("renders direct tool search arguments without raw JSON", () => {
+    const parameters = { query: "apply_patch", group: "builtin", limit: 5, offset: 10 };
+    expect(renderText(renderCodeModeToolSearchCall(parameters, plainTheme, false))).toBe(
+      'CodeMode  Search Tools  "apply_patch"',
+    );
+
+    const expanded = renderText(renderCodeModeToolSearchCall(parameters, plainTheme, true));
+    expect(expanded).toContain("Group: builtin");
+    expect(expanded).toContain("Limit: 5");
+    expect(expanded).toContain("Offset: 10");
+    expect(renderText(renderCodeModeToolSearchCall({}, plainTheme, false))).toBe(
+      "CodeMode  Search Tools  all exposed",
+    );
+  });
+
+  test("renders direct tool search pagination and expanded TypeScript declarations", () => {
+    const page: CodeModeToolSearchPage = {
+      items: [
+        {
+          name: "apply_patch",
+          group: "builtin",
+          description: "Patch files",
+          declaration:
+            '/** Patch files */\n  readonly ["apply_patch"]: (input: { readonly input: string }) => Promise<PiToolResult<undefined>>;',
+        },
+        {
+          name: "huge_tool",
+          group: "extension",
+          description: "A declaration too large to return",
+          declarationError: "Complete declaration exceeds the result limit",
+        },
+      ],
+      total: 7,
+      hasMore: true,
+      nextOffset: 5,
+    };
+    const parameters = { query: "patch", offset: 3 };
+    const collapsed = renderText(
+      renderCodeModeToolSearchResult(
+        searchResult(page),
+        { expanded: false, isPartial: false },
+        plainTheme,
+        false,
+        parameters,
+      ),
+    );
+    expect(collapsed).toContain("! 4–5 of 7 tools");
+    expect(collapsed).toContain("1 declaration unavailable");
+    expect(collapsed).toContain("next offset 5");
+    expect(collapsed).toContain("to expand");
+    expect(collapsed).not.toContain("declarationError");
+
+    const expandedComponent = renderCodeModeToolSearchResult(
+      searchResult(page),
+      { expanded: true, isPartial: false },
+      plainTheme,
+      false,
+      parameters,
+    );
+    const expanded = renderText(expandedComponent);
+    expect(expanded).toContain("apply_patch  builtin");
+    expect(expanded).toContain('readonly ["apply_patch"]');
+    expect(expanded).toContain("huge_tool  extension");
+    expect(expanded).toContain("A declaration too large to return");
+    expect(expanded).toContain("! Complete declaration exceeds the result limit");
+    expect(expanded).toContain("Next offset: 5");
+    expect(expanded).not.toContain("declarationError");
+    const highlightedDeclaration = expandedComponent
+      .render(120)
+      .find((line) => stripTerminalSequences(line).includes('readonly ["apply_patch"]'));
+    expect(highlightedDeclaration).toBeDefined();
+    expect(highlightedDeclaration).not.toBe(stripTerminalSequences(highlightedDeclaration ?? ""));
+  });
+
+  test("renders empty, partial, malformed, and bounded direct tool search results", () => {
+    const empty: CodeModeToolSearchPage = {
+      items: [],
+      total: 0,
+      hasMore: false,
+      nextOffset: null,
+    };
+    expect(
+      renderText(
+        renderCodeModeToolSearchResult(
+          searchResult(empty),
+          { expanded: false, isPartial: false },
+          plainTheme,
+          false,
+          {},
+        ),
+      ),
+    ).toBe("No matching tools");
+
+    expect(
+      renderText(
+        renderCodeModeToolSearchResult(
+          searchResult(empty),
+          { expanded: false, isPartial: true },
+          plainTheme,
+          false,
+          {},
+        ),
+      ),
+    ).toBe("Searching…");
+
+    const malformed = {
+      content: [{ type: "text" as const, text: "\u001b[31msearch failed\u001b[0m\nretry" }],
+      details: { unexpected: true },
+    };
+    expect(
+      renderText(
+        renderCodeModeToolSearchResult(
+          malformed,
+          { expanded: false, isPartial: false },
+          plainTheme,
+          true,
+          {},
+        ),
+      ),
+    ).toContain("search failed");
+
+    const oversized: CodeModeToolSearchPage = {
+      items: [
+        {
+          name: "large",
+          group: "extension",
+          declaration: `readonly ["large"]: ${"x".repeat(60 * 1024)};`,
+        },
+      ],
+      total: 1,
+      hasMore: false,
+      nextOffset: null,
+    };
+    const bounded = renderText(
+      renderCodeModeToolSearchResult(
+        searchResult(oversized),
+        { expanded: true, isPartial: false },
+        plainTheme,
+        false,
+        {},
+      ),
+    );
+    expect(bounded).toContain("declaration truncated in Transcript");
+    expect(Buffer.byteLength(bounded, "utf8")).toBeLessThan(55 * 1024);
+  });
+
   test("renders highlighted source previews and complete expanded TypeScript", () => {
     const script = `\n\u001b[31mconst answer: number = 42;\u001b[0m\n${Array.from(
       { length: 205 },

@@ -14,6 +14,7 @@ import {
 } from "../src/codemode-session-coordinator.js";
 import { CODEMODE_SYSTEM_RUNTIME, type CodeModeRuntime } from "../src/codemode-runtime.js";
 import {
+  CODEMODE_SEARCH_TOOL_NAME,
   CodeModeResultDetailsSchema,
   type CodeModeJsonValue,
 } from "../src/codemode-tool-contract.js";
@@ -42,6 +43,7 @@ function createCoordinator(
     readonly maxSessions?: number;
     readonly ids?: readonly string[];
     readonly toolNames?: readonly string[];
+    readonly getToolSnapshot?: CodeModeSessionCoordinatorOptions["getToolSnapshot"];
     readonly runtime?: CodeModeRuntime;
     readonly now?: () => number;
     readonly writeResultSpill?: (output: string) => {
@@ -59,7 +61,8 @@ function createCoordinator(
   let idIndex = 0;
   const coordinatorOptions: CodeModeSessionCoordinatorOptions = {
     maxSessions: options.maxSessions ?? 8,
-    getToolNames: () => options.toolNames ?? [],
+    getToolSnapshot:
+      options.getToolSnapshot ?? (() => ({ names: options.toolNames ?? [], searchEntries: [] })),
     executeToolBatch:
       options.executeToolBatch ??
       (async (batch) => ({
@@ -1019,6 +1022,74 @@ describe("CodeModeSessionCoordinator", () => {
       savedCode: "unavailable",
       recursive: "undefined",
     });
+  }, 30_000);
+
+  test("holds one Cell search snapshot and excludes internal search from Pi tool counts", async () => {
+    let toolSnapshot = {
+      names: [CODEMODE_SEARCH_TOOL_NAME, "visible"],
+      searchEntries: [
+        {
+          name: "visible",
+          group: "first",
+          declaration: 'readonly ["visible"]: (input: {}) => Promise<unknown>;',
+        },
+      ],
+    };
+    const observedBatches: CodeModeNestedToolBatch[] = [];
+    const coordinator = createCoordinator({
+      getToolSnapshot: () => toolSnapshot,
+      executeToolBatch: async (batch) => {
+        observedBatches.push(batch);
+        toolSnapshot = {
+          names: [CODEMODE_SEARCH_TOOL_NAME, "replacement"],
+          searchEntries: [
+            {
+              name: "replacement",
+              group: "second",
+              declaration: 'readonly ["replacement"]: (input: {}) => Promise<unknown>;',
+            },
+          ],
+        };
+        return {
+          results: batch.calls.map((call) => ({
+            callId: call.callId,
+            outcome: "success" as const,
+            result: { entry: batch.searchEntries[0]?.name ?? null },
+          })),
+        };
+      },
+    });
+
+    const firstCell = await coordinator.execute({
+      script:
+        'const first = await tools.codemode_search({ query: "visible" }); const second = await tools.codemode_search({ query: "visible" }); return { first, second, keys: Object.keys(tools) };',
+      wait: true,
+    });
+    expectSuccessData(firstCell, {
+      first: { entry: "visible" },
+      second: { entry: "visible" },
+      keys: [CODEMODE_SEARCH_TOOL_NAME, "visible"],
+    });
+    expect(observedBatches).toHaveLength(2);
+    for (const batch of observedBatches) {
+      expect(batch.exposedToolNames).toEqual([CODEMODE_SEARCH_TOOL_NAME, "visible"]);
+      expect(batch.searchEntries.map((entry) => entry.name)).toEqual(["visible"]);
+    }
+    expect(firstCell.presentation).toMatchObject({
+      nested_tool_count: 0,
+      succeeded_nested_tool_count: 0,
+      failed_nested_tool_count: 0,
+      nested_tools: [],
+    });
+
+    expectSuccessData(
+      await coordinator.execute({
+        script: "Object.keys(tools)",
+        sessionId: "session-1",
+        wait: true,
+      }),
+      [CODEMODE_SEARCH_TOOL_NAME, "replacement"],
+    );
   }, 30_000);
 
   test("bounds oversized JSON in both directions and keeps serialization failures reusable", async () => {

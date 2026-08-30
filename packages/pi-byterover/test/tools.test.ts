@@ -117,6 +117,19 @@ describe("formatSearchResults", () => {
 });
 
 describe("registerManualTools", () => {
+  test("registers undefined final-details output schemas", () => {
+    const { tools } = register();
+
+    for (const tool of [
+      tools.get("brv_recall"),
+      tools.get("brv_search"),
+      tools.get("brv_persist"),
+    ]) {
+      expect(Value.Check(tool.outputSchema, undefined)).toBe(true);
+      expect(Value.Check(tool.outputSchema, null)).toBe(false);
+    }
+  });
+
   test("schemas reject whitespace-only query, scope, and context", () => {
     const { tools } = register();
     const recall = tools.get("brv_recall");

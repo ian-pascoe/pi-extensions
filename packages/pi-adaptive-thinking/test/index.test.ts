@@ -8,6 +8,7 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
+import { Value } from "typebox/value";
 import { describe, expect, test, vi } from "vitest";
 import {
   type AdaptiveThinkingContext,
@@ -153,6 +154,27 @@ describe("adaptiveThinking extension", () => {
     );
     expect(JSON.stringify(tools)).not.toContain("Current thinking level");
     expect(JSON.stringify(tools)).not.toContain("Valid thinking levels");
+  });
+
+  test("registers exact final-details output schemas", async () => {
+    const host = createPi();
+    registerAdaptiveThinking(host);
+    await host.emitSessionStart({ reason: "startup" }, createCtx());
+
+    expect(Value.Check(setThinkingLevelTool(host.tools).outputSchema, undefined)).toBe(true);
+    expect(Value.Check(setThinkingLevelTool(host.tools).outputSchema, null)).toBe(false);
+    expect(
+      Value.Check(statusThinkingLevelTool(host.tools).outputSchema, {
+        currentLevel: "high",
+        supportedLevels: ["off", "high"],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(statusThinkingLevelTool(host.tools).outputSchema, {
+        currentLevel: "turbo",
+        supportedLevels: ["high"],
+      }),
+    ).toBe(false);
   });
 
   test("reports native current and model-supported thinking levels", async () => {

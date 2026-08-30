@@ -1,4 +1,5 @@
 /* oxlint-disable anti-slop/no-conditional-empty-object-spread, anti-slop/no-known-value-widening, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type -- MCP Transcript Presentation owns Pi's untyped historical result, tool-argument, and custom-message rendering boundaries. */
+import type { JSONValue } from "@modelcontextprotocol/client";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -32,22 +33,21 @@ const MCP_PRESENTATION_TEXT_STYLE_RESET = "\u001b[22;39m";
 const MCP_PRESENTATION_METADATA_LIMIT = 20;
 const MCP_PRESENTATION_RESERVED_BYTES = 8 * 1024;
 const MCP_PRESENTATION_RESERVED_LINES = 64;
-const McpResultDetailsMarkerSchema = Type.Object(
+/** MCP result marker schema shared by persisted-result parsing and tool output metadata. */
+export const McpResultMarkerSchema = Type.Object(
   {
-    mcp: Type.Object(
-      {
-        isError: Type.Boolean(),
-        operation: Type.Optional(Type.String()),
-        outputSchemaError: Type.Optional(Type.String()),
-        outputSchemaValid: Type.Optional(Type.Boolean()),
-        owner: Type.Literal(MCP_DETAILS_OWNER),
-        serverId: Type.Optional(Type.String()),
-        toolName: Type.Optional(Type.String()),
-      },
-      { additionalProperties: true },
-    ),
-    result: Type.Any(),
+    isError: Type.Boolean(),
+    operation: Type.Optional(Type.String()),
+    outputSchemaError: Type.Optional(Type.String()),
+    outputSchemaValid: Type.Optional(Type.Boolean()),
+    owner: Type.Literal(MCP_DETAILS_OWNER),
+    serverId: Type.Optional(Type.String()),
+    toolName: Type.Optional(Type.String()),
   },
+  { additionalProperties: true },
+);
+const McpResultDetailsMarkerSchema = Type.Object(
+  { mcp: McpResultMarkerSchema, result: Type.Any() },
   { additionalProperties: true },
 );
 
@@ -68,10 +68,11 @@ export interface McpResultMarker {
   readonly toolName?: string;
 }
 
-/** Existing persisted MCP tool details consumed without changing their stored shape. */
+/** MCP tool details containing host metadata, mapped result details, and optional structured output. */
 export interface McpResultDetails {
   readonly mcp: McpResultMarker;
   readonly result: unknown;
+  readonly structuredContent?: JSONValue;
 }
 
 /** One role-faithful Prompt message persisted for context replay and TUI presentation. */

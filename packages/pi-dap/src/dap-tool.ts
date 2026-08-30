@@ -25,6 +25,10 @@ import {
 } from "./dap-tool-contract.js";
 import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js";
 
+type DapToolDefinition = ToolDefinition<typeof DapToolParametersSchema, DapToolRenderDetails> & {
+  readonly outputSchema: typeof DapToolResultDetailsSchema;
+};
+
 type DapToolSession = Pick<
   DapSession,
   | "launch"
@@ -356,7 +360,7 @@ function notifyDapToolObserver(operation: () => void): void {
 /** Create the single strict Pi DAP ToolDefinition bound to current session resources. */
 export function createDapToolDefinition(
   getRuntime: () => DapToolRuntime | undefined,
-): ToolDefinition<typeof DapToolParametersSchema, DapToolRenderDetails> {
+): DapToolDefinition {
   return {
     name: "dap",
     label: "DAP",
@@ -367,6 +371,7 @@ export function createDapToolDefinition(
       "Use dap to set source breakpoints, launch a configured Debug Session, control the Debuggee, and inspect stopped Stack Frames and variables.",
     ],
     parameters: DapToolParametersSchema,
+    outputSchema: DapToolResultDetailsSchema,
     renderCall: (argumentsValue, theme, context) =>
       renderDapToolCall(argumentsValue, theme, context.expanded, context.cwd),
     renderResult: (result, options, theme, context) =>
