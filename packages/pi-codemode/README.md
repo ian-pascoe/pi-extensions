@@ -34,7 +34,8 @@ codemode_execute({
 ```
 
 `wait` defaults to `true`. `timeoutMs` has no default. Omitting `sessionId`
-creates a new CodeMode Session; supplying an unknown ID fails.
+creates a Session with a generated ID; supplying an unknown ID creates a Session
+under that exact ID.
 
 ```ts
 const result = await tools.read({ path: "README.md" });

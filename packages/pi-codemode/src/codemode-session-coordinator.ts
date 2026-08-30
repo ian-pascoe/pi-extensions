@@ -403,15 +403,19 @@ export class CodeModeSessionCoordinator {
         ),
       };
     }
-    let releaseAdmission =
-      input.sessionId === undefined ? await this.acquireSessionAdmission() : undefined;
+    const requestedSessionId =
+      input.sessionId === undefined ? undefined : parsestring(input.sessionId);
+    if (requestedSessionId?.ok === false) return invalidCodeModeSessionResult();
+    let releaseAdmission: (() => void) | undefined = await this.acquireSessionAdmission();
     try {
       let located: LocateCodeModeSessionResult;
-      if (input.sessionId === undefined) located = await this.createLiveSession();
+      if (requestedSessionId === undefined) located = await this.createLiveSession();
       else {
-        const parsedSessionId = parsestring(input.sessionId);
-        if (!parsedSessionId.ok) return invalidCodeModeSessionResult();
-        located = this.findSession(parsedSessionId.value);
+        const record = this.records.get(requestedSessionId.value);
+        located =
+          record === undefined
+            ? await this.createLiveSession(requestedSessionId.value)
+            : { record };
       }
       if ("failure" in located) return { result: located.failure };
       const record = located.record;
@@ -625,8 +629,8 @@ export class CodeModeSessionCoordinator {
     return admission.resolve;
   }
 
-  private async createLiveSession(): Promise<LocateCodeModeSessionResult> {
-    const parsedSessionId = parsestring(this.runtime.createSessionId());
+  private async createLiveSession(sessionIdValue?: string): Promise<LocateCodeModeSessionResult> {
+    const parsedSessionId = parsestring(sessionIdValue ?? this.runtime.createSessionId());
     if (!parsedSessionId.ok) {
       return {
         failure: createCodeModeFailure(
@@ -728,13 +732,6 @@ export class CodeModeSessionCoordinator {
     };
     this.records.set(sessionId, record);
     return reclaimedSessionId === undefined ? { record } : { record, reclaimedSessionId };
-  }
-
-  private findSession(sessionId: string): LocateCodeModeSessionResult {
-    const record = this.records.get(sessionId);
-    return record === undefined
-      ? { failure: createCodeModeFailure(sessionId, "unknown", "Unknown CodeMode Session") }
-      : { record };
   }
 
   private createActiveCell(

@@ -1394,6 +1394,30 @@ describe("CodeModeSessionCoordinator", () => {
     });
   }, 30_000);
 
+  test("serializes concurrent creation under a supplied Session ID", async () => {
+    const coordinator = createCoordinator();
+
+    const [created, concurrent] = await Promise.all([
+      coordinator.execute({
+        script: "await new Promise(() => {})",
+        sessionId: "named-session",
+        wait: false,
+      }),
+      coordinator.execute({ script: "1", sessionId: "named-session", wait: false }),
+    ]);
+
+    expect(created.result).toEqual({ result: "pending", sessionId: "named-session" });
+    expect(concurrent.result).toMatchObject({
+      result: "failed",
+      sessionId: "named-session",
+      error: { code: "busy" },
+    });
+    expect(coordinator.listSessions()).toEqual([
+      expect.objectContaining({ sessionId: "named-session", state: "running" }),
+    ]);
+    await coordinator.cancel("named-session");
+  }, 30_000);
+
   test("enforces busy, unknown, capacity, cancellation, and the 64-record terminal LRU", async () => {
     const toolStarted = Promise.withResolvers<void>();
     const toolReleased = Promise.withResolvers<void>();
