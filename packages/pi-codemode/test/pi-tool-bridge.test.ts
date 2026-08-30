@@ -759,7 +759,7 @@ describe("executePiToolBridgeBatch", () => {
     const fixture = await createBridgeFixture();
     const parallelController = new AbortController();
     const parallel = await executePiToolBridgeBatch(fixture.captured, {
-      now: deterministicNow(10, 20, 50, 70),
+      now: deterministicNow(10, 20, 70, 70),
       calls: [
         { callId: "left-1", name: "parallel-left", input: {} },
         { callId: "right-1", name: "parallel-right", input: {} },
@@ -774,7 +774,7 @@ describe("executePiToolBridgeBatch", () => {
 
     expect(parallel.presentation).toEqual([
       { callId: "left-1", name: "parallel-left", outcome: "success", elapsedMs: 60 },
-      { callId: "right-1", name: "parallel-right", outcome: "success", elapsedMs: 30 },
+      { callId: "right-1", name: "parallel-right", outcome: "success", elapsedMs: 50 },
     ]);
 
     fixture.executedNames.length = 0;
