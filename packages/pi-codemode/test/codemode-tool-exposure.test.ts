@@ -35,6 +35,7 @@ describe("decideCodeModeToolExposure", () => {
           "codemode_result",
           "codemode_cancel",
           "codemode_sessions",
+          "codemode_search",
         ],
         ["active"],
         [],
@@ -47,6 +48,7 @@ describe("decideCodeModeToolExposure", () => {
         "codemode_result",
         "codemode_cancel",
         "codemode_sessions",
+        "codemode_search",
       ],
       unavailableNames: ["inactive"],
     });

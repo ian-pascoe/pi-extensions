@@ -13,6 +13,7 @@ import {
   initTheme,
   SessionManager,
   SettingsManager,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -22,14 +23,32 @@ import {
   CodeModeResultDetailsSchema,
   CodeModeResultSchema,
   CodeModeSessionsResultSchema,
+  CodeModeToolSearchPageSchema,
   type CodeModeJsonValue,
   type CodeModeResult,
   type CodeModeSessionsResult,
+  type CodeModeToolSearchPage,
 } from "../src/codemode-tool-contract.js";
 import piCodeModeExtension from "../src/pi-codemode-extension.js";
 
 const fixtureDirectories: string[] = [];
 const fixtureSessions: AgentSession[] = [];
+const ClosureEchoParametersSchema = Type.Object(
+  { value: Type.Number() },
+  { additionalProperties: false },
+);
+const ClosureEchoOutputSchema = Type.Object(
+  { closure: Type.Literal("registered-closure"), value: Type.Number() },
+  { additionalProperties: false },
+);
+const DynamicLaterParametersSchema = Type.Object(
+  { text: Type.String() },
+  { additionalProperties: false },
+);
+const DynamicLaterOutputSchema = Type.Object(
+  { dynamic: Type.Literal(true) },
+  { additionalProperties: false },
+);
 
 function nestedUsage(units: number): Usage {
   return {
@@ -79,11 +98,14 @@ async function createCodeModeExtensionFixture(
 
   let extensionApi: ExtensionAPI | undefined;
   const registerClosureTool = (pi: ExtensionAPI): void => {
-    pi.registerTool({
+    const closureEchoTool: ToolDefinition<typeof ClosureEchoParametersSchema, unknown> & {
+      readonly outputSchema: typeof ClosureEchoOutputSchema;
+    } = {
       name: "closure_echo",
       label: "Closure Echo",
       description: "Returns a distinctive registered extension closure.",
-      parameters: Type.Object({ value: Type.Number() }, { additionalProperties: false }),
+      parameters: ClosureEchoParametersSchema,
+      outputSchema: ClosureEchoOutputSchema,
       async execute(_toolCallId, input, _signal, onUpdate) {
         onUpdate?.({
           content: [{ type: "text", text: "nested update" }],
@@ -96,7 +118,8 @@ async function createCodeModeExtensionFixture(
           addedToolNames: ["closure_echo"],
         };
       },
-    });
+    };
+    pi.registerTool(closureEchoTool);
     pi.registerTool({
       name: "hide_dynamic",
       label: "Hide Dynamic",
@@ -191,15 +214,19 @@ async function createCodeModeExtensionFixture(
     extensionApi: activeExtensionApi,
     notifications,
     registerDynamicTool(description = "Dynamically registered after startup.") {
-      activeExtensionApi.registerTool({
+      const dynamicTool: ToolDefinition<typeof DynamicLaterParametersSchema, { dynamic: true }> & {
+        readonly outputSchema: typeof DynamicLaterOutputSchema;
+      } = {
         name: "dynamic_later",
         label: "Dynamic Later",
         description,
-        parameters: Type.Object({ text: Type.String() }, { additionalProperties: false }),
+        parameters: DynamicLaterParametersSchema,
+        outputSchema: DynamicLaterOutputSchema,
         async execute(_toolCallId, input) {
           return { content: [{ type: "text", text: input.text }], details: { dynamic: true } };
         },
-      });
+      };
+      activeExtensionApi.registerTool(dynamicTool);
     },
     session,
   };
@@ -246,6 +273,16 @@ function codeModeSessionsResult(result: AgentToolResult<unknown>): CodeModeSessi
   if (!Value.Check(CodeModeSessionsResultSchema, result.details)) {
     throw new Error(
       `Pi CodeMode extension test: invalid Session list ${JSON.stringify(result.details)}`,
+    );
+  }
+  expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
+  return result.details;
+}
+
+function codeModeToolSearchPage(result: AgentToolResult<unknown>): CodeModeToolSearchPage {
+  if (!Value.Check(CodeModeToolSearchPageSchema, result.details)) {
+    throw new Error(
+      `Pi CodeMode extension test: invalid tool search page ${JSON.stringify(result.details)}`,
     );
   }
   expect(result.content).toEqual([{ type: "text", text: JSON.stringify(result.details) }]);
@@ -326,10 +363,17 @@ describe("Pi CodeMode extension", () => {
       "codemode_result",
       "codemode_cancel",
       "codemode_sessions",
+      "codemode_search",
     ]);
     const executeDefinition = fixture.session.getToolDefinition("codemode_execute");
+    const searchDefinition = fixture.session.getToolDefinition("codemode_search");
     expect(executeDefinition?.renderCall).toEqual(expect.any(Function));
     expect(executeDefinition?.renderResult).toEqual(expect.any(Function));
+    expect(searchDefinition?.renderCall).toEqual(expect.any(Function));
+    expect(searchDefinition?.renderResult).toEqual(expect.any(Function));
+    expect(Object.getOwnPropertyDescriptor(searchDefinition ?? {}, "outputSchema")?.value).toBe(
+      CodeModeToolSearchPageSchema,
+    );
     expect(fixture.session.systemPrompt).toContain(
       "- codemode_execute: Batch, filter, and aggregate Pi tool calls in TypeScript with less latency and context usage.",
     );
@@ -343,7 +387,27 @@ describe("Pi CodeMode extension", () => {
       "- Reuse a CodeMode Session for related work. Prefer direct tools for simple one-off calls, full raw output, and confirmation-sensitive or destructive actions; use CodeMode mutations only when conditional sequencing is the point, and fall back to direct tools when the CodeMode boundary does not fit.",
     );
     expect(fixture.session.getActiveToolNames()).not.toContain("closure_echo");
-    expect(executeDescription(fixture.session)).toContain('readonly ["closure_echo"]');
+    expect(executeDescription(fixture.session)).toContain('readonly ["codemode_search"]');
+    expect(executeDescription(fixture.session)).toMatch(
+      /CodeMode tool catalogue: (?:COMPLETE|PARTIAL)/,
+    );
+    expect(
+      codeModeToolSearchPage(
+        await executeTool(fixture.session, "codemode_search", { query: "closure_echo" }),
+      ),
+    ).toMatchObject({
+      total: 1,
+      items: [
+        {
+          name: "closure_echo",
+          description: "Returns a distinctive registered extension closure.",
+          declaration: expect.stringContaining('readonly ["closure_echo"]'),
+        },
+      ],
+    });
+    expect(
+      codeModeSessionsResult(await executeTool(fixture.session, "codemode_sessions", {})).sessions,
+    ).toEqual([]);
     expect(
       executeDescription(fixture.session).split("\n\nCurrent CodeMode tool declarations:")[0],
     ).toBe(
@@ -352,17 +416,36 @@ describe("Pi CodeMode extension", () => {
 
     const started = await executeTool(fixture.session, "codemode_execute", {
       script:
-        'type Count = number; let value: Count = 2; console.log("value:", value); return value;',
+        'type Count = number; let value: Count = 2; const [closure, read, write] = await Promise.all([tools.codemode_search({ query: "closure_echo" }), tools.codemode_search({ query: "read" }), tools.codemode_search({ query: "write" })]); console.log("value:", value); return { value, hasSearch: Object.keys(tools).includes("codemode_search"), closure: closure.items[0], readDeclaration: read.items[0]?.declaration, writeDeclaration: write.items[0]?.declaration };',
       wait: false,
     });
     const pending = codeModeResult(started);
     expect(pending.result).toBe("pending");
     const first = await pollCodeModeSession(fixture.session, pending.sessionId);
-    expect(codeModeResult(first)).toEqual({
+    expect(codeModeResult(first)).toMatchObject({
       result: "success",
       sessionId: pending.sessionId,
-      data: 2,
+      data: {
+        value: 2,
+        hasSearch: true,
+        closure: {
+          name: "closure_echo",
+          description: "Returns a distinctive registered extension closure.",
+        },
+      },
       console: [{ method: "log", text: "value: 2" }],
+    });
+    expect(JSON.stringify(codeModeResult(first))).toContain(
+      'Promise<PiToolResult<{ readonly [\\"closure\\"]: \\"registered-closure\\"; readonly [\\"value\\"]: number; }>>',
+    );
+    expect(JSON.stringify(codeModeResult(first))).toMatch(
+      /readonly \[\\"read\\"\]: .*Promise<PiToolResult<\{ readonly \[\\"truncation\\"\]\?: \{/,
+    );
+    expect(JSON.stringify(codeModeResult(first))).toMatch(
+      /readonly \[\\"write\\"\]: .*Promise<PiToolResult<undefined>>;/,
+    );
+    expect(first.details).toMatchObject({
+      presentation: { nested_tool_count: 0, nested_tools: [] },
     });
 
     const updates: AgentToolResult<unknown>[] = [];
@@ -411,6 +494,34 @@ describe("Pi CodeMode extension", () => {
       presentation: { active_tool_names: [], nested_tool_count: 1 },
     });
 
+    const invalidSearch = await executeTool(fixture.session, "codemode_execute", {
+      script:
+        'try { await tools.codemode_search({ limit: 0 }); return "unexpected"; } catch (error) { return { code: error.code, name: error.name }; }',
+      sessionId: pending.sessionId,
+      wait: true,
+    });
+    expect(codeModeResult(invalidSearch)).toMatchObject({
+      result: "success",
+      data: { code: "validation", name: "CodeModeToolError" },
+    });
+    expect(invalidSearch.details).toMatchObject({
+      presentation: { nested_tool_count: 0, nested_tools: [] },
+    });
+
+    const excessiveSearch = await executeTool(fixture.session, "codemode_execute", {
+      script:
+        'try { await Promise.all(Array.from({ length: 21 }, () => tools.codemode_search({ query: "read" }))); return "unexpected"; } catch (error) { return { code: error.code, name: error.name }; }',
+      sessionId: pending.sessionId,
+      wait: true,
+    });
+    expect(codeModeResult(excessiveSearch)).toMatchObject({
+      result: "success",
+      data: { code: "validation", name: "CodeModeToolError" },
+    });
+    expect(excessiveSearch.details).toMatchObject({
+      presentation: { nested_tool_count: 0, nested_tools: [] },
+    });
+
     const failed = await executeTool(fixture.session, "codemode_execute", {
       script: 'console.warn("before failure"); throw new Error("failed")',
       sessionId: pending.sessionId,
@@ -437,6 +548,64 @@ describe("Pi CodeMode extension", () => {
       result: "failed",
       sessionId: pending.sessionId,
       error: { code: "cancellation" },
+    });
+  }, 20_000);
+
+  test("searches and calls a tool omitted from a partial inline catalogue", async () => {
+    const fixture = await createCodeModeExtensionFixture();
+    const largeParameters = Type.Object(
+      Object.fromEntries(
+        Array.from({ length: 120 }, (_, index) => [
+          `field_${String(index).padStart(3, "0")}`,
+          Type.Optional(Type.String()),
+        ]),
+      ),
+      { additionalProperties: false },
+    );
+    for (let index = 0; index < 12; index += 1) {
+      const name = `large_catalog_tool_${String(index).padStart(2, "0")}`;
+      fixture.extensionApi.registerTool({
+        name,
+        label: name,
+        description: `Large catalogue integration tool ${index}.`,
+        parameters: largeParameters,
+        async execute() {
+          return {
+            content: [{ type: "text", text: `called:${name}` }],
+            details: { name },
+          };
+        },
+      });
+    }
+
+    const targetName = "large_catalog_tool_11";
+    const description = executeDescription(fixture.session);
+    expect(description).toContain("CodeMode tool catalogue: PARTIAL");
+    expect(description).not.toContain(`readonly [${JSON.stringify(targetName)}]`);
+
+    const result = await executeTool(fixture.session, "codemode_execute", {
+      script: `const page = await tools.codemode_search({ query: ${JSON.stringify(targetName)} }); const called = await tools[${JSON.stringify(targetName)}]({}); return { item: page.items[0], called };`,
+      wait: true,
+    });
+    expect(codeModeResult(result)).toMatchObject({
+      result: "success",
+      data: {
+        item: {
+          name: targetName,
+          description: "Large catalogue integration tool 11.",
+          declaration: expect.stringContaining(`readonly [${JSON.stringify(targetName)}]`),
+        },
+        called: {
+          content: [{ type: "text", text: `called:${targetName}` }],
+          details: { name: targetName },
+        },
+      },
+    });
+    expect(result.details).toMatchObject({
+      presentation: {
+        nested_tool_count: 1,
+        nested_tools: [{ name: targetName, outcome: "success" }],
+      },
     });
   }, 20_000);
 
@@ -530,30 +699,41 @@ describe("Pi CodeMode extension", () => {
 
     fixture.registerDynamicTool("First dynamic catalogue description.");
     expect(fixture.session.getActiveToolNames()).toContain("dynamic_later");
-    expect(executeDescription(fixture.session)).toContain('readonly ["dynamic_later"]');
-    expect(executeDescription(fixture.session)).toContain("First dynamic catalogue description.");
 
     const created = await executeTool(fixture.session, "codemode_execute", {
       script:
-        'const savedDynamic = tools.dynamic_later; return Object.keys(tools).includes("dynamic_later");',
+        'const savedDynamic = tools.dynamic_later; const found = await tools.codemode_search({ query: "dynamic_later" }); return { hasTool: Object.keys(tools).includes("dynamic_later"), found: found.items[0] };',
       wait: true,
     });
     const createdDetails = codeModeResult(created);
-    expect(createdDetails).toMatchObject({ result: "success", data: true });
+    expect(createdDetails).toMatchObject({
+      result: "success",
+      data: {
+        hasTool: true,
+        found: {
+          name: "dynamic_later",
+          description: "First dynamic catalogue description.",
+        },
+      },
+    });
+    expect(JSON.stringify(createdDetails)).toContain(
+      'Promise<PiToolResult<{ readonly [\\"dynamic\\"]: true; }>>',
+    );
 
     fixture.registerDynamicTool("Replacement dynamic catalogue description.");
-    expect(executeDescription(fixture.session)).toContain(
-      "Replacement dynamic catalogue description.",
-    );
     const changedMidBatch = await executeTool(fixture.session, "codemode_execute", {
       script:
-        'const outcomes = await Promise.all([tools.hide_dynamic({}), tools.dynamic_later({ text: "must not run" }).then(() => "ran", (error) => error.code)]); return outcomes[1];',
+        'const beforeHide = await tools.codemode_search({ query: "dynamic_later" }); const outcomes = await Promise.all([tools.hide_dynamic({}), tools.dynamic_later({ text: "must not run" }).then(() => "ran", (error) => error.code)]); const afterHide = await tools.codemode_search({ query: "dynamic_later" }); return { outcome: outcomes[1], before: beforeHide.items[0]?.description, after: afterHide.items[0]?.description };',
       sessionId: createdDetails.sessionId,
       wait: true,
     });
     expect(codeModeResult(changedMidBatch)).toMatchObject({
       result: "success",
-      data: "unknown-tool",
+      data: {
+        outcome: "unknown-tool",
+        before: "Replacement dynamic catalogue description.",
+        after: "Replacement dynamic catalogue description.",
+      },
     });
     await fixture.session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, "test", {
       cwd: ".",
@@ -567,18 +747,23 @@ describe("Pi CodeMode extension", () => {
         "codemode_result",
         "codemode_cancel",
         "codemode_sessions",
+        "codemode_search",
       ]),
     );
 
     const hidden = await executeTool(fixture.session, "codemode_execute", {
       script:
-        'try { await savedDynamic({ text: "must not run" }); return "unexpected"; } catch (error) { return { code: error.code, name: error.name }; }',
+        'const found = await tools.codemode_search({ query: "dynamic_later" }); try { await savedDynamic({ text: "must not run" }); return "unexpected"; } catch (error) { return { code: error.code, name: error.name, searchIncludesDynamic: found.items.some((item) => item.name === "dynamic_later") }; }',
       sessionId: createdDetails.sessionId,
       wait: true,
     });
     expect(codeModeResult(hidden)).toMatchObject({
       result: "success",
-      data: { code: "unknown-tool", name: "CodeModeToolError" },
+      data: {
+        code: "unknown-tool",
+        name: "CodeModeToolError",
+        searchIncludesDynamic: false,
+      },
     });
   }, 20_000);
 
@@ -731,6 +916,7 @@ describe("Pi CodeMode extension", () => {
       "codemode_result",
       "codemode_cancel",
       "codemode_sessions",
+      "codemode_search",
     ]);
     const stale = await executeTool(fixture.session, "codemode_result", {
       sessionId: hanging.sessionId,

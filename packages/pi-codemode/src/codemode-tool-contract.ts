@@ -19,7 +19,12 @@ const CODEMODE_TOOL_NAMES = {
   result: "codemode_result",
   cancel: "codemode_cancel",
   sessions: "codemode_sessions",
+  search: "codemode_search",
 } as const;
+
+/** Exact direct and guest name for progressive CodeMode tool declaration search. */
+export const CODEMODE_SEARCH_TOOL_NAME = CODEMODE_TOOL_NAMES.search;
+
 const RESERVED_CODEMODE_TOOL_NAMES = new Set<string>(Object.values(CODEMODE_TOOL_NAMES));
 
 /** Reports whether a registered name belongs to CodeMode itself and must remain direct-only. */
@@ -126,6 +131,17 @@ export const CodeModeCancelParametersSchema = Type.Object(
 /** Strict empty arguments accepted by the read-only `codemode_sessions` tool. */
 export const CodeModeSessionsParametersSchema = Type.Object({}, { additionalProperties: false });
 
+/** Strict arguments shared by direct and in-Cell `codemode_search`. */
+export const CodeModeToolSearchParametersSchema = Type.Object(
+  {
+    query: Type.Optional(Type.String({ maxLength: 512 })),
+    group: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
+    offset: Type.Optional(NonNegativeSafeIntegerSchema),
+  },
+  { additionalProperties: false },
+);
+
 /** Parsed arguments for `codemode_execute`. */
 export type CodeModeExecuteParameters = Static<typeof CodeModeExecuteParametersSchema>;
 /** Parsed arguments for `codemode_result`. */
@@ -134,6 +150,8 @@ export type CodeModeResultParameters = Static<typeof CodeModeResultParametersSch
 export type CodeModeCancelParameters = Static<typeof CodeModeCancelParametersSchema>;
 /** Parsed arguments for the read-only `codemode_sessions` tool. */
 export type CodeModeSessionsParameters = Static<typeof CodeModeSessionsParametersSchema>;
+/** Parsed arguments shared by direct and in-Cell `codemode_search`. */
+export type CodeModeToolSearchParameters = Static<typeof CodeModeToolSearchParametersSchema>;
 
 /** A JSON object accepted in a successful CodeMode result. */
 export type CodeModeJsonObject = { readonly [key: string]: CodeModeJsonValue };
@@ -227,6 +245,38 @@ export const CodeModeSessionsResultSchema = Type.Object(
 
 /** Schema-derived live Session list ordered by reclamation priority. */
 export type CodeModeSessionsResult = Static<typeof CodeModeSessionsResultSchema>;
+
+const CodeModeToolSearchItemBaseSchema = {
+  name: Type.String(),
+  group: Type.String(),
+  description: Type.Optional(Type.String()),
+};
+
+/** One exact CodeMode tool declaration, or an explicit size-bound failure for that declaration. */
+export const CodeModeToolSearchItemSchema = Type.Union([
+  Type.Object(
+    { ...CodeModeToolSearchItemBaseSchema, declaration: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ...CodeModeToolSearchItemBaseSchema, declarationError: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+]);
+
+/** Stable progressive declaration-search page shared by direct and in-Cell search. */
+export const CodeModeToolSearchPageSchema = Type.Object(
+  {
+    items: Type.Array(CodeModeToolSearchItemSchema, { maxItems: 20 }),
+    total: NonNegativeSafeIntegerSchema,
+    hasMore: Type.Boolean(),
+    nextOffset: Type.Union([NonNegativeSafeIntegerSchema, Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+
+/** Schema-derived progressive declaration-search page. */
+export type CodeModeToolSearchPage = Static<typeof CodeModeToolSearchPageSchema>;
 
 const CodeModePendingSchema = Type.Object(
   {
@@ -465,7 +515,7 @@ export type CodeModeToolOperationResult = {
   readonly presentation?: CodeModePresentationSnapshot;
 };
 
-/** Operations supplied by the session coordinator to build the four Pi tools. */
+/** Operations supplied by the session coordinator and catalogue to build the five Pi tools. */
 export interface CodeModeToolOperations {
   execute(
     input: CodeModeExecuteParameters,
@@ -476,6 +526,7 @@ export interface CodeModeToolOperations {
   result(input: CodeModeResultParameters): Promise<CodeModeToolOperationResult>;
   cancel(input: CodeModeCancelParameters): Promise<CodeModeToolOperationResult>;
   sessions(): Promise<CodeModeSessionsResult>;
+  search(input: CodeModeToolSearchParameters): Promise<CodeModeToolSearchPage>;
 }
 
 function structuredCodeModeResult(
@@ -503,6 +554,9 @@ type CodeModeToolDefinitions = readonly [
   ToolDefinition<typeof CodeModeResultParametersSchema, CodeModeResultDetails>,
   ToolDefinition<typeof CodeModeCancelParametersSchema, CodeModeResultDetails>,
   ToolDefinition<typeof CodeModeSessionsParametersSchema, CodeModeSessionsResult>,
+  ToolDefinition<typeof CodeModeToolSearchParametersSchema, CodeModeToolSearchPage> & {
+    readonly outputSchema: typeof CodeModeToolSearchPageSchema;
+  },
 ];
 
 function structuredCodeModeSessionsResult(
@@ -514,7 +568,16 @@ function structuredCodeModeSessionsResult(
   };
 }
 
-/** Creates the four stable Pi definitions while leaving admission and session policy to the coordinator. */
+function structuredCodeModeToolSearchPage(
+  page: CodeModeToolSearchPage,
+): AgentToolResult<CodeModeToolSearchPage> {
+  return {
+    content: [{ type: "text", text: JSON.stringify(page) }],
+    details: page,
+  };
+}
+
+/** Creates the five stable Pi definitions while leaving admission and session policy to the coordinator. */
 export function createCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
   executeDescription = "Execute TypeScript in a persistent isolated Deno CodeMode Session.",
@@ -570,5 +633,16 @@ export function createCodeModeToolDefinitions(
       return structuredCodeModeSessionsResult(await operations.sessions());
     },
   };
-  return [executeTool, resultTool, cancelTool, sessionsTool];
+  const searchTool: CodeModeToolDefinitions[4] = {
+    name: CODEMODE_TOOL_NAMES.search,
+    label: "Search CodeMode Tools",
+    description:
+      "Search CodeMode-exposed Pi tools and return exact flat names with complete TypeScript declarations.",
+    parameters: CodeModeToolSearchParametersSchema,
+    outputSchema: CodeModeToolSearchPageSchema,
+    async execute(_toolCallId, input) {
+      return structuredCodeModeToolSearchPage(await operations.search(input));
+    },
+  };
+  return [executeTool, resultTool, cancelTool, sessionsTool, searchTool];
 }

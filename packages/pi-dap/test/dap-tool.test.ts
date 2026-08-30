@@ -138,6 +138,13 @@ afterEach(async () => {
 });
 
 describe("DAP tool contract", () => {
+  test("publishes the final result-details output schema", () => {
+    const tool = createDapToolDefinition(() => undefined);
+
+    expect(Object.hasOwn(tool, "outputSchema")).toBe(true);
+    expect(tool.outputSchema).toBe(DapToolResultDetailsSchema);
+  });
+
   test("preserves exact ordinary, Debuggee output, and Result Spill text", async () => {
     const fixture = await createToolFixture();
     const tool = createDapToolDefinition(() => fixture.runtime);

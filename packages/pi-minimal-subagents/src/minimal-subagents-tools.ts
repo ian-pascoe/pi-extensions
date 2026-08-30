@@ -16,7 +16,10 @@ import {
   renderCoordinatorToolResult,
   type CoordinatorToolName,
 } from "./minimal-subagents-rendering.js";
-import type { CoordinatorToolCallInput } from "./minimal-subagents-render-contract.js";
+import {
+  CoordinatorToolOutputSchemas,
+  type CoordinatorToolCallInput,
+} from "./minimal-subagents-render-contract.js";
 import type { createCoordinatorToolSchemas } from "./minimal-subagents-tool-schemas.js";
 import type {
   AgentMessageResult,
@@ -86,6 +89,10 @@ type CoordinatorToolResultDetails =
   | DeleteResult
   | { agent_id: string; status: "waiting"; elapsed_ms: number };
 
+type CoordinatorToolDefinition = ToolDefinition & {
+  readonly outputSchema: (typeof CoordinatorToolOutputSchemas)[keyof typeof CoordinatorToolOutputSchemas];
+};
+
 function createCoordinatorToolRendering(toolName: CoordinatorToolName) {
   return {
     renderCall: (args: CoordinatorToolCallInput, theme: Theme) =>
@@ -145,7 +152,7 @@ function callerSourceTurnId(
 /** Create caller-bound definitions for the six coordinator tools shared by root and children. */
 export function createCoordinatorToolDefinitions(
   options: CoordinatorToolDefinitionOptions,
-): ToolDefinition[] {
+): CoordinatorToolDefinition[] {
   const modelRolePromptGuidelines = buildModelRolePromptGuidelines(options.modelRoles ?? []);
   const spawnTool = defineTool({
     name: "subagent",
@@ -306,7 +313,14 @@ export function createCoordinatorToolDefinitions(
     ...createCoordinatorToolRendering("subagent_delete"),
   });
 
-  const coordinatorTools = [spawnTool, messageTool, waitTool, statusTool, cancelTool, deleteTool];
+  const coordinatorTools: CoordinatorToolDefinition[] = [
+    Object.assign(spawnTool, { outputSchema: CoordinatorToolOutputSchemas.subagent }),
+    Object.assign(messageTool, { outputSchema: CoordinatorToolOutputSchemas.agent_message }),
+    Object.assign(waitTool, { outputSchema: CoordinatorToolOutputSchemas.subagent_wait }),
+    Object.assign(statusTool, { outputSchema: CoordinatorToolOutputSchemas.subagent_status }),
+    Object.assign(cancelTool, { outputSchema: CoordinatorToolOutputSchemas.subagent_cancel }),
+    Object.assign(deleteTool, { outputSchema: CoordinatorToolOutputSchemas.subagent_delete }),
+  ];
   const allowFanoutTools = options.allowFanoutTools ?? options.callerId === "root";
   return allowFanoutTools
     ? coordinatorTools

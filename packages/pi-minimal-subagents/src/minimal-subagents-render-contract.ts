@@ -181,6 +181,138 @@ const DeleteDetailsSchema = Type.Object({
   ),
 });
 
+const CoordinatorTurnStatusOutputSchema = Type.Union([
+  Type.Literal("completed"),
+  Type.Literal("failed"),
+  Type.Literal("cancelled"),
+  Type.Literal("interrupted"),
+]);
+const CoordinatorTurnOutputSchema = Type.Object({
+  agent_id: Type.String(),
+  turn_id: Type.String(),
+  status: CoordinatorTurnStatusOutputSchema,
+  output: Type.String(),
+  error: Type.Optional(Type.String()),
+  usage: Type.Optional(RenderUsageSchema),
+  elapsed_ms: Type.Optional(Type.Number()),
+});
+const CoordinatorAgentSummaryOutputSchema = Type.Object({
+  agent_id: Type.String(),
+  parent_id: Type.String(),
+  state: Type.Union([Type.Literal("running"), Type.Literal("idle")]),
+  availability: Type.Union([Type.Literal("available"), Type.Literal("unavailable")]),
+  active_turn_id: Type.Optional(Type.String()),
+  latest_turn: Type.Optional(
+    Type.Object({
+      turn_id: Type.String(),
+      status: Type.Union([Type.Literal("running"), CoordinatorTurnStatusOutputSchema]),
+    }),
+  ),
+  tools: Type.Array(Type.String()),
+  elapsed_ms: Type.Optional(Type.Number()),
+  latest_activity_at: Type.Optional(Type.String()),
+  task: Type.Optional(Type.String()),
+  child_count: Type.Number(),
+  children: Type.Array(Type.Unknown()),
+  model: Type.String(),
+  thinking_level: Type.String(),
+});
+const CoordinatorAgentDetailOutputSchema = Type.Object({
+  ...CoordinatorAgentSummaryOutputSchema.properties,
+  session_file: Type.Optional(Type.String()),
+  launch_contract: Type.Object({
+    session_context: Type.String(),
+    project_context: Type.String(),
+    model: Type.String(),
+    thinking_level: Type.String(),
+    tools: Type.Optional(
+      Type.Union([
+        Type.Literal("none"),
+        Type.Literal("read"),
+        Type.Literal("modify"),
+        Type.Array(Type.String()),
+      ]),
+    ),
+    ordinary_tools: Type.Array(Type.String()),
+    delegation: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("fanout")])),
+  }),
+  capability_ceiling: Type.Array(Type.String()),
+  spawn_entry_id: Type.String(),
+  recent_messages: Type.Array(
+    Type.Object({
+      source_agent_id: Type.String(),
+      turn_id: Type.String(),
+      content: Type.String(),
+    }),
+  ),
+  recent_activity: Type.Array(RenderRecentActivitySchema),
+  latest_result: Type.Optional(CoordinatorTurnOutputSchema),
+  missing_dependencies: Type.Array(Type.String()),
+  unavailable_reason: Type.Optional(Type.String()),
+  usage: Type.Optional(RenderUsageSchema),
+});
+const CoordinatorWaitMessageOutputSchema = Type.Object({
+  event: Type.Literal("message"),
+  agent_id: Type.String(),
+  turn_id: Type.String(),
+  message_id: Type.String(),
+  delivery_id: Type.Optional(Type.String()),
+  message: Type.String(),
+});
+const CoordinatorWaitSourceOutputSchema = {
+  source_agent_id: Type.String(),
+  source_turn_id: Type.String(),
+};
+
+/** Final details schemas exposed to CodeMode for the six coordinator tools. */
+export const CoordinatorToolOutputSchemas = {
+  subagent: Type.Object({
+    agent_id: Type.String(),
+    turn_id: Type.String(),
+    status: Type.Literal("running"),
+    agent: Type.Optional(CoordinatorAgentDetailOutputSchema),
+  }),
+  agent_message: Type.Object({
+    agent_id: Type.String(),
+    message_id: Type.String(),
+    disposition: Type.Union([
+      Type.Literal("delivered-via-wait"),
+      Type.Literal("queued"),
+      Type.Literal("failed"),
+    ]),
+    error: Type.Optional(Type.String()),
+  }),
+  subagent_wait: Type.Union([
+    Type.Object({
+      ...CoordinatorWaitMessageOutputSchema.properties,
+      ...CoordinatorWaitSourceOutputSchema,
+    }),
+    Type.Object({
+      ...CoordinatorTurnOutputSchema.properties,
+      event: Type.Literal("turn"),
+      messages: Type.Optional(Type.Array(CoordinatorWaitMessageOutputSchema)),
+      ...CoordinatorWaitSourceOutputSchema,
+    }),
+    Type.Object({
+      event: Type.Literal("timeout"),
+      agent_id: Type.String(),
+      turn_id: Type.String(),
+      timeout_ms: Type.Number(),
+      agent: CoordinatorAgentDetailOutputSchema,
+      ...CoordinatorWaitSourceOutputSchema,
+    }),
+  ]),
+  subagent_status: Type.Union([
+    Type.Object({
+      parent_id: Type.String(),
+      agents: Type.Array(CoordinatorAgentSummaryOutputSchema),
+    }),
+    Type.Object({ agent: CoordinatorAgentDetailOutputSchema }),
+  ]),
+  subagent_cancel: CancelDetailsSchema,
+  subagent_delete: DeleteDetailsSchema,
+} as const;
+
 const MessageRenderDetailsSchema = Type.Union([
   CurrentMessageDetailsSchema,
   LegacyMessageDetailsSchema,

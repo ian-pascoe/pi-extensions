@@ -22,10 +22,12 @@ import { LspServerManager } from "../src/lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "../src/lsp-session-files.js";
 import {
   LspToolParametersSchema,
+  LspToolResultDetailsSchema,
   type LspToolParameters,
   type LspToolResultDetails,
 } from "../src/lsp-tool-contract.js";
 import {
+  createLspToolDefinition,
   registerLspTool,
   type LspToolDependencies,
   type LspToolRegistrar,
@@ -207,6 +209,15 @@ afterEach(async () => {
 });
 
 describe("registered LSP tool", () => {
+  test("publishes the final result-details output schema", async () => {
+    const fixture = await createToolFixture();
+    const tool = createLspToolDefinition(fixture.dependencies);
+
+    expect(Object.hasOwn(tool, "outputSchema")).toBe(true);
+    expect(tool.outputSchema).toBe(LspToolResultDetailsSchema);
+    await fixture.close();
+  });
+
   test("registers one strict definition and dispatches every protocol operation", async () => {
     const fixture = await createToolFixture();
     const uri = pathToFileURL(fixture.filePath).href;

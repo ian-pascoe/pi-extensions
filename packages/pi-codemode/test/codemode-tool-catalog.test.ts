@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import {
   renderCodeModeToolCatalogue,
+  searchCodeModeToolCatalogue,
   type CodeModeToolCatalogueTool,
 } from "../src/codemode-tool-catalog.js";
 
@@ -18,9 +19,16 @@ function tool(
   name: string,
   inputSchema: CodeModeToolCatalogueTool["inputSchema"],
   description?: string,
+  outputSchema?: CodeModeToolCatalogueTool["outputSchema"],
+  group = "test",
 ): CodeModeToolCatalogueTool {
-  if (description === undefined) return { name, inputSchema };
-  return { name, inputSchema, description };
+  return {
+    name,
+    group,
+    inputSchema,
+    ...(description !== undefined && { description }),
+    ...(outputSchema !== undefined && { outputSchema }),
+  };
 }
 
 describe("renderCodeModeToolCatalogue", () => {
@@ -39,6 +47,12 @@ describe("renderCodeModeToolCatalogue", () => {
           required: ["path"],
         },
         "A */ description",
+        {
+          type: "object",
+          properties: { echoedPath: { type: "string" }, attempts: { type: "integer" } },
+          required: ["echoedPath"],
+          additionalProperties: false,
+        },
       ),
       tool("alpha", { type: "array", prefixItems: [{ const: 1 }, { type: "boolean" }] }),
       tool("typed-extras", {
@@ -57,14 +71,21 @@ describe("renderCodeModeToolCatalogue", () => {
     expect(rendered.text).toContain('readonly ["mode"]?: "fast" | "safe";');
     expect(rendered.text).toContain('readonly ["label"]: string; readonly [key: string]: unknown;');
     expect(rendered.text).toContain("readonly [key: string]: unknown;");
+    expect(rendered.text).toContain(
+      'Promise<PiToolResult<{ readonly ["attempts"]?: number; readonly ["echoedPath"]: string; }>>',
+    );
+    expect(rendered.text).toContain(
+      'readonly ["alpha"]: (input: readonly [1, boolean]) => Promise<PiToolResult<unknown>>;',
+    );
     expect(rendered.text).toContain("A *\\/ description");
     await expectTypeScriptToAccept(rendered.text);
   }, 20_000);
 
   test("preserves boolean and non-TypeBox structural JSON Schemas", () => {
     const rendered = renderCodeModeToolCatalogue([
-      tool("anything", true),
-      tool("nothing", false),
+      tool("anything", true, undefined, true),
+      tool("nothing", false, undefined, false),
+      tool("undefined-details", { type: "object" }, undefined, { type: "undefined" }),
       tool("prototype-property", {
         type: "object",
         properties: Object.fromEntries([["__proto__", { type: "string" }]]),
@@ -85,6 +106,10 @@ describe("renderCodeModeToolCatalogue", () => {
     if (!rendered.ok) return;
     expect(rendered.text).toContain('readonly ["anything"]: (input: unknown)');
     expect(rendered.text).toContain('readonly ["nothing"]: (input: never)');
+    expect(rendered.text).toContain(
+      'readonly ["nothing"]: (input: never) => Promise<PiToolResult<never>>;',
+    );
+    expect(rendered.text).toContain("Promise<PiToolResult<undefined>>");
     expect(rendered.text).toContain('readonly ["__proto__"]: string;');
     expect(rendered.text).toContain('readonly ["arbitrary/property"]: number | null;');
   });
@@ -111,10 +136,10 @@ describe("renderCodeModeToolCatalogue", () => {
     expect(rendered.text).toContain('readonly ["external"]: (input: unknown)');
   });
 
-  test("retains every non-reserved exact name when it degrades an oversized catalogue", () => {
+  test("bounds inline declarations and searches every omitted exact name", async () => {
     const hugeDescription = "d".repeat(4096);
-    const tools = Array.from({ length: 220 }, (_, index) =>
-      tool(`tool-${String(index).padStart(3, "0")}`, {
+    const tools = Array.from({ length: 220 }, (_, index) => {
+      const schema = {
         type: "object",
         description: hugeDescription,
         properties: Object.fromEntries(
@@ -123,28 +148,155 @@ describe("renderCodeModeToolCatalogue", () => {
             { type: "string", description: hugeDescription },
           ]),
         ),
-      }),
-    );
+      };
+      return tool(
+        `tool-${String(index).padStart(3, "0")}`,
+        schema,
+        hugeDescription,
+        schema,
+        index % 2 === 0 ? "group-a" : "group-b",
+      );
+    });
     const rendered = renderCodeModeToolCatalogue([
       ...tools,
       tool("codemode_execute", { type: "string" }),
+      tool("codemode_search", { type: "string" }),
     ]);
 
     expect(rendered).toMatchObject({ ok: true });
     if (!rendered.ok) return;
+    expect(Math.ceil(Buffer.byteLength(rendered.text, "utf8") / 4)).toBeLessThanOrEqual(2_000);
     expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(1024 * 1024);
+    expect(rendered).toMatchObject({ complete: false, totalCount: tools.length });
+    expect(rendered.shownCount).toBeLessThan(tools.length);
     expect(rendered.text).not.toContain('readonly ["codemode_execute"]');
-    for (const candidate of tools) {
-      expect(rendered.text).toContain(`readonly [${JSON.stringify(candidate.name)}]`);
-    }
-  });
+    expect(rendered.searchEntries.map((entry) => entry.name)).not.toContain("codemode_search");
+    expect(rendered.searchEntries).toHaveLength(tools.length);
+    expect(rendered.searchEntries.some((entry) => entry.group === "group-a")).toBe(true);
+    expect(rendered.searchEntries.some((entry) => entry.group === "group-b")).toBe(true);
 
-  test("fails coherently when exact names and unknown signatures alone exceed the bound", () => {
-    const rendered = renderCodeModeToolCatalogue([
-      tool("x".repeat(1024 * 1024), { type: "string" }),
+    const omitted = rendered.searchEntries.find(
+      (entry) => !rendered.text.includes(`readonly [${JSON.stringify(entry.name)}]`),
+    );
+    expect(omitted).toBeDefined();
+    if (omitted === undefined) return;
+    const searched = searchCodeModeToolCatalogue(rendered.searchEntries, {
+      query: omitted.name,
+    });
+    expect(searched).toMatchObject({
+      ok: true,
+      page: { total: 1, hasMore: false, nextOffset: null },
+    });
+    if (!searched.ok) return;
+    expect(searched.page.items).toEqual([
+      {
+        name: omitted.name,
+        group: omitted.group,
+        description: omitted.description,
+        declaration: omitted.declaration,
+      },
     ]);
+    await expectTypeScriptToAccept(rendered.text);
+  }, 20_000);
 
-    expect(rendered).toEqual({ ok: false, reason: "names-exceed-catalogue-limit" });
+  test("bounds group summaries and rejects a search declaration above its result limit", () => {
+    const manyGroups = renderCodeModeToolCatalogue(
+      Array.from({ length: 500 }, (_, index) =>
+        tool(`tool-${index}`, { type: "object" }, undefined, undefined, `group-${index}`),
+      ),
+    );
+    expect(manyGroups).toMatchObject({ ok: true, complete: false, totalCount: 500 });
+    if (!manyGroups.ok) return;
+    expect(Math.ceil(Buffer.byteLength(manyGroups.text, "utf8") / 4)).toBeLessThanOrEqual(2_000);
+    expect(manyGroups.text).toMatch(/\/\/ - \.\.\. \d+ more groups/);
+
+    const rendered = renderCodeModeToolCatalogue([
+      tool("huge", {
+        type: "object",
+        properties: { ["x".repeat(1024 * 1024)]: { type: "string" } },
+      }),
+      tool("small", { type: "object" }),
+    ]);
+    expect(rendered).toMatchObject({ ok: true, complete: false });
+    if (!rendered.ok) return;
+    expect(searchCodeModeToolCatalogue(rendered.searchEntries, { query: "huge" })).toMatchObject({
+      ok: true,
+      page: {
+        total: 1,
+        hasMore: false,
+        items: [
+          {
+            name: "huge",
+            declarationError: "Complete declaration exceeds the 1 MiB CodeMode search result limit",
+          },
+        ],
+      },
+    });
+    expect(searchCodeModeToolCatalogue(rendered.searchEntries, { limit: 1 })).toMatchObject({
+      ok: true,
+      page: {
+        total: 2,
+        hasMore: true,
+        nextOffset: 1,
+        items: [{ name: "huge", declarationError: expect.any(String) }],
+      },
+    });
+    expect(
+      searchCodeModeToolCatalogue(rendered.searchEntries, { limit: 1, offset: 1 }),
+    ).toMatchObject({
+      ok: true,
+      page: {
+        total: 2,
+        hasMore: false,
+        nextOffset: null,
+        items: [{ name: "small", declaration: expect.any(String) }],
+      },
+    });
+  }, 20_000);
+
+  test("searches exact names, browses groups, paginates, and validates input", () => {
+    const rendered = renderCodeModeToolCatalogue([
+      tool("alpha_issue", { type: "object" }, "Find alpha issues", undefined, "issues"),
+      tool("beta_issue", { type: "object" }, "Find beta issues", undefined, "issues"),
+      tool("calendar_lookup", { type: "object" }, "Find calendar events", undefined, "calendar"),
+    ]);
+    expect(rendered).toMatchObject({ ok: true });
+    if (!rendered.ok) return;
+
+    expect(
+      searchCodeModeToolCatalogue(rendered.searchEntries, {
+        query: 'tools["beta_issue"]',
+      }),
+    ).toMatchObject({
+      ok: true,
+      page: { total: 1, items: [{ name: "beta_issue" }] },
+    });
+    expect(
+      searchCodeModeToolCatalogue(rendered.searchEntries, {
+        group: "issues",
+        limit: 1,
+      }),
+    ).toMatchObject({
+      ok: true,
+      page: { total: 2, hasMore: true, nextOffset: 1, items: [{ name: "alpha_issue" }] },
+    });
+    expect(
+      searchCodeModeToolCatalogue(rendered.searchEntries, {
+        group: "issues",
+        limit: 1,
+        offset: 1,
+      }),
+    ).toMatchObject({
+      ok: true,
+      page: { total: 2, hasMore: false, nextOffset: null, items: [{ name: "beta_issue" }] },
+    });
+    expect(searchCodeModeToolCatalogue(rendered.searchEntries, { limit: 0 })).toMatchObject({
+      ok: false,
+      code: "validation",
+    });
+    expect(
+      searchCodeModeToolCatalogue(rendered.searchEntries, { query: "issue", extra: true }),
+    ).toMatchObject({ ok: false, code: "validation" });
   });
 });
 

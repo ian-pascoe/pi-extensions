@@ -15,6 +15,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import {
+  McpResultMarkerSchema,
   parseMcpResultDetails,
   renderMcpResourceToolCall,
   renderMcpServerToolCall,
@@ -44,6 +45,69 @@ const ReadResourceSchema = {
   required: ["server", "uri"],
   additionalProperties: false,
 } as const;
+
+type McpOutputSchemaToolDefinition<TParameters extends TSchema = TSchema> = ToolDefinition<
+  TParameters,
+  unknown
+> & {
+  readonly outputSchema: JsonSchemaType;
+};
+
+function mcpResultDetailsOutputSchema(structuredContentSchema?: JsonSchemaType): JsonSchemaType {
+  return {
+    type: "object",
+    properties: {
+      mcp: McpResultMarkerSchema,
+      result: {},
+      ...(structuredContentSchema === undefined
+        ? {}
+        : { structuredContent: structuredContentSchema }),
+    },
+    required: ["mcp", "result"],
+    additionalProperties: false,
+  };
+}
+
+function validatedMcpResultDetailsOutputSchema(
+  structuredContentSchema: JsonSchemaType,
+): JsonSchemaType {
+  const validationMarker = (valid: boolean): JsonSchemaType => ({
+    allOf: [
+      McpResultMarkerSchema,
+      {
+        type: "object",
+        properties: { outputSchemaValid: { const: valid } },
+        required: ["outputSchemaValid"],
+      },
+    ],
+  });
+  return {
+    anyOf: [
+      {
+        type: "object",
+        properties: {
+          mcp: validationMarker(true),
+          result: {},
+          structuredContent: structuredContentSchema,
+        },
+        required: ["mcp", "result"],
+        additionalProperties: false,
+      },
+      {
+        type: "object",
+        properties: {
+          mcp: validationMarker(false),
+          result: {},
+          structuredContent: {},
+        },
+        required: ["mcp", "result"],
+        additionalProperties: false,
+      },
+    ],
+  };
+}
+
+const RESOURCE_RESULT_DETAILS_OUTPUT_SCHEMA = mcpResultDetailsOutputSchema();
 
 /** Minimal public Pi surface required to register and activate MCP tools. */
 export interface McpToolCatalogPi {
@@ -298,9 +362,16 @@ export class McpToolCatalog {
     this.syncActiveTools(activeNames);
   }
 
-  private serverToolDefinition(compiled: CompiledServerTool, piToolName: string): ToolDefinition {
+  private serverToolDefinition(
+    compiled: CompiledServerTool,
+    piToolName: string,
+  ): McpOutputSchemaToolDefinition {
     // SAFETY: MCP's parsed Tool contract requires inputSchema to be JSON Schema; fromJsonSchema compiled this exact object above. Pi accepts the same structural schema without TypeBox metadata.
     const parameters = compiled.definition.inputSchema as TSchema;
+    const outputSchema =
+      compiled.outputValidator !== undefined && compiled.definition.outputSchema !== undefined
+        ? validatedMcpResultDetailsOutputSchema(compiled.definition.outputSchema)
+        : mcpResultDetailsOutputSchema({});
     return {
       name: piToolName,
       label:
@@ -310,6 +381,7 @@ export class McpToolCatalog {
       description:
         compiled.definition.description ?? `Call MCP Server Tool ${compiled.definition.name}.`,
       parameters,
+      outputSchema,
       renderCall: (arguments_, theme, context) =>
         renderMcpServerToolCall(
           compiled.serverId,
@@ -378,7 +450,16 @@ export class McpToolCatalog {
         ? {}
         : { serverId: compiled.serverId, toolName: compiled.definition.name }),
     };
-    return { content, details: { mcp, result: result.details } };
+    return {
+      content,
+      details: {
+        mcp,
+        result: result.details,
+        ...(result.structuredContent === undefined
+          ? {}
+          : { structuredContent: result.structuredContent }),
+      },
+    };
   }
 
   private registerResourceTools(): void {
@@ -387,6 +468,7 @@ export class McpToolCatalog {
       label: "List MCP Resources",
       description: "List Resources advertised by connected MCP Servers.",
       parameters: ListResourcesSchema,
+      outputSchema: RESOURCE_RESULT_DETAILS_OUTPUT_SCHEMA,
       renderCall: (parameters, theme, context) =>
         renderMcpResourceToolCall(
           "list_resources",
@@ -411,6 +493,7 @@ export class McpToolCatalog {
       label: "List MCP Resource Templates",
       description: "List Resource Templates advertised by connected MCP Servers.",
       parameters: ListResourcesSchema,
+      outputSchema: RESOURCE_RESULT_DETAILS_OUTPUT_SCHEMA,
       renderCall: (parameters, theme, context) =>
         renderMcpResourceToolCall(
           "list_resource_templates",
@@ -435,6 +518,7 @@ export class McpToolCatalog {
       label: "Read MCP Resource",
       description: "Read one Resource from a connected MCP Server.",
       parameters: ReadResourceSchema,
+      outputSchema: RESOURCE_RESULT_DETAILS_OUTPUT_SCHEMA,
       renderCall: (parameters, theme, context) =>
         renderMcpResourceToolCall(
           "read_resource",
@@ -457,7 +541,7 @@ export class McpToolCatalog {
   }
 
   private registerResourceTool<TParameters extends TSchema>(
-    tool: ToolDefinition<TParameters, unknown>,
+    tool: McpOutputSchemaToolDefinition<TParameters>,
   ): void {
     this.ownedToolNames.add(tool.name);
     this.pi.registerTool(tool);

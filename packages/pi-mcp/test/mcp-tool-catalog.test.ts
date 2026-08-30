@@ -1,4 +1,4 @@
-import type { JSONValue, JsonSchemaType } from "@modelcontextprotocol/client";
+import { fromJsonSchema, type JSONValue, type JsonSchemaType } from "@modelcontextprotocol/client";
 import type {
   AgentToolResult,
   ExtensionContext,
@@ -22,7 +22,7 @@ import {
 const TEST_CONTEXT = {} as ExtensionContext;
 
 class RecordingPi implements McpToolCatalogPi {
-  readonly tools = new Map<string, ToolDefinition>();
+  readonly tools = new Map<string, ToolDefinition & { readonly outputSchema?: JsonSchemaType }>();
   readonly activeToolChanges: string[][] = [];
   private activeTools: string[];
   private toolResultHandler:
@@ -48,7 +48,7 @@ class RecordingPi implements McpToolCatalogPi {
     tool: ToolDefinition<TParameters, TDetails>,
   ): void {
     // SAFETY: The recording map never calls tools through an erased type; each test retrieves and executes the original registered object.
-    this.tools.set(tool.name, tool as ToolDefinition);
+    this.tools.set(tool.name, tool as ToolDefinition & { readonly outputSchema?: JsonSchemaType });
     if (!this.activeTools.includes(tool.name)) this.activeTools.push(tool.name);
   }
 
@@ -193,6 +193,10 @@ describe("McpToolCatalog", () => {
         tool.description === "Look up docs",
     );
     expect(exactTool?.parameters).toBe(exactInputSchema);
+    expect(exactTool?.outputSchema).toMatchObject({
+      properties: { structuredContent: {} },
+      required: ["mcp", "result"],
+    });
     expect(exactTool?.label).toBe("Lookup");
     expect(exactTool?.renderCall).toEqual(expect.any(Function));
     expect(exactTool?.renderResult).toEqual(expect.any(Function));
@@ -214,6 +218,25 @@ describe("McpToolCatalog", () => {
     ]);
     const tool = pi.tools.get("mcp__server__count");
     if (tool === undefined) throw new Error("Expected registered Server Tool");
+    if (tool.outputSchema === undefined) throw new Error("Expected registered output schema");
+    expect(tool.outputSchema).toMatchObject({
+      anyOf: [
+        {
+          properties: {
+            mcp: { allOf: [{}, { properties: { outputSchemaValid: { const: true } } }] },
+            structuredContent: exactOutputSchema,
+          },
+          required: ["mcp", "result"],
+        },
+        {
+          properties: {
+            mcp: { allOf: [{}, { properties: { outputSchemaValid: { const: false } } }] },
+            structuredContent: {},
+          },
+          required: ["mcp", "result"],
+        },
+      ],
+    });
 
     await expect(
       tool.execute("bad", { count: 0 }, undefined, undefined, TEST_CONTEXT),
@@ -258,10 +281,15 @@ describe("McpToolCatalog", () => {
       expect.objectContaining({
         mcp: expect.objectContaining({ isError: true, outputSchemaValid: false }),
         result: { server: "details" },
+        structuredContent: { accepted: false },
       }),
     );
     // SAFETY: The catalog owns this registered tool and returns JSON-safe MCP marker details.
     const resultDetails = result.details as JSONValue;
+    const declaredOutputValidator = fromJsonSchema<JSONValue>(tool.outputSchema);
+    expect(
+      (await declaredOutputValidator["~standard"].validate(resultDetails)).issues,
+    ).toBeUndefined();
     await expect(pi.applyToolResult(tool.name, resultDetails)).resolves.toEqual({ isError: true });
     await expect(
       pi.applyToolResult("foreign_extension_tool", resultDetails),
@@ -315,6 +343,16 @@ describe("McpToolCatalog", () => {
     ];
 
     expect(resourceToolNames.every((name) => pi.tools.has(name))).toBe(true);
+    expect(
+      resourceToolNames.every((name) => {
+        const outputSchema = pi.tools.get(name)?.outputSchema;
+        return (
+          outputSchema !== undefined &&
+          "properties" in outputSchema &&
+          outputSchema.properties?.structuredContent === undefined
+        );
+      }),
+    ).toBe(true);
     expect(
       resourceToolNames.every((name) => {
         const tool = pi.tools.get(name);
