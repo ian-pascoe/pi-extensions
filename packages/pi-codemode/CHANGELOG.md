@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-codemode
 
+## 0.6.0
+
+### Minor Changes
+
+- fb76c3f: Keep empty and fuzzy `codemode_search` results compact, and return complete TypeScript declarations only for exact-name queries.
+- df0f6f7: Allow `codemode_execute` to create a session under an unknown supplied Session ID, and prevent Exposure Mode rules from reactivating tools disabled by Pi or another extension.
+
 ## 0.5.0
 
 ### Minor Changes
