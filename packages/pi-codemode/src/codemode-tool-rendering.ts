@@ -573,12 +573,14 @@ export function renderCodeModeToolSearchResult(
         container,
         boundedCodeModeToolSearchDeclaration(item.declaration, declarationCount),
       );
-    } else {
-      if (item.description !== undefined) {
-        container.addChild(
-          new Text(theme.fg("muted", boundedCodeModePreview(item.description, 240)), 0, 0),
-        );
-      }
+      continue;
+    }
+    if (item.description !== undefined) {
+      container.addChild(
+        new Text(theme.fg("muted", boundedCodeModePreview(item.description, 240)), 0, 0),
+      );
+    }
+    if ("declarationError" in item) {
       container.addChild(
         new Text(
           theme.fg("warning", `! ${boundedCodeModePreview(item.declarationError, 240)}`),

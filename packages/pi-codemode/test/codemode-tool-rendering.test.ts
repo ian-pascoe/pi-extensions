@@ -56,6 +56,11 @@ describe("CodeMode Transcript rendering", () => {
     const page: CodeModeToolSearchPage = {
       items: [
         {
+          name: "read",
+          group: "builtin",
+          description: "Read a file",
+        },
+        {
           name: "apply_patch",
           group: "builtin",
           description: "Patch files",
@@ -83,7 +88,7 @@ describe("CodeMode Transcript rendering", () => {
         parameters,
       ),
     );
-    expect(collapsed).toContain("! 4–5 of 7 tools");
+    expect(collapsed).toContain("! 4–6 of 7 tools");
     expect(collapsed).toContain("1 declaration unavailable");
     expect(collapsed).toContain("next offset 5");
     expect(collapsed).toContain("to expand");
@@ -97,6 +102,8 @@ describe("CodeMode Transcript rendering", () => {
       parameters,
     );
     const expanded = renderText(expandedComponent);
+    expect(expanded).toContain("read  builtin");
+    expect(expanded).toContain("Read a file");
     expect(expanded).toContain("apply_patch  builtin");
     expect(expanded).toContain('readonly ["apply_patch"]');
     expect(expanded).toContain("huge_tool  extension");

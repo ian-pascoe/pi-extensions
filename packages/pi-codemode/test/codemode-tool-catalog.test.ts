@@ -238,7 +238,7 @@ describe("renderCodeModeToolCatalogue", () => {
         total: 2,
         hasMore: true,
         nextOffset: 1,
-        items: [{ name: "huge", declarationError: expect.any(String) }],
+        items: [{ name: "huge" }],
       },
     });
     expect(
@@ -249,7 +249,7 @@ describe("renderCodeModeToolCatalogue", () => {
         total: 2,
         hasMore: false,
         nextOffset: null,
-        items: [{ name: "small", declaration: expect.any(String) }],
+        items: [{ name: "small" }],
       },
     });
   }, 20_000);
@@ -276,9 +276,20 @@ describe("renderCodeModeToolCatalogue", () => {
         group: "issues",
         limit: 1,
       }),
-    ).toMatchObject({
+    ).toEqual({
       ok: true,
-      page: { total: 2, hasMore: true, nextOffset: 1, items: [{ name: "alpha_issue" }] },
+      page: {
+        total: 2,
+        hasMore: true,
+        nextOffset: 1,
+        items: [
+          {
+            name: "alpha_issue",
+            group: "issues",
+            description: "Find alpha issues",
+          },
+        ],
+      },
     });
     expect(
       searchCodeModeToolCatalogue(rendered.searchEntries, {

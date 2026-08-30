@@ -49,9 +49,10 @@ describe("CodeMode tool contract", () => {
     expect(Value.Check(CodeModeToolSearchParametersSchema, { unexpected: true })).toBe(false);
   });
 
-  test("accepts complete and explicitly unavailable declaration search items", () => {
+  test("accepts summary, complete, and explicitly unavailable declaration search items", () => {
     const page = {
       items: [
+        { name: "apply_patch", group: "builtin", description: "Patch files" },
         { name: "read", group: "builtin", declaration: 'readonly ["read"]: unknown;' },
         {
           name: "huge",
@@ -68,7 +69,14 @@ describe("CodeMode tool contract", () => {
     expect(
       Value.Check(CodeModeToolSearchPageSchema, {
         ...page,
-        items: [{ name: "invalid", group: "test" }],
+        items: [
+          {
+            name: "invalid",
+            group: "test",
+            declaration: 'readonly ["invalid"]: unknown;',
+            declarationError: "unexpected",
+          },
+        ],
       }),
     ).toBe(false);
   });
