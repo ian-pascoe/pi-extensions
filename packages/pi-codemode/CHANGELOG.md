@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.5.0
+
+### Minor Changes
+
+- 841a7df: Add bounded CodeMode tool discovery and typed tool result schemas across supporting extensions.
+
 ## 0.4.1
 
 ### Patch Changes

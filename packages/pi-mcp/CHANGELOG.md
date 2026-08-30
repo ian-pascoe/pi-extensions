@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-mcp
 
+## 0.4.0
+
+### Minor Changes
+
+- 841a7df: Add bounded CodeMode tool discovery and typed tool result schemas across supporting extensions.
+
 ## 0.3.2
 
 ### Patch Changes

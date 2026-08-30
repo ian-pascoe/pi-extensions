@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-lsp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": false,
   "description": "Configured language-server tools and post-edit diagnostics for Pi",
   "keywords": [

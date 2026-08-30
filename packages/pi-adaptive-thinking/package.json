@@ -1,6 +1,6 @@
 {
   "name": "pi-adaptive-thinking",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": false,
   "description": "Pi extension for adaptive reasoning-effort control",
   "keywords": [
