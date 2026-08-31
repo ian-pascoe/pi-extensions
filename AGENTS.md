@@ -21,3 +21,5 @@ Run `./scripts/sync-reference-repos.sh` to refresh them directly.
 | ------------------------------------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------- |
 | [`earendil-works/pi`](https://github.com/earendil-works/pi)   | `.repos/pi`       | Pi extension APIs, lifecycle hooks, tool registration, TUI/runtime behavior, and upstream examples.  |
 | [`anomalyco/opencode`](https://github.com/anomalyco/opencode) | `.repos/opencode` | Agent orchestration, tool/plugin architecture, provider/model integration, and terminal UI patterns. |
+| [`openai/codex`](https://github.com/openai/codex)             | `.repos/codex`    | Agent-loop, tool protocol, sandbox/approval, MCP integration, and terminal UI implementations.       |
+| [`can1357/oh-my-pi`](https://github.com/can1357/oh-my-pi)     | `.repos/oh-my-pi` | Pi-derived LSP/DAP tools, code execution, model prompts, and Rust agent-runtime behavior.            |
