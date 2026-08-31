@@ -301,17 +301,6 @@ async function pollCodeModeSession(
   throw new Error(`Pi CodeMode extension test: session ${sessionId} remained pending`);
 }
 
-async function readResultSpill(path: string): Promise<string> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      return await readFile(path, "utf8");
-    } catch {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
-    }
-  }
-  throw new Error(`Pi CodeMode extension test: Result Spill was not written: ${path}`);
-}
-
 function codeModeToolNames(session: AgentSession): string[] {
   return session
     .getAllTools()
@@ -641,7 +630,7 @@ describe("Pi CodeMode extension", () => {
     if (spillPath === undefined) {
       throw new Error("Pi CodeMode extension test: missing Result Spill path");
     }
-    expect(await readResultSpill(spillPath)).toBe(JSON.stringify(data, undefined, 2));
+    await expect.poll(() => readFile(spillPath, "utf8")).toBe(JSON.stringify(data, undefined, 2));
   }, 30_000);
 
   test("bridges registered tool results with optional undefined detail fields", async () => {
