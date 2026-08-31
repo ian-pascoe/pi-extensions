@@ -78,9 +78,64 @@ interface PersistentIdentityOptions {
   rootSessionId: string;
 }
 
+/** Replaces the complete source group only while every runtime tool is active. */
+export interface RuntimeToolReplacement {
+  /** Launch Contract tools required to authorize this replacement. */
+  readonly sourceToolNames: readonly string[];
+  /** Adapter tools that jointly replace the source group. */
+  readonly runtimeToolNames: readonly string[];
+}
+
 /** Identifies one configured extension allowed to replace Child Agent runtime tools. */
 export interface RuntimeToolAdapter {
+  /** Every tool registered by the adapter, used to defer initial tool selection until it loads. */
   readonly toolNames: readonly string[];
+  /** Capability-preserving replacements recognized for this adapter. */
+  readonly replacements: readonly RuntimeToolReplacement[];
+}
+
+/** Resolve the exact active tools permitted by one Child Agent Launch Contract. */
+export function resolveChildActiveToolNames(
+  allowedToolNames: readonly string[],
+  requestedToolNames: readonly string[],
+  runtimeToolAdapters: readonly RuntimeToolAdapter[],
+): string[] {
+  const allowedNames = new Set(allowedToolNames);
+  const requestedNames = new Set(requestedToolNames);
+  const activeReplacements = runtimeToolAdapters
+    .flatMap((adapter) => adapter.replacements)
+    .filter((replacement) =>
+      replacement.sourceToolNames.every((toolName) => allowedNames.has(toolName)),
+    )
+    .filter((replacement) =>
+      replacement.runtimeToolNames.every((toolName) => requestedNames.has(toolName)),
+    );
+  const replacedSourceNames = new Set(
+    activeReplacements.flatMap((replacement) => replacement.sourceToolNames),
+  );
+  const activeRuntimeNames = new Set(
+    activeReplacements.flatMap((replacement) => replacement.runtimeToolNames),
+  );
+  return [
+    ...new Set([
+      ...allowedToolNames.filter((toolName) => !replacedSourceNames.has(toolName)),
+      ...requestedToolNames.filter((toolName) => activeRuntimeNames.has(toolName)),
+    ]),
+  ];
+}
+
+function installChildToolCapabilityPolicy(
+  session: AgentSession,
+  allowedToolNames: readonly string[],
+  runtimeToolAdapters: readonly RuntimeToolAdapter[],
+): void {
+  const applyActiveTools = session.setActiveToolsByName.bind(session);
+  session.setActiveToolsByName = (requestedToolNames) => {
+    applyActiveTools(
+      resolveChildActiveToolNames(allowedToolNames, requestedToolNames, runtimeToolAdapters),
+    );
+  };
+  session.setActiveToolsByName(session.getActiveToolNames());
 }
 
 /** Moves one verified child session file to trash and reports command unavailability. */
@@ -999,12 +1054,11 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       session.dispose();
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
     }
+    // The inner policy filters names added by extension wrappers such as Pi CodeMode.
+    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
     await session.bindExtensions({ mode: "print" });
-    const authorizedRuntimeToolNames = new Set([...allowedToolNames, ...adapterToolNames]);
-    const effectiveToolNames = session
-      .getActiveToolNames()
-      .filter((toolName) => authorizedRuntimeToolNames.has(toolName));
-    session.setActiveToolsByName(effectiveToolNames);
+    // The outer policy filters names before extension wrappers build their own tool catalogues.
+    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
     const activeNames = new Set(session.getActiveToolNames());
     const missingCoordinatorTools = coordinatorTools
       .map((tool) => tool.name)

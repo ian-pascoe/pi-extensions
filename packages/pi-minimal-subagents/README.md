@@ -183,9 +183,10 @@ configured settings and extensions, excluding the recursive
 `pi-minimal-subagents` entrypoint. Project Context controls only project-scoped
 AGENTS instructions and skills; omitting it retains user instructions and
 skills plus project settings, extensions, providers, and tools. A configured
-`pi-codex-conversion` adapter may replace these Pi built-ins with its authorized
-runtime tools. Status reports those effective tools while the Launch Contract
-continues to record the originally granted capability names.
+`pi-codex-conversion` adapter replaces a complete granted tool group only; a
+read-only child retains Pi's read tools instead of gaining an arbitrary shell.
+Status reports effective adapter tools while the Launch Contract continues to
+record the originally granted capability names.
 
 `agent_message` reports whether a message was delivered through an active
 parent wait, queued for the recipient, or failed. `subagent_wait` can return an

@@ -84,6 +84,12 @@ import type {
 
 const EXTENSION_ENTRYPOINT = fileURLToPath(new URL("./index.ts", import.meta.url));
 const CODEX_CONVERSION_TOOL_ADAPTER_SOURCE = "npm:@howaboua/pi-codex-conversion";
+const CODEX_CONVERSION_TOOL_REPLACEMENTS = [
+  { sourceToolNames: ["bash"], runtimeToolNames: ["exec_command", "write_stdin"] },
+  { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["apply_patch"] },
+  { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["exec", "wait"] },
+  { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["notebook"] },
+] as const;
 
 function codexConversionRuntimeToolAdapters(pi: ExtensionAPI): RuntimeToolAdapter[] {
   const extensions = new Map<
@@ -102,8 +108,17 @@ function codexConversionRuntimeToolAdapters(pi: ExtensionAPI): RuntimeToolAdapte
     extensions.set(path, extension);
   }
   return [...extensions.values()]
-    .filter((extension) => extension.source.startsWith(CODEX_CONVERSION_TOOL_ADAPTER_SOURCE))
-    .map((extension) => ({ toolNames: extension.toolNames }));
+    .filter(
+      (extension) =>
+        extension.source === CODEX_CONVERSION_TOOL_ADAPTER_SOURCE ||
+        extension.source.startsWith(`${CODEX_CONVERSION_TOOL_ADAPTER_SOURCE}@`),
+    )
+    .map((extension) => ({
+      toolNames: extension.toolNames,
+      replacements: CODEX_CONVERSION_TOOL_REPLACEMENTS.filter((replacement) =>
+        replacement.runtimeToolNames.every((toolName) => extension.toolNames.includes(toolName)),
+      ),
+    }));
 }
 
 function currentConversationMessages(context: ExtensionContext): AgentMessage[] {

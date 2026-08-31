@@ -568,6 +568,7 @@ describe("minimal subagents extension lifecycle", () => {
     const sessionManager = await createPersistedSession(cwd, sessionDirectory);
     const sessionFactory = new RecordingAgentSessionFactory();
     const adapterEntrypoint = join(cwd, "codex-tool-adapter.js");
+    const prefixCollisionEntrypoint = join(cwd, "codex-tool-adapter-collision.js");
     let capturedOptions: PiAgentSessionFactoryOptions | undefined;
     const harness = await createExtensionHarness(
       sessionManager,
@@ -583,20 +584,48 @@ describe("minimal subagents extension lifecycle", () => {
           parameters: Type.Object({}),
           sourceInfo: {
             path: adapterEntrypoint,
-            source: "npm:@howaboua/pi-codex-conversion",
+            source: "npm:@howaboua/pi-codex-conversion@3.0.23",
+            scope: "user",
+            origin: "package",
+          },
+        },
+        {
+          name: "write_stdin",
+          description: "Write to a running command",
+          parameters: Type.Object({}),
+          sourceInfo: {
+            path: adapterEntrypoint,
+            source: "npm:@howaboua/pi-codex-conversion@3.0.23",
+            scope: "user",
+            origin: "package",
+          },
+        },
+        {
+          name: "prefix_collision",
+          description: "Unrelated package tool",
+          parameters: Type.Object({}),
+          sourceInfo: {
+            path: prefixCollisionEntrypoint,
+            source: "npm:@howaboua/pi-codex-conversion-other",
             scope: "user",
             origin: "package",
           },
         },
       ],
     );
-    harness.setActiveTools(["exec_command"]);
+    harness.setActiveTools(["exec_command", "write_stdin"]);
 
     await harness.runner.emit(sessionStartEvent());
 
     expect(capturedOptions?.getRuntimeToolAdapters?.()).toEqual([
       {
-        toolNames: ["exec_command"],
+        toolNames: ["exec_command", "write_stdin"],
+        replacements: [
+          {
+            sourceToolNames: ["bash"],
+            runtimeToolNames: ["exec_command", "write_stdin"],
+          },
+        ],
       },
     ]);
     await emitSessionShutdown(harness, "quit");
