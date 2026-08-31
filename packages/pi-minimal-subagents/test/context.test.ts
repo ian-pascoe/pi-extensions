@@ -11,6 +11,7 @@ import {
   buildRecentAgentActivity,
   buildSubagentSystemPrompt,
   contextContainsImages,
+  selectChildAgentTranscript,
   snapshotCommittedContext,
 } from "../src/minimal-subagents-context.js";
 
@@ -97,6 +98,74 @@ describe("minimal subagents context", () => {
     expect(bounded[0]).toMatchObject({ label: "tool result exec_command", truncated: true });
     expect(Buffer.byteLength(bounded[0]?.content ?? "", "utf8")).toBeLessThanOrEqual(2 * 1024);
     expect(bounded[0]?.content.split("\n").length ?? 0).toBeLessThanOrEqual(20);
+  });
+
+  it("selects a bounded image-free transcript while preserving tool call/result pairs", () => {
+    const firstCall = {
+      ...assistantMessage("old work"),
+      content: [
+        { type: "text" as const, text: "old work" },
+        { type: "toolCall" as const, id: "call-across-cutoff", name: "read", arguments: {} },
+      ],
+    };
+    const filler = Array.from({ length: 24 }, (_, index) => userMessage(`filler ${index}`));
+    const pairedResult: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "call-across-cutoff",
+      toolName: "read",
+      content: [
+        { type: "text", text: "paired" },
+        { type: "image", data: "private image", mimeType: "image/png" },
+      ],
+      isError: false,
+      timestamp: 30,
+    };
+    const orphanResult: ToolResultMessage = {
+      ...pairedResult,
+      toolCallId: "orphan",
+      content: [{ type: "text", text: "orphan" }],
+      timestamp: 31,
+    };
+    const streaming = {
+      ...assistantMessage("streaming now"),
+      timestamp: 32,
+    };
+
+    const snapshot = selectChildAgentTranscript(
+      [firstCall, ...filler, pairedResult, orphanResult],
+      streaming,
+    );
+
+    expect(snapshot.messages.length).toBeLessThanOrEqual(48);
+    expect(snapshot.messages[0]).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-across-cutoff",
+        },
+      ],
+    });
+    expect(snapshot.messages).toContainEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "call-across-cutoff" }),
+    );
+    expect(snapshot.messages).not.toContainEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "orphan" }),
+    );
+    expect(snapshot.messages.at(snapshot.streamingAssistantIndex ?? -1)).toMatchObject({
+      role: "assistant",
+      content: [{ type: "text", text: "streaming now" }],
+    });
+    expect(JSON.stringify(snapshot.messages)).not.toContain("private image");
+
+    const outsidePairWindow = selectChildAgentTranscript([
+      firstCall,
+      ...Array.from({ length: 80 }, (_, index) => userMessage(`newer ${index}`)),
+      pairedResult,
+    ]);
+    expect(outsidePairWindow.messages).not.toContainEqual(
+      expect.objectContaining({ role: "toolResult", toolCallId: "call-across-cutoff" }),
+    );
   });
 
   it("detects image blocks and writes delegation boundaries into the child prompt", () => {

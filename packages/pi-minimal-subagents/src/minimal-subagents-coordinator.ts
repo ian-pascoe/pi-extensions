@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   assembleImportedContext,
+  boundRecentAgentText,
   buildRecentAgentActivity,
   contextContainsImages,
+  selectChildAgentTranscript,
 } from "./minimal-subagents-context.js";
 import {
   canAgentContractSpawn,
@@ -44,6 +46,7 @@ import type {
   CallerSnapshot,
   CancelResult,
   ChildAgentRuntime,
+  ChildAgentTranscriptSnapshot,
   CoordinatorDependencies,
   CoordinatorMessage,
   DeleteResult,
@@ -446,6 +449,25 @@ export class MinimalSubagentsCoordinator {
     return {
       root_id: "root",
       agents: this.childrenOf("root").map((agent) => this.buildAgentSummary(agent)),
+    };
+  }
+
+  /** Lazily inspect one Child Agent's bounded process-local transcript for trusted UI. */
+  inspectTranscript(agentId: string): ChildAgentTranscriptSnapshot {
+    const agent = this.requireAgent(agentId);
+    const runtime = this.runtimes.get(agentId);
+    const liveSnapshot = runtime?.snapshotActivityTranscript?.();
+    if (liveSnapshot) return liveSnapshot;
+    if (runtime) return selectChildAgentTranscript(runtime.snapshotActivityMessages());
+    const fallback =
+      agent.unavailable_reason ||
+      agent.latest_result?.error ||
+      agent.latest_result?.output ||
+      "Child Agent runtime is not available.";
+    return {
+      messages: [],
+      toolDefinitions: [],
+      fallback: boundRecentAgentText(fallback).content,
     };
   }
 

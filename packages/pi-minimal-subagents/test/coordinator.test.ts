@@ -6,6 +6,7 @@ import type {
   AgentSessionFactory,
   CallerSnapshot,
   ChildAgentRuntime,
+  ChildAgentTranscriptSnapshot,
   CoordinatorDependencies,
   CoordinatorMessage,
   PersistedAgent,
@@ -64,6 +65,10 @@ function childRuntime(
     getRuntimeProfile: vi.fn<() => RuntimeProfile | undefined>(() => runtimeProfile),
     snapshotCommittedMessages: vi.fn<() => AgentMessage[]>(() => []),
     snapshotActivityMessages: vi.fn<() => AgentMessage[]>(() => []),
+    snapshotActivityTranscript: vi.fn<() => ChildAgentTranscriptSnapshot>(() => ({
+      messages: [],
+      toolDefinitions: [],
+    })),
     hasDeliveryEvidence: vi.fn<
       (sourceAgentId: string, sourceTurnId: string, deliveryId?: string) => boolean
     >(() => false),
@@ -294,6 +299,33 @@ describe("minimal subagents coordinator", () => {
     });
   });
 
+  it("lazily exposes only the requested live Child Agent transcript", async () => {
+    const runtime = childRuntime();
+    runtime.snapshotActivityTranscript.mockReturnValue({
+      messages: [
+        {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "read",
+          content: [{ type: "text", text: "visible work" }],
+          isError: false,
+          timestamp: 1,
+        },
+      ],
+      toolDefinitions: [],
+    });
+    const { coordinator } = coordinatorFixture(runtime);
+    await coordinator.spawn("root", { task: "Inspect", agent_id: "worker" }, caller);
+    await coordinator.wait("root", "worker", 1_000);
+
+    coordinator.inspectStatus();
+    expect(runtime.snapshotActivityTranscript).not.toHaveBeenCalled();
+    expect(coordinator.inspectTranscript("worker")).toMatchObject({
+      messages: [{ role: "toolResult", toolCallId: "call-1" }],
+    });
+    expect(runtime.snapshotActivityTranscript).toHaveBeenCalledOnce();
+  });
+
   it("falls back to the Launch Contract before initialization and for unavailable agents", async () => {
     let resolveRuntime!: (runtime: ChildAgentRuntime) => void;
     const runtimeInitialization = new Promise<ChildAgentRuntime>((resolve) => {
@@ -311,10 +343,22 @@ describe("minimal subagents coordinator", () => {
 
     const unavailable = coordinatorFixture();
     unavailable.sessions.resolveRestorationMissingDependencies.mockResolvedValue([
-      "provider/model",
+      `provider/${"missing".repeat(500)}`,
     ]);
+    const longFailure = "restoration failed\n".repeat(300);
     await unavailable.coordinator.restore({
-      agents: [persistedAgent("missing", "root")],
+      agents: [
+        {
+          ...persistedAgent("missing", "root"),
+          latest_result: {
+            agent_id: "missing",
+            turn_id: "missing:turn-1",
+            status: "failed",
+            output: "",
+            error: longFailure,
+          },
+        },
+      ],
       tombstones: [],
       deliveries: [],
     });
@@ -325,6 +369,9 @@ describe("minimal subagents coordinator", () => {
         thinking_level: "medium",
       },
     });
+    const fallback = unavailable.coordinator.inspectTranscript("missing").fallback ?? "";
+    expect(fallback).toContain("missing");
+    expect(Buffer.byteLength(fallback, "utf8")).toBeLessThanOrEqual(2 * 1024);
   });
 
   it("supports abortable waits and recursive cancellation/deletion authorization", async () => {

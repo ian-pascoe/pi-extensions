@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -10,12 +10,16 @@ import {
   ModelRuntime,
   SessionManager,
   type AgentSettledEvent,
+  type ExtensionUIContext,
+  type KeybindingsManager,
   type MessageEndEvent,
   type SessionBeforeForkEvent,
   type SessionShutdownEvent,
   type SessionStartEvent,
   type SessionTreeEvent,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -92,6 +96,11 @@ class RecordingChildRuntime implements ChildAgentRuntime {
     await this.abortGate;
     this.isRunning = false;
     this.promptOutcome?.resolve({ status: "cancelled", output: "" });
+  }
+
+  completePrompt(): void {
+    this.isRunning = false;
+    this.promptOutcome?.resolve({ status: "completed", output: "completed after disable" });
   }
 
   dispose(): void {
@@ -208,10 +217,13 @@ type ExtensionHarness = {
   runner: ExtensionRunner;
   sessionManager: SessionManager;
   sessionFactory: RecordingAgentSessionFactory;
+  agentDirectory: string;
   sentMessageTypes: string[];
   sentDeliveryModes: Array<"steer" | "followUp" | "nextTurn" | undefined>;
   notifications: RecordedNotification[];
   extensionErrors: string[];
+  getActiveTools(): string[];
+  setActiveTools(toolNames: string[]): void;
   setIdle(idle: boolean): void;
 };
 
@@ -417,6 +429,16 @@ async function createExtensionHarness(
       getSystemPrompt: () => "Lifecycle test system prompt",
     },
   );
+  runner.bindCommandContext({
+    waitForIdle: async () => {
+      while (!idle) await new Promise((resolve) => setTimeout(resolve, 1));
+    },
+    newSession: async () => ({ cancelled: false }),
+    fork: async () => ({ cancelled: false }),
+    navigateTree: async () => ({ cancelled: false }),
+    switchSession: async () => ({ cancelled: false }),
+    reload: async () => undefined,
+  });
   const defaultUi = runner.getUIContext();
   runner.setUIContext(
     {
@@ -429,10 +451,15 @@ async function createExtensionHarness(
     runner,
     sessionManager,
     sessionFactory,
+    agentDirectory,
     sentMessageTypes,
     sentDeliveryModes,
     notifications,
     extensionErrors,
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (toolNames) => {
+      activeTools = [...toolNames];
+    },
     setIdle(nextIdle) {
       idle = nextIdle;
     },
@@ -492,9 +519,21 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.runner.hasHandlers("message_end")).toBe(true);
     expect(harness.runner.hasHandlers("agent_settled")).toBe(false);
     expect(harness.runner.hasHandlers("session_shutdown")).toBe(true);
+    expect(harness.runner.getCommand("subagents")?.description).toBe(
+      "Control Subagent Access and inspect Child Agents",
+    );
 
     await harness.runner.emit(sessionStartEvent());
     expect(harness.runner.getAllRegisteredTools().map((tool) => tool.definition.name)).toEqual([
+      "subagent",
+      "agent_message",
+      "subagent_wait",
+      "subagent_status",
+      "subagent_cancel",
+      "subagent_delete",
+    ]);
+    expect(harness.getActiveTools()).toEqual([
+      "read",
       "subagent",
       "agent_message",
       "subagent_wait",
@@ -516,6 +555,224 @@ describe("minimal subagents extension lifecycle", () => {
       source_root_session_file: sourceSessionFile,
       source_root_session_id: sessionManager.getSessionId(),
     });
+  });
+
+  it("changes branch and scoped Subagent Access through the registered command", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-command-cwd-");
+    const sessionDirectory = await createTemporaryDirectory("minimal-subagents-command-sessions-");
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const harness = await createExtensionHarness(sessionManager);
+    await harness.runner.emit(sessionStartEvent());
+    const command = harness.runner.getCommand("subagents");
+    if (!command) throw new Error("Expected the registered /subagents command");
+    const context = harness.runner.createCommandContext();
+
+    await command.handler("disable", context);
+    expect(harness.getActiveTools()).toEqual(["read"]);
+
+    await command.handler("enable", context);
+    expect(harness.getActiveTools()).toContain("subagent");
+
+    await command.handler("disable --global", context);
+    expect(harness.getActiveTools()).toEqual(["read"]);
+    expect(
+      JSON.parse(await readFile(join(harness.agentDirectory, "settings.json"), "utf8")),
+    ).toMatchObject({ minimalSubagents: { enabled: false } });
+
+    await command.handler("reset", context);
+    expect(harness.getActiveTools()).toEqual(["read"]);
+
+    await command.handler("enable --project", context);
+    expect(harness.getActiveTools()).toContain("subagent");
+    expect(JSON.parse(await readFile(join(cwd, ".pi", "settings.json"), "utf8"))).toMatchObject({
+      minimalSubagents: { enabled: true },
+    });
+
+    harness.setActiveTools(["read", "subagent"]);
+    await command.handler("", context);
+    expect(harness.getActiveTools()).toEqual(["read", "subagent"]);
+    expect(harness.notifications.at(-1)?.message).toContain("Coordinator Tools 1/6");
+
+    const activeBeforeInvalid = harness.getActiveTools();
+    await command.handler("status --global", context);
+    expect(harness.getActiveTools()).toEqual(activeBeforeInvalid);
+    expect(harness.notifications.at(-1)?.message).toContain("Usage: /subagents");
+
+    await emitSessionShutdown(harness, "quit");
+  });
+
+  it("opens and closes the live status view through the registered bare command", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-status-command-cwd-");
+    const sessionDirectory = await createTemporaryDirectory(
+      "minimal-subagents-status-command-sessions-",
+    );
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const harness = await createExtensionHarness(sessionManager);
+    await harness.runner.emit(sessionStartEvent());
+    const command = harness.runner.getCommand("subagents");
+    if (!command) throw new Error("Expected the registered /subagents command");
+
+    // SAFETY: the status view exercises only terminal dimensions and requestRender on TUI.
+    const tui = Object.assign(Object.create(null), {
+      terminal: { rows: 20, columns: 100 },
+      requestRender: vi.fn(),
+    }) as TUI;
+    // SAFETY: the collapsed status render exercises only fg and bold on Theme.
+    const theme = Object.assign(Object.create(null), {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    }) as Theme;
+    // SAFETY: this command test sends only Escape and exercises only matches.
+    const keybindings = Object.assign(Object.create(null), {
+      matches: (data: string, binding: string) =>
+        data === "escape" && binding === "tui.select.cancel",
+    }) as KeybindingsManager;
+    let rendered: string[] = [];
+    const custom: ExtensionUIContext["custom"] = async <T>(
+      factory: (
+        tui: TUI,
+        theme: Theme,
+        keybindings: KeybindingsManager,
+        done: (result: T) => void,
+      ) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
+    ): Promise<T> => {
+      const result = Promise.withResolvers<T>();
+      const component = await factory(tui, theme, keybindings, result.resolve);
+      rendered = component.render(80);
+      component.handleInput?.("escape");
+      return result.promise;
+    };
+    harness.runner.setUIContext({ ...harness.runner.getUIContext(), custom }, "tui");
+
+    await command.handler("", harness.runner.createCommandContext());
+
+    expect(rendered.join("\n")).toContain("Subagents status");
+    expect(rendered.join("\n")).toContain("Access: enabled");
+    await emitSessionShutdown(harness, "quit");
+  });
+
+  it("restores the selected branch's Subagent Access without changing Child Agents", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-access-tree-cwd-");
+    const sessionDirectory = await createTemporaryDirectory(
+      "minimal-subagents-access-tree-sessions-",
+    );
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const branchPoint = sessionManager.getLeafId();
+    if (!branchPoint) throw new Error("Expected a Subagent Access branch point");
+    const harness = await createExtensionHarness(sessionManager);
+    await harness.runner.emit(sessionStartEvent());
+    const command = harness.runner.getCommand("subagents");
+    if (!command) throw new Error("Expected the registered /subagents command");
+
+    await command.handler("disable", harness.runner.createCommandContext());
+    const disabledLeaf = sessionManager.getLeafId();
+    if (!disabledLeaf) throw new Error("Expected a disabled Subagent Access leaf");
+    expect(harness.getActiveTools()).toEqual(["read"]);
+
+    sessionManager.branch(branchPoint);
+    await harness.runner.emit(sessionTreeEvent);
+    expect(harness.getActiveTools()).toContain("subagent");
+
+    sessionManager.branch(disabledLeaf);
+    await harness.runner.emit(sessionTreeEvent);
+    expect(harness.getActiveTools()).toEqual(["read"]);
+
+    await emitSessionShutdown(harness, "quit");
+
+    const reloadedHarness = await createExtensionHarness(sessionManager);
+    await reloadedHarness.runner.emit(sessionStartEvent("reload"));
+    expect(reloadedHarness.getActiveTools()).toEqual(["read"]);
+    await emitSessionShutdown(reloadedHarness, "quit");
+  });
+
+  it("starts from trusted project, global, then built-in Subagent Access settings", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-access-settings-cwd-");
+    const sessionDirectory = await createTemporaryDirectory(
+      "minimal-subagents-access-settings-sessions-",
+    );
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const harness = await createExtensionHarness(sessionManager);
+    await mkdir(harness.agentDirectory, { recursive: true });
+    await writeFile(
+      join(harness.agentDirectory, "settings.json"),
+      JSON.stringify({ minimalSubagents: { enabled: false } }),
+    );
+    await mkdir(join(cwd, ".pi"), { recursive: true });
+    await writeFile(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ minimalSubagents: { enabled: true } }),
+    );
+
+    await harness.runner.emit(sessionStartEvent());
+    expect(harness.getActiveTools()).toContain("subagent");
+    await emitSessionShutdown(harness, "quit");
+  });
+
+  it("keeps active Child Agents and terminal delivery running while Root Agent access is disabled", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-disable-running-cwd-");
+    const sessionDirectory = await createTemporaryDirectory(
+      "minimal-subagents-disable-running-sessions-",
+    );
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const sessionFactory = new RecordingAgentSessionFactory();
+    sessionFactory.holdPrompts = true;
+    const harness = await createExtensionHarness(sessionManager, sessionFactory);
+    await harness.runner.emit(sessionStartEvent());
+
+    const spawnTool = harness.runner.getToolDefinition("subagent");
+    if (!spawnTool) throw new Error("Expected the registered subagent tool");
+    await spawnTool.execute(
+      "running-spawn",
+      { task: "Continue after disable", agent_id: "running-child", delegation: "fanout" },
+      undefined,
+      undefined,
+      harness.runner.createContext(),
+    );
+    await vi.waitFor(() => {
+      expect(sessionFactory.runtimes.get("running-child")?.isRunning).toBe(true);
+    });
+
+    const command = harness.runner.getCommand("subagents");
+    if (!command) throw new Error("Expected the registered /subagents command");
+    await command.handler("disable", harness.runner.createCommandContext());
+    expect(harness.getActiveTools()).toEqual(["read"]);
+    expect(sessionFactory.runtimes.get("running-child")).toMatchObject({
+      isRunning: true,
+      abortCount: 0,
+    });
+
+    sessionFactory.runtimes.get("running-child")?.completePrompt();
+    await vi.waitFor(
+      () => {
+        expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
+      },
+      { timeout: 2_000 },
+    );
+
+    await emitSessionShutdown(harness, "quit");
+  });
+
+  it("leaves current Subagent Access unchanged when a scoped settings write fails", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-settings-failure-cwd-");
+    const sessionDirectory = await createTemporaryDirectory(
+      "minimal-subagents-settings-failure-sessions-",
+    );
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const harness = await createExtensionHarness(sessionManager);
+    await harness.runner.emit(sessionStartEvent());
+    await mkdir(harness.agentDirectory, { recursive: true });
+    const globalSettingsPath = join(harness.agentDirectory, "settings.json");
+    await writeFile(globalSettingsPath, "{ malformed");
+    const activeBefore = harness.getActiveTools();
+    const command = harness.runner.getCommand("subagents");
+    if (!command) throw new Error("Expected the registered /subagents command");
+
+    await command.handler("disable --global", harness.runner.createCommandContext());
+
+    expect(harness.getActiveTools()).toEqual(activeBefore);
+    await expect(readFile(globalSettingsPath, "utf8")).resolves.toBe("{ malformed");
+    expect(harness.notifications.at(-1)?.message).toContain("settings JSON is malformed");
+    await emitSessionShutdown(harness, "quit");
   });
 
   it("restores only the active Registry branch and restores the newly selected tree branch", async () => {
