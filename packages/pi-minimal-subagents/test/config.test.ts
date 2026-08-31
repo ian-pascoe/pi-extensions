@@ -34,6 +34,12 @@ describe("minimal subagents configuration", () => {
 
     expect(result).toEqual({
       maxSubagentDepth: 1,
+      subagentAccess: {
+        enabled: true,
+        source: "default",
+        globalEnabled: undefined,
+        projectEnabled: undefined,
+      },
       modelRoles: [
         { name: "budget", model: "provider/project", thinkingLevel: "high" },
         {
@@ -63,6 +69,12 @@ describe("minimal subagents configuration", () => {
       eligibleModelIds: eligibleModels,
     });
     expect(result.maxSubagentDepth).toBe(3);
+    expect(result.subagentAccess).toEqual({
+      enabled: true,
+      source: "default",
+      globalEnabled: undefined,
+      projectEnabled: undefined,
+    });
     expect(result.modelRoles).toEqual([{ name: "valid", model: "provider/global" }]);
     expect(result.warnings).toEqual([
       "project minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
@@ -92,6 +104,12 @@ describe("minimal subagents configuration", () => {
 
     expect(result).toEqual({
       maxSubagentDepth: 2,
+      subagentAccess: {
+        enabled: true,
+        source: "default",
+        globalEnabled: undefined,
+        projectEnabled: undefined,
+      },
       modelRoles: [
         { name: "shorthandOff", model: "provider/shorthand", thinkingLevel: "off" },
         { name: "shorthandLow", model: "provider/shorthand", thinkingLevel: "low" },
@@ -127,6 +145,12 @@ describe("minimal subagents configuration", () => {
 
     expect(result).toEqual({
       maxSubagentDepth: 2,
+      subagentAccess: {
+        enabled: true,
+        source: "default",
+        globalEnabled: undefined,
+        projectEnabled: undefined,
+      },
       modelRoles: [
         { name: "exactHigh", model: "provider/real:high" },
         { name: "exactOther", model: "provider/real:8b", hint: "Exact model" },
@@ -147,6 +171,83 @@ describe("minimal subagents configuration", () => {
         },
         eligibleModels,
       ),
-    ).toEqual({ maxSubagentDepth: 2, modelRoles: [], warnings: [] });
+    ).toEqual({
+      maxSubagentDepth: 2,
+      subagentAccess: {
+        enabled: true,
+        source: "default",
+        globalEnabled: undefined,
+        projectEnabled: undefined,
+      },
+      modelRoles: [],
+      warnings: [],
+    });
+  });
+
+  it("reports authored access values and applies trusted project over global over default", () => {
+    expect(
+      resolveMinimalSubagentsConfig({
+        globalSettings: { minimalSubagents: { enabled: false } },
+        projectSettings: { minimalSubagents: { enabled: true } },
+        eligibleModelIds: eligibleModels,
+      }).subagentAccess,
+    ).toEqual({
+      enabled: true,
+      source: "project",
+      globalEnabled: false,
+      projectEnabled: true,
+    });
+
+    expect(
+      resolveMinimalSubagentsConfig({
+        globalSettings: { minimalSubagents: { enabled: false } },
+        projectSettings: {},
+        eligibleModelIds: eligibleModels,
+      }).subagentAccess,
+    ).toEqual({
+      enabled: false,
+      source: "global",
+      globalEnabled: false,
+      projectEnabled: undefined,
+    });
+  });
+
+  it("ignores invalid access booleans without disturbing valid settings", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: {
+        minimalSubagents: { enabled: false, maxSubagentDepth: 3 },
+      },
+      projectSettings: {
+        minimalSubagents: { enabled: "yes", maxSubagentDepth: 1 },
+      },
+      eligibleModelIds: eligibleModels,
+    });
+
+    expect(result.subagentAccess).toEqual({
+      enabled: false,
+      source: "global",
+      globalEnabled: false,
+      projectEnabled: undefined,
+    });
+    expect(result.maxSubagentDepth).toBe(1);
+    expect(result.warnings).toEqual(["project minimalSubagents.enabled: expected a boolean"]);
+  });
+
+  it("omits untrusted project access while retaining global access", () => {
+    const result = resolveMinimalSubagentsSettings(
+      {
+        getGlobalSettings: () => ({ minimalSubagents: { enabled: false } }),
+        getProjectSettings: () => ({ minimalSubagents: { enabled: true } }),
+        isProjectTrusted: () => false,
+      },
+      eligibleModels,
+    );
+
+    expect(result.subagentAccess).toEqual({
+      enabled: false,
+      source: "global",
+      globalEnabled: false,
+      projectEnabled: undefined,
+    });
   });
 });

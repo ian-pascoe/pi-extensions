@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   assembleImportedContext,
+  boundRecentAgentText,
   buildRecentAgentActivity,
   contextContainsImages,
+  selectChildAgentTranscript,
 } from "./minimal-subagents-context.js";
 import {
   canAgentContractSpawn,
@@ -44,6 +46,7 @@ import type {
   CallerSnapshot,
   CancelResult,
   ChildAgentRuntime,
+  ChildAgentTranscriptSnapshot,
   CoordinatorDependencies,
   CoordinatorMessage,
   DeleteResult,
@@ -446,6 +449,25 @@ export class MinimalSubagentsCoordinator {
     return {
       root_id: "root",
       agents: this.childrenOf("root").map((agent) => this.buildAgentSummary(agent)),
+    };
+  }
+
+  /** Lazily inspect one Child Agent's bounded process-local transcript for trusted UI. */
+  inspectTranscript(agentId: string): ChildAgentTranscriptSnapshot {
+    const agent = this.requireAgent(agentId);
+    const runtime = this.runtimes.get(agentId);
+    const liveSnapshot = runtime?.snapshotActivityTranscript?.();
+    if (liveSnapshot) return liveSnapshot;
+    if (runtime) return selectChildAgentTranscript(runtime.snapshotActivityMessages());
+    const fallback =
+      agent.unavailable_reason ||
+      agent.latest_result?.error ||
+      agent.latest_result?.output ||
+      "Child Agent runtime is not available.";
+    return {
+      messages: [],
+      toolDefinitions: [],
+      fallback: boundRecentAgentText(fallback).content,
     };
   }
 
@@ -1453,7 +1475,8 @@ export class MinimalSubagentsCoordinator {
     const elapsed = agent.active_turn_started_at
       ? Math.max(0, this.now().getTime() - new Date(agent.active_turn_started_at).getTime())
       : undefined;
-    const runtimeProfile = this.runtimes.get(agent.agent_id)?.getRuntimeProfile() ?? {
+    const runtime = this.runtimes.get(agent.agent_id);
+    const runtimeProfile = runtime?.getRuntimeProfile() ?? {
       model: agent.launch_contract.model,
       thinking_level: agent.launch_contract.thinking_level,
     };
@@ -1467,7 +1490,7 @@ export class MinimalSubagentsCoordinator {
         ? { turn_id: agent.latest_result.turn_id, status: agent.latest_result.status }
         : undefined,
       ...runtimeProfile,
-      tools: [...agent.launch_contract.ordinary_tools],
+      tools: runtime?.getActiveToolNames?.() ?? [...agent.launch_contract.ordinary_tools],
       elapsed_ms: elapsed ?? agent.latest_result?.elapsed_ms,
       latest_activity_at: agent.latest_activity_at ?? agent.created_at,
       task: agent.task,

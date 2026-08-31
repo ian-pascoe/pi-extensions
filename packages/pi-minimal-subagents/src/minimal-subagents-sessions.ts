@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -8,7 +8,6 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import {
   AgentSession,
   createAgentSession,
-  DefaultResourceLoader,
   estimateTokens,
   findCutPoint,
   generateSummaryWithUsage,
@@ -24,18 +23,22 @@ import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import {
   buildSubagentSystemPrompt,
+  selectChildAgentTranscript,
   snapshotCommittedContext,
 } from "./minimal-subagents-context.js";
 import {
   canAgentContractSpawn,
+  COORDINATOR_TOOL_NAMES,
   DEFAULT_MAX_SUBAGENT_DEPTH,
   getSubagentDepth,
 } from "./minimal-subagents-capabilities.js";
+import { createChildResourceLoader } from "./minimal-subagents-child-resources.js";
 import {
   CHILD_IDENTITY_ENTRY_TYPE,
   FORK_CLONE_ENTRY_TYPE,
   FORK_OWNERSHIP_ENTRY_TYPE,
 } from "./minimal-subagents-registry.js";
+import { canonicalPath } from "./minimal-subagents-paths.js";
 import {
   ChildSessionIdentityRecordSchema,
   DeliveryEvidenceDetailsSchema,
@@ -49,10 +52,10 @@ import { addMinimalSubagentsUsage } from "./minimal-subagents-usage.js";
 import type {
   AgentSessionFactory,
   ChildAgentRuntime,
+  ChildAgentTranscriptSnapshot,
   CoordinatorMessage,
   PersistedAgent,
   PersistedSessionIdentity,
-  ProjectContextMode,
   RuntimeProfile,
   RuntimeTurnOutcome,
 } from "./minimal-subagents-types.js";
@@ -75,14 +78,64 @@ interface PersistentIdentityOptions {
   rootSessionId: string;
 }
 
-interface ChildResourceLoaderOptionsInput {
-  cwd: string;
-  agentDir: string;
-  projectContext: ProjectContextMode;
-  extensionEntrypoint: string;
-  systemPromptBlock: string;
-  ordinaryToolNames?: readonly string[];
-  settingsManager?: SettingsManager;
+/** Replaces the complete source group only while every runtime tool is active. */
+export interface RuntimeToolReplacement {
+  /** Launch Contract tools required to authorize this replacement. */
+  readonly sourceToolNames: readonly string[];
+  /** Adapter tools that jointly replace the source group. */
+  readonly runtimeToolNames: readonly string[];
+}
+
+/** Identifies one configured extension allowed to replace Child Agent runtime tools. */
+export interface RuntimeToolAdapter {
+  /** Every tool registered by the adapter, used to defer initial tool selection until it loads. */
+  readonly toolNames: readonly string[];
+  /** Capability-preserving replacements recognized for this adapter. */
+  readonly replacements: readonly RuntimeToolReplacement[];
+}
+
+/** Resolve the exact active tools permitted by one Child Agent Launch Contract. */
+export function resolveChildActiveToolNames(
+  allowedToolNames: readonly string[],
+  requestedToolNames: readonly string[],
+  runtimeToolAdapters: readonly RuntimeToolAdapter[],
+): string[] {
+  const allowedNames = new Set(allowedToolNames);
+  const requestedNames = new Set(requestedToolNames);
+  const activeReplacements = runtimeToolAdapters
+    .flatMap((adapter) => adapter.replacements)
+    .filter((replacement) =>
+      replacement.sourceToolNames.every((toolName) => allowedNames.has(toolName)),
+    )
+    .filter((replacement) =>
+      replacement.runtimeToolNames.every((toolName) => requestedNames.has(toolName)),
+    );
+  const replacedSourceNames = new Set(
+    activeReplacements.flatMap((replacement) => replacement.sourceToolNames),
+  );
+  const activeRuntimeNames = new Set(
+    activeReplacements.flatMap((replacement) => replacement.runtimeToolNames),
+  );
+  return [
+    ...new Set([
+      ...allowedToolNames.filter((toolName) => !replacedSourceNames.has(toolName)),
+      ...requestedToolNames.filter((toolName) => activeRuntimeNames.has(toolName)),
+    ]),
+  ];
+}
+
+function installChildToolCapabilityPolicy(
+  session: AgentSession,
+  allowedToolNames: readonly string[],
+  runtimeToolAdapters: readonly RuntimeToolAdapter[],
+): void {
+  const applyActiveTools = session.setActiveToolsByName.bind(session);
+  session.setActiveToolsByName = (requestedToolNames) => {
+    applyActiveTools(
+      resolveChildActiveToolNames(allowedToolNames, requestedToolNames, runtimeToolAdapters),
+    );
+  };
+  session.setActiveToolsByName(session.getActiveToolNames());
 }
 
 /** Moves one verified child session file to trash and reports command unavailability. */
@@ -109,6 +162,7 @@ export interface PiAgentSessionFactoryOptions {
   eligibleModelIds: readonly string[];
   modelScopeRestricted: boolean;
   availableToolNames: readonly string[];
+  getRuntimeToolAdapters?: () => readonly RuntimeToolAdapter[];
   projectTrusted: boolean;
   maxSubagentDepth?: number;
   sessionFileTrash?: SessionFileTrashCapability;
@@ -129,12 +183,6 @@ export function buildDepthBoundSubagentPrompt(
     ),
     remainingDepth: Math.max(0, maxSubagentDepth - getSubagentDepth(agent.agent_id)),
   });
-}
-
-/** Canonicalize one path, resolving symlinks only when the target exists. */
-export function canonicalPath(path: string): string {
-  const absolutePath = resolve(path);
-  return existsSync(absolutePath) ? realpathSync(absolutePath) : absolutePath;
 }
 
 /** Build the shared unavailable-agent projection used by fork recovery and ownership binding. */
@@ -358,48 +406,6 @@ export function verifyChildSessionIdentity(
   }
 }
 
-/** Build child resources while filtering recursive coordinator loading and honoring project-context omission. */
-export function createChildResourceLoaderOptions(
-  input: ChildResourceLoaderOptionsInput,
-): ConstructorParameters<typeof DefaultResourceLoader>[0] {
-  const extensionEntrypoint = canonicalPath(input.extensionEntrypoint);
-  const omitProjectContext = input.projectContext === "omit";
-  const ordinaryToolNames = new Set(input.ordinaryToolNames ?? []);
-  const loadOrdinaryToolExtensions = [...ordinaryToolNames].some(
-    (toolName) => !PI_BUILTIN_ORDINARY_TOOL_NAMES.has(toolName),
-  );
-  return {
-    cwd: input.cwd,
-    agentDir: input.agentDir,
-    settingsManager: input.settingsManager,
-    noExtensions: !loadOrdinaryToolExtensions,
-    noContextFiles: omitProjectContext,
-    noSkills: omitProjectContext,
-    noPromptTemplates: omitProjectContext,
-    extensionsOverride: loadOrdinaryToolExtensions
-      ? (base) => ({
-          ...base,
-          extensions: base.extensions.filter(
-            (extension) =>
-              canonicalPath(extension.resolvedPath) !== extensionEntrypoint &&
-              [...extension.tools.keys()].some((toolName) => ordinaryToolNames.has(toolName)),
-          ),
-          errors: base.errors.filter((error) => canonicalPath(error.path) !== extensionEntrypoint),
-        })
-      : undefined,
-    agentsFilesOverride: omitProjectContext ? () => ({ agentsFiles: [] }) : undefined,
-    skillsOverride: omitProjectContext
-      ? (base) => ({ skills: [], diagnostics: base.diagnostics })
-      : undefined,
-    promptsOverride: omitProjectContext
-      ? (base) => ({ prompts: [], diagnostics: base.diagnostics })
-      : undefined,
-    systemPromptOverride: omitProjectContext ? () => undefined : undefined,
-    appendSystemPromptOverride: (base) =>
-      omitProjectContext ? [input.systemPromptBlock] : [...base, input.systemPromptBlock],
-  };
-}
-
 /** Find durable keyed evidence for exactly-once wait or custom-result delivery. */
 export function findDeliveryEvidence(
   entries: readonly SessionEntry[],
@@ -609,6 +615,11 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     };
   }
 
+  getActiveToolNames(): string[] {
+    const coordinatorTools = new Set<string>(COORDINATOR_TOOL_NAMES);
+    return this.session.getActiveToolNames().filter((toolName) => !coordinatorTools.has(toolName));
+  }
+
   snapshotCommittedMessages(): AgentMessage[] {
     return snapshotCommittedContext(this.session.messages, this.session.isStreaming);
   }
@@ -616,6 +627,26 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
   snapshotActivityMessages(): AgentMessage[] {
     const streamingMessage = this.session.state.streamingMessage;
     return [...this.session.messages, ...(streamingMessage ? [streamingMessage] : [])];
+  }
+
+  snapshotActivityTranscript(): ChildAgentTranscriptSnapshot {
+    const snapshot = selectChildAgentTranscript(
+      this.session.messages,
+      this.session.state.streamingMessage,
+    );
+    const toolNames = new Set<string>();
+    for (const message of snapshot.messages) {
+      if (message.role !== "assistant") continue;
+      for (const content of message.content) {
+        if (content.type === "toolCall") toolNames.add(content.name);
+      }
+    }
+    return {
+      ...snapshot,
+      toolDefinitions: [...toolNames]
+        .map((toolName) => this.session.getToolDefinition(toolName))
+        .filter((definition) => definition !== undefined),
+    };
   }
 
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean {
@@ -933,11 +964,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
   }
 
   private discoverChildToolNames(agent: PersistedAgent): Promise<Set<string>> {
-    const cacheKey = `${agent.launch_contract.project_context}:${[
-      ...agent.launch_contract.ordinary_tools,
-    ]
-      .sort()
-      .join(",")}`;
+    const cacheKey = [...agent.launch_contract.ordinary_tools].sort().join(",");
     const cached = this.discoveredToolNames.get(cacheKey);
     if (cached) return cached;
     const discovery = (async () => {
@@ -948,20 +975,15 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
         (name) => !PI_BUILTIN_ORDINARY_TOOL_NAMES.has(name),
       );
       if (!requiresCustomToolDiscovery) return names;
-      const settingsManager = SettingsManager.create(this.options.cwd, this.options.agentDir, {
-        projectTrusted: this.options.projectTrusted,
+      const settingsManager = this.createChildSettingsManager();
+      const resourceLoader = createChildResourceLoader({
+        cwd: this.options.cwd,
+        agentDir: this.options.agentDir,
+        projectContext: agent.launch_contract.project_context,
+        extensionEntrypoint: this.options.extensionEntrypoint,
+        systemPromptBlock: this.buildChildSystemPrompt(agent),
+        settingsManager,
       });
-      const resourceLoader = new DefaultResourceLoader(
-        createChildResourceLoaderOptions({
-          cwd: this.options.cwd,
-          agentDir: this.options.agentDir,
-          projectContext: agent.launch_contract.project_context,
-          extensionEntrypoint: this.options.extensionEntrypoint,
-          systemPromptBlock: this.buildChildSystemPrompt(agent),
-          ordinaryToolNames: agent.launch_contract.ordinary_tools,
-          settingsManager,
-        }),
-      );
       await resourceLoader.reload();
       for (const extension of resourceLoader.getExtensions().extensions) {
         for (const toolName of extension.tools.keys()) names.add(toolName);
@@ -981,23 +1003,18 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       throw new Error(
         `Minimal subagents restore: model unavailable: ${agent.launch_contract.model}`,
       );
-    const settingsManager = SettingsManager.create(this.options.cwd, this.options.agentDir, {
-      projectTrusted: this.options.projectTrusted,
-    });
+    const settingsManager = this.createChildSettingsManager();
     settingsManager.applyOverrides({
       retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
     });
-    const resourceLoader = new DefaultResourceLoader(
-      createChildResourceLoaderOptions({
-        cwd: this.options.cwd,
-        agentDir: this.options.agentDir,
-        projectContext: agent.launch_contract.project_context,
-        extensionEntrypoint: this.options.extensionEntrypoint,
-        systemPromptBlock: this.buildChildSystemPrompt(agent),
-        ordinaryToolNames: agent.launch_contract.ordinary_tools,
-        settingsManager,
-      }),
-    );
+    const resourceLoader = createChildResourceLoader({
+      cwd: this.options.cwd,
+      agentDir: this.options.agentDir,
+      projectContext: agent.launch_contract.project_context,
+      extensionEntrypoint: this.options.extensionEntrypoint,
+      systemPromptBlock: this.buildChildSystemPrompt(agent),
+      settingsManager,
+    });
     await resourceLoader.reload();
     const modelRuntime = await ModelRuntime.create({
       authPath: resolve(this.options.agentDir, "auth.json"),
@@ -1015,24 +1032,42 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       ...agent.launch_contract.ordinary_tools,
       ...coordinatorTools.map((tool) => tool.name),
     ];
+    const runtimeToolAdapters = this.options.getRuntimeToolAdapters?.() ?? [];
+    const adapterToolNames = new Set(runtimeToolAdapters.flatMap((adapter) => adapter.toolNames));
+    const adaptRuntimeTools = adapterToolNames.size > 0;
     const { session } = await createAgentSession({
       cwd: this.options.cwd,
       agentDir: this.options.agentDir,
       model,
       thinkingLevel: agent.launch_contract.thinking_level,
-      tools: allowedToolNames,
+      tools: adaptRuntimeTools ? undefined : allowedToolNames,
       customTools: coordinatorTools,
       resourceLoader,
       sessionManager,
       settingsManager,
       modelRuntime,
     });
-    await session.bindExtensions({ mode: "print" });
-    const activeNames = new Set(session.getActiveToolNames());
-    const missingTools = allowedToolNames.filter((toolName) => !activeNames.has(toolName));
+    if (adaptRuntimeTools) session.setActiveToolsByName(allowedToolNames);
+    const initialActiveNames = new Set(session.getActiveToolNames());
+    const missingTools = allowedToolNames.filter((toolName) => !initialActiveNames.has(toolName));
     if (missingTools.length > 0) {
       session.dispose();
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
+    }
+    // The inner policy filters names added by extension wrappers such as Pi CodeMode.
+    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
+    await session.bindExtensions({ mode: "print" });
+    // The outer policy filters names before extension wrappers build their own tool catalogues.
+    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
+    const activeNames = new Set(session.getActiveToolNames());
+    const missingCoordinatorTools = coordinatorTools
+      .map((tool) => tool.name)
+      .filter((toolName) => !activeNames.has(toolName));
+    if (missingCoordinatorTools.length > 0) {
+      session.dispose();
+      throw new Error(
+        `Minimal subagents child coordinator tool loading failed: ${missingCoordinatorTools.join(", ")}`,
+      );
     }
     return new PiChildAgentRuntime(
       session,
@@ -1040,5 +1075,11 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       this.modelById,
       this.options.onChildSessionActivity,
     );
+  }
+
+  private createChildSettingsManager(): SettingsManager {
+    return SettingsManager.create(this.options.cwd, this.options.agentDir, {
+      projectTrusted: this.options.projectTrusted,
+    });
   }
 }

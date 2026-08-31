@@ -6,6 +6,7 @@ import {
   SessionManager,
   SettingsManager,
   type ExtensionAPI,
+  type ExtensionCommandContext,
   type ExtensionContext,
   type ExtensionFactory,
   type MessageEndEvent,
@@ -15,8 +16,25 @@ import {
   type SessionStartEvent,
   type SessionTreeEvent,
 } from "@earendil-works/pi-coding-agent";
+import {
+  createSubagentAccessBranchRecord,
+  reconcileCoordinatorToolAccess,
+  replaySubagentAccessBranch,
+  resolveSubagentAccessSnapshot,
+  SUBAGENT_ACCESS_ENTRY_TYPE,
+  type SubagentAccessOverride,
+  type SubagentAccessReplayDiagnostic,
+} from "./minimal-subagents-access.js";
+import {
+  completeSubagentsCommandArguments,
+  parseSubagentsCommandArguments,
+  type SubagentsCommand,
+} from "./minimal-subagents-command.js";
 import { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
-import { resolveMinimalSubagentsSettings } from "./minimal-subagents-config.js";
+import {
+  resolveMinimalSubagentsSettings,
+  type ResolvedSubagentAccessSettings,
+} from "./minimal-subagents-config.js";
 import { snapshotCommittedContext } from "./minimal-subagents-context.js";
 import {
   isForkDestinationForSource,
@@ -25,7 +43,6 @@ import {
 } from "./minimal-subagents-fork-lifecycle.js";
 import {
   buildEligibleModelIds,
-  COORDINATOR_TOOL_NAMES,
   excludeCoordinatorTools,
 } from "./minimal-subagents-capabilities.js";
 import {
@@ -39,9 +56,15 @@ import {
   findDeliveryEvidence,
   PiAgentSessionFactory,
   type PiAgentSessionFactoryOptions,
+  type RuntimeToolAdapter,
   unavailableAgent,
 } from "./minimal-subagents-sessions.js";
 import { shutdownMinimalSubagentsSession } from "./minimal-subagents-shutdown.js";
+import { MinimalSubagentsSettingsWriter } from "./minimal-subagents-settings-writer.js";
+import {
+  MinimalSubagentsStatusPanelController,
+  type MinimalSubagentsStatusAccess,
+} from "./minimal-subagents-status-panel.js";
 import { createCoordinatorToolDefinitions } from "./minimal-subagents-tools.js";
 import {
   renderMinimalSubagentsMessage,
@@ -60,6 +83,43 @@ import type {
 } from "./minimal-subagents-types.js";
 
 const EXTENSION_ENTRYPOINT = fileURLToPath(new URL("./index.ts", import.meta.url));
+const CODEX_CONVERSION_TOOL_ADAPTER_SOURCE = "npm:@howaboua/pi-codex-conversion";
+const CODEX_CONVERSION_TOOL_REPLACEMENTS = [
+  { sourceToolNames: ["bash"], runtimeToolNames: ["exec_command", "write_stdin"] },
+  { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["apply_patch"] },
+  { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["exec", "wait"] },
+  { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["notebook"] },
+] as const;
+
+function codexConversionRuntimeToolAdapters(pi: ExtensionAPI): RuntimeToolAdapter[] {
+  const extensions = new Map<
+    string,
+    {
+      path: string;
+      source: string;
+      toolNames: string[];
+    }
+  >();
+  for (const tool of pi.getAllTools()) {
+    const { path, source } = tool.sourceInfo;
+    if (path.startsWith("<")) continue;
+    const extension = extensions.get(path) ?? { path, source, toolNames: [] };
+    extension.toolNames.push(tool.name);
+    extensions.set(path, extension);
+  }
+  return [...extensions.values()]
+    .filter(
+      (extension) =>
+        extension.source === CODEX_CONVERSION_TOOL_ADAPTER_SOURCE ||
+        extension.source.startsWith(`${CODEX_CONVERSION_TOOL_ADAPTER_SOURCE}@`),
+    )
+    .map((extension) => ({
+      toolNames: extension.toolNames,
+      replacements: CODEX_CONVERSION_TOOL_REPLACEMENTS.filter((replacement) =>
+        replacement.runtimeToolNames.every((toolName) => extension.toolNames.includes(toolName)),
+      ),
+    }));
+}
 
 function currentConversationMessages(context: ExtensionContext): AgentMessage[] {
   const entries = context.sessionManager.getEntries();
@@ -294,6 +354,25 @@ async function waitForRootSessionIdle(context: ExtensionContext): Promise<void> 
   }
 }
 
+interface ActiveSubagentAccessSession {
+  readonly agentDir: string;
+  readonly eligibleModelIds: readonly string[];
+  readonly context: ExtensionContext;
+  settings: ResolvedSubagentAccessSettings;
+  branchOverride: SubagentAccessOverride;
+}
+
+function reportInvalidSubagentAccessRecords(
+  context: ExtensionContext,
+): (diagnostics: SubagentAccessReplayDiagnostic[]) => void {
+  return (diagnostics) => {
+    context.ui.notify(
+      `Minimal subagents ignored ${diagnostics.length} invalid Subagent Access branch record${diagnostics.length === 1 ? "" : "s"}.`,
+      "warning",
+    );
+  };
+}
+
 /** SDK and runtime construction effects required by the Minimal Subagents lifecycle controller. */
 export interface MinimalSubagentsLifecycleEffects {
   /** Resolve Pi's current agent directory without coupling lifecycle tests to process configuration. */
@@ -311,6 +390,8 @@ const productionLifecycleEffects: MinimalSubagentsLifecycleEffects = {
 export class MinimalSubagentsLifecycleController {
   private coordinator: MinimalSubagentsCoordinator | undefined;
   private uiController: MinimalSubagentsUiController | undefined;
+  private statusPanelController: MinimalSubagentsStatusPanelController | undefined;
+  private accessSession: ActiveSubagentAccessSession | undefined;
   private preparedFork:
     | { sourceSessionFile: string; selectedBranchSnapshot: RegistrySnapshot }
     | undefined;
@@ -325,6 +406,11 @@ export class MinimalSubagentsLifecycleController {
   register(): void {
     this.pi.registerMessageRenderer("minimal-subagents.message", renderMinimalSubagentsMessage);
     this.pi.registerMessageRenderer("minimal-subagents.result", renderMinimalSubagentsResult);
+    this.pi.registerCommand("subagents", {
+      description: "Control Subagent Access and inspect Child Agents",
+      getArgumentCompletions: completeSubagentsCommandArguments,
+      handler: (args, context) => this.runSubagentsCommand(args, context),
+    });
 
     this.pi.on("session_start", (event, context) => this.startSession(event, context));
     this.pi.on("session_before_fork", (event, context) => this.prepareSessionFork(event, context));
@@ -350,6 +436,10 @@ export class MinimalSubagentsLifecycleController {
       settingsManager,
       eligibleModelIds,
     );
+    const branchOverride = replaySubagentAccessBranch(
+      context.sessionManager.getBranch(),
+      reportInvalidSubagentAccessRecords(context),
+    ).override;
     if (minimalSubagentsConfig.warnings.length > 0) {
       context.ui.notify(
         `Minimal subagents configuration warnings:\n- ${minimalSubagentsConfig.warnings.join("\n- ")}`,
@@ -386,6 +476,7 @@ export class MinimalSubagentsLifecycleController {
       eligibleModelIds,
       modelScopeRestricted: enabledModelPatterns !== undefined,
       availableToolNames,
+      getRuntimeToolAdapters: () => codexConversionRuntimeToolAdapters(this.pi),
       projectTrusted: context.isProjectTrusted(),
       maxSubagentDepth: minimalSubagentsConfig.maxSubagentDepth,
       onChildSessionActivity: () => activeCoordinator?.scheduleDeliveryReconciliation(),
@@ -488,7 +579,19 @@ export class MinimalSubagentsLifecycleController {
       onAttention: (message) => context.ui.notify(message, "error"),
     });
     for (const tool of rootTools) this.pi.registerTool(tool);
-    this.pi.setActiveTools([...new Set([...this.pi.getActiveTools(), ...COORDINATOR_TOOL_NAMES])]);
+    this.accessSession = {
+      agentDir,
+      eligibleModelIds,
+      context,
+      settings: minimalSubagentsConfig.subagentAccess,
+      branchOverride,
+    };
+    this.applySubagentAccess();
+    this.statusPanelController = new MinimalSubagentsStatusPanelController(
+      activeCoordinator,
+      context,
+      () => this.currentSubagentStatusAccess(),
+    );
 
     if (hasHistoricalChildIdentity(context.sessionManager.getBranch())) {
       context.ui.notify(
@@ -538,7 +641,120 @@ export class MinimalSubagentsLifecycleController {
     );
     await this.coordinator.restore(snapshot);
     this.coordinator.writeCheckpoint();
+    const replayedAccess = replaySubagentAccessBranch(
+      context.sessionManager.getBranch(),
+      reportInvalidSubagentAccessRecords(context),
+    );
+    if (this.accessSession) {
+      this.accessSession.branchOverride = replayedAccess.override;
+      this.applySubagentAccess();
+    }
     this.uiController?.refresh();
+  }
+
+  private async runSubagentsCommand(args: string, context: ExtensionCommandContext): Promise<void> {
+    const parsed = parseSubagentsCommandArguments(args);
+    if (!parsed.ok) {
+      context.ui.notify(parsed.message, "error");
+      return;
+    }
+    if (!this.accessSession || !this.coordinator) {
+      context.ui.notify("Minimal subagents is not active for this session.", "error");
+      return;
+    }
+    if (parsed.command.action === "status") {
+      await this.statusPanelController?.open();
+      return;
+    }
+    await this.changeSubagentAccess(parsed.command, context);
+  }
+
+  private async changeSubagentAccess(
+    command: Exclude<SubagentsCommand, { action: "status" }>,
+    context: ExtensionCommandContext,
+  ): Promise<void> {
+    const accessSession = this.accessSession;
+    if (!accessSession) return;
+    const requestedOverride: SubagentAccessOverride =
+      command.action === "reset" ? "inherit" : command.action === "enable" ? "enabled" : "disabled";
+
+    let persistedScope: "global" | "project" | undefined;
+    if (command.scope !== "session") {
+      const writeResult = await new MinimalSubagentsSettingsWriter(
+        context,
+        () => accessSession.agentDir,
+      ).writeMinimalSubagentsEnabled(
+        command.scope,
+        command.action === "reset" ? undefined : command.action === "enable",
+      );
+      if (!writeResult.ok) {
+        context.ui.notify(writeResult.error.message, "error");
+        return;
+      }
+      persistedScope = command.scope;
+      const settingsManager = SettingsManager.create(context.cwd, accessSession.agentDir, {
+        projectTrusted: context.isProjectTrusted(),
+      });
+      accessSession.settings = resolveMinimalSubagentsSettings(
+        settingsManager,
+        accessSession.eligibleModelIds,
+      ).subagentAccess;
+    }
+
+    await context.waitForIdle();
+    try {
+      this.pi.appendEntry(
+        SUBAGENT_ACCESS_ENTRY_TYPE,
+        createSubagentAccessBranchRecord(requestedOverride),
+      );
+      accessSession.branchOverride = requestedOverride;
+      this.applySubagentAccess();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      context.ui.notify(
+        persistedScope
+          ? `Minimal subagents ${persistedScope} default changed, but the current session did not: ${detail}`
+          : `Minimal subagents could not change the current session: ${detail}`,
+        "error",
+      );
+      return;
+    }
+
+    const snapshot = this.currentSubagentAccessSnapshot();
+    context.ui.notify(
+      `Subagent Access ${snapshot.enabled ? "enabled" : "disabled"} (${command.scope}).`,
+      "info",
+    );
+  }
+
+  private applySubagentAccess(): void {
+    const accessSession = this.accessSession;
+    if (!accessSession) return;
+    const snapshot = resolveSubagentAccessSnapshot(
+      accessSession.settings,
+      accessSession.branchOverride,
+      this.pi.getActiveTools(),
+    );
+    this.pi.setActiveTools(
+      reconcileCoordinatorToolAccess(this.pi.getActiveTools(), snapshot.enabled),
+    );
+  }
+
+  private currentSubagentAccessSnapshot() {
+    const accessSession = this.accessSession;
+    if (!accessSession) throw new Error("Minimal subagents access: no active session");
+    return resolveSubagentAccessSnapshot(
+      accessSession.settings,
+      accessSession.branchOverride,
+      this.pi.getActiveTools(),
+    );
+  }
+
+  private currentSubagentStatusAccess(): MinimalSubagentsStatusAccess {
+    return {
+      ...this.currentSubagentAccessSnapshot(),
+      projectTrusted: this.accessSession?.context.isProjectTrusted() ?? false,
+    };
   }
 
   private async reconcileMessageDelivery(
@@ -556,6 +772,8 @@ export class MinimalSubagentsLifecycleController {
     event: SessionShutdownEvent,
     context: ExtensionContext,
   ): Promise<void> {
+    this.statusPanelController?.dispose();
+    this.statusPanelController = undefined;
     if (this.coordinator) {
       if (event.reason === "fork" && this.preparedFork) {
         await this.coordinator.restore(this.preparedFork.selectedBranchSnapshot);
@@ -571,6 +789,7 @@ export class MinimalSubagentsLifecycleController {
     this.uiController?.dispose();
     this.uiController = undefined;
     this.coordinator = undefined;
+    this.accessSession = undefined;
     this.preparedFork = undefined;
   }
 }

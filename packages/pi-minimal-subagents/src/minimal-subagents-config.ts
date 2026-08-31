@@ -12,10 +12,12 @@ const SettingsDocumentSchema = Type.Object({
   minimalSubagents: Type.Optional(JsonValueSchema),
 });
 const MinimalSubagentsSettingsSchema = Type.Object({
+  enabled: Type.Optional(JsonValueSchema),
   maxSubagentDepth: Type.Optional(JsonValueSchema),
   modelRoles: Type.Optional(JsonValueSchema),
 });
 const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
+const EnabledSettingSchema = Type.Boolean();
 const PositiveSafeIntegerSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const MaxSubagentDepthSettingSchema = Type.Union([PositiveSafeIntegerSchema, Type.Null()]);
 const ShorthandModelRoleSchema = Type.String();
@@ -39,9 +41,21 @@ export interface MinimalSubagentsModelRole {
   hint?: string;
 }
 
+/** Identifies the authored settings layer that determines Subagent Access. */
+export type SubagentAccessSettingsSource = "project" | "global" | "default";
+
+/** Contains effective and authored Subagent Access settings for one Root Agent session. */
+export interface ResolvedSubagentAccessSettings {
+  enabled: boolean;
+  source: SubagentAccessSettingsSource;
+  globalEnabled: boolean | undefined;
+  projectEnabled: boolean | undefined;
+}
+
 /** Contains the validated minimal subagents settings used by one extension session. */
 export interface ResolvedMinimalSubagentsConfig {
   maxSubagentDepth: number;
+  subagentAccess: ResolvedSubagentAccessSettings;
   modelRoles: MinimalSubagentsModelRole[];
   warnings: string[];
 }
@@ -53,6 +67,7 @@ interface MinimalSubagentsSettingsDocument {
 interface MinimalSubagentsConfigInput {
   globalSettings: MinimalSubagentsSettingsDocumentInput;
   projectSettings: MinimalSubagentsSettingsDocumentInput;
+  projectTrusted?: boolean;
   eligibleModelIds: readonly string[];
 }
 
@@ -62,6 +77,7 @@ type MinimalSubagentsSettingsDocumentInput = PiSettingsDocument | MinimalSubagen
 interface MinimalSubagentsSettingsReader {
   getGlobalSettings(): MinimalSubagentsSettingsDocumentInput;
   getProjectSettings(): MinimalSubagentsSettingsDocumentInput;
+  isProjectTrusted?(): boolean;
 }
 
 type SettingsScope = "global" | "project";
@@ -72,6 +88,7 @@ interface ScopedSettingValue {
 }
 
 interface ParsedMinimalSubagentsSettings {
+  enabled?: boolean;
   maxSubagentDepth?: MaxSubagentDepthWireValue;
   modelRoles?: ModelRolesWireValue;
 }
@@ -136,6 +153,13 @@ function readMinimalSubagentsSettings(
   if (minimalSubagents === undefined) return {};
   if (Value.Check(MinimalSubagentsSettingsSchema, minimalSubagents)) {
     const parsed: ParsedMinimalSubagentsSettings = {};
+    if (minimalSubagents.enabled !== undefined) {
+      if (Value.Check(EnabledSettingSchema, minimalSubagents.enabled)) {
+        parsed.enabled = minimalSubagents.enabled;
+      } else {
+        warnings.push(`${scope} minimalSubagents.enabled: expected a boolean`);
+      }
+    }
     if (minimalSubagents.maxSubagentDepth !== undefined) {
       parsed.maxSubagentDepth = parseMaxSubagentDepthWireValue(minimalSubagents.maxSubagentDepth);
     }
@@ -295,6 +319,20 @@ function parseModelRoles(
   return roles;
 }
 
+function resolveSubagentAccessSettings(
+  globalEnabled: boolean | undefined,
+  projectEnabled: boolean | undefined,
+): ResolvedSubagentAccessSettings {
+  const source =
+    projectEnabled !== undefined ? "project" : globalEnabled !== undefined ? "global" : "default";
+  return {
+    enabled: projectEnabled ?? globalEnabled ?? true,
+    source,
+    globalEnabled,
+    projectEnabled,
+  };
+}
+
 function resolveMaxSubagentDepth(
   globalValue: MaxSubagentDepthWireValue | undefined,
   projectValue: MaxSubagentDepthWireValue | undefined,
@@ -323,7 +361,10 @@ export function resolveMinimalSubagentsConfig(
 ): ResolvedMinimalSubagentsConfig {
   const warnings: string[] = [];
   const globalConfig = readMinimalSubagentsSettings(input.globalSettings, "global", warnings);
-  const projectConfig = readMinimalSubagentsSettings(input.projectSettings, "project", warnings);
+  const projectConfig =
+    input.projectTrusted === false
+      ? {}
+      : readMinimalSubagentsSettings(input.projectSettings, "project", warnings);
   const maxSubagentDepth = resolveMaxSubagentDepth(
     globalConfig.maxSubagentDepth,
     projectConfig.maxSubagentDepth,
@@ -337,6 +378,7 @@ export function resolveMinimalSubagentsConfig(
 
   return {
     maxSubagentDepth,
+    subagentAccess: resolveSubagentAccessSettings(globalConfig.enabled, projectConfig.enabled),
     modelRoles: parseModelRoles(modelRoleEntries, input.eligibleModelIds, warnings),
     warnings,
   };
@@ -350,6 +392,7 @@ export function resolveMinimalSubagentsSettings(
   return resolveMinimalSubagentsConfig({
     globalSettings: settings.getGlobalSettings(),
     projectSettings: settings.getProjectSettings(),
+    projectTrusted: settings.isProjectTrusted?.() ?? true,
     eligibleModelIds,
   });
 }

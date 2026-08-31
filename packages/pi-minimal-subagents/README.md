@@ -40,6 +40,43 @@ Configure the extension in Pi's standard settings files:
 
 Project values override global values. Run `/reload` after editing either file.
 
+## Subagent Access
+
+`minimalSubagents.enabled` controls whether the six Root Agent Coordinator
+Tools start active. It defaults to `true`; a trusted project value overrides
+the global value.
+
+```json
+{
+  "minimalSubagents": {
+    "enabled": false
+  }
+}
+```
+
+Use `/subagents` to inspect or change access without editing JSON:
+
+```text
+/subagents
+/subagents status
+/subagents enable|disable|reset
+/subagents enable|disable|reset --global
+/subagents enable|disable|reset --project
+```
+
+Bare `/subagents` means `status`. Unscoped changes apply to the selected
+session-tree branch. `reset` removes that override and follows project, global,
+then the built-in default. Scoped changes update both the selected branch and
+the chosen settings file; project changes require a trusted project. A malformed
+settings file is left unchanged and reported with its path.
+
+Disabling Subagent Access removes all six Coordinator Tools from the Root
+Agent while preserving unrelated tools. It does not cancel or alter existing
+Child Agents, their Launch Contracts or fanout capability, Coordination Message
+delivery, or terminal-result delivery. Reload and resume preserve the selected
+branch override, `/tree` restores the newly selected branch, forks inherit the
+source branch, and a new branch without an override follows settings.
+
 ## Model roles
 
 `minimalSubagents.modelRoles` gives the parent agent advisory names for
@@ -141,7 +178,15 @@ lists: `"read"` grants `read`, `grep`, `find`, and `ls`; `"modify"` adds
 named ordinary tool and does not expand a preset. Coordinator tools are
 injected separately according to delegation and must not appear in `tools`;
 misuse returns an actionable error. Use the string preset when a child needs
-the complete read-only discovery bundle.
+the complete read-only discovery bundle. Child sessions load the Root Agent's
+configured settings and extensions, excluding the recursive
+`pi-minimal-subagents` entrypoint. Project Context controls only project-scoped
+AGENTS instructions and skills; omitting it retains user instructions and
+skills plus project settings, extensions, providers, and tools. A configured
+`pi-codex-conversion` adapter replaces a complete granted tool group only; a
+read-only child retains Pi's read tools instead of gaining an arbitrary shell.
+Status reports effective adapter tools while the Launch Contract continues to
+record the originally granted capability names.
 
 `agent_message` reports whether a message was delivered through an active
 parent wait, queued for the recipient, or failed. `subagent_wait` can return an
@@ -202,6 +247,18 @@ selected branch and proceeds only when its canonical `parentSession` proves the
 source file; it never substitutes the source session's newer head.
 
 ## Status and TUI
+
+In TUI mode, `/subagents status` opens a live read-only hierarchy. Rows begin
+collapsed; use Up/Down to select, Enter to expand Recent Activity, the configured
+tool-expansion key to reveal tool output, page keys to scroll, and Escape to
+close. Expanded activity uses Pi's transcript components, updates once per
+second, remains bounded, and omits images. The header reports the effective
+access source, authored settings, direct running/idle counts, and actual
+Coordinator Tool activation. Partial external activation is reported as
+`N/6 active`; status does not repair it.
+
+RPC mode receives a concise status notification. JSON and print modes produce
+no observer-only output.
 
 Visible Child Agent rows show the canonical `provider/model:thinking` Runtime
 Profile. Status uses the live Runtime Profile while a runtime exists and falls

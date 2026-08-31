@@ -3,7 +3,10 @@ import { Type } from "typebox";
 import { THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
 
 const SessionContextSchema = StringEnum(["inherit", "compact", "omit"] as const);
-const ProjectContextSchema = StringEnum(["inherit", "omit"] as const);
+const ProjectContextSchema = StringEnum(["inherit", "omit"] as const, {
+  description:
+    "Whether to include project-scoped AGENTS.md instructions and skills. Settings, extensions, providers, and tools remain available.",
+});
 const DelegationSchema = StringEnum(["none", "fanout"] as const);
 const ThinkingLevelSchema = StringEnum(THINKING_LEVELS);
 const ToolSelectionSchema = Type.Union(

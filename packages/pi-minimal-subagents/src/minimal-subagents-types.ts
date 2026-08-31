@@ -1,5 +1,6 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 /** Controls how much committed caller conversation enters a new child session. */
 export type SessionContextMode = "inherit" | "compact" | "omit";
@@ -122,6 +123,17 @@ export interface RecentAgentActivity {
   truncated: boolean;
 }
 
+/** Holds a bounded, image-free process-local Child Agent transcript for trusted status UI. */
+export interface ChildAgentTranscriptSnapshot {
+  messages: AgentMessage[];
+  /** Index of the current streaming assistant message when it remains in the bounded tail. */
+  streamingAssistantIndex?: number;
+  /** Real Child Agent tool definitions referenced by visible tool calls. */
+  toolDefinitions: ToolDefinition[];
+  /** Best-known status or result text when no live Child Agent runtime exists. */
+  fallback?: string;
+}
+
 /** Extends summary status with launch, dependency, recent-message, and recent-work diagnostics. */
 export interface AgentDetail extends AgentSummary {
   session_file?: string;
@@ -223,10 +235,14 @@ export interface ChildAgentRuntime {
   dispose(): void;
   /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
   getRuntimeProfile(): RuntimeProfile | undefined;
+  /** Return the effective ordinary tools after child extensions apply runtime adapters. */
+  getActiveToolNames?(): string[];
   /** Clone committed child transcript messages while excluding the streaming assistant tail. */
   snapshotCommittedMessages(): AgentMessage[];
   /** Clone child transcript messages including the current streaming assistant tail. */
   snapshotActivityMessages(): AgentMessage[];
+  /** Select the bounded process-local transcript and its real visible tool definitions. */
+  snapshotActivityTranscript?(): ChildAgentTranscriptSnapshot;
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
   getUsage(): Usage | undefined;
 }
