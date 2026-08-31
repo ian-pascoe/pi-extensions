@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.6.0
+
+### Minor Changes
+
+- 33923bb: Add `/subagents` for branch, global, and trusted-project Subagent Access controls plus live Child Agent status, configured Child Agent extensions, and capability-bounded runtime tool adapters.
+
 ## 0.5.0
 
 ### Minor Changes
