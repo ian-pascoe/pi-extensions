@@ -1,5 +1,5 @@
 import type { ForkSnapshot } from "./minimal-subagents-types.js";
-import { canonicalPath } from "./minimal-subagents-sessions.js";
+import { canonicalPath } from "./minimal-subagents-paths.js";
 
 declare global {
   // eslint-disable-next-line no-var -- A process-global handoff must be visible to replacement extension instances.

@@ -63,6 +63,7 @@ function childRuntime(
     abort: vi.fn<() => Promise<void>>(async () => undefined),
     dispose: vi.fn(),
     getRuntimeProfile: vi.fn<() => RuntimeProfile | undefined>(() => runtimeProfile),
+    getActiveToolNames: vi.fn(() => ["exec_command", "apply_patch"]),
     snapshotCommittedMessages: vi.fn<() => AgentMessage[]>(() => []),
     snapshotActivityMessages: vi.fn<() => AgentMessage[]>(() => []),
     snapshotActivityTranscript: vi.fn<() => ChildAgentTranscriptSnapshot>(() => ({
@@ -259,6 +260,7 @@ describe("minimal subagents coordinator", () => {
           agent_id: "worker",
           model: "live/provider/model:variant",
           thinking_level: "high",
+          tools: ["exec_command", "apply_patch"],
         },
       ],
     });

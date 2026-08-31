@@ -18,6 +18,7 @@ import {
   type SessionStartEvent,
   type SessionTreeEvent,
   type Theme,
+  type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -341,6 +342,7 @@ async function createExtensionHarness(
   sessionManager: SessionManager,
   sessionFactory = new RecordingAgentSessionFactory(),
   createSessionFactory?: (options: PiAgentSessionFactoryOptions) => AgentSessionFactory,
+  rootTools?: ToolInfo[],
 ): Promise<ExtensionHarness> {
   const cwd = sessionManager.getCwd();
   const agentDirectory = await createTemporaryDirectory("minimal-subagents-lifecycle-agent-");
@@ -393,19 +395,20 @@ async function createExtensionHarness(
       getSessionName: () => sessionManager.getSessionName(),
       setLabel: (entryId, label) => sessionManager.appendLabelChange(entryId, label),
       getActiveTools: () => [...activeTools],
-      getAllTools: () => [
-        {
-          name: "read",
-          description: "Read a file",
-          parameters: Type.Object({}),
-          sourceInfo: {
-            path: "<builtin:read>",
-            source: "builtin",
-            scope: "temporary",
-            origin: "top-level",
+      getAllTools: () =>
+        rootTools ?? [
+          {
+            name: "read",
+            description: "Read a file",
+            parameters: Type.Object({}),
+            sourceInfo: {
+              path: "<builtin:read>",
+              source: "builtin",
+              scope: "temporary",
+              origin: "top-level",
+            },
           },
-        },
-      ],
+        ],
       setActiveTools: (toolNames) => {
         activeTools = [...toolNames];
       },
@@ -555,6 +558,48 @@ describe("minimal subagents extension lifecycle", () => {
       source_root_session_file: sourceSessionFile,
       source_root_session_id: sessionManager.getSessionId(),
     });
+  });
+
+  it("identifies pi-codex-conversion as a Child Agent runtime tool adapter", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-tool-provider-cwd-");
+    const sessionDirectory = await createTemporaryDirectory(
+      "minimal-subagents-tool-provider-sessions-",
+    );
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const sessionFactory = new RecordingAgentSessionFactory();
+    const adapterEntrypoint = join(cwd, "codex-tool-adapter.js");
+    let capturedOptions: PiAgentSessionFactoryOptions | undefined;
+    const harness = await createExtensionHarness(
+      sessionManager,
+      sessionFactory,
+      (options) => {
+        capturedOptions = options;
+        return sessionFactory;
+      },
+      [
+        {
+          name: "exec_command",
+          description: "Run a command",
+          parameters: Type.Object({}),
+          sourceInfo: {
+            path: adapterEntrypoint,
+            source: "npm:@howaboua/pi-codex-conversion",
+            scope: "user",
+            origin: "package",
+          },
+        },
+      ],
+    );
+    harness.setActiveTools(["exec_command"]);
+
+    await harness.runner.emit(sessionStartEvent());
+
+    expect(capturedOptions?.getRuntimeToolAdapters?.()).toEqual([
+      {
+        toolNames: ["exec_command"],
+      },
+    ]);
+    await emitSessionShutdown(harness, "quit");
   });
 
   it("changes branch and scoped Subagent Access through the registered command", async () => {

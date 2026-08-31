@@ -56,6 +56,7 @@ import {
   findDeliveryEvidence,
   PiAgentSessionFactory,
   type PiAgentSessionFactoryOptions,
+  type RuntimeToolAdapter,
   unavailableAgent,
 } from "./minimal-subagents-sessions.js";
 import { shutdownMinimalSubagentsSession } from "./minimal-subagents-shutdown.js";
@@ -82,6 +83,28 @@ import type {
 } from "./minimal-subagents-types.js";
 
 const EXTENSION_ENTRYPOINT = fileURLToPath(new URL("./index.ts", import.meta.url));
+const CODEX_CONVERSION_TOOL_ADAPTER_SOURCE = "npm:@howaboua/pi-codex-conversion";
+
+function codexConversionRuntimeToolAdapters(pi: ExtensionAPI): RuntimeToolAdapter[] {
+  const extensions = new Map<
+    string,
+    {
+      path: string;
+      source: string;
+      toolNames: string[];
+    }
+  >();
+  for (const tool of pi.getAllTools()) {
+    const { path, source } = tool.sourceInfo;
+    if (path.startsWith("<")) continue;
+    const extension = extensions.get(path) ?? { path, source, toolNames: [] };
+    extension.toolNames.push(tool.name);
+    extensions.set(path, extension);
+  }
+  return [...extensions.values()]
+    .filter((extension) => extension.source.startsWith(CODEX_CONVERSION_TOOL_ADAPTER_SOURCE))
+    .map((extension) => ({ toolNames: extension.toolNames }));
+}
 
 function currentConversationMessages(context: ExtensionContext): AgentMessage[] {
   const entries = context.sessionManager.getEntries();
@@ -438,6 +461,7 @@ export class MinimalSubagentsLifecycleController {
       eligibleModelIds,
       modelScopeRestricted: enabledModelPatterns !== undefined,
       availableToolNames,
+      getRuntimeToolAdapters: () => codexConversionRuntimeToolAdapters(this.pi),
       projectTrusted: context.isProjectTrusted(),
       maxSubagentDepth: minimalSubagentsConfig.maxSubagentDepth,
       onChildSessionActivity: () => activeCoordinator?.scheduleDeliveryReconciliation(),

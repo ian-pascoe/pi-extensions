@@ -235,6 +235,8 @@ export interface ChildAgentRuntime {
   dispose(): void;
   /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
   getRuntimeProfile(): RuntimeProfile | undefined;
+  /** Return the effective ordinary tools after child extensions apply runtime adapters. */
+  getActiveToolNames?(): string[];
   /** Clone committed child transcript messages while excluding the streaming assistant tail. */
   snapshotCommittedMessages(): AgentMessage[];
   /** Clone child transcript messages including the current streaming assistant tail. */

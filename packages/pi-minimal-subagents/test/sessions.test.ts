@@ -1,26 +1,23 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   AssistantMessage,
+  Model,
   ToolResultMessage,
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
 import {
   AgentSession,
-  createExtensionRuntime,
   SessionManager,
-  type Extension,
-  type LoadExtensionsResult,
-  type RegisteredTool,
+  SettingsManager,
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
 import {
   captureChildTurnOutcome,
-  createChildResourceLoaderOptions,
   createPersistentChildIdentity,
   findDeliveryEvidence,
   PiAgentSessionFactory,
@@ -37,6 +34,19 @@ const ZERO_USAGE: Usage = {
   cacheWrite: 0,
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+const TEST_MODEL: Model<"openai-completions"> = {
+  id: "model",
+  name: "Child tool adapter test model",
+  api: "openai-completions",
+  provider: "provider",
+  baseUrl: "http://127.0.0.1:1/v1",
+  reasoning: true,
+  input: ["text"],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow: 128_000,
+  maxTokens: 8_192,
 };
 
 function userMessage(text: string, timestamp: number): UserMessage {
@@ -118,41 +128,6 @@ function persistedAgent(): PersistedAgent {
     availability: "available",
     missing_dependencies: [],
     recent_messages: [],
-  };
-}
-
-function loadedExtension(resolvedPath: string, toolNames: readonly string[]): Extension {
-  const sourceInfo: Extension["sourceInfo"] = {
-    path: resolvedPath,
-    source: resolvedPath,
-    scope: "temporary",
-    origin: "top-level",
-  };
-  const tools = new Map<string, RegisteredTool>();
-  for (const toolName of toolNames) {
-    tools.set(toolName, {
-      sourceInfo,
-      definition: {
-        name: toolName,
-        label: toolName,
-        description: "test tool",
-        parameters: Type.Object({}),
-        async execute() {
-          return { content: [{ type: "text", text: "ok" }], details: {} };
-        },
-      },
-    });
-  }
-  return {
-    path: resolvedPath,
-    resolvedPath,
-    sourceInfo,
-    handlers: new Map(),
-    tools,
-    messageRenderers: new Map(),
-    commands: new Map(),
-    flags: new Map(),
-    shortcuts: new Map(),
   };
 }
 
@@ -452,71 +427,191 @@ describe("minimal subagent sessions", () => {
     });
   });
 
-  it("filters the exact coordinator entrypoint and extensions missing selected tools", () => {
+  it("loads all configured extensions except the coordinator entrypoint", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-resources-"));
     temporaryDirectories.push(directory);
     const coordinatorEntrypoint = join(directory, "index.ts");
-    const options = createChildResourceLoaderOptions({
+    const selectedEntrypoint = join(directory, "selected.ts");
+    const otherEntrypoint = join(directory, "other.ts");
+    for (const extensionPath of [coordinatorEntrypoint, selectedEntrypoint, otherEntrypoint]) {
+      writeFileSync(extensionPath, "export default function extension() {}\n");
+    }
+    writeFileSync(
+      join(directory, "settings.json"),
+      JSON.stringify({
+        extensions: [coordinatorEntrypoint, selectedEntrypoint, otherEntrypoint],
+      }),
+    );
+    const loader = createChildResourceLoader({
       cwd: directory,
       agentDir: directory,
       projectContext: "inherit",
       extensionEntrypoint: coordinatorEntrypoint,
       systemPromptBlock: "child prompt",
-      ordinaryToolNames: ["custom_read"],
+      settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
     });
-    const loadResult: LoadExtensionsResult = {
-      extensions: [
-        loadedExtension(coordinatorEntrypoint, ["custom_read"]),
-        loadedExtension(join(directory, "selected.ts"), ["custom_read"]),
-        loadedExtension(join(directory, "irrelevant.ts"), ["other"]),
-      ],
-      errors: [
-        { path: coordinatorEntrypoint, error: "recursive" },
-        { path: join(directory, "broken.ts"), error: "broken" },
-      ],
-      runtime: createExtensionRuntime(),
-    };
-    const result = options.extensionsOverride?.(loadResult);
-    expect(result?.extensions.map((extension) => extension.resolvedPath)).toEqual([
-      join(directory, "selected.ts"),
+
+    await loader.reload();
+
+    expect(loader.getExtensions().extensions.map((extension) => extension.resolvedPath)).toEqual([
+      selectedEntrypoint,
+      otherEntrypoint,
     ]);
-    expect(result?.errors).toEqual([{ path: join(directory, "broken.ts"), error: "broken" }]);
   });
 
-  it("omits project resources, recognizes built-ins, and appends the child prompt", () => {
-    const options = createChildResourceLoaderOptions({
-      cwd: "/tmp/project",
-      agentDir: "/tmp/agent",
+  it("lets a retained tool adapter replace built-ins in the effective child runtime", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));
+    temporaryDirectories.push(directory);
+    const adapterEntrypoint = join(directory, "tool-adapter.ts");
+    const globalObserverEntrypoint = join(directory, "global-observer.ts");
+    const globalObserverMarker = join(directory, "global-observer-ran");
+    const projectAdapterEntrypoint = join(directory, ".pi", "project-adapter.ts");
+    const projectAdapterMarker = join(directory, "project-adapter-ran");
+    writeFileSync(
+      adapterEntrypoint,
+      `import { Type } from "typebox";
+export default function adapter(pi) {
+  pi.registerTool({
+    name: "exec_command",
+    label: "exec_command",
+    description: "test adapter command",
+    parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; },
+  });
+  pi.on("session_start", () => pi.setActiveTools(["exec_command", "project_tool"]));
+}
+`,
+    );
+    writeFileSync(
+      globalObserverEntrypoint,
+      `import { writeFileSync } from "node:fs";
+export default function globalObserver(pi) {
+  pi.on("session_start", () => writeFileSync(${JSON.stringify(globalObserverMarker)}, "ran"));
+}
+`,
+    );
+    mkdirSync(join(directory, ".pi"));
+    writeFileSync(
+      projectAdapterEntrypoint,
+      `import { writeFileSync } from "node:fs";
+import { Type } from "typebox";
+export default function projectAdapter(pi) {
+  writeFileSync(${JSON.stringify(projectAdapterMarker)}, "ran");
+  pi.registerTool({
+    name: "project_tool",
+    label: "project_tool",
+    description: "test project adapter command",
+    parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; },
+  });
+}
+`,
+    );
+    writeFileSync(
+      join(directory, ".pi", "settings.json"),
+      JSON.stringify({ extensions: [projectAdapterEntrypoint] }),
+    );
+    writeFileSync(
+      join(directory, "settings.json"),
+      JSON.stringify({ extensions: [adapterEntrypoint, globalObserverEntrypoint] }),
+    );
+    const agent = persistedAgent();
+    const identity = createPersistentChildIdentity({
+      agent,
+      importedMessages: [],
+      cwd: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+    });
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    agent.session_leaf_id = identity.sessionLeafId;
+    agent.launch_contract.ordinary_tools = ["read"];
+    agent.launch_contract.project_context = "omit";
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "minimal-subagents.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read", "exec_command"],
+      getRuntimeToolAdapters: () => [
+        {
+          toolNames: ["exec_command"],
+        },
+        {
+          toolNames: ["project_tool"],
+        },
+      ],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+
+    const runtime = await factory.openRuntime(agent);
+
+    expect(runtime.getActiveToolNames?.()).toEqual(["exec_command", "project_tool"]);
+    expect(existsSync(globalObserverMarker)).toBe(true);
+    expect(existsSync(projectAdapterMarker)).toBe(true);
+    runtime.dispose();
+  });
+
+  it("omits only project AGENTS context and skills", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-project-context-"));
+    temporaryDirectories.push(directory);
+    const agentDir = join(directory, "agent");
+    const projectDir = join(directory, "project");
+    mkdirSync(join(agentDir, "skills", "user-skill"), { recursive: true });
+    mkdirSync(join(agentDir, "skills", "shared-skill"), { recursive: true });
+    mkdirSync(join(projectDir, ".pi", "skills", "project-skill"), { recursive: true });
+    mkdirSync(join(projectDir, ".pi", "skills", "shared-skill"), { recursive: true });
+    mkdirSync(join(projectDir, ".pi", "prompts"), { recursive: true });
+    writeFileSync(join(agentDir, "AGENTS.md"), "user context");
+    writeFileSync(join(projectDir, "AGENTS.md"), "project context");
+    writeFileSync(
+      join(agentDir, "skills", "user-skill", "SKILL.md"),
+      "---\nname: user-skill\ndescription: User skill\n---\n",
+    );
+    writeFileSync(
+      join(projectDir, ".pi", "skills", "project-skill", "SKILL.md"),
+      "---\nname: project-skill\ndescription: Project skill\n---\n",
+    );
+    writeFileSync(
+      join(agentDir, "skills", "shared-skill", "SKILL.md"),
+      "---\nname: shared-skill\ndescription: User fallback\n---\n",
+    );
+    writeFileSync(
+      join(projectDir, ".pi", "skills", "shared-skill", "SKILL.md"),
+      "---\nname: shared-skill\ndescription: Project winner\n---\n",
+    );
+    writeFileSync(join(projectDir, ".pi", "prompts", "project-prompt.md"), "Project prompt");
+    writeFileSync(join(projectDir, ".pi", "SYSTEM.md"), "Project system prompt");
+    writeFileSync(join(projectDir, ".pi", "APPEND_SYSTEM.md"), "Project appended prompt");
+    const loader = createChildResourceLoader({
+      cwd: projectDir,
+      agentDir,
       projectContext: "omit",
-      extensionEntrypoint: "/tmp/index.ts",
+      extensionEntrypoint: join(directory, "index.ts"),
       systemPromptBlock: "child prompt",
-      ordinaryToolNames: ["read"],
+      settingsManager: SettingsManager.create(projectDir, agentDir, { projectTrusted: true }),
     });
-    expect(options.noExtensions).toBe(true);
-    expect(options.noContextFiles).toBe(true);
-    expect(options.noSkills).toBe(true);
-    expect(options.appendSystemPromptOverride?.(["base"])).toEqual(["child prompt"]);
-  });
 
-  it("inherits project resources and base prompt blocks when project context is included", () => {
-    const options = createChildResourceLoaderOptions({
-      cwd: "/tmp/project",
-      agentDir: "/tmp/agent",
-      projectContext: "inherit",
-      extensionEntrypoint: "/tmp/index.ts",
-      systemPromptBlock: "child prompt",
-      ordinaryToolNames: ["read"],
-    });
-    expect(options.noExtensions).toBe(true);
-    expect(options.noContextFiles).toBe(false);
-    expect(options.noSkills).toBe(false);
-    expect(options.noPromptTemplates).toBe(false);
-    expect(options.agentsFilesOverride).toBeUndefined();
-    expect(options.appendSystemPromptOverride?.(["base", "project"])).toEqual([
-      "base",
-      "project",
-      "child prompt",
+    await loader.reload();
+
+    expect(loader.getAgentsFiles().agentsFiles.map(({ content }) => content)).toEqual([
+      "user context",
     ]);
+    const skillNames = loader.getSkills().skills.map(({ name }) => name);
+    expect(skillNames).toContain("user-skill");
+    expect(skillNames).not.toContain("project-skill");
+    expect(loader.getSkills().skills.find(({ name }) => name === "shared-skill")?.description).toBe(
+      "User fallback",
+    );
+    expect(loader.getPrompts().prompts.map(({ name }) => name)).toContain("project-prompt");
+    expect(loader.getSystemPrompt()).toBe("Project system prompt");
+    expect(loader.getAppendSystemPrompt()).toEqual(["Project appended prompt", "child prompt"]);
   });
 
   it("finds exact delivery evidence in custom results and wait tool results", () => {
