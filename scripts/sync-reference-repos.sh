@@ -42,3 +42,5 @@ sync_repo() {
 
 sync_repo "pi" "https://github.com/earendil-works/pi.git"
 sync_repo "opencode" "https://github.com/anomalyco/opencode.git"
+sync_repo "codex" "https://github.com/openai/codex.git"
+sync_repo "oh-my-pi" "https://github.com/can1357/oh-my-pi.git"
