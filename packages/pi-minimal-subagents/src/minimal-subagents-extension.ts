@@ -680,13 +680,6 @@ export class MinimalSubagentsLifecycleController {
 
     let persistedScope: "global" | "project" | undefined;
     if (command.scope !== "session") {
-      if (command.scope === "project" && !context.isProjectTrusted()) {
-        context.ui.notify(
-          "Minimal subagents project settings write refused because the project is not trusted.",
-          "error",
-        );
-        return;
-      }
       const writeResult = await new MinimalSubagentsSettingsWriter(
         context,
         () => accessSession.agentDir,
@@ -758,15 +751,9 @@ export class MinimalSubagentsLifecycleController {
   }
 
   private currentSubagentStatusAccess(): MinimalSubagentsStatusAccess {
-    const access = this.currentSubagentAccessSnapshot();
     return {
-      enabled: access.enabled,
-      source: access.source,
-      branch: access.branchOverride,
-      global: access.globalEnabled,
-      project: access.projectEnabled,
+      ...this.currentSubagentAccessSnapshot(),
       projectTrusted: this.accessSession?.context.isProjectTrusted() ?? false,
-      activeCoordinatorToolCount: access.coordinatorTools.activeCount,
     };
   }
 

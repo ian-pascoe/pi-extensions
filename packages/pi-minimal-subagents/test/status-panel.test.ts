@@ -28,11 +28,15 @@ function summary(agentId: string, overrides: Partial<AgentSummary> = {}): AgentS
 const access: MinimalSubagentsStatusAccess = {
   enabled: true,
   source: "branch",
-  branch: "enabled",
-  global: false,
-  project: true,
+  branchOverride: "enabled",
+  globalEnabled: false,
+  projectEnabled: true,
+  coordinatorTools: {
+    activeCount: 3,
+    totalCount: 6,
+    state: "partial",
+  },
   projectTrusted: true,
-  activeCoordinatorToolCount: 3,
 };
 
 const ZERO_USAGE: Usage = {

@@ -323,25 +323,11 @@ function resolveSubagentAccessSettings(
   globalEnabled: boolean | undefined,
   projectEnabled: boolean | undefined,
 ): ResolvedSubagentAccessSettings {
-  if (projectEnabled !== undefined) {
-    return {
-      enabled: projectEnabled,
-      source: "project",
-      globalEnabled,
-      projectEnabled,
-    };
-  }
-  if (globalEnabled !== undefined) {
-    return {
-      enabled: globalEnabled,
-      source: "global",
-      globalEnabled,
-      projectEnabled,
-    };
-  }
+  const source =
+    projectEnabled !== undefined ? "project" : globalEnabled !== undefined ? "global" : "default";
   return {
-    enabled: true,
-    source: "default",
+    enabled: projectEnabled ?? globalEnabled ?? true,
+    source,
     globalEnabled,
     projectEnabled,
   };

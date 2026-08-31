@@ -16,42 +16,22 @@ export type ParseSubagentsCommandResult =
   | { readonly ok: true; readonly command: SubagentsCommand }
   | { readonly ok: false; readonly message: string };
 
-const COMMAND_COMPLETIONS: readonly AutocompleteItem[] = [
-  { value: "status", label: "status", description: "Show live Child Agent status" },
-  { value: "enable", label: "enable", description: "Enable for this branch" },
-  {
-    value: "enable --global",
-    label: "enable --global",
-    description: "Enable by default globally",
-  },
-  {
-    value: "enable --project",
-    label: "enable --project",
-    description: "Enable by default for this project",
-  },
-  { value: "disable", label: "disable", description: "Disable for this branch" },
-  {
-    value: "disable --global",
-    label: "disable --global",
-    description: "Disable by default globally",
-  },
-  {
-    value: "disable --project",
-    label: "disable --project",
-    description: "Disable by default for this project",
-  },
-  { value: "reset", label: "reset", description: "Follow settings for this branch" },
-  {
-    value: "reset --global",
-    label: "reset --global",
-    description: "Remove the global default",
-  },
-  {
-    value: "reset --project",
-    label: "reset --project",
-    description: "Remove the project default",
-  },
-];
+const SUBAGENTS_COMMAND_COMPLETION_DETAILS = [
+  ["status", "Show live Child Agent status"],
+  ["enable", "Enable for this branch"],
+  ["enable --global", "Enable by default globally"],
+  ["enable --project", "Enable by default for this project"],
+  ["disable", "Disable for this branch"],
+  ["disable --global", "Disable by default globally"],
+  ["disable --project", "Disable by default for this project"],
+  ["reset", "Follow settings for this branch"],
+  ["reset --global", "Remove the global default"],
+  ["reset --project", "Remove the project default"],
+] as const;
+
+const COMMAND_COMPLETIONS: readonly AutocompleteItem[] = SUBAGENTS_COMMAND_COMPLETION_DETAILS.map(
+  ([value, description]) => ({ value, label: value, description }),
+);
 
 /** Parse the exact `/subagents` argument grammar without accepting extra operands. */
 export function parseSubagentsCommandArguments(input: string): ParseSubagentsCommandResult {

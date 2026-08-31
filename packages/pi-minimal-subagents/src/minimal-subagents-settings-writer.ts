@@ -69,7 +69,6 @@ const SettingsJsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
 const SETTINGS_LOCK_RETRY_DELAY_MS = 20;
 const SETTINGS_LOCK_RETRIES = 100;
 const NEW_SETTINGS_FILE_MODE = 0o600;
-const settingsWriteTails = new Map<string, Promise<void>>();
 
 function stripUtf8Bom(content: string): string {
   return content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
@@ -165,19 +164,6 @@ function filesystemWriteError(
   );
 }
 
-function enqueueSettingsWrite<T>(path: string, write: () => Promise<T>): Promise<T> {
-  const predecessor = settingsWriteTails.get(path) ?? Promise.resolve();
-  const operation = predecessor.catch(() => undefined).then(write);
-  const tail = operation.then(
-    () => undefined,
-    () => undefined,
-  );
-  settingsWriteTails.set(path, tail);
-  return operation.finally(() => {
-    if (settingsWriteTails.get(path) === tail) settingsWriteTails.delete(path);
-  });
-}
-
 async function readSettingsDocumentUnderLock(
   scope: MinimalSubagentsSettingsScope,
   path: string,
@@ -260,7 +246,7 @@ export class MinimalSubagentsSettingsWriter {
       };
     }
 
-    return enqueueSettingsWrite(path, () => this.writeEnabledUnderLock(scope, path, enabled));
+    return this.writeEnabledUnderLock(scope, path, enabled);
   }
 
   private async writeEnabledUnderLock(

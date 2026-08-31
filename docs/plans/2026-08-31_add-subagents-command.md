@@ -101,7 +101,7 @@ Pi exposes `SettingsManager` for reading custom fields but no supported generic 
 The writer must:
 
 - derive the global path from `getAgentDir()` and the project path from `context.cwd` plus Pi's exported `CONFIG_DIR_NAME`;
-- serialize same-process calls and acquire `proper-lockfile` on the target path so it interoperates with Pi's writer;
+- acquire `proper-lockfile` on the target path to serialize same- and cross-process calls and interoperate with Pi's writer;
 - create the parent directory when absent;
 - re-read bytes while holding the lock;
 - strip a UTF-8 BOM, parse JSON, and require an object root plus an object-or-absent `minimalSubagents` value;
@@ -197,7 +197,7 @@ Add real-filesystem tests around a temporary agent directory and project:
 - preserve existing mode and use `0o600` for a new file;
 - reject malformed JSON, array roots, and non-object `minimalSubagents` without changing bytes;
 - reject an untrusted project before I/O;
-- serialize concurrent same-process writes and coordinate with another `proper-lockfile` holder;
+- serialize concurrent writes through `proper-lockfile` and coordinate with another lock holder;
 - clean temporary files after a forced write/rename failure; and
 - re-read under lock so an unrelated concurrent edit survives.
 

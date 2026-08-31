@@ -21,6 +21,7 @@ import {
   subagentStatusLadder,
 } from "./minimal-subagents-rendering.js";
 import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
+import type { SubagentAccessSnapshot } from "./minimal-subagents-access.js";
 import type {
   AgentSummary,
   ChildAgentTranscriptSnapshot,
@@ -40,19 +41,10 @@ function startStatusPanelRefresh(refresh: () => void): () => void {
   return () => clearInterval(interval);
 }
 
-/** Names the setting layer currently supplying effective Root Agent Subagent Access. */
-export type MinimalSubagentsStatusAccessSource = "branch" | "project" | "global" | "default";
-
 /** Supplies read-only Subagent Access data without coupling the panel to persistence mechanics. */
-export interface MinimalSubagentsStatusAccess {
-  enabled: boolean;
-  source: MinimalSubagentsStatusAccessSource;
-  branch: "enabled" | "disabled" | "inherit";
-  global: boolean | undefined;
-  project: boolean | undefined;
-  projectTrusted: boolean;
-  activeCoordinatorToolCount: number;
-}
+export type MinimalSubagentsStatusAccess = SubagentAccessSnapshot & {
+  readonly projectTrusted: boolean;
+};
 
 interface FlattenedStatusAgent {
   agent: AgentSummary;
@@ -74,7 +66,7 @@ function authoredAccessValue(value: boolean | undefined): string {
   return value === undefined ? "unset" : value ? "enabled" : "disabled";
 }
 
-function statusAccessSourceLabel(source: MinimalSubagentsStatusAccessSource): string {
+function statusAccessSourceLabel(source: SubagentAccessSnapshot["source"]): string {
   switch (source) {
     case "branch":
       return "branch override";
@@ -340,14 +332,14 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     const running = direct.filter((agent) => agent.state === "running").length;
     const idle = direct.length - running;
     const accessState = this.access.enabled ? "enabled" : "disabled";
-    const toolState = `${this.access.activeCoordinatorToolCount}/${COORDINATOR_TOOL_COUNT} active${
-      this.access.activeCoordinatorToolCount > 0 &&
-      this.access.activeCoordinatorToolCount < COORDINATOR_TOOL_COUNT
+    const activeCoordinatorToolCount = this.access.coordinatorTools.activeCount;
+    const toolState = `${activeCoordinatorToolCount}/${COORDINATOR_TOOL_COUNT} active${
+      activeCoordinatorToolCount > 0 && activeCoordinatorToolCount < COORDINATOR_TOOL_COUNT
         ? " (inconsistent)"
         : ""
     }`;
     const projectValue = this.access.projectTrusted
-      ? authoredAccessValue(this.access.project)
+      ? authoredAccessValue(this.access.projectEnabled)
       : "unavailable (untrusted)";
     return [
       truncateToWidth(this.theme.bold("Subagents status"), width, "…"),
@@ -357,7 +349,7 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
         "…",
       ),
       truncateToWidth(
-        `Defaults: branch ${this.access.branch} · project ${projectValue} · global ${authoredAccessValue(this.access.global)}`,
+        `Defaults: branch ${this.access.branchOverride} · project ${projectValue} · global ${authoredAccessValue(this.access.globalEnabled)}`,
         width,
         "…",
       ),
@@ -449,7 +441,7 @@ export class MinimalSubagentsStatusPanelController {
       const running = direct.filter((agent) => agent.state === "running").length;
       const access = this.getAccess();
       this.context.ui.notify(
-        `Subagent Access ${access.enabled ? "enabled" : "disabled"} (${statusAccessSourceLabel(access.source)}); Coordinator Tools ${access.activeCoordinatorToolCount}/${COORDINATOR_TOOL_COUNT}; direct Children ${running} running, ${direct.length - running} idle`,
+        `Subagent Access ${access.enabled ? "enabled" : "disabled"} (${statusAccessSourceLabel(access.source)}); Coordinator Tools ${access.coordinatorTools.activeCount}/${COORDINATOR_TOOL_COUNT}; direct Children ${running} running, ${direct.length - running} idle`,
         "info",
       );
       return Promise.resolve();

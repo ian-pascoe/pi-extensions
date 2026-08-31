@@ -126,26 +126,10 @@ export function reconcileCoordinatorToolAccess(
   activeToolNames: readonly string[],
   enabled: boolean,
 ): string[] {
-  if (!enabled) {
-    return activeToolNames.filter((toolName) => !COORDINATOR_TOOL_NAME_SET.has(toolName));
-  }
-
-  const reconciled: string[] = [];
-  const includedCoordinatorNames = new Set<string>();
-  for (const toolName of activeToolNames) {
-    if (!COORDINATOR_TOOL_NAME_SET.has(toolName)) {
-      reconciled.push(toolName);
-      continue;
-    }
-    if (!includedCoordinatorNames.has(toolName)) {
-      reconciled.push(toolName);
-      includedCoordinatorNames.add(toolName);
-    }
-  }
-  for (const coordinatorToolName of COORDINATOR_TOOL_NAMES) {
-    if (!includedCoordinatorNames.has(coordinatorToolName)) reconciled.push(coordinatorToolName);
-  }
-  return reconciled;
+  const ordinaryToolNames = activeToolNames.filter(
+    (toolName) => !COORDINATOR_TOOL_NAME_SET.has(toolName),
+  );
+  return enabled ? [...ordinaryToolNames, ...COORDINATOR_TOOL_NAMES] : ordinaryToolNames;
 }
 
 /** Resolve branch state over settings and include read-only Coordinator Tool activation. */
