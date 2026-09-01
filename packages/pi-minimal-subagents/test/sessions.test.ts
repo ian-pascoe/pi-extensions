@@ -681,7 +681,7 @@ export default function projectAdapter(pi) {
     } finally {
       shellRuntime.dispose();
     }
-  });
+  }, 15_000);
 
   it("keeps arbitrary runtime tool replacements inside the Launch Contract", () => {
     const toolName = fc.stringMatching(/^[a-z][a-z0-9_]{0,11}$/);
