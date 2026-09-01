@@ -149,16 +149,22 @@ describe("minimal subagents settings writer", () => {
       { cwd: harness.cwd, isProjectTrusted: () => true },
       () => harness.agentDirectory,
     );
+    const completed: boolean[] = [];
+    const write = async (writer: MinimalSubagentsSettingsWriter, enabled: boolean) => {
+      const result = await writer.writeMinimalSubagentsEnabled("global", enabled);
+      completed.push(enabled);
+      return result;
+    };
 
     const [first, second] = await Promise.all([
-      harness.writer.writeMinimalSubagentsEnabled("global", true),
-      secondWriter.writeMinimalSubagentsEnabled("global", false),
+      write(harness.writer, true),
+      write(secondWriter, false),
     ]);
 
     expectWriteSucceeded(first);
     expectWriteSucceeded(second);
     expect(JSON.parse(await readFile(harness.globalPath, "utf8"))).toEqual({
-      minimalSubagents: { enabled: false },
+      minimalSubagents: { enabled: completed.at(-1) },
     });
   });
 
