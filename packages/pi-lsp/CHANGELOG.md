@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-lsp
 
+## 0.3.1
+
+### Patch Changes
+
+- 5cdd3b5: Update dependencies
+
 ## 0.3.0
 
 ### Minor Changes
