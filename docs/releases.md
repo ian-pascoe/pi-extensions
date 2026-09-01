@@ -23,11 +23,14 @@ This is the release procedure. Migration implementation publishes nothing.
 ```bash
 pnpm install --frozen-lockfile
 pnpm verify
+pnpm pack:check
+pnpm git-install:check
 pnpm changeset:status
 ```
 
-`pnpm verify` includes format, lint, typecheck, tests, package-tarball checks,
-and the Git-install check. It must pass before a version PR or publish.
+The release workflow runs `pnpm verify`, the package-tarball check, and the
+Git-install check in parallel. All three must pass before a version PR or
+publish.
 
 ## Initial scoped-package bootstrap
 

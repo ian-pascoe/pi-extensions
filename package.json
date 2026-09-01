@@ -23,7 +23,7 @@
     "publish-packages": "changeset publish",
     "test": "pnpm -r --filter './packages/*' test",
     "typecheck": "tsc --noEmit && pnpm -r --filter './packages/*' typecheck",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm pack:check && pnpm git-install:check",
+    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
     "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {
