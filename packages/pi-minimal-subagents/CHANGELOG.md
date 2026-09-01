@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.6.1
+
+### Patch Changes
+
+- d89b4ea: Queue parent messages into active child turns without racing a second prompt.
+
 ## 0.6.0
 
 ### Minor Changes
