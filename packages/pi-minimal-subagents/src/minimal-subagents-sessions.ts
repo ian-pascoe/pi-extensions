@@ -585,15 +585,14 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
   }
 
   async queueCoordinatorMessage(message: CoordinatorMessage): Promise<void> {
-    await this.session.sendCustomMessage(
-      {
-        customType: message.customType,
-        content: message.content,
-        display: true,
-        details: message.details,
-      },
-      { triggerTurn: true, deliverAs: "steer" },
-    );
+    this.session.agent.steer({
+      role: "custom",
+      customType: message.customType,
+      content: message.content,
+      display: true,
+      details: message.details,
+      timestamp: Date.now(),
+    });
   }
 
   async abort(): Promise<void> {

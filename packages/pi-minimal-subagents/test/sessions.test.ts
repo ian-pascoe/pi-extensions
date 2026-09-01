@@ -8,6 +8,7 @@ import type {
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
+import { Agent } from "@earendil-works/pi-agent-core";
 import {
   AgentSession,
   SessionManager,
@@ -26,7 +27,7 @@ import {
   verifyChildSessionIdentity,
   type SessionFileTrashCapability,
 } from "../src/minimal-subagents-sessions.js";
-import type { PersistedAgent } from "../src/minimal-subagents-types.js";
+import type { CoordinatorMessage, PersistedAgent } from "../src/minimal-subagents-types.js";
 
 const temporaryDirectories: string[] = [];
 const ZERO_USAGE: Usage = {
@@ -155,6 +156,64 @@ describe("minimal subagent sessions", () => {
       status: "completed",
       output: "completed before compaction",
     });
+  });
+
+  it("queues an active-turn coordination message without starting a second prompt", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-active-turn-message-"));
+    temporaryDirectories.push(directory);
+    const agent = persistedAgent();
+    const identity = createPersistentChildIdentity({
+      agent,
+      importedMessages: [],
+      cwd: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+    });
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    agent.session_leaf_id = identity.sessionLeafId;
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    const runtime = await factory.openRuntime(agent);
+    const secondPrompt = vi
+      .spyOn(AgentSession.prototype, "sendCustomMessage")
+      .mockRejectedValue(
+        new Error(
+          "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+        ),
+      );
+    const steer = vi.spyOn(Agent.prototype, "steer");
+    const message: CoordinatorMessage = {
+      customType: "minimal-subagents.message",
+      content: "change direction",
+      details: {
+        source_agent_id: "root",
+        destination_agent_id: "child",
+        source_turn_id: "root:turn",
+        message_id: "message",
+      },
+    };
+
+    try {
+      await expect(runtime.queueCoordinatorMessage(message)).resolves.toBeUndefined();
+      expect(secondPrompt).not.toHaveBeenCalled();
+      expect(steer).toHaveBeenCalledWith(expect.objectContaining({ role: "custom" }));
+    } finally {
+      secondPrompt.mockRestore();
+      steer.mockRestore();
+      runtime.dispose();
+    }
   });
 
   it("force-flushes persistent child identity before any model response", () => {
