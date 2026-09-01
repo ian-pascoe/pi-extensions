@@ -31,15 +31,12 @@ jobs:
       - name: Verify migration
         run: pnpm verify
       - name: Create or update version pull request
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          version: pnpm version-packages
-          commit: "chore: version packages"
-          title: "chore: version packages"
-          createGithubReleases: true
-          commitMode: github-api
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          version-script: pnpm version-packages
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+          create-github-releases: true
 
   publish:
     if: vars.NPM_PUBLISH_ENABLED == 'true'
@@ -68,13 +65,10 @@ jobs:
       - name: Verify migration
         run: pnpm verify
       - name: Publish packages
-        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          publish: pnpm publish-packages
-          version: pnpm version-packages
-          commit: "chore: version packages"
-          title: "chore: version packages"
-          createGithubReleases: true
-          commitMode: github-api
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          publish-script: pnpm publish-packages
+          version-script: pnpm version-packages
+          commit-message: "chore: version packages"
+          pr-title: "chore: version packages"
+          create-github-releases: true
