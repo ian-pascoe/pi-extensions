@@ -540,7 +540,7 @@ describe("CodeModeSessionCoordinator", () => {
     });
 
     expectSuccessData(result, {
-      deno: "2.9.5",
+      deno: "2.9.6",
       typescript: "6.0.3",
       process: "undefined",
       console: "object",

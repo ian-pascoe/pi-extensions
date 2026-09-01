@@ -37,7 +37,7 @@
   },
   "dependencies": {
     "cross-spawn": "^7.0.6",
-    "vscode-languageserver-protocol": "^3.18.2"
+    "vscode-languageserver-protocol": "^3.18.3"
   },
   "devDependencies": {
     "@types/cross-spawn": "^6.0.6"

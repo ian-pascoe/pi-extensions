@@ -38,7 +38,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "deno": "2.9.5",
+    "deno": "2.9.6",
     "minimatch": "^10.2.6",
     "runtime-typescript": "npm:typescript@6.0.3",
     "typescript": "^7.0.2"
