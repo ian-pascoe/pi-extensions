@@ -205,6 +205,36 @@ describe("McpToolCatalog", () => {
     expect([...pi.tools.keys()].filter((name) => name.includes("mcp_task"))).toEqual([]);
   });
 
+  test("registers unknown schema formats without writing validator warnings", () => {
+    const pi = new RecordingPi();
+    const catalog = new McpToolCatalog(pi, new RecordingRuntime());
+    let warningCount = 0;
+    const warn = console.warn;
+    console.warn = () => {
+      warningCount += 1;
+    };
+    try {
+      catalog.replaceServerTools("computer-use", [
+        {
+          name: "click",
+          inputSchema: {
+            type: "object",
+            properties: { pid: { type: "integer", format: "uint32" } },
+          },
+          outputSchema: {
+            type: "object",
+            properties: { windowId: { type: "integer", format: "uint64" } },
+          },
+        },
+      ]);
+    } finally {
+      console.warn = warn;
+    }
+
+    expect(warningCount).toBe(0);
+    expect(pi.tools.has("mcp__computer-use__click")).toBe(true);
+  });
+
   test("revalidates mutated input and bridges abort, progress, output validation, and MCP errors", async () => {
     const pi = new RecordingPi();
     const runtime = new RecordingRuntime();

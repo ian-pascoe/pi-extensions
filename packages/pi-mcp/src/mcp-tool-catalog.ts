@@ -1,7 +1,6 @@
 /* oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional MCP result marker fields are present only when supplied by the protocol operation. */
 import { createHash } from "node:crypto";
 import {
-  fromJsonSchema,
   type JSONValue,
   type JsonSchemaType,
   type ToolAnnotations,
@@ -24,6 +23,7 @@ import {
   type McpResultDetails,
   type McpResultMarker,
 } from "./mcp-presentation.js";
+import { compileMcpJsonSchema } from "./mcp-json-schema.js";
 
 const RESOURCE_TOOL_NAMES = [
   "list_mcp_resources",
@@ -201,9 +201,9 @@ interface ServerCatalog {
 
 interface CompiledServerTool {
   readonly definition: McpServerToolDefinition;
-  readonly inputValidator: ReturnType<typeof fromJsonSchema<McpServerToolArguments>>;
+  readonly inputValidator: ReturnType<typeof compileMcpJsonSchema<McpServerToolArguments>>;
   readonly outputSchemaError?: string;
-  readonly outputValidator?: ReturnType<typeof fromJsonSchema<JSONValue>>;
+  readonly outputValidator?: ReturnType<typeof compileMcpJsonSchema<JSONValue>>;
   readonly serverId: string;
 }
 
@@ -308,14 +308,16 @@ export class McpToolCatalog {
     for (const [serverId, catalog] of this.serverCatalogs) {
       for (const definition of catalog.tools) {
         try {
-          // SAFETY: fromJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
-          const inputValidator = fromJsonSchema<McpServerToolArguments>(definition.inputSchema);
-          let outputValidator: ReturnType<typeof fromJsonSchema<JSONValue>> | undefined;
+          // SAFETY: compileMcpJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
+          const inputValidator = compileMcpJsonSchema<McpServerToolArguments>(
+            definition.inputSchema,
+          );
+          let outputValidator: ReturnType<typeof compileMcpJsonSchema<JSONValue>> | undefined;
           let outputSchemaError: string | undefined;
           if (definition.outputSchema !== undefined) {
             try {
-              // SAFETY: fromJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
-              outputValidator = fromJsonSchema<JSONValue>(definition.outputSchema);
+              // SAFETY: compileMcpJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
+              outputValidator = compileMcpJsonSchema<JSONValue>(definition.outputSchema);
             } catch (cause) {
               outputSchemaError = cause instanceof Error ? cause.message : String(cause);
             }
