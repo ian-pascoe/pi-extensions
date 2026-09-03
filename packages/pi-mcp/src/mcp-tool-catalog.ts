@@ -203,8 +203,8 @@ interface ServerCatalog {
 interface CompiledServerTool {
   readonly definition: McpServerToolDefinition;
   readonly inputValidator: ReturnType<typeof compileMcpJsonSchema<McpServerToolArguments>>;
-  readonly outputSchemaError?: string;
-  readonly outputValidator?: ReturnType<typeof compileMcpJsonSchema<JSONValue>>;
+  readonly outputSchemaError: string | undefined;
+  readonly outputValidator: ReturnType<typeof compileMcpJsonSchema<JSONValue>> | undefined;
   readonly serverId: string;
 }
 
@@ -270,10 +270,8 @@ export class McpToolCatalog {
   private readonly ownedToolNames = new Set<string>();
   private registeredServerTools: readonly {
     readonly compiled: CompiledServerTool;
-    readonly definition: McpServerToolDefinition;
     readonly identity: string;
     readonly name: string;
-    readonly serverId: string;
   }[] = [];
   private rebuildTail: Promise<void> = Promise.resolve();
   private readonly serverCatalogs = new Map<string, ServerCatalog>();
@@ -347,7 +345,7 @@ export class McpToolCatalog {
       for (const definition of catalog.tools) {
         const identity = serverToolIdentity(serverId, definition.name);
         const previous = previousRegistrations.get(identity);
-        if (previous?.definition === definition) {
+        if (previous?.compiled.definition === definition) {
           compiledTools.push(previous.compiled);
           await scheduler.yield();
           continue;
@@ -367,15 +365,13 @@ export class McpToolCatalog {
               outputSchemaError = errorMessage(cause);
             }
           }
-          let compiled: CompiledServerTool;
-          if (outputValidator !== undefined) {
-            compiled = { definition, inputValidator, outputValidator, serverId };
-          } else if (outputSchemaError !== undefined) {
-            compiled = { definition, inputValidator, outputSchemaError, serverId };
-          } else {
-            compiled = { definition, inputValidator, serverId };
-          }
-          compiledTools.push(compiled);
+          compiledTools.push({
+            definition,
+            inputValidator,
+            outputSchemaError,
+            outputValidator,
+            serverId,
+          });
         } catch {
           continue;
         } finally {
@@ -396,13 +392,7 @@ export class McpToolCatalog {
         .filter((name) => !this.ownedToolNames.has(name)),
     );
     const occupiedNames = new Set([...foreignNames, ...RESOURCE_TOOL_NAMES]);
-    const registeredServerTools: {
-      compiled: CompiledServerTool;
-      definition: McpServerToolDefinition;
-      identity: string;
-      name: string;
-      serverId: string;
-    }[] = [];
+    const registeredServerTools = [];
     for (const compiled of compiledTools) {
       const baseName = `mcp__${sanitizeToolNamePart(compiled.serverId)}__${sanitizeToolNamePart(compiled.definition.name)}`;
       const identity = serverToolIdentity(compiled.serverId, compiled.definition.name);
@@ -412,15 +402,13 @@ export class McpToolCatalog {
       occupiedNames.add(piToolName);
       this.ownedToolNames.add(piToolName);
       const previous = previousRegistrations.get(identity);
-      if (previous?.definition !== compiled.definition || previous.name !== piToolName) {
+      if (previous?.compiled.definition !== compiled.definition || previous.name !== piToolName) {
         this.pi.registerTool(this.serverToolDefinition(compiled, piToolName));
       }
       registeredServerTools.push({
         compiled,
-        definition: compiled.definition,
         identity,
         name: piToolName,
-        serverId: compiled.serverId,
       });
       await scheduler.yield();
     }
@@ -634,7 +622,7 @@ export class McpToolCatalog {
     const ownActiveNames = [
       ...(this.resourceToolsActive ? RESOURCE_TOOL_NAMES : []),
       ...this.registeredServerTools
-        .filter(({ serverId }) => this.serverCatalogs.get(serverId)?.active === true)
+        .filter(({ compiled }) => this.serverCatalogs.get(compiled.serverId)?.active === true)
         .map(({ name }) => name),
     ];
     const nextActiveNames = [...foreignActiveNames, ...ownActiveNames];
