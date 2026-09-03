@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-mcp
 
+## 0.4.3
+
+### Patch Changes
+
+- 195507b: Reduce MCP catalog startup work and keep JSON Schema warnings out of Pi's TUI.
+
 ## 0.4.2
 
 ### Patch Changes
