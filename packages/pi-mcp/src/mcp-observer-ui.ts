@@ -102,7 +102,7 @@ export function buildMcpObserverSnapshot(
   const segments: McpObserverFooterSegment[] = [
     {
       color: "dim",
-      text: `${useNerdFontIcons ? "" : "MCP"} ${connected}/${enabled.length}`,
+      text: `${useNerdFontIcons ? "" : "MCP"} ${connected}/${enabled.length}`,
     },
   ];
   if (busy > 0) {
