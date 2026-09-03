@@ -2,7 +2,6 @@
 // oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This Pi composition root parses persisted custom-entry and custom-message replay data before restoring it.
 import { pathToFileURL } from "node:url";
 import {
-  fromJsonSchema,
   ProtocolError,
   RegistrationRejectedError,
   SdkError,
@@ -33,6 +32,7 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { compileMcpJsonSchema } from "./mcp-json-schema.js";
 import { McpAuthStore } from "./mcp-auth-store.js";
 import {
   completeMcpCommandArguments,
@@ -543,9 +543,9 @@ async function fulfilMcpElicitation(
     // SAFETY: The official MCP Client parsed requestedSchema as the flat elicitation JSON Schema before invoking this Host callback; the cast only reconciles exact-optional SDK declarations.
     const requestedSchema = request.params.requestedSchema as JsonSchemaType;
     const validation =
-      await fromJsonSchema<Record<string, string | number | boolean | string[]>>(requestedSchema)[
-        "~standard"
-      ].validate(content);
+      await compileMcpJsonSchema<Record<string, string | number | boolean | string[]>>(
+        requestedSchema,
+      )["~standard"].validate(content);
     return validation.issues === undefined
       ? { action: "accept", content: validation.value }
       : { action: "decline" };
