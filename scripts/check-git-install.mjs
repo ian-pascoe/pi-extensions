@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { access, cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
   DefaultPackageManager,
@@ -146,16 +146,6 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   );
 }
 
-async function assertGitInstalledPiUtilsLoads(installDirectory) {
-  const piUtils = await import(
-    pathToFileURL(resolve(installDirectory, "packages/pi-utils/dist/index.js")).href
-  );
-  assertGitInstallCondition(
-    piUtils.shouldUseNerdFontIcons({ TERM_PROGRAM: "WezTerm" }) === true,
-    "temporary install did not load the compiled pi-utils package",
-  );
-}
-
 async function assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory) {
   const projectSettings = await readJsonDocument(
     resolve(installDirectory, ".pi/settings.json"),
@@ -189,11 +179,6 @@ async function assertFilteredProjectPackageLoadsSkills(installDirectory, agentDi
 const installDirectory = await mkdtemp(resolve(tmpdir(), "pi-git-install-"));
 const agentDirectory = await mkdtemp(resolve(tmpdir(), "pi-git-install-agent-"));
 try {
-  await execFile("pnpm", ["--filter", "@ian-pascoe/pi-utils", "build"], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-    maxBuffer: 20 * 1024 * 1024,
-  });
   await cp(repositoryRoot, installDirectory, {
     recursive: true,
     filter: includeWorkingTreePath,
@@ -201,7 +186,6 @@ try {
   await runNpmProductionInstall(installDirectory);
   await assertPackageExcludedFromProductionInstall(installDirectory, "byterover-cli");
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
-  await assertGitInstalledPiUtilsLoads(installDirectory);
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
   await assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory);
 } finally {

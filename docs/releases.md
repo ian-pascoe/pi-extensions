@@ -49,18 +49,6 @@ Publish only `@ian-pascoe/pi-minimal-subagents`,
 `@ian-pascoe/pi-codemode`, and `@ian-pascoe/pi-mcp`. Verify each name, version, and tarball first. This is
 the one-time provenance exception; later releases use OIDC.
 
-Bootstrap `@ian-pascoe/pi-utils` separately at `0.1.0` before merging or
-publishing the first extension release that depends on it:
-
-```bash
-pnpm --filter @ian-pascoe/pi-utils build
-cd packages/pi-utils
-npm publish --access public --provenance=false
-```
-
-Inspect the tarball before publishing. This is the utility package's one-time
-provenance exception; later releases use OIDC.
-
 ## Trusted publishing and guarded automation
 
 Configure npm Trusted Publishing for all thirteen packages with repository

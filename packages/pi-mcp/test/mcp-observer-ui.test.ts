@@ -24,7 +24,7 @@ describe("MCP Observer UI", () => {
   test("always projects a portable connected-to-enabled ratio", () => {
     expect(
       buildMcpObserverSnapshot(new Map([["disabled", { state: "disabled" }]]), false).footer,
-    ).toEqual({ segments: [{ color: "dim", text: "MCP 0/0" }] });
+    ).toEqual([{ color: "dim", text: "MCP 0/0" }]);
     expect(
       buildMcpObserverSnapshot(
         new Map([
@@ -33,7 +33,7 @@ describe("MCP Observer UI", () => {
         ]),
         false,
       ).footer,
-    ).toEqual({ segments: [{ color: "dim", text: "MCP 2/2" }] });
+    ).toEqual([{ color: "dim", text: "MCP 2/2" }]);
   });
 
   test("groups portable busy, auth, and failed health with individual colors", () => {
@@ -47,7 +47,7 @@ describe("MCP Observer UI", () => {
       false,
     );
 
-    expect(snapshot.footer.segments).toEqual([
+    expect(snapshot.footer).toEqual([
       { color: "dim", text: "MCP 0/4" },
       { color: "warning", text: "busy 2" },
       { color: "warning", text: "auth 1" },

@@ -44,14 +44,9 @@ export type McpObserverFooterSegment = {
   readonly text: string;
 };
 
-/** Compact MCP footer status composed from independently styled health segments. */
-export type McpObserverFooter = {
-  readonly segments: readonly McpObserverFooterSegment[];
-};
-
 /** Read-only MCP Observer Snapshot derived from copied Host status. */
 export type McpObserverSnapshot = {
-  readonly footer: McpObserverFooter;
+  readonly footer: readonly McpObserverFooterSegment[];
   readonly notices: readonly McpAttentionNotice[];
 };
 
@@ -131,7 +126,7 @@ export function buildMcpObserverSnapshot(
       level: "warning",
     });
   }
-  return { footer: { segments }, notices };
+  return { footer: segments, notices };
 }
 
 /** Own TUI-only MCP footer status and deduplicated MCP Attention Notices for one session. */
@@ -179,15 +174,13 @@ export class McpObserverUiController {
     if (this.context.mode === "tui") this.setFooter(undefined);
   }
 
-  private setFooter(footer: McpObserverFooter | undefined): void {
+  private setFooter(footer: readonly McpObserverFooterSegment[] | undefined): void {
     try {
       this.context.ui.setStatus(
         MCP_OBSERVER_STATUS_KEY,
         footer === undefined
           ? undefined
-          : footer.segments
-              .map(({ color, text }) => this.context.ui.theme.fg(color, text))
-              .join(" · "),
+          : footer.map(({ color, text }) => this.context.ui.theme.fg(color, text)).join(" · "),
       );
     } catch {
       // Observer rendering failures must not affect MCP Host lifecycle.
