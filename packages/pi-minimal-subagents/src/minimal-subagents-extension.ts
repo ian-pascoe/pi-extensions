@@ -85,8 +85,12 @@ import type {
 const EXTENSION_ENTRYPOINT = fileURLToPath(new URL("./index.ts", import.meta.url));
 const CODEX_CONVERSION_TOOL_ADAPTER_SOURCE = "npm:@howaboua/pi-codex-conversion";
 const CODEX_CONVERSION_TOOL_REPLACEMENTS = [
+  {
+    sourceToolNames: ["read", "grep", "find", "ls"],
+    runtimeToolNames: ["exec_command", "write_stdin"],
+  },
   { sourceToolNames: ["bash"], runtimeToolNames: ["exec_command", "write_stdin"] },
-  { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["apply_patch"] },
+  { sourceToolNames: ["edit", "write"], runtimeToolNames: ["apply_patch"] },
   { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["exec", "wait"] },
   { sourceToolNames: ["bash", "edit", "write"], runtimeToolNames: ["notebook"] },
 ] as const;

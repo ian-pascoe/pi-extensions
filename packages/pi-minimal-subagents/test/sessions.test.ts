@@ -520,7 +520,7 @@ describe("minimal subagent sessions", () => {
     ]);
   });
 
-  it("loads retained tool adapters without broadening a read-only child runtime", async () => {
+  it("lets retained tool adapters replace a complete read bundle", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));
     temporaryDirectories.push(directory);
     const adapterEntrypoint = join(directory, "tool-adapter.ts");
@@ -612,7 +612,8 @@ export default function projectAdapter(pi) {
     agent.session_file = identity.sessionFile;
     agent.session_id = identity.sessionId;
     agent.session_leaf_id = identity.sessionLeafId;
-    agent.launch_contract.ordinary_tools = ["read"];
+    agent.launch_contract.ordinary_tools = ["read", "grep", "find", "ls"];
+    agent.capability_ceiling = ["read", "grep", "find", "ls"];
     agent.launch_contract.project_context = "omit";
     const factory = new PiAgentSessionFactory({
       cwd: directory,
@@ -623,11 +624,15 @@ export default function projectAdapter(pi) {
       models: [TEST_MODEL],
       eligibleModelIds: ["provider/model"],
       modelScopeRestricted: false,
-      availableToolNames: ["read", "bash", "exec_command", "write_stdin"],
+      availableToolNames: ["read", "grep", "find", "ls", "bash", "exec_command", "write_stdin"],
       getRuntimeToolAdapters: () => [
         {
           toolNames: ["exec_command", "write_stdin"],
           replacements: [
+            {
+              sourceToolNames: ["read", "grep", "find", "ls"],
+              runtimeToolNames: ["exec_command", "write_stdin"],
+            },
             {
               sourceToolNames: ["bash"],
               runtimeToolNames: ["exec_command", "write_stdin"],
@@ -647,7 +652,7 @@ export default function projectAdapter(pi) {
 
     try {
       await vi.waitFor(() => expect(existsSync(lateToolMarker)).toBe(true));
-      expect(runtime.getActiveToolNames?.()).toEqual(["read"]);
+      expect(runtime.getActiveToolNames?.()).toEqual(["exec_command", "write_stdin"]);
       expect(existsSync(globalObserverMarker)).toBe(true);
       expect(existsSync(projectAdapterMarker)).toBe(true);
     } finally {

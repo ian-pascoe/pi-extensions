@@ -601,6 +601,17 @@ describe("minimal subagents extension lifecycle", () => {
           },
         },
         {
+          name: "apply_patch",
+          description: "Patch files",
+          parameters: Type.Object({}),
+          sourceInfo: {
+            path: adapterEntrypoint,
+            source: "npm:@howaboua/pi-codex-conversion@3.0.23",
+            scope: "user",
+            origin: "package",
+          },
+        },
+        {
           name: "prefix_collision",
           description: "Unrelated package tool",
           parameters: Type.Object({}),
@@ -619,11 +630,19 @@ describe("minimal subagents extension lifecycle", () => {
 
     expect(capturedOptions?.getRuntimeToolAdapters?.()).toEqual([
       {
-        toolNames: ["exec_command", "write_stdin"],
+        toolNames: ["exec_command", "write_stdin", "apply_patch"],
         replacements: [
+          {
+            sourceToolNames: ["read", "grep", "find", "ls"],
+            runtimeToolNames: ["exec_command", "write_stdin"],
+          },
           {
             sourceToolNames: ["bash"],
             runtimeToolNames: ["exec_command", "write_stdin"],
+          },
+          {
+            sourceToolNames: ["edit", "write"],
+            runtimeToolNames: ["apply_patch"],
           },
         ],
       },

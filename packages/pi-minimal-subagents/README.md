@@ -178,15 +178,18 @@ lists: `"read"` grants `read`, `grep`, `find`, and `ls`; `"modify"` adds
 named ordinary tool and does not expand a preset. Coordinator tools are
 injected separately according to delegation and must not appear in `tools`;
 misuse returns an actionable error. Use the string preset when a child needs
-the complete read-only discovery bundle. Child sessions load the Root Agent's
+the complete discovery bundle. Child sessions load the Root Agent's
 configured settings and extensions, excluding the recursive
 `pi-minimal-subagents` entrypoint. Project Context controls only project-scoped
 AGENTS instructions and skills; omitting it retains user instructions and
 skills plus project settings, extensions, providers, and tools. A configured
-`pi-codex-conversion` adapter replaces a complete granted tool group only; a
-read-only child retains Pi's read tools instead of gaining an arbitrary shell.
-Status reports effective adapter tools while the Launch Contract continues to
-record the originally granted capability names.
+`pi-codex-conversion` adapter replaces a complete granted tool group only,
+including the `"read"` preset's `read`, `grep`, `find`, and `ls` tools. Exact
+tool arrays are replaced only when they contain the complete source group.
+Because Codex performs discovery through `exec_command`, an adapted `"read"`
+preset is not an enforced read-only boundary. Status reports effective adapter
+tools while the Launch Contract continues to record the originally granted
+capability names.
 
 `agent_message` reports whether a message was delivered through an active
 parent wait, queued for the recipient, or failed. `subagent_wait` can return an
