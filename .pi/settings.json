@@ -13,6 +13,7 @@
         "+packages/pi-mcp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts",
+        "+packages/pi-web-tools/src/index.ts",
         "+packages/pi-codemode/src/index.ts"
       ],
       "skills": [
@@ -25,6 +26,7 @@
         "+packages/pi-mcp/skills/pi-mcp/SKILL.md",
         "+packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "+packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
+        "+packages/pi-web-tools/skills/pi-web-tools/SKILL.md",
         "+packages/pi-codemode/skills/pi-codemode/SKILL.md"
       ]
     },
@@ -41,6 +43,7 @@
         "-packages/pi-mcp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts",
+        "-packages/pi-web-tools/src/index.ts",
         "-packages/pi-codemode/src/index.ts"
       ],
       "skills": [
@@ -53,6 +56,7 @@
         "-packages/pi-mcp/skills/pi-mcp/SKILL.md",
         "-packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "-packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
+        "-packages/pi-web-tools/skills/pi-web-tools/SKILL.md",
         "-packages/pi-codemode/skills/pi-codemode/SKILL.md"
       ]
     },
@@ -144,6 +148,16 @@
       ],
       "skills": [
         "-skills/pi-tps-tracker/SKILL.md"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-web-tools",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-web-tools/SKILL.md"
       ]
     },
     {
