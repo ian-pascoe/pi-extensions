@@ -89,7 +89,7 @@ describe("MCP Observer UI", () => {
 
     expect(setStatus).toHaveBeenLastCalledWith(
       "pi-mcp",
-      "<dim> 1/4</dim> · <warning> 1</warning> · <warning> 1</warning> · <error> 1</error>",
+      "<dim> 1/4</dim> · <warning> 1</warning> · <warning> 1</warning> · <error> 1</error>",
     );
   });
 
