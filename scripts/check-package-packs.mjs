@@ -67,8 +67,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 13,
-    `expected 13 workspace manifests, found ${manifests.length}`,
+    manifests.length === 11,
+    `expected 11 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -376,5 +376,5 @@ try {
 }
 
 console.log(
-  "Validated thirteen package tarballs, twelve source entrypoints, configuration skills, the shared utility, and the Pi MCP CLI.",
+  "Validated eleven package tarballs, ten source entrypoints, configuration skills, the shared utility, and the Pi MCP CLI.",
 );

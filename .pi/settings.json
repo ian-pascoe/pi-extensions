@@ -4,9 +4,7 @@
       "source": "..",
       "autoload": false,
       "extensions": [
-        "-packages/pi-adaptive-thinking/src/index.ts",
         "+packages/pi-bible-verses/src/index.ts",
-        "-packages/pi-byterover/src/index.ts",
         "+packages/pi-dap/src/index.ts",
         "+packages/pi-formatter/src/index.ts",
         "+packages/pi-git-checkpoints/src/index.ts",
@@ -18,9 +16,7 @@
         "+packages/pi-codemode/src/index.ts"
       ],
       "skills": [
-        "-packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md",
         "+packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
-        "-packages/pi-byterover/skills/pi-byterover/SKILL.md",
         "+packages/pi-dap/skills/pi-dap/SKILL.md",
         "+packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
@@ -36,9 +32,7 @@
       "source": "git:github.com/ian-pascoe/pi-extensions",
       "autoload": false,
       "extensions": [
-        "-packages/pi-adaptive-thinking/src/index.ts",
         "-packages/pi-bible-verses/src/index.ts",
-        "-packages/pi-byterover/src/index.ts",
         "-packages/pi-dap/src/index.ts",
         "-packages/pi-formatter/src/index.ts",
         "-packages/pi-git-checkpoints/src/index.ts",
@@ -50,9 +44,7 @@
         "-packages/pi-codemode/src/index.ts"
       ],
       "skills": [
-        "-packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md",
         "-packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
-        "-packages/pi-byterover/skills/pi-byterover/SKILL.md",
         "-packages/pi-dap/skills/pi-dap/SKILL.md",
         "-packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "-packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
@@ -62,26 +54,6 @@
         "-packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "-packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
         "-packages/pi-codemode/skills/pi-codemode/SKILL.md"
-      ]
-    },
-    {
-      "source": "npm:pi-adaptive-thinking",
-      "autoload": false,
-      "extensions": [
-        "-src/index.ts"
-      ],
-      "skills": [
-        "-skills/pi-adaptive-thinking/SKILL.md"
-      ]
-    },
-    {
-      "source": "npm:pi-byterover",
-      "autoload": false,
-      "extensions": [
-        "-src/index.ts"
-      ],
-      "skills": [
-        "-skills/pi-byterover/SKILL.md"
       ]
     },
     {

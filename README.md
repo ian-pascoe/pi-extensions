@@ -9,20 +9,18 @@ independently or together from this Git repository.
 
 ## Packages
 
-| Package                                                             | Purpose                                                       | Install                                           |
-| ------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------- |
-| [`pi-adaptive-thinking`](packages/pi-adaptive-thinking)             | Session-safe temporary and persistent thinking-level changes. | `pi install npm:pi-adaptive-thinking`             |
-| [`pi-byterover`](packages/pi-byterover)                             | ByteRover memory recall and curation.                         | `pi install npm:pi-byterover`                     |
-| [`@ian-pascoe/pi-minimal-subagents`](packages/pi-minimal-subagents) | Persistent nested-agent coordination.                         | `pi install npm:@ian-pascoe/pi-minimal-subagents` |
-| [`@ian-pascoe/pi-bible-verses`](packages/pi-bible-verses)           | Offline rotating verse working messages.                      | `pi install npm:@ian-pascoe/pi-bible-verses`      |
-| [`@ian-pascoe/pi-tps-tracker`](packages/pi-tps-tracker)             | Assistant output-token throughput.                            | `pi install npm:@ian-pascoe/pi-tps-tracker`       |
-| [`@ian-pascoe/pi-git-status-widget`](packages/pi-git-status-widget) | Refreshing Git worktree status.                               | `pi install npm:@ian-pascoe/pi-git-status-widget` |
-| [`@ian-pascoe/pi-git-checkpoints`](packages/pi-git-checkpoints)     | Git-backed worktree checkpoints for tree navigation.          | `pi install npm:@ian-pascoe/pi-git-checkpoints`   |
-| [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                 | Configured automatic post-edit formatting.                    | `pi install npm:@ian-pascoe/pi-formatter`         |
-| [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                             | Configured language-server tools and post-edit diagnostics.   | `pi install npm:@ian-pascoe/pi-lsp`               |
-| [`@ian-pascoe/pi-dap`](packages/pi-dap)                             | Configured Debug Adapter Protocol sessions.                   | `pi install npm:@ian-pascoe/pi-dap`               |
-| [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.     | `pi install npm:@ian-pascoe/pi-codemode`          |
-| [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                             | Model Context Protocol hosting for configured MCP servers.    | `pi install npm:@ian-pascoe/pi-mcp`               |
+| Package                                                             | Purpose                                                     | Install                                           |
+| ------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------- |
+| [`@ian-pascoe/pi-minimal-subagents`](packages/pi-minimal-subagents) | Persistent nested-agent coordination.                       | `pi install npm:@ian-pascoe/pi-minimal-subagents` |
+| [`@ian-pascoe/pi-bible-verses`](packages/pi-bible-verses)           | Offline rotating verse working messages.                    | `pi install npm:@ian-pascoe/pi-bible-verses`      |
+| [`@ian-pascoe/pi-tps-tracker`](packages/pi-tps-tracker)             | Assistant output-token throughput.                          | `pi install npm:@ian-pascoe/pi-tps-tracker`       |
+| [`@ian-pascoe/pi-git-status-widget`](packages/pi-git-status-widget) | Refreshing Git worktree status.                             | `pi install npm:@ian-pascoe/pi-git-status-widget` |
+| [`@ian-pascoe/pi-git-checkpoints`](packages/pi-git-checkpoints)     | Git-backed worktree checkpoints for tree navigation.        | `pi install npm:@ian-pascoe/pi-git-checkpoints`   |
+| [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                 | Configured automatic post-edit formatting.                  | `pi install npm:@ian-pascoe/pi-formatter`         |
+| [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                             | Configured language-server tools and post-edit diagnostics. | `pi install npm:@ian-pascoe/pi-lsp`               |
+| [`@ian-pascoe/pi-dap`](packages/pi-dap)                             | Configured Debug Adapter Protocol sessions.                 | `pi install npm:@ian-pascoe/pi-dap`               |
+| [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.   | `pi install npm:@ian-pascoe/pi-codemode`          |
+| [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                             | Model Context Protocol hosting for configured MCP servers.  | `pi install npm:@ian-pascoe/pi-mcp`               |
 
 The extensions share terminal capability decisions through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
@@ -43,12 +41,12 @@ package entry with resource paths relative to the repository root:
     {
       "source": "git:github.com/ian-pascoe/pi-extensions",
       "extensions": [
-        "packages/pi-adaptive-thinking/src/index.ts",
-        "packages/pi-byterover/src/index.ts"
+        "packages/pi-minimal-subagents/src/index.ts",
+        "packages/pi-bible-verses/src/index.ts"
       ],
       "skills": [
-        "packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md",
-        "packages/pi-byterover/skills/pi-byterover/SKILL.md"
+        "packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
+        "packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md"
       ]
     }
   ]
@@ -58,8 +56,6 @@ package entry with resource paths relative to the repository root:
 Every selectable extension path is:
 
 ```text
-packages/pi-adaptive-thinking/src/index.ts
-packages/pi-byterover/src/index.ts
 packages/pi-minimal-subagents/src/index.ts
 packages/pi-bible-verses/src/index.ts
 packages/pi-tps-tracker/src/index.ts
@@ -75,8 +71,6 @@ packages/pi-mcp/src/index.ts
 Every selectable configuration skill path is:
 
 ```text
-packages/pi-adaptive-thinking/skills/pi-adaptive-thinking/SKILL.md
-packages/pi-byterover/skills/pi-byterover/SKILL.md
 packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md
 packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md
 packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md
@@ -97,7 +91,6 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 
 ## Prerequisites
 
-- ByteRover needs the `brv` CLI (or a configured custom `brvPath`).
 - Git Status Widget needs `git` on `PATH`.
 - Git Checkpoints needs `git` on `PATH`; the starting directory need not be a repository.
 - Minimal Subagents can use optional `trash`; deletion otherwise unlinks.
@@ -131,8 +124,6 @@ pnpm verify
 Focused package checks:
 
 ```bash
-pnpm --filter pi-adaptive-thinking typecheck
-pnpm --filter pi-byterover test
 pnpm --filter @ian-pascoe/pi-minimal-subagents test
 pnpm --filter @ian-pascoe/pi-bible-verses test
 pnpm --filter @ian-pascoe/pi-tps-tracker test
