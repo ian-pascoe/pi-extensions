@@ -36,6 +36,9 @@
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "dependencies": {
+    "@ian-pascoe/pi-utils": "^0.1.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },

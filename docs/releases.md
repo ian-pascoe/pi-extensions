@@ -12,7 +12,8 @@ This is the release procedure. Migration implementation publishes nothing.
   `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
   `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-git-checkpoints`,
   `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
-  `@ian-pascoe/pi-codemode`, and `@ian-pascoe/pi-mcp` bootstrap
+  `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`, and
+  `@ian-pascoe/pi-utils` bootstrap
   manually at `0.1.0`; do not add bootstrap Changesets.
 - Use `pnpm changeset` for releasable changes and inspect them with
   `pnpm changeset:status`. The workflow creates version PRs with
@@ -48,9 +49,21 @@ Publish only `@ian-pascoe/pi-minimal-subagents`,
 `@ian-pascoe/pi-codemode`, and `@ian-pascoe/pi-mcp`. Verify each name, version, and tarball first. This is
 the one-time provenance exception; later releases use OIDC.
 
+Bootstrap `@ian-pascoe/pi-utils` separately at `0.1.0` before merging or
+publishing the first extension release that depends on it:
+
+```bash
+pnpm --filter @ian-pascoe/pi-utils build
+cd packages/pi-utils
+npm publish --access public --provenance=false
+```
+
+Inspect the tarball before publishing. This is the utility package's one-time
+provenance exception; later releases use OIDC.
+
 ## Trusted publishing and guarded automation
 
-Configure npm Trusted Publishing for all twelve packages with repository
+Configure npm Trusted Publishing for all thirteen packages with repository
 `ian-pascoe/pi-extensions`, workflow `.github/workflows/release.yml`, and
 protected GitHub environment `npm`. Then set repository variable
 `NPM_PUBLISH_ENABLED=true`.

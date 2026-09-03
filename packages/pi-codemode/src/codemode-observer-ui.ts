@@ -47,9 +47,7 @@ type CodeModeObserverWidgetFactory = (
 export type CodeModeObserverUiContext = {
   readonly mode: ExtensionContext["mode"];
   readonly ui: {
-    readonly theme: CodeModeObserverWidgetTheme;
     readonly notify: (message: string, level: "info" | "warning" | "error") => void;
-    readonly setStatus: (key: string, status: string | undefined) => void;
     readonly setWidget: (
       key: string,
       widget: CodeModeObserverWidgetFactory | undefined,
@@ -83,7 +81,7 @@ export type CodeModeObserverRow = {
     }
 );
 
-/** Bounded read-only projection rendered by the CodeMode Observer widget and footer. */
+/** Bounded read-only projection rendered by the CodeMode Observer widget. */
 export type CodeModeObserverView = {
   /** Exact count of Sessions with a running Cell. */
   readonly runningCount: number;
@@ -325,7 +323,7 @@ class CodeModeObserverWidgetComponent implements Component {
   invalidate(): void {}
 }
 
-/** Own the TUI-only CodeMode Observer widget, live footer, refresh, cooldown, and cleanup. */
+/** Own the TUI-only CodeMode Observer widget, refresh, cooldown, and cleanup. */
 export class CodeModeObserverUiController {
   private disposed = false;
   private widgetMounted = false;
@@ -384,7 +382,6 @@ export class CodeModeObserverUiController {
     this.clearRefreshTimer();
     this.clearCooldownTimer();
     if (this.context.mode === "tui") {
-      this.setStatus(undefined);
       this.clearWidget();
     }
     this.widgetMounted = false;
@@ -395,24 +392,16 @@ export class CodeModeObserverUiController {
     if (this.currentView.rows.length === 0) {
       this.clearRefreshTimer();
       this.clearCooldownTimer();
-      this.setStatus(undefined);
       this.hideWidget();
       return;
     }
     this.showWidget();
     if (this.currentView.runningCount > 0) {
       this.clearCooldownTimer();
-      this.setStatus(
-        [
-          this.context.ui.theme.fg("accent", `◉ ${this.currentView.runningCount} running`),
-          this.context.ui.theme.fg("muted", `${this.currentView.liveCount} live`),
-        ].join(this.context.ui.theme.fg("dim", " · ")),
-      );
       this.ensureRefreshTimer();
       return;
     }
     this.clearRefreshTimer();
-    this.setStatus(undefined);
     this.ensureCooldownTimer();
   }
 
@@ -453,14 +442,6 @@ export class CodeModeObserverUiController {
     } finally {
       this.widgetMounted = false;
       this.widgetComponent = undefined;
-    }
-  }
-
-  private setStatus(status: string | undefined): void {
-    try {
-      this.context.ui.setStatus(CODEMODE_OBSERVER_UI_KEY, status);
-    } catch {
-      // A non-authoritative footer failure cannot alter CodeMode lifecycle.
     }
   }
 

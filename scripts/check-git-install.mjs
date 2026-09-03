@@ -2,7 +2,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { access, cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   DefaultPackageManager,
@@ -24,6 +24,7 @@ import {
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const piUtilsDistDirectory = resolve(repositoryRoot, "packages/pi-utils/dist");
 const excludedDirectoryNames = new Set([".git", ".repos", "coverage", "dist", "node_modules"]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
@@ -34,6 +35,7 @@ function assertGitInstallCondition(condition, message) {
 
 function includeWorkingTreePath(source) {
   const name = basename(source);
+  if (source === piUtilsDistDirectory) return true;
   if (excludedDirectoryNames.has(name)) return false;
   if (name.endsWith(".tgz")) return false;
   return true;
@@ -144,6 +146,16 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   );
 }
 
+async function assertGitInstalledPiUtilsLoads(installDirectory) {
+  const piUtils = await import(
+    pathToFileURL(resolve(installDirectory, "packages/pi-utils/dist/index.js")).href
+  );
+  assertGitInstallCondition(
+    piUtils.shouldUseNerdFontIcons({ TERM_PROGRAM: "WezTerm" }) === true,
+    "temporary install did not load the compiled pi-utils package",
+  );
+}
+
 async function assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory) {
   const projectSettings = await readJsonDocument(
     resolve(installDirectory, ".pi/settings.json"),
@@ -177,6 +189,11 @@ async function assertFilteredProjectPackageLoadsSkills(installDirectory, agentDi
 const installDirectory = await mkdtemp(resolve(tmpdir(), "pi-git-install-"));
 const agentDirectory = await mkdtemp(resolve(tmpdir(), "pi-git-install-agent-"));
 try {
+  await execFile("pnpm", ["--filter", "@ian-pascoe/pi-utils", "build"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    maxBuffer: 20 * 1024 * 1024,
+  });
   await cp(repositoryRoot, installDirectory, {
     recursive: true,
     filter: includeWorkingTreePath,
@@ -184,6 +201,7 @@ try {
   await runNpmProductionInstall(installDirectory);
   await assertPackageExcludedFromProductionInstall(installDirectory, "byterover-cli");
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
+  await assertGitInstalledPiUtilsLoads(installDirectory);
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
   await assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory);
 } finally {
@@ -194,5 +212,5 @@ try {
 }
 
 console.log(
-  "Validated the clean npm production Git-install path with twelve configuration skills.",
+  "Validated the clean npm production Git-install path with the shared utility and twelve configuration skills.",
 );

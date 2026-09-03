@@ -19,6 +19,7 @@ import type {
   ToolUseContent,
 } from "@modelcontextprotocol/client";
 import type { AssistantMessage, Message, UserMessage } from "@earendil-works/pi-ai";
+import { shouldUseNerdFontIcons } from "@ian-pascoe/pi-utils";
 import type { TSchema } from "typebox";
 import {
   DEFAULT_MAX_BYTES,
@@ -772,7 +773,11 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
         settings,
       });
       ownedHost = host;
-      observer = new McpObserverUiController(context, (value) => settings.secrets.redact(value));
+      observer = new McpObserverUiController(
+        context,
+        (value) => settings.secrets.redact(value),
+        shouldUseNerdFontIcons(process.env),
+      );
       observer.update(host.listStatuses(), invalidSettings);
       const synchronizeServerCatalog = async (serverId: string): Promise<void> => {
         const activeCatalog = catalog;

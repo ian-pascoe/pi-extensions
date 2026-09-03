@@ -43,6 +43,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@ian-pascoe/pi-utils": "^0.1.0",
     "@modelcontextprotocol/client": "^2.0.0"
   },
   "devDependencies": {

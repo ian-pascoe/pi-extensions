@@ -24,6 +24,10 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.     | `pi install npm:@ian-pascoe/pi-codemode`          |
 | [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                             | Model Context Protocol hosting for configured MCP servers.    | `pi install npm:@ian-pascoe/pi-mcp`               |
 
+The extensions share terminal capability decisions through the conventional
+compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
+dependency, not a Pi extension or configuration skill.
+
 ## Install the collection from Git
 
 ```bash
@@ -141,6 +145,7 @@ pnpm --filter @ian-pascoe/pi-codemode test
 pnpm --filter @ian-pascoe/pi-mcp typecheck
 pnpm --filter @ian-pascoe/pi-mcp test
 pnpm --filter @ian-pascoe/pi-mcp build:cli
+pnpm --filter @ian-pascoe/pi-utils test
 ```
 
 Read [`CONTEXT-MAP.md`](CONTEXT-MAP.md), ADRs, and
