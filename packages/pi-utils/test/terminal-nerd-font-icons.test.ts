@@ -11,7 +11,8 @@ describe("Nerd Font terminal decision", () => {
     { GHOSTTY_RESOURCES_DIR: "/opt/ghostty" },
     { TERM: "xterm-ghostty" },
     { WEZTERM_PANE: "1" },
-  ])("uses Nerd Font icons for a documented bundled-symbol terminal: %o", (environment) => {
+    { HERDR_ENV: "1", TERM: "xterm-256color" },
+  ])("uses Nerd Font icons for a known capable terminal path: %o", (environment) => {
     expect(shouldUseNerdFontIcons(environment)).toBe(true);
   });
 

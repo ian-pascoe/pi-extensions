@@ -13,7 +13,7 @@ The reason is structural:
 2. The TUI writes characters to a terminal emulator. The emulator chooses the primary font, per-character fallback fonts, shaping, and presentation. The process writing the bytes normally cannot inspect those choices.
 3. Terminal protocols conventionally report terminal behavior (cursor position, colors, hyperlinks, graphics, keyboard protocols), not the font coverage of the rendering pipeline. Unicode's East Asian Width annex says that actual glyph display width is given by the font and may be adjusted by layout; it also cautions that the property is not an off-the-shelf solution for modern terminal emulators ([UAX #11 §§2, 4](https://www.unicode.org/reports/tr11/#Scope)).
 
-Therefore the extensions should use **automatic, conservative detection**: enable Nerd glyphs only for a small allowlist of terminals with documented bundled Nerd symbol fallback, and use portable symbols everywhere else. This is a high-confidence rendering heuristic, not a proof of font coverage. Absence of a positive identity signal must mean the portable path.
+Therefore the extensions should use **automatic, conservative detection**: enable Nerd glyphs for a small allowlist of terminals with documented bundled Nerd symbol fallback and for explicitly identified proxy paths such as Herdr, then use portable symbols everywhere else. This is a rendering heuristic, not a proof of font coverage.
 
 ## Mechanism review
 
@@ -58,7 +58,7 @@ These facts justify a useful **allowlist heuristic** without requiring a user to
 The heuristic has predictable boundaries:
 
 - **False negatives:** `TERM_PROGRAM`/terminal variables may be absent in an integrated terminal, stripped by SSH, unavailable in a remote shell, or stale because a tmux server retained an older environment. A known terminal reached through an unrecognised proxy will therefore use portable symbols.
-- **False positives:** environment variables can be spoofed or describe an outer terminal while the path is unusual; users can override bundled-font/fallback configuration (for example kitty `symbol_map`, WezTerm font resolver/list, or Ghostty font settings). These cases are why the allowlist should stay small and why a portable fallback remains necessary.
+- **False positives:** environment variables can be spoofed or describe an outer terminal while the path is unusual; users can override bundled-font/fallback configuration (for example kitty `symbol_map`, WezTerm font resolver/list, or Ghostty font settings). Herdr also identifies its pane but does not expose its outer client terminal, so its allowlist entry is intentionally best-effort.
 - **tmux:** when attached directly to a known allowlisted outer terminal, Pi may additionally consult tmux's client terminal identity (`client_termname`) rather than trusting only the tmux process environment. If that identity is unavailable or ambiguous, choose portable symbols. Never infer Nerd support merely from `TERM=tmux-*`.
 - **SSH:** identity can only be trusted when it is actually propagated from the outer terminal or obtained through a terminal-specific query. SSH's PTY negotiation itself carries no font field ([RFC 4254 §6.2](https://www.rfc-editor.org/rfc/rfc4254#section-6.2)).
 
@@ -90,13 +90,13 @@ Pi's upstream terminal capability model currently contains only `images`, `trueC
 
 ## Recommended minimal contract
 
-1. **Use auto mode with a conservative allowlist:** positively identify a direct kitty, Ghostty, or WezTerm session and select Nerd icons; unknown paths and all current tmux or screen sessions select portable icons. A future terminal adapter may safely admit an unambiguous outer-client identity. This requires no user toggle while taking advantage of documented bundled symbols.
+1. **Use auto mode with a conservative allowlist:** positively identify kitty, Ghostty, WezTerm, or a Herdr pane and select Nerd icons; unknown paths and all current tmux or screen sessions select portable icons. Herdr is a best-effort proxy exception because its persistent pane environment does not preserve the outer terminal identity.
 2. **Do not add a glyph-probing startup query.** It cannot be made reliable and would add escape-sequence latency and rendering risk to every TUI startup.
 3. **Use portable defaults outside the allowlist:** ordinary Unicode symbols with known width/meaning, or ASCII if the extension already has an ASCII path. Keep labels short and preserve semantic meaning without private-use glyphs.
 4. **Centralize icon selection in Pi/TUI, not in each extension.** Define a small mapping of semantic icon → `{ portable, nerd }`, and make the allowlist decision once. This avoids six independent guesses and keeps width calculations consistent.
-5. **Represent the result explicitly:** `nerdFont: true | false | "unknown"` (or equivalent), where `true` means “known bundled-symbol terminal under normal defaults,” not “font coverage proven.” Treat unknown as false. Keep terminal-specific font queries (kitty `kitty-query-font_family`, xterm OSC 50) isolated as optional adapters and never let them remove the portable fallback.
+5. **Represent the result explicitly:** `nerdFont: true | false | "unknown"` (or equivalent), where `true` means “known capable terminal path,” not “font coverage proven.” Treat unknown as false. Keep terminal-specific font queries (kitty `kitty-query-font_family`, xterm OSC 50) isolated as optional adapters and never let them remove the portable fallback.
 
-For the current footer work, this means the extensions can remain minimal and uncluttered immediately: Nerd Font icons are used automatically in the documented bundled-symbol terminals, while all unknown, remote, or ambiguous paths retain portable symbols. This is the best practical contract, while acknowledging that no standards-based query can prove glyph coverage across every direct terminal, SSH session, and tmux topology.
+For the current footer work, this means the extensions can remain minimal and uncluttered immediately: Nerd Font icons are used automatically in known terminal paths, while unknown and ambiguous paths retain portable symbols. This is the best practical contract, while acknowledging that no standards-based query can prove glyph coverage across every direct terminal, proxy, SSH session, and tmux topology.
 
 ## Primary sources consulted
 

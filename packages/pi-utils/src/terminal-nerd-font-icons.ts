@@ -3,8 +3,8 @@ const BUNDLED_NERD_FONT_TERM_PROGRAMS = new Set(["ghostty", "kitty", "wezterm"])
 /**
  * Decide whether terminal status UI should use Nerd Font icons.
  *
- * A positive result means the identified terminal normally bundles Nerd Font symbols; it does not
- * prove that a user has kept the terminal's default font fallback configuration.
+ * A positive result means the identified terminal path is expected to render Nerd Font symbols; it
+ * does not prove the outer terminal's current font fallback configuration.
  */
 export function shouldUseNerdFontIcons(
   environment: Readonly<Record<string, string | undefined>> = process.env,
@@ -15,6 +15,7 @@ export function shouldUseNerdFontIcons(
   const termProgram = environment.TERM_PROGRAM?.toLowerCase() ?? "";
   return (
     BUNDLED_NERD_FONT_TERM_PROGRAMS.has(termProgram) ||
+    environment.HERDR_ENV === "1" ||
     Boolean(environment.KITTY_WINDOW_ID) ||
     term.includes("kitty") ||
     Boolean(environment.GHOSTTY_RESOURCES_DIR) ||
