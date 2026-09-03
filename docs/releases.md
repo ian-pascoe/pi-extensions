@@ -14,8 +14,8 @@ This is the release procedure. Migration implementation publishes nothing.
   `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
   `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-git-checkpoints`,
   `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
-  `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`, and
-  `@ian-pascoe/pi-utils` bootstrap
+  `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`,
+  `@ian-pascoe/pi-web-tools`, and `@ian-pascoe/pi-utils` bootstrap
   manually at `0.1.0`; do not add bootstrap Changesets.
 - Use `pnpm changeset` for releasable changes and inspect them with
   `pnpm changeset:status`. The workflow creates version PRs with
@@ -37,7 +37,7 @@ publish.
 
 ## Initial scoped-package bootstrap
 
-After approval and merge, a human publishes the ten scoped packages at `0.1.0`
+After approval and merge, a human publishes the eleven scoped packages at `0.1.0`
 from each package directory:
 
 ```bash
@@ -48,12 +48,13 @@ Publish only `@ian-pascoe/pi-minimal-subagents`,
 `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
 `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-git-checkpoints`,
 `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
-`@ian-pascoe/pi-codemode`, and `@ian-pascoe/pi-mcp`. Verify each name, version, and tarball first. This is
+`@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`, and
+`@ian-pascoe/pi-web-tools`. Verify each name, version, and tarball first. This is
 the one-time provenance exception; later releases use OIDC.
 
 ## Trusted publishing and guarded automation
 
-Configure npm Trusted Publishing for all eleven active packages with repository
+Configure npm Trusted Publishing for all twelve active packages with repository
 `ian-pascoe/pi-extensions`, workflow `.github/workflows/release.yml`, and
 protected GitHub environment `npm`. Then set repository variable
 `NPM_PUBLISH_ENABLED=true`.

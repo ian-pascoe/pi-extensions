@@ -21,6 +21,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-dap`](packages/pi-dap)                             | Configured Debug Adapter Protocol sessions.                 | `pi install npm:@ian-pascoe/pi-dap`               |
 | [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.   | `pi install npm:@ian-pascoe/pi-codemode`          |
 | [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                             | Model Context Protocol hosting for configured MCP servers.  | `pi install npm:@ian-pascoe/pi-mcp`               |
+| [`@ian-pascoe/pi-web-tools`](packages/pi-web-tools)                 | Public web search and textual URL retrieval.                | `pi install npm:@ian-pascoe/pi-web-tools`         |
 
 The extensions share terminal capability decisions through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
@@ -66,6 +67,7 @@ packages/pi-lsp/src/index.ts
 packages/pi-dap/src/index.ts
 packages/pi-codemode/src/index.ts
 packages/pi-mcp/src/index.ts
+packages/pi-web-tools/src/index.ts
 ```
 
 Every selectable configuration skill path is:
@@ -81,6 +83,7 @@ packages/pi-lsp/skills/pi-lsp/SKILL.md
 packages/pi-dap/skills/pi-dap/SKILL.md
 packages/pi-codemode/skills/pi-codemode/SKILL.md
 packages/pi-mcp/skills/pi-mcp/SKILL.md
+packages/pi-web-tools/skills/pi-web-tools/SKILL.md
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -105,6 +108,8 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi CodeMode installs Deno 2.9.5 and runs TypeScript Cells directly in a
   permission-denied Deno subprocess; registered Pi tools still execute with
   their normal host permissions.
+- Pi Web Tools needs outbound network access. `EXA_API_KEY` and
+  `PARALLEL_API_KEY` are optional provider credentials.
 
 See package READMEs for configuration. The repository MIT license covers
 package code; Bible Verses documents separate embedded-text rights and
@@ -136,6 +141,8 @@ pnpm --filter @ian-pascoe/pi-codemode test
 pnpm --filter @ian-pascoe/pi-mcp typecheck
 pnpm --filter @ian-pascoe/pi-mcp test
 pnpm --filter @ian-pascoe/pi-mcp build:cli
+pnpm --filter @ian-pascoe/pi-web-tools typecheck
+pnpm --filter @ian-pascoe/pi-web-tools test
 pnpm --filter @ian-pascoe/pi-utils test
 ```
 
