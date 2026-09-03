@@ -1,5 +1,14 @@
 # @ian-pascoe/pi-mcp
 
+## 0.4.1
+
+### Patch Changes
+
+- eff9c6a: Prevent harmless unknown JSON Schema format warnings from flooding Pi's TUI.
+- 291a3d2: Reduce duplicate TUI footer status and use compact Nerd Font-aware MCP and throughput indicators.
+- Updated dependencies [291a3d2]
+  - @ian-pascoe/pi-utils@0.1.1
+
 ## 0.4.0
 
 ### Minor Changes
