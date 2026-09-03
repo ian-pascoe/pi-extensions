@@ -133,6 +133,25 @@ describe("McpServerClient", () => {
     await expect(cancelled).rejects.toThrow(/abort/i);
   });
 
+  test("validates Server Tool output formats without writing schema warnings", async () => {
+    const client = await connectStdioClient();
+    await client.run((sdk, requestOptions) => sdk.listTools(undefined, requestOptions));
+    const warnings: unknown[][] = [];
+    const warn = console.warn;
+    console.warn = (...arguments_) => warnings.push(arguments_);
+    try {
+      await expect(
+        client.run((sdk, requestOptions) =>
+          sdk.callTool({ name: "formatted-output", arguments: {} }, requestOptions),
+        ),
+      ).resolves.toMatchObject({ structuredContent: { id: 1 } });
+    } finally {
+      console.warn = warn;
+    }
+
+    expect(warnings).toEqual([]);
+  });
+
   test("enforces request and connect timeouts without retaining the stdio child", async () => {
     const client = await connectStdioClient("serve", { requestTimeoutMs: 30 });
     await expect(

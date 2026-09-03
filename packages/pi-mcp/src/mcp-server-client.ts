@@ -23,6 +23,7 @@ import {
   type RequestOptions,
 } from "@modelcontextprotocol/client";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/client/stdio";
+import { mcpJsonSchemaValidator } from "./mcp-json-schema.js";
 import { MCP_SHUTDOWN_TIMEOUT_MS, type McpServerDefinition } from "./pi-mcp-settings.js";
 
 const MAX_MCP_LIST_PAGES = 1_000;
@@ -214,6 +215,7 @@ export class McpServerClient {
         sampling: {},
       },
       inputRequired: { maxRounds: 10 },
+      jsonSchemaValidator: mcpJsonSchemaValidator,
       listMaxPages: MAX_MCP_LIST_PAGES,
       versionNegotiation: {
         mode: "auto",

@@ -44,7 +44,8 @@
   },
   "dependencies": {
     "@ian-pascoe/pi-utils": "^0.1.1",
-    "@modelcontextprotocol/client": "^2.0.0"
+    "@modelcontextprotocol/client": "^2.0.0",
+    "ajv": "^8.20.0"
   },
   "devDependencies": {
     "@modelcontextprotocol/server": "^2.0.0",

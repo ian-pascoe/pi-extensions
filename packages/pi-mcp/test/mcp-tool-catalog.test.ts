@@ -17,6 +17,7 @@ import {
   type McpToolExecution,
   type McpToolOperationResult,
 } from "../src/mcp-tool-catalog.js";
+import { compileMcpJsonSchema } from "../src/mcp-json-schema.js";
 
 // SAFETY: Catalog execution only forwards this context to the recording runtime, which never reads it.
 const TEST_CONTEXT = {} as ExtensionContext;
@@ -24,6 +25,7 @@ const TEST_CONTEXT = {} as ExtensionContext;
 class RecordingPi implements McpToolCatalogPi {
   readonly tools = new Map<string, ToolDefinition & { readonly outputSchema?: JsonSchemaType }>();
   readonly activeToolChanges: string[][] = [];
+  readonly registeredToolNames: string[] = [];
   private activeTools: string[];
   private toolResultHandler:
     | ((
@@ -47,6 +49,7 @@ class RecordingPi implements McpToolCatalogPi {
   registerTool<TParameters extends TSchema, TDetails>(
     tool: ToolDefinition<TParameters, TDetails>,
   ): void {
+    this.registeredToolNames.push(tool.name);
     // SAFETY: The recording map never calls tools through an erased type; each test retrieves and executes the original registered object.
     this.tools.set(tool.name, tool as ToolDefinition & { readonly outputSchema?: JsonSchemaType });
     if (!this.activeTools.includes(tool.name)) this.activeTools.push(tool.name);
@@ -169,6 +172,38 @@ describe("McpToolCatalog", () => {
     expect(terminalTurns).toBeGreaterThanOrEqual(tools.length);
   });
 
+  test("changes activation without recompiling or re-registering unchanged Server Tools", async () => {
+    const pi = new RecordingPi();
+    const catalog = new McpToolCatalog(pi, new RecordingRuntime());
+    await catalog.replaceServerTools("server", [
+      { name: "first", inputSchema: { type: "object" } },
+      { name: "second", inputSchema: { type: "object" } },
+    ]);
+    const registrations = pi.registeredToolNames.length;
+
+    await catalog.setResourceToolsActive(true);
+    await catalog.setServerActive("server", false);
+    await catalog.setServerActive("server", true);
+
+    expect(pi.registeredToolNames).toHaveLength(registrations);
+  });
+
+  test("registers only the new server when another catalog connects", async () => {
+    const pi = new RecordingPi();
+    const catalog = new McpToolCatalog(pi, new RecordingRuntime());
+    await catalog.replaceServerTools("first", [
+      { name: "one", inputSchema: { type: "object" } },
+      { name: "two", inputSchema: { type: "object" } },
+    ]);
+    const registrations = pi.registeredToolNames.length;
+
+    await catalog.replaceServerTools("second", [
+      { name: "three", inputSchema: { type: "object" } },
+    ]);
+
+    expect(pi.registeredToolNames.slice(registrations)).toEqual(["mcp__second__three"]);
+  });
+
   test("registers exact Server Tool schemas with deterministic collision-only hashes", async () => {
     const foreignCollision = "mcp__docs_server__lookup";
     const pi = new RecordingPi(["read", foreignCollision]);
@@ -253,6 +288,36 @@ describe("McpToolCatalog", () => {
 
     expect(warningCount).toBe(0);
     expect(pi.tools.has("mcp__computer-use__click")).toBe(true);
+  });
+
+  test("compiles schema formats without replacing Pi's process-global warning handler", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(console, "warn");
+    if (descriptor === undefined) throw new Error("Expected console.warn descriptor");
+    let replacements = 0;
+    Object.defineProperty(console, "warn", {
+      configurable: true,
+      get: () => () => undefined,
+      set: () => {
+        replacements += 1;
+      },
+    });
+    try {
+      const validator = compileMcpJsonSchema<{ readonly email: string; readonly pid: number }>({
+        type: "object",
+        properties: {
+          email: { type: "string", format: "email" },
+          pid: { type: "integer", format: "uint32" },
+        },
+        required: ["email", "pid"],
+      });
+      expect(
+        (await validator["~standard"].validate({ email: "invalid", pid: 1 })).issues,
+      ).toBeDefined();
+    } finally {
+      Object.defineProperty(console, "warn", descriptor);
+    }
+
+    expect(replacements).toBe(0);
   });
 
   test("revalidates mutated input and bridges abort, progress, output validation, and MCP errors", async () => {
@@ -344,6 +409,42 @@ describe("McpToolCatalog", () => {
     await expect(
       pi.applyToolResult("foreign_extension_tool", resultDetails),
     ).resolves.toBeUndefined();
+  });
+
+  test("retains Server Tool content when lazy output schema compilation fails", async () => {
+    const pi = new RecordingPi();
+    const runtime = new RecordingRuntime();
+    runtime.result = {
+      content: [{ type: "text", text: "retained" }],
+      details: {},
+      structuredContent: "value",
+    };
+    const catalog = new McpToolCatalog(pi, runtime);
+    await catalog.replaceServerTools("server", [
+      {
+        name: "invalid-pattern",
+        inputSchema: { type: "object" },
+        outputSchema: { type: "string", pattern: "[" },
+      },
+    ]);
+    const tool = pi.tools.get("mcp__server__invalid-pattern");
+    if (tool === undefined) throw new Error("Expected registered Server Tool");
+
+    await expect(
+      tool.execute("call", {}, undefined, undefined, TEST_CONTEXT),
+    ).resolves.toMatchObject({
+      content: [
+        { type: "text", text: "retained" },
+        { type: "text", text: expect.stringContaining("output schema validation failed") },
+      ],
+      details: {
+        mcp: {
+          outputSchemaError: expect.any(String),
+          outputSchemaValid: false,
+        },
+        structuredContent: "value",
+      },
+    });
   });
 
   test("replaces and deactivates Server Tools without changing foreign active tools", async () => {
