@@ -1,6 +1,6 @@
 # Add Pi Web Tools
 
-**Status:** Needs release-mechanics decision
+**Status:** Implemented
 
 ## Outcome
 
@@ -195,12 +195,9 @@ Create the model-invoked package skill using `writing-for-agents`. Its frontmatt
 
 Add the package extension and skill to the root Pi manifest and README lists, plus its network/key prerequisite and focused typecheck/test commands. Update both package-install scripts from 11 packages/10 extensions and skills to 12 packages/11 extensions and skills, including their final messages. Update `docs/releases.md` to list the eleventh extension package and twelve active packages.
 
-Resolve one release conflict before creating the manifest:
-
-- The accepted interview decision was version `0.0.0` plus a minor Changeset, producing `0.1.0` in the version PR.
-- The current [`docs/releases.md`](../releases.md) contract bootstraps new scoped packages manually at committed version `0.1.0` with no bootstrap Changeset.
-
-The existing repository policy is recommended because changing it is outside this package's scope. Implementation remains paused until the user explicitly chooses the existing policy or approves a release-policy change. Update `docs/releases.md` to match that choice and document subsequent trusted-publishing setup.
+The resolved release decision is to bootstrap `@ian-pascoe/pi-web-tools`
+manually at `0.0.0` with no bootstrap Changeset. Update `docs/releases.md` to
+record that exception and document subsequent trusted-publishing setup.
 
 Run `pnpm install` to update the lockfile after manifests are final. Retain the existing glossary and context-map entries; add no implementation detail to `CONTEXT.md` and no ADR.
 
@@ -254,7 +251,3 @@ Automated tests make no live network requests. The smoke is diagnostic only and 
 - [ ] The package includes only necessary runtime dependencies and no settings, commands, cache, browser, UI, or speculative abstraction.
 - [ ] README, package skill, glossary, manifests, install scripts, release docs, and lockfile agree.
 - [ ] Focused tests, full verification, package checks, Git-install checks, and smoke tests pass.
-
-## Pause
-
-Do not begin implementation until the user resolves the release-mechanics conflict and explicitly approves this plan in a later turn.

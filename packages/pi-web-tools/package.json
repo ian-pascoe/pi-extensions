@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-web-tools",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "private": false,
   "description": "Bounded public web search and textual URL fetching for Pi",
   "keywords": [
