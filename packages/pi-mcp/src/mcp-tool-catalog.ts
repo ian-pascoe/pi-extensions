@@ -226,6 +226,10 @@ function schemaIssues(issues: readonly { readonly message: string }[]): string {
   return issues.map((issue) => issue.message).join("; ");
 }
 
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 function sanitizeToolNamePart(value: string): string {
   const sanitized = value.replaceAll(/[^A-Za-z0-9_-]/g, "_");
   return sanitized.length === 0 ? "_" : sanitized;
@@ -264,6 +268,13 @@ function execution(
 /** Register exact-schema Server Tools and the stable fixed Resource tools for one MCP Host. */
 export class McpToolCatalog {
   private readonly ownedToolNames = new Set<string>();
+  private registeredServerTools: readonly {
+    readonly compiled: CompiledServerTool;
+    readonly definition: McpServerToolDefinition;
+    readonly identity: string;
+    readonly name: string;
+    readonly serverId: string;
+  }[] = [];
   private rebuildTail: Promise<void> = Promise.resolve();
   private readonly serverCatalogs = new Map<string, ServerCatalog>();
   private resourceToolsActive = false;
@@ -281,7 +292,7 @@ export class McpToolCatalog {
       if (details === undefined || !details.mcp.isError) return;
       return { isError: true };
     });
-    this.syncActiveTools([]);
+    this.syncActiveTools();
   }
 
   /** Replace one server's complete advertised tool list and activate valid definitions. */
@@ -294,7 +305,7 @@ export class McpToolCatalog {
 
   /** Activate or deactivate one server's registered tools without touching foreign tools. */
   setServerActive(serverId: string, active: boolean): Promise<void> {
-    return this.queueServerToolRebuild(() => {
+    return this.queueActiveToolSync(() => {
       const catalog = this.serverCatalogs.get(serverId);
       if (catalog === undefined || catalog.active === active) return false;
       catalog.active = active;
@@ -304,7 +315,7 @@ export class McpToolCatalog {
 
   /** Activate or deactivate all three fixed Resource tools as one stable capability surface. */
   setResourceToolsActive(active: boolean): Promise<void> {
-    return this.queueServerToolRebuild(() => {
+    return this.queueActiveToolSync(() => {
       if (this.resourceToolsActive === active) return false;
       this.resourceToolsActive = active;
       return true;
@@ -319,10 +330,28 @@ export class McpToolCatalog {
     return rebuild;
   }
 
+  private queueActiveToolSync(update: () => boolean): Promise<void> {
+    const sync = this.rebuildTail.then(() => {
+      if (update()) this.syncActiveTools();
+    });
+    this.rebuildTail = sync.catch(() => undefined);
+    return sync;
+  }
+
   private async rebuildServerTools(): Promise<void> {
+    const previousRegistrations = new Map(
+      this.registeredServerTools.map((registered) => [registered.identity, registered]),
+    );
     const compiledTools: CompiledServerTool[] = [];
     for (const [serverId, catalog] of this.serverCatalogs) {
       for (const definition of catalog.tools) {
+        const identity = serverToolIdentity(serverId, definition.name);
+        const previous = previousRegistrations.get(identity);
+        if (previous?.definition === definition) {
+          compiledTools.push(previous.compiled);
+          await scheduler.yield();
+          continue;
+        }
         try {
           // SAFETY: compileMcpJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
           const inputValidator = compileMcpJsonSchema<McpServerToolArguments>(
@@ -335,7 +364,7 @@ export class McpToolCatalog {
               // SAFETY: compileMcpJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
               outputValidator = compileMcpJsonSchema<JSONValue>(definition.outputSchema);
             } catch (cause) {
-              outputSchemaError = cause instanceof Error ? cause.message : String(cause);
+              outputSchemaError = errorMessage(cause);
             }
           }
           let compiled: CompiledServerTool;
@@ -367,7 +396,13 @@ export class McpToolCatalog {
         .filter((name) => !this.ownedToolNames.has(name)),
     );
     const occupiedNames = new Set([...foreignNames, ...RESOURCE_TOOL_NAMES]);
-    const activeNames: string[] = [];
+    const registeredServerTools: {
+      compiled: CompiledServerTool;
+      definition: McpServerToolDefinition;
+      identity: string;
+      name: string;
+      serverId: string;
+    }[] = [];
     for (const compiled of compiledTools) {
       const baseName = `mcp__${sanitizeToolNamePart(compiled.serverId)}__${sanitizeToolNamePart(compiled.definition.name)}`;
       const identity = serverToolIdentity(compiled.serverId, compiled.definition.name);
@@ -376,11 +411,21 @@ export class McpToolCatalog {
         : baseName;
       occupiedNames.add(piToolName);
       this.ownedToolNames.add(piToolName);
-      this.pi.registerTool(this.serverToolDefinition(compiled, piToolName));
-      if (this.serverCatalogs.get(compiled.serverId)?.active === true) activeNames.push(piToolName);
+      const previous = previousRegistrations.get(identity);
+      if (previous?.definition !== compiled.definition || previous.name !== piToolName) {
+        this.pi.registerTool(this.serverToolDefinition(compiled, piToolName));
+      }
+      registeredServerTools.push({
+        compiled,
+        definition: compiled.definition,
+        identity,
+        name: piToolName,
+        serverId: compiled.serverId,
+      });
       await scheduler.yield();
     }
-    this.syncActiveTools(activeNames);
+    this.registeredServerTools = registeredServerTools;
+    this.syncActiveTools();
   }
 
   private serverToolDefinition(
@@ -415,7 +460,16 @@ export class McpToolCatalog {
       renderResult: (result, options, theme, context) =>
         renderMcpToolResult(result, options, theme, context.isError, this.redact),
       execute: async (toolCallId, arguments_, signal, onUpdate, context) => {
-        const parsed = await compiled.inputValidator["~standard"].validate(arguments_);
+        let parsed;
+        try {
+          parsed = await compiled.inputValidator["~standard"].validate(arguments_);
+        } catch (cause) {
+          throw new McpServerToolInputError(
+            compiled.serverId,
+            compiled.definition.name,
+            errorMessage(cause),
+          );
+        }
         if (parsed.issues !== undefined) {
           throw new McpServerToolInputError(
             compiled.serverId,
@@ -446,11 +500,16 @@ export class McpToolCatalog {
     let outputSchemaError = compiled?.outputSchemaError;
     let outputSchemaValid: boolean | undefined;
     if (compiled?.outputValidator !== undefined) {
-      const validation = await compiled.outputValidator["~standard"].validate(
-        result.structuredContent,
-      );
-      outputSchemaValid = validation.issues === undefined;
-      if (validation.issues !== undefined) outputSchemaError = schemaIssues(validation.issues);
+      try {
+        const validation = await compiled.outputValidator["~standard"].validate(
+          result.structuredContent,
+        );
+        outputSchemaValid = validation.issues === undefined;
+        if (validation.issues !== undefined) outputSchemaError = schemaIssues(validation.issues);
+      } catch (cause) {
+        outputSchemaError = errorMessage(cause);
+        outputSchemaValid = false;
+      }
     } else if (outputSchemaError !== undefined) {
       outputSchemaValid = false;
     }
@@ -568,13 +627,15 @@ export class McpToolCatalog {
     this.pi.registerTool(tool);
   }
 
-  private syncActiveTools(serverToolNames: readonly string[]): void {
+  private syncActiveTools(): void {
     const foreignActiveNames = this.pi
       .getActiveTools()
       .filter((name) => !this.ownedToolNames.has(name));
     const ownActiveNames = [
       ...(this.resourceToolsActive ? RESOURCE_TOOL_NAMES : []),
-      ...serverToolNames,
+      ...this.registeredServerTools
+        .filter(({ serverId }) => this.serverCatalogs.get(serverId)?.active === true)
+        .map(({ name }) => name),
     ];
     const nextActiveNames = [...foreignActiveNames, ...ownActiveNames];
     if (JSON.stringify(nextActiveNames) !== JSON.stringify(this.pi.getActiveTools())) {

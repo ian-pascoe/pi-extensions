@@ -121,6 +121,16 @@ lines.on("line", (line) => {
           name: "sample",
           inputSchema: { type: "object", properties: {}, additionalProperties: false },
         },
+        {
+          name: "formatted-output",
+          inputSchema: { type: "object", properties: {}, additionalProperties: false },
+          outputSchema: {
+            type: "object",
+            properties: { id: { type: "integer", format: "uint64" } },
+            required: ["id"],
+            additionalProperties: false,
+          },
+        },
       ],
     });
     return;
@@ -144,6 +154,13 @@ lines.on("line", (line) => {
           maxTokens: 32,
           messages: [{ role: "user", content: { type: "text", text: "return context" } }],
         },
+      });
+      return;
+    }
+    if (message.params.name === "formatted-output") {
+      respond(message.id, {
+        content: [{ type: "text", text: "formatted" }],
+        structuredContent: { id: 1 },
       });
       return;
     }
