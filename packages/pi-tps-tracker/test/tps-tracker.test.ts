@@ -173,7 +173,7 @@ describe("TPS Tracker extension", () => {
     vi.advanceTimersByTime(1_000);
     await requireHandler(host.messageUpdate)(messageUpdateEvent("second", 12), context);
 
-    expect(context.statuses).toContain(" waiting");
+    expect(context.statuses).toContain(" waiting");
     expect(context.statuses).toContain(" 12 tok/s");
   });
 

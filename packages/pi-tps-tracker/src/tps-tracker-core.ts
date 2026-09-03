@@ -245,7 +245,7 @@ export function registerTpsTracker(
     resetMessageState(state);
     context.setStatus(
       STATUS_KEY,
-      context.render("dim", `${context.useNerdFontIcons ? "" : "TPS"} waiting`),
+      context.render("dim", `${context.useNerdFontIcons ? "" : "TPS"} waiting`),
     );
     void startCounterLoad(context.modelId);
   });
