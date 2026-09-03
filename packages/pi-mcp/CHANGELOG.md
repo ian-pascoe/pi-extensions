@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-mcp
 
+## 0.4.2
+
+### Patch Changes
+
+- 6bfd482: Keep terminal input responsive while MCP Server Tool catalogs compile and register.
+
 ## 0.4.1
 
 ### Patch Changes

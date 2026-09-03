@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.6.4
+
+### Patch Changes
+
+- 229ea22: Expose tools registered after CodeMode starts, including tools loaded by Pi MCP, without widening Child Agent Launch Contracts.
+
 ## 0.6.3
 
 ### Patch Changes
