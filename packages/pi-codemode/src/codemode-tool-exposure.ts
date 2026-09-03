@@ -13,6 +13,8 @@ export interface CodeModeActiveToolOwner {
 export interface InstalledCodeModeToolExposure {
   /** Returns the latest coherent direct, CodeMode, and unavailable classification. */
   getDecision(): CodeModeToolExposureDecision;
+  /** Reconciles registry or active-tool changes that bypassed the installed method wrapper. */
+  refreshToolExposure(): void;
   /** Restores pre-policy requested names and the owner's exact original method descriptor. */
   restore(): void;
 }
@@ -144,6 +146,18 @@ export function installCodeModeToolExposure(
 
   return {
     getDecision: () => decision,
+    refreshToolExposure: () => {
+      if (restored) return;
+      const registryNames = new Set(getRegistryNames());
+      const activeNames = owner.getActiveToolNames();
+      if (
+        haveSameNames(registryNames, lastObservedRegistryNames) &&
+        haveSameNames(activeNames, lastAppliedDirectNames)
+      ) {
+        return;
+      }
+      applyPolicy(activeNames);
+    },
     restore: () => {
       if (restored) return;
       const registryNames = new Set(getRegistryNames());
