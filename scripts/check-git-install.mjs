@@ -92,17 +92,17 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   const configuredPaths = manifest.pi.extensions;
   const configuredSkillPaths = manifest.pi.skills;
   assertGitInstallCondition(
-    configuredPaths.length === 12,
-    "temporary root manifest does not contain twelve extension paths",
+    configuredPaths.length === 10,
+    "temporary root manifest does not contain ten extension paths",
   );
   assertGitInstallCondition(
     configuredPaths.every((configuredPath) => configuredPath.endsWith("/src/index.ts")),
     "temporary root manifest contains a non-source extension path",
   );
   assertGitInstallCondition(
-    configuredSkillPaths.length === 12 &&
+    configuredSkillPaths.length === 10 &&
       configuredSkillPaths.every((configuredPath) => configuredPath.endsWith("/skills")),
-    "temporary root manifest does not contain twelve skill paths",
+    "temporary root manifest does not contain ten skill paths",
   );
   const resources = await new DefaultPackageManager({
     agentDir: agentDirectory,
@@ -110,8 +110,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     settingsManager: SettingsManager.inMemory(),
   }).resolveExtensionSources([installDirectory], { temporary: true });
   assertGitInstallCondition(
-    resources.skills.length === 12,
-    "temporary install did not expose twelve configuration skills",
+    resources.skills.length === 10,
+    "temporary install did not expose ten configuration skills",
   );
   const loadedSkills = loadSkills({
     agentDir: agentDirectory,
@@ -120,8 +120,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     skillPaths: resources.skills.map(({ path }) => path),
   });
   assertGitInstallCondition(
-    loadedSkills.diagnostics.length === 0 && loadedSkills.skills.length === 12,
-    "temporary install did not load twelve valid configuration skills",
+    loadedSkills.diagnostics.length === 0 && loadedSkills.skills.length === 10,
+    "temporary install did not load ten valid configuration skills",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
@@ -132,8 +132,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     `temporary source entrypoints failed to load: ${JSON.stringify(result.errors)}`,
   );
   assertGitInstallCondition(
-    result.extensions.length === 12,
-    "temporary install did not load twelve extensions",
+    result.extensions.length === 10,
+    "temporary install did not load ten extensions",
   );
   assertGitInstallCondition(
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===
@@ -184,7 +184,6 @@ try {
     filter: includeWorkingTreePath,
   });
   await runNpmProductionInstall(installDirectory);
-  await assertPackageExcludedFromProductionInstall(installDirectory, "byterover-cli");
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
   await assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory);
@@ -196,5 +195,5 @@ try {
 }
 
 console.log(
-  "Validated the clean npm production Git-install path with the shared utility and twelve configuration skills.",
+  "Validated the clean npm production Git-install path with the shared utility and ten configuration skills.",
 );

@@ -58,8 +58,6 @@
   },
   "pi": {
     "extensions": [
-      "./packages/pi-adaptive-thinking/src/index.ts",
-      "./packages/pi-byterover/src/index.ts",
       "./packages/pi-minimal-subagents/src/index.ts",
       "./packages/pi-bible-verses/src/index.ts",
       "./packages/pi-tps-tracker/src/index.ts",
@@ -72,8 +70,6 @@
       "./packages/pi-mcp/src/index.ts"
     ],
     "skills": [
-      "./packages/pi-adaptive-thinking/skills",
-      "./packages/pi-byterover/skills",
       "./packages/pi-minimal-subagents/skills",
       "./packages/pi-bible-verses/skills",
       "./packages/pi-tps-tracker/skills",
