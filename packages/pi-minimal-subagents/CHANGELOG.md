@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.6.3
+
+### Patch Changes
+
+- 89e1007: Replace the complete read-tool preset with pi-codex-conversion's native shell tools in Child Agent runtimes.
+
 ## 0.6.2
 
 ### Patch Changes
