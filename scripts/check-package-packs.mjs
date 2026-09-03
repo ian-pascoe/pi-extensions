@@ -135,7 +135,7 @@ function validatePackedFileList(packageName, files) {
   }
 }
 
-function validatePackedManifest(sourceManifest, packedManifest) {
+function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) {
   const packageName = sourceManifest.name;
   for (const field of [
     "name",
@@ -171,7 +171,7 @@ function validatePackedManifest(sourceManifest, packedManifest) {
   }
   if (piUtilsConsumerPackageNames.has(packageName)) {
     assertPackCondition(
-      packedManifest.dependencies?.[piUtilsPackageName] === "^0.1.0",
+      packedManifest.dependencies?.[piUtilsPackageName] === `^${piUtilsVersion}`,
       `${packageName} has an invalid ${piUtilsPackageName} dependency`,
     );
   }
@@ -330,6 +330,9 @@ try {
     if (right.manifest.name === piUtilsPackageName) return 1;
     return left.manifest.name.localeCompare(right.manifest.name);
   });
+  const piUtilsVersion = workspaces.find(({ manifest }) => manifest.name === piUtilsPackageName)
+    ?.manifest.version;
+  assertPackCondition(piUtilsVersion !== undefined, `workspace omits ${piUtilsPackageName}`);
   let piUtilsTarballPath;
   for (const { manifest, packageDirectory } of workspaces) {
     const packed = parsePackJson(
@@ -355,7 +358,7 @@ try {
     const packedManifestText = (
       await runCommand("tar", ["-xOf", tarballPath, "package/package.json"])
     ).stdout;
-    validatePackedManifest(manifest, JSON.parse(packedManifestText));
+    validatePackedManifest(manifest, JSON.parse(packedManifestText), piUtilsVersion);
     const dependsOnPiUtils = piUtilsConsumerPackageNames.has(manifest.name);
     assertPackCondition(
       !dependsOnPiUtils || piUtilsTarballPath !== undefined,
