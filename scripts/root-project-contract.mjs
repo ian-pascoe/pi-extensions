@@ -20,6 +20,7 @@ export const rootPiManifestSchema = Type.Object({
 /** Parses the package-manifest fields used by root package checks. */
 export const workspacePackageManifestSchema = Type.Object({
   name: Type.String(),
+  private: Type.Boolean(),
   pi: Type.Optional(
     Type.Object({
       extensions: Type.Array(Type.String()),

@@ -38,15 +38,15 @@ export type McpAttentionNotice =
       readonly serverId: string;
     };
 
-/** One footer status row with its required theme role. */
-export type McpObserverFooter = {
+/** One independently styled MCP footer status segment. */
+export type McpObserverFooterSegment = {
   readonly color: "dim" | "error" | "warning";
   readonly text: string;
 };
 
 /** Read-only MCP Observer Snapshot derived from copied Host status. */
 export type McpObserverSnapshot = {
-  readonly footer?: McpObserverFooter;
+  readonly footer: readonly McpObserverFooterSegment[];
   readonly notices: readonly McpAttentionNotice[];
 };
 
@@ -84,37 +84,36 @@ function actionableNotice(
 /** Project copied MCP Host status into the bounded, read-only MCP Observer Snapshot. */
 export function buildMcpObserverSnapshot(
   statuses: ReadonlyMap<string, McpServerStatus>,
+  useNerdFontIcons: boolean,
   invalidSettings: readonly string[] = [],
 ): McpObserverSnapshot {
   const entries = [...statuses].sort(([left], [right]) => left.localeCompare(right));
   const enabled = entries.filter(([, status]) => status.state !== "disabled");
   const connected = enabled.filter(([, status]) => status.state === "connected").length;
-  const counts = new Map<string, number>();
+  let busy = 0;
+  let auth = 0;
+  let failed = 0;
   for (const [, status] of enabled) {
-    if (status.state !== "connected") counts.set(status.state, (counts.get(status.state) ?? 0) + 1);
+    if (status.state === "connecting" || status.state === "retrying") busy += 1;
+    else if (status.state === "needs_auth" || status.state === "needs_client_registration") {
+      auth += 1;
+    } else if (status.state === "failed") failed += 1;
   }
-  const stateLabels = [
-    ["connecting", "connecting"],
-    ["retrying", "retrying"],
-    ["needs_auth", "authentication"],
-    ["needs_client_registration", "registration"],
-    ["failed", "failed"],
-  ] as const;
-  const degraded = stateLabels
-    .flatMap(([state, label]) => {
-      const count = counts.get(state);
-      return count === undefined ? [] : [`${label} ${count}`];
-    })
-    .join(" · ");
-  const footer =
-    enabled.length === 0
-      ? undefined
-      : degraded.length === 0
-        ? { color: "dim" as const, text: `MCP ${connected}/${enabled.length}` }
-        : {
-            color: counts.has("failed") ? ("error" as const) : ("warning" as const),
-            text: `MCP ${connected}/${enabled.length} · ${degraded}`,
-          };
+  const segments: McpObserverFooterSegment[] = [
+    {
+      color: "dim",
+      text: `${useNerdFontIcons ? "" : "MCP"} ${connected}/${enabled.length}`,
+    },
+  ];
+  if (busy > 0) {
+    segments.push({ color: "warning", text: `${useNerdFontIcons ? "" : "busy"} ${busy}` });
+  }
+  if (auth > 0) {
+    segments.push({ color: "warning", text: `${useNerdFontIcons ? "" : "auth"} ${auth}` });
+  }
+  if (failed > 0) {
+    segments.push({ color: "error", text: `${useNerdFontIcons ? "" : "failed"} ${failed}` });
+  }
   const notices = entries.flatMap(([serverId, status]) => {
     const notice = actionableNotice(serverId, status);
     return notice === undefined ? [] : [notice];
@@ -127,7 +126,7 @@ export function buildMcpObserverSnapshot(
       level: "warning",
     });
   }
-  return footer === undefined ? { notices } : { footer, notices };
+  return { footer: segments, notices };
 }
 
 /** Own TUI-only MCP footer status and deduplicated MCP Attention Notices for one session. */
@@ -135,10 +134,11 @@ export class McpObserverUiController {
   private disposed = false;
   private readonly activeNoticeKeys = new Set<string>();
 
-  /** Build a controller with the session's exact-value redactor. */
+  /** Build a controller with the session's exact-value redactor and terminal icon capability. */
   constructor(
     private readonly context: McpObserverUiContext,
     private readonly redact: (value: string) => string,
+    private readonly useNerdFontIcons: boolean,
   ) {}
 
   /** Render a copied Host status map without changing MCP Host state or sending protocol requests. */
@@ -147,7 +147,7 @@ export class McpObserverUiController {
     invalidSettings: readonly string[] = [],
   ): void {
     if (this.disposed || this.context.mode !== "tui") return;
-    const snapshot = buildMcpObserverSnapshot(statuses, invalidSettings);
+    const snapshot = buildMcpObserverSnapshot(statuses, this.useNerdFontIcons, invalidSettings);
     this.setFooter(snapshot.footer);
     const nextNoticeKeys = new Set<string>();
     for (const notice of snapshot.notices) {
@@ -174,11 +174,13 @@ export class McpObserverUiController {
     if (this.context.mode === "tui") this.setFooter(undefined);
   }
 
-  private setFooter(footer: McpObserverFooter | undefined): void {
+  private setFooter(footer: readonly McpObserverFooterSegment[] | undefined): void {
     try {
       this.context.ui.setStatus(
         MCP_OBSERVER_STATUS_KEY,
-        footer === undefined ? undefined : this.context.ui.theme.fg(footer.color, footer.text),
+        footer === undefined
+          ? undefined
+          : footer.map(({ color, text }) => this.context.ui.theme.fg(color, text)).join(" · "),
       );
     } catch {
       // Observer rendering failures must not affect MCP Host lifecycle.

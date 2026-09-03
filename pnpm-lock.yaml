@@ -400,6 +400,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: '*'
         version: 0.84.4
+      '@ian-pascoe/pi-utils':
+        specifier: ^0.1.0
+        version: link:../pi-utils
       '@modelcontextprotocol/client':
         specifier: ^2.0.0
         version: 2.0.0
@@ -444,10 +447,15 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: '*'
         version: 0.84.4(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.5.4))(supports-color@8.1.1)(ws@8.21.3)(zod@4.5.4)
+      '@ian-pascoe/pi-utils':
+        specifier: ^0.1.0
+        version: link:../pi-utils
     optionalDependencies:
       tiktoken:
         specifier: 1.0.22
         version: 1.0.22
+
+  packages/pi-utils: {}
 
   tools/pi-dap-vscode-js-debug:
     devDependencies:

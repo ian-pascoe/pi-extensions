@@ -44,11 +44,13 @@ class RecordingLifecycleHost implements TpsTrackerLifecycleHost {
 
 class RecordingTrackerContext implements TpsTrackerContext {
   modelId: string | undefined;
-  readonly statuses: string[] = [];
+  readonly useNerdFontIcons: boolean;
+  readonly statuses: (string | undefined)[] = [];
   readonly notifications: string[] = [];
 
-  constructor(modelId = "test-model") {
+  constructor(modelId = "test-model", useNerdFontIcons = false) {
     this.modelId = modelId;
+    this.useNerdFontIcons = useNerdFontIcons;
   }
   render(_color: "accent" | "dim" | "success", text: string) {
     return text;
@@ -56,7 +58,7 @@ class RecordingTrackerContext implements TpsTrackerContext {
   notify(message: string) {
     this.notifications.push(message);
   }
-  setStatus(_key: string, text: string) {
+  setStatus(_key: string, text: string | undefined) {
     this.statuses.push(text);
   }
 }
@@ -141,7 +143,9 @@ describe("TPS Tracker extension", () => {
       context,
     );
 
-    expect(context.statuses).toContain("12 tok/s (12 tok / 1.0s)");
+    expect(context.statuses).toContain("TPS waiting");
+    expect(context.statuses).toContain("TPS 12 tok/s");
+    expect(context.statuses.at(-1)).toBeUndefined();
     expect(context.notifications).toContain("✓ 12 tok/s  12 tokens in 1.0s streaming");
 
     await requireHandler(host.agentStart)(
@@ -153,6 +157,24 @@ describe("TPS Tracker extension", () => {
       context,
     );
     expect(context.notifications).toContain("• N/A  0 tokens in 0.0s streaming");
+  });
+
+  it("uses Nerd Font icons for deterministic waiting and live footer states", async () => {
+    const host = new RecordingLifecycleHost();
+    const context = new RecordingTrackerContext("test-model", true);
+    registerTpsTracker(host, new RecordingTokenCounterLoader(null));
+
+    await requireHandler(host.agentStart)(
+      { type: "agent_start" } satisfies AgentStartEvent,
+      context,
+    );
+    await requireHandler(host.messageStart)(messageStartEvent(), context);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("first", 12), context);
+    vi.advanceTimersByTime(1_000);
+    await requireHandler(host.messageUpdate)(messageUpdateEvent("second", 12), context);
+
+    expect(context.statuses).toContain(" waiting");
+    expect(context.statuses).toContain(" 12 tok/s");
   });
 
   it("uses a model-keyed Tokenized Output Count when provider usage is absent", async () => {

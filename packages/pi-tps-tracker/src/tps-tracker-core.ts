@@ -8,6 +8,7 @@ import type {
   MessageStartEvent,
   MessageUpdateEvent,
 } from "@earendil-works/pi-coding-agent";
+import { shouldUseNerdFontIcons } from "@ian-pascoe/pi-utils";
 import type { Tiktoken, TiktokenEncoding } from "tiktoken";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -63,10 +64,16 @@ export interface TiktokenRuntimeLoader {
 
 /** The narrow UI contract used by the TPS tracker lifecycle. */
 export interface TpsTrackerContext {
+  /** Active Pi model identifier used to select the token counter. */
   modelId: string | undefined;
+  /** Whether the current terminal safely supports Nerd Font status icons. */
+  useNerdFontIcons: boolean;
+  /** Render footer or notification text with one Pi theme role. */
   render(color: "accent" | "dim" | "success", text: string): string;
+  /** Send the final human-only throughput notification. */
   notify(message: string): void;
-  setStatus(key: string, text: string): void;
+  /** Set or clear the TPS footer status. */
+  setStatus(key: string, text: string | undefined): void;
 }
 
 /** Registers the typed TPS tracker lifecycle events needed by the tracker core. */
@@ -133,12 +140,6 @@ function tpsLabel(tps: number) {
 
 function isTiktokenEncoding(value: string): value is TiktokenEncoding {
   return TIKTOKEN_ENCODINGS.has(value);
-}
-
-function tokenLabel(officialTokens: number, tokenizedTokens: number, estimatedTokens: number) {
-  if (officialTokens > 0) return `${Math.round(officialTokens)} tok`;
-  if (tokenizedTokens > 0) return `${Math.round(tokenizedTokens)} tok`;
-  return `~${Math.round(estimatedTokens)} tok`;
 }
 
 const dynamicTiktokenRuntimeLoader: TiktokenRuntimeLoader = {
@@ -242,7 +243,10 @@ export function registerTpsTracker(
     state.totalOutputTokens = 0;
     state.totalStreamMs = 0;
     resetMessageState(state);
-    context.setStatus(STATUS_KEY, context.render("dim", "⏱ waiting for output..."));
+    context.setStatus(
+      STATUS_KEY,
+      context.render("dim", `${context.useNerdFontIcons ? "" : "TPS"} waiting`),
+    );
     void startCounterLoad(context.modelId);
   });
 
@@ -276,10 +280,7 @@ export function registerTpsTracker(
       const tps = currentTokens / elapsed;
       context.setStatus(
         STATUS_KEY,
-        `${context.render("accent", tpsLabel(tps))} ${context.render(
-          "dim",
-          `(${tokenLabel(officialTokens, state.tokenizedStreamedTokens, state.estimatedStreamedTokens)} / ${elapsed.toFixed(1)}s)`,
-        )}`,
+        context.render("accent", `${context.useNerdFontIcons ? "" : "TPS"} ${tpsLabel(tps)}`),
       );
     }
   });
@@ -307,14 +308,18 @@ export function registerTpsTracker(
       `${Math.round(state.totalOutputTokens)} tokens in ${elapsed.toFixed(1)}s streaming`,
     );
     context.notify(`${icon} ${formattedTps}  ${detail}`);
-    context.setStatus(STATUS_KEY, context.render("dim", `done — ${tpsLabel(tps)}`));
+    context.setStatus(STATUS_KEY, undefined);
     resetMessageState(state);
   });
 }
 
-function tpsTrackerContext(context: ExtensionContext): TpsTrackerContext {
+function tpsTrackerContext(
+  context: ExtensionContext,
+  useNerdFontIcons: boolean,
+): TpsTrackerContext {
   return {
     modelId: context.model?.id,
+    useNerdFontIcons,
     render: (color, text) => context.ui.theme.fg(color, text),
     notify: (message) => context.ui.notify(message, "info"),
     setStatus: (key, text) => context.ui.setStatus(key, text),
@@ -323,16 +328,27 @@ function tpsTrackerContext(context: ExtensionContext): TpsTrackerContext {
 
 /** Installs the TPS tracker into Pi's extension lifecycle. */
 export default function tpsTrackerExtension(pi: ExtensionAPI) {
+  const useNerdFontIcons = shouldUseNerdFontIcons(process.env);
   registerTpsTracker({
     onAgentStart: (handler) =>
-      pi.on("agent_start", (event, context) => handler(event, tpsTrackerContext(context))),
+      pi.on("agent_start", (event, context) =>
+        handler(event, tpsTrackerContext(context, useNerdFontIcons)),
+      ),
     onMessageStart: (handler) =>
-      pi.on("message_start", (event, context) => handler(event, tpsTrackerContext(context))),
+      pi.on("message_start", (event, context) =>
+        handler(event, tpsTrackerContext(context, useNerdFontIcons)),
+      ),
     onMessageUpdate: (handler) =>
-      pi.on("message_update", (event, context) => handler(event, tpsTrackerContext(context))),
+      pi.on("message_update", (event, context) =>
+        handler(event, tpsTrackerContext(context, useNerdFontIcons)),
+      ),
     onMessageEnd: (handler) =>
-      pi.on("message_end", (event, context) => handler(event, tpsTrackerContext(context))),
+      pi.on("message_end", (event, context) =>
+        handler(event, tpsTrackerContext(context, useNerdFontIcons)),
+      ),
     onAgentEnd: (handler) =>
-      pi.on("agent_end", (event, context) => handler(event, tpsTrackerContext(context))),
+      pi.on("agent_end", (event, context) =>
+        handler(event, tpsTrackerContext(context, useNerdFontIcons)),
+      ),
   });
 }

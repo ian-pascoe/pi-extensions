@@ -33,7 +33,6 @@ function createUiContext(mode: "tui" | "rpc") {
   context.mode = mode;
   context.ui = {
     setWidget: vi.fn(),
-    setStatus: vi.fn(),
     theme: passthroughTheme,
   };
   return context;
@@ -86,7 +85,6 @@ describe("minimal subagents UI", () => {
       renderMinimalSubagentsWidgetLines(
         {
           runningCount: 1,
-          retainedCount: 1,
           recentCount: 0,
           overflowCount: 0,
           rows: [
@@ -144,7 +142,6 @@ describe("minimal subagents UI", () => {
     expect(setTimeoutSpy).toHaveBeenCalledOnce();
     controller.dispose();
     expect(clearTimeoutSpy).toHaveBeenCalledOnce();
-    expect(context.ui.setStatus).toHaveBeenLastCalledWith("minimal-subagents", undefined);
     expect(context.ui.setWidget).toHaveBeenLastCalledWith("minimal-subagents", undefined);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(context.ui.setWidget).toHaveBeenCalledTimes(2);

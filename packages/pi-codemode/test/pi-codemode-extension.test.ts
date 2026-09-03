@@ -15,7 +15,6 @@ import {
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
@@ -658,7 +657,6 @@ describe("Pi CodeMode extension", () => {
       readonly content: ObserverWidgetFactory | undefined;
       readonly placement?: string;
     }> = [];
-    const statusEvents: Array<string | undefined> = [];
     const setWidget = (
       _key: string,
       content: ObserverWidgetFactory | undefined,
@@ -674,12 +672,10 @@ describe("Pi CodeMode extension", () => {
       mode: "tui",
       uiContext: {
         ...fixture.session.extensionRunner.getUIContext(),
-        setStatus: (_key, text) => statusEvents.push(text),
         setWidget: recordWidget,
       },
     });
     expect(widgetEvents).toEqual([]);
-    expect(statusEvents).toEqual([]);
 
     const started = await executeTool(fixture.session, "codemode_execute", {
       script: "while (true) {}",
@@ -690,10 +686,8 @@ describe("Pi CodeMode extension", () => {
       content: expect.any(Function),
       placement: "aboveEditor",
     });
-    expect(stripTerminalSequences(statusEvents.at(-1) ?? "")).toContain("1 running · 1 live");
 
     await executeTool(fixture.session, "codemode_cancel", { sessionId: pending.sessionId });
-    expect(statusEvents.at(-1)).toBeUndefined();
   }, 30_000);
 
   test("does not reactivate a tool disabled before exposure policy installs", async () => {

@@ -1,6 +1,7 @@
 packages:
   - packages/*
   - tools/*
+linkWorkspacePackages: true
 allowBuilds:
   "@google/genai": true
   deno: false

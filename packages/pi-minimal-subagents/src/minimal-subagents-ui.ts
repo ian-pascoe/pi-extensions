@@ -42,7 +42,6 @@ export interface MinimalSubagentsWidgetRow {
 
 export interface MinimalSubagentsWidgetView {
   runningCount: number;
-  retainedCount: number;
   recentCount: number;
   rows: MinimalSubagentsWidgetRow[];
   overflowCount: number;
@@ -148,7 +147,6 @@ export function buildMinimalSubagentsWidgetView(
     });
   return {
     runningCount: running.length,
-    retainedCount: flattened.length,
     recentCount: recent.filter((item) => chosenIds.has(item.agent.agent_id)).length,
     rows,
     overflowCount: Math.max(0, desiredIds.size - chosenIds.size),
@@ -395,7 +393,7 @@ class MinimalSubagentsWidgetComponent implements Component {
   invalidate(): void {}
 }
 
-/** Own the root session's widget, footer, live refresh, cooldown, and idempotent cleanup. */
+/** Own the root session's widget, live refresh, cooldown, and idempotent cleanup. */
 export class MinimalSubagentsUiController {
   private disposed = false;
   private widgetMounted = false;
@@ -406,7 +404,6 @@ export class MinimalSubagentsUiController {
   private restorationAttentionConsumed = false;
   private currentView: MinimalSubagentsWidgetView = {
     runningCount: 0,
-    retainedCount: 0,
     recentCount: 0,
     rows: [],
     overflowCount: 0,
@@ -426,16 +423,8 @@ export class MinimalSubagentsUiController {
       this.clearCooldown();
       this.ensureRefreshInterval();
       this.showWidget(nextView);
-      this.context.ui.setStatus(
-        MINIMAL_SUBAGENTS_UI_KEY,
-        [
-          this.context.ui.theme.fg("accent", `◉ ${nextView.runningCount} running`),
-          this.context.ui.theme.fg("muted", `${nextView.retainedCount} retained`),
-        ].join(this.context.ui.theme.fg("dim", "  ·  ")),
-      );
     } else {
       this.clearRefreshInterval();
-      this.context.ui.setStatus(MINIMAL_SUBAGENTS_UI_KEY, undefined);
       const restoredUnavailable =
         !this.restorationAttentionConsumed &&
         this.previousRunningCount === 0 &&
@@ -459,7 +448,6 @@ export class MinimalSubagentsUiController {
     this.clearRefreshInterval();
     this.clearCooldown();
     if (this.context.mode === "tui") {
-      this.context.ui.setStatus(MINIMAL_SUBAGENTS_UI_KEY, undefined);
       this.context.ui.setWidget(MINIMAL_SUBAGENTS_UI_KEY, undefined);
     }
     this.widgetMounted = false;

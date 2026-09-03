@@ -189,10 +189,9 @@ available.
 In TUI mode, the read-only CodeMode Observer UI appears above the editor during
 Cell activity. It shows up to eight running, idle, or recently terminal
 Sessions, uses the shortest unique Session prefix of at least eight characters,
-and adds `… +N more` when bounded. A footer shows `◉ N running · N live` only
-while Cells run. The widget disappears ten seconds after every Session becomes
-idle or terminal and remounts on later activity. It has no controls and issues
-no hidden CodeMode or Pi tool calls.
+and adds `… +N more` when bounded. The widget disappears ten seconds after every
+Session becomes idle or terminal and remounts on later activity. It has no
+controls and issues no hidden CodeMode or Pi tool calls.
 
 ## Notebook Bindings
 

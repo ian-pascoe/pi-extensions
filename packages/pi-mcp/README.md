@@ -138,7 +138,7 @@ The MCP Transcript Presentation gives every Server Tool and fixed Resource tool 
 
 Prompt messages show their MCP Server, Prompt name, message roles, text, and image metadata. Resource Update Notices show their MCP Server and URI, and state that the Resource remains unread until the agent explicitly reads it. These renderers use the existing persisted content and details. They do not invoke a Prompt, read a Resource, or change replay and next-turn delivery.
 
-In TUI mode, the MCP Observer UI uses Pi's footer status to show connected, connecting, retrying, authentication, registration, and failed counts. It sends one MCP Attention Notice when invalid settings, authentication, client registration, or terminal failure needs a command. `/mcp status` reports invalid settings separately from an empty configuration and includes attempts, retry timing, redacted causes, and sorted active Resource subscriptions.
+In TUI mode, the MCP Observer UI always shows the connected/enabled Server ratio in Pi's footer. It groups connecting and retrying Servers as busy, authentication and client-registration states as auth, and terminal failures as failed. It sends one MCP Attention Notice when invalid settings, authentication, client registration, or terminal failure needs a command. `/mcp status` reports invalid settings separately from an empty configuration and includes attempts, retry timing, redacted causes, and sorted active Resource subscriptions.
 
 Interactive TUI and HTML exports use the semantic tool renderers. Prompt and Resource Update custom rendering, footer health, and Attention Notices are TUI-only. Print, JSON, and RPC modes receive no Observer-only output. HTML custom messages keep their durable content-based representation.
 

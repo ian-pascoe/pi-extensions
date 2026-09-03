@@ -2,6 +2,8 @@
 node_modules/
 # Build Output
 dist/
+!packages/pi-utils/dist/
+!packages/pi-utils/dist/**
 # Code Coverage
 coverage/
 # NPM Packs

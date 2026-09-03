@@ -1,4 +1,4 @@
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   buildCodeModeObserverView,
@@ -30,16 +30,14 @@ function createControllerContext(mode: "tui" | "rpc") {
       widgetFactory = widget;
     },
   );
-  const setStatus = vi.fn((_key: string, _status: string | undefined) => {});
   const notify = vi.fn((_message: string, _level: "info" | "warning" | "error") => {});
   const context: CodeModeObserverUiContext = {
     mode,
-    ui: { notify, setStatus, setWidget, theme: plainTheme },
+    ui: { notify, setWidget },
   };
   return {
     context,
     notify,
-    setStatus,
     setWidget,
     mountedWidgetFactory: (): ObserverWidgetFactory => {
       if (widgetFactory === undefined) throw new Error("Expected CodeMode Observer widget factory");
@@ -59,10 +57,6 @@ function createTimerRuntime(): CodeModeObserverUiRuntime {
 function createTui() {
   const requestRender = vi.fn();
   return { tui: { requestRender }, requestRender };
-}
-
-function plain(text: string | undefined): string | undefined {
-  return text === undefined ? undefined : stripTerminalSequences(text);
 }
 
 afterEach(() => vi.useRealTimers());
@@ -202,7 +196,7 @@ describe("CodeMode Observer UI", () => {
   test("mounts immediately, refreshes elapsed time recursively, then cools down and hides", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    const { context, mountedWidgetFactory, setStatus, setWidget } = createControllerContext("tui");
+    const { context, mountedWidgetFactory, setWidget } = createControllerContext("tui");
     const controller = new CodeModeObserverUiController(context, createTimerRuntime());
     const running: CodeModeObserverSnapshot = {
       sessions: [
@@ -226,8 +220,6 @@ describe("CodeMode Observer UI", () => {
     expect(setWidget).toHaveBeenCalledWith("codemode-observer", expect.any(Function), {
       placement: "aboveEditor",
     });
-    expect(plain(setStatus.mock.calls.at(-1)?.[1])).toBe("◉ 1 running · 1 live");
-
     const { requestRender, tui } = createTui();
     const component = mountedWidgetFactory()(tui, plainTheme);
     expect(component.render(80)[1]).toContain("0ms");
@@ -245,7 +237,6 @@ describe("CodeMode Observer UI", () => {
         },
       ],
     });
-    expect(setStatus).toHaveBeenLastCalledWith("codemode-observer", undefined);
     await vi.advanceTimersByTimeAsync(9_999);
     expect(setWidget).not.toHaveBeenLastCalledWith("codemode-observer", undefined);
     await vi.advanceTimersByTimeAsync(1);
@@ -254,7 +245,7 @@ describe("CodeMode Observer UI", () => {
 
   test("deduplicates unexpected failure notifications and disposes UI and timers once", async () => {
     vi.useFakeTimers();
-    const { context, notify, setStatus, setWidget } = createControllerContext("tui");
+    const { context, notify, setWidget } = createControllerContext("tui");
     const controller = new CodeModeObserverUiController(context, createTimerRuntime());
     controller.onSnapshotChange({
       sessions: [
@@ -289,7 +280,6 @@ describe("CodeMode Observer UI", () => {
 
     controller.dispose();
     controller.dispose();
-    expect(setStatus).toHaveBeenLastCalledWith("codemode-observer", undefined);
     expect(setWidget).toHaveBeenLastCalledWith("codemode-observer", undefined);
     const widgetCalls = setWidget.mock.calls.length;
     await vi.advanceTimersByTimeAsync(2_000);
@@ -318,12 +308,8 @@ describe("CodeMode Observer UI", () => {
     const throwingContext: CodeModeObserverUiContext = {
       mode: "tui",
       ui: {
-        theme: plainTheme,
         notify: () => {
           throw new Error("notify failed");
-        },
-        setStatus: () => {
-          throw new Error("status failed");
         },
         setWidget: () => {
           throw new Error("widget failed");
