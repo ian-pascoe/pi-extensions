@@ -90,7 +90,7 @@ export interface RuntimeToolReplacement {
 export interface RuntimeToolAdapter {
   /** Every tool registered by the adapter, used to defer initial tool selection until it loads. */
   readonly toolNames: readonly string[];
-  /** Capability-preserving replacements recognized for this adapter. */
+  /** Runtime replacements recognized for this adapter. */
   readonly replacements: readonly RuntimeToolReplacement[];
 }
 
