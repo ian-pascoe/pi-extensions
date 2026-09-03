@@ -1039,7 +1039,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       agentDir: this.options.agentDir,
       model,
       thinkingLevel: agent.launch_contract.thinking_level,
-      tools: adaptRuntimeTools ? undefined : allowedToolNames,
+      tools: [...allowedToolNames, ...adapterToolNames],
       customTools: coordinatorTools,
       resourceLoader,
       sessionManager,
