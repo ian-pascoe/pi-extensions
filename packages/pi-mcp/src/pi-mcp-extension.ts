@@ -649,7 +649,6 @@ class ProductionPiMcpSession implements PiMcpExtensionSession {
     private readonly observer: McpObserverUiController,
     private readonly redact: (text: string) => string,
     private readonly adapters: Awaited<ReturnType<typeof createStandaloneMcpCommandAdapters>>,
-    private readonly synchronizeInitialCatalog: () => Promise<void>,
     private readonly interactionContext: { current: ExtensionContext },
   ) {}
 
@@ -686,7 +685,6 @@ class ProductionPiMcpSession implements PiMcpExtensionSession {
   async start(): Promise<void> {
     this.host.start();
     await this.host.waitForInitialConnections();
-    await this.synchronizeInitialCatalog();
   }
 
   transformContext(messages: ContextEvent["messages"]): ContextEvent["messages"] {
@@ -732,12 +730,10 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
     try {
       const host = new McpHost({
         initialSubscriptions: replaySubscriptions(context),
-        onCatalogChanged: (serverId, kind) => {
-          if (kind === "tools") void synchronizeServerCatalog(serverId);
-          else if (kind === "resources" || kind === "resourceTemplates") {
-            void synchronizeServerCatalog(serverId);
-          }
-        },
+        onCatalogChanged: (serverId, kind) =>
+          kind === "tools" || kind === "resources" || kind === "resourceTemplates"
+            ? synchronizeServerCatalog(serverId)
+            : undefined,
         onResourceUpdated: ({ serverId, uri }) => {
           pi.sendMessage(
             {
@@ -783,24 +779,24 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
         const activeCatalog = catalog;
         if (activeCatalog === undefined) return;
         if (host.getStatus(serverId)?.state !== "connected") {
-          activeCatalog.setServerActive(serverId, false);
+          await activeCatalog.setServerActive(serverId, false);
           resourceServers.delete(serverId);
-          activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
           return;
         }
         try {
           const tools = await host.listTools(serverId);
-          activeCatalog.replaceServerTools(
+          await activeCatalog.replaceServerTools(
             serverId,
             tools.map(({ tool }) => catalogServerTool(tool)),
           );
           if (host.hasConnectedCapability("resources", serverId)) resourceServers.add(serverId);
           else resourceServers.delete(serverId);
-          activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
         } catch {
-          activeCatalog.setServerActive(serverId, false);
+          await activeCatalog.setServerActive(serverId, false);
           resourceServers.delete(serverId);
-          activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
         }
       };
       catalog = new McpToolCatalog(
@@ -818,9 +814,9 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
         const definition = resolveCurrentSettings().servers.get(serverId);
         if (definition === undefined) {
           if (host.getStatus(serverId) !== undefined) await host.removeServer(serverId);
-          catalog?.setServerActive(serverId, false);
+          await catalog?.setServerActive(serverId, false);
           resourceServers.delete(serverId);
-          catalog?.setResourceToolsActive(resourceServers.size > 0);
+          await catalog?.setResourceToolsActive(resourceServers.size > 0);
           return;
         }
         await host.upsertServer(definition);
@@ -932,9 +928,6 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
         observer,
         (text) => settings.secrets.redact(text),
         adapters,
-        async () => {
-          await Promise.all([...settings.servers.keys()].map(synchronizeServerCatalog));
-        },
         interactionContext,
       );
     } catch (cause) {

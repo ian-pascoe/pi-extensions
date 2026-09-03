@@ -149,13 +149,33 @@ const exactOutputSchema: JsonSchemaType = {
 };
 
 describe("McpToolCatalog", () => {
-  test("registers exact Server Tool schemas with deterministic collision-only hashes", () => {
+  test("yields to terminal input while preparing and registering Server Tools", async () => {
+    const catalog = new McpToolCatalog(new RecordingPi(), new RecordingRuntime());
+    const tools = Array.from({ length: 4 }, (_, index) => ({
+      inputSchema: { type: "object" as const },
+      name: `tool_${index}`,
+    }));
+    let terminalTurns = 0;
+    let catalogSettled = false;
+    const processTerminalTurn = () => {
+      terminalTurns += 1;
+      if (!catalogSettled) setImmediate(processTerminalTurn);
+    };
+    setImmediate(processTerminalTurn);
+
+    await catalog.replaceServerTools("server", tools);
+    catalogSettled = true;
+
+    expect(terminalTurns).toBeGreaterThanOrEqual(tools.length);
+  });
+
+  test("registers exact Server Tool schemas with deterministic collision-only hashes", async () => {
     const foreignCollision = "mcp__docs_server__lookup";
     const pi = new RecordingPi(["read", foreignCollision]);
     const runtime = new RecordingRuntime();
     const catalog = new McpToolCatalog(pi, runtime);
 
-    catalog.replaceServerTools("docs server", [
+    await catalog.replaceServerTools("docs server", [
       {
         name: "lookup",
         description: "Look up docs",
@@ -168,10 +188,10 @@ describe("McpToolCatalog", () => {
         inputSchema: { type: "object", additionalProperties: false },
       },
     ]);
-    catalog.replaceServerTools("docs@server", [
+    await catalog.replaceServerTools("docs@server", [
       { name: "lookup", inputSchema: { type: "object", additionalProperties: false } },
     ]);
-    catalog.replaceServerTools("broken", [
+    await catalog.replaceServerTools("broken", [
       {
         name: "invalid",
         // SAFETY: This deliberately malformed value exercises the catalog's runtime schema boundary.
@@ -205,7 +225,7 @@ describe("McpToolCatalog", () => {
     expect([...pi.tools.keys()].filter((name) => name.includes("mcp_task"))).toEqual([]);
   });
 
-  test("registers unknown schema formats without writing validator warnings", () => {
+  test("registers unknown schema formats without writing validator warnings", async () => {
     const pi = new RecordingPi();
     const catalog = new McpToolCatalog(pi, new RecordingRuntime());
     let warningCount = 0;
@@ -214,7 +234,7 @@ describe("McpToolCatalog", () => {
       warningCount += 1;
     };
     try {
-      catalog.replaceServerTools("computer-use", [
+      await catalog.replaceServerTools("computer-use", [
         {
           name: "click",
           inputSchema: {
@@ -239,7 +259,7 @@ describe("McpToolCatalog", () => {
     const pi = new RecordingPi();
     const runtime = new RecordingRuntime();
     const catalog = new McpToolCatalog(pi, runtime);
-    catalog.replaceServerTools("server", [
+    await catalog.replaceServerTools("server", [
       {
         name: "count",
         inputSchema: exactInputSchema,
@@ -326,10 +346,10 @@ describe("McpToolCatalog", () => {
     ).resolves.toBeUndefined();
   });
 
-  test("replaces and deactivates Server Tools without changing foreign active tools", () => {
+  test("replaces and deactivates Server Tools without changing foreign active tools", async () => {
     const pi = new RecordingPi(["read", "foreign_extension_tool"]);
     const catalog = new McpToolCatalog(pi, new RecordingRuntime());
-    catalog.replaceServerTools("server", [
+    await catalog.replaceServerTools("server", [
       { name: "first", inputSchema: { type: "object" } },
       { name: "second", inputSchema: { type: "object" } },
     ]);
@@ -340,7 +360,7 @@ describe("McpToolCatalog", () => {
       "mcp__server__second",
     ]);
 
-    catalog.replaceServerTools("server", [
+    await catalog.replaceServerTools("server", [
       { name: "second", description: "replacement", inputSchema: { type: "object" } },
       { name: "third", inputSchema: { type: "object" } },
     ]);
@@ -352,9 +372,9 @@ describe("McpToolCatalog", () => {
       "mcp__server__third",
     ]);
 
-    catalog.setServerActive("server", false);
+    await catalog.setServerActive("server", false);
     expect(pi.getActiveTools()).toEqual(["read", "foreign_extension_tool"]);
-    catalog.setServerActive("server", true);
+    await catalog.setServerActive("server", true);
     expect(pi.getActiveTools()).toEqual([
       "read",
       "foreign_extension_tool",
@@ -390,7 +410,7 @@ describe("McpToolCatalog", () => {
       }),
     ).toBe(true);
     expect(pi.getActiveTools()).toEqual(["read"]);
-    catalog.setResourceToolsActive(true);
+    await catalog.setResourceToolsActive(true);
     expect(pi.getActiveTools()).toEqual(["read", ...resourceToolNames]);
 
     const list = pi.tools.get("list_mcp_resources");
@@ -410,7 +430,7 @@ describe("McpToolCatalog", () => {
         TEST_CONTEXT,
       ),
     ).resolves.toMatchObject({ content: [{ type: "text", text: "read:file:///guide.md" }] });
-    catalog.setResourceToolsActive(false);
+    await catalog.setResourceToolsActive(false);
     expect(pi.getActiveTools()).toEqual(["read"]);
   });
 });

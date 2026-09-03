@@ -221,7 +221,7 @@ export interface McpHostOptions {
   readonly clock?: McpHostClock;
   readonly initialSubscriptions?: readonly McpHostResourceSubscription[];
   readonly instructionDeadlineMs?: number;
-  readonly onCatalogChanged?: (serverId: string, kind: McpHostCatalogKind) => void;
+  readonly onCatalogChanged?: (serverId: string, kind: McpHostCatalogKind) => Promise<void> | void;
   readonly onResourceUpdated?: (update: McpHostResourceSubscription) => void;
   /** Observe copied, sorted status after each status or Server Definition change. */
   readonly onStatusChange?: (statuses: ReadonlyMap<string, McpServerStatus>) => void;
@@ -927,7 +927,7 @@ export class McpHost {
     kind: McpHostCatalogKind,
   ): Promise<void> {
     try {
-      this.options.onCatalogChanged?.(entry.definition.id, kind);
+      await this.options.onCatalogChanged?.(entry.definition.id, kind);
     } catch (cause) {
       await this.recordLog(entry.definition.id, errorMessage(cause));
     }

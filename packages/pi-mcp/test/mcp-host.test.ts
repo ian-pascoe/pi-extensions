@@ -210,6 +210,32 @@ test("starts without blocking, isolates failures, and retries with capped expone
   expect(factory.attempts.get("flaky")).toBe(3);
 });
 
+test("keeps initial connection ownership until asynchronous catalog synchronization finishes", async () => {
+  const factory = new FakeFactory();
+  const catalogSynchronization = Promise.withResolvers<void>();
+  factory.queue("catalog", new FakeClient());
+  const host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: () => catalogSynchronization.promise,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("catalog")]),
+  });
+
+  host.start();
+  const initialConnection = host.waitForInitialConnections();
+  await flush();
+  let connectionSettled = false;
+  void initialConnection.then(() => {
+    connectionSettled = true;
+  });
+  await flush();
+  expect(connectionSettled).toBe(false);
+
+  catalogSynchronization.resolve();
+  await initialConnection;
+});
+
 test("publishes copied sorted status snapshots without letting observers affect lifecycle", async () => {
   const clock = new FakeClock();
   const factory = new FakeFactory();

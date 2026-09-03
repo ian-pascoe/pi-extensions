@@ -1,5 +1,6 @@
 /* oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional MCP result marker fields are present only when supplied by the protocol operation. */
 import { createHash } from "node:crypto";
+import { scheduler } from "node:timers/promises";
 import {
   type JSONValue,
   type JsonSchemaType,
@@ -263,6 +264,7 @@ function execution(
 /** Register exact-schema Server Tools and the stable fixed Resource tools for one MCP Host. */
 export class McpToolCatalog {
   private readonly ownedToolNames = new Set<string>();
+  private rebuildTail: Promise<void> = Promise.resolve();
   private readonly serverCatalogs = new Map<string, ServerCatalog>();
   private resourceToolsActive = false;
 
@@ -283,27 +285,41 @@ export class McpToolCatalog {
   }
 
   /** Replace one server's complete advertised tool list and activate valid definitions. */
-  replaceServerTools(serverId: string, tools: readonly McpServerToolDefinition[]): void {
-    this.serverCatalogs.set(serverId, { active: true, tools: [...tools] });
-    this.rebuildServerTools();
+  replaceServerTools(serverId: string, tools: readonly McpServerToolDefinition[]): Promise<void> {
+    return this.queueServerToolRebuild(() => {
+      this.serverCatalogs.set(serverId, { active: true, tools: [...tools] });
+      return true;
+    });
   }
 
   /** Activate or deactivate one server's registered tools without touching foreign tools. */
-  setServerActive(serverId: string, active: boolean): void {
-    const catalog = this.serverCatalogs.get(serverId);
-    if (catalog === undefined || catalog.active === active) return;
-    catalog.active = active;
-    this.rebuildServerTools();
+  setServerActive(serverId: string, active: boolean): Promise<void> {
+    return this.queueServerToolRebuild(() => {
+      const catalog = this.serverCatalogs.get(serverId);
+      if (catalog === undefined || catalog.active === active) return false;
+      catalog.active = active;
+      return true;
+    });
   }
 
   /** Activate or deactivate all three fixed Resource tools as one stable capability surface. */
-  setResourceToolsActive(active: boolean): void {
-    if (this.resourceToolsActive === active) return;
-    this.resourceToolsActive = active;
-    this.rebuildServerTools();
+  setResourceToolsActive(active: boolean): Promise<void> {
+    return this.queueServerToolRebuild(() => {
+      if (this.resourceToolsActive === active) return false;
+      this.resourceToolsActive = active;
+      return true;
+    });
   }
 
-  private rebuildServerTools(): void {
+  private queueServerToolRebuild(update: () => boolean): Promise<void> {
+    const rebuild = this.rebuildTail.then(async () => {
+      if (update()) await this.rebuildServerTools();
+    });
+    this.rebuildTail = rebuild.catch(() => undefined);
+    return rebuild;
+  }
+
+  private async rebuildServerTools(): Promise<void> {
     const compiledTools: CompiledServerTool[] = [];
     for (const [serverId, catalog] of this.serverCatalogs) {
       for (const definition of catalog.tools) {
@@ -333,6 +349,8 @@ export class McpToolCatalog {
           compiledTools.push(compiled);
         } catch {
           continue;
+        } finally {
+          await scheduler.yield();
         }
       }
     }
@@ -360,6 +378,7 @@ export class McpToolCatalog {
       this.ownedToolNames.add(piToolName);
       this.pi.registerTool(this.serverToolDefinition(compiled, piToolName));
       if (this.serverCatalogs.get(compiled.serverId)?.active === true) activeNames.push(piToolName);
+      await scheduler.yield();
     }
     this.syncActiveTools(activeNames);
   }
