@@ -401,7 +401,7 @@ importers:
         specifier: '*'
         version: 0.84.4
       '@ian-pascoe/pi-utils':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../pi-utils
       '@modelcontextprotocol/client':
         specifier: ^2.0.0
@@ -448,7 +448,7 @@ importers:
         specifier: '*'
         version: 0.84.4(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.5.4))(supports-color@8.1.1)(ws@8.21.3)(zod@4.5.4)
       '@ian-pascoe/pi-utils':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../pi-utils
     optionalDependencies:
       tiktoken:

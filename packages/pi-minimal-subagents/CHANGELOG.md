@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.6.2
+
+### Patch Changes
+
+- 291a3d2: Reduce duplicate TUI footer status and use compact Nerd Font-aware MCP and throughput indicators.
+
 ## 0.6.1
 
 ### Patch Changes

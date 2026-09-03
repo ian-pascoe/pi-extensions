@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-tps-tracker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "description": "Pi extension that reports token generation speed for each agent run.",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.1.0"
+    "@ian-pascoe/pi-utils": "^0.1.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
