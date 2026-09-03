@@ -232,13 +232,16 @@ class PiCodeModeLifecycleController {
       resultSpillWriter: sessionFiles,
       onSnapshotChange: (snapshot) => observer.onSnapshotChange(snapshot),
       onUnexpectedFailure: (failure) => observer.onUnexpectedFailure(failure),
-      getToolSnapshot: () =>
-        generation.active && this.generation === generation
-          ? {
-              names: [CODEMODE_SEARCH_TOOL_NAME, ...generation.decision.codeModeNames],
-              searchEntries: generation.catalogue.searchEntries,
-            }
-          : { names: [], searchEntries: [] },
+      getToolSnapshot: () => {
+        if (!generation.active || this.generation !== generation) {
+          return { names: [], searchEntries: [] };
+        }
+        this.synchronizeGeneration(generation);
+        return {
+          names: [CODEMODE_SEARCH_TOOL_NAME, ...generation.decision.codeModeNames],
+          searchEntries: generation.catalogue.searchEntries,
+        };
+      },
       executeToolBatch: (batch) => this.executeNestedToolBatch(generation, batch),
     });
     const operations: CodeModeToolOperations = {
@@ -273,6 +276,7 @@ class PiCodeModeLifecycleController {
         if (!generation.active || this.generation !== generation) {
           throw new Error("Pi CodeMode session generation is inactive");
         }
+        this.synchronizeGeneration(generation);
         const searched = searchCodeModeToolCatalogue(generation.catalogue.searchEntries, input);
         if (!searched.ok) throw new Error(searched.message);
         return searched.page;
@@ -371,6 +375,7 @@ class PiCodeModeLifecycleController {
     try {
       do {
         generation.synchronizationPending = false;
+        generation.exposure?.refreshToolExposure();
         const decision = generation.exposure?.getDecision() ?? generation.decision;
         const catalogue = renderGenerationCatalogue(generation.captured, decision);
         if (!catalogue.ok) continue;

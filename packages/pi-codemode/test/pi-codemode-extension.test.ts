@@ -724,6 +724,13 @@ describe("Pi CodeMode extension", () => {
   test("keeps direct exposure, guest exposure, and the dynamic catalogue coherent", async () => {
     const fixture = await createCodeModeExtensionFixture();
     expect(executeDescription(fixture.session)).not.toContain('readonly ["dynamic_later"]');
+    const beforeRegistration = codeModeResult(
+      await executeTool(fixture.session, "codemode_execute", {
+        script: 'return Object.hasOwn(tools, "dynamic_later");',
+        wait: true,
+      }),
+    );
+    expect(beforeRegistration).toMatchObject({ result: "success", data: false });
 
     fixture.registerDynamicTool("First dynamic catalogue description.");
     expect(fixture.session.getActiveToolNames()).toContain("dynamic_later");
@@ -731,6 +738,7 @@ describe("Pi CodeMode extension", () => {
     const created = await executeTool(fixture.session, "codemode_execute", {
       script:
         'const savedDynamic = tools.dynamic_later; const found = await tools.codemode_search({ query: "dynamic_later" }); return { hasTool: Object.keys(tools).includes("dynamic_later"), found: found.items[0] };',
+      sessionId: beforeRegistration.sessionId,
       wait: true,
     });
     const createdDetails = codeModeResult(created);

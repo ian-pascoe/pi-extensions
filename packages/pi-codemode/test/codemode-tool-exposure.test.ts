@@ -168,6 +168,31 @@ describe("installCodeModeToolExposure", () => {
     expect(owner.activeNames).toEqual(["third"]);
   });
 
+  test("refreshes a late registry change when Pi's active-set callback was missed", () => {
+    const owner = new RecordingActiveToolOwner(["first"]);
+    let registryNames = ["first"];
+    const settings = resolveCodeModeSettings({
+      getGlobalSettings: () => ({
+        codemode: { tools: [{ pattern: "late", exposure: "codemode-only" }] },
+      }),
+      getProjectSettings: () => ({}),
+    });
+    expect(settings.enabled).toBe(true);
+    if (!settings.enabled) return;
+    const installed = installCodeModeToolExposure(owner, () => registryNames, settings.rules);
+
+    registryNames = ["first", "late"];
+    owner.activeNames = ["first", "late"];
+    installed.refreshToolExposure();
+
+    expect(owner.activeNames).toEqual(["first"]);
+    expect(installed.getDecision()).toEqual({
+      codeModeNames: ["first", "late"],
+      directNames: ["first"],
+      unavailableNames: [],
+    });
+  });
+
   test("coalesces a reentrant registry refresh into the latest decision notification", () => {
     const owner = new RecordingActiveToolOwner(["first"]);
     let registryNames = ["first"];
