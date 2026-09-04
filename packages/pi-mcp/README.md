@@ -181,7 +181,7 @@ The host maps the core protocol surface:
 
 Interactive callbacks are request-scoped. Headless environments decline interaction rather than hanging; background work never opens a dialog or browser and never starts a model turn. Resource changes queue a provenance-labelled notice for the next turn; the host does not fetch or inject resource content automatically.
 
-Before every model request, Pi synchronously captures a deterministic **Instruction Snapshot** without waiting for MCP connection or catalog startup. It includes MCP Servers whose tool catalogs are ready at that moment, so Server Instructions and tools appear together on a later turn after connection and disappear after disconnection.
+Before every model request, Pi synchronously captures a deterministic **Instruction Snapshot** without waiting for MCP connection or catalog startup. It includes MCP Servers whose tool catalogs are model-active at that moment, so Server Instructions and tools appear together after catalog activation and disappear together after catalog deactivation, including the debounced disconnect path.
 
 Failures stay isolated to the affected Server Definition. Status is one of `disabled`, `connecting`, `connected`, `needs_auth`, `needs_client_registration`, `retrying`, or `failed`. Retryable startup failures and unexpected closes use the shared capped exponential policy. Authentication, invalid configuration, unsupported protocol, disable, and shutdown do not retry. After retries are exhausted, use reconnect, reload, or a new session.
 

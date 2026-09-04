@@ -152,17 +152,22 @@ const exactOutputSchema: JsonSchemaType = {
 };
 
 describe("McpToolCatalog", () => {
-  test("yields to terminal input while preparing and registering Server Tools", async () => {
-    const catalog = new McpToolCatalog(new RecordingPi(), new RecordingRuntime());
+  test("yields to terminal input without exposing a partial Server Tool catalog", async () => {
+    const pi = new RecordingPi();
+    const catalog = new McpToolCatalog(pi, new RecordingRuntime());
     const tools = Array.from({ length: 4 }, (_, index) => ({
       inputSchema: { type: "object" as const },
       name: `tool_${index}`,
     }));
     let terminalTurns = 0;
     let catalogSettled = false;
+    let partialCatalogObserved = false;
     const processTerminalTurn = () => {
       terminalTurns += 1;
-      if (!catalogSettled) setImmediate(processTerminalTurn);
+      if (!catalogSettled) {
+        partialCatalogObserved ||= pi.getActiveTools().some((name) => name.startsWith("mcp__"));
+        setImmediate(processTerminalTurn);
+      }
     };
     setImmediate(processTerminalTurn);
 
@@ -170,6 +175,10 @@ describe("McpToolCatalog", () => {
     catalogSettled = true;
 
     expect(terminalTurns).toBeGreaterThanOrEqual(tools.length);
+    expect(partialCatalogObserved).toBe(false);
+    expect(pi.getActiveTools().filter((name) => name.startsWith("mcp__"))).toHaveLength(
+      tools.length,
+    );
   });
 
   test("changes activation without recompiling or re-registering unchanged Server Tools", async () => {

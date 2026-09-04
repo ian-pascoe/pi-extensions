@@ -12,7 +12,6 @@ import {
   CodeModeToolSearchParametersSchema,
 } from "./codemode-tool-contract.js";
 
-const CODEMODE_CATALOGUE_LIMIT_BYTES = 1024 * 1024;
 const CODEMODE_CATALOGUE_TOKEN_BUDGET = 2_000;
 const CODEMODE_CATALOGUE_GROUP_SUMMARY_TOKEN_BUDGET = 256;
 const CODEMODE_JSDOC_LIMIT_BYTES = 2 * 1024;
@@ -46,19 +45,17 @@ export type CodeModeToolSearchEntry = {
 };
 
 /** A bounded inline catalogue plus every searchable complete declaration. */
-export type CodeModeToolCatalogueResult =
-  | {
-      readonly ok: true;
-      readonly text: string;
-      readonly complete: boolean;
-      readonly shownCount: number;
-      readonly totalCount: number;
-      readonly searchEntries: readonly CodeModeToolSearchEntry[];
-    }
-  | { readonly ok: false; readonly reason: "catalogue-exceeds-outer-limit" };
+export type CodeModeToolCatalogueResult = {
+  readonly ok: true;
+  readonly text: string;
+  readonly complete: boolean;
+  readonly shownCount: number;
+  readonly totalCount: number;
+  readonly searchEntries: readonly CodeModeToolSearchEntry[];
+};
 
 /** Successfully rendered progressive CodeMode tool catalogue. */
-export type CodeModeToolCatalogue = Extract<CodeModeToolCatalogueResult, { readonly ok: true }>;
+export type CodeModeToolCatalogue = CodeModeToolCatalogueResult;
 
 /** Expected progressive declaration search outcome at the guest input boundary. */
 export type CodeModeToolSearchResult =
@@ -355,10 +352,6 @@ function arrayType(
 
 function renderTool(tool: RenderedTool): string {
   return `${jsdoc(tool.description)}  readonly [${quotedName(tool.name)}]: (input: ${tool.input}) => Promise<PiToolResult<${tool.output}>>;\n`;
-}
-
-function isWithinCatalogueLimit(text: string): boolean {
-  return Buffer.byteLength(text, "utf8") <= CODEMODE_CATALOGUE_LIMIT_BYTES;
 }
 
 function renderSchema(
@@ -659,9 +652,6 @@ export function renderCodeModeToolCatalogue(
   }));
   const selectedNames = selectInlineToolNames(rendered);
   const text = renderCatalogue(rendered, selectedNames);
-  if (!isWithinCatalogueLimit(text)) {
-    return { ok: false, reason: "catalogue-exceeds-outer-limit" };
-  }
   const searchEntries = rendered.map((tool) => ({
     name: tool.name,
     group: tool.group,

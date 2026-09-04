@@ -385,6 +385,13 @@ export class McpToolCatalog {
       const previous = previousRegistrations.get(identity);
       if (previous?.prepared.definition !== prepared.definition || previous.name !== piToolName) {
         this.pi.registerTool(this.serverToolDefinition(prepared, piToolName));
+        // Pi activates newly registered tools; keep new names hidden until the complete catalog commits.
+        if (previous?.name !== piToolName) {
+          const activeToolNames = this.pi.getActiveTools();
+          if (activeToolNames.includes(piToolName)) {
+            this.pi.setActiveTools(activeToolNames.filter((name) => name !== piToolName));
+          }
+        }
       }
       registeredServerTools.push({ prepared, identity, name: piToolName });
       await scheduler.yield();

@@ -30,7 +30,7 @@ MCP Server-provided guidance presented to the model by the MCP Host. It is not P
 _Avoid_: System prompt, host policy
 
 **Instruction Snapshot**:
-The immutable, deterministically ordered Server Instructions included in one model request. It reflects MCP Servers whose tool catalogs are ready when the request begins and may differ between turns.
+The immutable, deterministically ordered Server Instructions included in one model request. It reflects the model-active Server Tool catalogs when the request begins, changes atomically with catalog activation or deactivation, and may differ between turns.
 _Avoid_: Live instructions, instruction cache
 
 **MCP Observer UI**:

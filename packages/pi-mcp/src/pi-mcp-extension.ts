@@ -53,6 +53,7 @@ import {
   type McpHostGetPromptResult,
   type McpHostLogTail,
   McpHostOperationError,
+  type McpHostToolCatalogState,
   type McpHostShutdownReason,
   type McpHostRequestContext,
   type McpHostResourceSubscription,
@@ -795,15 +796,18 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
         shouldUseNerdFontIcons(process.env),
       );
       observer.update(host.listStatuses(), invalidSettings);
-      const synchronizeServerCatalog = async (serverId: string): Promise<void> => {
+      const synchronizeServerCatalog = async (
+        serverId: string,
+      ): Promise<McpHostToolCatalogState> => {
         const activeCatalog = catalog;
-        if (activeCatalog === undefined) return;
-        if (host.getStatus(serverId)?.state !== "connected") {
+        if (activeCatalog === undefined) return "inactive";
+        const deactivateCatalog = async (): Promise<"inactive"> => {
           await activeCatalog.setServerActive(serverId, false);
           resourceServers.delete(serverId);
           await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
-          return;
-        }
+          return "inactive";
+        };
+        if (host.getStatus(serverId)?.state !== "connected") return deactivateCatalog();
         try {
           const tools = await host.listTools(serverId);
           await activeCatalog.replaceServerTools(
@@ -813,10 +817,9 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
           if (host.hasConnectedCapability("resources", serverId)) resourceServers.add(serverId);
           else resourceServers.delete(serverId);
           await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          return host.getStatus(serverId)?.state === "connected" ? "active" : deactivateCatalog();
         } catch {
-          await activeCatalog.setServerActive(serverId, false);
-          resourceServers.delete(serverId);
-          await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          return deactivateCatalog();
         }
       };
       catalog = new McpToolCatalog(

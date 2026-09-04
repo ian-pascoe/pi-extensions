@@ -594,6 +594,9 @@ describe("Pi CodeMode extension", () => {
     }
 
     const targetName = "large_catalog_tool_11";
+    await fixture.session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, "test", {
+      cwd: ".",
+    });
     const description = executeDescription(fixture.session);
     expect(description).toContain("CodeMode tool catalogue: PARTIAL");
     expect(description).not.toContain(`readonly [${JSON.stringify(targetName)}]`);
@@ -732,6 +735,20 @@ describe("Pi CodeMode extension", () => {
       result: "success",
       data: { hasBash: false },
     });
+  });
+
+  test("defers dynamic catalogue rendering to the next synchronization boundary", async () => {
+    const fixture = await createCodeModeExtensionFixture();
+    fixture.registerDynamicTool();
+
+    expect(fixture.session.getActiveToolNames()).toContain("dynamic_later");
+    expect(executeDescription(fixture.session)).not.toContain('readonly ["dynamic_later"]');
+
+    await fixture.session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, "test", {
+      cwd: ".",
+    });
+
+    expect(executeDescription(fixture.session)).toContain('readonly ["dynamic_later"]');
   });
 
   test("keeps direct exposure, guest exposure, and the dynamic catalogue coherent", async () => {

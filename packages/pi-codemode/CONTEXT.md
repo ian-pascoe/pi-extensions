@@ -24,6 +24,12 @@ The policy that makes a registered Pi tool direct-only, CodeMode-only, or
 available through both interfaces.
 _Avoid_: inclusion, visibility
 
+**Tool Catalogue**:
+The generated TypeScript declarations for one synchronized Exposure Mode
+snapshot. Registry changes update execution policy immediately, while catalogue
+rendering waits for the next model-turn or CodeMode-access boundary.
+_Avoid_: registry, tool list
+
 **CodeMode Transcript**:
 The durable, semantic presentation of CodeMode tool calls and results in Pi's
 conversation history.

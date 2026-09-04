@@ -6,6 +6,8 @@ import {
   SdkErrorCode,
   UnauthorizedError,
 } from "@modelcontextprotocol/client";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
 import { expect, test, vi } from "vitest";
 import { McpClientPool } from "../src/mcp-client-pool.js";
 import {
@@ -20,6 +22,7 @@ import {
   type McpHostServerTool,
 } from "../src/mcp-host.js";
 import type { McpSessionFiles } from "../src/mcp-session-files.js";
+import { McpToolCatalog, type McpToolCatalogPi } from "../src/mcp-tool-catalog.js";
 import {
   McpResolvedSecrets,
   type McpServerDefinition,
@@ -82,6 +85,31 @@ class FakeClient implements McpOwnedHostClient {
   ) {
     this.instructions = instructions;
   }
+}
+
+class FakeCatalogPi implements McpToolCatalogPi {
+  private readonly registeredNames = new Set<string>();
+  private activeNames: string[] = [];
+
+  registerTool<TParameters extends TSchema, TDetails>(
+    tool: ToolDefinition<TParameters, TDetails>,
+  ): void {
+    this.registeredNames.add(tool.name);
+  }
+
+  getAllTools(): readonly { readonly name: string }[] {
+    return [...this.registeredNames].map((name) => ({ name }));
+  }
+
+  getActiveTools(): string[] {
+    return [...this.activeNames];
+  }
+
+  setActiveTools(toolNames: string[]): void {
+    this.activeNames = [...toolNames];
+  }
+
+  on(..._parameters: Parameters<McpToolCatalogPi["on"]>): void {}
 }
 
 class FakeFactory implements McpHostClientFactory {
@@ -753,11 +781,12 @@ test("returns current model-ready Server Instructions without waiting", async ()
   const client = new FakeClient({ tools: true }, "Current instructions");
   client.tools = [{ inputSchema: { type: "object" }, name: "current_tool" }];
   factory.queue("current", client);
-  const catalogSynchronization = Promise.withResolvers<void>();
+  const initialCatalogSynchronization = Promise.withResolvers<void>();
+  let catalogSynchronization = initialCatalogSynchronization.promise;
   const host = new McpHost({
     clientFactory: factory,
     clock,
-    onCatalogChanged: () => catalogSynchronization.promise,
+    onCatalogChanged: () => catalogSynchronization,
     piCwd: "/project",
     sessionFiles: sessionFiles(),
     settings: settings([stdioDefinition("current")]),
@@ -768,12 +797,157 @@ test("returns current model-ready Server Instructions without waiting", async ()
     await vi.advanceTimersByTimeAsync(50);
     expect(host.instructionSnapshot().text).toBe("");
 
-    catalogSynchronization.resolve();
+    initialCatalogSynchronization.resolve();
     await host.waitForInitialConnections();
     expect(host.instructionSnapshot().text).toContain("Current instructions");
     expect(host.instructionSnapshot().text).toContain("current_tool");
 
+    const disconnectCatalogSynchronization = Promise.withResolvers<void>();
+    catalogSynchronization = disconnectCatalogSynchronization.promise;
     factory.events.get("current")?.onClose();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(host.instructionSnapshot().text).toContain("Current instructions");
+    expect(host.instructionSnapshot().text).toContain("current_tool");
+
+    disconnectCatalogSynchronization.resolve();
+    await flush();
+    expect(host.instructionSnapshot().text).toBe("");
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("keeps Server Instructions unavailable when catalog synchronization fails", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true }, "Unsynchronized instructions");
+  client.tools = [{ inputSchema: { type: "object" }, name: "unsynchronized_tool" }];
+  factory.queue("unsynchronized", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: () => Promise.reject(new Error("catalog synchronization failed")),
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("unsynchronized")]),
+  });
+
+  try {
+    host.start();
+    await vi.advanceTimersByTimeAsync(100);
+    await host.waitForInitialConnections();
+
+    expect(host.instructionSnapshot().text).toBe("");
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("keeps Server Instructions unavailable when synchronization deactivates tools", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true }, "Inactive instructions");
+  client.tools = [{ inputSchema: { type: "object" }, name: "inactive_tool" }];
+  factory.queue("inactive", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: () => "inactive",
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("inactive")]),
+  });
+
+  try {
+    host.start();
+    await vi.advanceTimersByTimeAsync(50);
+    await host.waitForInitialConnections();
+
+    expect(host.instructionSnapshot().text).toBe("");
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("keeps Server Instructions paired with a real inactive Server Tool catalog", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true }, "Inactive catalog instructions");
+  client.listTools.mockRejectedValue(new Error("tool catalog unavailable"));
+  factory.queue("inactive-catalog", client);
+  const pi = new FakeCatalogPi();
+  let host: McpHost;
+  let catalog: McpToolCatalog;
+  host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: async (serverId) => {
+      if (host.getStatus(serverId)?.state !== "connected") {
+        await catalog.setServerActive(serverId, false);
+        return "inactive";
+      }
+      try {
+        const tools = await host.listTools(serverId);
+        await catalog.replaceServerTools(
+          serverId,
+          tools.map(({ tool }) => ({ name: tool.name, inputSchema: { type: "object" } })),
+        );
+        return "active";
+      } catch {
+        await catalog.setServerActive(serverId, false);
+        return "inactive";
+      }
+    },
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("inactive-catalog")]),
+  });
+  catalog = new McpToolCatalog(pi, {
+    callServerTool: vi.fn(),
+    listResourceTemplates: vi.fn(),
+    listResources: vi.fn(),
+    readResource: vi.fn(),
+  });
+
+  try {
+    host.start();
+    await vi.advanceTimersByTimeAsync(100);
+    await host.waitForInitialConnections();
+
+    expect(host.instructionSnapshot().text).toBe("");
+    expect(pi.getActiveTools().some((name) => name.startsWith("mcp__"))).toBe(false);
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("removes Server Instructions when a catalog update deactivates tools", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true }, "Current instructions");
+  client.tools = [{ inputSchema: { type: "object" }, name: "current_tool" }];
+  factory.queue("current", client);
+  let catalogActive = true;
+  const host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: () => (catalogActive ? "active" : "inactive"),
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("current")]),
+  });
+
+  try {
+    host.start();
+    await vi.advanceTimersByTimeAsync(50);
+    await host.waitForInitialConnections();
+    expect(host.instructionSnapshot().text).toContain("Current instructions");
+
+    catalogActive = false;
+    const changed = factory.events.get("current")?.onCatalogChanged("tools", ["next_tool"]);
+    await vi.advanceTimersByTimeAsync(50);
+    await changed;
+
     expect(host.instructionSnapshot().text).toBe("");
   } finally {
     await host.shutdown();
