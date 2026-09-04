@@ -9,6 +9,7 @@ import {
   type Client,
   type OAuthClientProvider,
 } from "@modelcontextprotocol/client";
+import type { McpClientLease, McpClientPool } from "./mcp-client-pool.js";
 import {
   McpServerClient,
   type McpServerClientConnectOptions,
@@ -18,6 +19,9 @@ import type { McpSessionFiles } from "./mcp-session-files.js";
 import type { McpServerDefinition, ResolvedMcpSettings } from "./pi-mcp-settings.js";
 
 const DEFAULT_INSTRUCTION_DEADLINE_MS = 10_000;
+const MCP_CATALOG_CHANGE_DEBOUNCE_MS = 50;
+const MCP_LOG_FLUSH_BYTES = 64 * 1024;
+const MCP_LOG_FLUSH_INTERVAL_MS = 50;
 
 const TERMINAL_MCP_SDK_ERROR_CODES: ReadonlySet<SdkErrorCode> = new Set([
   SdkErrorCode.CapabilityNotSupported,
@@ -105,7 +109,6 @@ export interface McpHostClient {
     args: McpHostToolArguments,
     context?: McpHostRequestContext<PiContext>,
   ): Promise<McpHostCallToolResult>;
-  close(): Promise<void>;
   completePromptArgument(
     promptName: string,
     argumentName: string,
@@ -128,6 +131,11 @@ export interface McpHostClient {
   unsubscribeResource(uri: string): Promise<void>;
 }
 
+/** Physical MCP Client owned only by a factory or the process MCP Client Pool. */
+export interface McpOwnedHostClient extends McpHostClient {
+  close(): Promise<void>;
+}
+
 /** Authentication provider resolved from stored credentials for one remote Server. */
 export type McpHostAuthProvider = AuthProvider | OAuthClientProvider;
 
@@ -141,17 +149,24 @@ export interface McpHostClientConnectOptions {
 
 /** Acquires the single client owned by one Server Definition. */
 export interface McpHostClientFactory {
-  connect(options: McpHostClientConnectOptions): Promise<McpHostClient>;
+  connect(options: McpHostClientConnectOptions): Promise<McpOwnedHostClient>;
 }
 
 /** Catalog refreshed by its matching MCP notification. */
 export type McpHostCatalogKind = "prompts" | "resources" | "resourceTemplates" | "tools";
 
+/** Why one session-owned MCP Host releases its acquired clients. */
+export type McpHostShutdownReason = "handoff" | "quit";
+
 /** Live status of one configured MCP Server. */
 export type McpServerStatus =
   | { readonly state: "disabled" }
   | { readonly attempt: number; readonly state: "connecting" }
-  | { readonly state: "connected" }
+  | {
+      readonly connectionAgeMs?: number;
+      readonly reused?: boolean;
+      readonly state: "connected";
+    }
   | { readonly error: string; readonly state: "needs_auth" }
   | { readonly error: string; readonly state: "needs_client_registration" }
   | {
@@ -215,8 +230,7 @@ export interface McpInstructionSnapshot {
   readonly text: string;
 }
 
-/** Construction boundaries for one session-owned MCP Host. */
-export interface McpHostOptions {
+interface McpHostBaseOptions {
   readonly clientFactory?: McpHostClientFactory;
   readonly clock?: McpHostClock;
   readonly initialSubscriptions?: readonly McpHostResourceSubscription[];
@@ -236,10 +250,38 @@ export interface McpHostOptions {
   readonly settings: ResolvedMcpSettings;
 }
 
+/** Construction boundaries for one session-owned MCP Host. */
+export type McpHostOptions = McpHostBaseOptions &
+  (
+    | {
+        readonly clientPool?: undefined;
+        readonly projectRoot?: never;
+        readonly projectTrusted?: never;
+      }
+    | {
+        readonly clientPool: McpClientPool;
+        readonly projectRoot: string;
+        readonly projectTrusted: boolean;
+      }
+  );
+
+interface PendingMcpCatalogChange {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
+type PendingMcpLogFlush = PendingMcpCatalogChange;
+
 interface McpHostServerEntry {
   definition: McpServerDefinition;
   instructionToolNames: readonly string[];
+  toolCatalog?: Promise<readonly McpHostServerTool[]>;
   client?: McpHostClient;
+  ownedClient?: McpOwnedHostClient;
+  connectionReused?: boolean;
+  connectionStartedAt?: number;
+  lease?: McpClientLease;
   failures: number;
   generation: number;
   pending?: Promise<void>;
@@ -251,7 +293,7 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-class SdkMcpHostClient implements McpHostClient {
+class SdkMcpHostClient implements McpOwnedHostClient {
   private constructor(
     private readonly owner: McpServerClient,
     readonly capabilities: McpHostClientCapabilities,
@@ -278,12 +320,12 @@ class SdkMcpHostClient implements McpHostClient {
     const listChanged = {
       prompts: {
         autoRefresh: true,
-        debounceMs: 0,
+        debounceMs: MCP_CATALOG_CHANGE_DEBOUNCE_MS,
         onChanged: (error) => notifyCatalogChanged(error, "prompts"),
       },
       resources: {
         autoRefresh: true,
-        debounceMs: 0,
+        debounceMs: MCP_CATALOG_CHANGE_DEBOUNCE_MS,
         onChanged: (error) => {
           notifyCatalogChanged(error, "resources");
           if (error === null) notifyCatalogChanged(null, "resourceTemplates");
@@ -291,7 +333,7 @@ class SdkMcpHostClient implements McpHostClient {
       },
       tools: {
         autoRefresh: true,
-        debounceMs: 0,
+        debounceMs: MCP_CATALOG_CHANGE_DEBOUNCE_MS,
         onChanged: (error, tools) =>
           notifyCatalogChanged(
             error,
@@ -434,8 +476,12 @@ export class McpHost {
   private readonly clock: McpHostClock;
   private readonly clientFactory: McpHostClientFactory;
   private readonly entries = new Map<string, McpHostServerEntry>();
+  private readonly pendingCatalogChanges = new Map<string, PendingMcpCatalogChange>();
+  private readonly pendingLogs = new Map<string, string[]>();
   private readonly subscriptions = new Set<string>();
   private initialConnections: readonly Promise<void>[] = [];
+  private pendingLogBytes = 0;
+  private pendingLogFlush: PendingMcpLogFlush | undefined;
   private instructionSnapshot: McpInstructionSnapshot | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private started = false;
@@ -482,8 +528,8 @@ export class McpHost {
 
   /** Return a snapshot of one server's current status. */
   getStatus(serverId: string): McpServerStatus | undefined {
-    const status = this.entries.get(serverId)?.status;
-    return status === undefined ? undefined : { ...status };
+    const entry = this.entries.get(serverId);
+    return entry === undefined ? undefined : this.statusSnapshot(entry);
   }
 
   /** Return every server status in deterministic Server Definition order. */
@@ -491,7 +537,7 @@ export class McpHost {
     return new Map(
       [...this.entries]
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([serverId, entry]) => [serverId, { ...entry.status }]),
+        .map(([serverId, entry]) => [serverId, this.statusSnapshot(entry)]),
     );
   }
 
@@ -528,9 +574,13 @@ export class McpHost {
 
   /** Return native SDK-listed Server Tools with provenance. */
   async listTools(serverId?: string): Promise<readonly McpHostToolItem[]> {
-    return (await this.listCatalog("tools", (client) => client.listTools(), serverId)).map(
-      ({ item, serverId: id }) => ({ serverId: id, tool: item }),
-    );
+    return (
+      await this.listCatalog(
+        "tools",
+        (client, entry) => this.cachedServerTools(entry, client),
+        serverId,
+      )
+    ).map(({ item, serverId: id }) => ({ serverId: id, tool: item }));
   }
 
   /** Return native SDK-listed Resources with provenance. */
@@ -705,14 +755,15 @@ export class McpHost {
     return this.instructionSnapshot;
   }
 
-  /** Stop retries, close all acquired clients including late arrivals, then remove session files. */
-  shutdown(): Promise<void> {
-    this.shutdownPromise ??= this.shutdownOwnedResources();
+  /** Release or close acquired clients, stop retries, and remove session files. */
+  shutdown(reason: McpHostShutdownReason = "quit"): Promise<void> {
+    this.shutdownPromise ??= this.shutdownOwnedResources(reason);
     return this.shutdownPromise;
   }
 
   private connectEntry(entry: McpHostServerEntry): Promise<void> {
     const generation = ++entry.generation;
+    let ownedClient: McpOwnedHostClient | undefined;
     entry.retryAbort?.abort(new Error("MCP connection attempt replaced"));
     delete entry.retryAbort;
     this.setEntryStatus(entry, { attempt: entry.failures + 1, state: "connecting" });
@@ -722,44 +773,74 @@ export class McpHost {
           entry.definition.transport === "stdio"
             ? undefined
             : await this.options.resolveAuthProvider?.(entry.definition);
-        const connectOptions: McpHostClientConnectOptions = {
-          definition: entry.definition,
-          events: {
-            onCatalogChanged: async (kind, toolNames) => {
-              if (kind === "tools" && toolNames !== undefined) {
-                entry.instructionToolNames = [...toolNames];
-              }
-              await this.notifyCatalogChanged(entry, kind);
-            },
-            onClose: () => this.handleUnexpectedClose(entry, generation),
-            onError: (error) => void this.recordLog(entry.definition.id, error.message),
-            onLog: (message) => this.recordLog(entry.definition.id, message),
-            onResourceUpdated: async (uri) => {
-              try {
-                this.options.onResourceUpdated?.({ serverId: entry.definition.id, uri });
-              } catch (cause) {
-                await this.recordLog(entry.definition.id, errorMessage(cause));
-              }
-            },
+        if (this.shuttingDown || generation !== entry.generation) {
+          throw new Error("MCP connection cancelled during shutdown");
+        }
+        const events: McpHostClientEvents = {
+          onCatalogChanged: async (kind, toolNames) => {
+            if (kind === "tools") {
+              delete entry.toolCatalog;
+              if (toolNames !== undefined) entry.instructionToolNames = [...toolNames];
+            }
+            await this.notifyCatalogChanged(entry, kind);
           },
-          serverId: entry.definition.id,
+          onClose: () => this.handleUnexpectedClose(entry, generation),
+          onError: (error) => this.handleClientError(entry, generation, error),
+          onLog: (message) => this.recordLog(entry.definition.id, message),
+          onResourceUpdated: async (uri) => {
+            try {
+              this.options.onResourceUpdated?.({ serverId: entry.definition.id, uri });
+            } catch (cause) {
+              await this.recordLog(entry.definition.id, errorMessage(cause));
+            }
+          },
         };
-        return this.clientFactory.connect(
-          authProvider === undefined ? connectOptions : { ...connectOptions, authProvider },
-        );
+        const connect = (connectionEvents: McpHostClientEvents): Promise<McpOwnedHostClient> => {
+          const connectOptions: McpHostClientConnectOptions = {
+            definition: entry.definition,
+            events: connectionEvents,
+            serverId: entry.definition.id,
+          };
+          return this.clientFactory.connect(
+            authProvider === undefined ? connectOptions : { ...connectOptions, authProvider },
+          );
+        };
+        if (this.options.clientPool === undefined) {
+          return connect(events).then((client) => {
+            ownedClient = client;
+            return client;
+          });
+        }
+        const lease = this.options.clientPool.acquire({
+          connect,
+          connectTimeoutMs: this.options.settings.connectTimeoutMs,
+          definition: entry.definition,
+          events,
+          projectRoot: this.options.projectRoot,
+          projectTrusted: this.options.projectTrusted,
+          requestTimeoutMs: this.options.settings.requestTimeoutMs,
+        });
+        entry.lease = lease;
+        entry.connectionReused = lease.reused;
+        return lease.connectedClient();
       })
       .then(async (client) => {
         if (this.shuttingDown || generation !== entry.generation) {
-          await client.close();
+          await ownedClient?.close();
           return;
         }
         entry.client = client;
+        if (ownedClient !== undefined) entry.ownedClient = ownedClient;
+        else if (entry.lease !== undefined) entry.connectionStartedAt = entry.lease.connectedAt;
         entry.failures = 0;
         this.setEntryStatus(entry, { state: "connected" });
         const initialized = await Promise.allSettled([
           this.loadInstructionToolNames(entry, client),
           this.restoreSubscriptions(entry),
         ]);
+        if (this.shuttingDown || generation !== entry.generation || entry.client !== client) {
+          return;
+        }
         for (const result of initialized) {
           if (result.status === "rejected") {
             await this.recordLog(entry.definition.id, errorMessage(result.reason));
@@ -768,6 +849,9 @@ export class McpHost {
         await this.notifyCatalogChanged(entry, "tools");
       })
       .catch((cause: unknown) => {
+        const lease = entry.lease;
+        delete entry.lease;
+        if (lease !== undefined) void lease.release("quit");
         if (this.shuttingDown || generation !== entry.generation) return;
         this.handleConnectionFailure(entry, cause);
       });
@@ -821,31 +905,87 @@ export class McpHost {
     void this.notifyCatalogChanged(entry, "tools");
   }
 
+  private handleClientError(entry: McpHostServerEntry, generation: number, error: Error): void {
+    void this.recordLog(entry.definition.id, error.message);
+    if (
+      !(error instanceof UnauthorizedError) ||
+      this.shuttingDown ||
+      generation !== entry.generation
+    ) {
+      return;
+    }
+    entry.generation += 1;
+    const lease = entry.lease;
+    const ownedClient = entry.ownedClient;
+    delete entry.client;
+    delete entry.connectionReused;
+    delete entry.connectionStartedAt;
+    delete entry.lease;
+    delete entry.ownedClient;
+    delete entry.toolCatalog;
+    entry.instructionToolNames = [];
+    if (lease === undefined) void ownedClient?.close();
+    else void lease.release("quit");
+    this.handleConnectionFailure(entry, error);
+  }
+
   private handleUnexpectedClose(entry: McpHostServerEntry, generation: number): void {
     if (this.shuttingDown || generation !== entry.generation) return;
+    const lease = entry.lease;
+    delete entry.lease;
+    if (lease !== undefined) void lease.release("quit");
     delete entry.client;
+    delete entry.ownedClient;
+    delete entry.connectionReused;
+    delete entry.connectionStartedAt;
+    delete entry.toolCatalog;
     entry.instructionToolNames = [];
     this.handleConnectionFailure(entry, new Error("MCP connection closed unexpectedly"));
+  }
+
+  private cachedServerTools(
+    entry: McpHostServerEntry,
+    client: McpHostClient,
+  ): Promise<readonly McpHostServerTool[]> {
+    if (entry.toolCatalog !== undefined) return entry.toolCatalog;
+    const pending = client.listTools();
+    entry.toolCatalog = pending;
+    void pending.catch(() => {
+      if (entry.toolCatalog === pending) delete entry.toolCatalog;
+    });
+    return pending;
   }
 
   private async loadInstructionToolNames(
     entry: McpHostServerEntry,
     client: McpHostClient,
   ): Promise<void> {
-    entry.instructionToolNames =
-      client.capabilities.tools === true ? (await client.listTools()).map((tool) => tool.name) : [];
+    if (client.capabilities.tools !== true) {
+      entry.instructionToolNames = [];
+      return;
+    }
+    const pending = this.cachedServerTools(entry, client);
+    const tools = await pending;
+    if (this.shuttingDown || entry.client !== client) return;
+    if (entry.toolCatalog !== pending) {
+      if (!this.shuttingDown && entry.client === client) {
+        await this.loadInstructionToolNames(entry, client);
+      }
+      return;
+    }
+    entry.instructionToolNames = tools.map((tool) => tool.name);
   }
 
   private async listCatalog<Item extends { readonly name: string }>(
     capability: McpHostCapabilityName,
-    list: (client: McpHostClient) => Promise<readonly Item[]>,
+    list: (client: McpHostClient, entry: McpHostServerEntry) => Promise<readonly Item[]>,
     serverId?: string,
   ): Promise<readonly McpHostCatalogItem<Item>[]> {
     const catalogs = await Promise.all(
       this.connectedEntries(serverId).map(async (entry) => {
         const client = entry.client;
         if (client === undefined || client.capabilities[capability] !== true) return [];
-        return (await list(client)).map((item) => ({ item, serverId: entry.definition.id }));
+        return (await list(client, entry)).map((item) => ({ item, serverId: entry.definition.id }));
       }),
     );
     return catalogs
@@ -910,27 +1050,81 @@ export class McpHost {
     await this.options.persistSubscriptions?.(this.listSubscriptions());
   }
 
+  private async releaseSessionLease(
+    entry: McpHostServerEntry,
+    lease: McpClientLease,
+    reason: McpHostShutdownReason,
+  ): Promise<void> {
+    const client = entry.client;
+    if (reason !== "handoff" || client?.capabilities.resourceSubscriptions !== true) {
+      await lease.release(reason);
+      return;
+    }
+    const prefix = `${entry.definition.id}\0`;
+    const uris = [...this.subscriptions]
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length));
+    await lease.release(reason, async (retainedClient) => {
+      const results = await Promise.allSettled(
+        uris.map((uri) => retainedClient.unsubscribeResource(uri)),
+      );
+      const failed = results.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    });
+  }
+
   private async stopEntry(entry: McpHostServerEntry, reason: string): Promise<void> {
     entry.retryAbort?.abort(new Error(reason));
     delete entry.retryAbort;
     entry.generation += 1;
     entry.instructionToolNames = [];
-    const client = entry.client;
+    delete entry.toolCatalog;
+    const ownedClient = entry.ownedClient;
+    const lease = entry.lease;
     delete entry.client;
+    delete entry.ownedClient;
+    delete entry.connectionReused;
+    delete entry.connectionStartedAt;
+    delete entry.lease;
     this.setEntryStatus(entry, { state: "disabled" });
     await this.notifyCatalogChanged(entry, "tools");
-    await client?.close();
+    if (lease === undefined) await ownedClient?.close();
+    else await lease.release("quit");
   }
 
-  private async notifyCatalogChanged(
-    entry: McpHostServerEntry,
-    kind: McpHostCatalogKind,
-  ): Promise<void> {
-    try {
-      await this.options.onCatalogChanged?.(entry.definition.id, kind);
-    } catch (cause) {
-      await this.recordLog(entry.definition.id, errorMessage(cause));
+  private notifyCatalogChanged(entry: McpHostServerEntry, kind: McpHostCatalogKind): Promise<void> {
+    if (this.options.onCatalogChanged === undefined) return Promise.resolve();
+    const key = `${entry.definition.id}\0${kind}`;
+    const pending = this.pendingCatalogChanges.get(key);
+    if (pending !== undefined) return pending.promise;
+
+    const completion = Promise.withResolvers<void>();
+    const timer = setTimeout(() => {
+      this.pendingCatalogChanges.delete(key);
+      void (async () => {
+        try {
+          await this.options.onCatalogChanged?.(entry.definition.id, kind);
+        } catch (cause) {
+          await this.recordLog(entry.definition.id, errorMessage(cause));
+        } finally {
+          completion.resolve();
+        }
+      })();
+    }, MCP_CATALOG_CHANGE_DEBOUNCE_MS);
+    timer.unref();
+    this.pendingCatalogChanges.set(key, { ...completion, timer });
+    return completion.promise;
+  }
+
+  private statusSnapshot(entry: McpHostServerEntry): McpServerStatus {
+    if (entry.status.state !== "connected" || entry.connectionStartedAt === undefined) {
+      return { ...entry.status };
     }
+    return {
+      connectionAgeMs: Math.max(0, Date.now() - entry.connectionStartedAt),
+      reused: entry.connectionReused ?? false,
+      state: "connected",
+    };
   }
 
   private setEntryStatus(entry: McpHostServerEntry, status: McpServerStatus): void {
@@ -946,33 +1140,73 @@ export class McpHost {
     }
   }
 
-  private async recordLog(serverId: string, message: string): Promise<void> {
-    try {
-      await this.options.sessionFiles.appendServerLog(
-        serverId,
-        this.options.settings.secrets.redact(message),
-      );
-    } catch {
-      // Logging must not change protocol lifecycle behavior.
+  private recordLog(serverId: string, message: string): Promise<void> {
+    const redacted = this.options.settings.secrets.redact(message);
+    const chunks = this.pendingLogs.get(serverId) ?? [];
+    chunks.push(redacted);
+    this.pendingLogs.set(serverId, chunks);
+    this.pendingLogBytes += Buffer.byteLength(redacted);
+
+    if (this.pendingLogFlush === undefined) {
+      const completion = Promise.withResolvers<void>();
+      const timer = setTimeout(() => void this.flushPendingLogs(), MCP_LOG_FLUSH_INTERVAL_MS);
+      timer.unref();
+      this.pendingLogFlush = { ...completion, timer };
     }
+    const pending = this.pendingLogFlush.promise;
+    if (this.pendingLogBytes >= MCP_LOG_FLUSH_BYTES) void this.flushPendingLogs();
+    return pending;
   }
 
-  private async shutdownOwnedResources(): Promise<void> {
+  private flushPendingLogs(): Promise<void> {
+    const pending = this.pendingLogFlush;
+    if (pending === undefined) return Promise.resolve();
+    clearTimeout(pending.timer);
+    this.pendingLogFlush = undefined;
+    this.pendingLogBytes = 0;
+    const logs = [...this.pendingLogs].map(
+      ([serverId, chunks]) => [serverId, chunks.join("")] as const,
+    );
+    this.pendingLogs.clear();
+    void Promise.allSettled(
+      logs.map(([serverId, message]) =>
+        this.options.sessionFiles.appendServerLog(serverId, message),
+      ),
+    ).then(() => pending.resolve());
+    return pending.promise;
+  }
+
+  private async shutdownOwnedResources(reason: McpHostShutdownReason): Promise<void> {
     this.shuttingDown = true;
-    const clients: McpHostClient[] = [];
+    for (const pending of this.pendingCatalogChanges.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve();
+    }
+    this.pendingCatalogChanges.clear();
+    const clients: McpOwnedHostClient[] = [];
+    const leases: Promise<void>[] = [];
     const pending: Promise<void>[] = [];
     for (const entry of this.entries.values()) {
       entry.retryAbort?.abort(new Error("MCP Host shutting down"));
       delete entry.retryAbort;
       entry.generation += 1;
-      if (entry.client !== undefined) {
-        clients.push(entry.client);
-        delete entry.client;
+      const lease = entry.lease;
+      if (lease !== undefined) {
+        leases.push(this.releaseSessionLease(entry, lease, reason));
+        delete entry.lease;
+      } else {
+        if (entry.ownedClient !== undefined) clients.push(entry.ownedClient);
+        if (entry.pending !== undefined) pending.push(entry.pending);
       }
-      if (entry.pending !== undefined) pending.push(entry.pending);
+      delete entry.client;
+      delete entry.ownedClient;
+      delete entry.connectionReused;
+      delete entry.connectionStartedAt;
     }
+    await Promise.allSettled(leases);
     await Promise.allSettled(clients.map((client) => client.close()));
     await Promise.allSettled(pending);
+    await this.flushPendingLogs();
     await this.options.sessionFiles.close();
   }
 }

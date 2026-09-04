@@ -4,17 +4,19 @@ import {
   ProtocolErrorCode,
   SdkError,
   SdkErrorCode,
+  UnauthorizedError,
 } from "@modelcontextprotocol/client";
 import { expect, test, vi } from "vitest";
+import { McpClientPool } from "../src/mcp-client-pool.js";
 import {
   McpHost,
   type McpHostAuthProvider,
-  type McpHostClient,
   type McpHostClientCapabilities,
   type McpHostClientConnectOptions,
   type McpHostClientEvents,
   type McpHostClientFactory,
   type McpHostClock,
+  type McpOwnedHostClient,
   type McpHostServerTool,
 } from "../src/mcp-host.js";
 import type { McpSessionFiles } from "../src/mcp-session-files.js";
@@ -53,7 +55,7 @@ class FakeClock implements McpHostClock {
   }
 }
 
-class FakeClient implements McpHostClient {
+class FakeClient implements McpOwnedHostClient {
   readonly callTool = vi.fn(async () => ({ content: [{ text: "called", type: "text" as const }] }));
   readonly close = vi.fn(async () => undefined);
   readonly getPrompt = vi.fn(async (name: string, args?: Readonly<Record<string, string>>) => ({
@@ -86,16 +88,19 @@ class FakeFactory implements McpHostClientFactory {
   readonly attempts = new Map<string, number>();
   readonly authProviders = new Map<string, McpHostAuthProvider | undefined>();
   readonly events = new Map<string, McpHostClientEvents>();
-  readonly outcomes = new Map<string, Array<McpHostClient | Error | Promise<McpHostClient>>>();
+  readonly outcomes = new Map<
+    string,
+    Array<McpOwnedHostClient | Error | Promise<McpOwnedHostClient>>
+  >();
 
   queue(
     serverId: string,
-    ...outcomes: Array<McpHostClient | Error | Promise<McpHostClient>>
+    ...outcomes: Array<McpOwnedHostClient | Error | Promise<McpOwnedHostClient>>
   ): void {
     this.outcomes.set(serverId, outcomes);
   }
 
-  async connect(options: McpHostClientConnectOptions): Promise<McpHostClient> {
+  async connect(options: McpHostClientConnectOptions): Promise<McpOwnedHostClient> {
     const attempts = (this.attempts.get(options.serverId) ?? 0) + 1;
     this.attempts.set(options.serverId, attempts);
     this.authProviders.set(options.serverId, options.authProvider);
@@ -122,7 +127,7 @@ function stdioDefinition(
   };
 }
 
-function remoteDefinition(id: string): McpServerDefinition {
+function remoteDefinition(id: string): Extract<McpServerDefinition, { transport: "http" | "sse" }> {
   return {
     auth: { scopes: [], type: "oauth" },
     enabled: true,
@@ -234,6 +239,120 @@ test("keeps initial connection ownership until asynchronous catalog synchronizat
 
   catalogSynchronization.resolve();
   await initialConnection;
+});
+
+test("lists initial Server Tools once for instructions and catalog synchronization", async () => {
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true }, "Use the search tool");
+  client.tools = [{ inputSchema: { type: "object" }, name: "search" }];
+  factory.queue("catalog", client);
+  let synchronizedTools: readonly McpHostServerTool[] = [];
+  let host: McpHost;
+  host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: async (serverId, kind) => {
+      if (kind === "tools") {
+        synchronizedTools = (await host.listTools(serverId)).map(({ tool }) => tool);
+      }
+    },
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("catalog")]),
+  });
+
+  host.start();
+  await host.waitForInitialConnections();
+
+  expect(synchronizedTools.map((tool) => tool.name)).toEqual(["search"]);
+  expect(client.listTools).toHaveBeenCalledTimes(1);
+});
+
+test("coalesces burst catalog changes before notifying the session", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  factory.queue("catalog", new FakeClient({ tools: true }));
+  const changes: string[] = [];
+  const host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: (_serverId, kind) => {
+      changes.push(kind);
+    },
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("catalog")]),
+  });
+
+  try {
+    host.start();
+    await vi.advanceTimersByTimeAsync(50);
+    await host.waitForInitialConnections();
+    changes.length = 0;
+
+    void factory.events.get("catalog")?.onCatalogChanged("tools", ["one"]);
+    void factory.events.get("catalog")?.onCatalogChanged("tools", ["two"]);
+    void factory.events.get("catalog")?.onCatalogChanged("tools", ["three"]);
+    await flush();
+    expect(changes).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(50);
+    expect(changes).toEqual(["tools"]);
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("does not restore a Tool catalog invalidated during its initial read", async () => {
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true });
+  const initialCatalog = Promise.withResolvers<McpHostServerTool[]>();
+  client.listTools.mockImplementationOnce(() => initialCatalog.promise);
+  factory.queue("catalog", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("catalog")]),
+  });
+  host.start();
+  await flush();
+  client.tools = [{ inputSchema: { type: "object" }, name: "current" }];
+  void factory.events.get("catalog")?.onCatalogChanged("tools", ["current"]);
+  initialCatalog.resolve([{ inputSchema: { type: "object" }, name: "stale" }]);
+  await host.waitForInitialConnections();
+
+  expect((await host.listTools("catalog")).map(({ tool }) => tool.name)).toEqual(["current"]);
+  expect(client.listTools).toHaveBeenCalledTimes(2);
+  await host.shutdown();
+});
+
+test("does not resume session callbacks after a pooled catalog handoff", async () => {
+  const pool = new McpClientPool();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true });
+  const catalog = Promise.withResolvers<McpHostServerTool[]>();
+  client.listTools.mockImplementationOnce(() => catalog.promise);
+  factory.queue("catalog", client);
+  const onCatalogChanged = vi.fn(async () => undefined);
+  const host = new McpHost({
+    clientFactory: factory,
+    clientPool: pool,
+    onCatalogChanged,
+    piCwd: "/project",
+    projectRoot: "/project",
+    projectTrusted: true,
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("catalog")]),
+  });
+  host.start();
+  await flush();
+
+  await host.shutdown("handoff");
+  catalog.resolve([{ inputSchema: { type: "object" }, name: "late" }]);
+  await host.waitForInitialConnections();
+  await new Promise((resolveWait) => setTimeout(resolveWait, 60));
+
+  expect(onCatalogChanged).not.toHaveBeenCalled();
 });
 
 test("publishes copied sorted status snapshots without letting observers affect lifecycle", async () => {
@@ -389,6 +508,93 @@ test("refreshes native SDK catalogs after real list-change notifications", async
   }
 });
 
+test("batches burst MCP logs before writing session files", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  const appendServerLog = vi.fn(async () => undefined);
+  factory.queue("logs", new FakeClient());
+  const host = new McpHost({
+    clientFactory: factory,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(undefined, appendServerLog),
+    settings: {
+      ...settings([stdioDefinition("logs")]),
+      secrets: new McpResolvedSecrets(["private-token"]),
+    },
+  });
+
+  try {
+    host.start();
+    await host.waitForInitialConnections();
+    const events = factory.events.get("logs");
+    if (events === undefined) throw new Error("Expected MCP Client events");
+    const writes = [
+      Promise.resolve(events.onLog("first ")),
+      Promise.resolve(events.onLog("private-token ")),
+      Promise.resolve(events.onLog("third")),
+    ];
+    await flush();
+    expect(appendServerLog).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.all(writes);
+    expect(appendServerLog).toHaveBeenCalledOnce();
+    expect(appendServerLog).toHaveBeenCalledWith("logs", "first [REDACTED] third");
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("flushes MCP log batches at 64 KiB", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  const appendServerLog = vi.fn(async () => undefined);
+  factory.queue("logs", new FakeClient());
+  const host = new McpHost({
+    clientFactory: factory,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(undefined, appendServerLog),
+    settings: settings([stdioDefinition("logs")]),
+  });
+
+  try {
+    host.start();
+    await host.waitForInitialConnections();
+    const events = factory.events.get("logs");
+    if (events === undefined) throw new Error("Expected MCP Client events");
+
+    await events.onLog("x".repeat(64 * 1024));
+
+    expect(appendServerLog).toHaveBeenCalledOnce();
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("flushes pending MCP logs during shutdown", async () => {
+  const factory = new FakeFactory();
+  const appendServerLog = vi.fn(async () => undefined);
+  factory.queue("logs", new FakeClient());
+  const host = new McpHost({
+    clientFactory: factory,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(undefined, appendServerLog),
+    settings: settings([stdioDefinition("logs")]),
+  });
+  host.start();
+  await host.waitForInitialConnections();
+  const events = factory.events.get("logs");
+  if (events === undefined) throw new Error("Expected MCP Client events");
+  const logged = Promise.resolve(events.onLog("shutdown tail"));
+
+  await host.shutdown();
+  await logged;
+
+  expect(appendServerLog).toHaveBeenCalledWith("logs", "shutdown tail");
+});
+
 test("owns resources, prompts, desired subscriptions, and provenance-only update notices", async () => {
   const factory = new FakeFactory();
   const client = new FakeClient({
@@ -529,9 +735,11 @@ test("signals catalog deactivation and activation across an automatic reconnect"
   catalogStates.length = 0;
   factory.events.get("unstable")?.onClose();
   expect(host.getStatus("unstable")?.state).toBe("retrying");
+  await new Promise((resolveWait) => setTimeout(resolveWait, 60));
   expect(catalogStates).toEqual(["retrying"]);
 
   clock.wakeNext();
+  await new Promise((resolveWait) => setTimeout(resolveWait, 60));
   await flush();
   expect(host.getStatus("unstable")?.state).toBe("connected");
   expect(catalogStates).toEqual(["retrying", "connected"]);
@@ -543,8 +751,8 @@ test("freezes the first-request Instruction Snapshot after the bounded deadline"
   const factory = new FakeFactory();
   const fast = new FakeClient({ tools: true }, "Fast instructions");
   fast.tools = [{ inputSchema: { type: "object" }, name: "fast_tool" }];
-  let resolveSlow: ((client: McpHostClient) => void) | undefined;
-  const slowConnection = new Promise<McpHostClient>((resolve) => {
+  let resolveSlow: ((client: McpOwnedHostClient) => void) | undefined;
+  const slowConnection = new Promise<McpOwnedHostClient>((resolve) => {
     resolveSlow = resolve;
   });
   const slow = new FakeClient({ tools: true }, "Late instructions");
@@ -575,6 +783,177 @@ test("freezes the first-request Instruction Snapshot after the bounded deadline"
   expect(await host.freezeInstructionSnapshot()).toBe(snapshot);
 });
 
+test.each(["stdio", "http", "sse"] as const)(
+  "reuses a pooled %s MCP Client across sequential MCP Hosts",
+  async (transport) => {
+    const pool = new McpClientPool();
+    const factory = new FakeFactory();
+    const client = new FakeClient({ tools: true }, "Pooled instructions");
+    client.tools = [{ inputSchema: { type: "object" }, name: "search" }];
+    factory.queue("pooled", client);
+    const remote = remoteDefinition("pooled");
+    const pooledDefinition =
+      transport === "stdio" ? stdioDefinition("pooled") : { ...remote, transport };
+    const hostOptions = {
+      clientFactory: factory,
+      clientPool: pool,
+      piCwd: "/project",
+      projectRoot: "/project",
+      projectTrusted: true,
+      settings: settings([pooledDefinition]),
+    } as const;
+    const first = new McpHost({ ...hostOptions, sessionFiles: sessionFiles() });
+
+    first.start();
+    await first.waitForInitialConnections();
+    await first.shutdown("handoff");
+
+    const second = new McpHost({ ...hostOptions, sessionFiles: sessionFiles() });
+    second.start();
+    await second.waitForInitialConnections();
+
+    expect(factory.attempts.get("pooled")).toBe(1);
+    expect(client.listTools).toHaveBeenCalledOnce();
+    expect(client.close).not.toHaveBeenCalled();
+    expect(second.getStatus("pooled")).toMatchObject({ reused: true, state: "connected" });
+
+    await second.shutdown("quit");
+    expect(client.close).toHaveBeenCalledOnce();
+  },
+);
+
+test("removes session-owned Resource subscriptions before pooled handoff", async () => {
+  const pool = new McpClientPool();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ resourceSubscriptions: true });
+  factory.queue("pooled", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    clientPool: pool,
+    initialSubscriptions: [{ serverId: "pooled", uri: "file:///old" }],
+    piCwd: "/project",
+    projectRoot: "/project",
+    projectTrusted: true,
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("pooled")]),
+  });
+  host.start();
+  await host.waitForInitialConnections();
+  expect(client.subscribeResource).toHaveBeenCalledWith("file:///old");
+
+  await host.shutdown("handoff");
+
+  expect(client.unsubscribeResource).toHaveBeenCalledWith("file:///old");
+  expect(client.close).not.toHaveBeenCalled();
+});
+
+test("closes a pooled client when Resource subscription cleanup fails", async () => {
+  const pool = new McpClientPool();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ resourceSubscriptions: true });
+  client.unsubscribeResource.mockRejectedValueOnce(new Error("unsubscribe failed"));
+  factory.queue("pooled", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    clientPool: pool,
+    initialSubscriptions: [{ serverId: "pooled", uri: "file:///old" }],
+    piCwd: "/project",
+    projectRoot: "/project",
+    projectTrusted: true,
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("pooled")]),
+  });
+  host.start();
+  await host.waitForInitialConnections();
+
+  await host.shutdown("handoff");
+
+  expect(client.close).toHaveBeenCalledOnce();
+});
+
+test("bounds hung Resource subscription cleanup before pooled handoff", async () => {
+  vi.useFakeTimers();
+  const pool = new McpClientPool();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ resourceSubscriptions: true });
+  client.unsubscribeResource.mockImplementation(async () => new Promise(() => undefined));
+  factory.queue("pooled", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    clientPool: pool,
+    initialSubscriptions: [{ serverId: "pooled", uri: "file:///old" }],
+    piCwd: "/project",
+    projectRoot: "/project",
+    projectTrusted: true,
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("pooled")]),
+  });
+
+  try {
+    host.start();
+    await host.waitForInitialConnections();
+    const shutdown = host.shutdown("handoff");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await shutdown;
+
+    expect(client.close).toHaveBeenCalledOnce();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("starts a fresh pooled MCP Client on explicit reconnect", async () => {
+  const pool = new McpClientPool();
+  const factory = new FakeFactory();
+  const firstClient = new FakeClient({ tools: true });
+  const secondClient = new FakeClient({ tools: true });
+  factory.queue("pooled", firstClient, secondClient);
+  const host = new McpHost({
+    clientFactory: factory,
+    clientPool: pool,
+    piCwd: "/project",
+    projectRoot: "/project",
+    projectTrusted: true,
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("pooled")]),
+  });
+  host.start();
+  await host.waitForInitialConnections();
+
+  await host.reconnect("pooled");
+
+  expect(factory.attempts.get("pooled")).toBe(2);
+  expect(firstClient.close).toHaveBeenCalledOnce();
+  expect(secondClient.close).not.toHaveBeenCalled();
+  await host.shutdown("quit");
+  expect(secondClient.close).toHaveBeenCalledOnce();
+});
+
+test("does not retry a pooled client after detected authentication loss", async () => {
+  const pool = new McpClientPool();
+  const factory = new FakeFactory();
+  const client = new FakeClient();
+  factory.queue("pooled", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    clientPool: pool,
+    piCwd: "/project",
+    projectRoot: "/project",
+    projectTrusted: true,
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("pooled")]),
+  });
+  host.start();
+  await host.waitForInitialConnections();
+
+  factory.events.get("pooled")?.onError(new UnauthorizedError());
+  await vi.waitFor(() => expect(client.close).toHaveBeenCalledOnce());
+
+  expect(host.getStatus("pooled")?.state).toBe("needs_auth");
+  expect(factory.attempts.get("pooled")).toBe(1);
+  await host.shutdown();
+});
+
 test("shuts down connected, retrying, and late clients exactly once", async () => {
   const clock = new FakeClock();
   const factory = new FakeFactory();
@@ -582,8 +961,8 @@ test("shuts down connected, retrying, and late clients exactly once", async () =
   const files = sessionFiles(closeSessionFiles);
   const connected = new FakeClient();
   const late = new FakeClient();
-  let resolveLate: ((client: McpHostClient) => void) | undefined;
-  const lateConnection = new Promise<McpHostClient>((resolve) => {
+  let resolveLate: ((client: McpOwnedHostClient) => void) | undefined;
+  const lateConnection = new Promise<McpOwnedHostClient>((resolve) => {
     resolveLate = resolve;
   });
   factory.queue("connected", connected);

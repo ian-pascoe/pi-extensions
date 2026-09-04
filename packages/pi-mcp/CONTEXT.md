@@ -52,3 +52,11 @@ _Avoid_: Server Instructions, tool result
 **MCP Command Surface**:
 The human-operated `/mcp` and `pi-mcp` commands for inspecting or changing MCP configuration and runtime state. It remains distinct from the passive MCP Observer UI even when its read-only output supports observation.
 _Avoid_: Observer UI, MCP management tool
+
+**MCP Client Pool**:
+The process-scoped owner of MCP Clients retained between in-process Pi session replacements. It partitions clients by trusted project and effective Server Definition.
+_Avoid_: Connection cache, daemon
+
+**Session Lease**:
+The exclusive binding of one session-owned MCP Host to a pooled MCP Client. It directs session-scoped protocol interactions and presentation without transferring client ownership.
+_Avoid_: Shared session, connection ownership

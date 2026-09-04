@@ -168,7 +168,9 @@ Input and output schemas are retained as the Server advertised them. Pi structur
 
 ## Host behavior
 
-Enabled servers connect in the background at session start, so Pi startup and TUI rendering do not wait for a process or network connection. Each session owns its clients, transports, children, listeners, timers, retries, subscriptions, logs, and private files. Current MCP peers are negotiated automatically and legacy 2025-era peers remain supported. Streamable HTTP never silently falls back to SSE.
+Enabled servers connect in the background after one event-loop turn at session start, so Pi startup and TUI input do not wait for process or network work. Within one Pi process, matching clients are retained for 30 seconds across `/reload`, `/new`, `/resume`, and `/fork`; this applies to stdio, Streamable HTTP, and legacy SSE. Reuse requires the same canonical project root, trust state, resolved Server Definition, authentication identity, and timeout settings. Concurrent sessions receive exclusive clients, and `/mcp reconnect`, configuration or authentication changes, disable, removal, logout, and quit close affected clients instead of retaining them. `/mcp status` reports reused connections and their age.
+
+Each session still owns its MCP Host, callbacks, retries, desired subscriptions, Instruction Snapshot, logs, and private files. A released session cannot start operations or receive callbacks through a retained client. Current MCP peers are negotiated automatically and legacy 2025-era peers remain supported. Streamable HTTP never silently falls back to SSE.
 
 The host maps the core protocol surface:
 
@@ -183,7 +185,7 @@ Before the first model request, Pi waits only for the bounded initial connection
 
 Failures stay isolated to the affected Server Definition. Status is one of `disabled`, `connecting`, `connected`, `needs_auth`, `needs_client_registration`, `retrying`, or `failed`. Retryable startup failures and unexpected closes use the shared capped exponential policy. Authentication, invalid configuration, unsupported protocol, disable, and shutdown do not retry. After retries are exhausted, use reconnect, reload, or a new session.
 
-Catalog lists are cached for the session, aggregate at most 1,000 pages, reject repeated cursors, and invalidate on their matching MCP notifications. Server Tool additions/replacements take effect immediately. Pi has no public deregistration API, so removed tools are deactivated until reload.
+Validated catalog lists are cached with the connection across session handoff, aggregate at most 1,000 pages, reject repeated cursors, and invalidate on their matching MCP notifications. Catalog changes are coalesced for 50 ms, MCP log writes for 50 ms or 64 KiB, and unchanged footer state is not redrawn. Server Tool additions/replacements take effect immediately. Pi has no public deregistration API, so removed tools are deactivated until reload.
 
 ## Output, persistence, and reload
 
@@ -191,7 +193,7 @@ Text and images map to Pi-native content. Embedded text Resources and Resource L
 
 All model-facing text uses Pi's 2,000-line / 50-KB limit. Oversized complete output is retained in a private Result Spill and the returned content includes its path. Per-server stderr and MCP logging retain only the newest 256 KB. `/mcp logs` keeps the newest combined text within Pi's display limit and identifies the private retained-log path when it truncates. Stdio stdout is protocol framing only; stderr and MCP logs do not write directly to TUI, JSON, or RPC output.
 
-Desired Resource subscriptions and expanded Prompt messages are persisted as versioned Pi custom entries and replay only on the active session branch. Connections and logs are ephemeral. Reload closes the old session generation and its dormant tool definitions, then creates a clean generation; shutdown awaits owned cleanup.
+Desired Resource subscriptions and expanded Prompt messages are persisted as versioned Pi custom entries and replay only on the active session branch. Logs remain session-local and ephemeral. Replacement closes the old session generation and its dormant tool definitions, then gives the new generation an exclusive lease on a matching retained connection when available. Shutdown awaits owned cleanup.
 
 OAuth data lives in a strict, URL-and-client-identity-bound `mcp-auth.json` under Pi's agent directory, protected with mode `0600`. Settings and auth writes use a bounded lock plus atomic replacement. Malformed auth storage is not overwritten by ordinary operations; use the explicit reset command.
 

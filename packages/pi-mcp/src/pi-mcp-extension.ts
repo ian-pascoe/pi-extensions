@@ -1,5 +1,7 @@
 // oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional protocol and Pi fields must be omitted when absent at this composition boundary.
 // oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This Pi composition root parses persisted custom-entry and custom-message replay data before restoring it.
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   ProtocolError,
@@ -33,6 +35,7 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { processMcpClientPool } from "./mcp-client-pool.js";
 import { compileMcpJsonSchema } from "./mcp-json-schema.js";
 import { McpAuthStore } from "./mcp-auth-store.js";
 import {
@@ -50,6 +53,7 @@ import {
   type McpHostGetPromptResult,
   type McpHostLogTail,
   McpHostOperationError,
+  type McpHostShutdownReason,
   type McpHostRequestContext,
   type McpHostResourceSubscription,
   type McpHostServerTool,
@@ -88,8 +92,8 @@ export type PiMcpAutocompleteItem = McpCommandCompletionItem;
 
 /** Session-owned MCP Host behavior consumed by the Pi lifecycle adapter. */
 export interface PiMcpExtensionSession {
-  /** Close all processes, transports, subscriptions, listeners, timers, and session files once. */
-  close(): Promise<void>;
+  /** Release clients for replacement, or close them for terminal shutdown. */
+  close(reason: McpHostShutdownReason): Promise<void>;
   /** Complete `/mcp` commands and arguments through the live Host. */
   completeCommandArguments?(prefix: string): Promise<PiMcpAutocompleteItem[] | null>;
   /** Execute one `/mcp` command without throwing an expected failure through Pi. */
@@ -116,6 +120,7 @@ export interface PiMcpExtensionEffects {
 interface ActivePiMcpSession {
   readonly runtime: PiMcpExtensionSession;
   instructionSnapshot?: Promise<string | undefined>;
+  startPromise?: Promise<void>;
 }
 
 const MCP_PROMPT_MESSAGE_TYPE = "pi-mcp-prompt";
@@ -142,8 +147,11 @@ function formatMcpServerStatus(status: McpServerStatus): string {
   const safeError = "error" in status ? sanitizeMcpPresentationText(status.error) : undefined;
   switch (status.state) {
     case "disabled":
-    case "connected":
       return status.state;
+    case "connected":
+      return status.connectionAgeMs === undefined
+        ? status.state
+        : `connected (${status.reused === true ? "reused, " : ""}age ${status.connectionAgeMs} ms)`;
     case "connecting":
       return `connecting (attempt ${status.attempt})`;
     case "needs_auth":
@@ -652,9 +660,9 @@ class ProductionPiMcpSession implements PiMcpExtensionSession {
     private readonly interactionContext: { current: ExtensionContext },
   ) {}
 
-  close(): Promise<void> {
+  close(reason: McpHostShutdownReason): Promise<void> {
     this.observer.dispose();
-    return this.host.shutdown();
+    return this.host.shutdown(reason);
   }
 
   redactPresentationText(text: string): string {
@@ -696,17 +704,27 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
   createSession: async (context, pi) => {
     const interactionContext = { current: context };
     const agentDirectory = getAgentDir();
+    const projectRoot = await realpath(context.cwd).catch(() => resolve(context.cwd));
+    const projectTrusted = context.isProjectTrusted();
+    const clientPool = await processMcpClientPool();
     const settingsManager = SettingsManager.create(context.cwd, agentDirectory, {
-      projectTrusted: context.isProjectTrusted(),
+      projectTrusted,
     });
     const settings = resolveMcpSettings(settingsManager);
+    void clientPool.reconcileProject({
+      connectTimeoutMs: settings.connectTimeoutMs,
+      definitions: [...settings.servers.values()],
+      projectRoot,
+      projectTrusted,
+      requestTimeoutMs: settings.requestTimeoutMs,
+    });
     const invalidSettings = settings.valid
       ? []
       : settings.errors.map((error) => settings.secrets.redact(error.message));
     const adapters = await createStandaloneMcpCommandAdapters({
       agentDirectory,
       cwd: context.cwd,
-      projectTrusted: context.isProjectTrusted(),
+      projectTrusted,
       waitForOAuthPaste: async (signal) => {
         if (!context.hasUI) throw new Error("Pi MCP OAuth callback input requires UI");
         const input = await context.ui.input(
@@ -729,6 +747,7 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
     let ownedHost: McpHost | undefined;
     try {
       const host = new McpHost({
+        clientPool,
         initialSubscriptions: replaySubscriptions(context),
         onCatalogChanged: (serverId, kind) =>
           kind === "tools" || kind === "resources" || kind === "resourceTemplates"
@@ -749,6 +768,8 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
           pi.appendEntry(MCP_SUBSCRIPTIONS_ENTRY_TYPE, { subscriptions, version: 1 });
         },
         piCwd: context.cwd,
+        projectRoot,
+        projectTrusted,
         resolveAuthProvider: (definition) => {
           if (definition.auth?.type === "none" || definition.auth?.type === "bearer") {
             return undefined;
@@ -807,7 +828,7 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
       const resolveCurrentSettings = () =>
         resolveMcpSettings(
           SettingsManager.create(context.cwd, agentDirectory, {
-            projectTrusted: context.isProjectTrusted(),
+            projectTrusted,
           }),
         );
       const applyPersistedServer = async (serverId: string): Promise<void> => {
@@ -826,8 +847,40 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
       adapters.auth = {
         ...persistentAuth,
         authenticate: async (options) => {
+          const definition = resolveCurrentSettings().servers.get(options.server);
           const result = await persistentAuth.authenticate(options);
-          if (result.ok) void host.reconnect(options.server).catch(() => undefined);
+          if (result.ok) {
+            if (definition !== undefined) {
+              await clientPool.invalidateAuthentication(definition);
+            }
+            void host.reconnect(options.server).catch(() => undefined);
+          }
+          return result;
+        },
+        logout: async (options) => {
+          const definition =
+            options.server === undefined
+              ? undefined
+              : resolveCurrentSettings().servers.get(options.server);
+          const result = await persistentAuth.logout(options);
+          if (result.ok) {
+            if (options.all) await clientPool.invalidateAllAuthentication();
+            else if (definition !== undefined) {
+              await clientPool.invalidateAuthentication(definition);
+            }
+          }
+          return result;
+        },
+      };
+      const persistentSettings = adapters.settings;
+      adapters.settings = {
+        ...persistentSettings,
+        remove: async (options) => {
+          const definition = resolveCurrentSettings().servers.get(options.name);
+          const result = await persistentSettings.remove(options);
+          if (result.ok && options.logout && definition !== undefined) {
+            await clientPool.invalidateAuthentication(definition);
+          }
           return result;
         },
       };
@@ -971,11 +1024,13 @@ export class PiMcpLifecycleController {
       this.beforeAgentStart(event.systemPrompt, context),
     );
     this.pi.on("context", (event) => this.transformContext(event));
-    this.pi.on("session_shutdown", () => this.shutdownSession());
+    this.pi.on("session_shutdown", (event) =>
+      this.shutdownSession(event.reason === "quit" ? "quit" : "handoff"),
+    );
   }
 
   private async startSession(context: ExtensionContext): Promise<void> {
-    await this.shutdownSession();
+    await this.shutdownSession("handoff");
     let runtime: PiMcpExtensionSession;
     try {
       runtime = await this.effects.createSession(context, this.pi);
@@ -985,10 +1040,8 @@ export class PiMcpLifecycleController {
     }
     const activeSession = { runtime };
     this.activeSession = activeSession;
-    void runtime.start().catch((cause: unknown) => {
-      if (this.activeSession === activeSession) {
-        this.notifyFailure(context, "Pi MCP background startup failed", cause);
-      }
+    setImmediate(() => {
+      if (this.activeSession === activeSession) this.startRuntime(activeSession, context);
     });
   }
 
@@ -998,6 +1051,7 @@ export class PiMcpLifecycleController {
   ): Promise<{ readonly systemPrompt: string } | undefined> {
     const activeSession = this.activeSession;
     if (activeSession === undefined) return undefined;
+    this.startRuntime(activeSession, context);
     activeSession.instructionSnapshot ??= activeSession.runtime.instructionSnapshot();
     try {
       const snapshot = await activeSession.instructionSnapshot;
@@ -1008,6 +1062,14 @@ export class PiMcpLifecycleController {
       this.notifyFailure(context, "Pi MCP Instruction Snapshot failed", cause);
       return undefined;
     }
+  }
+
+  private startRuntime(activeSession: ActivePiMcpSession, context: ExtensionContext): void {
+    activeSession.startPromise ??= activeSession.runtime.start().catch((cause: unknown) => {
+      if (this.activeSession === activeSession) {
+        this.notifyFailure(context, "Pi MCP background startup failed", cause);
+      }
+    });
   }
 
   private transformContext(
@@ -1041,14 +1103,14 @@ export class PiMcpLifecycleController {
     context.ui.notify(`${prefix}: ${message}`, "error");
   }
 
-  private async shutdownSession(): Promise<void> {
+  private async shutdownSession(reason: McpHostShutdownReason): Promise<void> {
     const activeSession = this.activeSession;
     if (activeSession === undefined) {
       await this.shutdownPromise;
       return;
     }
     this.activeSession = undefined;
-    const shutdown = activeSession.runtime.close();
+    const shutdown = activeSession.runtime.close(reason);
     this.shutdownPromise = shutdown;
     try {
       await shutdown;
