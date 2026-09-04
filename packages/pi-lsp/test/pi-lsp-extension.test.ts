@@ -3,12 +3,16 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import {
+  type AgentSession,
+  createAgentSession,
   DefaultResourceLoader,
   ExtensionRunner,
   ModelRegistry,
   ModelRuntime,
   SessionManager,
+  SettingsManager,
   type SessionShutdownEvent,
   type SessionStartEvent,
   type ToolResultEvent,
@@ -21,12 +25,16 @@ import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
+const agentSessions: AgentSession[] = [];
 
 interface ExtensionHarness {
+  readonly agentDirectory: string;
   readonly notifications: string[];
+  readonly resourceLoader: DefaultResourceLoader;
   readonly runner: ExtensionRunner;
   readonly sessionDirectory: string;
   readonly sessionManager: SessionManager;
+  readonly settingsManager: SettingsManager;
 }
 
 async function makeTemporaryDirectory(prefix: string): Promise<string> {
@@ -50,9 +58,11 @@ async function createExtensionHarness(
   );
 
   const sessionManager = SessionManager.create(cwd, sessionDirectory);
+  const settingsManager = SettingsManager.create(cwd, agentDirectory, { projectTrusted });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: agentDirectory,
+    settingsManager,
     extensionFactories: [
       {
         name: "pi-lsp-lifecycle-test",
@@ -120,7 +130,15 @@ async function createExtensionHarness(
     },
     "rpc",
   );
-  return { notifications, runner, sessionDirectory, sessionManager };
+  return {
+    agentDirectory,
+    notifications,
+    resourceLoader,
+    runner,
+    sessionDirectory,
+    sessionManager,
+    settingsManager,
+  };
 }
 
 async function startExtension(harness: ExtensionHarness): Promise<void> {
@@ -162,6 +180,13 @@ async function piLspSessionDirectories(sessionDirectory: string): Promise<string
 }
 
 afterEach(async () => {
+  for (const session of agentSessions.splice(0)) {
+    try {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    } finally {
+      session.dispose();
+    }
+  }
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -170,7 +195,46 @@ afterEach(async () => {
 });
 
 describe("Pi LSP extension lifecycle", () => {
-  test("registers lazily, replays only the active branch, augments writes, and shuts down idempotently", async () => {
+  test("keeps the rendered lsp tool available while reload reconstructs the transcript", async () => {
+    const harness = await createExtensionHarness(false);
+    const model = getModel("anthropic", "claude-sonnet-4-5");
+    if (model === undefined) throw new Error("Pi LSP extension test: missing pinned model");
+    const session = (
+      await createAgentSession({
+        cwd: harness.sessionManager.getCwd(),
+        agentDir: harness.agentDirectory,
+        model,
+        resourceLoader: harness.resourceLoader,
+        sessionManager: harness.sessionManager,
+        settingsManager: harness.settingsManager,
+      })
+    ).session;
+    agentSessions.push(session);
+    await session.bindExtensions({
+      mode: "rpc",
+      uiContext: session.extensionRunner.getUIContext(),
+    });
+
+    let definitionAvailableBeforeSessionStart = false;
+    let renderCallAvailableBeforeSessionStart = false;
+    let renderResultAvailableBeforeSessionStart = false;
+    await session.reload({
+      beforeSessionStart: () => {
+        const definition = session.getToolDefinition("lsp");
+        definitionAvailableBeforeSessionStart = definition !== undefined;
+        renderCallAvailableBeforeSessionStart = definition?.renderCall !== undefined;
+        renderResultAvailableBeforeSessionStart = definition?.renderResult !== undefined;
+      },
+    });
+
+    expect({
+      definition: definitionAvailableBeforeSessionStart,
+      renderCall: renderCallAvailableBeforeSessionStart,
+      renderResult: renderResultAvailableBeforeSessionStart,
+    }).toEqual({ definition: true, renderCall: true, renderResult: true });
+  });
+
+  test("starts runtime lazily, replays only the active branch, augments writes, and shuts down idempotently", async () => {
     const harness = await createExtensionHarness(false);
     const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
     await writeFile(filePath, "before\n");
@@ -278,7 +342,10 @@ describe("Pi LSP extension lifecycle", () => {
       timestamp: Date.now(),
     });
 
-    expect(harness.runner.getAllRegisteredTools()).toEqual([]);
+    expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
+      ["lsp"],
+    );
+    expect(await piLspSessionDirectories(harness.sessionDirectory)).toEqual([]);
     await startExtension(harness);
 
     expect(harness.notifications).toEqual([]);

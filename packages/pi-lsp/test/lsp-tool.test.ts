@@ -166,7 +166,7 @@ async function createToolFixture(
     sessionFiles,
   };
   const registrar = new RecordingLspToolRegistrar();
-  registerLspTool(registrar, dependencies);
+  registerLspTool(registrar, () => dependencies);
   expect(registrar.tools).toHaveLength(1);
   const tool = registrar.tools[0];
   if (tool === undefined) throw new Error("Expected registered LSP tool");
@@ -211,7 +211,7 @@ afterEach(async () => {
 describe("registered LSP tool", () => {
   test("publishes the final result-details output schema", async () => {
     const fixture = await createToolFixture();
-    const tool = createLspToolDefinition(fixture.dependencies);
+    const tool = createLspToolDefinition(() => fixture.dependencies);
 
     expect(Object.hasOwn(tool, "outputSchema")).toBe(true);
     expect(tool.outputSchema).toBe(LspToolResultDetailsSchema);
@@ -493,10 +493,10 @@ describe("registered LSP tool", () => {
       },
     });
     const registrar = new RecordingLspToolRegistrar();
-    registerLspTool(registrar, {
+    registerLspTool(registrar, () => ({
       ...fixture.dependencies,
       manager,
-    });
+    }));
     const tool = registrar.tools[0];
     if (tool === undefined) throw new Error("Expected registered LSP tool");
     const result = await tool.execute(
@@ -618,7 +618,7 @@ describe("registered LSP tool", () => {
     };
     const workspaceEdits = new LspWorkspaceEditStore({ fileOperations: failingFiles });
     const registrar = new RecordingLspToolRegistrar();
-    registerLspTool(registrar, { ...fixture.dependencies, workspaceEdits });
+    registerLspTool(registrar, () => ({ ...fixture.dependencies, workspaceEdits }));
     const tool = registrar.tools[0];
     if (tool === undefined) throw new Error("Expected registered LSP tool");
     const preview = await workspaceEdits.createPreview({

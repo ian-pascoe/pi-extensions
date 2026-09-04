@@ -1055,8 +1055,10 @@ async function executeApplyPreview(
   return createLspToolOutput(formatLspToolValue(result), details, dependencies);
 }
 
-/** Create the single strict Pi LSP ToolDefinition bound to one session's runtime owners. */
-export function createLspToolDefinition(dependencies: LspToolDependencies): LspToolDefinition {
+/** Create the single strict Pi LSP ToolDefinition backed by the current session's runtime owners. */
+export function createLspToolDefinition(
+  getDependencies: () => LspToolDependencies,
+): LspToolDefinition {
   return {
     name: "lsp",
     label: "LSP",
@@ -1077,7 +1079,7 @@ export function createLspToolDefinition(dependencies: LspToolDependencies): LspT
         return parseLspToolParameters(argumentsValue);
       }
       const applyArguments: ApplyPreviewArguments = argumentsValue;
-      const storeManifest = dependencies.workspaceEdits.prepareMutationManifest(
+      const storeManifest = getDependencies().workspaceEdits.prepareMutationManifest(
         applyArguments.preview_id,
       );
       return parseLspToolParameters({
@@ -1087,6 +1089,7 @@ export function createLspToolDefinition(dependencies: LspToolDependencies): LspT
     },
     async execute(_toolCallId, input, signal, _onUpdate, context) {
       const parameters = parseLspToolParameters(input);
+      const dependencies = getDependencies();
       switch (parameters.operation) {
         case "status": {
           const status = dependencies.manager.getStatus();
@@ -1190,7 +1193,10 @@ export function createLspToolDefinition(dependencies: LspToolDependencies): LspT
   };
 }
 
-/** Register exactly one strict `lsp` tool for the current Pi extension session. */
-export function registerLspTool(pi: LspToolRegistrar, dependencies: LspToolDependencies): void {
-  pi.registerTool(createLspToolDefinition(dependencies));
+/** Register exactly one strict `lsp` tool backed by the current Pi extension session. */
+export function registerLspTool(
+  pi: LspToolRegistrar,
+  getDependencies: () => LspToolDependencies,
+): void {
+  pi.registerTool(createLspToolDefinition(getDependencies));
 }

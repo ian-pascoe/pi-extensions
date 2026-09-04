@@ -61,7 +61,6 @@ type PiCodeModeGeneration = {
   readonly coordinator: CodeModeSessionCoordinator;
   readonly observer: CodeModeObserverUiController;
   readonly sessionFiles: CodeModeSessionFiles;
-  readonly operations: CodeModeToolOperations;
   exposure?: InstalledCodeModeToolExposure;
   decision: CodeModeToolExposureDecision;
   catalogue: CodeModeToolCatalogue;
@@ -172,12 +171,81 @@ function codeModeNestedBridgeValue(value: PiToolBridgeValue): CodeModeJsonValue 
 /** Owns Pi CodeMode startup, exposure/catalogue synchronization, and resource shutdown. */
 class PiCodeModeLifecycleController {
   private generation: PiCodeModeGeneration | undefined;
+  private readonly operations: CodeModeToolOperations = {
+    execute: async (input, signal, onUpdate) => {
+      const generation = this.generation;
+      if (generation === undefined || !generation.active) {
+        return {
+          result: createCodeModeFailure(
+            input.sessionId ?? "inactive",
+            "runtime",
+            "Pi CodeMode session generation is inactive",
+          ),
+        };
+      }
+      return generation.coordinator.execute(
+        input,
+        signal,
+        onUpdate === undefined
+          ? undefined
+          : (update) => {
+              // SAFETY: executeNestedToolBatch is the only update producer and replaces nested details with a schema-valid CodeMode pending result.
+              onUpdate(update as AgentToolResult<CodeModeResultDetails>);
+            },
+      );
+    },
+    result: async (input) => {
+      const generation = this.generation;
+      return generation === undefined || !generation.active
+        ? {
+            result: createCodeModeFailure(
+              input.sessionId,
+              "runtime",
+              "Pi CodeMode session generation is inactive",
+            ),
+          }
+        : generation.coordinator.result(input.sessionId);
+    },
+    cancel: async (input) => {
+      const generation = this.generation;
+      return generation === undefined || !generation.active
+        ? {
+            result: createCodeModeFailure(
+              input.sessionId,
+              "runtime",
+              "Pi CodeMode session generation is inactive",
+            ),
+          }
+        : generation.coordinator.cancel(input.sessionId);
+    },
+    sessions: async () => ({
+      result: "success",
+      sessions: [...(this.generation?.coordinator.listSessions() ?? [])],
+    }),
+    search: async (input) => {
+      const generation = this.generation;
+      if (generation === undefined || !generation.active) {
+        throw new Error("Pi CodeMode session generation is inactive");
+      }
+      this.synchronizeGeneration(generation);
+      const searched = searchCodeModeToolCatalogue(generation.catalogue.searchEntries, input);
+      if (!searched.ok) throw new Error(searched.message);
+      return searched.page;
+    },
+  };
 
   /** Creates inert lifecycle wiring around one Pi extension registration interface. */
   constructor(private readonly pi: ExtensionAPI) {}
 
-  /** Registers inert lifecycle handlers; no process or public tool exists before session start. */
+  /** Registers stable public tools and inert lifecycle handlers without starting a process. */
   register(): void {
+    const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
+      createRenderedCodeModeToolDefinitions(this.operations, CODEMODE_EXECUTE_DESCRIPTION);
+    this.pi.registerTool(executeTool);
+    this.pi.registerTool(resultTool);
+    this.pi.registerTool(cancelTool);
+    this.pi.registerTool(sessionsTool);
+    this.pi.registerTool(searchTool);
     this.pi.on("session_start", async (_event, context) => this.startSession(context));
     this.pi.on("before_agent_start", () => this.synchronizeCurrentGeneration());
     this.pi.on("tool_execution_end", () => this.synchronizeCurrentGeneration());
@@ -244,51 +312,12 @@ class PiCodeModeLifecycleController {
       },
       executeToolBatch: (batch) => this.executeNestedToolBatch(generation, batch),
     });
-    const operations: CodeModeToolOperations = {
-      execute: async (input, signal, onUpdate) => {
-        if (!generation.active || this.generation !== generation) {
-          return {
-            result: createCodeModeFailure(
-              input.sessionId ?? "inactive",
-              "runtime",
-              "Pi CodeMode session generation is inactive",
-            ),
-          };
-        }
-        return coordinator.execute(
-          input,
-          signal,
-          onUpdate === undefined
-            ? undefined
-            : (update) => {
-                // SAFETY: executeNestedToolBatch is the only update producer and replaces nested details with a schema-valid CodeMode pending result.
-                onUpdate(update as AgentToolResult<CodeModeResultDetails>);
-              },
-        );
-      },
-      result: async (input) => coordinator.result(input.sessionId),
-      cancel: async (input) => coordinator.cancel(input.sessionId),
-      sessions: async () => ({
-        result: "success",
-        sessions: [...coordinator.listSessions()],
-      }),
-      search: async (input) => {
-        if (!generation.active || this.generation !== generation) {
-          throw new Error("Pi CodeMode session generation is inactive");
-        }
-        this.synchronizeGeneration(generation);
-        const searched = searchCodeModeToolCatalogue(generation.catalogue.searchEntries, input);
-        if (!searched.ok) throw new Error(searched.message);
-        return searched.page;
-      },
-    };
     generation = {
       captured,
       context,
       coordinator,
       observer,
       sessionFiles,
-      operations,
       decision: initialDecision,
       catalogue: initialCatalogue,
       executeDescription: catalogueDescription(initialCatalogue),
@@ -330,7 +359,7 @@ class PiCodeModeLifecycleController {
 
     const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
       createRenderedCodeModeToolDefinitions(
-        operations,
+        this.operations,
         generation.executeDescription,
         (sessionId) => coordinator.formatSessionPrefix(sessionId),
       );
@@ -386,7 +415,7 @@ class PiCodeModeLifecycleController {
         generation.executeDescription = description;
         if (!generation.toolsRegistered) continue;
         const executeDefinition = createRenderedCodeModeToolDefinitions(
-          generation.operations,
+          this.operations,
           description,
           (sessionId) => generation.coordinator.formatSessionPrefix(sessionId),
         )[0];

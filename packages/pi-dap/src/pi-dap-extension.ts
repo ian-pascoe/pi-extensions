@@ -21,7 +21,6 @@ interface ActivePiDapSession extends DapToolRuntime {
 export class PiDapLifecycleController {
   private activeSession: ActivePiDapSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
-  private toolRegistered = false;
 
   /** Bind lifecycle handlers to Pi; `getAgentDirectory` may be overridden by tests to isolate settings. */
   constructor(
@@ -29,8 +28,9 @@ export class PiDapLifecycleController {
     private readonly getAgentDirectory: () => string = getAgentDir,
   ) {}
 
-  /** Register the Pi conversation session start and shutdown handlers. */
+  /** Register the stable tool definition and Pi conversation session lifecycle handlers. */
   register(): void {
+    this.pi.registerTool(createDapToolDefinition(() => this.activeSession));
     this.pi.on("session_start", (_event, context) => this.startSession(context));
     this.pi.on("session_shutdown", () => this.shutdownSession());
   }
@@ -58,10 +58,6 @@ export class PiDapLifecycleController {
       }),
       sessionFiles,
     };
-    if (!this.toolRegistered) {
-      this.pi.registerTool(createDapToolDefinition(() => this.activeSession));
-      this.toolRegistered = true;
-    }
   }
 
   private async shutdownSession(): Promise<void> {
