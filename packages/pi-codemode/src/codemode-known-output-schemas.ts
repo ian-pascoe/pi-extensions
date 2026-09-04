@@ -3,7 +3,6 @@ import { Type, type TSchema } from "typebox";
 import type { CodeModeToolSchema } from "./codemode-tool-catalog.js";
 
 const ClosedObject = { additionalProperties: false } as const;
-const OptionalUndefinedString = Type.Optional(Type.Union([Type.String(), Type.Undefined()]));
 const OptionalUndefinedNumber = Type.Optional(Type.Union([Type.Number(), Type.Undefined()]));
 
 const TruncationResultSchema = Type.Object(
@@ -96,46 +95,6 @@ const UnifiedExecOutputSchema = Type.Object(
   },
   ClosedObject,
 );
-const ImagegenOutputSchema = Type.Object(
-  {
-    path: Type.String(),
-    latest_path: Type.String(),
-    images: Type.Array(
-      Type.Object(
-        {
-          path: Type.String(),
-          absolute_path: Type.String(),
-          latest_path: Type.Optional(Type.String()),
-          latest_absolute_path: Type.Optional(Type.String()),
-        },
-        ClosedObject,
-      ),
-    ),
-    background: OptionalUndefinedString,
-    quality: OptionalUndefinedString,
-    size: OptionalUndefinedString,
-  },
-  ClosedObject,
-);
-// oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- SAFETY: pi-codex-conversion intentionally exposes provider-defined web_run fields alongside these known text fields.
-type CodexWebRunPayload = Record<string, unknown> & {
-  encrypted_output?: string | undefined;
-  output_text?: string | undefined;
-  output?: string | undefined;
-  text?: string | undefined;
-};
-const WebRunPayloadSchema = Type.Unsafe<CodexWebRunPayload>(
-  Type.Object(
-    {
-      encrypted_output: OptionalUndefinedString,
-      output_text: OptionalUndefinedString,
-      output: OptionalUndefinedString,
-      text: OptionalUndefinedString,
-    },
-    { additionalProperties: true },
-  ),
-);
-const WebRunOutputSchema = Type.Object({ webRun: WebRunPayloadSchema }, ClosedObject);
 const ViewImageContentSchema = Type.Object(
   {
     type: Type.Literal("image"),
@@ -179,8 +138,6 @@ export const CodeModeKnownOutputSchemas = {
     exec_command: UnifiedExecOutputSchema,
     write_stdin: UnifiedExecOutputSchema,
     view_image: ViewImageOutputSchema,
-    web_run: WebRunOutputSchema,
-    imagegen: ImagegenOutputSchema,
   },
 } as const satisfies {
   readonly builtin: Readonly<Record<string, TSchema>>;

@@ -44,14 +44,14 @@
     "typescript": "^7.0.2"
   },
   "devDependencies": {
-    "@howaboua/pi-codex-conversion": "3.0.23"
+    "@howaboua/pi-codex-conversion": "3.0.25"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "@howaboua/pi-codex-conversion": "3.0.23",
+    "@howaboua/pi-codex-conversion": "3.0.25",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
