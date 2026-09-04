@@ -3,7 +3,8 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { readBoundedResponseBody } from "./web-response.js";
-import { createWebToolOutput, type WebToolTruncationDetails } from "./web-tool-output.js";
+import { renderWebSearchToolCall, renderWebSearchToolResult } from "./web-tool-rendering.js";
+import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
 
 const DEFAULT_EXA_URL = "https://mcp.exa.ai/mcp";
 const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
@@ -13,8 +14,10 @@ const NO_SEARCH_RESULTS = "No search results found. Please try a different query
 /** Total Web Search request budget, including response reading. */
 export const WEB_SEARCH_TIMEOUT_MS = 25_000;
 
+const SearchProviderSchema = Type.Union([Type.Literal("exa"), Type.Literal("parallel")]);
+
 /** Hosted Search Provider selected deterministically for one Pi session. */
-export type SearchProvider = "exa" | "parallel";
+export type SearchProvider = Static<typeof SearchProviderSchema>;
 
 const redactedWebSearchApiKey = Symbol("RedactedWebSearchApiKey");
 
@@ -45,11 +48,17 @@ export type WebSearchToolOptions = {
   readonly parallelApiKey?: RedactedWebSearchApiKey | undefined;
 };
 
+/** Runtime contract for model-invisible Web Search execution metadata. */
+export const WebSearchDetailsSchema = Type.Object(
+  {
+    provider: SearchProviderSchema,
+    truncation: Type.Optional(WebToolTruncationDetailsSchema),
+  },
+  { additionalProperties: false },
+);
+
 /** Model-invisible Web Search execution metadata. */
-export type WebSearchDetails = {
-  readonly provider: SearchProvider;
-  readonly truncation?: WebToolTruncationDetails;
-};
+export type WebSearchDetails = Static<typeof WebSearchDetailsSchema>;
 
 const WEB_SEARCH_PARAMETERS = Type.Object(
   {
@@ -84,6 +93,9 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
   },
   { additionalProperties: false },
 );
+
+/** Validated arguments accepted by Web Search execution and Transcript Presentation. */
+export type WebSearchParameters = Static<typeof WEB_SEARCH_PARAMETERS>;
 
 const MCP_RESPONSE_SCHEMA = Type.Object(
   {
@@ -203,7 +215,7 @@ async function cancelResponse(response: Response): Promise<void> {
 async function callSearchProvider(
   provider: SearchProvider,
   sessionId: string,
-  parameters: Static<typeof WEB_SEARCH_PARAMETERS>,
+  parameters: WebSearchParameters,
   options: WebSearchToolOptions,
   signal: AbortSignal,
 ): Promise<WebSearchResult<string>> {
@@ -302,9 +314,20 @@ export function createWebSearchTool(
     description: WEB_SEARCH_DESCRIPTION,
     promptSnippet: "Search the web for current information",
     parameters: WEB_SEARCH_PARAMETERS,
-    async execute(_toolCallId, parameters, callerSignal, _onUpdate, context) {
+    renderCall: (parameters, theme, context) =>
+      renderWebSearchToolCall(parameters, theme, context.expanded),
+    renderResult: (result, renderOptions, theme, context) =>
+      renderWebSearchToolResult(
+        result,
+        renderOptions,
+        theme,
+        context.isError,
+        Value.Check(WebSearchDetailsSchema, result.details) ? result.details : undefined,
+      ),
+    async execute(_toolCallId, parameters, callerSignal, onUpdate, context) {
       const provider = selectSearchProvider(context.sessionManager.getSessionId());
-      let input: Static<typeof WEB_SEARCH_PARAMETERS>;
+      onUpdate?.({ content: [], details: { provider } });
+      let input: WebSearchParameters;
       try {
         input = Value.Parse(WEB_SEARCH_PARAMETERS, parameters);
       } catch {
