@@ -65,7 +65,10 @@ import {
   MinimalSubagentsStatusPanelController,
   type MinimalSubagentsStatusAccess,
 } from "./minimal-subagents-status-panel.js";
-import { createCoordinatorToolDefinitions } from "./minimal-subagents-tools.js";
+import {
+  createCoordinatorToolDefinitions,
+  type CoordinatorToolOperations,
+} from "./minimal-subagents-tools.js";
 import {
   renderMinimalSubagentsMessage,
   renderMinimalSubagentsResult,
@@ -393,6 +396,15 @@ const productionLifecycleEffects: MinimalSubagentsLifecycleEffects = {
 /** Own coordinator, UI, and prepared-fork state for one root Pi session lifecycle. */
 export class MinimalSubagentsLifecycleController {
   private coordinator: MinimalSubagentsCoordinator | undefined;
+  private readonly coordinatorOperations: CoordinatorToolOperations = {
+    spawn: (...args) => this.requireCoordinator().spawn(...args),
+    inspectStatus: (...args) => this.requireCoordinator().inspectStatus(...args),
+    sendAgentMessage: (...args) => this.requireCoordinator().sendAgentMessage(...args),
+    wait: (...args) => this.requireCoordinator().wait(...args),
+    status: (...args) => this.requireCoordinator().status(...args),
+    cancel: (...args) => this.requireCoordinator().cancel(...args),
+    delete: (...args) => this.requireCoordinator().delete(...args),
+  };
   private uiController: MinimalSubagentsUiController | undefined;
   private statusPanelController: MinimalSubagentsStatusPanelController | undefined;
   private accessSession: ActiveSubagentAccessSession | undefined;
@@ -406,8 +418,18 @@ export class MinimalSubagentsLifecycleController {
     private readonly effects: MinimalSubagentsLifecycleEffects,
   ) {}
 
-  /** Register renderers and the six Pi lifecycle event handlers owned by Minimal Subagents. */
+  /** Register stable tools, renderers, and the six Pi lifecycle event handlers. */
   register(): void {
+    const rootTools = createCoordinatorToolDefinitions({
+      coordinator: this.coordinatorOperations,
+      callerId: "root",
+      allowFanoutTools: true,
+      schemas: createCoordinatorToolSchemas([]),
+      captureCaller: (context) => rootCallerSnapshot(this.pi, context),
+      onActivity: () => this.uiController?.refresh(),
+      onAttention: (message) => this.accessSession?.context.ui.notify(message, "error"),
+    });
+    for (const tool of rootTools) this.pi.registerTool(tool);
     this.pi.registerMessageRenderer("minimal-subagents.message", renderMinimalSubagentsMessage);
     this.pi.registerMessageRenderer("minimal-subagents.result", renderMinimalSubagentsResult);
     this.pi.registerCommand("subagents", {
@@ -573,7 +595,7 @@ export class MinimalSubagentsLifecycleController {
     this.uiController.refresh();
 
     const rootTools = createCoordinatorToolDefinitions({
-      coordinator: activeCoordinator,
+      coordinator: this.coordinatorOperations,
       callerId: "root",
       allowFanoutTools: true,
       modelRoles: minimalSubagentsConfig.modelRoles,
@@ -603,6 +625,13 @@ export class MinimalSubagentsLifecycleController {
         "warning",
       );
     }
+  }
+
+  private requireCoordinator(): MinimalSubagentsCoordinator {
+    if (!this.coordinator) {
+      throw new Error("Minimal subagents lifecycle: coordinator is not initialized");
+    }
+    return this.coordinator;
   }
 
   private async prepareSessionFork(

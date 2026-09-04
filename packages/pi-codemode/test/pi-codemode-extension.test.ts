@@ -32,6 +32,13 @@ import piCodeModeExtension from "../src/pi-codemode-extension.js";
 
 const fixtureDirectories: string[] = [];
 const fixtureSessions: AgentSession[] = [];
+const CODEMODE_RENDERED_TOOL_NAMES = [
+  "codemode_execute",
+  "codemode_result",
+  "codemode_cancel",
+  "codemode_sessions",
+  "codemode_search",
+] as const;
 const ClosureEchoParametersSchema = Type.Object(
   { value: Type.Number() },
   { additionalProperties: false },
@@ -329,7 +336,7 @@ afterEach(async () => {
 });
 
 describe("Pi CodeMode extension", () => {
-  test("keeps loading inert, then composes registered Pi tools through a reusable CodeMode Session", async () => {
+  test("registers tools inertly, then composes Pi tools through a reusable CodeMode Session", async () => {
     const fixture = await createCodeModeExtensionFixture(
       {
         tools: [{ pattern: "closure_echo", exposure: "codemode-only" }],
@@ -337,7 +344,13 @@ describe("Pi CodeMode extension", () => {
       false,
     );
 
-    expect(codeModeToolNames(fixture.session)).toEqual([]);
+    expect(codeModeToolNames(fixture.session)).toEqual([
+      "codemode_execute",
+      "codemode_result",
+      "codemode_cancel",
+      "codemode_sessions",
+      "codemode_search",
+    ]);
     await fixture.session.bindExtensions({
       mode: "rpc",
       uiContext: {
@@ -803,7 +816,7 @@ describe("Pi CodeMode extension", () => {
     });
   }, 20_000);
 
-  test("fails closed without registering tools or changing active names for invalid settings", async () => {
+  test("leaves inert tools registered without changing active names for invalid settings", async () => {
     const fixture = await createCodeModeExtensionFixture({ maxSessions: 0 }, false);
     const activeNames = fixture.session.getActiveToolNames();
 
@@ -815,7 +828,13 @@ describe("Pi CodeMode extension", () => {
       },
     });
 
-    expect(codeModeToolNames(fixture.session)).toEqual([]);
+    expect(codeModeToolNames(fixture.session)).toEqual([
+      "codemode_execute",
+      "codemode_result",
+      "codemode_cancel",
+      "codemode_sessions",
+      "codemode_search",
+    ]);
     expect(fixture.session.getActiveToolNames()).toEqual(activeNames);
     expect(fixture.notifications).toEqual([
       "Pi CodeMode disabled: global codemode.maxSessions: expected a positive safe integer",
@@ -844,7 +863,13 @@ describe("Pi CodeMode extension", () => {
       Object.defineProperty(AgentSession.prototype, "getAllTools", descriptor);
     }
 
-    expect(codeModeToolNames(fixture.session)).toEqual([]);
+    expect(codeModeToolNames(fixture.session)).toEqual([
+      "codemode_execute",
+      "codemode_result",
+      "codemode_cancel",
+      "codemode_sessions",
+      "codemode_search",
+    ]);
     expect(fixture.session.getActiveToolNames()).toEqual(activeNames);
     expect(fixture.notifications).toEqual([
       "Pi CodeMode disabled: AgentSession.getAllTools is not the tested data method",
@@ -929,7 +954,7 @@ describe("Pi CodeMode extension", () => {
     ).toMatchObject({ result: "failed", error: { code: "eviction" } });
   }, 30_000);
 
-  test("tears down the prior generation on reload and restores the active-set method on shutdown", async () => {
+  test("tears down the prior generation and restores rendered tools before reload startup", async () => {
     const fixture = await createCodeModeExtensionFixture();
     const hanging = codeModeResult(
       await executeTool(fixture.session, "codemode_execute", {
@@ -940,12 +965,18 @@ describe("Pi CodeMode extension", () => {
     expect(Object.hasOwn(fixture.session, "setActiveToolsByName")).toBe(true);
 
     let restoredBeforeRestart = false;
+    let renderersAvailableBeforeRestart = false;
     await fixture.session.reload({
       beforeSessionStart: () => {
         restoredBeforeRestart = !Object.hasOwn(fixture.session, "setActiveToolsByName");
+        renderersAvailableBeforeRestart = CODEMODE_RENDERED_TOOL_NAMES.every((toolName) => {
+          const definition = fixture.session.getToolDefinition(toolName);
+          return definition?.renderCall !== undefined && definition.renderResult !== undefined;
+        });
       },
     });
     expect(restoredBeforeRestart).toBe(true);
+    expect(renderersAvailableBeforeRestart).toBe(true);
     expect(Object.hasOwn(fixture.session, "setActiveToolsByName")).toBe(true);
     expect(codeModeToolNames(fixture.session)).toEqual([
       "codemode_execute",

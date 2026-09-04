@@ -1,12 +1,14 @@
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import {
+  type AgentSession,
+  createAgentSession,
   DefaultResourceLoader,
   ExtensionRunner,
-  ModelRegistry,
-  ModelRuntime,
   SessionManager,
+  SettingsManager,
   type SessionShutdownEvent,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -15,11 +17,13 @@ import { createPiDapExtension } from "../src/pi-dap-extension.js";
 import type { DapSettingsDocumentInput } from "../src/pi-dap-settings.js";
 
 const temporaryDirectories: string[] = [];
+const agentSessions: AgentSession[] = [];
 
 interface ExtensionHarness {
   readonly agentDirectory: string;
   readonly notifications: string[];
   readonly runner: ExtensionRunner;
+  readonly session: AgentSession;
   readonly sessionDirectory: string;
   readonly widgetCalls: readonly { readonly key: string; readonly content: unknown }[];
 }
@@ -46,9 +50,11 @@ async function createExtensionHarness(
   );
 
   const sessionManager = SessionManager.create(cwd, sessionDirectory);
+  const settingsManager = SettingsManager.create(cwd, agentDirectory, { projectTrusted });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: agentDirectory,
+    settingsManager,
     extensionFactories: [
       {
         name: "pi-dap-lifecycle-test",
@@ -65,49 +71,20 @@ async function createExtensionHarness(
   expect(extensions.errors).toEqual([]);
   expect(extensions.extensions).toHaveLength(1);
 
-  const modelRuntime = await ModelRuntime.create({
-    authPath: resolve(agentDirectory, "auth.json"),
-    modelsPath: null,
-    refreshOnCreate: false,
-  });
-  const runner = new ExtensionRunner(
-    extensions.extensions,
-    extensions.runtime,
-    cwd,
-    sessionManager,
-    new ModelRegistry(modelRuntime),
-  );
-  runner.bindCore(
-    {
-      sendMessage: () => undefined,
-      sendUserMessage: () => undefined,
-      appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
-      setSessionName: (name) => sessionManager.appendSessionInfo(name),
-      getSessionName: () => sessionManager.getSessionName(),
-      setLabel: (entryId, label) => sessionManager.appendLabelChange(entryId, label),
-      getActiveTools: () => [],
-      getAllTools: () => [],
-      setActiveTools: () => undefined,
-      refreshTools: () => undefined,
-      getCommands: () => [],
-      setModel: async () => true,
-      getThinkingLevel: () => "medium",
-      setThinkingLevel: () => undefined,
-    },
-    {
-      getModel: () => undefined,
-      getScopedModels: () => [],
-      isIdle: () => true,
-      isProjectTrusted: () => projectTrusted,
-      getSignal: () => undefined,
-      abort: () => undefined,
-      hasPendingMessages: () => false,
-      shutdown: () => undefined,
-      getContextUsage: () => undefined,
-      compact: () => undefined,
-      getSystemPrompt: () => "Pi DAP lifecycle test",
-    },
-  );
+  const model = getModel("anthropic", "claude-sonnet-4-5");
+  if (model === undefined) throw new Error("Pi DAP extension test: missing pinned model");
+  const session = (
+    await createAgentSession({
+      cwd,
+      agentDir: agentDirectory,
+      model,
+      resourceLoader,
+      sessionManager,
+      settingsManager,
+    })
+  ).session;
+  agentSessions.push(session);
+  const runner = session.extensionRunner;
   const notifications: string[] = [];
   const widgetCalls: { key: string; content: unknown }[] = [];
   runner.setUIContext(
@@ -118,7 +95,16 @@ async function createExtensionHarness(
     },
     mode,
   );
-  return { agentDirectory, notifications, runner, sessionDirectory, widgetCalls };
+  return {
+    agentDirectory,
+    notifications,
+    get runner() {
+      return session.extensionRunner;
+    },
+    session,
+    sessionDirectory,
+    widgetCalls,
+  };
 }
 
 async function startExtension(
@@ -140,6 +126,13 @@ async function piDapSessionDirectories(sessionDirectory: string): Promise<string
 }
 
 afterEach(async () => {
+  for (const session of agentSessions.splice(0)) {
+    try {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    } finally {
+      session.dispose();
+    }
+  }
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -148,12 +141,36 @@ afterEach(async () => {
 });
 
 describe("Pi DAP extension lifecycle", () => {
-  test("loads inertly, reloads trust-aware settings, and shuts down idempotently", async () => {
+  test("restores the rendered DAP tool before reload session startup", async () => {
+    const harness = await createExtensionHarness(false, {});
+    await harness.session.bindExtensions({
+      mode: "rpc",
+      uiContext: harness.runner.getUIContext(),
+    });
+
+    let definitionDuringTranscriptRebuild: unknown;
+    await harness.session.reload({
+      beforeSessionStart: () => {
+        definitionDuringTranscriptRebuild = harness.session.getToolDefinition("dap");
+      },
+    });
+
+    expect(definitionDuringTranscriptRebuild).toMatchObject({
+      name: "dap",
+      renderCall: expect.any(Function),
+      renderResult: expect.any(Function),
+    });
+    await shutdownExtension(harness);
+  });
+
+  test("loads the tool eagerly, reloads trust-aware settings, and shuts down idempotently", async () => {
     const harness = await createExtensionHarness(false, {
       dap: { unknownGlobalField: true },
     });
 
-    expect(harness.runner.getAllRegisteredTools()).toEqual([]);
+    expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
+      ["dap"],
+    );
     expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
 
     await startExtension(harness, "startup");

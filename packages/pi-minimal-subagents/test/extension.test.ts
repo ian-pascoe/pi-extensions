@@ -4,11 +4,13 @@ import { join } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
+  createAgentSession,
   DefaultResourceLoader,
   ExtensionRunner,
   ModelRegistry,
   ModelRuntime,
   SessionManager,
+  SettingsManager,
   type AgentSettledEvent,
   type ExtensionUIContext,
   type KeybindingsManager,
@@ -23,6 +25,7 @@ import {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
 import {
   createMinimalSubagentsExtension,
   type MinimalSubagentsLifecycleEffects,
@@ -560,6 +563,71 @@ describe("minimal subagents extension lifecycle", () => {
     });
   });
 
+  it("restores coordinator tool rendering before reload session startup", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-render-reload-cwd-");
+    const sessionDirectory = await createTemporaryDirectory(
+      "minimal-subagents-render-reload-sessions-",
+    );
+    const agentDirectory = await createTemporaryDirectory("minimal-subagents-render-reload-agent-");
+    const sessionManager = await createPersistedSession(cwd, sessionDirectory);
+    const settingsManager = SettingsManager.create(cwd, agentDirectory, {
+      projectTrusted: true,
+    });
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir: agentDirectory,
+      settingsManager,
+      extensionFactories: [
+        {
+          name: "minimal-subagents-render-reload-test",
+          factory: createMinimalSubagentsExtension({
+            getAgentDirectory: () => agentDirectory,
+            createSessionFactory: () => new RecordingAgentSessionFactory(),
+          }),
+        },
+      ],
+      noContextFiles: true,
+      noPromptTemplates: true,
+      noSkills: true,
+      noThemes: true,
+    });
+    await resourceLoader.reload();
+    const modelRuntime = await ModelRuntime.create({
+      authPath: join(agentDirectory, "auth.json"),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir: agentDirectory,
+      model: TEST_MODEL,
+      modelRuntime,
+      resourceLoader,
+      sessionManager,
+      settingsManager,
+    });
+    try {
+      await session.bindExtensions({
+        mode: "rpc",
+        uiContext: session.extensionRunner.getUIContext(),
+      });
+      let renderedToolNamesBeforeSessionStart: string[] = [];
+      await session.reload({
+        beforeSessionStart: () => {
+          renderedToolNamesBeforeSessionStart = COORDINATOR_TOOL_NAMES.filter((toolName) => {
+            const definition = session.getToolDefinition(toolName);
+            return definition?.renderCall !== undefined && definition.renderResult !== undefined;
+          });
+        },
+      });
+
+      expect(renderedToolNamesBeforeSessionStart).toEqual(COORDINATOR_TOOL_NAMES);
+    } finally {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      session.dispose();
+    }
+  });
+
   it("identifies pi-codex-conversion as a Child Agent runtime tool adapter", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-tool-provider-cwd-");
     const sessionDirectory = await createTemporaryDirectory(
@@ -1038,7 +1106,7 @@ describe("minimal subagents extension lifecycle", () => {
     await emitSessionShutdown(harness, "quit");
   });
 
-  it("surfaces runtime construction failure before registering coordinator tools", async () => {
+  it("surfaces runtime construction failure while retaining inert coordinator tools", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-construction-cwd-");
     const sessionDirectory = await createTemporaryDirectory(
       "minimal-subagents-construction-sessions-",
@@ -1054,7 +1122,9 @@ describe("minimal subagents extension lifecycle", () => {
 
     await harness.runner.emit(sessionStartEvent());
     expect(harness.extensionErrors).toContain("session runtime construction failed");
-    expect(harness.runner.getAllRegisteredTools()).toEqual([]);
+    expect(harness.runner.getAllRegisteredTools().map((tool) => tool.definition.name)).toEqual(
+      COORDINATOR_TOOL_NAMES,
+    );
   });
 
   it("awaits active child cancellation before completing session shutdown", async () => {

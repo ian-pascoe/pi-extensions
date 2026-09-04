@@ -55,6 +55,7 @@ interface ActivePiLspSession {
   readonly cwd: string;
   readonly manager: LspServerManager<LspServerClient>;
   readonly sessionFiles: LspSessionFiles;
+  readonly workspaceEdits: LspWorkspaceEditStore;
 }
 
 const productionPiLspLifecycleEffects: PiLspLifecycleEffects = {
@@ -236,7 +237,6 @@ export class PiLspLifecycleController {
   private readonly pendingPostEditDiagnosticOutcomes: PostEditDiagnosticOutcome[] = [];
   private session: ActivePiLspSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
-  private toolRegistered = false;
 
   /** Bind one lifecycle controller to Pi and production or test construction effects. */
   constructor(
@@ -246,6 +246,7 @@ export class PiLspLifecycleController {
 
   /** Register Pi LSP lifecycle handlers and model-invisible diagnostics entry rendering. */
   register(): void {
+    registerLspTool(this.pi, () => this.activeSession());
     this.pi.registerEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, (entry, { expanded }, theme) =>
       Value.Check(PostEditDiagnosticsEntryDataSchema, entry.data)
         ? renderPostEditDiagnosticsEntry(entry.data, expanded, theme)
@@ -308,12 +309,12 @@ export class PiLspLifecycleController {
         return client;
       },
     });
-    this.session = { cwd: context.cwd, manager, sessionFiles };
+    this.session = { cwd: context.cwd, manager, sessionFiles, workspaceEdits };
+  }
 
-    if (!this.toolRegistered) {
-      registerLspTool(this.pi, { manager, workspaceEdits, sessionFiles });
-      this.toolRegistered = true;
-    }
+  private activeSession(): ActivePiLspSession {
+    if (this.session === undefined) throw new Error("Pi LSP: session runtime is inactive");
+    return this.session;
   }
 
   private handleToolResult(
