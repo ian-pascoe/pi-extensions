@@ -204,5 +204,7 @@ lines.on("line", (line) => {
 });
 
 lines.on("close", () => {
-  if (mode !== "ignore-close") process.exit(0);
+  if (mode === "ignore-close") return;
+  if (mode === "hang") setTimeout(() => process.exit(0), 500);
+  else process.exit(0);
 });

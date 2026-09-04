@@ -123,13 +123,18 @@ function createAuthenticatedFetch(
 function createMcpTransport(options: McpServerClientConnectOptions): McpClientTransport {
   const definition = options.definition;
   if (definition.transport === "stdio") {
-    return new StdioClientTransport({
+    const transport = new StdioClientTransport({
       args: [...definition.args],
       command: definition.command,
       cwd: resolve(options.piCwd, definition.cwd ?? "."),
       env: { ...getDefaultEnvironment(), ...definition.environment },
       stderr: "pipe",
     });
+    // The SDK starts cleanup without awaiting it when a handshake fails; owner cleanup must join it.
+    const close = transport.close.bind(transport);
+    let closePromise: Promise<void> | undefined;
+    transport.close = () => (closePromise ??= close());
+    return transport;
   }
 
   const headers = requestHeaders(definition);
