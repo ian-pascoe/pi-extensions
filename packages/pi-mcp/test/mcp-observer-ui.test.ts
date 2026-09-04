@@ -93,6 +93,17 @@ describe("MCP Observer UI", () => {
     );
   });
 
+  test("does not redraw an unchanged footer", () => {
+    const { context: tui, setStatus } = context();
+    const observer = new McpObserverUiController(tui, (value) => value, false);
+    const statuses = new Map([["docs", { state: "connected" as const }]]);
+
+    observer.update(statuses);
+    observer.update(statuses);
+
+    expect(setStatus).toHaveBeenCalledTimes(1);
+  });
+
   test("emits each actionable notice once, re-arms after recovery, and clears its footer", () => {
     const { context: tui, notify, setStatus } = context();
     const observer = new McpObserverUiController(

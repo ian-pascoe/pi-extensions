@@ -134,10 +134,10 @@ describe("Pi MCP extension lifecycle", () => {
     const startBlocked = new Promise<void>((resolveStart) => {
       releaseStart = resolveStart;
     });
-    let closeCalls = 0;
+    const closeReasons: string[] = [];
     const session: PiMcpExtensionSession = {
-      close: async () => {
-        closeCalls += 1;
+      close: async (reason) => {
+        closeReasons.push(reason);
       },
       executeCommand: async (_arguments: string, _context: ExtensionCommandContext) => ({
         level: "info",
@@ -175,7 +175,81 @@ describe("Pi MCP extension lifecycle", () => {
     releaseStart?.();
     await runner.emit({ type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent);
     await runner.emit({ type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent);
-    expect(closeCalls).toBe(1);
+    expect(closeReasons).toEqual(["quit"]);
+  });
+
+  test.each(["reload", "new", "resume", "fork"] as const)(
+    "releases clients for %s session replacement",
+    async (reason) => {
+      const close = vi.fn(async () => undefined);
+      const session: PiMcpExtensionSession = {
+        close,
+        executeCommand: async () => ({ level: "info", message: "ok" }),
+        instructionSnapshot: async () => undefined,
+        redactPresentationText: (text) => text,
+        start: async () => undefined,
+        transformContext: (messages) => messages,
+      };
+      const runner = await createRunner(session);
+      await runner.emit({ type: "session_start", reason: "startup" } satisfies SessionStartEvent);
+
+      await runner.emit({ type: "session_shutdown", reason } satisfies SessionShutdownEvent);
+
+      expect(close).toHaveBeenCalledWith("handoff");
+    },
+  );
+
+  test("yields one event-loop turn before background MCP startup", async () => {
+    let started = false;
+    const session: PiMcpExtensionSession = {
+      close: async () => undefined,
+      executeCommand: async () => ({ level: "info", message: "ok" }),
+      instructionSnapshot: async () => undefined,
+      redactPresentationText: (text) => text,
+      start: async () => {
+        started = true;
+      },
+      transformContext: (messages) => messages,
+    };
+    const runner = await createRunner(session);
+
+    await runner.emit({ type: "session_start", reason: "startup" } satisfies SessionStartEvent);
+    expect(started).toBe(false);
+
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    expect(started).toBe(true);
+  });
+
+  test("starts MCP before an immediate first agent turn", async () => {
+    let starts = 0;
+    const session: PiMcpExtensionSession = {
+      close: async () => undefined,
+      executeCommand: async () => ({ level: "info", message: "ok" }),
+      instructionSnapshot: async () => {
+        if (starts === 0) throw new Error("MCP startup was not initiated");
+        return "Immediate instructions";
+      },
+      redactPresentationText: (text) => text,
+      start: async () => {
+        starts += 1;
+      },
+      transformContext: (messages) => messages,
+    };
+    const runner = await createRunner(session);
+    await runner.emit({ type: "session_start", reason: "startup" } satisfies SessionStartEvent);
+
+    const beforeStart = await runner.emitBeforeAgentStart("hello", undefined, "base", {
+      selectedTools: [],
+      toolSnippets: {},
+      promptGuidelines: [],
+      appendSystemPrompt: "",
+      cwd: runner.createContext().cwd,
+      contextFiles: [],
+      skills: [],
+    });
+
+    expect(starts).toBe(1);
+    expect(beforeStart?.systemPrompt).toBe("base\n\nImmediate instructions");
   });
 
   test("registers inert Prompt and Resource Update renderers with the active session redactor", async () => {

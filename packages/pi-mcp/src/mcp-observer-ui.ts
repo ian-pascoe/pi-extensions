@@ -132,6 +132,7 @@ export function buildMcpObserverSnapshot(
 /** Own TUI-only MCP footer status and deduplicated MCP Attention Notices for one session. */
 export class McpObserverUiController {
   private disposed = false;
+  private renderedFooter: string | undefined | null = null;
   private readonly activeNoticeKeys = new Set<string>();
 
   /** Build a controller with the session's exact-value redactor and terminal icon capability. */
@@ -175,13 +176,14 @@ export class McpObserverUiController {
   }
 
   private setFooter(footer: readonly McpObserverFooterSegment[] | undefined): void {
+    const status =
+      footer === undefined
+        ? undefined
+        : footer.map(({ color, text }) => this.context.ui.theme.fg(color, text)).join(" · ");
+    if (status === this.renderedFooter) return;
     try {
-      this.context.ui.setStatus(
-        MCP_OBSERVER_STATUS_KEY,
-        footer === undefined
-          ? undefined
-          : footer.map(({ color, text }) => this.context.ui.theme.fg(color, text)).join(" · "),
-      );
+      this.context.ui.setStatus(MCP_OBSERVER_STATUS_KEY, status);
+      this.renderedFooter = status;
     } catch {
       // Observer rendering failures must not affect MCP Host lifecycle.
     }
