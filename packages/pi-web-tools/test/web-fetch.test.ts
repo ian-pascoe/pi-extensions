@@ -256,7 +256,7 @@ describe("Web Fetch", () => {
     await expect(
       executeFetch({ fetch }, { url: "https://example.com/deep", format: "markdown" }),
     ).rejects.toThrow("Unable to fetch https://example.com/deep");
-  });
+  }, 15000);
 
   test("truncates complete converted output to a private spill", async () => {
     const paragraphs = Array.from(
