@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.6.5
+
+### Patch Changes
+
+- 8e665f5: Preserve custom fixed-name tool rendering when Pi reloads extensions.
+
 ## 0.6.4
 
 ### Patch Changes
