@@ -249,7 +249,7 @@ describe("Web Fetch", () => {
   });
 
   test("translates HTML conversion failures at the tool boundary", async () => {
-    const deeplyNestedHtml = `${"<div>".repeat(10_000)}content${"</div>".repeat(10_000)}`;
+    const deeplyNestedHtml = `${"<div>".repeat(4_000)}content${"</div>".repeat(4_000)}`;
     const fetch: typeof globalThis.fetch = async () =>
       new Response(deeplyNestedHtml, { headers: { "content-type": "text/html" } });
 

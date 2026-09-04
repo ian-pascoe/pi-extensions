@@ -5,7 +5,9 @@ import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { readBoundedResponseBody } from "./web-response.js";
-import { createWebToolOutput, type WebToolTruncationDetails } from "./web-tool-output.js";
+import { renderWebFetchToolCall, renderWebFetchToolResult } from "./web-tool-rendering.js";
+import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
+import { redactWebUrlUserinfo } from "./web-url.js";
 
 /** Maximum accepted Web Fetch response body size. */
 export const WEB_FETCH_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
@@ -17,31 +19,37 @@ const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 const HONEST_USER_AGENT = "pi-web-tools";
 
+const WebFetchFormatSchema = StringEnum(["text", "markdown", "html"] as const, {
+  default: "markdown",
+  description: "Returned format (default: markdown)",
+});
+
 /** Textual representation requested from Web Fetch. */
-export type WebFetchFormat = "text" | "markdown" | "html";
+export type WebFetchFormat = Static<typeof WebFetchFormatSchema>;
 
 /** Native transport used by a Web Fetch definition. */
 export type WebFetchToolOptions = {
   readonly fetch?: typeof globalThis.fetch | undefined;
 };
 
+/** Runtime contract for model-invisible Web Fetch response metadata. */
+export const WebFetchDetailsSchema = Type.Object(
+  {
+    url: Type.String(),
+    contentType: Type.String(),
+    format: WebFetchFormatSchema,
+    truncation: Type.Optional(WebToolTruncationDetailsSchema),
+  },
+  { additionalProperties: false },
+);
+
 /** Model-invisible Web Fetch response metadata. */
-export type WebFetchDetails = {
-  readonly url: string;
-  readonly contentType: string;
-  readonly format: WebFetchFormat;
-  readonly truncation?: WebToolTruncationDetails;
-};
+export type WebFetchDetails = Static<typeof WebFetchDetailsSchema>;
 
 const WEB_FETCH_PARAMETERS = Type.Object(
   {
     url: Type.String({ description: "Absolute HTTP or HTTPS URL to fetch" }),
-    format: Type.Optional(
-      StringEnum(["text", "markdown", "html"] as const, {
-        default: "markdown",
-        description: "Returned format (default: markdown)",
-      }),
-    ),
+    format: Type.Optional(WebFetchFormatSchema),
     timeout: Type.Optional(
       Type.Number({
         exclusiveMinimum: 0,
@@ -53,6 +61,9 @@ const WEB_FETCH_PARAMETERS = Type.Object(
   },
   { additionalProperties: false },
 );
+
+/** Validated arguments accepted by Web Fetch execution and Transcript Presentation. */
+export type WebFetchParameters = Static<typeof WEB_FETCH_PARAMETERS>;
 
 type WebFetchRequestHeaders = {
   readonly Accept: string;
@@ -104,17 +115,6 @@ function parseHttpUrl(input: string, safeUrl: string): WebFetchResult<URL> {
     return { _tag: "err", error: new WebFetchFailure("url", safeUrl, 0) };
   }
   return { _tag: "ok", value: url };
-}
-
-function redactUrlUserinfo(input: string): string {
-  try {
-    const url = new URL(input);
-    url.username = "";
-    url.password = "";
-    return url.toString();
-  } catch {
-    return input.replace(/^([a-z][a-z\d+.-]*:\/\/)[^/@]*@/i, "$1");
-  }
 }
 
 function acceptHeader(format: WebFetchFormat): string {
@@ -315,7 +315,7 @@ async function fetchText(
     value: {
       content: converted.value,
       contentType,
-      finalUrl: redactUrlUserinfo(response.url || parsedUrl.toString()),
+      finalUrl: redactWebUrlUserinfo(response.url || parsedUrl.toString()),
     },
   };
 }
@@ -334,14 +334,24 @@ export function createWebFetchTool(
     description: WEB_FETCH_DESCRIPTION,
     promptSnippet: "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML",
     parameters: WEB_FETCH_PARAMETERS,
-    async execute(_toolCallId, parameters, callerSignal) {
-      let input: Static<typeof WEB_FETCH_PARAMETERS>;
+    renderCall: (parameters, theme, context) =>
+      renderWebFetchToolCall(parameters, theme, context.expanded),
+    renderResult: (result, renderOptions, theme, context) =>
+      renderWebFetchToolResult(
+        result,
+        renderOptions,
+        theme,
+        context.isError,
+        Value.Check(WebFetchDetailsSchema, result.details) ? result.details : undefined,
+      ),
+    async execute(_toolCallId, parameters, callerSignal, onUpdate) {
+      let input: WebFetchParameters;
       try {
         input = Value.Parse(WEB_FETCH_PARAMETERS, parameters);
       } catch {
         throw unableToFetch("requested URL");
       }
-      const safeUrl = redactUrlUserinfo(input.url);
+      const safeUrl = redactWebUrlUserinfo(input.url);
       const parsedUrl = parseHttpUrl(input.url, safeUrl);
       if (parsedUrl._tag === "err") throw unableToFetch(safeUrl);
       const format = input.format ?? "markdown";
@@ -349,6 +359,7 @@ export function createWebFetchTool(
         callerSignal,
         input.timeout ?? WEB_FETCH_DEFAULT_TIMEOUT_SECONDS,
       );
+      onUpdate?.({ content: [], details: { url: safeUrl, contentType: "", format } });
       const fetched = await fetchText(parsedUrl.value, safeUrl, format, signal, options);
       if (fetched._tag === "err") throw unableToFetch(safeUrl);
       const output = await createWebToolOutput(fetched.value.content);

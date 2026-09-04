@@ -1,6 +1,6 @@
-import { readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { createWebToolOutput, type WebToolOutput } from "../src/web-tool-output.js";
@@ -28,14 +28,19 @@ async function recordSpill(result: WebToolOutput): Promise<string> {
 
 describe("Web Tool output", () => {
   test("returns fitting text unchanged without creating a temporary directory", async () => {
-    const before = new Set(
-      (await readdir(tmpdir())).filter((name) => name.startsWith("pi-web-tools-")),
-    );
-    const result = await outputFor("small result");
-    const after = (await readdir(tmpdir())).filter((name) => name.startsWith("pi-web-tools-"));
+    const isolatedTemporaryDirectory = await mkdtemp(resolve(tmpdir(), "pi-web-tools-test-"));
+    spillDirectories.push(isolatedTemporaryDirectory);
+    const previousTemporaryDirectory = process.env.TMPDIR;
+    process.env.TMPDIR = isolatedTemporaryDirectory;
+    try {
+      const result = await outputFor("small result");
 
-    expect(result).toEqual({ content: "small result" });
-    expect(after.filter((name) => !before.has(name))).toEqual([]);
+      expect(result).toEqual({ content: "small result" });
+      expect(await readdir(isolatedTemporaryDirectory)).toEqual([]);
+    } finally {
+      if (previousTemporaryDirectory === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTemporaryDirectory;
+    }
   });
 
   test("bounds byte-truncated content and saves the exact complete text privately", async () => {

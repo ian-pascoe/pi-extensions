@@ -7,17 +7,24 @@ import {
   truncateHead,
   withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
+import { type Static, Type } from "typebox";
 
 const TRUNCATION_NOTICE_LINES = 2;
 
+/** Runtime contract for exact complete-output metadata returned after Web Tool truncation. */
+export const WebToolTruncationDetailsSchema = Type.Object(
+  {
+    outputLines: Type.Number(),
+    totalLines: Type.Number(),
+    outputBytes: Type.Number(),
+    totalBytes: Type.Number(),
+    fullOutputPath: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
 /** Exact complete-output metadata returned when a Web Tool result is truncated. */
-export type WebToolTruncationDetails = {
-  readonly outputLines: number;
-  readonly totalLines: number;
-  readonly outputBytes: number;
-  readonly totalBytes: number;
-  readonly fullOutputPath: string;
-};
+export type WebToolTruncationDetails = Static<typeof WebToolTruncationDetailsSchema>;
 
 /** A complete Web Tool result could not be saved after model-visible truncation. */
 export class WebToolOutputError extends Error {
