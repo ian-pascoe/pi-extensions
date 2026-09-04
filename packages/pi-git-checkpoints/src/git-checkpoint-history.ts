@@ -1,7 +1,8 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import { isAbsolute } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import type { GitCheckpointMode } from "./git-checkpoint-store.js";
+import type { GitCheckpointMode, GitCheckpointUndoRecord } from "./git-checkpoint-store.js";
 
 export type { GitCheckpointMode } from "./git-checkpoint-store.js";
 
@@ -9,6 +10,8 @@ export type { GitCheckpointMode } from "./git-checkpoint-store.js";
 export const GIT_CHECKPOINT_MODEL_STEP_START_ENTRY_TYPE = "pi-git-checkpoints.model-step-start";
 /** Custom session entry type for the Worktree Checkpoint captured after a Model Step. */
 export const GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE = "pi-git-checkpoints.model-step-end";
+/** Custom session entry type for active-branch Restore undo state. */
+export const GIT_CHECKPOINT_UNDO_ENTRY_TYPE = "pi-git-checkpoints.undo";
 
 const strictObject = { additionalProperties: false } as const;
 const CheckpointModeSchema = Type.Union([Type.Literal("repository"), Type.Literal("standalone")]);
@@ -55,10 +58,37 @@ export const ModelStepEndEntryPayloadSchema = Type.Object(
   strictObject,
 );
 
+/** Strict version-one payload schema for recorded or consumed Restore undo state. */
+export const GitCheckpointUndoEntryPayloadSchema = Type.Object(
+  {
+    version: Type.Literal(1),
+    session_id: Type.String({ minLength: 1 }),
+    checkpoint_scope: Type.String({ minLength: 1 }),
+    mode: CheckpointModeSchema,
+    record: Type.Union([
+      Type.Object(
+        {
+          paths: Type.Array(Type.String({ minLength: 1 }), {
+            minItems: 1,
+            uniqueItems: true,
+          }),
+          restored_tree_id: CheckpointTreeIdSchema,
+          safety_tree_id: CheckpointTreeIdSchema,
+        },
+        strictObject,
+      ),
+      Type.Null(),
+    ]),
+  },
+  strictObject,
+);
+
 /** Persisted payload captured before one complete Model Step. */
 export type ModelStepStartEntryPayload = Static<typeof ModelStepStartEntryPayloadSchema>;
 /** Persisted payload captured after one complete Model Step and tool batch. */
 export type ModelStepEndEntryPayload = Static<typeof ModelStepEndEntryPayloadSchema>;
+/** Persisted active-branch Restore undo record or consumed tombstone. */
+export type GitCheckpointUndoEntryPayload = Static<typeof GitCheckpointUndoEntryPayloadSchema>;
 /** Identity required to exclude foreign and inherited Worktree Checkpoint records. */
 export type GitCheckpointHistoryIdentity = {
   readonly sessionId: string;
@@ -135,7 +165,7 @@ function sourceStateMatchesMode(
 }
 
 function isNormalizedCheckpointPath(path: string): boolean {
-  if (path.startsWith("/") || path.includes("\\")) return false;
+  if (isAbsolute(path) || path.includes("\\") || path.includes("\0")) return false;
   const segments = path.split("/");
   return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
@@ -172,6 +202,43 @@ function isEndEntry(
     entry.data.changed_paths.every(isNormalizedCheckpointPath) &&
     entry.data.skipped_paths.every(isNormalizedCheckpointPath)
   );
+}
+
+function isUndoEntry(entry: SessionEntry): entry is Extract<SessionEntry, { type: "custom" }> & {
+  data: GitCheckpointUndoEntryPayload;
+} {
+  return (
+    entry.type === "custom" &&
+    entry.customType === GIT_CHECKPOINT_UNDO_ENTRY_TYPE &&
+    Value.Check(GitCheckpointUndoEntryPayloadSchema, entry.data) &&
+    (entry.data.record === null || entry.data.record.paths.every(isNormalizedCheckpointPath))
+  );
+}
+
+/** Replays one ordered Pi session branch; null is a consumed tombstone. */
+export function replayGitCheckpointUndo(
+  entries: readonly SessionEntry[],
+  identity: GitCheckpointHistoryIdentity,
+): GitCheckpointUndoRecord | null | undefined {
+  let undoRecord: GitCheckpointUndoRecord | null | undefined;
+  for (const entry of entries) {
+    if (
+      !isUndoEntry(entry) ||
+      entry.data.session_id !== identity.sessionId ||
+      entry.data.checkpoint_scope !== identity.checkpointScope ||
+      entry.data.mode !== identity.mode
+    ) {
+      continue;
+    }
+    undoRecord = entry.data.record
+      ? {
+          paths: entry.data.record.paths,
+          restoredTreeId: entry.data.record.restored_tree_id,
+          safetyTreeId: entry.data.record.safety_tree_id,
+        }
+      : null;
+  }
+  return undoRecord;
 }
 
 /** Replays only strict, current-session start/end pairs from the complete Pi session tree. */

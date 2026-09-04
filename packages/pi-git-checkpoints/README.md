@@ -33,7 +33,7 @@ User `!` and `!!` changes enter the next Model Step baseline because Pi exposes 
 
 `status` reports repository, standalone, or disabled state; valid Model Step count; private store path; retention; the last capture failure; and undo availability. Bare `/checkpoint` adds concise usage.
 
-`undo` restores the Safety Checkpoint from the most recent successful Restore. If affected paths have changed since that Restore, TUI/RPC asks for confirmation; print and JSON modes refuse the divergent undo. A later successful Restore replaces the previous undo record, and successful undo removes it.
+`undo` restores the Safety Checkpoint from the most recent successful Restore on the active session branch. The small, versioned undo record survives session resume in Pi's session history; file contents remain in the private Git store. If affected paths have changed since that Restore, TUI/RPC asks for confirmation; print and JSON modes refuse the divergent undo. A later successful Restore replaces the previous record, and successful undo marks it consumed.
 
 ## Eligible paths
 

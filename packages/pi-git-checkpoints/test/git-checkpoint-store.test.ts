@@ -19,10 +19,12 @@ import {
   cleanupGitCheckpointStores,
   initializeGitCheckpointStore,
   type GitCheckpointStore,
+  type GitCheckpointUndoRecord,
 } from "../src/git-checkpoint-store.js";
 
 const execute = promisify(execFile);
 const temporaryDirectories: string[] = [];
+const ignoreUndoRecord = () => undefined;
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(resolve(tmpdir(), prefix));
@@ -170,6 +172,9 @@ describe("selective Restore and one-level undo", () => {
       await store.restore({
         paths: ["nested/inside.txt", "ignored-later.txt"],
         safetyTreeId: safety.treeId,
+        saveUndoRecord: () => {
+          throw new Error("zero-path Restore must not record undo");
+        },
         targetTreeId: target.treeId,
       }),
     ).toEqual({
@@ -192,6 +197,7 @@ describe("selective Restore and one-level undo", () => {
       store.restore({
         paths: ["blocked"],
         safetyTreeId: safety.treeId,
+        saveUndoRecord: ignoreUndoRecord,
         targetTreeId: target.treeId,
       }),
     ).rejects.toThrow("destination is a directory");
@@ -209,9 +215,13 @@ describe("selective Restore and one-level undo", () => {
     await writeFile(join(repository, "unrelated.txt"), "keep me\n");
     const safety = await store.capture();
 
+    let undoRecord: GitCheckpointUndoRecord | undefined;
     const restored = await store.restore({
       paths: ["tracked.txt", "added.txt"],
       safetyTreeId: safety.treeId,
+      saveUndoRecord: (record) => {
+        undoRecord = record;
+      },
       targetTreeId: target.treeId,
     });
 
@@ -219,16 +229,115 @@ describe("selective Restore and one-level undo", () => {
     expect(await readFile(join(repository, "tracked.txt"), "utf8")).toBe("one\n");
     await expect(lstat(join(repository, "added.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(join(repository, "unrelated.txt"), "utf8")).toBe("keep me\n");
-    expect(await store.inspectUndo()).toMatchObject({ divergedPaths: [], kind: "ready" });
+    expect(await store.inspectUndo(() => undoRecord)).toMatchObject({
+      divergedPaths: [],
+      kind: "ready",
+    });
 
-    expect(await store.undo({ allowDiverged: false })).toEqual({
+    expect(
+      await store.undo({
+        allowDiverged: false,
+        consumeUndoRecord: () => {
+          undoRecord = undefined;
+        },
+        readUndoRecord: () => undoRecord,
+      }),
+    ).toEqual({
       kind: "undone",
       restoredPaths: ["added.txt", "tracked.txt"],
     });
     expect(await readFile(join(repository, "tracked.txt"), "utf8")).toBe("live safety\n");
     expect(await readFile(join(repository, "added.txt"), "utf8")).toBe("live added\n");
-    expect(await store.inspectUndo()).toEqual({ kind: "unavailable" });
+    expect(await store.inspectUndo(() => undoRecord)).toEqual({ kind: "unavailable" });
+    await expect(lstat(join(store.storeDirectory, "undo.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(changed.treeId).not.toBe(target.treeId);
+  });
+
+  test("rolls worktree writes back when session undo callbacks fail", async () => {
+    const { repository, store } = await initializeRepositoryStore();
+    const target = await store.capture();
+    await writeFile(join(repository, "tracked.txt"), "live safety\n");
+    const safety = await store.capture();
+
+    await expect(
+      store.restore({
+        paths: ["tracked.txt"],
+        safetyTreeId: safety.treeId,
+        saveUndoRecord: () => {
+          throw new Error("session append failed");
+        },
+        targetTreeId: target.treeId,
+      }),
+    ).rejects.toMatchObject({ operation: "restore", unrecoveredPaths: [] });
+    expect(await readFile(join(repository, "tracked.txt"), "utf8")).toBe("live safety\n");
+
+    let undoRecord: GitCheckpointUndoRecord | undefined;
+    await store.restore({
+      paths: ["tracked.txt"],
+      safetyTreeId: safety.treeId,
+      saveUndoRecord: (record) => {
+        undoRecord = record;
+      },
+      targetTreeId: target.treeId,
+    });
+    await expect(
+      store.undo({
+        allowDiverged: false,
+        consumeUndoRecord: () => {
+          throw new Error("session append failed");
+        },
+        readUndoRecord: () => undoRecord,
+      }),
+    ).rejects.toMatchObject({ operation: "undo", unrecoveredPaths: [] });
+    expect(await readFile(join(repository, "tracked.txt"), "utf8")).toBe("one\n");
+    expect(await store.inspectUndo(() => undoRecord)).toEqual({
+      divergedPaths: [],
+      kind: "ready",
+    });
+  });
+
+  test("imports and removes a valid legacy undo.json record", async () => {
+    const { store } = await initializeRepositoryStore();
+    const capture = await store.capture();
+    await writeFile(
+      join(store.storeDirectory, "undo.json"),
+      JSON.stringify({
+        checkpointScopeId: store.checkpointScopeId,
+        paths: ["tracked.txt"],
+        restoredTreeId: capture.treeId,
+        safetyTreeId: capture.treeId,
+        sessionId: "session-one",
+        version: 1,
+      }),
+    );
+    let undoRecord: GitCheckpointUndoRecord | undefined;
+
+    await store.migrateLegacyUndo((record) => {
+      undoRecord = record;
+    });
+
+    expect(undoRecord).toEqual({
+      paths: ["tracked.txt"],
+      restoredTreeId: capture.treeId,
+      safetyTreeId: capture.treeId,
+    });
+    await expect(lstat(join(store.storeDirectory, "undo.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  test("reports missing Git trees referenced by session undo state", async () => {
+    const { store } = await initializeRepositoryStore();
+
+    await expect(
+      store.inspectUndo(() => ({
+        paths: ["tracked.txt"],
+        restoredTreeId: "0".repeat(40),
+        safetyTreeId: "1".repeat(40),
+      })),
+    ).rejects.toThrow();
   });
 
   test("reports divergent undo and rolls partial Restore writes back", async () => {
@@ -257,6 +366,7 @@ describe("selective Restore and one-level undo", () => {
       store.restore({
         paths: ["a.txt", "tracked.txt"],
         safetyTreeId: safety.treeId,
+        saveUndoRecord: ignoreUndoRecord,
         targetTreeId: target.treeId,
       }),
     ).rejects.toMatchObject({ operation: "restore", unrecoveredPaths: [] });
@@ -264,13 +374,23 @@ describe("selective Restore and one-level undo", () => {
     expect(await readFile(join(repository, "tracked.txt"), "utf8")).toBe("safety tracked\n");
 
     failTrackedWrite = false;
+    let undoRecord: GitCheckpointUndoRecord | undefined;
     await store.restore({
       paths: ["a.txt"],
       safetyTreeId: safety.treeId,
+      saveUndoRecord: (record) => {
+        undoRecord = record;
+      },
       targetTreeId: target.treeId,
     });
     await writeFile(join(repository, "a.txt"), "external\n");
-    expect(await store.undo({ allowDiverged: false })).toEqual({
+    expect(
+      await store.undo({
+        allowDiverged: false,
+        consumeUndoRecord: ignoreUndoRecord,
+        readUndoRecord: () => undoRecord,
+      }),
+    ).toEqual({
       kind: "diverged",
       paths: ["a.txt"],
     });
@@ -300,6 +420,7 @@ describe("selective Restore and one-level undo", () => {
       store.restore({
         paths: ["a.txt", "b.txt"],
         safetyTreeId: safety.treeId,
+        saveUndoRecord: ignoreUndoRecord,
         signal: controller.signal,
         targetTreeId: target.treeId,
       }),
@@ -333,6 +454,7 @@ describe("checkpoint scope and retention safety", () => {
       store.restore({
         paths: ["scope/directory/inside.txt"],
         safetyTreeId: safety.treeId,
+        saveUndoRecord: ignoreUndoRecord,
         targetTreeId: target.treeId,
       }),
     ).rejects.toThrow("destination ancestor is a symlink");
@@ -340,6 +462,7 @@ describe("checkpoint scope and retention safety", () => {
       store.restore({
         paths: ["tracked.txt"],
         safetyTreeId: safety.treeId,
+        saveUndoRecord: ignoreUndoRecord,
         targetTreeId: target.treeId,
       }),
     ).rejects.toThrow("outside the starting-directory scope");

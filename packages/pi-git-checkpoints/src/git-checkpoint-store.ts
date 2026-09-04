@@ -24,7 +24,7 @@ import { Value } from "typebox/value";
 
 const MAXIMUM_FIRST_CAPTURE_BYTES = 2 * 1024 * 1024;
 const STORE_VERSION = 1;
-const UNDO_VERSION = 1;
+const LEGACY_UNDO_VERSION = 1;
 const TREE_ID_PATTERN = /^[0-9a-f]{40,64}$/;
 const TreeIdSchema = Type.String({ pattern: "^[0-9a-f]{40,64}$" });
 const StoreMetadataSchema = Type.Object(
@@ -38,18 +38,17 @@ const StoreMetadataSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const PersistedUndoRecordSchema = Type.Object(
+const LegacyUndoRecordSchema = Type.Object(
   {
     checkpointScopeId: Type.String(),
     paths: Type.Array(Type.String()),
     restoredTreeId: TreeIdSchema,
     safetyTreeId: TreeIdSchema,
     sessionId: Type.String(),
-    version: Type.Literal(UNDO_VERSION),
+    version: Type.Literal(LEGACY_UNDO_VERSION),
   },
   { additionalProperties: false },
 );
-
 /** Repository-backed or standalone checkpoint storage selected at initialization. */
 export type GitCheckpointMode = "repository" | "standalone";
 
@@ -94,6 +93,7 @@ export interface GitCheckpointStoreEffects {
 export interface RestoreWorktreeCheckpointInput {
   readonly paths: readonly string[];
   readonly safetyTreeId: string;
+  readonly saveUndoRecord: (record: GitCheckpointUndoRecord) => Promise<void> | void;
   readonly signal?: AbortSignal;
   readonly targetTreeId: string;
 }
@@ -103,14 +103,14 @@ export interface RestoreWorktreeCheckpointResult {
   readonly restoredPaths: readonly string[];
 }
 
-/** Persisted one-level undo information for the latest successful Restore. */
+/** One-level undo information produced by the latest successful Restore. */
 export interface GitCheckpointUndoRecord {
   readonly paths: readonly string[];
   readonly restoredTreeId: string;
   readonly safetyTreeId: string;
 }
 
-/** Current undo comparison against the persisted restored tree. */
+/** Current undo comparison against the recorded restored tree. */
 export type GitCheckpointUndoInspection =
   | { readonly kind: "unavailable" }
   | { readonly kind: "ready"; readonly divergedPaths: readonly string[] };
@@ -118,6 +118,8 @@ export type GitCheckpointUndoInspection =
 /** Input for one-level Worktree Checkpoint undo. */
 export interface UndoWorktreeCheckpointInput {
   readonly allowDiverged: boolean;
+  readonly consumeUndoRecord: () => Promise<void> | void;
+  readonly readUndoRecord: () => GitCheckpointUndoRecord | undefined;
   readonly signal?: AbortSignal;
 }
 
@@ -177,7 +179,6 @@ interface SourceRepository {
 }
 
 type StoreMetadata = Static<typeof StoreMetadataSchema>;
-type PersistedUndoRecord = Static<typeof PersistedUndoRecordSchema>;
 type JsonValue =
   | null
   | boolean
@@ -564,7 +565,7 @@ export class GitCheckpointStore {
   readonly mode: GitCheckpointMode;
   /** Canonical starting directory whose paths may be restored. */
   readonly scopeRoot: string;
-  /** Per-session directory containing private Git data and undo metadata. */
+  /** Per-session directory containing private Git checkpoint data. */
   readonly storeDirectory: string;
   /** Canonical source worktree, or the starting directory in standalone mode. */
   readonly workspaceRoot: string;
@@ -1067,25 +1068,15 @@ export class GitCheckpointStore {
     }
   }
 
-  private undoPath(): string {
+  private legacyUndoPath(): string {
     return join(this.storeDirectory, "undo.json");
   }
 
-  private async persistUndo(record: GitCheckpointUndoRecord): Promise<void> {
-    await writeJsonAtomically(this.undoPath(), {
-      ...record,
-      paths: [...record.paths],
-      checkpointScopeId: this.checkpointScopeId,
-      sessionId: this.sessionId,
-      version: UNDO_VERSION,
-    } satisfies PersistedUndoRecord);
-  }
-
-  private async readUndo(): Promise<GitCheckpointUndoRecord | undefined> {
+  private async readLegacyUndo(): Promise<GitCheckpointUndoRecord | undefined> {
     try {
-      const parsed: JsonValue = JSON.parse(await readFile(this.undoPath(), "utf8"));
+      const parsed: JsonValue = JSON.parse(await readFile(this.legacyUndoPath(), "utf8"));
       if (
-        !Value.Check(PersistedUndoRecordSchema, parsed) ||
+        !Value.Check(LegacyUndoRecordSchema, parsed) ||
         parsed.sessionId !== this.sessionId ||
         parsed.checkpointScopeId !== this.checkpointScopeId ||
         !parsed.paths.every((checkpointPath) =>
@@ -1104,6 +1095,17 @@ export class GitCheckpointStore {
     }
   }
 
+  /** Imports valid legacy undo.json state through the callback, then removes the obsolete file. */
+  migrateLegacyUndo(
+    saveUndoRecord?: (record: GitCheckpointUndoRecord) => Promise<void> | void,
+  ): Promise<void> {
+    return this.serialize(async () => {
+      const record = await this.readLegacyUndo();
+      if (record && saveUndoRecord) await saveUndoRecord(record);
+      await rm(this.legacyUndoPath(), { force: true });
+    });
+  }
+
   /** Restores only approved paths, rolling partial writes back from the Safety Checkpoint. */
   restore(input: RestoreWorktreeCheckpointInput): Promise<RestoreWorktreeCheckpointResult> {
     return this.serialize(async () => {
@@ -1119,14 +1121,14 @@ export class GitCheckpointStore {
           input.signal,
         );
         const restoredPaths = result.completed;
+        await this.touchActivity();
         if (restoredPaths.length > 0) {
-          await this.persistUndo({
+          await input.saveUndoRecord({
             paths: restoredPaths,
             restoredTreeId: input.targetTreeId,
             safetyTreeId: input.safetyTreeId,
           });
         }
-        await this.touchActivity();
         return { restoredPaths };
       } catch (cause) {
         const original = errorFrom(cause);
@@ -1149,10 +1151,13 @@ export class GitCheckpointStore {
     });
   }
 
-  /** Compares live paths with the latest persisted Restore for undo confirmation. */
-  inspectUndo(signal?: AbortSignal): Promise<GitCheckpointUndoInspection> {
+  /** Compares live paths with the latest recorded Restore for undo confirmation. */
+  inspectUndo(
+    readUndoRecord: () => GitCheckpointUndoRecord | undefined,
+    signal?: AbortSignal,
+  ): Promise<GitCheckpointUndoInspection> {
     return this.serialize(async () => {
-      const record = await this.readUndo();
+      const record = readUndoRecord();
       if (!record) return { kind: "unavailable" };
       this.assertEnabled("undo");
       const live = await this.captureForOperation("undo", signal);
@@ -1210,7 +1215,7 @@ export class GitCheckpointStore {
   undo(input: UndoWorktreeCheckpointInput): Promise<UndoWorktreeCheckpointResult> {
     return this.serialize(async () => {
       this.assertEnabled("undo");
-      const record = await this.readUndo();
+      const record = input.readUndoRecord();
       if (!record) return { kind: "unavailable" };
       const live = await this.captureForOperation("undo", input.signal);
       const changes = await this.compareTreesUnserialized(
@@ -1229,8 +1234,8 @@ export class GitCheckpointStore {
           "restore",
           input.signal,
         );
-        await rm(this.undoPath(), { force: true });
         await this.touchActivity();
+        await input.consumeUndoRecord();
         return { kind: "undone", restoredPaths: result.completed };
       } catch (cause) {
         const original = errorFrom(cause);

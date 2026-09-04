@@ -13,11 +13,14 @@ import {
 import {
   GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE,
   GIT_CHECKPOINT_MODEL_STEP_START_ENTRY_TYPE,
+  GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
   createGitCheckpointPreview,
   planGitCheckpointNavigation,
   replayGitCheckpointHistory,
+  replayGitCheckpointUndo,
   ModelStepEndEntryPayloadSchema,
   type GitCheckpointHistoryIdentity,
+  type GitCheckpointUndoEntryPayload,
   type ModelStepEndEntryPayload,
   type ModelStepStartEntryPayload,
 } from "./git-checkpoint-history.js";
@@ -28,6 +31,7 @@ import {
   type GitCheckpointCapture,
   type GitCheckpointSourceHead,
   type GitCheckpointStore,
+  type GitCheckpointUndoRecord,
 } from "./git-checkpoint-store.js";
 import { resolveGitCheckpointsSettings } from "./pi-git-checkpoints-settings.js";
 import { Value } from "typebox/value";
@@ -57,6 +61,25 @@ function sourceState(
 ): ModelStepStartEntryPayload["source_state"] {
   if (sourceHead.kind === "head") return { kind: "commit", head: sourceHead.commit };
   return { kind: sourceHead.kind };
+}
+
+function undoEntryPayload(
+  identity: GitCheckpointHistoryIdentity,
+  record: GitCheckpointUndoRecord | null,
+): GitCheckpointUndoEntryPayload {
+  return {
+    version: 1,
+    session_id: identity.sessionId,
+    checkpoint_scope: identity.checkpointScope,
+    mode: identity.mode,
+    record: record
+      ? {
+          paths: [...record.paths],
+          restored_tree_id: record.restoredTreeId,
+          safety_tree_id: record.safetyTreeId,
+        }
+      : null,
+  };
 }
 
 function errorMessage(cause: unknown): string {
@@ -106,6 +129,22 @@ class PiGitCheckpointsLifecycle {
     private readonly getAgentDirectory: () => string = getAgentDir,
   ) {}
 
+  private appendUndoEntry(
+    context: ExtensionContext,
+    identity: GitCheckpointHistoryIdentity,
+    record: GitCheckpointUndoRecord | null,
+  ): void {
+    const previousLeafId = context.sessionManager.getLeafId();
+    try {
+      this.pi.appendEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, undoEntryPayload(identity, record));
+    } catch (cause) {
+      if (context.sessionManager.getLeafId() === previousLeafId) throw cause;
+      const message = `undo state remains active in memory but the session write failed: ${errorMessage(cause)}`;
+      if (context.hasUI) notify(context, message, "warning");
+      else console.warn(`${PACKAGE_PREFIX}: ${message}`);
+    }
+  }
+
   register(): void {
     this.pi.on("session_start", async (_event, context) => this.startSession(context));
     this.pi.on("turn_start", async (event, context) => this.startModelStep(event, context));
@@ -144,11 +183,24 @@ class PiGitCheckpointsLifecycle {
         startingDirectory: context.cwd,
       });
       this.store = store;
-      this.identity = {
+      const identity = {
         checkpointScope: store.checkpointScopeId,
         mode: store.mode,
         sessionId: context.sessionManager.getSessionId(),
-      };
+      } satisfies GitCheckpointHistoryIdentity;
+      this.identity = identity;
+      try {
+        const undoState = replayGitCheckpointUndo(context.sessionManager.getBranch(), identity);
+        if (undoState === undefined) {
+          await store.migrateLegacyUndo((record) =>
+            this.pi.appendEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, undoEntryPayload(identity, record)),
+          );
+        } else {
+          await store.migrateLegacyUndo();
+        }
+      } catch (cause) {
+        notify(context, `legacy undo migration failed: ${errorMessage(cause)}`, "warning");
+      }
       void cleanupGitCheckpointStores({
         agentDirectory,
         currentStoreDirectory: store.storeDirectory,
@@ -298,7 +350,15 @@ class PiGitCheckpointsLifecycle {
     const intent = this.pendingRestore;
     this.pendingRestore = undefined;
     const store = this.store;
-    if (!intent || !store || event.oldLeafId !== intent.oldLeafId || this.disabledReason) return;
+    const identity = this.identity;
+    if (
+      !intent ||
+      !store ||
+      !identity ||
+      event.oldLeafId !== intent.oldLeafId ||
+      this.disabledReason
+    )
+      return;
     try {
       const safetyCapture = await store.capture(context.signal);
       const stale = await store.compareTrees(
@@ -318,6 +378,8 @@ class PiGitCheckpointsLifecycle {
       const restoreInput = {
         paths: intent.paths,
         safetyTreeId: safetyCapture.treeId,
+        saveUndoRecord: (record: GitCheckpointUndoRecord) =>
+          this.appendUndoEntry(context, identity, record),
         targetTreeId: intent.targetTreeId,
       };
       const result = context.signal
@@ -354,9 +416,15 @@ class PiGitCheckpointsLifecycle {
     const action = arguments_.trim();
     if (action === "" || action === "status") {
       let text = this.statusText(context);
-      if (this.store && !this.disabledReason && !this.store.lastCaptureFailure) {
-        const undo = await this.store
-          .inspectUndo(context.signal)
+      const store = this.store;
+      const identity = this.identity;
+      if (store && identity && !this.disabledReason && !store.lastCaptureFailure) {
+        const undo = await store
+          .inspectUndo(
+            () =>
+              replayGitCheckpointUndo(context.sessionManager.getBranch(), identity) ?? undefined,
+            context.signal,
+          )
           .catch(() => ({ kind: "unavailable" as const }));
         text += `\nUndo: ${undo.kind === "ready" ? "available" : "unavailable"}`;
       }
@@ -369,12 +437,15 @@ class PiGitCheckpointsLifecycle {
       return;
     }
     const store = this.store;
-    if (!store || this.disabledReason || store.lastCaptureFailure) {
+    const identity = this.identity;
+    if (!store || !identity || this.disabledReason || store.lastCaptureFailure) {
       notify(context, "undo unavailable while checkpointing is disabled", "warning");
       return;
     }
     try {
-      const inspection = await store.inspectUndo(context.signal);
+      const readUndoRecord = () =>
+        replayGitCheckpointUndo(context.sessionManager.getBranch(), identity) ?? undefined;
+      const inspection = await store.inspectUndo(readUndoRecord, context.signal);
       if (inspection.kind === "unavailable") {
         notify(context, "undo unavailable", "warning");
         return;
@@ -395,9 +466,14 @@ class PiGitCheckpointsLifecycle {
         );
         if (!allowDiverged) return;
       }
+      const undoInput = {
+        allowDiverged,
+        consumeUndoRecord: () => this.appendUndoEntry(context, identity, null),
+        readUndoRecord,
+      };
       const result = context.signal
-        ? await store.undo({ allowDiverged, signal: context.signal })
-        : await store.undo({ allowDiverged });
+        ? await store.undo({ ...undoInput, signal: context.signal })
+        : await store.undo(undoInput);
       if (result.kind === "undone")
         notify(context, `undo restored ${result.restoredPaths.length} path(s)`, "info");
       else if (result.kind === "diverged")
