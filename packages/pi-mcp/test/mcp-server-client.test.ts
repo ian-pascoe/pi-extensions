@@ -166,7 +166,7 @@ describe("McpServerClient", () => {
     await expect(
       McpServerClient.connect({
         clientInfo: { name: "pi-mcp-test", version: "1.0.0" },
-        connectTimeoutMs: 40,
+        connectTimeoutMs: 200,
         definition: {
           args: [fixturePath, "hang"],
           command: process.execPath,
@@ -179,7 +179,8 @@ describe("McpServerClient", () => {
       }),
     ).rejects.toThrow(/timed out|abort/i);
     const processId = Number(/pid:(\d+)/.exec(stderr.join(""))?.[1]);
-    if (Number.isInteger(processId)) expect(() => process.kill(processId, 0)).toThrow();
+    expect(Number.isInteger(processId)).toBe(true);
+    expect(() => process.kill(processId, 0)).toThrow();
   });
 
   test("keeps parallel request callbacks and Pi contexts isolated", async () => {
