@@ -1,0 +1,62 @@
+{
+  "name": "@ian-pascoe/pi-web-tools",
+  "version": "0.0.0",
+  "private": false,
+  "description": "Bounded public web search and textual URL fetching for Pi",
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "pi-package",
+    "web-fetch",
+    "web-search"
+  ],
+  "homepage": "https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-web-tools#readme",
+  "bugs": {
+    "url": "https://github.com/ian-pascoe/pi-extensions/issues"
+  },
+  "license": "MIT",
+  "author": "Ian Pascoe <ian.g.pascoe@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
+    "directory": "packages/pi-web-tools"
+  },
+  "files": [
+    "src",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "htmlparser2": "8.0.2",
+    "turndown": "7.2.0"
+  },
+  "devDependencies": {
+    "@types/turndown": "5.0.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}

@@ -67,7 +67,8 @@
       "./packages/pi-lsp/src/index.ts",
       "./packages/pi-dap/src/index.ts",
       "./packages/pi-codemode/src/index.ts",
-      "./packages/pi-mcp/src/index.ts"
+      "./packages/pi-mcp/src/index.ts",
+      "./packages/pi-web-tools/src/index.ts"
     ],
     "skills": [
       "./packages/pi-minimal-subagents/skills",
@@ -79,7 +80,8 @@
       "./packages/pi-lsp/skills",
       "./packages/pi-dap/skills",
       "./packages/pi-codemode/skills",
-      "./packages/pi-mcp/skills"
+      "./packages/pi-mcp/skills",
+      "./packages/pi-web-tools/skills"
     ]
   }
 }
