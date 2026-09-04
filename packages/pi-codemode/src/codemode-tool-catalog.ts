@@ -45,17 +45,13 @@ export type CodeModeToolSearchEntry = {
 };
 
 /** A bounded inline catalogue plus every searchable complete declaration. */
-export type CodeModeToolCatalogueResult = {
-  readonly ok: true;
+export type CodeModeToolCatalogue = {
   readonly text: string;
   readonly complete: boolean;
   readonly shownCount: number;
   readonly totalCount: number;
   readonly searchEntries: readonly CodeModeToolSearchEntry[];
 };
-
-/** Successfully rendered progressive CodeMode tool catalogue. */
-export type CodeModeToolCatalogue = CodeModeToolCatalogueResult;
 
 /** Expected progressive declaration search outcome at the guest input boundary. */
 export type CodeModeToolSearchResult =
@@ -634,7 +630,7 @@ export function searchCodeModeToolCatalogue(
 /** Renders a token-budgeted inline catalogue and retains complete declarations for search. */
 export function renderCodeModeToolCatalogue(
   tools: readonly CodeModeToolCatalogueTool[],
-): CodeModeToolCatalogueResult {
+): CodeModeToolCatalogue {
   const candidates = tools
     .filter((tool) => !isReservedCodeModeToolName(tool.name))
     .sort(
@@ -662,7 +658,6 @@ export function renderCodeModeToolCatalogue(
     ),
   }));
   return {
-    ok: true,
     text,
     complete: selectedNames.size === rendered.length,
     shownCount: selectedNames.size,

@@ -996,9 +996,7 @@ export class McpHost {
     const tools = await pending;
     if (this.shuttingDown || entry.client !== client) return [];
     if (entry.toolCatalog !== pending) {
-      return !this.shuttingDown && entry.client === client
-        ? this.readInstructionToolNames(entry, client)
-        : [];
+      return this.readInstructionToolNames(entry, client);
     }
     return tools.map((tool) => tool.name);
   }

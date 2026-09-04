@@ -185,8 +185,6 @@ describe("known CodeMode output schemas", () => {
       })),
     );
 
-    expect(rendered).toMatchObject({ ok: true });
-    if (!rendered.ok) return;
     for (const [name] of schemas) {
       const declaration = rendered.searchEntries.find((entry) => entry.name === name)?.declaration;
       if (declaration === undefined) {

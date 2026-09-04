@@ -63,8 +63,6 @@ describe("renderCodeModeToolCatalogue", () => {
       }),
     ]);
 
-    expect(rendered).toMatchObject({ ok: true });
-    if (!rendered.ok) return;
     expect(rendered.text).toContain('readonly ["alpha"]: (input: readonly [1, boolean])');
     expect(rendered.text).toContain('readonly ["quote\\\" key"]: (input: {');
     expect(rendered.text).toContain('readonly ["path"]: string;');
@@ -102,8 +100,6 @@ describe("renderCodeModeToolCatalogue", () => {
       }),
     ]);
 
-    expect(rendered).toMatchObject({ ok: true });
-    if (!rendered.ok) return;
     expect(rendered.text).toContain('readonly ["anything"]: (input: unknown)');
     expect(rendered.text).toContain('readonly ["nothing"]: (input: never)');
     expect(rendered.text).toContain(
@@ -129,8 +125,6 @@ describe("renderCodeModeToolCatalogue", () => {
       tool("external", { $ref: "https://example.test/schema" }),
     ]);
 
-    expect(rendered).toMatchObject({ ok: true });
-    if (!rendered.ok) return;
     expect(rendered.text).toContain('readonly ["id"]: string;');
     expect(rendered.text).toContain('readonly ["next"]?: unknown;');
     expect(rendered.text).toContain('readonly ["external"]: (input: unknown)');
@@ -163,8 +157,6 @@ describe("renderCodeModeToolCatalogue", () => {
       tool("codemode_search", { type: "string" }),
     ]);
 
-    expect(rendered).toMatchObject({ ok: true });
-    if (!rendered.ok) return;
     expect(Math.ceil(Buffer.byteLength(rendered.text, "utf8") / 4)).toBeLessThanOrEqual(2_000);
     expect(Buffer.byteLength(rendered.text, "utf8")).toBeLessThanOrEqual(1024 * 1024);
     expect(rendered).toMatchObject({ complete: false, totalCount: tools.length });
@@ -205,8 +197,7 @@ describe("renderCodeModeToolCatalogue", () => {
         tool(`tool-${index}`, { type: "object" }, undefined, undefined, `group-${index}`),
       ),
     );
-    expect(manyGroups).toMatchObject({ ok: true, complete: false, totalCount: 500 });
-    if (!manyGroups.ok) return;
+    expect(manyGroups).toMatchObject({ complete: false, totalCount: 500 });
     expect(Math.ceil(Buffer.byteLength(manyGroups.text, "utf8") / 4)).toBeLessThanOrEqual(2_000);
     expect(manyGroups.text).toMatch(/\/\/ - \.\.\. \d+ more groups/);
 
@@ -217,8 +208,7 @@ describe("renderCodeModeToolCatalogue", () => {
       }),
       tool("small", { type: "object" }),
     ]);
-    expect(rendered).toMatchObject({ ok: true, complete: false });
-    if (!rendered.ok) return;
+    expect(rendered).toMatchObject({ complete: false });
     expect(searchCodeModeToolCatalogue(rendered.searchEntries, { query: "huge" })).toMatchObject({
       ok: true,
       page: {
@@ -260,9 +250,6 @@ describe("renderCodeModeToolCatalogue", () => {
       tool("beta_issue", { type: "object" }, "Find beta issues", undefined, "issues"),
       tool("calendar_lookup", { type: "object" }, "Find calendar events", undefined, "calendar"),
     ]);
-    expect(rendered).toMatchObject({ ok: true });
-    if (!rendered.ok) return;
-
     expect(
       searchCodeModeToolCatalogue(rendered.searchEntries, {
         query: 'tools["beta_issue"]',

@@ -66,7 +66,6 @@ type PiCodeModeGeneration = {
   catalogue: CodeModeToolCatalogue;
   executeDescription: string;
   active: boolean;
-  toolsRegistered: boolean;
 };
 
 function catalogueDescription(catalogue: CodeModeToolCatalogue): string {
@@ -315,7 +314,6 @@ class PiCodeModeLifecycleController {
       catalogue: initialCatalogue,
       executeDescription: catalogueDescription(initialCatalogue),
       active: true,
-      toolsRegistered: false,
     };
     this.generation = generation;
 
@@ -356,7 +354,6 @@ class PiCodeModeLifecycleController {
     this.pi.registerTool(cancelTool);
     this.pi.registerTool(sessionsTool);
     this.pi.registerTool(searchTool);
-    generation.toolsRegistered = true;
     this.synchronizeGeneration(generation);
   }
 
@@ -375,7 +372,6 @@ class PiCodeModeLifecycleController {
     const description = catalogueDescription(catalogue);
     if (description === generation.executeDescription) return;
     generation.executeDescription = description;
-    if (!generation.toolsRegistered) return;
     const executeDefinition = createRenderedCodeModeToolDefinitions(
       this.operations,
       description,
