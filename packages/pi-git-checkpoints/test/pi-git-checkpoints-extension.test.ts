@@ -6,6 +6,7 @@ import {
   ModelRuntime,
   SessionManager,
   type SessionBeforeTreeEvent,
+  type SessionShutdownEvent,
   type SessionStartEvent,
   type SessionTreeEvent,
   type TurnEndEvent,
@@ -15,6 +16,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
+import { GIT_CHECKPOINT_UNDO_ENTRY_TYPE } from "../src/git-checkpoint-history.js";
 import { createPiGitCheckpointsExtension } from "../src/pi-git-checkpoints-extension.js";
 
 const temporaryDirectories: string[] = [];
@@ -32,6 +34,7 @@ interface GitCheckpointsHarness {
   readonly notifications: string[];
   readonly runner: ExtensionRunner;
   readonly sessionManager: SessionManager;
+  failNextUndoAppend(): void;
   selectChoice: string | undefined;
 }
 
@@ -92,12 +95,17 @@ async function createHarness(hasUI = true): Promise<GitCheckpointsHarness> {
     sessionManager,
     new ModelRegistry(modelRuntime),
   );
+  let failNextUndoAppend = false;
   runner.bindCore(
     {
       sendMessage: () => undefined,
       sendUserMessage: () => undefined,
       appendEntry: (customType, data) => {
         sessionManager.appendCustomEntry(customType, data);
+        if (failNextUndoAppend && customType === GIT_CHECKPOINT_UNDO_ENTRY_TYPE) {
+          failNextUndoAppend = false;
+          throw new Error("injected session write failure after append");
+        }
       },
       setSessionName: () => undefined,
       getSessionName: () => undefined,
@@ -137,6 +145,9 @@ async function createHarness(hasUI = true): Promise<GitCheckpointsHarness> {
   const notifications: string[] = [];
   const harness: GitCheckpointsHarness = {
     cwd,
+    failNextUndoAppend: () => {
+      failNextUndoAppend = true;
+    },
     notifications,
     runner,
     sessionManager,
@@ -230,16 +241,53 @@ describe("Pi Git Checkpoints lifecycle", () => {
       newLeafId: first.assistantId,
     } satisfies SessionTreeEvent);
     expect(await readFile(resolve(harness.cwd, "code.txt"), "utf8")).toBe("two\n");
+    expect(
+      harness.sessionManager
+        .getEntries()
+        .filter(
+          (entry) => entry.type === "custom" && entry.customType === GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
+        ),
+    ).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          record: expect.objectContaining({ paths: ["code.txt"] }),
+          version: 1,
+        }),
+      }),
+    ]);
+    const sessionFile = harness.sessionManager.getSessionFile();
+    if (!sessionFile) throw new Error("Expected a persisted lifecycle test session");
+    expect(await readFile(sessionFile, "utf8")).toContain(GIT_CHECKPOINT_UNDO_ENTRY_TYPE);
+
+    await harness.runner.emit({
+      type: "session_shutdown",
+      reason: "reload",
+    } satisfies SessionShutdownEvent);
+    await harness.runner.emit({
+      type: "session_start",
+      reason: "reload",
+    } satisfies SessionStartEvent);
 
     const command = harness.runner.getCommand("checkpoint");
     if (!command) throw new Error("Expected /checkpoint command");
     await command.handler("status", harness.runner.createCommandContext());
+    harness.failNextUndoAppend();
     await command.handler("undo", harness.runner.createCommandContext());
     expect(await readFile(resolve(harness.cwd, "code.txt"), "utf8")).toBe("three\n");
+    const undoEntries = harness.sessionManager
+      .getEntries()
+      .filter(
+        (entry) => entry.type === "custom" && entry.customType === GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
+      );
+    expect(undoEntries).toHaveLength(2);
+    expect(undoEntries.at(-1)).toMatchObject({ data: { record: null, version: 1 } });
+    await command.handler("undo", harness.runner.createCommandContext());
     expect(harness.notifications).toEqual(
       expect.arrayContaining([
         expect.stringContaining("active standalone"),
         expect.stringContaining("undo restored 1 path(s)"),
+        expect.stringContaining("undo unavailable"),
+        expect.stringContaining("undo state remains active in memory"),
       ]),
     );
   });

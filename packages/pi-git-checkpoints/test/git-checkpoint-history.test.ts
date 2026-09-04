@@ -5,10 +5,13 @@ import { describe, expect, test } from "vitest";
 import {
   GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE,
   GIT_CHECKPOINT_MODEL_STEP_START_ENTRY_TYPE,
+  GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
   createGitCheckpointPreview,
   planGitCheckpointNavigation,
   replayGitCheckpointHistory,
+  replayGitCheckpointUndo,
   type GitCheckpointHistoryIdentity,
+  type GitCheckpointUndoEntryPayload,
   type ModelStepEndEntryPayload,
   type ModelStepStartEntryPayload,
 } from "../src/git-checkpoint-history.js";
@@ -73,6 +76,23 @@ function startPayload(
     step_id: stepId,
     tree_id: checkpointTreeId(treeId),
     source_state: { kind: "standalone" },
+  };
+}
+
+function undoPayload(
+  identity: GitCheckpointHistoryIdentity,
+  label: string,
+): GitCheckpointUndoEntryPayload {
+  return {
+    version: 1,
+    session_id: identity.sessionId,
+    checkpoint_scope: identity.checkpointScope,
+    mode: identity.mode,
+    record: {
+      paths: [`src/${label}.ts`],
+      restored_tree_id: checkpointTreeId(`${label}-restored`),
+      safety_tree_id: checkpointTreeId(`${label}-safety`),
+    },
   };
 }
 
@@ -207,6 +227,87 @@ describe("persisted Worktree Checkpoint history", () => {
     expect(replay(sessionManager, identity).checkpoints).toEqual([
       expect.objectContaining({ stepId: "valid", endEntryId: valid.endEntryId }),
     ]);
+  });
+});
+
+describe("persisted Restore undo state", () => {
+  test("replays the latest valid record and consumed tombstone", () => {
+    const { sessionManager, identity } = createHistorySession();
+    sessionManager.appendCustomEntry(
+      GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
+      undoPayload(identity, "first"),
+    );
+    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
+      ...undoPayload(identity, "unsupported"),
+      version: 2,
+    });
+    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
+      ...undoPayload(identity, "foreign"),
+      session_id: "another-session",
+    });
+    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
+      ...undoPayload(identity, "scope"),
+      checkpoint_scope: "another-scope",
+    });
+    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
+      ...undoPayload(identity, "mode"),
+      mode: "repository",
+    });
+    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
+      ...undoPayload(identity, "bad-path"),
+      record: {
+        ...undoPayload(identity, "bad-path").record,
+        paths: ["../escape"],
+      },
+    });
+
+    expect(replayGitCheckpointUndo(sessionManager.getBranch(), identity)).toEqual({
+      paths: ["src/first.ts"],
+      restoredTreeId: checkpointTreeId("first-restored"),
+      safetyTreeId: checkpointTreeId("first-safety"),
+    });
+
+    sessionManager.appendCustomEntry(GIT_CHECKPOINT_UNDO_ENTRY_TYPE, {
+      ...undoPayload(identity, "unused"),
+      record: null,
+    } satisfies GitCheckpointUndoEntryPayload);
+    expect(replayGitCheckpointUndo(sessionManager.getBranch(), identity)).toBeNull();
+
+    sessionManager.appendCustomEntry(
+      GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
+      undoPayload(identity, "second"),
+    );
+    expect(replayGitCheckpointUndo(sessionManager.getBranch(), identity)).toMatchObject({
+      paths: ["src/second.ts"],
+    });
+  });
+
+  test("isolates undo records to their active session branch", () => {
+    const { sessionManager, identity } = createHistorySession();
+    const rootId = sessionManager.appendMessage({
+      role: "user",
+      content: "root",
+      timestamp: Date.now(),
+    });
+    const recordedId = sessionManager.appendCustomEntry(
+      GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
+      undoPayload(identity, "branch-a"),
+    );
+
+    sessionManager.branch(rootId);
+    sessionManager.appendMessage({ role: "user", content: "branch b", timestamp: Date.now() });
+    expect(replayGitCheckpointUndo(sessionManager.getBranch(), identity)).toBeUndefined();
+
+    sessionManager.branch(recordedId);
+    expect(replayGitCheckpointUndo(sessionManager.getBranch(), identity)).toMatchObject({
+      paths: ["src/branch-a.ts"],
+    });
+    expect(
+      replayGitCheckpointUndo(sessionManager.getBranch(), {
+        ...identity,
+        sessionId: "forked-session",
+      }),
+    ).toBeUndefined();
   });
 });
 
