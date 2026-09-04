@@ -68,10 +68,7 @@ const lazyMcpJsonSchemaValidator: jsonSchemaValidator = {
   },
 };
 
-/** Compile an MCP JSON Schema without writing AJV diagnostics to Pi's process-global console. */
-export function compileMcpJsonSchema<T>(schema: JsonSchemaType): StandardSchemaWithJSON<T, T> {
-  const structuralSchema = { ...schema };
-  delete structuralSchema.$schema;
-  void engineFor(schema).validateSchema(structuralSchema, true);
+/** Create an MCP JSON Schema validator that compiles once, on its first validation. */
+export function createMcpSchemaValidator<T>(schema: JsonSchemaType): StandardSchemaWithJSON<T, T> {
   return fromJsonSchema<T>(schema, lazyMcpJsonSchemaValidator);
 }

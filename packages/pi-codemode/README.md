@@ -259,7 +259,10 @@ declaration is omitted from the inline catalogue.
 `codemode_search` is also a direct Pi tool, so declarations can be discovered
 before starting a Cell. Direct search reads the current exposure catalogue;
 in-Cell search reads the Cell's frozen exposure snapshot. Both expose only
-CodeMode-callable tools and use the same search implementation.
+CodeMode-callable tools and use the same search implementation. Dynamic registry
+changes update execution policy immediately, but catalogue rendering waits until
+the next model turn or CodeMode access needs a synchronized snapshot. This keeps
+bulk tool registration from rebuilding the complete catalogue after every tool.
 
 Ordinary guest tool calls resolve to:
 

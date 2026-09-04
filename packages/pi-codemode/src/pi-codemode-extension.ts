@@ -66,10 +66,6 @@ type PiCodeModeGeneration = {
   catalogue: CodeModeToolCatalogue;
   executeDescription: string;
   active: boolean;
-  toolsRegistered: boolean;
-  synchronizing: boolean;
-  synchronizationPending: boolean;
-  catalogueWarningShown: boolean;
 };
 
 function catalogueDescription(catalogue: CodeModeToolCatalogue): string {
@@ -273,13 +269,6 @@ class PiCodeModeLifecycleController {
       settings.rules,
     );
     const initialCatalogue = renderGenerationCatalogue(captured, initialDecision);
-    if (!initialCatalogue.ok) {
-      this.notifyWarning(
-        context,
-        "Pi CodeMode disabled: generated tool catalogue exceeds the 1 MiB outer limit",
-      );
-      return;
-    }
 
     let sessionFiles: CodeModeSessionFiles;
     try {
@@ -306,7 +295,10 @@ class PiCodeModeLifecycleController {
         }
         this.synchronizeGeneration(generation);
         return {
-          names: [CODEMODE_SEARCH_TOOL_NAME, ...generation.decision.codeModeNames],
+          names: [
+            CODEMODE_SEARCH_TOOL_NAME,
+            ...generation.catalogue.searchEntries.map(({ name }) => name),
+          ],
           searchEntries: generation.catalogue.searchEntries,
         };
       },
@@ -322,10 +314,6 @@ class PiCodeModeLifecycleController {
       catalogue: initialCatalogue,
       executeDescription: catalogueDescription(initialCatalogue),
       active: true,
-      toolsRegistered: false,
-      synchronizing: false,
-      synchronizationPending: false,
-      catalogueWarningShown: false,
     };
     this.generation = generation;
 
@@ -336,9 +324,7 @@ class PiCodeModeLifecycleController {
         settings.rules,
         (decision) => {
           generation.decision = decision;
-          this.synchronizeGeneration(generation);
         },
-        (decision) => this.acceptExposureDecision(generation, decision),
       );
     } catch (cause) {
       generation.active = false;
@@ -368,25 +354,7 @@ class PiCodeModeLifecycleController {
     this.pi.registerTool(cancelTool);
     this.pi.registerTool(sessionsTool);
     this.pi.registerTool(searchTool);
-    generation.toolsRegistered = true;
     this.synchronizeGeneration(generation);
-  }
-
-  private acceptExposureDecision(
-    generation: PiCodeModeGeneration,
-    decision: CodeModeToolExposureDecision,
-  ): boolean {
-    if (!generation.active || this.generation !== generation) return false;
-    const catalogue = renderGenerationCatalogue(generation.captured, decision);
-    if (catalogue.ok) return true;
-    if (!generation.catalogueWarningShown) {
-      generation.catalogueWarningShown = true;
-      this.notifyWarning(
-        generation.context,
-        "Pi CodeMode retained its previous exposure because the generated tool catalogue exceeds the 1 MiB outer limit",
-      );
-    }
-    return false;
   }
 
   private synchronizeCurrentGeneration(): void {
@@ -396,34 +364,20 @@ class PiCodeModeLifecycleController {
 
   private synchronizeGeneration(generation: PiCodeModeGeneration): void {
     if (!generation.active || this.generation !== generation) return;
-    if (generation.synchronizing) {
-      generation.synchronizationPending = true;
-      return;
-    }
-    generation.synchronizing = true;
-    try {
-      do {
-        generation.synchronizationPending = false;
-        generation.exposure?.refreshToolExposure();
-        const decision = generation.exposure?.getDecision() ?? generation.decision;
-        const catalogue = renderGenerationCatalogue(generation.captured, decision);
-        if (!catalogue.ok) continue;
-        generation.decision = decision;
-        generation.catalogue = catalogue;
-        const description = catalogueDescription(catalogue);
-        if (description === generation.executeDescription) continue;
-        generation.executeDescription = description;
-        if (!generation.toolsRegistered) continue;
-        const executeDefinition = createRenderedCodeModeToolDefinitions(
-          this.operations,
-          description,
-          (sessionId) => generation.coordinator.formatSessionPrefix(sessionId),
-        )[0];
-        if (executeDefinition !== undefined) this.pi.registerTool(executeDefinition);
-      } while (generation.synchronizationPending);
-    } finally {
-      generation.synchronizing = false;
-    }
+    generation.exposure?.refreshToolExposure();
+    const decision = generation.exposure?.getDecision() ?? generation.decision;
+    const catalogue = renderGenerationCatalogue(generation.captured, decision);
+    generation.decision = decision;
+    generation.catalogue = catalogue;
+    const description = catalogueDescription(catalogue);
+    if (description === generation.executeDescription) return;
+    generation.executeDescription = description;
+    const executeDefinition = createRenderedCodeModeToolDefinitions(
+      this.operations,
+      description,
+      (sessionId) => generation.coordinator.formatSessionPrefix(sessionId),
+    )[0];
+    if (executeDefinition !== undefined) this.pi.registerTool(executeDefinition);
   }
 
   private async executeNestedToolBatch(

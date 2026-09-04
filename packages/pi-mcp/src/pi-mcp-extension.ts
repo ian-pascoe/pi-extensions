@@ -36,7 +36,7 @@ import {
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { processMcpClientPool } from "./mcp-client-pool.js";
-import { compileMcpJsonSchema } from "./mcp-json-schema.js";
+import { createMcpSchemaValidator } from "./mcp-json-schema.js";
 import { McpAuthStore } from "./mcp-auth-store.js";
 import {
   completeMcpCommandArguments,
@@ -53,6 +53,7 @@ import {
   type McpHostGetPromptResult,
   type McpHostLogTail,
   McpHostOperationError,
+  type McpHostToolCatalogState,
   type McpHostShutdownReason,
   type McpHostRequestContext,
   type McpHostResourceSubscription,
@@ -101,8 +102,8 @@ export interface PiMcpExtensionSession {
     arguments_: string,
     context: ExtensionCommandContext,
   ): Promise<PiMcpExtensionCommandResult>;
-  /** Return the bounded, immutable Server Instructions snapshot for this Pi session. */
-  instructionSnapshot(): Promise<string | undefined>;
+  /** Return the current per-request Server Instructions snapshot without waiting for startup. */
+  instructionSnapshot(): string | undefined;
   /** Redact exact configured values from human-only MCP presentation copy. */
   redactPresentationText(text: string): string;
   /** Start enabled MCP Servers without making `session_start` await their connections. */
@@ -119,7 +120,6 @@ export interface PiMcpExtensionEffects {
 
 interface ActivePiMcpSession {
   readonly runtime: PiMcpExtensionSession;
-  instructionSnapshot?: Promise<string | undefined>;
   startPromise?: Promise<void>;
 }
 
@@ -552,7 +552,7 @@ async function fulfilMcpElicitation(
     // SAFETY: The official MCP Client parsed requestedSchema as the flat elicitation JSON Schema before invoking this Host callback; the cast only reconciles exact-optional SDK declarations.
     const requestedSchema = request.params.requestedSchema as JsonSchemaType;
     const validation =
-      await compileMcpJsonSchema<Record<string, string | number | boolean | string[]>>(
+      await createMcpSchemaValidator<Record<string, string | number | boolean | string[]>>(
         requestedSchema,
       )["~standard"].validate(content);
     return validation.issues === undefined
@@ -685,8 +685,8 @@ class ProductionPiMcpSession implements PiMcpExtensionSession {
     };
   }
 
-  async instructionSnapshot(): Promise<string | undefined> {
-    const snapshot = await this.host.freezeInstructionSnapshot();
+  instructionSnapshot(): string | undefined {
+    const snapshot = this.host.instructionSnapshot();
     return snapshot.text.length === 0 ? undefined : snapshot.text;
   }
 
@@ -796,15 +796,18 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
         shouldUseNerdFontIcons(process.env),
       );
       observer.update(host.listStatuses(), invalidSettings);
-      const synchronizeServerCatalog = async (serverId: string): Promise<void> => {
+      const synchronizeServerCatalog = async (
+        serverId: string,
+      ): Promise<McpHostToolCatalogState> => {
         const activeCatalog = catalog;
-        if (activeCatalog === undefined) return;
-        if (host.getStatus(serverId)?.state !== "connected") {
+        if (activeCatalog === undefined) return "inactive";
+        const deactivateCatalog = async (): Promise<"inactive"> => {
           await activeCatalog.setServerActive(serverId, false);
           resourceServers.delete(serverId);
           await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
-          return;
-        }
+          return "inactive";
+        };
+        if (host.getStatus(serverId)?.state !== "connected") return deactivateCatalog();
         try {
           const tools = await host.listTools(serverId);
           await activeCatalog.replaceServerTools(
@@ -814,10 +817,9 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
           if (host.hasConnectedCapability("resources", serverId)) resourceServers.add(serverId);
           else resourceServers.delete(serverId);
           await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          return host.getStatus(serverId)?.state === "connected" ? "active" : deactivateCatalog();
         } catch {
-          await activeCatalog.setServerActive(serverId, false);
-          resourceServers.delete(serverId);
-          await activeCatalog.setResourceToolsActive(resourceServers.size > 0);
+          return deactivateCatalog();
         }
       };
       catalog = new McpToolCatalog(
@@ -992,7 +994,7 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
   },
 };
 
-/** Own `/mcp`, Pi session generations, Instruction Snapshot reuse, and complete shutdown. */
+/** Own `/mcp`, Pi session generations, per-request Instruction Snapshots, and shutdown. */
 export class PiMcpLifecycleController {
   private activeSession: ActivePiMcpSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
@@ -1052,9 +1054,8 @@ export class PiMcpLifecycleController {
     const activeSession = this.activeSession;
     if (activeSession === undefined) return undefined;
     this.startRuntime(activeSession, context);
-    activeSession.instructionSnapshot ??= activeSession.runtime.instructionSnapshot();
     try {
-      const snapshot = await activeSession.instructionSnapshot;
+      const snapshot = activeSession.runtime.instructionSnapshot();
       return snapshot === undefined || snapshot.length === 0
         ? undefined
         : { systemPrompt: `${systemPrompt}\n\n${snapshot}` };

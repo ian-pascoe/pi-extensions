@@ -73,7 +73,6 @@ export function installCodeModeToolExposure(
   getRegistryNames: () => Iterable<string>,
   rules: readonly CodeModeExposureRule[],
   onDecision?: (decision: CodeModeToolExposureDecision) => void,
-  acceptDecision?: (decision: CodeModeToolExposureDecision) => boolean,
 ): InstalledCodeModeToolExposure {
   const originalOwnDescriptor = Object.getOwnPropertyDescriptor(owner, "setActiveToolsByName");
   const inheritedCallable = owner.setActiveToolsByName.bind(owner);
@@ -123,13 +122,8 @@ export function installCodeModeToolExposure(
       requestedNames = new Set(inputNames);
     }
 
-    const candidate = decideCodeModeToolExposure(registryNames, requestedNames, rules);
+    decision = decideCodeModeToolExposure(registryNames, requestedNames, rules);
     lastObservedRegistryNames = registryNames;
-    if (acceptDecision?.(candidate) === false) {
-      inheritedCallable([...lastAppliedDirectNames]);
-      return;
-    }
-    decision = candidate;
     lastAppliedDirectNames = new Set(decision.directNames);
     inheritedCallable([...decision.directNames]);
     notifyDecision();

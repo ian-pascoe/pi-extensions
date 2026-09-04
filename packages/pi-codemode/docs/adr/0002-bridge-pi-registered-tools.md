@@ -12,3 +12,9 @@ policy-applied direct names and fresh registry names, so registry refreshes and
 external selections remain distinguishable. Shutdown applies retained requested
 names through the original callable, then restores the exact prior own
 descriptor—or deletes the wrapper when the method was originally inherited.
+
+Exposure decisions take effect synchronously for execution, but dynamic registry
+changes do not render a new TypeScript catalogue immediately. The next
+`before_agent_start` hook, direct catalogue search, or CodeMode Session snapshot
+renders the latest coherent catalogue once. This avoids quadratic startup work
+when extensions register large tool sets one tool at a time.

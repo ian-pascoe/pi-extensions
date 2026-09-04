@@ -215,26 +215,4 @@ describe("installCodeModeToolExposure", () => {
     expect(installed.getDecision().directNames).toEqual(["first", "second"]);
     installed.restore();
   });
-
-  test("retains the last coherent direct and guest sets when a candidate is rejected", () => {
-    const owner = new RecordingActiveToolOwner(["first"]);
-    let registryNames = ["first"];
-    const notifications: string[][] = [];
-    const installed = installCodeModeToolExposure(
-      owner,
-      () => registryNames,
-      [],
-      (decision) => notifications.push([...decision.codeModeNames]),
-      (decision) => !decision.codeModeNames.includes("rejected"),
-    );
-
-    registryNames = ["first", "rejected"];
-    owner.setActiveToolsByName(["first", "rejected"]);
-
-    expect(owner.activeNames).toEqual(["first"]);
-    expect(installed.getDecision().codeModeNames).toEqual(["first"]);
-    expect(notifications).toEqual([["first"]]);
-    installed.restore();
-    expect(owner.activeNames).toEqual(["first", "rejected"]);
-  });
 });
