@@ -164,13 +164,13 @@ read_mcp_resource
 
 There is no generic raw-MCP request tool or protocol gateway. Prompts, authentication, subscriptions, status, reconnect, and logs remain `/mcp` operations rather than model tools.
 
-Input and output schemas are retained as the Server advertised them. Pi structurally validates Server Tool schemas and validates mutated tool input before calling the server. On Pi 0.84.2 there is no public provider-schema compatibility preflight: a model provider can reject an otherwise valid exact MCP JSON Schema, which can fail that model turn. Pi MCP deliberately does not maintain a provider matrix, rewrite schemas, inspect Pi internals, or rewrite provider payloads to hide that limitation.
+Input and output schemas are retained as the Server advertised them. Pi MCP trusts the official MCP Client's parsed Tool contract, registers schemas without eager structural validation, and compiles each exact validator once on first use. Malformed schemas therefore fail lazily at tool invocation or result validation. On Pi 0.84.2 there is no public provider-schema compatibility preflight: a model provider can reject an otherwise valid or malformed exact MCP JSON Schema, which can fail that model turn. Pi MCP deliberately does not maintain a provider matrix, rewrite schemas, inspect Pi internals, or rewrite provider payloads to hide that limitation.
 
 ## Host behavior
 
 Enabled servers connect in the background after one event-loop turn at session start, so Pi startup and TUI input do not wait for process or network work. Within one Pi process, matching clients are retained for 30 seconds across `/reload`, `/new`, `/resume`, and `/fork`; this applies to stdio, Streamable HTTP, and legacy SSE. Reuse requires the same canonical project root, trust state, resolved Server Definition, authentication identity, and timeout settings. Concurrent sessions receive exclusive clients, and `/mcp reconnect`, configuration or authentication changes, disable, removal, logout, and quit close affected clients instead of retaining them. `/mcp status` reports reused connections and their age.
 
-Each session still owns its MCP Host, callbacks, retries, desired subscriptions, Instruction Snapshot, logs, and private files. A released session cannot start operations or receive callbacks through a retained client. Current MCP peers are negotiated automatically and legacy 2025-era peers remain supported. Streamable HTTP never silently falls back to SSE.
+Each session still owns its MCP Host, callbacks, retries, desired subscriptions, Instruction Snapshots, logs, and private files. A released session cannot start operations or receive callbacks through a retained client. Current MCP peers are negotiated automatically and legacy 2025-era peers remain supported. Streamable HTTP never silently falls back to SSE.
 
 The host maps the core protocol surface:
 
@@ -181,7 +181,7 @@ The host maps the core protocol surface:
 
 Interactive callbacks are request-scoped. Headless environments decline interaction rather than hanging; background work never opens a dialog or browser and never starts a model turn. Resource changes queue a provenance-labelled notice for the next turn; the host does not fetch or inject resource content automatically.
 
-Before the first model request, Pi waits only for the bounded initial connection deadline, then freezes one deterministic **Instruction Snapshot**. Its Server Instructions bytes stay unchanged for the session; instructions from later connections appear only after reload or a new session.
+Before every model request, Pi synchronously captures a deterministic **Instruction Snapshot** without waiting for MCP connection or catalog startup. It includes MCP Servers whose tool catalogs are ready at that moment, so Server Instructions and tools appear together on a later turn after connection and disappear after disconnection.
 
 Failures stay isolated to the affected Server Definition. Status is one of `disabled`, `connecting`, `connected`, `needs_auth`, `needs_client_registration`, `retrying`, or `failed`. Retryable startup failures and unexpected closes use the shared capped exponential policy. Authentication, invalid configuration, unsupported protocol, disable, and shutdown do not retry. After retries are exhausted, use reconnect, reload, or a new session.
 

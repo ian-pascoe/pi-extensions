@@ -18,7 +18,6 @@ import {
 import type { McpSessionFiles } from "./mcp-session-files.js";
 import type { McpServerDefinition, ResolvedMcpSettings } from "./pi-mcp-settings.js";
 
-const DEFAULT_INSTRUCTION_DEADLINE_MS = 10_000;
 const MCP_CATALOG_CHANGE_DEBOUNCE_MS = 50;
 const MCP_LOG_FLUSH_BYTES = 64 * 1024;
 const MCP_LOG_FLUSH_INTERVAL_MS = 50;
@@ -224,9 +223,9 @@ export interface McpHostResourceSubscription {
   readonly uri: string;
 }
 
-/** Frozen Server Instructions and tool names used by the first model request. */
+/** Immutable Server Instructions and tool names captured for one model request. */
 export interface McpInstructionSnapshot {
-  readonly frozenAt: number;
+  readonly capturedAt: number;
   readonly text: string;
 }
 
@@ -234,7 +233,6 @@ interface McpHostBaseOptions {
   readonly clientFactory?: McpHostClientFactory;
   readonly clock?: McpHostClock;
   readonly initialSubscriptions?: readonly McpHostResourceSubscription[];
-  readonly instructionDeadlineMs?: number;
   readonly onCatalogChanged?: (serverId: string, kind: McpHostCatalogKind) => Promise<void> | void;
   readonly onResourceUpdated?: (update: McpHostResourceSubscription) => void;
   /** Observe copied, sorted status after each status or Server Definition change. */
@@ -284,6 +282,7 @@ interface McpHostServerEntry {
   lease?: McpClientLease;
   failures: number;
   generation: number;
+  toolCatalogReady: boolean;
   pending?: Promise<void>;
   retryAbort?: AbortController;
   status: McpServerStatus;
@@ -482,7 +481,6 @@ export class McpHost {
   private initialConnections: readonly Promise<void>[] = [];
   private pendingLogBytes = 0;
   private pendingLogFlush: PendingMcpLogFlush | undefined;
-  private instructionSnapshot: McpInstructionSnapshot | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private started = false;
   private shuttingDown = false;
@@ -499,6 +497,7 @@ export class McpHost {
         failures: 0,
         instructionToolNames: [],
         generation: 0,
+        toolCatalogReady: false,
         status: { state: "disabled" },
       });
     }
@@ -679,6 +678,7 @@ export class McpHost {
       failures: 0,
       generation: 0,
       instructionToolNames: [],
+      toolCatalogReady: false,
       status: { state: "disabled" as const },
     };
     if (existing !== undefined) await this.stopEntry(existing, "MCP Server Definition replaced");
@@ -722,17 +722,15 @@ export class McpHost {
     await this.connectEntry(entry);
   }
 
-  /** Freeze Server Instructions and tool names after initial attempts or the first-request deadline. */
-  async freezeInstructionSnapshot(): Promise<McpInstructionSnapshot> {
-    if (this.instructionSnapshot !== undefined) return this.instructionSnapshot;
-    const deadline = new AbortController();
-    const timeout = this.clock
-      .sleep(this.options.instructionDeadlineMs ?? DEFAULT_INSTRUCTION_DEADLINE_MS, deadline.signal)
-      .catch(() => undefined);
-    await Promise.race([this.waitForInitialConnections(), timeout]);
-    deadline.abort(new Error("Instruction Snapshot frozen"));
+  /** Snapshot Server Instructions for model-ready MCP Servers without waiting for startup. */
+  instructionSnapshot(): McpInstructionSnapshot {
     const sections = [...this.entries.values()]
-      .filter((entry) => entry.client !== undefined && entry.status.state === "connected")
+      .filter(
+        (entry) =>
+          entry.toolCatalogReady &&
+          entry.client !== undefined &&
+          entry.status.state === "connected",
+      )
       .sort((left, right) => left.definition.id.localeCompare(right.definition.id))
       .flatMap((entry) => {
         const instructions = entry.client?.instructions?.trim();
@@ -748,11 +746,10 @@ export class McpHost {
             .join("\n"),
         ];
       });
-    this.instructionSnapshot = {
-      frozenAt: this.clock.now,
+    return {
+      capturedAt: this.clock.now,
       text: sections.join("\n\n"),
     };
-    return this.instructionSnapshot;
   }
 
   /** Release or close acquired clients, stop retries, and remove session files. */
@@ -764,6 +761,7 @@ export class McpHost {
   private connectEntry(entry: McpHostServerEntry): Promise<void> {
     const generation = ++entry.generation;
     let ownedClient: McpOwnedHostClient | undefined;
+    entry.toolCatalogReady = false;
     entry.retryAbort?.abort(new Error("MCP connection attempt replaced"));
     delete entry.retryAbort;
     this.setEntryStatus(entry, { attempt: entry.failures + 1, state: "connecting" });
@@ -778,11 +776,16 @@ export class McpHost {
         }
         const events: McpHostClientEvents = {
           onCatalogChanged: async (kind, toolNames) => {
-            if (kind === "tools") {
-              delete entry.toolCatalog;
-              if (toolNames !== undefined) entry.instructionToolNames = [...toolNames];
-            }
+            if (kind === "tools") delete entry.toolCatalog;
             await this.notifyCatalogChanged(entry, kind);
+            if (
+              kind === "tools" &&
+              toolNames !== undefined &&
+              !this.shuttingDown &&
+              generation === entry.generation
+            ) {
+              entry.instructionToolNames = [...toolNames];
+            }
           },
           onClose: () => this.handleUnexpectedClose(entry, generation),
           onError: (error) => this.handleClientError(entry, generation, error),
@@ -847,6 +850,9 @@ export class McpHost {
           }
         }
         await this.notifyCatalogChanged(entry, "tools");
+        if (!this.shuttingDown && generation === entry.generation && entry.client === client) {
+          entry.toolCatalogReady = true;
+        }
       })
       .catch((cause: unknown) => {
         const lease = entry.lease;
@@ -924,6 +930,7 @@ export class McpHost {
     delete entry.ownedClient;
     delete entry.toolCatalog;
     entry.instructionToolNames = [];
+    entry.toolCatalogReady = false;
     if (lease === undefined) void ownedClient?.close();
     else void lease.release("quit");
     this.handleConnectionFailure(entry, error);
@@ -940,6 +947,7 @@ export class McpHost {
     delete entry.connectionStartedAt;
     delete entry.toolCatalog;
     entry.instructionToolNames = [];
+    entry.toolCatalogReady = false;
     this.handleConnectionFailure(entry, new Error("MCP connection closed unexpectedly"));
   }
 
@@ -1078,6 +1086,7 @@ export class McpHost {
     delete entry.retryAbort;
     entry.generation += 1;
     entry.instructionToolNames = [];
+    entry.toolCatalogReady = false;
     delete entry.toolCatalog;
     const ownedClient = entry.ownedClient;
     const lease = entry.lease;

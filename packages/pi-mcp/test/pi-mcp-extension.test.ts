@@ -115,7 +115,7 @@ describe("Pi MCP extension lifecycle", () => {
       close: async () => undefined,
       completeCommandArguments,
       executeCommand: async () => ({ level: "info", message: "ok" }),
-      instructionSnapshot: async () => undefined,
+      instructionSnapshot: () => undefined,
       redactPresentationText: (text) => text,
       start: async () => undefined,
       transformContext: (messages) => messages,
@@ -129,12 +129,13 @@ describe("Pi MCP extension lifecycle", () => {
     expect(completeCommandArguments).toHaveBeenCalledWith("rec");
   });
 
-  test("starts in the background, freezes instructions before the first turn, and closes once", async () => {
+  test("starts in the background and reads current instructions before every turn", async () => {
     let releaseStart: (() => void) | undefined;
     const startBlocked = new Promise<void>((resolveStart) => {
       releaseStart = resolveStart;
     });
     const closeReasons: string[] = [];
+    let instructions: string | undefined;
     const session: PiMcpExtensionSession = {
       close: async (reason) => {
         closeReasons.push(reason);
@@ -143,7 +144,7 @@ describe("Pi MCP extension lifecycle", () => {
         level: "info",
         message: "ok",
       }),
-      instructionSnapshot: async () => "Server Instructions\n- fixture: keep exact bytes",
+      instructionSnapshot: () => instructions,
       redactPresentationText: (text) => text,
       start: () => startBlocked,
       transformContext: (messages) => messages,
@@ -159,7 +160,7 @@ describe("Pi MCP extension lifecycle", () => {
     ).resolves.toBe("tick");
     await expect(start).resolves.toBeUndefined();
 
-    const beforeStart = await runner.emitBeforeAgentStart("hello", undefined, "base", {
+    const promptContext = {
       selectedTools: [],
       toolSnippets: {},
       promptGuidelines: [],
@@ -167,10 +168,14 @@ describe("Pi MCP extension lifecycle", () => {
       cwd: runner.createContext().cwd,
       contextFiles: [],
       skills: [],
-    });
-    expect(beforeStart?.systemPrompt).toBe(
-      "base\n\nServer Instructions\n- fixture: keep exact bytes",
-    );
+    };
+    await expect(
+      runner.emitBeforeAgentStart("first", undefined, "base", promptContext),
+    ).resolves.toBeUndefined();
+
+    instructions = "Server Instructions\n- fixture: keep exact bytes";
+    const nextTurn = await runner.emitBeforeAgentStart("second", undefined, "base", promptContext);
+    expect(nextTurn?.systemPrompt).toBe("base\n\nServer Instructions\n- fixture: keep exact bytes");
 
     releaseStart?.();
     await runner.emit({ type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent);
@@ -185,7 +190,7 @@ describe("Pi MCP extension lifecycle", () => {
       const session: PiMcpExtensionSession = {
         close,
         executeCommand: async () => ({ level: "info", message: "ok" }),
-        instructionSnapshot: async () => undefined,
+        instructionSnapshot: () => undefined,
         redactPresentationText: (text) => text,
         start: async () => undefined,
         transformContext: (messages) => messages,
@@ -204,7 +209,7 @@ describe("Pi MCP extension lifecycle", () => {
     const session: PiMcpExtensionSession = {
       close: async () => undefined,
       executeCommand: async () => ({ level: "info", message: "ok" }),
-      instructionSnapshot: async () => undefined,
+      instructionSnapshot: () => undefined,
       redactPresentationText: (text) => text,
       start: async () => {
         started = true;
@@ -225,7 +230,7 @@ describe("Pi MCP extension lifecycle", () => {
     const session: PiMcpExtensionSession = {
       close: async () => undefined,
       executeCommand: async () => ({ level: "info", message: "ok" }),
-      instructionSnapshot: async () => {
+      instructionSnapshot: () => {
         if (starts === 0) throw new Error("MCP startup was not initiated");
         return "Immediate instructions";
       },
@@ -256,7 +261,7 @@ describe("Pi MCP extension lifecycle", () => {
     const session: PiMcpExtensionSession = {
       close: async () => undefined,
       executeCommand: async () => ({ level: "info", message: "ok" }),
-      instructionSnapshot: async () => undefined,
+      instructionSnapshot: () => undefined,
       redactPresentationText: (text) => text.replaceAll("secret", "[REDACTED]"),
       start: async () => undefined,
       transformContext: (messages) => messages,

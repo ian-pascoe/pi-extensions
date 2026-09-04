@@ -17,7 +17,7 @@ import {
   type McpToolExecution,
   type McpToolOperationResult,
 } from "../src/mcp-tool-catalog.js";
-import { compileMcpJsonSchema } from "../src/mcp-json-schema.js";
+import { createMcpSchemaValidator } from "../src/mcp-json-schema.js";
 
 // SAFETY: Catalog execution only forwards this context to the recording runtime, which never reads it.
 const TEST_CONTEXT = {} as ExtensionContext;
@@ -226,14 +226,6 @@ describe("McpToolCatalog", () => {
     await catalog.replaceServerTools("docs@server", [
       { name: "lookup", inputSchema: { type: "object", additionalProperties: false } },
     ]);
-    await catalog.replaceServerTools("broken", [
-      {
-        name: "invalid",
-        // SAFETY: This deliberately malformed value exercises the catalog's runtime schema boundary.
-        inputSchema: { type: "not-json-schema" } as JsonSchemaType,
-      },
-    ]);
-
     const lookupNames = [...pi.tools.keys()].filter((name) => name.startsWith(foreignCollision));
     expect(lookupNames).toEqual([
       foreignCollision,
@@ -256,8 +248,30 @@ describe("McpToolCatalog", () => {
     expect(exactTool?.renderCall).toEqual(expect.any(Function));
     expect(exactTool?.renderResult).toEqual(expect.any(Function));
     expect(pi.tools.has("mcp__docs_server__clean-name")).toBe(true);
-    expect([...pi.tools.keys()].some((name) => name.includes("broken"))).toBe(false);
     expect([...pi.tools.keys()].filter((name) => name.includes("mcp_task"))).toEqual([]);
+  });
+
+  test("defers malformed Server Tool schema failures until execution", async () => {
+    const pi = new RecordingPi();
+    const runtime = new RecordingRuntime();
+    const catalog = new McpToolCatalog(pi, runtime);
+    await catalog.replaceServerTools("server", [
+      {
+        name: "malformed",
+        // SAFETY: The malformed nested schema exercises lazy validation after the protocol-level Tool shape was accepted.
+        inputSchema: {
+          type: "object",
+          properties: { count: { type: "not-json-schema" } },
+        } as JsonSchemaType,
+      },
+    ]);
+    const tool = pi.tools.get("mcp__server__malformed");
+    if (tool === undefined) throw new Error("Expected lazily validated Server Tool");
+
+    await expect(tool.execute("call", {}, undefined, undefined, TEST_CONTEXT)).rejects.toThrow(
+      "Pi MCP Server Tool input invalid",
+    );
+    expect(runtime.calls).toEqual([]);
   });
 
   test("registers unknown schema formats without writing validator warnings", async () => {
@@ -302,7 +316,7 @@ describe("McpToolCatalog", () => {
       },
     });
     try {
-      const validator = compileMcpJsonSchema<{ readonly email: string; readonly pid: number }>({
+      const validator = createMcpSchemaValidator<{ readonly email: string; readonly pid: number }>({
         type: "object",
         properties: {
           email: { type: "string", format: "email" },

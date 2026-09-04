@@ -24,7 +24,7 @@ import {
   type McpResultDetails,
   type McpResultMarker,
 } from "./mcp-presentation.js";
-import { compileMcpJsonSchema } from "./mcp-json-schema.js";
+import { createMcpSchemaValidator } from "./mcp-json-schema.js";
 
 const RESOURCE_TOOL_NAMES = [
   "list_mcp_resources",
@@ -200,11 +200,10 @@ interface ServerCatalog {
   tools: readonly McpServerToolDefinition[];
 }
 
-interface CompiledServerTool {
+interface PreparedServerTool {
   readonly definition: McpServerToolDefinition;
-  readonly inputValidator: ReturnType<typeof compileMcpJsonSchema<McpServerToolArguments>>;
-  readonly outputSchemaError: string | undefined;
-  readonly outputValidator: ReturnType<typeof compileMcpJsonSchema<JSONValue>> | undefined;
+  readonly inputValidator: ReturnType<typeof createMcpSchemaValidator<McpServerToolArguments>>;
+  readonly outputValidator: ReturnType<typeof createMcpSchemaValidator<JSONValue>> | undefined;
   readonly serverId: string;
 }
 
@@ -269,7 +268,7 @@ function execution(
 export class McpToolCatalog {
   private readonly ownedToolNames = new Set<string>();
   private registeredServerTools: readonly {
-    readonly compiled: CompiledServerTool;
+    readonly prepared: PreparedServerTool;
     readonly identity: string;
     readonly name: string;
   }[] = [];
@@ -340,46 +339,28 @@ export class McpToolCatalog {
     const previousRegistrations = new Map(
       this.registeredServerTools.map((registered) => [registered.identity, registered]),
     );
-    const compiledTools: CompiledServerTool[] = [];
+    const preparedTools: PreparedServerTool[] = [];
     for (const [serverId, catalog] of this.serverCatalogs) {
       for (const definition of catalog.tools) {
         const identity = serverToolIdentity(serverId, definition.name);
         const previous = previousRegistrations.get(identity);
-        if (previous?.compiled.definition === definition) {
-          compiledTools.push(previous.compiled);
+        if (previous?.prepared.definition === definition) {
+          preparedTools.push(previous.prepared);
           await scheduler.yield();
           continue;
         }
-        try {
-          // SAFETY: compileMcpJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
-          const inputValidator = compileMcpJsonSchema<McpServerToolArguments>(
-            definition.inputSchema,
-          );
-          let outputValidator: ReturnType<typeof compileMcpJsonSchema<JSONValue>> | undefined;
-          let outputSchemaError: string | undefined;
-          if (definition.outputSchema !== undefined) {
-            try {
-              // SAFETY: compileMcpJsonSchema is the owning boundary parser and rejects values that are not JSON Schema.
-              outputValidator = compileMcpJsonSchema<JSONValue>(definition.outputSchema);
-            } catch (cause) {
-              outputSchemaError = errorMessage(cause);
-            }
-          }
-          compiledTools.push({
-            definition,
-            inputValidator,
-            outputSchemaError,
-            outputValidator,
-            serverId,
-          });
-        } catch {
-          continue;
-        } finally {
-          await scheduler.yield();
-        }
+        const inputValidator = createMcpSchemaValidator<McpServerToolArguments>(
+          definition.inputSchema,
+        );
+        const outputValidator =
+          definition.outputSchema === undefined
+            ? undefined
+            : createMcpSchemaValidator<JSONValue>(definition.outputSchema);
+        preparedTools.push({ definition, inputValidator, outputValidator, serverId });
+        await scheduler.yield();
       }
     }
-    compiledTools.sort((left, right) =>
+    preparedTools.sort((left, right) =>
       serverToolIdentity(left.serverId, left.definition.name).localeCompare(
         serverToolIdentity(right.serverId, right.definition.name),
       ),
@@ -393,23 +374,19 @@ export class McpToolCatalog {
     );
     const occupiedNames = new Set([...foreignNames, ...RESOURCE_TOOL_NAMES]);
     const registeredServerTools = [];
-    for (const compiled of compiledTools) {
-      const baseName = `mcp__${sanitizeToolNamePart(compiled.serverId)}__${sanitizeToolNamePart(compiled.definition.name)}`;
-      const identity = serverToolIdentity(compiled.serverId, compiled.definition.name);
+    for (const prepared of preparedTools) {
+      const baseName = `mcp__${sanitizeToolNamePart(prepared.serverId)}__${sanitizeToolNamePart(prepared.definition.name)}`;
+      const identity = serverToolIdentity(prepared.serverId, prepared.definition.name);
       const piToolName = occupiedNames.has(baseName)
         ? collisionName(baseName, identity, occupiedNames)
         : baseName;
       occupiedNames.add(piToolName);
       this.ownedToolNames.add(piToolName);
       const previous = previousRegistrations.get(identity);
-      if (previous?.compiled.definition !== compiled.definition || previous.name !== piToolName) {
-        this.pi.registerTool(this.serverToolDefinition(compiled, piToolName));
+      if (previous?.prepared.definition !== prepared.definition || previous.name !== piToolName) {
+        this.pi.registerTool(this.serverToolDefinition(prepared, piToolName));
       }
-      registeredServerTools.push({
-        compiled,
-        identity,
-        name: piToolName,
-      });
+      registeredServerTools.push({ prepared, identity, name: piToolName });
       await scheduler.yield();
     }
     this.registeredServerTools = registeredServerTools;
@@ -417,29 +394,29 @@ export class McpToolCatalog {
   }
 
   private serverToolDefinition(
-    compiled: CompiledServerTool,
+    prepared: PreparedServerTool,
     piToolName: string,
   ): McpOutputSchemaToolDefinition {
-    // SAFETY: MCP's parsed Tool contract requires inputSchema to be JSON Schema; fromJsonSchema compiled this exact object above. Pi accepts the same structural schema without TypeBox metadata.
-    const parameters = compiled.definition.inputSchema as TSchema;
+    // SAFETY: MCP's parsed Tool contract requires inputSchema to be JSON Schema. Pi accepts the same exact structural schema without TypeBox metadata; its MCP validator compiles lazily on first use.
+    const parameters = prepared.definition.inputSchema as TSchema;
     const outputSchema =
-      compiled.outputValidator !== undefined && compiled.definition.outputSchema !== undefined
-        ? validatedMcpResultDetailsOutputSchema(compiled.definition.outputSchema)
+      prepared.outputValidator !== undefined && prepared.definition.outputSchema !== undefined
+        ? validatedMcpResultDetailsOutputSchema(prepared.definition.outputSchema)
         : mcpResultDetailsOutputSchema({});
     return {
       name: piToolName,
       label:
-        compiled.definition.title ??
-        compiled.definition.annotations?.title ??
-        compiled.definition.name,
+        prepared.definition.title ??
+        prepared.definition.annotations?.title ??
+        prepared.definition.name,
       description:
-        compiled.definition.description ?? `Call MCP Server Tool ${compiled.definition.name}.`,
+        prepared.definition.description ?? `Call MCP Server Tool ${prepared.definition.name}.`,
       parameters,
       outputSchema,
       renderCall: (arguments_, theme, context) =>
         renderMcpServerToolCall(
-          compiled.serverId,
-          compiled.definition.name,
+          prepared.serverId,
+          prepared.definition.name,
           arguments_,
           theme,
           context.expanded,
@@ -450,31 +427,31 @@ export class McpToolCatalog {
       execute: async (toolCallId, arguments_, signal, onUpdate, context) => {
         let parsed;
         try {
-          parsed = await compiled.inputValidator["~standard"].validate(arguments_);
+          parsed = await prepared.inputValidator["~standard"].validate(arguments_);
         } catch (cause) {
           throw new McpServerToolInputError(
-            compiled.serverId,
-            compiled.definition.name,
+            prepared.serverId,
+            prepared.definition.name,
             errorMessage(cause),
           );
         }
         if (parsed.issues !== undefined) {
           throw new McpServerToolInputError(
-            compiled.serverId,
-            compiled.definition.name,
+            prepared.serverId,
+            prepared.definition.name,
             schemaIssues(parsed.issues),
           );
         }
         const result = await this.runtime.callServerTool(
-          compiled.serverId,
-          compiled.definition.name,
+          prepared.serverId,
+          prepared.definition.name,
           parsed.value,
           execution(toolCallId, signal, onUpdate, context),
         );
         return this.mapOperationResult(
           result,
-          `Server Tool ${compiled.serverId}/${compiled.definition.name}`,
-          compiled,
+          `Server Tool ${prepared.serverId}/${prepared.definition.name}`,
+          prepared,
         );
       },
     };
@@ -483,13 +460,13 @@ export class McpToolCatalog {
   private async mapOperationResult(
     result: McpToolOperationResult,
     operation: string,
-    compiled?: CompiledServerTool,
+    prepared?: PreparedServerTool,
   ): Promise<AgentToolResult<McpResultDetails>> {
-    let outputSchemaError = compiled?.outputSchemaError;
+    let outputSchemaError: string | undefined;
     let outputSchemaValid: boolean | undefined;
-    if (compiled?.outputValidator !== undefined) {
+    if (prepared?.outputValidator !== undefined) {
       try {
-        const validation = await compiled.outputValidator["~standard"].validate(
+        const validation = await prepared.outputValidator["~standard"].validate(
           result.structuredContent,
         );
         outputSchemaValid = validation.issues === undefined;
@@ -498,8 +475,6 @@ export class McpToolCatalog {
         outputSchemaError = errorMessage(cause);
         outputSchemaValid = false;
       }
-    } else if (outputSchemaError !== undefined) {
-      outputSchemaValid = false;
     }
     const content = [...result.content];
     if (outputSchemaValid === false) {
@@ -514,9 +489,9 @@ export class McpToolCatalog {
       ...(outputSchemaError === undefined ? {} : { outputSchemaError }),
       ...(outputSchemaValid === undefined ? {} : { outputSchemaValid }),
       owner: "pi-mcp",
-      ...(compiled === undefined
+      ...(prepared === undefined
         ? {}
-        : { serverId: compiled.serverId, toolName: compiled.definition.name }),
+        : { serverId: prepared.serverId, toolName: prepared.definition.name }),
     };
     return {
       content,
@@ -622,7 +597,7 @@ export class McpToolCatalog {
     const ownActiveNames = [
       ...(this.resourceToolsActive ? RESOURCE_TOOL_NAMES : []),
       ...this.registeredServerTools
-        .filter(({ compiled }) => this.serverCatalogs.get(compiled.serverId)?.active === true)
+        .filter(({ prepared }) => this.serverCatalogs.get(prepared.serverId)?.active === true)
         .map(({ name }) => name),
     ];
     const nextActiveNames = [...foreignActiveNames, ...ownActiveNames];

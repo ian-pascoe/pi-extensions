@@ -746,41 +746,75 @@ test("signals catalog deactivation and activation across an automatic reconnect"
   await host.shutdown();
 });
 
-test("freezes the first-request Instruction Snapshot after the bounded deadline", async () => {
+test("returns current model-ready Server Instructions without waiting", async () => {
+  vi.useFakeTimers();
   const clock = new FakeClock();
   const factory = new FakeFactory();
-  const fast = new FakeClient({ tools: true }, "Fast instructions");
-  fast.tools = [{ inputSchema: { type: "object" }, name: "fast_tool" }];
-  let resolveSlow: ((client: McpOwnedHostClient) => void) | undefined;
-  const slowConnection = new Promise<McpOwnedHostClient>((resolve) => {
-    resolveSlow = resolve;
-  });
-  const slow = new FakeClient({ tools: true }, "Late instructions");
-  slow.tools = [{ inputSchema: { type: "object" }, name: "late_tool" }];
-  factory.queue("fast", fast);
-  factory.queue("slow", slowConnection);
+  const client = new FakeClient({ tools: true }, "Current instructions");
+  client.tools = [{ inputSchema: { type: "object" }, name: "current_tool" }];
+  factory.queue("current", client);
+  const catalogSynchronization = Promise.withResolvers<void>();
   const host = new McpHost({
     clientFactory: factory,
     clock,
-    instructionDeadlineMs: 500,
+    onCatalogChanged: () => catalogSynchronization.promise,
     piCwd: "/project",
     sessionFiles: sessionFiles(),
-    settings: settings([stdioDefinition("fast"), stdioDefinition("slow")]),
+    settings: settings([stdioDefinition("current")]),
   });
 
-  host.start();
-  await flush();
-  const freezing = host.freezeInstructionSnapshot();
-  expect(clock.sleeps[0]?.milliseconds).toBe(500);
-  clock.wakeNext();
-  const snapshot = await freezing;
-  expect(snapshot.text).toContain("Fast instructions");
-  expect(snapshot.text).toContain("fast_tool");
-  expect(snapshot.text).not.toContain("Late instructions");
+  try {
+    host.start();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(host.instructionSnapshot().text).toBe("");
 
-  resolveSlow?.(slow);
-  await flush();
-  expect(await host.freezeInstructionSnapshot()).toBe(snapshot);
+    catalogSynchronization.resolve();
+    await host.waitForInitialConnections();
+    expect(host.instructionSnapshot().text).toContain("Current instructions");
+    expect(host.instructionSnapshot().text).toContain("current_tool");
+
+    factory.events.get("current")?.onClose();
+    expect(host.instructionSnapshot().text).toBe("");
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+test("updates Instruction Snapshot tool names after catalog synchronization", async () => {
+  vi.useFakeTimers();
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true }, "Current instructions");
+  client.tools = [{ inputSchema: { type: "object" }, name: "current_tool" }];
+  factory.queue("current", client);
+  let catalogSynchronization = Promise.resolve();
+  const host = new McpHost({
+    clientFactory: factory,
+    onCatalogChanged: () => catalogSynchronization,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("current")]),
+  });
+
+  try {
+    host.start();
+    await vi.advanceTimersByTimeAsync(50);
+    await host.waitForInitialConnections();
+
+    const nextCatalogSynchronization = Promise.withResolvers<void>();
+    catalogSynchronization = nextCatalogSynchronization.promise;
+    const changed = factory.events.get("current")?.onCatalogChanged("tools", ["next_tool"]);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(host.instructionSnapshot().text).toContain("current_tool");
+    expect(host.instructionSnapshot().text).not.toContain("next_tool");
+
+    nextCatalogSynchronization.resolve();
+    await changed;
+    expect(host.instructionSnapshot().text).toContain("next_tool");
+  } finally {
+    await host.shutdown();
+    vi.useRealTimers();
+  }
 });
 
 test.each(["stdio", "http", "sse"] as const)(
