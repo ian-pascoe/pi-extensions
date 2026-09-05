@@ -14,9 +14,9 @@ This is the release procedure. Migration implementation publishes nothing.
   `@ian-pascoe/pi-bible-verses`, `@ian-pascoe/pi-tps-tracker`, and
   `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-git-checkpoints`,
   `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
-  `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`, `@ian-pascoe/pi-todo`,
+  `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`,
   and `@ian-pascoe/pi-utils` bootstrap manually at `0.1.0`;
-  `@ian-pascoe/pi-web-tools` bootstraps manually at `0.0.0`. Do not add
+  `@ian-pascoe/pi-todo` and `@ian-pascoe/pi-web-tools` bootstrap manually at `0.0.0`. Do not add
   bootstrap Changesets.
 - Use `pnpm changeset` for releasable changes and inspect them with
   `pnpm changeset:status`. The workflow creates version PRs with
@@ -38,8 +38,8 @@ publish.
 
 ## Initial scoped-package bootstrap
 
-After approval and merge, a human publishes twelve scoped packages at `0.1.0` and
-`@ian-pascoe/pi-web-tools` at `0.0.0` from each package directory:
+After approval and merge, bootstrap eleven scoped packages at `0.1.0` and
+`@ian-pascoe/pi-todo` and `@ian-pascoe/pi-web-tools` at `0.0.0` from each package directory:
 
 ```bash
 npm publish --access public --provenance=false
@@ -50,7 +50,7 @@ Publish only `@ian-pascoe/pi-minimal-subagents`,
 `@ian-pascoe/pi-git-status-widget`, `@ian-pascoe/pi-git-checkpoints`,
 `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
 `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`, `@ian-pascoe/pi-todo`, and
-`@ian-pascoe/pi-web-tools`. Verify Web Tools is `0.0.0` and every other package
+`@ian-pascoe/pi-web-tools`. Verify Todo and Web Tools are `0.0.0` and every other package
 is `0.1.0`, plus each name and tarball, before publishing. This is
 the one-time provenance exception; later releases use OIDC.
 
