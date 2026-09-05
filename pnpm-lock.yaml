@@ -414,6 +414,21 @@ importers:
         specifier: ^4.1.4
         version: 4.1.4
 
+  packages/pi-todo:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: '*'
+        version: 0.84.4(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.5.4))(supports-color@8.1.1)(ws@8.21.3)(zod@4.5.4)
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.84.4(@modelcontextprotocol/sdk@1.26.0(supports-color@8.1.1)(zod@4.5.4))(supports-color@8.1.1)(ws@8.21.3)(zod@4.5.4)
+      '@earendil-works/pi-tui':
+        specifier: '*'
+        version: 0.84.4
+      typebox:
+        specifier: '*'
+        version: 1.3.24
+
   packages/pi-tps-tracker:
     dependencies:
       '@earendil-works/pi-coding-agent':
