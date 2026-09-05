@@ -1,5 +1,16 @@
 # @ian-pascoe/pi-mcp
 
+## 0.5.0
+
+### Minor Changes
+
+- 290d6dc: Retain matching MCP clients and validated catalogs across in-process Pi session replacement, while deferring and batching cold-start work to keep TUI input responsive.
+
+### Patch Changes
+
+- b05e6ab: Defer MCP schema compilation until use, stop MCP startup from delaying the first prompt, and avoid rebuilding the CodeMode catalogue after every dynamic tool registration.
+- 13f666c: Wait for timed-out stdio MCP Servers to exit before reporting connection failure.
+
 ## 0.4.3
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-lsp
 
+## 0.3.2
+
+### Patch Changes
+
+- 8e665f5: Preserve custom fixed-name tool rendering when Pi reloads extensions.
+
 ## 0.3.1
 
 ### Patch Changes

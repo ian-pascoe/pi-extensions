@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-dap
 
+## 0.3.1
+
+### Patch Changes
+
+- 8e665f5: Preserve custom fixed-name tool rendering when Pi reloads extensions.
+
 ## 0.3.0
 
 ### Minor Changes

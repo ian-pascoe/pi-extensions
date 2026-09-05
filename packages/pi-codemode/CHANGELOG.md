@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-codemode
 
+## 0.6.4
+
+### Patch Changes
+
+- b05e6ab: Defer MCP schema compilation until use, stop MCP startup from delaying the first prompt, and avoid rebuilding the CodeMode catalogue after every dynamic tool registration.
+- 8e665f5: Preserve custom fixed-name tool rendering when Pi reloads extensions.
+
 ## 0.6.3
 
 ### Patch Changes
