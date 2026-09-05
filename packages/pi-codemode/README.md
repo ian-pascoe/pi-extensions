@@ -277,7 +277,7 @@ type PiToolResult<Output = unknown> = {
 
 Each declaration derives its input from `parameters` and its `details` type
 from the registered definition's optional `outputSchema`. Source-gated fallback
-schemas cover Pi's built-in tools and `@howaboua/pi-codex-conversion` 3.0.23;
+schemas cover Pi's built-in tools and `@howaboua/pi-codex-conversion` 3.0.25;
 tool-provided schemas take precedence. Other missing or unsupported output
 schemas remain `unknown`.
 

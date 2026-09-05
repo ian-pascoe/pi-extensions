@@ -1,7 +1,5 @@
 import type { ApplyPatchToolDetails } from "@howaboua/pi-codex-conversion";
 import type { UnifiedExecResult } from "@howaboua/pi-codex-conversion/dist/tools/exec/session-manager.js";
-import type { createImageGenerationTool } from "@howaboua/pi-codex-conversion/dist/tools/imagegen/tool.js";
-import type { executeCodexWebSearch } from "@howaboua/pi-codex-conversion/dist/tools/web-run/tool.js";
 import type { ViewImageContent } from "@howaboua/pi-codex-conversion/dist/tools/view-image/output.js";
 import type {
   BashToolDetails,
@@ -12,7 +10,6 @@ import type {
   PowerShellToolDetails,
   ReadToolDetails,
   SourceInfo,
-  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
@@ -29,14 +26,6 @@ type Equal<Left, Right> =
       ? true
       : false
     : false;
-type ToolDefinitionDetails<Definition> =
-  Definition extends ToolDefinition<infer _Parameters, infer Details, infer _State>
-    ? Details
-    : never;
-type ImagegenDetails = ToolDefinitionDetails<ReturnType<typeof createImageGenerationTool>>;
-type WebRunDetails = {
-  webRun: Awaited<ReturnType<typeof executeCodexWebSearch>>["details"];
-};
 type ViewImageDetails =
   | { viewImage: true }
   | {
@@ -86,14 +75,6 @@ const OutputSchemaTypeParity = {
     Static<typeof CodeModeKnownOutputSchemas.codexConversion.write_stdin>,
     UnifiedExecResult
   >,
-  imagegen: true satisfies Equal<
-    Static<typeof CodeModeKnownOutputSchemas.codexConversion.imagegen>,
-    ImagegenDetails
-  >,
-  web_run: true satisfies Equal<
-    Static<typeof CodeModeKnownOutputSchemas.codexConversion.web_run>,
-    WebRunDetails
-  >,
   view_image: true satisfies Equal<
     Static<typeof CodeModeKnownOutputSchemas.codexConversion.view_image>,
     ViewImageDetails
@@ -116,7 +97,7 @@ function schemaEntries(
 
 describe("known CodeMode output schemas", () => {
   test("stay compile-time compatible with their upstream detail types", () => {
-    expect(Object.values(OutputSchemaTypeParity)).toEqual(Array(14).fill(true));
+    expect(Object.values(OutputSchemaTypeParity)).toEqual(Array(12).fill(true));
   });
 
   test("resolve only for the owning built-in or pi-codex-conversion source", () => {
@@ -132,7 +113,7 @@ describe("known CodeMode output schemas", () => {
       expect(
         resolveKnownToolOutputSchema({
           name,
-          sourceInfo: sourceInfo("npm:@howaboua/pi-codex-conversion@3.0.23", "package"),
+          sourceInfo: sourceInfo("npm:@howaboua/pi-codex-conversion@3.0.25", "package"),
         }),
       ).toBe(schema);
     }
@@ -155,6 +136,17 @@ describe("known CodeMode output schemas", () => {
         sourceInfo: sourceInfo("npm:@howaboua/pi-codex-conversion", "top-level"),
       }),
     ).toBeUndefined();
+  });
+
+  test("do not provide fallbacks for tools removed from pi-codex-conversion", () => {
+    for (const name of ["web_run", "imagegen"]) {
+      expect(
+        resolveKnownToolOutputSchema({
+          name,
+          sourceInfo: sourceInfo("npm:@howaboua/pi-codex-conversion@3.0.25", "package"),
+        }),
+      ).toBeUndefined();
+    }
   });
 
   test("accept both view_image result variants", () => {
