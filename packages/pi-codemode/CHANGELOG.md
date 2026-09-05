@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.6.5
+
+### Patch Changes
+
+- 9b5c7c2: Update dependencies
+
 ## 0.6.4
 
 ### Patch Changes
