@@ -22,6 +22,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.   | `pi install npm:@ian-pascoe/pi-codemode`          |
 | [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                             | Model Context Protocol hosting for configured MCP servers.  | `pi install npm:@ian-pascoe/pi-mcp`               |
 | [`@ian-pascoe/pi-web-tools`](packages/pi-web-tools)                 | Public web search and textual URL retrieval.                | `pi install npm:@ian-pascoe/pi-web-tools`         |
+| [`@ian-pascoe/pi-todo`](packages/pi-todo)                           | Minimal session-native Todo List for agents.                | `pi install npm:@ian-pascoe/pi-todo`              |
 
 The extensions share terminal capability decisions through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
@@ -68,6 +69,7 @@ packages/pi-dap/src/index.ts
 packages/pi-codemode/src/index.ts
 packages/pi-mcp/src/index.ts
 packages/pi-web-tools/src/index.ts
+packages/pi-todo/src/index.ts
 ```
 
 Every selectable configuration skill path is:
@@ -84,6 +86,7 @@ packages/pi-dap/skills/pi-dap/SKILL.md
 packages/pi-codemode/skills/pi-codemode/SKILL.md
 packages/pi-mcp/skills/pi-mcp/SKILL.md
 packages/pi-web-tools/skills/pi-web-tools/SKILL.md
+packages/pi-todo/skills/pi-todo/SKILL.md
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -143,6 +146,8 @@ pnpm --filter @ian-pascoe/pi-mcp test
 pnpm --filter @ian-pascoe/pi-mcp build:cli
 pnpm --filter @ian-pascoe/pi-web-tools typecheck
 pnpm --filter @ian-pascoe/pi-web-tools test
+pnpm --filter @ian-pascoe/pi-todo typecheck
+pnpm --filter @ian-pascoe/pi-todo test
 pnpm --filter @ian-pascoe/pi-utils test
 ```
 

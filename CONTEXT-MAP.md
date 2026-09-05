@@ -16,6 +16,7 @@ context relevant to the work:
 | `@ian-pascoe/pi-codemode`          | [`packages/pi-codemode/CONTEXT.md`](packages/pi-codemode/CONTEXT.md)                   | Persistent TypeScript tool composition  |
 | `@ian-pascoe/pi-mcp`               | [`packages/pi-mcp/CONTEXT.md`](packages/pi-mcp/CONTEXT.md)                             | Model Context Protocol hosting          |
 | `@ian-pascoe/pi-web-tools`         | [`packages/pi-web-tools/CONTEXT.md`](packages/pi-web-tools/CONTEXT.md)                 | Public web search and retrieval         |
+| `@ian-pascoe/pi-todo`              | [`packages/pi-todo/CONTEXT.md`](packages/pi-todo/CONTEXT.md)                           | Minimal session work tracking           |
 
 The contexts are package-local vocabulary authorities. Repository-wide decisions
 live in [`docs/adr/`](docs/adr/).
