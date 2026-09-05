@@ -79,7 +79,6 @@ export class TodoOperationError extends Error {
 export type TodoActionResult =
   | {
       readonly ok: true;
-      readonly changed: boolean;
       readonly state: TodoStateSnapshot;
       readonly message: string;
       readonly details: TodoToolDetails;
@@ -136,7 +135,6 @@ export function applyTodoAction(
     case "list":
       return {
         ok: true,
-        changed: false,
         state,
         message: formatTodoList(state.tasks),
         details: { action: "list", tasks: state.tasks },
@@ -158,30 +156,42 @@ export function applyTodoAction(
         : { id, title, status: input.status ?? "pending" };
       return {
         ok: true,
-        changed: true,
         state: { nextId: state.nextId + 1, tasks: [...state.tasks, task] },
         message: `Added Task #${task.id}`,
         details: { action: "add" },
       };
     }
 
-    case "update": {
+    case "update":
+    case "remove": {
+      const action = input.action;
       if (input.id === undefined) {
-        return todoOperationFailure("update", "Todo update failed: id is required");
+        return todoOperationFailure(action, `Todo ${action} failed: id is required`);
       }
       const id = parseTodoTaskId(input.id);
       if (id === undefined) {
         return todoOperationFailure(
-          "update",
-          "Todo update failed: id must be a positive safe integer",
+          action,
+          `Todo ${action} failed: id must be a positive safe integer`,
         );
       }
       const task = state.tasks.find((candidate) => candidate.id === id);
       if (!task) {
         return todoOperationFailure(
-          "update",
-          `Todo update failed: Task #${input.id} was not found`,
+          action,
+          `Todo ${action} failed: Task #${input.id} was not found`,
         );
+      }
+      if (action === "remove") {
+        return {
+          ok: true,
+          state: {
+            nextId: state.nextId,
+            tasks: state.tasks.filter((candidate) => candidate.id !== task.id),
+          },
+          message: `Removed Task #${task.id}`,
+          details: { action: "remove" },
+        };
       }
       if (
         input.title === undefined &&
@@ -198,11 +208,7 @@ export function applyTodoAction(
         return todoOperationFailure("update", "Todo update failed: title must not be empty");
       }
       const description =
-        input.description === undefined
-          ? task.description
-          : input.description === null
-            ? undefined
-            : input.description.trim();
+        input.description === undefined ? task.description : input.description?.trim();
       if (input.description !== undefined && input.description !== null && !description) {
         return todoOperationFailure("update", "Todo update failed: description must not be empty");
       }
@@ -211,7 +217,6 @@ export function applyTodoAction(
         : { id: task.id, title, status: input.status ?? task.status };
       return {
         ok: true,
-        changed: true,
         state: {
           nextId: state.nextId,
           tasks: state.tasks.map((candidate) =>
@@ -223,42 +228,11 @@ export function applyTodoAction(
       };
     }
 
-    case "remove": {
-      if (input.id === undefined) {
-        return todoOperationFailure("remove", "Todo remove failed: id is required");
-      }
-      const id = parseTodoTaskId(input.id);
-      if (id === undefined) {
-        return todoOperationFailure(
-          "remove",
-          "Todo remove failed: id must be a positive safe integer",
-        );
-      }
-      const task = state.tasks.find((candidate) => candidate.id === id);
-      if (!task) {
-        return todoOperationFailure(
-          "remove",
-          `Todo remove failed: Task #${input.id} was not found`,
-        );
-      }
-      return {
-        ok: true,
-        changed: true,
-        state: {
-          nextId: state.nextId,
-          tasks: state.tasks.filter((candidate) => candidate.id !== task.id),
-        },
-        message: `Removed Task #${task.id}`,
-        details: { action: "remove" },
-      };
-    }
-
     case "clear": {
       const count = state.tasks.length;
       return {
         ok: true,
-        changed: count > 0 || state.nextId !== 1,
-        state: createEmptyTodoState(),
+        state: count > 0 || state.nextId !== 1 ? createEmptyTodoState() : state,
         message: `Cleared ${count} ${count === 1 ? "Task" : "Tasks"}`,
         details: { action: "clear" },
       };
@@ -273,10 +247,7 @@ export function todoStatusMarker(status: TodoStatus): "[ ]" | "[>]" | "[x]" {
 }
 
 function formatTodoDescription(description: string): string {
-  return description
-    .split("\n")
-    .map((line) => `    ${line}`)
-    .join("\n");
+  return "    " + description.replaceAll("\n", "\n    ");
 }
 
 /** Formats the complete numeric-ID-ordered Todo List for tools and model context. */

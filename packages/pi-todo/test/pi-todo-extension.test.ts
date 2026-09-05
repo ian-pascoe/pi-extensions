@@ -104,6 +104,10 @@ class TodoExtensionHarness {
     return handler(event, context);
   }
 
+  execute(params: TodoActionInput, context: ExtensionContext): Promise<TodoToolResult> {
+    return this.tool.execute("call-todo", params, undefined, undefined, context);
+  }
+
   context(
     branch: readonly SessionEntry[] = [],
     mode: ExtensionMode = "print",
@@ -161,25 +165,16 @@ describe("Pi Todo extension", () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context();
 
-    const added = await harness.tool.execute(
-      "call-add",
+    const added = await harness.execute(
       {
         action: "add",
         title: "  Ship the extension  ",
         description: "  Run the focused checks.  ",
         status: "active",
       },
-      undefined,
-      undefined,
       context,
     );
-    const listed = await harness.tool.execute(
-      "call-list",
-      { action: "list" },
-      undefined,
-      undefined,
-      context,
-    );
+    const listed = await harness.execute({ action: "list" }, context);
 
     expect(harness.tool.name).toBe("todo");
     expect(resultText(added)).toBe("Added Task #1");
@@ -205,34 +200,49 @@ describe("Pi Todo extension", () => {
   test("agent can update, remove, and clear Tasks without accidental ID reuse", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context();
-    const execute = (params: TodoActionInput) =>
-      harness.tool.execute("call-mutate", params, undefined, undefined, context);
 
-    await execute({ action: "add", title: "First", description: "Details" });
-    await execute({ action: "add", title: "Second" });
+    await harness.execute({ action: "add", title: "First", description: "Details" }, context);
+    await harness.execute({ action: "add", title: "Second" }, context);
     expect(
       resultText(
-        await execute({ action: "update", id: 1, description: null, status: "completed" }),
+        await harness.execute(
+          { action: "update", id: 1, description: null, status: "completed" },
+          context,
+        ),
       ),
     ).toBe("Updated Task #1");
-    expect(resultText(await execute({ action: "remove", id: 2 }))).toBe("Removed Task #2");
-    expect(resultText(await execute({ action: "add", title: "Third" }))).toBe("Added Task #3");
-    expect(resultText(await execute({ action: "list" }))).toBe("[x] #1 First\n[ ] #3 Third");
+    expect(resultText(await harness.execute({ action: "remove", id: 2 }, context))).toBe(
+      "Removed Task #2",
+    );
+    expect(resultText(await harness.execute({ action: "add", title: "Third" }, context))).toBe(
+      "Added Task #3",
+    );
+    expect(resultText(await harness.execute({ action: "list" }, context))).toBe(
+      "[x] #1 First\n[ ] #3 Third",
+    );
 
-    expect(resultText(await execute({ action: "clear" }))).toBe("Cleared 2 Tasks");
-    expect(resultText(await execute({ action: "add", title: "After clear" }))).toBe(
-      "Added Task #1",
-    );
-    await expect(execute({ action: "update", id: 99, status: "active" })).rejects.toThrow(
-      "Todo update failed: Task #99 was not found",
-    );
-    await expect(execute({ action: "remove", id: 99 })).rejects.toThrow(
+    expect(resultText(await harness.execute({ action: "clear" }, context))).toBe("Cleared 2 Tasks");
+    expect(
+      resultText(await harness.execute({ action: "add", title: "After clear" }, context)),
+    ).toBe("Added Task #1");
+    await expect(
+      harness.execute({ action: "update", id: 99, status: "active" }, context),
+    ).rejects.toThrow("Todo update failed: Task #99 was not found");
+    await expect(harness.execute({ action: "remove", id: 99 }, context)).rejects.toThrow(
       "Todo remove failed: Task #99 was not found",
     );
-    await expect(execute({ action: "update", id: 1 })).rejects.toThrow(
+    for (const action of ["update", "remove"] as const) {
+      await expect(harness.execute({ action }, context)).rejects.toThrow(
+        `Todo ${action} failed: id is required`,
+      );
+      await expect(harness.execute({ action, id: 0 }, context)).rejects.toThrow(
+        `Todo ${action} failed: id must be a positive safe integer`,
+      );
+    }
+    await expect(harness.execute({ action: "update", id: 1 }, context)).rejects.toThrow(
       "Todo update failed: provide a title, description, or status",
     );
-    await expect(execute({ action: "add", title: "   " })).rejects.toThrow(
+    await expect(harness.execute({ action: "add", title: "   " }, context)).rejects.toThrow(
       "Todo add failed: title must not be empty",
     );
 
@@ -249,12 +259,29 @@ describe("Pi Todo extension", () => {
   test("clear resets IDs after every Task was individually removed", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context();
-    const execute = (params: TodoActionInput) =>
-      harness.tool.execute("call-reset", params, undefined, undefined, context);
-    await execute({ action: "add", title: "Temporary" });
-    await execute({ action: "remove", id: 1 });
-    await execute({ action: "clear" });
-    expect(resultText(await execute({ action: "add", title: "Fresh" }))).toBe("Added Task #1");
+    await harness.execute({ action: "add", title: "Temporary" }, context);
+    await harness.execute({ action: "remove", id: 1 }, context);
+    await harness.execute({ action: "clear" }, context);
+    expect(resultText(await harness.execute({ action: "add", title: "Fresh" }, context))).toBe(
+      "Added Task #1",
+    );
+  });
+
+  test("list and repeated empty clear append only the required reset snapshot", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+
+    await harness.execute({ action: "add", title: "Temporary" }, context);
+    await harness.execute({ action: "remove", id: 1 }, context);
+    await harness.execute({ action: "list" }, context);
+    expect(harness.entries).toHaveLength(2);
+
+    await harness.execute({ action: "clear" }, context);
+    expect(harness.entries).toHaveLength(3);
+    expect(harness.entries.at(-1)?.data).toEqual({ nextId: 1, tasks: [] });
+
+    await harness.execute({ action: "clear" }, context);
+    expect(harness.entries).toHaveLength(3);
   });
 
   test("rejects ID exhaustion without persisting an unrestorable snapshot", async () => {
@@ -270,15 +297,9 @@ describe("Pi Todo extension", () => {
       },
     ]);
     await harness.emit("session_start", { type: "session_start", reason: "resume" }, context);
-    await expect(
-      harness.tool.execute(
-        "call-limit",
-        { action: "add", title: "Too far" },
-        undefined,
-        undefined,
-        context,
-      ),
-    ).rejects.toThrow("Task ID limit reached");
+    await expect(harness.execute({ action: "add", title: "Too far" }, context)).rejects.toThrow(
+      "Task ID limit reached",
+    );
     expect(harness.entries).toHaveLength(0);
   });
 
@@ -314,13 +335,7 @@ describe("Pi Todo extension", () => {
     const context = harness.context([validStateEntry, malformedStateEntry]);
 
     await harness.emit("session_start", { type: "session_start", reason: "resume" }, context);
-    const listed = await harness.tool.execute(
-      "call-list-restored",
-      { action: "list" },
-      undefined,
-      undefined,
-      context,
-    );
+    const listed = await harness.execute({ action: "list" }, context);
     const contextResult = await harness.emit("context", { type: "context", messages: [] }, context);
 
     expect(resultText(listed)).toBe(
@@ -343,24 +358,28 @@ describe("Pi Todo extension", () => {
   test("renders a compact Todo Widget and confirms manual clearing", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context([], "tui");
-    const execute = (params: TodoActionInput) =>
-      harness.tool.execute("call-widget", params, undefined, undefined, context);
 
-    await execute({
-      action: "add",
-      title: "Active one with a title that must truncate",
-      status: "active",
-    });
-    await execute({ action: "add", title: "Pending one" });
-    await execute({ action: "add", title: "Completed one", status: "completed" });
-    await execute({ action: "add", title: "Active two", status: "active" });
-    await execute({ action: "add", title: "Pending two" });
-    const listed = await execute({
-      action: "add",
-      title: "Completed two",
-      description: "Only expanded transcript output shows this.",
-      status: "completed",
-    });
+    await harness.execute(
+      {
+        action: "add",
+        title: "Active one with a title that must truncate",
+        status: "active",
+      },
+      context,
+    );
+    await harness.execute({ action: "add", title: "Pending one" }, context);
+    await harness.execute({ action: "add", title: "Completed one", status: "completed" }, context);
+    await harness.execute({ action: "add", title: "Active two", status: "active" }, context);
+    await harness.execute({ action: "add", title: "Pending two" }, context);
+    const listed = await harness.execute(
+      {
+        action: "add",
+        title: "Completed two",
+        description: "Only expanded transcript output shows this.",
+        status: "completed",
+      },
+      context,
+    );
 
     expect(renderTodoWidget(harness, 36)).toEqual([
       "TODO  2 active · 2 pending · 2 comp…",
@@ -373,11 +392,17 @@ describe("Pi Todo extension", () => {
     ]);
     expect(renderTodoWidget(harness, 36).every((line) => visibleWidth(line) <= 36)).toBe(true);
 
-    const listResult = await execute({ action: "list" });
+    const listResult = await harness.execute({ action: "list" }, context);
     const transcriptTool = harness.tool;
     if (!transcriptTool.renderCall || !transcriptTool.renderResult) {
       throw new Error("Todo extension test harness did not receive custom transcript renderers");
     }
+    const renderResult = transcriptTool.renderResult.bind(transcriptTool);
+    const renderResultText = (result: TodoToolResult, expanded = false, width = 80) =>
+      renderTodoComponent(
+        renderResult(result, { expanded, isPartial: false }, createTodoTestTheme()),
+        width,
+      ).join("\n");
     expect(
       renderTodoComponent(
         transcriptTool.renderCall(
@@ -387,48 +412,18 @@ describe("Pi Todo extension", () => {
         80,
       ),
     ).toEqual(["todo update #4"]);
-    expect(
-      renderTodoComponent(
-        transcriptTool.renderResult(
-          listResult,
-          { expanded: false, isPartial: false },
-          createTodoTestTheme(),
-        ),
-        80,
-      ).join("\n"),
-    ).toBe(
+    expect(renderResultText(listResult)).toBe(
       "6 Tasks:\n[>] #1 Active one with a title that must truncate\n[ ] #2 Pending one\n[x] #3 ~Completed one~\n[>] #4 Active two\n[ ] #5 Pending two\n… 1 more",
     );
+    expect(renderResultText(listResult, true, 100)).toContain(
+      "[x] #6 ~Completed two~\n    Only expanded transcript output shows this.",
+    );
+    expect(renderResultText(listed)).toBe("✓ Added Task #6");
     expect(
-      renderTodoComponent(
-        transcriptTool.renderResult(
-          listResult,
-          { expanded: true, isPartial: false },
-          createTodoTestTheme(),
-        ),
-        100,
-      ).join("\n"),
-    ).toContain("[x] #6 ~Completed two~\n    Only expanded transcript output shows this.");
-    expect(
-      renderTodoComponent(
-        transcriptTool.renderResult(
-          listed,
-          { expanded: false, isPartial: false },
-          createTodoTestTheme(),
-        ),
-        80,
-      ),
-    ).toEqual(["✓ Added Task #6"]);
-    expect(
-      renderTodoComponent(
-        transcriptTool.renderResult(
-          { content: [{ type: "text", text: "Todo update failed: Task #99 was not found" }] },
-          { expanded: false, isPartial: false },
-          createTodoTestTheme(),
-        ),
-        80,
-      ),
-    ).toEqual(["Todo update failed: Task #99 was not found"]);
+      renderResultText({
+        content: [{ type: "text", text: "Todo update failed: Task #99 was not found" }],
+      }),
+    ).toBe("Todo update failed: Task #99 was not found");
 
     const completions = await harness.command.getArgumentCompletions?.("cl");
     expect(completions).toEqual([
@@ -437,11 +432,15 @@ describe("Pi Todo extension", () => {
 
     harness.confirmResult = false;
     await harness.command.handler("clear", context);
-    expect(resultText(await execute({ action: "list" }))).toContain("#1 Active one");
+    expect(resultText(await harness.execute({ action: "list" }, context))).toContain(
+      "#1 Active one",
+    );
 
     harness.confirmResult = true;
     await harness.command.handler("clear", context);
-    expect(resultText(await execute({ action: "list" }))).toBe("Todo List is empty");
+    expect(resultText(await harness.execute({ action: "list" }, context))).toBe(
+      "Todo List is empty",
+    );
     expect(harness.widget).toBeUndefined();
     expect(harness.notifications.at(-1)).toEqual({ message: "Cleared 6 Tasks", type: "info" });
 

@@ -120,7 +120,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
   const runTodoAction = (input: TodoActionInput, context: ExtensionContext) => {
     const result = applyTodoAction(state, input);
     if (!result.ok) throw result.error;
-    if (result.changed) commitTodoState(result.state, context);
+    if (result.state !== state) commitTodoState(result.state, context);
     return result;
   };
   const restoreState = (context: ExtensionContext): void => {
@@ -163,11 +163,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     renderResult: (result, { expanded }, theme) => {
       const text = result.content.find((item) => item.type === "text");
       if (!result.details) {
-        return new Text(
-          theme.fg("error", text?.type === "text" ? text.text : "Todo operation failed"),
-          0,
-          0,
-        );
+        return new Text(theme.fg("error", text?.text ?? "Todo operation failed"), 0, 0);
       }
       if (result.details.action === "list") {
         const tasks = result.details.tasks;
@@ -188,11 +184,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
         if (remaining > 0) lines.push(theme.fg("dim", `… ${remaining} more`));
         return new Text(lines.join("\n"), 0, 0);
       }
-      return new Text(
-        theme.fg("success", "✓ ") + theme.fg("muted", text?.type === "text" ? text.text : "Done"),
-        0,
-        0,
-      );
+      return new Text(theme.fg("success", "✓ ") + theme.fg("muted", text?.text ?? "Done"), 0, 0);
     },
   });
 
