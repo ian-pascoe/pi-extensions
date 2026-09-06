@@ -87,7 +87,7 @@ Take over native manual, threshold, and overflow compaction through `session_bef
 
 Users must not have to remember to disable auto-compaction, and the extension must not silently rewrite global settings. Native `/compact` retains Pi's normal interruption behavior: Pi aborts the active run before invoking the hook. `/rollover` remains the deliberate agent-led request path.
 
-Another compaction owner must not silently replace this policy. Detect/report conflicts where possible and fail closed on known conflicts or preparation failures. A thrown hook can let Pi fall back to its native summarizer, so expected errors require explicit handling rather than an uncaught exception.
+Another compaction owner must not silently replace this policy. Inspect actual hook results during native dispatch, not listener counts: allow passive observers and cancellation, but report the source and cancel competing summaries in either load order. Guard the final result against missing ownership or summarizer fallback. Fail closed on known conflicts or preparation failures. A thrown hook can let Pi fall back to its native summarizer, so expected errors require explicit handling rather than an uncaught exception.
 
 ## One checkpoint representation
 

@@ -149,6 +149,8 @@ test("reload replaces its own callbacks while preserving a later extension's wra
   expect(newChecks).toBe(1);
   expect(JSON.stringify(f.requests[0])).toContain("LATER WRAPPER");
   replacement.dispose();
+  expect(Object.getOwnPropertyDescriptor(f.session.extensionRunner, "emit")).toBeUndefined();
+  expect(Object.getOwnPropertyDescriptor(f.session.extensionRunner, "hasHandlers")).toBeUndefined();
   expect(f.session.agent.transformContext).toBe(later);
   f.responses.push(reply("Still running."));
   await f.session.prompt("After disposal");

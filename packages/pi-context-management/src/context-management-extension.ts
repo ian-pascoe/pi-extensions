@@ -1,7 +1,11 @@
 import { Type } from "typebox";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Value } from "typebox/value";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  SessionBeforeCompactEvent,
+} from "@earendil-works/pi-coding-agent";
 import { captureCheckpointAdapter, type CheckpointAdapter } from "./checkpoint-adapter.js";
 import { registerContextTools } from "./context-tools.js";
 import {
@@ -53,17 +57,6 @@ export default function contextManagement(pi: ExtensionAPI): void {
     if (failure) throw failure;
     if (!adapter) throw new Error("Context Management has no compatible Pi session");
     assertContextJournalReadable(adapter.session.sessionManager);
-    const owners = adapter.session.resourceLoader
-      .getExtensions()
-      .extensions.reduce(
-        (count, extension) =>
-          count + (extension.handlers.get("session_before_compact")?.length ?? 0),
-        0,
-      );
-    if (owners !== 1)
-      throw new Error(
-        "Context Management requires sole ownership of session_before_compact; remove the competing compaction handler",
-      );
     return adapter;
   };
   const requireSettings = () => {
@@ -78,6 +71,10 @@ export default function contextManagement(pi: ExtensionAPI): void {
     warnedWindow = undefined;
     try {
       adapter = captureCheckpointAdapter(pi, {
+        compaction: {
+          handler: beforeCompact,
+          onConflict: (error) => fail(error, ctx),
+        },
         afterTransformContext(messages, signal, mayRebuild) {
           signal?.throwIfAborted();
           try {
@@ -333,7 +330,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
       fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
     }
   });
-  pi.on("session_before_compact", (event, ctx) => {
+  function beforeCompact(event: SessionBeforeCompactEvent, ctx: ExtensionContext) {
     try {
       event.signal.throwIfAborted();
       const owner = requireAdapter();
@@ -358,7 +355,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
       fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
       return { cancel: true };
     }
-  });
+  }
+  pi.on("session_before_compact", beforeCompact);
   pi.on("session_compact", (event, ctx) => {
     nativeLeaf = undefined;
     if (!Value.Check(CheckpointDetails, event.compactionEntry.details)) {

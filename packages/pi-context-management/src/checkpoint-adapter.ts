@@ -4,6 +4,8 @@ import {
   SessionManager,
   type CompactionEntry,
   type ExtensionAPI,
+  type ExtensionHandler,
+  type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -15,6 +17,7 @@ const Capabilities = Type.Object({
   abortCompaction: Callable,
   getContextUsage: Callable,
   resourceLoader: Type.Object({ getExtensions: Callable }),
+  extensionRunner: Type.Object({ emit: Callable, hasHandlers: Callable }),
   settingsManager: Type.Object({
     getGlobalSettings: Callable,
     getProjectSettings: Callable,
@@ -46,8 +49,25 @@ const Capabilities = Type.Object({
   }),
 });
 const Disposable = Type.Object({ dispose: Callable });
+const CancelledCompaction = Type.Object({ cancel: Type.Literal(true) });
+const PassiveCompaction = Type.Object({
+  cancel: Type.Optional(Type.Literal(false)),
+  compaction: Type.Optional(Type.Undefined()),
+});
+const ProvidedCompaction = Type.Object({
+  compaction: Type.Object({
+    summary: Type.String({ minLength: 1 }),
+    firstKeptEntryId: Type.String({ minLength: 1 }),
+    tokensBefore: Type.Number({ minimum: 0 }),
+  }),
+});
 
 export interface CheckpointAdapterOptions {
+  /** Guard actual native hook results without rejecting passive listeners or cancellation. */
+  readonly compaction?: {
+    readonly handler: ExtensionHandler<SessionBeforeCompactEvent, unknown>;
+    readonly onConflict: (error: Error) => void;
+  };
   /** Checks the final public projections. A native commit reapplies those projections once, then validates without allowing another commit. */
   readonly afterTransformContext?: (
     messages: AgentMessage[],
@@ -139,6 +159,7 @@ export function captureCheckpointAdapter(
   const session = capture(pi);
   const agent = session.agent;
   const manager = session.sessionManager;
+  const runner = session.extensionRunner;
   const existing = Object.getOwnPropertyDescriptor(agent, AdapterSlot)?.value;
   if (existing !== undefined) {
     if (!Value.Check(Disposable, existing))
@@ -161,6 +182,69 @@ export function captureCheckpointAdapter(
   ) {
     throw new Error("Context Management requires the unwrapped native appendCompaction method");
   }
+  const emitDescriptor = Object.getOwnPropertyDescriptor(runner, "emit");
+  const hasHandlersDescriptor = Object.getOwnPropertyDescriptor(runner, "hasHandlers");
+  if (
+    (emitDescriptor ? emitDescriptor.writable !== true : !Object.isExtensible(runner)) ||
+    (hasHandlersDescriptor ? hasHandlersDescriptor.writable !== true : !Object.isExtensible(runner))
+  ) {
+    throw new Error("Context Management capability unavailable: writable extension event dispatch");
+  }
+  const hasHandlers = runner.hasHandlers.bind(runner);
+  // Native compaction must reach our result guard even if its registered handler disappears.
+  const hasHandlersWrapper: typeof runner.hasHandlers = (event) =>
+    active && options.compaction && event === "session_before_compact" ? true : hasHandlers(event);
+  const emit = runner.emit.bind(runner);
+  const emitWrapper: typeof runner.emit = async (event) => {
+    const policy = options.compaction;
+    if (!active || !policy || event.type !== "session_before_compact") return emit(event);
+    const restoreHandlers: Array<() => void> = [];
+    let ownResult: unknown;
+    try {
+      ready();
+      for (const extension of session.resourceLoader.getExtensions().extensions) {
+        const handlers = extension.handlers.get("session_before_compact");
+        if (!handlers) continue;
+        for (const [index, handler] of handlers.entries()) {
+          const guarded: typeof handler = async (...args) => {
+            const result = await handler(...args);
+            if (handler === policy.handler) {
+              ownResult = result;
+              return result;
+            }
+            if (!result || Value.Check(PassiveCompaction, result)) return;
+            if (Value.Check(CancelledCompaction, result)) return { cancel: true };
+            policy.onConflict(
+              new Error(
+                `Competing compaction result from ${extension.path}; disable its compaction override`,
+              ),
+            );
+            return { cancel: true };
+          };
+          handlers[index] = guarded;
+          restoreHandlers.push(() => {
+            if (handlers[index] === guarded) handlers[index] = handler;
+          });
+        }
+      }
+      const result = await emit(event);
+      if (
+        !Value.Check(CancelledCompaction, result) &&
+        (result !== ownResult || !Value.Check(ProvidedCompaction, ownResult))
+      ) {
+        throw new Error(
+          "Context Management compaction result missing or replaced; refusing native summarizer fallback",
+        );
+      }
+      return result;
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      policy.onConflict(error);
+      throw new Error("Compaction cancelled", { cause: error });
+    } finally {
+      for (const restore of restoreHandlers.reverse()) restore();
+    }
+  };
   const appendCompaction = manager.appendCompaction.bind(manager);
   const appendWrapper: SessionManager["appendCompaction"] = (...args) => {
     const id = appendCompaction(...args);
@@ -175,7 +259,9 @@ export function captureCheckpointAdapter(
     if (
       !Value.Check(Capabilities, session) ||
       !writable(agent.state, "messages") ||
-      manager.appendCompaction !== appendWrapper
+      manager.appendCompaction !== appendWrapper ||
+      runner.emit !== emitWrapper ||
+      runner.hasHandlers !== hasHandlersWrapper
     ) {
       const error = new Error("Context Management native checkpoint capability lost");
       adapter.fault(error);
@@ -319,6 +405,15 @@ export function captureCheckpointAdapter(
     dispose() {
       if (!active) return;
       active = false;
+      if (runner.hasHandlers === hasHandlersWrapper) {
+        if (hasHandlersDescriptor)
+          Object.defineProperty(runner, "hasHandlers", hasHandlersDescriptor);
+        else Reflect.deleteProperty(runner, "hasHandlers");
+      }
+      if (runner.emit === emitWrapper) {
+        if (emitDescriptor) Object.defineProperty(runner, "emit", emitDescriptor);
+        else Reflect.deleteProperty(runner, "emit");
+      }
       if (manager.appendCompaction === appendWrapper) {
         if (appendDescriptor) Object.defineProperty(manager, "appendCompaction", appendDescriptor);
         else Reflect.deleteProperty(manager, "appendCompaction");
@@ -331,6 +426,8 @@ export function captureCheckpointAdapter(
     },
   };
   Object.defineProperty(agent, AdapterSlot, { value: adapter, configurable: true });
+  runner.hasHandlers = hasHandlersWrapper;
+  runner.emit = emitWrapper;
   manager.appendCompaction = appendWrapper;
   agent.prepareNextTurnWithContext = wrapper;
   agent.transformContext = transformWrapper;

@@ -142,18 +142,6 @@ describe("Context Windows through the Pi SDK", () => {
     });
   }
 
-  it("fails closed on a second compaction owner before model execution", async () => {
-    const f = await createSdkHarness([
-      (pi) => {
-        pi.on("session_before_compact", () => ({ cancel: true }));
-      },
-      contextManagement,
-    ]);
-    f.responses.push(reply("Must not be requested."));
-    await f.session.prompt("Continue task");
-    expect(f.requests).toHaveLength(0);
-    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-  });
   it("inspects without changing History or making a model request", async () => {
     const f = await createSdkHarness([contextManagement]);
     const before = JSON.stringify(f.manager.getEntries());

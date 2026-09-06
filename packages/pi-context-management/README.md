@@ -36,6 +36,8 @@ A normal Rollover carries standing instructions, the Handoff, a Note Index of at
 
 Native manual, threshold, and overflow compaction use the same native checkpoint representation; no background model or summarization request is added. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents and CodeMode processes are not replaced or patched.
 
+Other extensions may observe or cancel native compaction; registering a listener is not a conflict. Inactive Autoresearch is supported. If another hook supplies compaction content, Context Management stops before checkpoint persistence and names that extension, regardless of load order. Disable the competing override before resuming. Empty observer results cannot trigger Pi's native summarizer fallback.
+
 At 80% of usable input budget the extension warns the agent to prepare Notes and a Handoff. At 90% it performs an Emergency Rollover using the last saved Handoff, marking it stale or absent and directing recovery through History. Usable input budget excludes the larger of `outputReserveTokens` and the model's output limit. The input estimate includes standing instructions, tool declarations, and the safety margin. The effective Tail shrinks before the Handoff or standing context is sacrificed; an oversized Handoff fails with an actionable error rather than being truncated.
 
 Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.

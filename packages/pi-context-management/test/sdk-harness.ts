@@ -51,6 +51,13 @@ export async function createSdkHarness(
     retry: { enabled: false },
   };
   const settings = options.settings ?? SettingsManager.inMemory(document);
+  const baseModel = getModel("anthropic", "claude-sonnet-4-5");
+  const model = {
+    ...baseModel,
+    contextWindow: options.contextWindow ?? 200_000,
+    maxTokens: options.maxTokens ?? 512,
+  };
+  const providerRequests: string[] = [];
   const loader = new DefaultResourceLoader({
     cwd: dir,
     agentDir: dir,
@@ -60,7 +67,18 @@ export async function createSdkHarness(
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    extensionFactories: extensions,
+    extensionFactories: [
+      ...extensions,
+      (pi) =>
+        pi.registerProvider("anthropic", {
+          api: "anthropic-messages",
+          models: [model],
+          streamSimple(model) {
+            providerRequests.push(model.id);
+            throw new Error("Unexpected direct provider request (including a native summarizer)");
+          },
+        }),
+    ],
     additionalExtensionPaths: options.additionalExtensionPaths ?? [],
     systemPromptOverride: () =>
       options.systemPrompt ?? "Standing instructions: finish the user's task.",
@@ -73,12 +91,6 @@ export async function createSdkHarness(
     allowModelNetwork: false,
   });
   await modelRuntime.setRuntimeApiKey("anthropic", "TEST-NOT-A-REAL-KEY");
-  const baseModel = getModel("anthropic", "claude-sonnet-4-5");
-  const model = {
-    ...baseModel,
-    contextWindow: options.contextWindow ?? 200_000,
-    maxTokens: options.maxTokens ?? 512,
-  };
   const { session } = await createAgentSession({
     cwd: dir,
     agentDir: dir,
@@ -124,7 +136,7 @@ export async function createSdkHarness(
     return stream;
   };
   await session.bindExtensions({ mode: "rpc" });
-  return { dir, manager, settings, session, requests, responses, events };
+  return { dir, manager, settings, session, requests, responses, events, providerRequests };
 }
 
 export function reply(text: string, inputTokens = 100): AssistantMessage {
