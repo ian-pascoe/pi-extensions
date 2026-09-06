@@ -2,7 +2,9 @@
 
 `@ian-pascoe/pi-context-management` lets a Pi agent continue work across native Context Windows using its own **Notes**, an explicit **Handoff**, a bounded recent **Tail**, and retrievable original **History**.
 
-Requires Node `>=22.19.0` and exactly Pi `0.85.1`. The native-checkpoint adapter is version- and capability-guarded because Pi does not expose arbitrary-time checkpoint mutation through its public extension API.
+Requires Node `>=22.19.0` and a Pi runtime exposing the required checkpoint capabilities. The adapter checks runtime methods, writable hooks, and native append ownership rather than requiring an exact Pi version. Missing or lost capabilities fail closed before checkpoint mutation.
+
+The SDK regression suite passes on Pi `0.85.0` and `0.85.1`; development dependencies remain pinned to `0.85.1`. Runtime checks validate interface shape, not persistence ordering or compatibility with every future Pi release. Pi still lacks arbitrary-time checkpoint mutation through its public extension API.
 
 ## Install
 

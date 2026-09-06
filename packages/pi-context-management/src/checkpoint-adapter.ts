@@ -2,7 +2,6 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   AgentSession,
   SessionManager,
-  VERSION,
   type CompactionEntry,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
@@ -13,6 +12,14 @@ import { assertContextJournalReadable, quarantineContextJournal } from "./contex
 const AdapterSlot = Symbol.for("@ian-pascoe/pi-context-management/checkpoint-adapter");
 const Callable = Type.Function([], Type.Unknown());
 const Capabilities = Type.Object({
+  abortCompaction: Callable,
+  getContextUsage: Callable,
+  resourceLoader: Type.Object({ getExtensions: Callable }),
+  settingsManager: Type.Object({
+    getGlobalSettings: Callable,
+    getProjectSettings: Callable,
+    isProjectTrusted: Callable,
+  }),
   agent: Type.Object({
     abort: Callable,
     prepareNextTurnWithContext: Callable,
@@ -24,6 +31,8 @@ const Capabilities = Type.Object({
     }),
   }),
   sessionManager: Type.Object({
+    getHeader: Callable,
+    getSessionId: Callable,
     getLeafId: Callable,
     getEntry: Callable,
     getEntries: Callable,
@@ -47,7 +56,7 @@ export interface CheckpointAdapterOptions {
   ) => AgentMessage[] | void | Promise<AgentMessage[] | void>;
 }
 
-/** The sole version-gated mutable Pi integration; the caller owns safe batch placement and policy. */
+/** The sole capability-gated mutable Pi integration; the caller owns safe batch placement and policy. */
 export interface CheckpointAdapter {
   readonly session: AgentSession;
   /** Last append acknowledged by the native journal method, including native compaction paths. */
@@ -76,8 +85,6 @@ function writable(
 }
 
 function capture(pi: Pick<ExtensionAPI, "getAllTools">): AgentSession {
-  if (VERSION !== "0.85.1")
-    throw new Error(`Context Management requires tested Pi 0.85.1; found ${VERSION}`);
   const prototype = AgentSession.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, "getAllTools");
   if (!descriptor?.configurable || !Value.Check(Callable, descriptor.value)) {
@@ -109,7 +116,7 @@ function capture(pi: Pick<ExtensionAPI, "getAllTools">): AgentSession {
   // Every request and mutation checks journal readability in ready().
   if (!Value.Check(Capabilities, session)) {
     throw new Error(
-      "Context Management capability unavailable: callable native checkpoint/session refresh",
+      "Context Management capability unavailable: required session/checkpoint methods",
     );
   }
   if (
@@ -152,7 +159,7 @@ export function captureCheckpointAdapter(
     manager.appendCompaction !== SessionManager.prototype.appendCompaction ||
     (appendDescriptor ? appendDescriptor.writable !== true : !Object.isExtensible(manager))
   ) {
-    throw new Error("Context Management requires the tested native appendCompaction method");
+    throw new Error("Context Management requires the unwrapped native appendCompaction method");
   }
   const appendCompaction = manager.appendCompaction.bind(manager);
   const appendWrapper: SessionManager["appendCompaction"] = (...args) => {

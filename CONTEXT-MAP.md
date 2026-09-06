@@ -20,7 +20,7 @@ context relevant to the work:
 | `@ian-pascoe/pi-context-management` | [`packages/pi-context-management/CONTEXT.md`](packages/pi-context-management/CONTEXT.md) | Session Notes, History, and Rollover    |
 
 `pi-context-management` implements session-local Notes, selected-branch History retrieval,
-and native Context Checkpoints for Pi 0.85.1.
+and native Context Checkpoints for capability-compatible Pi runtimes.
 
 The contexts are package-local vocabulary authorities. Repository-wide decisions
 live in [`docs/adr/`](docs/adr/).

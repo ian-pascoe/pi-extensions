@@ -2,7 +2,7 @@
 
 **Package:** `@ian-pascoe/pi-context-management`
 
-**Status:** production package implemented on 2026-09-06 after the accepted native-checkpoint prototype. The three tools, two commands, budget safeguards, native compaction takeover, and guarded Pi 0.85.1 adapter are implemented with SDK regression tests. Storage failures quarantine the loaded journal and require reopening the persisted session—not merely resource `/reload`; transactional repair is deliberately not implemented. See the [package README](../../packages/pi-context-management/README.md) and historical [prototype verdict](../../packages/pi-context-management/prototype/README.md).
+**Status:** production package implemented on 2026-09-06 after the accepted native-checkpoint prototype. The three tools, two commands, budget safeguards, native compaction takeover, and capability-guarded adapter are implemented with SDK regression tests. Runtime capabilities—not an exact Pi version—control activation; Pi 0.85.1 remains the pinned development baseline. Storage failures quarantine the loaded journal and require reopening the persisted session—not merely resource `/reload`; transactional repair is deliberately not implemented. See the [package README](../../packages/pi-context-management/README.md) and historical [prototype verdict](../../packages/pi-context-management/prototype/README.md).
 
 - [Glossary](../../packages/pi-context-management/CONTEXT.md)
 - [ADR-0001: native compaction checkpoints](../../packages/pi-context-management/docs/adr/0001-use-native-compaction-checkpoints.md)
@@ -93,7 +93,7 @@ Another compaction owner must not silently replace this policy. Detect/report co
 
 Every Rollover must produce a native Pi `CompactionEntry` understood by the parent, native session context construction, resume, forks, and existing Subagent inheritance. Do not introduce a second virtual-only checkpoint representation and then modify its consumers to compensate.
 
-Native compaction hooks cover native lifecycle paths. Arbitrary-time Rollover requires a **narrow, version-checked adapter** beyond the extension-facing read-only session interface. This trade-off is accepted; deferred-only compaction is not the substitute design.
+Native compaction hooks cover native lifecycle paths. Arbitrary-time Rollover requires a **narrow, runtime-capability-checked adapter** beyond the extension-facing read-only session interface. This trade-off is accepted; deferred-only compaction is not the substitute design.
 
 The adapter must maintain coherent persisted state and the parent's live context. Merely casting to call `appendCompaction` is insufficient. It must also preserve the accepted commit-failure behavior: a failed commit leaves the old Context Window active, while previously successful Note writes remain saved.
 

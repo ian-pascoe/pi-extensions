@@ -200,6 +200,37 @@ test("capability loss is rejected without checkpoint mutation and always restore
   );
 });
 
+test.each([
+  { target: "manager", method: "getHeader" },
+  { target: "session", method: "getContextUsage" },
+  { target: "settings", method: "isProjectTrusted" },
+] as const)(
+  "rejects missing $target / $method at capture and before mutation",
+  async ({ target, method }) => {
+    const f = await fixture();
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("Original task");
+    const owner = f[target];
+    const descriptor = Object.getOwnPropertyDescriptor(owner, method);
+    const before = f.manager.getEntries();
+    let replacement: CheckpointAdapter | undefined;
+    try {
+      Object.defineProperty(owner, method, { value: undefined, configurable: true });
+      expect(() => {
+        replacement = captureCheckpointAdapter(f.api);
+      }).toThrow(/capability unavailable/);
+      expect(() => f.adapter.commit("Must not commit.", undefined, 100, {})).toThrow(
+        /capability lost/,
+      );
+      expect(f.manager.getEntries()).toEqual(before);
+    } finally {
+      if (descriptor) Object.defineProperty(owner, method, descriptor);
+      else Reflect.deleteProperty(owner, method);
+      replacement?.dispose();
+    }
+  },
+);
+
 test("a projection still too large after one checkpoint cannot cause a second rebuild", async () => {
   let armed = false;
   const f = await fixture({

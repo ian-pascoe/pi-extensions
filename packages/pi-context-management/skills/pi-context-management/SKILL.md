@@ -6,7 +6,7 @@ license: MIT
 
 # Pi Context Management
 
-1. Read [`../../README.md`](../../README.md), then confirm the runtime is exactly Pi 0.85.1 and identify whether `contextManagement` settings come from global or trusted-project scope.
+1. Read [`../../README.md`](../../README.md), identify the Pi runtime version and any capability-check error, then determine whether `contextManagement` settings come from global or trusted-project scope. Activation depends on runtime capabilities, not an exact version number.
 2. Call `context_notes` with `{"action":"list"}` and `context_history` with `{"action":"windows"}`. Finish if both return the intended selected-branch state.
 3. For a missing item, use its `context:<source-session>:<entry>` reference with `context_history read`. Classify an unavailable reference as wrong branch, abandoned sibling, unrelated session, or context-only inheritance; the extension opens only entries present on the selected branch.
 4. For Rollover trouble, call `/context`, update Notes, then invoke `context_rollover` directly as the only tool call with a non-empty Handoff. A nested or batched call is intentionally rejected.
