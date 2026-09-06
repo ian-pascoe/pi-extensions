@@ -9,20 +9,21 @@ independently or together from this Git repository.
 
 ## Packages
 
-| Package                                                             | Purpose                                                     | Install                                           |
-| ------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------- |
-| [`@ian-pascoe/pi-minimal-subagents`](packages/pi-minimal-subagents) | Persistent nested-agent coordination.                       | `pi install npm:@ian-pascoe/pi-minimal-subagents` |
-| [`@ian-pascoe/pi-bible-verses`](packages/pi-bible-verses)           | Offline rotating verse working messages.                    | `pi install npm:@ian-pascoe/pi-bible-verses`      |
-| [`@ian-pascoe/pi-tps-tracker`](packages/pi-tps-tracker)             | Assistant output-token throughput.                          | `pi install npm:@ian-pascoe/pi-tps-tracker`       |
-| [`@ian-pascoe/pi-git-status-widget`](packages/pi-git-status-widget) | Refreshing Git worktree status.                             | `pi install npm:@ian-pascoe/pi-git-status-widget` |
-| [`@ian-pascoe/pi-git-checkpoints`](packages/pi-git-checkpoints)     | Git-backed worktree checkpoints for tree navigation.        | `pi install npm:@ian-pascoe/pi-git-checkpoints`   |
-| [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                 | Configured automatic post-edit formatting.                  | `pi install npm:@ian-pascoe/pi-formatter`         |
-| [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                             | Configured language-server tools and post-edit diagnostics. | `pi install npm:@ian-pascoe/pi-lsp`               |
-| [`@ian-pascoe/pi-dap`](packages/pi-dap)                             | Configured Debug Adapter Protocol sessions.                 | `pi install npm:@ian-pascoe/pi-dap`               |
-| [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                   | Persistent TypeScript composition of registered Pi tools.   | `pi install npm:@ian-pascoe/pi-codemode`          |
-| [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                             | Model Context Protocol hosting for configured MCP servers.  | `pi install npm:@ian-pascoe/pi-mcp`               |
-| [`@ian-pascoe/pi-web-tools`](packages/pi-web-tools)                 | Public web search and textual URL retrieval.                | `pi install npm:@ian-pascoe/pi-web-tools`         |
-| [`@ian-pascoe/pi-todo`](packages/pi-todo)                           | Minimal session-native Todo List for agents.                | `pi install npm:@ian-pascoe/pi-todo`              |
+| Package                                                               | Purpose                                                     | Install                                            |
+| --------------------------------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------------- |
+| [`@ian-pascoe/pi-minimal-subagents`](packages/pi-minimal-subagents)   | Persistent nested-agent coordination.                       | `pi install npm:@ian-pascoe/pi-minimal-subagents`  |
+| [`@ian-pascoe/pi-bible-verses`](packages/pi-bible-verses)             | Offline rotating verse working messages.                    | `pi install npm:@ian-pascoe/pi-bible-verses`       |
+| [`@ian-pascoe/pi-tps-tracker`](packages/pi-tps-tracker)               | Assistant output-token throughput.                          | `pi install npm:@ian-pascoe/pi-tps-tracker`        |
+| [`@ian-pascoe/pi-git-status-widget`](packages/pi-git-status-widget)   | Refreshing Git worktree status.                             | `pi install npm:@ian-pascoe/pi-git-status-widget`  |
+| [`@ian-pascoe/pi-git-checkpoints`](packages/pi-git-checkpoints)       | Git-backed worktree checkpoints for tree navigation.        | `pi install npm:@ian-pascoe/pi-git-checkpoints`    |
+| [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                   | Configured automatic post-edit formatting.                  | `pi install npm:@ian-pascoe/pi-formatter`          |
+| [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                               | Configured language-server tools and post-edit diagnostics. | `pi install npm:@ian-pascoe/pi-lsp`                |
+| [`@ian-pascoe/pi-dap`](packages/pi-dap)                               | Configured Debug Adapter Protocol sessions.                 | `pi install npm:@ian-pascoe/pi-dap`                |
+| [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                     | Persistent TypeScript composition of registered Pi tools.   | `pi install npm:@ian-pascoe/pi-codemode`           |
+| [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                               | Model Context Protocol hosting for configured MCP servers.  | `pi install npm:@ian-pascoe/pi-mcp`                |
+| [`@ian-pascoe/pi-web-tools`](packages/pi-web-tools)                   | Public web search and textual URL retrieval.                | `pi install npm:@ian-pascoe/pi-web-tools`          |
+| [`@ian-pascoe/pi-todo`](packages/pi-todo)                             | Minimal session-native Todo List for agents.                | `pi install npm:@ian-pascoe/pi-todo`               |
+| [`@ian-pascoe/pi-context-management`](packages/pi-context-management) | Session Notes, History retrieval, and native Rollover.      | `pi install npm:@ian-pascoe/pi-context-management` |
 
 The extensions share terminal capability decisions through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
@@ -70,6 +71,7 @@ packages/pi-codemode/src/index.ts
 packages/pi-mcp/src/index.ts
 packages/pi-web-tools/src/index.ts
 packages/pi-todo/src/index.ts
+packages/pi-context-management/src/index.ts
 ```
 
 Every selectable configuration skill path is:
@@ -87,6 +89,7 @@ packages/pi-codemode/skills/pi-codemode/SKILL.md
 packages/pi-mcp/skills/pi-mcp/SKILL.md
 packages/pi-web-tools/skills/pi-web-tools/SKILL.md
 packages/pi-todo/skills/pi-todo/SKILL.md
+packages/pi-context-management/skills/pi-context-management/SKILL.md
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -113,6 +116,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
   their normal host permissions.
 - Pi Web Tools needs outbound network access. `EXA_API_KEY` and
   `PARALLEL_API_KEY` are optional provider credentials.
+- Pi Context Management requires exactly Pi `0.85.1` because its native-checkpoint adapter is version-guarded.
 
 See package READMEs for configuration. The repository MIT license covers
 package code; Bible Verses documents separate embedded-text rights and
@@ -122,7 +126,7 @@ provenance.
 
 Node `22.19.0` and pnpm `11.21.0` are required.
 
-Published packages support Node `>=22.19.0` and Pi `>=0.84.1`.
+Published packages support Node `>=22.19.0` and Pi `>=0.84.1`, except Pi Context Management, which requires exactly Pi `0.85.1`.
 
 ```bash
 pnpm install
@@ -148,6 +152,8 @@ pnpm --filter @ian-pascoe/pi-web-tools typecheck
 pnpm --filter @ian-pascoe/pi-web-tools test
 pnpm --filter @ian-pascoe/pi-todo typecheck
 pnpm --filter @ian-pascoe/pi-todo test
+pnpm --filter @ian-pascoe/pi-context-management typecheck
+pnpm --filter @ian-pascoe/pi-context-management test
 pnpm --filter @ian-pascoe/pi-utils test
 ```
 

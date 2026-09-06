@@ -3,20 +3,24 @@
 Read the repository ADRs before a package context, then read only the package
 context relevant to the work:
 
-| Package                            | Context                                                                                | Domain focus                            |
-| ---------------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------- |
-| `@ian-pascoe/pi-minimal-subagents` | [`packages/pi-minimal-subagents/CONTEXT.md`](packages/pi-minimal-subagents/CONTEXT.md) | Persistent nested agents                |
-| `@ian-pascoe/pi-bible-verses`      | [`packages/pi-bible-verses/CONTEXT.md`](packages/pi-bible-verses/CONTEXT.md)           | Offline verse rotation and provenance   |
-| `@ian-pascoe/pi-tps-tracker`       | [`packages/pi-tps-tracker/CONTEXT.md`](packages/pi-tps-tracker/CONTEXT.md)             | Output-token throughput measurement     |
-| `@ian-pascoe/pi-git-status-widget` | [`packages/pi-git-status-widget/CONTEXT.md`](packages/pi-git-status-widget/CONTEXT.md) | Worktree-status display refresh         |
-| `@ian-pascoe/pi-git-checkpoints`   | [`packages/pi-git-checkpoints/CONTEXT.md`](packages/pi-git-checkpoints/CONTEXT.md)     | Session-linked worktree restoration     |
-| `@ian-pascoe/pi-formatter`         | [`packages/pi-formatter/CONTEXT.md`](packages/pi-formatter/CONTEXT.md)                 | Automatic post-edit formatting          |
-| `@ian-pascoe/pi-lsp`               | [`packages/pi-lsp/CONTEXT.md`](packages/pi-lsp/CONTEXT.md)                             | Language-server tools and edit feedback |
-| `@ian-pascoe/pi-dap`               | [`packages/pi-dap/CONTEXT.md`](packages/pi-dap/CONTEXT.md)                             | Interactive debug sessions              |
-| `@ian-pascoe/pi-codemode`          | [`packages/pi-codemode/CONTEXT.md`](packages/pi-codemode/CONTEXT.md)                   | Persistent TypeScript tool composition  |
-| `@ian-pascoe/pi-mcp`               | [`packages/pi-mcp/CONTEXT.md`](packages/pi-mcp/CONTEXT.md)                             | Model Context Protocol hosting          |
-| `@ian-pascoe/pi-web-tools`         | [`packages/pi-web-tools/CONTEXT.md`](packages/pi-web-tools/CONTEXT.md)                 | Public web search and retrieval         |
-| `@ian-pascoe/pi-todo`              | [`packages/pi-todo/CONTEXT.md`](packages/pi-todo/CONTEXT.md)                           | Minimal session work tracking           |
+| Package                             | Context                                                                                  | Domain focus                            |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------- |
+| `@ian-pascoe/pi-minimal-subagents`  | [`packages/pi-minimal-subagents/CONTEXT.md`](packages/pi-minimal-subagents/CONTEXT.md)   | Persistent nested agents                |
+| `@ian-pascoe/pi-bible-verses`       | [`packages/pi-bible-verses/CONTEXT.md`](packages/pi-bible-verses/CONTEXT.md)             | Offline verse rotation and provenance   |
+| `@ian-pascoe/pi-tps-tracker`        | [`packages/pi-tps-tracker/CONTEXT.md`](packages/pi-tps-tracker/CONTEXT.md)               | Output-token throughput measurement     |
+| `@ian-pascoe/pi-git-status-widget`  | [`packages/pi-git-status-widget/CONTEXT.md`](packages/pi-git-status-widget/CONTEXT.md)   | Worktree-status display refresh         |
+| `@ian-pascoe/pi-git-checkpoints`    | [`packages/pi-git-checkpoints/CONTEXT.md`](packages/pi-git-checkpoints/CONTEXT.md)       | Session-linked worktree restoration     |
+| `@ian-pascoe/pi-formatter`          | [`packages/pi-formatter/CONTEXT.md`](packages/pi-formatter/CONTEXT.md)                   | Automatic post-edit formatting          |
+| `@ian-pascoe/pi-lsp`                | [`packages/pi-lsp/CONTEXT.md`](packages/pi-lsp/CONTEXT.md)                               | Language-server tools and edit feedback |
+| `@ian-pascoe/pi-dap`                | [`packages/pi-dap/CONTEXT.md`](packages/pi-dap/CONTEXT.md)                               | Interactive debug sessions              |
+| `@ian-pascoe/pi-codemode`           | [`packages/pi-codemode/CONTEXT.md`](packages/pi-codemode/CONTEXT.md)                     | Persistent TypeScript tool composition  |
+| `@ian-pascoe/pi-mcp`                | [`packages/pi-mcp/CONTEXT.md`](packages/pi-mcp/CONTEXT.md)                               | Model Context Protocol hosting          |
+| `@ian-pascoe/pi-web-tools`          | [`packages/pi-web-tools/CONTEXT.md`](packages/pi-web-tools/CONTEXT.md)                   | Public web search and retrieval         |
+| `@ian-pascoe/pi-todo`               | [`packages/pi-todo/CONTEXT.md`](packages/pi-todo/CONTEXT.md)                             | Minimal session work tracking           |
+| `@ian-pascoe/pi-context-management` | [`packages/pi-context-management/CONTEXT.md`](packages/pi-context-management/CONTEXT.md) | Session Notes, History, and Rollover    |
+
+`pi-context-management` implements session-local Notes, selected-branch History retrieval,
+and native Context Checkpoints for Pi 0.85.1.
 
 The contexts are package-local vocabulary authorities. Repository-wide decisions
 live in [`docs/adr/`](docs/adr/).
