@@ -36,6 +36,7 @@ it("preserves the real Todo extension's live projection across a native Rollover
   ).toBe(false);
 });
 
+// Includes Deno startup and three Cell/tool round trips on shared CI runners.
 it("keeps a real CodeMode Deno binding alive through native compaction", async () => {
   const codeModePath = fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url));
   const f = await createSdkHarness([contextManagement], {
@@ -85,7 +86,7 @@ it("keeps a real CodeMode Deno binding alive through native compaction", async (
     JSON.stringify(f.requests[5]).includes('"result":"failed"'),
     JSON.stringify(f.requests[5]).slice(-1800),
   ).toBe(true);
-});
+}, 30_000);
 
 for (const position of ["before", "after"]) {
   it(`preserves MCP-style replay/instructions under ${position} hook order (contract fixture, no server)`, async () => {
