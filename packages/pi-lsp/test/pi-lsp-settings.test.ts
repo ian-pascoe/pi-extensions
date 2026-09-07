@@ -38,10 +38,43 @@ afterEach(async () => {
 });
 
 describe("resolveLspSettings", () => {
+  test("resolves enablement independently of complete Server Definition replacement", async () => {
+    const reader = await createSettingsReader(
+      {
+        lsp: {
+          servers: { typescript: typescriptServer("global-lsp") },
+          enablement: { typescript: false, globalOnly: false },
+        },
+      },
+      {
+        lsp: {
+          servers: { typescript: typescriptServer("project-lsp") },
+          enablement: { typescript: true },
+        },
+      },
+      true,
+    );
+
+    const settings = resolveLspSettings(reader);
+    expect([...settings.enablement]).toEqual([
+      ["typescript", { enabled: true, scope: "project" }],
+      ["globalOnly", { enabled: false, scope: "global" }],
+    ]);
+    expect(settings.servers.get("typescript")?.command).toBe("project-lsp");
+    expect(settings.warnings).toEqual([]);
+  });
+
   test("excludes project settings through an untrusted SettingsManager", async () => {
     const settingsManager = await createSettingsReader(
-      { lsp: { servers: { global: typescriptServer("global-lsp") } } },
-      { lsp: { servers: { project: typescriptServer("project-lsp") } } },
+      {
+        lsp: { servers: { global: typescriptServer("global-lsp") }, enablement: { global: false } },
+      },
+      {
+        lsp: {
+          servers: { project: typescriptServer("project-lsp") },
+          enablement: { global: true },
+        },
+      },
       false,
     );
 
@@ -50,6 +83,38 @@ describe("resolveLspSettings", () => {
     expect([...settings.servers]).toEqual([
       ["global", expect.objectContaining({ command: "global-lsp", id: "global" })],
     ]);
+    expect(settings.enablement.get("global")).toEqual({ enabled: false, scope: "global" });
+  });
+
+  test("reports invalid enablement values without dropping valid definitions or inherited choices", async () => {
+    const reader = await createSettingsReader(
+      {
+        lsp: {
+          servers: { typescript: typescriptServer("global-lsp") },
+          enablement: { typescript: false },
+        },
+      },
+      { lsp: { enablement: { typescript: "yes", "": true, another: false } } },
+      true,
+    );
+    const settings = resolveLspSettings(reader);
+    expect([...settings.enablement]).toEqual([
+      ["typescript", { enabled: false, scope: "global" }],
+      ["another", { enabled: false, scope: "project" }],
+    ]);
+    expect(settings.servers.has("typescript")).toBe(true);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("project lsp.enablement.typescript"),
+      expect.stringContaining("project lsp.enablement.:"),
+    ]);
+  });
+
+  test.each([null, [], true, "no"])("reports invalid enablement map %j", async (enablement) => {
+    const reader = await createSettingsReader({ lsp: { enablement } }, {}, true);
+    expect(resolveLspSettings(reader)).toMatchObject({
+      enablement: new Map(),
+      warnings: ["global lsp.enablement: expected a JSON object"],
+    });
   });
 
   test("merges timeout fields from global and trusted project settings", async () => {

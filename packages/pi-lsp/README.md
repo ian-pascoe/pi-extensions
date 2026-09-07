@@ -56,7 +56,8 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
 }
 ```
 
-Every field is optional except an enabled server's non-empty `command` and `languages`. Each
+Every field is optional except a Server Definition's non-empty `command` and `languages`, even
+when that definition is disabled. Each
 language needs a non-empty `languageId` and at least one extension or exact filename. Extensions
 include their leading period. `rootMarkers` are basename glob patterns; the nearest matching
 ancestor becomes the server root and Pi's working directory is the fallback. Set
@@ -72,8 +73,55 @@ Invalid server definitions and timeout fields are quarantined individually and r
 through `status`; unrelated valid settings continue to work. An invalid project server replacement
 still shadows the global definition. Untrusted project settings are ignored.
 
-Pi's `/reload` reloads configuration. Servers start on first use, live for one Pi session, and stay
-unavailable after a process or protocol failure until `restart` or `/reload`.
+Pi's `/reload` reloads configuration. Servers start lazily on first use and live for one Pi session.
+After a process or protocol failure, recovery requires stopping the affected Instance, disabling
+then enabling its Definition, using the existing `restart` tool operation, or `/reload`.
+
+## `/lsp` command
+
+Use `/lsp` to inspect server status and choose an action. The picker displays known workspace
+roots and the effective enablement scope; opening it never starts a server. Text shortcuts are:
+
+```text
+/lsp stop typescript
+/lsp stop typescript "packages/my app"
+/lsp disable typescript
+/lsp enable typescript
+/lsp disable typescript --project
+/lsp enable typescript --global
+```
+
+- **Stop** ends one known Server Instance and clears its failure state. The next matching request
+  can start it again. Omit the root when only one is known; otherwise choose a root in the picker
+  or supply its path, relative to Pi's working directory or absolute.
+- **Disable** prevents automatic and explicit startup of the entire Server Definition, stops all
+  its Instances in this session, and clears their failed runtime state.
+- **Enable** permits lazy startup without launching a process.
+
+Unflagged enable/disable choices are custom session entries. They survive `/reload` and saved-session
+resume, but follow the selected branch: navigating before a choice rolls it back, and forks inherit
+choices on their selected ancestry. A newly created session starts without session overrides. Pi
+only flushes entries in a brand-new session after its first assistant message; ephemeral sessions
+are not persisted.
+
+`--project` and `--global` write only the chosen settings document's `lsp.enablement` map, preserving
+Server Definitions and unrelated settings. Project writes require a trusted project. For example,
+this project setting disables an inherited global Definition without copying it:
+
+```json
+{ "lsp": { "enablement": { "typescript": false } } }
+```
+
+Enablement resolves independently of Server Definition replacement, by server ID:
+**session override → project setting → global setting → enabled by default**. Explicit `true`
+can override a lower scope's `false`. Scoped commands do not change session overrides and report
+when a higher-priority choice masks their effect. They update eligibility immediately in the current
+session; other sessions read the settings on startup or `/reload`. Changes to commands, languages,
+and other definition fields still require `/reload`.
+
+There are no `/lsp start`, `/lsp restart`, or `/lsp inherit` subcommands. Use explicit enable/disable
+choices to manage overrides. The existing agent-facing `lsp` tool remains available, but cannot
+start a disabled server.
 
 ## `lsp` tool
 
@@ -172,7 +220,7 @@ timeout, unavailable server, or an `apply_patch` adapter-version warning. Diagno
 duplicates from independent servers and never change the original tool's success or error state.
 Only servers that advertise document diagnostics participate; formatting-only servers remain
 available for explicit LSP formatting operations without appearing in Post-edit Diagnostics.
-Files excluded by every matching server's Activation Gate are skipped silently.
+Files excluded by every matching server's Activation Gate or disable state are skipped silently.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. Clean results and files without a

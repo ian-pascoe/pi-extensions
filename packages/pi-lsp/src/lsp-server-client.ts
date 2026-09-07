@@ -107,6 +107,8 @@ export interface LspServerClientOptions {
   readonly onWorkspaceEdit?: (workspaceEdit: WorkspaceEdit) => Promise<string>;
   /** Mark the owning Server Instance unavailable after its first terminal process/protocol failure. */
   readonly onUnavailable?: (error: LspServerClientError) => void;
+  /** Cancel startup before initialization completes; running clients use shutdown instead. */
+  readonly signal?: AbortSignal;
 }
 
 /** A valid UTF-8 document synchronized with one server instance. */
@@ -286,6 +288,7 @@ export class LspServerClient {
     await mkdir(dirname(options.stderrPath), { recursive: true, mode: 0o700 });
     await writeFile(options.stderrPath, "", { mode: 0o600 });
 
+    if (options.signal?.aborted === true) throw abortError(options);
     const childProcess = spawn(options.command, [...options.args], {
       cwd: options.rootPath,
       env: options.environment,
@@ -309,7 +312,12 @@ export class LspServerClient {
     connection.listen();
 
     try {
-      await client.initialize();
+      await client.raceBudget(
+        client.initialize(),
+        options.timeouts.initializeMs,
+        InitializeRequest.method,
+        options.signal,
+      );
       return client;
     } catch (cause) {
       await client.forceStop();
@@ -897,6 +905,7 @@ export class LspServerClient {
         },
         this.options.timeouts.initializeMs,
         InitializeRequest.method,
+        this.options.signal,
       );
     } catch (cause) {
       if (cause instanceof LspServerClientError) throw cause;

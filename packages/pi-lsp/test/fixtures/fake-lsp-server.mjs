@@ -195,6 +195,13 @@ function publishDiagnostics(document) {
 function handleNotification(message) {
   switch (message.method) {
     case "initialized":
+      if (process.env.FAKE_BLOCK_CONFIGURATION === "1") {
+        process.stdin.pause();
+        process.stderr.write(String(process.pid));
+        // Stay alive without draining the client's configuration notification.
+        setInterval(() => {}, 1000);
+        return;
+      }
       clientRequestsReady = exerciseClientRequests();
       return;
     case "workspace/didChangeConfiguration":
