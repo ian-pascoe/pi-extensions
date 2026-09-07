@@ -103,7 +103,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
                   content:
                     "Context budget warning (~" +
                     Math.round(budget.ratio * 100) +
-                    "% of usable input, output reserved). Update Notes and prepare a Handoff; call context_rollover alone before the emergency threshold.",
+                    "% of full context window). Update Notes and prepare a Handoff; call context_rollover alone before the emergency threshold.",
                 };
                 ctx.ui.notify("Context budget warning: prepare a Handoff and Rollover.", "warning");
                 return [...messages, warning];
@@ -202,10 +202,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
             "Input ~" +
               budget.inputTokens +
               " / " +
-              budget.usableInput +
-              " usable tokens; output reserved " +
-              budget.outputReserve +
-              ".",
+              budget.contextWindow +
+              " tokens (full context window).",
             "Latest native measurement: " +
               (budget.measuredTokens ?? "unavailable after transition") +
               ". Safety margin: " +

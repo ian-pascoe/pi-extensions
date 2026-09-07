@@ -205,7 +205,7 @@ describe("Context Windows through the Pi SDK", () => {
     );
   });
 
-  it("stops before sending static instructions that consume the usable budget", async () => {
+  it("stops before sending static instructions that consume the full context window", async () => {
     const f = await createSdkHarness([contextManagement], {
       contextWindow: 16_000,
       systemPrompt: "STANDING ".repeat(10_000),
@@ -245,26 +245,34 @@ describe("Context Windows through the Pi SDK", () => {
     expect(f.requests).toHaveLength(0);
     expect(JSON.stringify(f.manager.getEntries())).toBe(before);
   });
-  it("warns once near 80% of usable input without persisting the reminder", async () => {
-    const f = await createSdkHarness([contextManagement], { contextWindow: 24_000 });
-    f.responses.push(reply("Ready.", 16_000));
-    await f.session.prompt("Keep working");
-    const next = toolCall("context_notes", { action: "list" });
-    next.usage = reply("", 16_000).usage;
-    f.responses.push(next, reply("Done."));
-    await f.session.prompt("Continue");
-    expect(
-      JSON.stringify(f.requests[1]).includes("Context budget warning"),
-      JSON.stringify({
-        window: f.session.model?.contextWindow,
-        checkpoints: f.manager.getBranch().filter((e) => e.type === "compaction").length,
-        request: JSON.stringify(f.requests[1]).slice(-1500),
-      }),
-    ).toBe(true);
-    expect(JSON.stringify(f.requests[2]).includes("Context budget warning")).toBe(false);
-    expect(JSON.stringify(f.manager.getBranch()).includes("Context budget warning")).toBe(false);
-    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-  });
+  it.each([512, 12_000, 24_000])(
+    "warns only near 80% of the full window with output limit %i",
+    async (maxTokens) => {
+      const f = await createSdkHarness([contextManagement], { contextWindow: 24_000, maxTokens });
+      f.responses.push(reply("Ready.", 8000));
+      await f.session.prompt("Keep working");
+      f.responses.push(reply("Still working.", 17_000));
+      await f.session.prompt("Continue below the warning threshold");
+      expect(f.requests).toHaveLength(2);
+      expect(JSON.stringify(f.requests[1])).not.toContain("Context budget warning");
+      expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+      const next = toolCall("context_notes", { action: "list" });
+      next.usage = reply("", 17_000).usage;
+      f.responses.push(next, reply("Done."));
+      await f.session.prompt("Continue");
+      expect(
+        JSON.stringify(f.requests[2]).includes("Context budget warning"),
+        JSON.stringify({
+          window: f.session.model?.contextWindow,
+          checkpoints: f.manager.getBranch().filter((e) => e.type === "compaction").length,
+          request: JSON.stringify(f.requests[2]).slice(-1500),
+        }),
+      ).toBe(true);
+      expect(JSON.stringify(f.requests[3]).includes("Context budget warning")).toBe(false);
+      expect(JSON.stringify(f.manager.getBranch()).includes("Context budget warning")).toBe(false);
+      expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+    },
+  );
   it("rolls over before sending a large tool result and never replays the completed tool", async () => {
     let executions = 0;
     const f = await createSdkHarness(
@@ -278,7 +286,7 @@ describe("Context Windows through the Pi SDK", () => {
             async execute() {
               executions++;
               return {
-                content: [{ type: "text", text: "DATA-ONLY " + "data ".repeat(9000) }],
+                content: [{ type: "text", text: "DATA-ONLY " + "data ".repeat(10_000) }],
                 details: {},
               };
             },
@@ -286,7 +294,7 @@ describe("Context Windows through the Pi SDK", () => {
         },
         contextManagement,
       ],
-      { contextWindow: 16_000 },
+      { contextWindow: 16_000, maxTokens: 16_000 },
     );
     f.responses.push(toolCall("large_output", {}), reply("Recovered from History."));
     await f.session.prompt("Process the data");

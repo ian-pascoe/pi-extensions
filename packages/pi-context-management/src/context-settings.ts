@@ -7,7 +7,6 @@ const Settings = Type.Object(
     tailTokens: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000 })),
     warningThreshold: Type.Optional(Type.Number({ minimum: 0.1, maximum: 0.95 })),
     emergencyThreshold: Type.Optional(Type.Number({ minimum: 0.2, maximum: 0.99 })),
-    outputReserveTokens: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000_000 })),
     safetyMarginTokens: Type.Optional(Type.Integer({ minimum: 256, maximum: 100_000 })),
   },
   { additionalProperties: false },
@@ -17,7 +16,6 @@ export interface ContextSettings {
   tailTokens: number;
   warningThreshold: number;
   emergencyThreshold: number;
-  outputReserveTokens: number;
   safetyMarginTokens: number;
 }
 
@@ -27,7 +25,6 @@ export function resolveContextSettings(reader: AgentSession["settingsManager"]):
     tailTokens: 16_000,
     warningThreshold: 0.8,
     emergencyThreshold: 0.9,
-    outputReserveTokens: 0,
     safetyMarginTokens: 2048,
   };
   const layers = [reader.getGlobalSettings()];

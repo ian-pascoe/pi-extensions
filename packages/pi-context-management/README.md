@@ -41,7 +41,7 @@ SDK/RPC manual compaction, threshold compaction, overflow, and Emergency Rollove
 
 Other extensions may observe or cancel native compaction; registering a listener is not a conflict. Inactive Autoresearch is supported. If another hook supplies compaction content, Context Management stops before checkpoint persistence and names that extension, regardless of load order. Disable the competing override before resuming. Empty observer results cannot trigger Pi's native summarizer fallback.
 
-At 80% of usable input budget the extension warns the agent to prepare Notes and a Handoff. At 90% it performs an Emergency Rollover using the last saved Handoff, marking it stale or absent and directing recovery through History. Usable input budget excludes the larger of `outputReserveTokens` and the model's output limit. The input estimate includes standing instructions, tool declarations, and the safety margin. The effective Tail shrinks before the Handoff or standing context is sacrificed; an oversized Handoff fails with an actionable error rather than being truncated.
+At 80% of the model's full context window the extension warns the agent to prepare Notes and a Handoff. At 90% it performs an Emergency Rollover using the last saved Handoff, marking it stale or absent and directing recovery through History. Neither threshold subtracts the model's output limit. The input estimate includes standing instructions, tool declarations, and the safety margin. The effective Tail shrinks before the Handoff or standing context is sacrificed; an oversized Handoff fails with an actionable error rather than being truncated.
 
 Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
 
@@ -55,19 +55,19 @@ The extension reads `contextManagement` from Pi's global `~/.pi/agent/settings.j
     "tailTokens": 16000,
     "warningThreshold": 0.8,
     "emergencyThreshold": 0.9,
-    "outputReserveTokens": 16384,
     "safetyMarginTokens": 2048
   }
 }
 ```
 
-| Setting               |            Default | Constraint                                                                               |
-| --------------------- | -----------------: | ---------------------------------------------------------------------------------------- |
-| `tailTokens`          |            `16000` | Non-negative maximum Tail allowance.                                                     |
-| `warningThreshold`    |              `0.8` | Fraction of usable input budget; less than `emergencyThreshold`.                         |
-| `emergencyThreshold`  |              `0.9` | Fraction of usable input budget; greater than `warningThreshold` and below `1`.          |
-| `outputReserveTokens` | model output limit | Optional non-negative reserve; the effective reserve is at least the model output limit. |
-| `safetyMarginTokens`  |             `2048` | Conservative accounting margin, minimum `256`.                                           |
+| Setting              | Default | Constraint                                                                          |
+| -------------------- | ------: | ----------------------------------------------------------------------------------- |
+| `tailTokens`         | `16000` | Non-negative maximum Tail allowance.                                                |
+| `warningThreshold`   |   `0.8` | Fraction of the full context window; less than `emergencyThreshold`.                |
+| `emergencyThreshold` |   `0.9` | Fraction of the full context window; greater than `warningThreshold` and below `1`. |
+| `safetyMarginTokens` |  `2048` | Conservative accounting margin, minimum `256`.                                      |
+
+The former `outputReserveTokens` setting has been removed; delete it from existing `contextManagement` settings before reloading.
 
 Trusted project values override global values. Invalid settings are reported and the extension fails closed rather than guessing a policy. Reload Pi after changing settings.
 

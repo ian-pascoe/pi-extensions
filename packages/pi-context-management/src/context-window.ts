@@ -169,8 +169,8 @@ export function contextBudget(
 ) {
   const model = session.model;
   if (!model) throw new Error("Select a model before managing its Context Window");
-  const outputReserve = Math.max(model.maxTokens, settings.outputReserveTokens);
-  const usableInput = model.contextWindow - outputReserve;
+  const contextWindow = model.contextWindow;
+  if (contextWindow <= 0) throw new Error("Model context window must be positive");
   const staticTokens =
     textTokens(session.agent.state.systemPrompt) +
     textTokens(
@@ -188,13 +188,11 @@ export function contextBudget(
     Math.max(messageTokens(messages), (measured ?? 0) + liveExtra) +
     staticTokens +
     settings.safetyMarginTokens;
-  if (usableInput <= 0) throw new Error("Model output reserve leaves no usable input budget");
   return {
     inputTokens,
     staticTokens,
-    outputReserve,
-    usableInput,
-    ratio: inputTokens / usableInput,
+    contextWindow,
+    ratio: inputTokens / contextWindow,
     measuredTokens: measured ?? null,
     source: "conservative estimate",
   };
@@ -211,7 +209,7 @@ export function boundedCheckpoint(
   const budget = contextBudget(session, settings);
   budget.staticTokens += liveTokens;
   const ceiling =
-    Math.floor(budget.usableInput * settings.emergencyThreshold) -
+    Math.floor(budget.contextWindow * settings.emergencyThreshold) -
     budget.staticTokens -
     settings.safetyMarginTokens -
     256;
@@ -225,7 +223,7 @@ export function boundedCheckpoint(
   const base = planCheckpoint(session.sessionManager, handoff, reason, 0, indexCharacters);
   const allowance = Math.max(
     0,
-    Math.floor(budget.usableInput * settings.warningThreshold) -
+    Math.floor(budget.contextWindow * settings.warningThreshold) -
       budget.staticTokens -
       settings.safetyMarginTokens -
       textTokens(base.summary) -
