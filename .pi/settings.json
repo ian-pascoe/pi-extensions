@@ -5,6 +5,7 @@
       "autoload": false,
       "extensions": [
         "+packages/pi-bible-verses/src/index.ts",
+        "+packages/pi-context-management/src/index.ts",
         "+packages/pi-dap/src/index.ts",
         "+packages/pi-formatter/src/index.ts",
         "+packages/pi-git-checkpoints/src/index.ts",
@@ -19,6 +20,7 @@
       ],
       "skills": [
         "+packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
+        "+packages/pi-context-management/skills/pi-context-management/SKILL.md",
         "+packages/pi-dap/skills/pi-dap/SKILL.md",
         "+packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
@@ -37,6 +39,7 @@
       "autoload": false,
       "extensions": [
         "-packages/pi-bible-verses/src/index.ts",
+        "-packages/pi-context-management/src/index.ts",
         "-packages/pi-dap/src/index.ts",
         "-packages/pi-formatter/src/index.ts",
         "-packages/pi-git-checkpoints/src/index.ts",
@@ -51,6 +54,7 @@
       ],
       "skills": [
         "-packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
+        "-packages/pi-context-management/skills/pi-context-management/SKILL.md",
         "-packages/pi-dap/skills/pi-dap/SKILL.md",
         "-packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "-packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
@@ -72,6 +76,16 @@
       ],
       "skills": [
         "-skills/pi-bible-verses/SKILL.md"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-context-management",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-context-management/SKILL.md"
       ]
     },
     {
