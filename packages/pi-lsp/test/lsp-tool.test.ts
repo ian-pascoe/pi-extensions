@@ -122,6 +122,7 @@ interface LspToolFixture {
 
 function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
   return {
+    enablement: new Map(),
     warnings: [],
     timeouts: {
       diagnosticsMs: 100,

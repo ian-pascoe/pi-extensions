@@ -12,6 +12,9 @@
 - **Result Spill** — the complete LSP operation output referenced when the model-visible result reaches Pi's standard output limit.
 - **Server Definition** — a configured language-server command, language mapping, workspace-root policy, Activation Gate, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID; an invalid project replacement shadows the global definition and is quarantined.
 - **Server Instance** — one running language-server process for a Server Definition and a detected workspace root.
+- **Stop** — ending a Server Instance without preventing a later lazy start for its Server Definition.
+- **Disabled Server Definition** — a Server Definition that is ineligible to start Server Instances until it is enabled.
+- **Server Enablement Override** — an explicit enabled or disabled choice for a Server Definition at session, project, or global scope. A session-scoped choice belongs to the selected session history and does not apply when navigating before it.
 - **Capable Server Instance** — a Server Instance that currently advertises support for the requested operation through static or dynamic capabilities.
 - **Mutation Manifest** — the exact file operations and absolute paths of a Validated Workspace Edit exposed to Pi's pre-execution tool hooks.
 
@@ -23,7 +26,7 @@ Language-server requests to apply edits are also converted into Workspace Edit P
 
 Language-server documents are valid UTF-8 text. Content edits follow existing symlinks and identify the canonical target in the Mutation Manifest; resource operations act on the named directory entry. Conflicting or non-file workspace edits are rejected before they become applicable previews.
 
-Server Definitions come only from the `lsp` key in Pi's global and trusted project settings. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and require an explicit restart after failure. Read operations may query several matching Server Instances; a mutation must identify one when several match.
+Server Definitions come only from the `lsp` key in Pi's global and trusted project settings. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and retain failure state until explicit recovery. Read operations may query several matching Server Instances; a mutation must identify one when several match.
 
 An Activation Gate is evaluated independently for every candidate file. A Server Definition that
 does not pass its gate is excluded from automatic routing without warning. Changes to root markers

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,7 +18,7 @@ import {
   type ToolResultEvent,
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
@@ -26,6 +26,17 @@ import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
 const agentSessions: AgentSession[] = [];
+
+const typescriptSettings = {
+  lsp: {
+    servers: {
+      typescript: {
+        command: "missing-lsp-test-server",
+        languages: [{ extensions: [".ts"], languageId: "typescript" }],
+      },
+    },
+  },
+};
 
 interface ExtensionHarness {
   readonly agentDirectory: string;
@@ -195,6 +206,307 @@ afterEach(async () => {
 });
 
 describe("Pi LSP extension lifecycle", () => {
+  test("persists explicit session toggles and rolls them back with selected branch history", async () => {
+    const harness = await createExtensionHarness(false, typescriptSettings);
+    const before = harness.sessionManager.appendMessage(completedAssistantMessage());
+    await startExtension(harness);
+    const command = harness.runner.getCommand("lsp");
+    if (command === undefined) throw new Error("Expected /lsp command");
+    await command.handler("disable typescript", harness.runner.createCommandContext());
+    expect(harness.sessionManager.getBranch().at(-1)).toMatchObject({
+      type: "custom",
+      customType: "pi-lsp-enablement",
+      data: { serverId: "typescript", enabled: false },
+    });
+    const disabledLeaf = harness.sessionManager.getLeafId();
+    const status = async () => {
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (tool === undefined) throw new Error("Expected LSP tool");
+      return tool.execute(
+        "status",
+        { operation: "status" },
+        undefined,
+        undefined,
+        harness.runner.createContext(),
+      );
+    };
+    expect(await status()).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("disabled") }],
+    });
+    await harness.runner.emit({ type: "session_start", reason: "reload" });
+    expect(await status()).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("disabled") }],
+    });
+    harness.sessionManager.branch(before);
+    await harness.runner.emit({
+      type: "session_tree",
+      newLeafId: before,
+      oldLeafId: disabledLeaf,
+      fromExtension: false,
+    });
+    expect(await status()).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("configured") }],
+    });
+    if (disabledLeaf === null) throw new Error("Expected disabled entry");
+    harness.sessionManager.branch(disabledLeaf);
+    await harness.runner.emit({
+      type: "session_tree",
+      newLeafId: disabledLeaf,
+      oldLeafId: before,
+      fromExtension: false,
+    });
+    expect(await status()).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("disabled") }],
+    });
+    await command.handler("enable typescript", harness.runner.createCommandContext());
+    expect(harness.sessionManager.getBranch().at(-1)).toMatchObject({
+      data: { serverId: "typescript", enabled: true },
+    });
+    expect(await status()).toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("configured") }],
+    });
+    const forkFile = harness.sessionManager.createBranchedSession(disabledLeaf);
+    if (forkFile === undefined) throw new Error("Expected saved fork");
+    await harness.runner.emit({
+      type: "session_start",
+      reason: "fork",
+      previousSessionFile: forkFile,
+    });
+    expect(await status()).toMatchObject({
+      content: [{ text: expect.stringContaining("disabled") }],
+    });
+    harness.sessionManager.setSessionFile(forkFile);
+    harness.sessionManager.appendCustomEntry("pi-lsp-enablement", {
+      serverId: "typescript",
+      enabled: "invalid",
+    });
+    await harness.runner.emit({
+      type: "session_start",
+      reason: "resume",
+      previousSessionFile: forkFile,
+    });
+    expect(await status()).toMatchObject({
+      content: [{ text: expect.stringContaining("disabled") }],
+    });
+    harness.sessionManager.newSession();
+    await harness.runner.emit({
+      type: "session_start",
+      reason: "new",
+      previousSessionFile: forkFile,
+    });
+    expect(await status()).toMatchObject({
+      content: [{ text: expect.stringContaining("configured") }],
+    });
+    await shutdownExtension(harness);
+  });
+  test("writes only the selected settings scope and reports a masking session override", async () => {
+    const harness = await createExtensionHarness(true, {
+      lsp: {
+        enablement: { typescript: false },
+        servers: {
+          typescript: {
+            command: "missing-lsp-test-server",
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+        },
+      },
+    });
+    await startExtension(harness);
+    const command = harness.runner.getCommand("lsp");
+    if (command === undefined) throw new Error("Expected /lsp command");
+    await command.handler("enable typescript", harness.runner.createCommandContext());
+    const sessionLeaf = harness.sessionManager.getLeafId();
+    await command.handler("disable typescript --project", harness.runner.createCommandContext());
+    expect(
+      JSON.parse(
+        await readFile(resolve(harness.sessionManager.getCwd(), ".pi/settings.json"), "utf8"),
+      ),
+    ).toEqual({
+      lsp: { unknownField: true, enablement: { typescript: false } },
+    });
+    expect(harness.sessionManager.getLeafId()).toBe(sessionLeaf);
+    expect(harness.notifications.at(-1)).toContain("masked by session");
+    expect(harness.notifications.at(-1)).toContain("enabled");
+    await command.handler("disable typescript --global", harness.runner.createCommandContext());
+    expect(harness.notifications.at(-1)).toContain("masked by session");
+    await shutdownExtension(harness);
+  });
+
+  test("stops only the selected root and accepts quoted paths without changing enablement", async () => {
+    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        servers: {
+          fake: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+            rootMarkers: ["workspace.json"],
+          },
+        },
+      },
+    });
+    const firstRoot = resolve(harness.sessionManager.getCwd(), "first root");
+    const secondRoot = resolve(harness.sessionManager.getCwd(), "second");
+    for (const root of [firstRoot, secondRoot]) {
+      await mkdir(root);
+      await writeFile(resolve(root, "workspace.json"), "{}");
+      await writeFile(resolve(root, "source.ts"), "const value = 1;");
+    }
+    await startExtension(harness);
+    const command = harness.runner.getCommand("lsp");
+    const tool = harness.runner.getToolDefinition("lsp");
+    if (command === undefined || tool === undefined) throw new Error("Expected /lsp and lsp");
+    for (const root of [firstRoot, secondRoot]) {
+      await tool.execute(
+        "start",
+        { operation: "capabilities", server_id: "fake", file_path: resolve(root, "source.ts") },
+        undefined,
+        undefined,
+        harness.runner.createContext(),
+      );
+    }
+    expect(await command.getArgumentCompletions?.("sto")).toEqual([
+      { value: "stop", label: "stop" },
+    ]);
+    expect(await command.getArgumentCompletions?.("disable f")).toContainEqual(
+      expect.objectContaining({ value: "disable fake" }),
+    );
+    expect(await command.getArgumentCompletions?.("disable fake --g")).toEqual([
+      { value: "disable fake --global", label: "--global" },
+    ]);
+    expect(await command.getArgumentCompletions?.(`stop fake "${firstRoot.slice(0, -2)}`)).toEqual([
+      { value: `stop fake ${JSON.stringify(firstRoot)}`, label: firstRoot },
+    ]);
+    await command.handler(
+      `stop fake ${JSON.stringify(firstRoot)}`,
+      harness.runner.createCommandContext(),
+    );
+    const result = await tool.execute(
+      "status",
+      { operation: "status" },
+      undefined,
+      undefined,
+      harness.runner.createContext(),
+    );
+    const text = result.content.find((item) => item.type === "text");
+    if (text?.type !== "text") throw new Error("Expected status text");
+    expect(JSON.parse(text.text)).toMatchObject({
+      servers: [
+        { rootPath: firstRoot, state: "stopped" },
+        { rootPath: secondRoot, state: "running" },
+      ],
+    });
+    expect(harness.sessionManager.getBranch()).toEqual([]);
+    await tool.execute(
+      "lazy-restart",
+      { operation: "capabilities", server_id: "fake", file_path: resolve(firstRoot, "source.ts") },
+      undefined,
+      undefined,
+      harness.runner.createContext(),
+    );
+    await shutdownExtension(harness);
+  });
+
+  test("offers server status, lifecycle actions, and toggle scope through native selectors", async () => {
+    const harness = await createExtensionHarness(false, typescriptSettings);
+    await startExtension(harness);
+    const selections: string[][] = [];
+    harness.runner.setUIContext(
+      {
+        ...harness.runner.getUIContext(),
+        select: async (_title, options) => {
+          selections.push(options);
+          if (selections.length === 1) return options[0];
+          if (selections.length === 2) return "disable";
+          return "session";
+        },
+      },
+      "rpc",
+    );
+    const command = harness.runner.getCommand("lsp");
+    if (command === undefined) throw new Error("Expected /lsp command");
+    await command.handler("", harness.runner.createCommandContext());
+    expect(selections).toEqual([
+      [expect.stringContaining("typescript — configured")],
+      ["enable", "disable"],
+      ["session", "project", "global"],
+    ]);
+    expect(harness.sessionManager.getBranch().at(-1)).toMatchObject({
+      data: { serverId: "typescript", enabled: false },
+    });
+    await shutdownExtension(harness);
+  });
+
+  test("reports status and invalid commands without UI or session mutations", async () => {
+    const harness = await createExtensionHarness(false, typescriptSettings);
+    await startExtension(harness);
+    harness.runner.setUIContext(undefined, "print");
+    expect(harness.runner.createContext().hasUI).toBe(false);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const command = harness.runner.getCommand("lsp");
+      if (command === undefined) throw new Error("Expected /lsp command");
+      await command.handler("", harness.runner.createCommandContext());
+      expect(stderr).toHaveBeenLastCalledWith(expect.stringContaining("typescript — configured"));
+      for (const args of [
+        "start typescript",
+        "restart typescript",
+        "inherit typescript",
+        "stop typescript --global",
+        "disable typescript --project --global",
+        "disable typescript extra",
+        "disable nonexistent",
+        'disable "typescript',
+        "disable typescript --unknown",
+      ]) {
+        await command.handler(args, harness.runner.createCommandContext());
+      }
+      expect(stderr).toHaveBeenCalledTimes(10);
+      expect(harness.sessionManager.getBranch()).toEqual([]);
+    } finally {
+      stderr.mockRestore();
+      await shutdownExtension(harness);
+    }
+  });
+
+  test("discards a pending picker action after session history navigation", async () => {
+    const harness = await createExtensionHarness(false, typescriptSettings);
+    const before = harness.sessionManager.appendMessage(completedAssistantMessage());
+    await startExtension(harness);
+    const choice = Promise.withResolvers<string | undefined>();
+    const opened = Promise.withResolvers<string>();
+    let selections = 0;
+    harness.runner.setUIContext(
+      {
+        ...harness.runner.getUIContext(),
+        select: async (_title, options) => {
+          selections += 1;
+          if (selections > 1) return selections === 2 ? "disable" : "session";
+          opened.resolve(options[0] ?? "");
+          return choice.promise;
+        },
+      },
+      "rpc",
+    );
+    const command = harness.runner.getCommand("lsp");
+    if (command === undefined) throw new Error("Expected /lsp command");
+    const pending = command.handler("", harness.runner.createCommandContext());
+    const option = await opened.promise;
+    harness.sessionManager.resetLeaf();
+    await harness.runner.emit({
+      type: "session_tree",
+      newLeafId: null,
+      oldLeafId: before,
+      fromExtension: false,
+    });
+    choice.resolve(option);
+    await pending;
+    expect(selections).toBe(1);
+    expect(harness.sessionManager.getBranch()).toEqual([]);
+    await shutdownExtension(harness);
+  });
+
   test("keeps the rendered lsp tool available while reload reconstructs the transcript", async () => {
     const harness = await createExtensionHarness(false);
     const model = getModel("anthropic", "claude-sonnet-4-5");

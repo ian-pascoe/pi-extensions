@@ -94,8 +94,18 @@ export interface LspTimeouts {
   readonly shutdownMs: number;
 }
 
+/** Identifies the highest-priority explicit choice, or implicit default eligibility. */
+export type LspEnablementScope = "session" | "project" | "global" | "default";
+
+/** Records one Server Definition's eligibility and the scope that selected it. */
+export interface LspServerEnablement {
+  readonly enabled: boolean;
+  readonly scope: LspEnablementScope;
+}
+
 /** Reports resolved trusted configuration, retaining valid entries when other settings are invalid. */
 export interface ResolvedLspSettings {
+  readonly enablement: ReadonlyMap<string, LspServerEnablement>;
   readonly servers: ReadonlyMap<string, LspServerDefinition>;
   readonly timeouts: LspTimeouts;
   readonly warnings: readonly string[];
@@ -114,6 +124,7 @@ type PiSettingsDocument = ReturnType<SettingsManager["getGlobalSettings"]>;
 export type LspSettingsDocumentInput = PiSettingsDocument | { readonly lsp?: JsonValue };
 
 interface ParsedLspLayer {
+  readonly enablement: ReadonlyMap<string, LspServerEnablement>;
   readonly servers: ReadonlyMap<string, ParsedLspServerDefinition>;
   readonly timeouts: LspTimeoutsWire;
   readonly warnings: readonly string[];
@@ -224,34 +235,65 @@ function parseLspTimeouts(
   return { timeouts, warnings };
 }
 
+function parseLspEnablement(
+  value: JsonValue | undefined,
+  scope: "global" | "project",
+): Pick<ParsedLspLayer, "enablement" | "warnings"> {
+  const enablement = new Map<string, LspServerEnablement>();
+  const warnings: string[] = [];
+  if (value === undefined) return { enablement, warnings };
+  if (!isJsonObject(value)) {
+    return { enablement, warnings: [`${scope} lsp.enablement: expected a JSON object`] };
+  }
+  for (const [id, enabled] of Object.entries(value)) {
+    if (id.length === 0 || !Value.Check(Type.Boolean(), enabled)) {
+      warnings.push(`${scope} lsp.enablement.${id}: expected a non-empty server ID and boolean`);
+      continue;
+    }
+    enablement.set(id, { enabled, scope });
+  }
+  return { enablement, warnings };
+}
+
 function readLspLayer(
   settings: LspSettingsDocumentInput,
   scope: "global" | "project",
 ): ParsedLspLayer {
   if (!Value.Check(SettingsDocumentSchema, settings)) {
     return {
+      enablement: new Map(),
       servers: new Map(),
       timeouts: {},
       warnings: [`${scope} settings: expected a JSON object`],
     };
   }
-  if (settings.lsp === undefined) return { servers: new Map(), timeouts: {}, warnings: [] };
+  if (settings.lsp === undefined) {
+    return { enablement: new Map(), servers: new Map(), timeouts: {}, warnings: [] };
+  }
   if (!isJsonObject(settings.lsp)) {
     return {
+      enablement: new Map(),
       servers: new Map(),
       timeouts: {},
       warnings: [`${scope} lsp: expected a JSON object`],
     };
   }
   const warnings = Object.keys(settings.lsp)
-    .filter((field) => field !== "servers" && field !== "timeouts")
+    .filter((field) => field !== "servers" && field !== "timeouts" && field !== "enablement")
     .map((field) => `${scope} lsp.${field}: unknown field`);
   const parsedServers = parseLspServerDefinitions(settings.lsp.servers, scope);
   const parsedTimeouts = parseLspTimeouts(settings.lsp.timeouts, scope);
+  const parsedEnablement = parseLspEnablement(settings.lsp.enablement, scope);
   return {
+    enablement: parsedEnablement.enablement,
     servers: parsedServers.servers,
     timeouts: parsedTimeouts.timeouts,
-    warnings: [...warnings, ...parsedServers.warnings, ...parsedTimeouts.warnings],
+    warnings: [
+      ...warnings,
+      ...parsedServers.warnings,
+      ...parsedTimeouts.warnings,
+      ...parsedEnablement.warnings,
+    ],
   };
 }
 
@@ -336,6 +378,7 @@ export function resolveLspSettings(reader: LspSettingsReader): ResolvedLspSettin
   const globalLayer = readLspLayer(reader.getGlobalSettings(), "global");
   const projectLayer = readLspLayer(reader.getProjectSettings(), "project");
   return {
+    enablement: new Map([...globalLayer.enablement, ...projectLayer.enablement]),
     servers: mergeLspServers(globalLayer, projectLayer),
     timeouts: mergeLspTimeouts(globalLayer, projectLayer),
     warnings: [...globalLayer.warnings, ...projectLayer.warnings],

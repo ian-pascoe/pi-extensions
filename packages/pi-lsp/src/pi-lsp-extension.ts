@@ -5,6 +5,7 @@ import {
   SettingsManager,
   type ExtensionAPI,
   type ExtensionContext,
+  type ExtensionCommandContext,
   type ExtensionFactory,
   type SessionEntry,
   type ToolResultEvent,
@@ -33,7 +34,16 @@ import {
   normalizeLspPositionEncoding,
   type LspPositionEncoding,
 } from "./lsp-position-encoding.js";
+import {
+  completeLspCommandArguments,
+  formatLspCommandStatus,
+  knownLspServerRoots,
+  notifyLspCommand,
+  parseLspCommandArguments,
+  selectLspCommand,
+} from "./lsp-command.js";
 import { LspServerClient } from "./lsp-server-client.js";
+import { writeLspEnablement } from "./lsp-settings-store.js";
 import { LspServerManager, normalizeLspFilePath } from "./lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "./lsp-session-files.js";
 import {
@@ -43,7 +53,7 @@ import {
 import { registerLspTool } from "./lsp-tool.js";
 import { truncateLspOutputText } from "./lsp-tool-output.js";
 import { LspWorkspaceEditStore } from "./lsp-workspace-edit.js";
-import { resolveLspSettings } from "./pi-lsp-settings.js";
+import { resolveLspSettings, type LspServerEnablement } from "./pi-lsp-settings.js";
 
 /** Runtime construction effects kept narrow so lifecycle tests can select an isolated Pi agent directory. */
 export interface PiLspLifecycleEffects {
@@ -53,6 +63,7 @@ export interface PiLspLifecycleEffects {
 
 interface ActivePiLspSession {
   readonly cwd: string;
+  configuredEnablement: ReadonlyMap<string, LspServerEnablement>;
   readonly manager: LspServerManager<LspServerClient>;
   readonly sessionFiles: LspSessionFiles;
   readonly workspaceEdits: LspWorkspaceEditStore;
@@ -61,6 +72,26 @@ interface ActivePiLspSession {
 const productionPiLspLifecycleEffects: PiLspLifecycleEffects = {
   getAgentDirectory: getAgentDir,
 };
+const ENABLEMENT_ENTRY_TYPE = "pi-lsp-enablement";
+const EnablementEntrySchema = Type.Object(
+  { serverId: Type.String({ minLength: 1 }), enabled: Type.Boolean() },
+  { additionalProperties: false },
+);
+
+function branchEnablement(entries: readonly SessionEntry[]): ReadonlyMap<string, boolean> {
+  const overrides = new Map<string, boolean>();
+  for (const entry of entries) {
+    if (
+      entry.type === "custom" &&
+      entry.customType === ENABLEMENT_ENTRY_TYPE &&
+      Value.Check(EnablementEntrySchema, entry.data)
+    ) {
+      overrides.set(entry.data.serverId, entry.data.enabled);
+    }
+  }
+  return overrides;
+}
+
 const DiagnosticMarkupContentSchema = Type.Object(
   {
     kind: Type.String(),
@@ -237,6 +268,7 @@ export class PiLspLifecycleController {
   private readonly pendingPostEditDiagnosticOutcomes: PostEditDiagnosticOutcome[] = [];
   private session: ActivePiLspSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
+  private historyRevision = 0;
 
   /** Bind one lifecycle controller to Pi and production or test construction effects. */
   constructor(
@@ -247,12 +279,22 @@ export class PiLspLifecycleController {
   /** Register Pi LSP lifecycle handlers and model-invisible diagnostics entry rendering. */
   register(): void {
     registerLspTool(this.pi, () => this.activeSession());
+    this.pi.registerCommand("lsp", {
+      description: "Manage language-server enablement and Instances",
+      getArgumentCompletions: (prefix) =>
+        completeLspCommandArguments(prefix, this.session?.manager),
+      handler: (args, context) => this.handleCommand(args, context),
+    });
     this.pi.registerEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, (entry, { expanded }, theme) =>
       Value.Check(PostEditDiagnosticsEntryDataSchema, entry.data)
         ? renderPostEditDiagnosticsEntry(entry.data, expanded, theme)
         : undefined,
     );
     this.pi.on("session_start", (_event, context) => this.startSession(context));
+    this.pi.on("session_tree", (_event, context) => {
+      this.historyRevision += 1;
+      return this.restoreEnablement(context);
+    });
     this.pi.on("tool_result", (event, context) => this.handleToolResult(event, context));
     this.pi.on("turn_end", () => this.flushPostEditDiagnosticsEntry());
     this.pi.on("session_shutdown", () => this.shutdownSession());
@@ -284,7 +326,7 @@ export class PiLspLifecycleController {
     const manager = new LspServerManager<LspServerClient>({
       cwd: context.cwd,
       settings,
-      startClient: async ({ definition, onUnavailable, rootPath, timeouts }) => {
+      startClient: async ({ definition, onUnavailable, rootPath, timeouts, signal }) => {
         let client: LspServerClient | undefined;
         client = await LspServerClient.start({
           serverId: definition.id,
@@ -295,6 +337,7 @@ export class PiLspLifecycleController {
           initializationOptions: definition.initializationOptions ?? null,
           settings: definition.settings ?? null,
           timeouts,
+          signal,
           stderrPath: await sessionFiles.getServerStderrPath(`${definition.id}\u0000${rootPath}`),
           onUnavailable,
           onWorkspaceEdit: async (edit) =>
@@ -309,7 +352,107 @@ export class PiLspLifecycleController {
         return client;
       },
     });
-    this.session = { cwd: context.cwd, manager, sessionFiles, workspaceEdits };
+    this.session = {
+      cwd: context.cwd,
+      configuredEnablement: settings.enablement,
+      manager,
+      sessionFiles,
+      workspaceEdits,
+    };
+    await this.restoreEnablement(context);
+  }
+
+  private restoreEnablement(context: ExtensionContext): Promise<void> | undefined {
+    const session = this.session;
+    if (session === undefined) return undefined;
+    return session.manager.setEnablement(
+      session.configuredEnablement,
+      branchEnablement(context.sessionManager.getBranch()),
+    );
+  }
+
+  private async handleCommand(args: string, context: ExtensionCommandContext): Promise<void> {
+    const session = this.session;
+    const revision = this.historyRevision;
+    const isCurrent = () => this.session === session && this.historyRevision === revision;
+    try {
+      if (session === undefined) throw new Error("Pi LSP: session runtime is inactive");
+      if (args.trim() === "" && !context.hasUI) {
+        notifyLspCommand(context, formatLspCommandStatus(session.manager), "info");
+        return;
+      }
+      const command =
+        args.trim() === ""
+          ? await selectLspCommand(session.manager, context, isCurrent)
+          : parseLspCommandArguments(args);
+      if (command === undefined || !isCurrent()) return;
+      if (
+        !session.manager.getStatus().servers.some(({ serverId }) => serverId === command.serverId)
+      ) {
+        throw new Error(`Pi LSP: unknown Server Definition ${command.serverId}`);
+      }
+      if (command.action === "stop") {
+        const roots = knownLspServerRoots(session.manager, command.serverId);
+        let rootPath =
+          command.rootPath === undefined
+            ? roots[0]
+            : resolve(session.cwd, normalizeLspFilePath(command.rootPath));
+        if (command.rootPath === undefined && roots.length > 1) {
+          if (!context.hasUI)
+            throw new Error(
+              `Pi LSP: multiple roots for ${command.serverId}; use /lsp stop <server-id> <root>: ${roots.join(", ")}`,
+            );
+          rootPath = await context.ui.select(
+            `Stop ${command.serverId}: select workspace root`,
+            roots,
+          );
+          if (rootPath === undefined || !isCurrent()) return;
+        }
+        if (rootPath === undefined || !roots.includes(rootPath))
+          throw new Error(
+            `Pi LSP: no known Instance for ${command.serverId} at ${rootPath ?? "any root"}`,
+          );
+        await session.manager.stopServer(command.serverId, rootPath);
+        if (isCurrent())
+          notifyLspCommand(
+            context,
+            `Pi LSP: stopped ${command.serverId} at ${rootPath}; ${session.manager.getEnablement(command.serverId).enabled ? "lazy startup remains permitted" : "the Server Definition remains disabled"}.`,
+            "info",
+          );
+        return;
+      }
+      const enabled = command.action === "enable";
+      if (command.scope === "session") {
+        this.pi.appendEntry(ENABLEMENT_ENTRY_TYPE, { serverId: command.serverId, enabled });
+      } else {
+        await writeLspEnablement({
+          agentDirectory: this.effects.getAgentDirectory(),
+          cwd: session.cwd,
+          projectTrusted: context.isProjectTrusted(),
+          scope: command.scope,
+          serverId: command.serverId,
+          enabled,
+        });
+        if (this.session !== session) return;
+        session.configuredEnablement = resolveLspSettings(
+          SettingsManager.create(session.cwd, this.effects.getAgentDirectory(), {
+            projectTrusted: context.isProjectTrusted(),
+          }),
+        ).enablement;
+      }
+      await this.restoreEnablement(context);
+      if (!isCurrent()) return;
+      const effective = session.manager.getEnablement(command.serverId);
+      const masked = effective.scope !== command.scope;
+      notifyLspCommand(
+        context,
+        `Pi LSP: ${command.serverId} ${enabled ? "enabled" : "disabled"} at ${command.scope} scope.${masked ? ` Change masked by ${effective.scope} override; effectively ${effective.enabled ? "enabled" : "disabled"}.` : ""}`,
+        masked ? "warning" : "info",
+      );
+    } catch (error) {
+      if (isCurrent())
+        notifyLspCommand(context, error instanceof Error ? error.message : String(error), "error");
+    }
   }
 
   private activeSession(): ActivePiLspSession {
