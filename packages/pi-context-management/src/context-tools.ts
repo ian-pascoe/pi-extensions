@@ -3,6 +3,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  renderContextToolCall,
+  renderContextToolResult,
+  type ContextToolDetails,
+} from "./context-tool-rendering.js";
+import {
   appendNote,
   assertContextJournalReadable,
   contextReference,
@@ -105,13 +110,17 @@ export function registerContextTools(
   pi: ExtensionAPI,
   onMutationFailure?: (cause: Error, ctx: ExtensionContext) => void,
 ): void {
-  pi.registerTool({
+  pi.registerTool<typeof HistoryParameters, ContextToolDetails>({
     name: "context_history",
     label: "Context History",
     description:
       "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
     parameters: HistoryParameters,
     executionMode: "sequential",
+    renderCall: (args, theme, context) =>
+      renderContextToolCall("History", args, theme, context.isPartial, context.executionStarted),
+    renderResult: (result, options, theme, context) =>
+      renderContextToolResult(result, options, theme, "History", context.args, context.isError),
     async execute(_id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       assertContextJournalReadable(ctx.sessionManager);
@@ -192,13 +201,17 @@ export function registerContextTools(
       return result(search(recordedEntries(), params.query, offset, limit));
     },
   });
-  pi.registerTool({
+  pi.registerTool<typeof NotesParameters, ContextToolDetails>({
     name: "context_notes",
     label: "Context Notes",
     description:
       "Session-branch Markdown Notes. Actions list/read/write/append/delete/search. Names are labels, not paths. Reads use zero-based UTF-16 offsets and return at most 2000 units; lists return at most 20 Notes. Search is case-sensitive literal text. Forks inherit Notes; plain context-only child inheritance does not copy the store.",
     parameters: NotesParameters,
     executionMode: "sequential",
+    renderCall: (args, theme, context) =>
+      renderContextToolCall("Notes", args, theme, context.isPartial, context.executionStarted),
+    renderResult: (result, options, theme, context) =>
+      renderContextToolResult(result, options, theme, "Notes", context.args, context.isError),
     async execute(_id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       assertContextJournalReadable(ctx.sessionManager);

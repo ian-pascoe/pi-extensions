@@ -102,6 +102,9 @@ importers:
 
   packages/pi-context-management:
     dependencies:
+      '@earendil-works/pi-tui':
+        specifier: '*'
+        version: 0.85.1
       typebox:
         specifier: '*'
         version: 1.3.25

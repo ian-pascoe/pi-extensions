@@ -9,6 +9,11 @@ import type {
 import { captureCheckpointAdapter, type CheckpointAdapter } from "./checkpoint-adapter.js";
 import { registerContextTools } from "./context-tools.js";
 import {
+  renderContextToolCall,
+  renderContextToolResult,
+  type ContextToolDetails,
+} from "./context-tool-rendering.js";
+import {
   contextReference,
   assertContextJournalReadable,
   ensureReferenceOrigin,
@@ -254,13 +259,17 @@ export default function contextManagement(pi: ExtensionAPI): void {
       event.systemPrompt +
       "\nContext Management: keep named Notes with context_notes. Original selected-branch History is available through context_history. Before Rollover, update Notes then call context_rollover alone with an explicit continuation Handoff. Read full Notes only when needed; inherited references may be unavailable locally.",
   }));
-  pi.registerTool({
+  pi.registerTool<typeof RolloverParameters, ContextToolDetails>({
     name: "context_rollover",
     label: "Context Rollover",
     description:
       "Save an agent-written Handoff and request an immediate native Context Checkpoint after this tool batch. Must be a standalone direct tool call; never nest in CodeMode.",
     parameters: RolloverParameters,
     executionMode: "sequential",
+    renderCall: (args, theme, context) =>
+      renderContextToolCall("Rollover", args, theme, context.isPartial, context.executionStarted),
+    renderResult: (result, options, theme, context) =>
+      renderContextToolResult(result, options, theme, "Rollover", context.args, context.isError),
     async execute(id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       requireAdapter();
