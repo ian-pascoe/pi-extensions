@@ -27,6 +27,17 @@ import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
 const temporaryDirectories: string[] = [];
 const agentSessions: AgentSession[] = [];
 
+const typescriptSettings = {
+  lsp: {
+    servers: {
+      typescript: {
+        command: "missing-lsp-test-server",
+        languages: [{ extensions: [".ts"], languageId: "typescript" }],
+      },
+    },
+  },
+};
+
 interface ExtensionHarness {
   readonly agentDirectory: string;
   readonly notifications: string[];
@@ -196,16 +207,7 @@ afterEach(async () => {
 
 describe("Pi LSP extension lifecycle", () => {
   test("persists explicit session toggles and rolls them back with selected branch history", async () => {
-    const harness = await createExtensionHarness(false, {
-      lsp: {
-        servers: {
-          typescript: {
-            command: "missing-lsp-test-server",
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-          },
-        },
-      },
-    });
+    const harness = await createExtensionHarness(false, typescriptSettings);
     const before = harness.sessionManager.appendMessage(completedAssistantMessage());
     await startExtension(harness);
     const command = harness.runner.getCommand("lsp");
@@ -407,16 +409,7 @@ describe("Pi LSP extension lifecycle", () => {
   });
 
   test("offers server status, lifecycle actions, and toggle scope through native selectors", async () => {
-    const harness = await createExtensionHarness(false, {
-      lsp: {
-        servers: {
-          typescript: {
-            command: "missing-lsp-test-server",
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-          },
-        },
-      },
-    });
+    const harness = await createExtensionHarness(false, typescriptSettings);
     await startExtension(harness);
     const selections: string[][] = [];
     harness.runner.setUIContext(
@@ -446,16 +439,7 @@ describe("Pi LSP extension lifecycle", () => {
   });
 
   test("reports status and invalid commands without UI or session mutations", async () => {
-    const harness = await createExtensionHarness(false, {
-      lsp: {
-        servers: {
-          typescript: {
-            command: "missing-lsp-test-server",
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-          },
-        },
-      },
-    });
+    const harness = await createExtensionHarness(false, typescriptSettings);
     await startExtension(harness);
     harness.runner.setUIContext(undefined, "print");
     expect(harness.runner.createContext().hasUI).toBe(false);
@@ -487,16 +471,7 @@ describe("Pi LSP extension lifecycle", () => {
   });
 
   test("discards a pending picker action after session history navigation", async () => {
-    const harness = await createExtensionHarness(false, {
-      lsp: {
-        servers: {
-          typescript: {
-            command: "missing-lsp-test-server",
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-          },
-        },
-      },
-    });
+    const harness = await createExtensionHarness(false, typescriptSettings);
     const before = harness.sessionManager.appendMessage(completedAssistantMessage());
     await startExtension(harness);
     const choice = Promise.withResolvers<string | undefined>();
