@@ -272,7 +272,14 @@ export default function contextManagement(pi: ExtensionAPI): void {
     parameters: RolloverParameters,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
-      renderContextToolCall("Rollover", args, theme, context.isPartial, context.executionStarted),
+      renderContextToolCall(
+        "Rollover",
+        args,
+        theme,
+        context.isPartial,
+        context.executionStarted,
+        context.expanded,
+      ),
     renderResult: (result, options, theme, context) =>
       renderContextToolResult(result, options, theme, "Rollover", context.args, context.isError),
     async execute(id, params, signal, _update, ctx) {

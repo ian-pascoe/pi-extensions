@@ -221,7 +221,7 @@ test("Rollover acknowledges a request, not a completed checkpoint, and expands t
   const collapsed = present(tool, result, renderContext(args));
   expect(collapsed).toContain("Rollover · requested · Handoff saved");
   expect(collapsed).not.toContain("completed");
-  expect(collapsed).not.toContain("Finish the renderer");
+  expect(collapsed).toContain("Finish the renderer");
   const expanded = present(tool, result, renderContext(args, true));
   expect(expanded).toContain("commit follows the complete tool batch");
   expect(expanded).toContain("Continue");
@@ -278,6 +278,61 @@ test.each(["context_notes", "context_history", "context_rollover"])(
     }
   },
 );
+
+test.each([
+  ["context_notes", "write"],
+  ["context_notes", "append"],
+  ["context_rollover", undefined],
+] as const)("%s %s streams a bounded preview and expands the full text", async (name, action) => {
+  const { tool } = await registeredTool(name);
+  const text = Array.from(
+    { length: 20 },
+    (_, index) => `Line ${index + 1}: 界😀 native context`,
+  ).join("\n");
+  const args = action ? { action, name: "plan", content: text } : { handoff: text };
+  const original = structuredClone(args);
+  const pending = {
+    ...renderContext(args),
+    argsComplete: false,
+    executionStarted: false,
+    isPartial: true,
+  };
+  const empty = { content: [], details: undefined };
+  const firstArgs = action ? { ...args, content: "First fragment" } : { handoff: "First fragment" };
+  expect(present(tool, empty, { ...pending, args: firstArgs })).toContain("First fragment");
+  const finalResult = {
+    content: [],
+    details: action ? { action, name: "plan", saved: true } : { requested: true },
+  };
+  for (const executionStarted of [false, true]) {
+    const output = present(tool, empty, { ...pending, executionStarted });
+    expect(output).toContain("Line 20:");
+    expect(output).not.toContain("Line 1:");
+    expect(output).not.toContain("preparing…");
+    expect(output).not.toContain("Handoff saved");
+    expect(output).toContain("…");
+  }
+  const expanded = present(tool, empty, { ...pending, expanded: true });
+  expect(expanded).toContain("Line 1:");
+  expect(expanded).toContain("Line 20:");
+  expect(expanded.split("\n").length).toBeGreaterThan(8);
+  for (const width of [12, 40, 120]) {
+    for (const [result, context] of [
+      [empty, pending],
+      [finalResult, renderContext(args)],
+    ] as const) {
+      const output = present(tool, result, context, width);
+      expect(output.split("\n").length).toBeLessThanOrEqual(8);
+      expect(output.split("\n").every((row) => visibleWidth(row) <= width)).toBe(true);
+    }
+  }
+  const hostileArgs = action
+    ? { ...args, content: "Safe\u001b[2J text" }
+    : { handoff: "Safe\u001b[2J text" };
+  const component = tool.renderCall?.(hostileArgs, theme, { ...pending, args: hostileArgs });
+  expect(component?.render(120).join("\n")).not.toContain("\u001b[2J");
+  expect(args).toEqual(original);
+});
 
 test("Expanded Notes edits show Markdown input, while scoped searches retain their controls", async () => {
   const { tool, context } = await registeredTool("context_notes");
@@ -343,8 +398,9 @@ test("Notes mutations show one compact action, target, and acknowledged outcome"
     const args = { action, name: "handoff", content: "Private working content" };
     const result = await tool.execute("note-edit", args, undefined, undefined, context);
     const output = present(tool, result, renderContext(args));
-    expect(output).toBe(`Notes · ${outcome} “handoff”`);
-    expect(output).not.toContain("Private working content");
+    expect(output).toContain(`Notes · ${outcome} “handoff”`);
+    if (action === "delete") expect(output).not.toContain("Private working content");
+    else expect(output).toContain("Private working content");
     expect(result.content[0]).toEqual({
       type: "text",
       text: JSON.stringify({ action, name: "handoff", saved: true }),

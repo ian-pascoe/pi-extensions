@@ -118,7 +118,14 @@ export function registerContextTools(
     parameters: HistoryParameters,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
-      renderContextToolCall("History", args, theme, context.isPartial, context.executionStarted),
+      renderContextToolCall(
+        "History",
+        args,
+        theme,
+        context.isPartial,
+        context.executionStarted,
+        context.expanded,
+      ),
     renderResult: (result, options, theme, context) =>
       renderContextToolResult(result, options, theme, "History", context.args, context.isError),
     async execute(_id, params, signal, _update, ctx) {
@@ -209,7 +216,14 @@ export function registerContextTools(
     parameters: NotesParameters,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
-      renderContextToolCall("Notes", args, theme, context.isPartial, context.executionStarted),
+      renderContextToolCall(
+        "Notes",
+        args,
+        theme,
+        context.isPartial,
+        context.executionStarted,
+        context.expanded,
+      ),
     renderResult: (result, options, theme, context) =>
       renderContextToolResult(result, options, theme, "Notes", context.args, context.isError),
     async execute(_id, params, signal, _update, ctx) {

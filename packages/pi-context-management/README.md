@@ -31,6 +31,10 @@ Notes use labels rather than filesystem paths. A session branch may hold up to 1
 
 History is read-only and limited to recorded entries on the selected branch. Forks inherit entries on their selected path and then diverge; abandoned siblings and unrelated sessions are excluded. Context-only Child Agent inheritance does not copy the source Notes/History store, so an inherited reference may be unavailable locally. Foreign references resolve only when a persisted owned record proves the issuer had that entry; otherwise browse the current branch for a fresh reference. Reads do not open arbitrary external spill paths or reconstruct unavailable originals.
 
+## Transcript previews
+
+Note writes/appends and Rollover Handoffs display their text as tool arguments stream in. Collapsed previews use at most eight rendered lines, including the heading and any omission notice, and follow the newest text. Expand the tool output to read the full text. Completed writes and Rollover requests retain the preview; a saved Handoff still indicates a request, not a completed checkpoint. Other operations keep their compact summaries.
+
 ## Context Windows
 
 A normal Rollover carries standing instructions, the Handoff, a Note Index of at most 4,000 characters, and a Tail of complete recent message/tool-result groups. The Tail allowance is a maximum, not a guaranteed allocation. Oversized groups are omitted whole and remain available through History references.

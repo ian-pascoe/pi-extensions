@@ -1,3 +1,5 @@
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import {
   getMarkdownTheme,
   keyText,
@@ -123,16 +125,59 @@ function callTarget(args: ContextToolArguments): string {
   );
 }
 
-/** Pending calls own the summary until the final result replaces it in Pi's default shell. */
+/** Cap rendered rows, not source lines, so wrapped text stays bounded in narrow terminals. */
+function contentPreview(
+  heading: Component,
+  content: string,
+  expanded: boolean,
+  theme: RenderTheme,
+): Component {
+  const body = new Markdown(safeText(content), 0, 0, getMarkdownTheme());
+  const omitted = new TruncatedText(
+    theme.fg("dim", "… earlier lines hidden · expand for full text"),
+  );
+  return {
+    render(width) {
+      if (width <= 0) return [];
+      const lines = body.render(width);
+      const visible =
+        expanded || lines.length <= 7 ? lines : [...omitted.render(width), ...lines.slice(-6)];
+      return [...heading.render(width), ...visible];
+    },
+    invalidate() {
+      heading.invalidate();
+      body.invalidate();
+      omitted.invalidate();
+    },
+  };
+}
+
+/** Pending calls own the preview until the final result replaces it in Pi's default shell. */
 export function renderContextToolCall(
   label: string,
   args: ContextToolArguments,
   theme: RenderTheme,
   isPartial: boolean,
   executionStarted: boolean,
+  expanded: boolean,
 ): Component {
   if (!isPartial) return new Container();
   const action = [preview(args.action ?? ""), callTarget(args)].filter(Boolean).join(" ");
+  const content =
+    label === "Rollover"
+      ? args.handoff
+      : label === "Notes" && (args.action === "write" || args.action === "append")
+        ? args.content
+        : undefined;
+  if (Value.Check(Type.String({ minLength: 1 }), content)) {
+    const heading = new TruncatedText(
+      theme.fg(
+        "accent",
+        `${label}${action ? ` · ${action}` : ""} · ${executionStarted ? "running…" : "streaming…"}`,
+      ),
+    );
+    return contentPreview(heading, content, expanded, theme);
+  }
   return new TruncatedText(
     theme.fg(
       "accent",
@@ -184,7 +229,12 @@ export function renderContextToolResult(
     const { action, name } = result.details;
     const outcome = action === "delete" ? "deleted" : action === "append" ? "appended" : "saved";
     const heading = theme.fg("success", `Notes · ${outcome} “${safeText(name)}”`);
-    if (!options.expanded) return new TruncatedText(heading);
+    if (!options.expanded) {
+      const title = new TruncatedText(heading);
+      return action !== "delete" && args.content !== undefined
+        ? contentPreview(title, args.content || "(empty Note)", false, theme)
+        : title;
+    }
     const container = expandedResult(new Text(heading, 0, 0), theme, args);
     if (action !== "delete" && args.content !== undefined) {
       container.addChild(new Spacer(1));
@@ -197,7 +247,7 @@ export function renderContextToolResult(
   const details = result.details;
   if ("requested" in details) {
     const heading = summary("Rollover · requested · Handoff saved", options.expanded, theme);
-    if (!options.expanded) return heading;
+    if (!options.expanded) return contentPreview(heading, args.handoff ?? "", false, theme);
     const container = new Container();
     container.addChild(heading);
     container.addChild(new Text("Checkpoint commit follows the complete tool batch.", 0, 0));
