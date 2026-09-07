@@ -76,6 +76,102 @@ describe("Context Windows through the Pi SDK", () => {
     expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   });
 
+  it("prepares fresh Notes and a Handoff before interactive manual compaction", async () => {
+    const f = await createSdkHarness([contextManagement]);
+    await f.session.bindExtensions({ mode: "tui" });
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("Original task " + "history ".repeat(3000));
+    f.responses.push(
+      toolCall("context_notes", {
+        action: "write",
+        name: "task",
+        content: "Pending decision preserved.",
+      }),
+      toolCall("context_rollover", { handoff: "Fresh Handoff: resolve the pending decision." }),
+      reply("Continued with the pending decision."),
+    );
+    await expect(f.session.compact("preserve the pending decision")).rejects.toThrow(
+      "Compaction cancelled",
+    );
+    await expect.poll(() => f.requests.length).toBe(4);
+    await f.session.waitForIdle();
+    expect(JSON.stringify(f.requests[1])).toContain("Prepare a Context Rollover");
+    expect(JSON.stringify(f.requests[1])).toContain(
+      "Additional instructions: preserve the pending decision",
+    );
+    const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0]?.summary).toContain("Fresh Handoff: resolve the pending decision.");
+    expect(checkpoints[0]?.summary).not.toContain("saved Handoff may be stale");
+    expect(f.providerRequests).toEqual([]);
+    expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
+  });
+
+  it("keeps user-cancelled manual compaction stopped without disabling later prompts", async () => {
+    let resumeHook: (() => void) | undefined;
+    const f = await createSdkHarness([
+      (pi) => {
+        pi.on(
+          "session_before_compact",
+          () =>
+            new Promise<void>((resolve) => {
+              resumeHook = resolve;
+            }),
+        );
+      },
+      contextManagement,
+    ]);
+    await f.session.bindExtensions({ mode: "tui" });
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("Original task " + "history ".repeat(3000));
+    const compacting = expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+    await expect.poll(() => resumeHook).toBeDefined();
+    f.session.abortCompaction();
+    resumeHook?.();
+    await compacting;
+    await f.session.waitForIdle();
+    expect(f.requests).toHaveLength(1);
+    expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+    f.responses.push(reply("Continuing without compacting."));
+    await f.session.prompt("Continue the original task");
+    expect(f.requests).toHaveLength(2);
+  });
+
+  it("keeps acknowledged Notes when manual preparation is interrupted before its Handoff", async () => {
+    const f = await createSdkHarness([
+      contextManagement,
+      (pi) => {
+        pi.on("tool_result", (event, ctx) => {
+          if (event.toolName === "context_notes" && event.input.action === "write") ctx.abort();
+        });
+      },
+    ]);
+    await f.session.bindExtensions({ mode: "tui" });
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("Original task " + "history ".repeat(3000));
+    f.responses.push(
+      toolCall("context_notes", {
+        action: "write",
+        name: "task",
+        content: "Keep this acknowledged decision.",
+      }),
+    );
+    await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+    await expect.poll(() => f.requests.length).toBe(2);
+    await f.session.waitForIdle();
+    expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+    f.responses.push(
+      toolCall("context_notes", { action: "read", name: "task" }),
+      reply("Decision recovered."),
+    );
+    await f.session.prompt("Read the saved task Note without rolling over");
+    expect(JSON.stringify(f.requests.at(-1)?.messages.at(-1))).toContain(
+      "Keep this acknowledged decision.",
+    );
+    expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+    expect(f.providerRequests).toEqual([]);
+  });
+
   it("does not repeatedly rebuild a fresh window that live projections make too large", async () => {
     const f = await createSdkHarness(
       [

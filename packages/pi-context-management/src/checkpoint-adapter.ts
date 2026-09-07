@@ -7,7 +7,7 @@ import {
   type ExtensionHandler,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { assertContextJournalReadable, quarantineContextJournal } from "./context-store.js";
 
@@ -61,6 +61,8 @@ const ProvidedCompaction = Type.Object({
     tokensBefore: Type.Number({ minimum: 0 }),
   }),
 });
+
+type OwnedCompactionResult = Static<typeof CancelledCompaction> | Static<typeof ProvidedCompaction>;
 
 export interface CheckpointAdapterOptions {
   /** Guard actual native hook results without rejecting passive listeners or cancellation. */
@@ -199,7 +201,7 @@ export function captureCheckpointAdapter(
     const policy = options.compaction;
     if (!active || !policy || event.type !== "session_before_compact") return emit(event);
     const restoreHandlers: Array<() => void> = [];
-    let ownResult: unknown;
+    let runOwnedHandler: (() => Promise<OwnedCompactionResult | undefined>) | undefined;
     try {
       ready();
       for (const extension of session.resourceLoader.getExtensions().extensions) {
@@ -207,11 +209,18 @@ export function captureCheckpointAdapter(
         if (!handlers) continue;
         for (const [index, handler] of handlers.entries()) {
           const guarded: typeof handler = async (...args) => {
-            const result = await handler(...args);
             if (handler === policy.handler) {
-              ownResult = result;
-              return result;
+              // Defer owned compaction until every other hook has had a chance to cancel or conflict.
+              runOwnedHandler = async () => {
+                const result = await handler(...args);
+                return Value.Check(CancelledCompaction, result) ||
+                  Value.Check(ProvidedCompaction, result)
+                  ? result
+                  : undefined;
+              };
+              return;
             }
+            const result = await handler(...args);
             if (!result || Value.Check(PassiveCompaction, result)) return;
             if (Value.Check(CancelledCompaction, result)) return { cancel: true };
             policy.onConflict(
@@ -228,15 +237,15 @@ export function captureCheckpointAdapter(
         }
       }
       const result = await emit(event);
-      if (
-        !Value.Check(CancelledCompaction, result) &&
-        (result !== ownResult || !Value.Check(ProvidedCompaction, ownResult))
-      ) {
+      if (Value.Check(CancelledCompaction, result)) return result;
+      const ownResult = await runOwnedHandler?.();
+      if (!ownResult) {
         throw new Error(
           "Context Management compaction result missing or replaced; refusing native summarizer fallback",
         );
       }
-      return result;
+      // SAFETY: the event discriminator and result schemas above establish the generic runner result.
+      return ownResult as typeof result;
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
       policy.onConflict(error);

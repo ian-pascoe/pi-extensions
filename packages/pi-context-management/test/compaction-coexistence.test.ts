@@ -38,58 +38,66 @@ for (const position of ["before", "after"] as const) {
     },
   );
 
-  it(`respects cancellation ${position} Context Management without faulting the session`, async () => {
-    const f = await createSdkHarness(
-      ordered((pi) => {
-        pi.on("session_before_compact", () => ({ cancel: true }));
-      }),
-    );
-    f.responses.push(reply("Ready."));
-    await f.session.prompt("Ordinary task " + "history ".repeat(3000));
-    expect(f.requests).toHaveLength(1);
-    const leaf = f.manager.getLeafId();
-    const handlers = compactionHandlers(f.session);
-    await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-    expect(compactionHandlers(f.session)).toEqual(handlers);
-    expect(f.providerRequests).toHaveLength(0);
-    expect(f.manager.getLeafId()).toBe(leaf);
-    f.responses.push(reply("Still working."));
-    await f.session.prompt("Continue without compacting");
-    expect(f.requests).toHaveLength(2);
-    expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
-  });
+  it.each(["rpc", "tui"] as const)(
+    `respects cancellation ${position} Context Management without faulting the session in %s`,
+    async (mode) => {
+      const f = await createSdkHarness(
+        ordered((pi) => {
+          pi.on("session_before_compact", () => ({ cancel: true }));
+        }),
+      );
+      f.responses.push(reply("Ready."));
+      await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+      expect(f.requests).toHaveLength(1);
+      await f.session.bindExtensions({ mode });
+      const leaf = f.manager.getLeafId();
+      const handlers = compactionHandlers(f.session);
+      await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+      expect(compactionHandlers(f.session)).toEqual(handlers);
+      expect(f.providerRequests).toHaveLength(0);
+      expect(f.manager.getLeafId()).toBe(leaf);
+      f.responses.push(reply("Still working."));
+      await f.session.prompt("Continue without compacting");
+      expect(f.requests).toHaveLength(2);
+      expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+    },
+  );
 
-  it(`blocks an actual compaction override ${position} Context Management before persistence`, async () => {
-    let active = false;
-    const f = await createSdkHarness(
-      ordered((pi) => {
-        pi.on("session_before_compact", (event) =>
-          active
-            ? {
-                compaction: {
-                  summary: "FOREIGN SUMMARY",
-                  firstKeptEntryId: event.preparation.firstKeptEntryId,
-                  tokensBefore: event.preparation.tokensBefore,
-                },
-              }
-            : undefined,
-        );
-      }),
-    );
-    f.responses.push(reply("Ready."));
-    await f.session.prompt("Ordinary task " + "history ".repeat(3000));
-    expect(f.requests).toHaveLength(1);
-    const leaf = f.manager.getLeafId();
-    active = true;
-    const handlers = compactionHandlers(f.session);
-    await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-    expect(compactionHandlers(f.session)).toEqual(handlers);
-    expect(f.manager.getLeafId()).toBe(leaf);
-    expect(f.manager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
-    await f.session.prompt("Must not continue after the conflict");
-    expect(f.requests).toHaveLength(1);
-    expect(f.providerRequests).toHaveLength(0);
-  });
+  it.each(["rpc", "tui"] as const)(
+    `blocks an actual compaction override ${position} Context Management before persistence in %s`,
+    async (mode) => {
+      let active = false;
+      const f = await createSdkHarness(
+        ordered((pi) => {
+          pi.on("session_before_compact", (event) =>
+            active
+              ? {
+                  compaction: {
+                    summary: "FOREIGN SUMMARY",
+                    firstKeptEntryId: event.preparation.firstKeptEntryId,
+                    tokensBefore: event.preparation.tokensBefore,
+                  },
+                }
+              : undefined,
+          );
+        }),
+      );
+      f.responses.push(reply("Ready."));
+      await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+      expect(f.requests).toHaveLength(1);
+      await f.session.bindExtensions({ mode });
+      const leaf = f.manager.getLeafId();
+      active = true;
+      const handlers = compactionHandlers(f.session);
+      await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+      expect(compactionHandlers(f.session)).toEqual(handlers);
+      expect(f.manager.getLeafId()).toBe(leaf);
+      expect(f.manager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+      await f.session.prompt("Must not continue after the conflict");
+      expect(f.requests).toHaveLength(1);
+      expect(f.providerRequests).toHaveLength(0);
+    },
+  );
 }
 
 it.each(["missing", "throwing"])(

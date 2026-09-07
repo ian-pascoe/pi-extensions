@@ -22,7 +22,8 @@ pi -e ./packages/pi-context-management/src/index.ts
 | `context_history`  | Browse Context Windows and entries, read exact recorded entry JSON, or perform case-sensitive literal search.            |
 | `context_rollover` | Save an explicit agent-written Handoff and request an immediate native Context Checkpoint after the complete tool batch. |
 | `/context`         | Inspect budget usage, Notes, and recent Context Windows without changing them.                                           |
-| `/rollover`        | Ask the agent to update Notes, write a Handoff, and roll over.                                                           |
+| `/compact`         | In the TUI, ask the agent to update Notes, write a fresh Handoff, and roll over.                                         |
+| `/rollover`        | Request the same preparation flow directly, including outside the TUI.                                                   |
 
 `context_rollover` must be the only direct call in its tool batch. Nested rollover, including through CodeMode, is rejected before checkpoint mutation. The extension does not change CodeMode exposure rules.
 
@@ -34,7 +35,9 @@ History is read-only and limited to recorded entries on the selected branch. For
 
 A normal Rollover carries standing instructions, the Handoff, a Note Index of at most 4,000 characters, and a Tail of complete recent message/tool-result groups. The Tail allowance is a maximum, not a guaranteed allocation. Oversized groups are omitted whole and remain available through History references.
 
-Native manual, threshold, and overflow compaction use the same native checkpoint representation; no background model or summarization request is added. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents and CodeMode processes are not replaced or patched.
+In the TUI, `/compact [instructions]` starts a normal agent turn to refresh Notes and write a fresh Handoff before Rollover. `/rollover [instructions]` requests the same preparation directly. Instructions are limited to 2,000 characters. Preparation can be interrupted without creating a checkpoint; already acknowledged Notes remain saved. Pi owns `/compact`, so the extension cancels its immediate native compaction before starting preparation; Pi may display `Compaction cancelled`, followed by the preparation notice. Pi's native model/auth and history checks still apply before this redirect.
+
+SDK/RPC manual compaction, threshold compaction, overflow, and Emergency Rollover remain immediate and non-interactive, using the last saved Handoff marked stale or absent. These paths add no model or summarization request. All paths use the same native checkpoint representation. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents and CodeMode processes are not replaced or patched.
 
 Other extensions may observe or cancel native compaction; registering a listener is not a conflict. Inactive Autoresearch is supported. If another hook supplies compaction content, Context Management stops before checkpoint persistence and names that extension, regardless of load order. Disable the competing override before resuming. Empty observer results cannot trigger Pi's native summarizer fallback.
 

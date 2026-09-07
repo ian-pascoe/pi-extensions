@@ -41,6 +41,7 @@ const RolloverParameters = Type.Object(
 export default function contextManagement(pi: ExtensionAPI): void {
   let adapter: CheckpointAdapter | undefined;
   let pending: { handoff: string; signal: AbortSignal | undefined } | undefined;
+  let manualRollover: { instructions: string; signal: AbortSignal } | undefined;
   let failure: Error | undefined;
   let settings: ContextSettings | undefined;
   let nativeLeaf: string | null | undefined;
@@ -71,6 +72,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     adapter?.dispose();
     pending = undefined;
+    manualRollover = undefined;
     failure = undefined;
     nativeLeaf = undefined;
     warnedWindow = undefined;
@@ -162,6 +164,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
     adapter?.dispose();
     adapter = undefined;
     pending = undefined;
+    manualRollover = undefined;
   });
   pi.on("input", (_event, ctx) => {
     try {
@@ -233,25 +236,29 @@ export default function contextManagement(pi: ExtensionAPI): void {
       }
     },
   });
+  function requestRollover(args: string, ctx: ExtensionContext): void {
+    try {
+      requireAdapter();
+      if (args.length > 2000) throw new Error("Keep Rollover instructions below 2000 characters");
+      ctx.ui.notify("Preparing Notes and a fresh Handoff before Rollover.", "info");
+      pi.sendUserMessage(
+        "Prepare a Context Rollover for the current task: update useful Notes, then call context_rollover as the only direct tool call with an explicit Handoff containing the objective, decisions, current state, and next actions. Continue the task after the checkpoint." +
+          (args.trim() ? "\nAdditional instructions: " + args.trim() : ""),
+        { deliverAs: "followUp" },
+      );
+    } catch (cause) {
+      ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
+    }
+  }
   pi.registerCommand("rollover", {
     description: "Ask the agent to update Notes, write its Handoff, and request Rollover",
     async handler(args, ctx) {
-      try {
-        requireAdapter();
-        if (args.length > 2000)
-          throw new Error("Keep /rollover instructions below 2000 characters");
-        pi.sendUserMessage(
-          "Prepare a Context Rollover for the current task: update useful Notes, then call context_rollover as the only direct tool call with an explicit Handoff containing the objective, decisions, current state, and next actions. Continue the task after the checkpoint." +
-            (args.trim() ? "\nAdditional instructions: " + args.trim() : ""),
-          { deliverAs: "followUp" },
-        );
-      } catch (cause) {
-        ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
-      }
+      requestRollover(args, ctx);
     },
   });
   pi.on("session_tree", () => {
     pending = undefined;
+    manualRollover = undefined;
     warnedWindow = undefined;
   });
   pi.on("before_agent_start", (event) => ({
@@ -340,9 +347,13 @@ export default function contextManagement(pi: ExtensionAPI): void {
     }
   });
   function beforeCompact(event: SessionBeforeCompactEvent, ctx: ExtensionContext) {
+    if (event.signal.aborted) return { cancel: true };
     try {
-      event.signal.throwIfAborted();
       const owner = requireAdapter();
+      if (event.reason === "manual" && ctx.mode === "tui") {
+        manualRollover = { instructions: event.customInstructions ?? "", signal: event.signal };
+        return { cancel: true };
+      }
       nativeLeaf = ctx.sessionManager.getLeafId();
       nativeCommittedBefore = owner.lastCommittedCheckpointId;
       const plan = boundedCheckpoint(
@@ -380,6 +391,13 @@ export default function contextManagement(pi: ExtensionAPI): void {
     );
   });
   pi.on("session_compact_failed", (event, ctx) => {
+    const request = manualRollover;
+    manualRollover = undefined;
+    if (request && event.reason === "manual" && event.aborted) {
+      // Pi releases its compaction lock before this event; the preparation prompt can now run.
+      if (!request.signal.aborted) requestRollover(request.instructions, ctx);
+      return;
+    }
     if (nativeLeaf === undefined) return;
     const manager = adapter?.session.sessionManager;
     const committed = adapter?.lastCommittedCheckpointId !== nativeCommittedBefore;
