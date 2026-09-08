@@ -324,7 +324,7 @@ export function renderContextToolResult(
   }
   if ("content" in details) {
     const heading = summary(
-      `${label} · read ${label === "Notes" ? `“${preview(details.name ?? "")}”` : preview(details.ref.split(":").at(-1) ?? details.ref)} · ${details.content.length} UTF-16 units${details.nextOffset === null ? "" : " · more"}`,
+      `${label} · read ${label === "Notes" ? `“${preview(details.name ?? "")}”` : preview(details.ref.split(":").at(-1) ?? details.ref)}${details.nextOffset === null ? "" : " · more"}`,
       options.expanded,
       theme,
     );
