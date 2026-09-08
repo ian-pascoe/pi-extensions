@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-context-management
 
+## 0.2.0
+
+### Minor Changes
+
+- 3a1bf68: Stream Note writes/appends and Rollover Handoffs in the transcript. Collapsed previews follow the newest text within eight rendered lines, remain visible after completion, and expand to show the full content.
+
+### Patch Changes
+
+- 873d8f7: Remove the UTF-16 length counter from Note and History read headings while preserving pagination metadata in expanded output.
+
 ## 0.1.0
 
 ### Minor Changes
