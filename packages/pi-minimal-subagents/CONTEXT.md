@@ -8,6 +8,7 @@ Provide persistent, capability-bounded nested agents whose hierarchy, conversati
 
 - **Root Agent** — the interactive Pi agent that owns the top-level coordinator and may manage its complete descendant hierarchy.
 - **Child Agent** — a persistent nested Pi session owned by exactly one parent agent.
+- **Active Child Agent** — a Child Agent with a running turn, including time spent waiting for tools or other Child Agents; an idle persistent session is not active.
 - **Subagent Access** — the Root Agent's branch-scoped enabled or disabled availability of Coordinator Tools; disabling it does not interrupt existing Child Agents or their result delivery.
 - **Launch Contract** — the immutable model, tool, context, delegation, and depth capabilities captured when a Child Agent is created.
 - **Runtime Profile** — the model and thinking level currently used by a Child Agent, initially derived from its Launch Contract but able to diverge during the session.
@@ -16,6 +17,7 @@ Provide persistent, capability-bounded nested agents whose hierarchy, conversati
 - **Delivery Evidence** — a durable destination-session record proving that one Delivery Ledger item reached its destination.
 - **Coordination Message** — a mid-turn message between adjacent agents, identified by stable delivery, source-agent, source-turn, and message IDs.
 - **Recent Activity** — the bounded tail of a Child Agent's message text, reasoning, tool calls, and tool results, including its current streaming assistant message; it excludes image data.
+- **Child Session Transcript** — the conversation on a Child Agent's selected session branch, including inherited context, messages predating compaction, and current streaming output. Unlike Recent Activity, it is not restricted to a recent tail; abandoned branches and internal bookkeeping are excluded.
 - **Wait Event** — one `subagent_wait` result; it is an intermediate Coordination Message, a terminal turn result, or an observational timeout with a detailed Child Agent status snapshot.
 - **Child Session Position** — the verified child-session leaf recorded for the active Root Agent branch.
 - **Fork Snapshot** — the selected branch's Registry state plus independently cloned child sessions carrying verified source provenance and destination-root ownership.

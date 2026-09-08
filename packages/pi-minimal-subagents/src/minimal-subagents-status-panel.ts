@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
 import {
   AssistantMessageComponent,
@@ -12,10 +14,20 @@ import {
   type Theme,
   type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import {
+  Container,
+  Text,
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+  type Component,
+  type OverlayHandle,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import {
   formatSubagentDuration,
+  orderActiveAgentSubtrees,
   renderMinimalSubagentsMessage,
   renderMinimalSubagentsResult,
   subagentStatusLadder,
@@ -29,8 +41,7 @@ import type {
 } from "./minimal-subagents-types.js";
 
 const STATUS_PANEL_REFRESH_MS = 1_000;
-const STATUS_PANEL_FIXED_LINE_COUNT = 7;
-const STATUS_PANEL_MIN_VIEWPORT_LINES = 4;
+const STATUS_PANEL_MARGIN = 1;
 const COORDINATOR_TOOL_COUNT = COORDINATOR_TOOL_NAMES.length;
 
 type StartStatusPanelRefresh = (refresh: () => void) => () => void;
@@ -58,7 +69,7 @@ function flattenStatusAgents(status: HierarchyStatusResult): FlattenedStatusAgen
     for (const child of agent.children) visit(child, depth + 1);
   };
   const roots = "agents" in status ? status.agents : [status.agent];
-  for (const agent of roots) visit(agent, 0);
+  for (const agent of orderActiveAgentSubtrees(roots)) visit(agent, 0);
   return flattened;
 }
 
@@ -79,25 +90,107 @@ function statusAccessSourceLabel(source: SubagentAccessSnapshot["source"]): stri
   }
 }
 
+interface CachedTranscriptMessage {
+  container: Container;
+  tools: Map<string, ToolExecutionComponent>;
+  expanded: boolean;
+  streaming: boolean;
+}
+
+interface TranscriptLayout {
+  lines: string[];
+  messageStarts: number[];
+}
+
+function transcriptText(line: string): string {
+  return stripVTControlCharacters(line).replace(/\s/g, "");
+}
+
+function anchoredTranscriptOffset(
+  previous: TranscriptLayout,
+  next: TranscriptLayout,
+  offset: number,
+): number {
+  const index = previous.messageStarts.findLastIndex((start) => start <= offset);
+  const previousStart = previous.messageStarts[index] ?? 0;
+  const nextStart = next.messageStarts[index] ?? 0;
+  const oldLines = previous.lines
+    .slice(previousStart, previous.messageStarts[index + 1])
+    .map(transcriptText);
+  const newLines = next.lines.slice(nextStart, next.messageStarts[index + 1]).map(transcriptText);
+  const row = offset - previousStart;
+  if (oldLines.slice(0, row + 1).every((line, lineIndex) => line === newLines[lineIndex])) {
+    return nextStart + row;
+  }
+  const text = oldLines[row];
+  if (text) {
+    const occurrence = oldLines.slice(0, row).filter((line) => line === text).length;
+    let seen = 0;
+    const match = newLines.findIndex((line) => line === text && seen++ === occurrence);
+    if (match >= 0) return nextStart + match;
+  }
+  let characters = oldLines.slice(0, row).reduce((total, line) => total + line.length, 0);
+  for (const [lineIndex, line] of newLines.entries()) {
+    if (characters < line.length) return nextStart + lineIndex;
+    characters -= line.length;
+  }
+  return nextStart + Math.max(0, newLines.length - 1);
+}
+
+interface TranscriptRenderCache {
+  messages: WeakMap<AgentMessage, CachedTranscriptMessage>;
+  results: WeakMap<ToolExecutionComponent, AgentMessage>;
+}
+
 function renderTranscriptSnapshot(
   snapshot: ChildAgentTranscriptSnapshot,
   tui: TUI,
   cwd: string,
   expanded: boolean,
   width: number,
-): string[] {
+  cache: TranscriptRenderCache,
+): TranscriptLayout {
   if (snapshot.messages.length === 0) {
-    return snapshot.fallback
-      ? new Text(snapshot.fallback, 3, 0).render(width)
-      : new Text("No Recent Activity", 3, 0).render(width);
+    return {
+      lines: new Text(snapshot.fallback || "No conversation messages yet.", 3, 0).render(width),
+      messageStarts: [0],
+    };
   }
-  const container = new Container();
+  const blocks: Container[] = [];
   const tools = new Map(
     snapshot.toolDefinitions.map((definition) => [definition.name, definition]),
   );
   const pendingTools = new Map<string, ToolExecutionComponent>();
+  const currentMessages = new Set(snapshot.messages);
 
   for (const [messageIndex, message] of snapshot.messages.entries()) {
+    if (message.role === "toolResult") {
+      const paired = pendingTools.get(message.toolCallId);
+      if (paired) {
+        if (cache.results.get(paired) !== message) {
+          paired.updateResult(message);
+          cache.results.set(paired, message);
+        }
+        pendingTools.delete(message.toolCallId);
+        blocks.push(new Container());
+        continue;
+      }
+    }
+    const streaming = messageIndex === snapshot.streamingAssistantIndex;
+    const cached = cache.messages.get(message);
+    const staleResult =
+      cached &&
+      [...cached.tools.values()].some((tool) => {
+        const result = cache.results.get(tool);
+        return result !== undefined && !currentMessages.has(result);
+      });
+    if (cached && !staleResult && cached.expanded === expanded && cached.streaming === streaming) {
+      blocks.push(cached.container);
+      for (const [id, tool] of cached.tools) pendingTools.set(id, tool);
+      continue;
+    }
+    const container = new Container();
+    const messageTools = new Map<string, ToolExecutionComponent>();
     switch (message.role) {
       case "user": {
         const text = contentText(message.content, "\n\n");
@@ -115,7 +208,7 @@ function renderTranscriptSnapshot(
             content.id,
             content.arguments,
             { showImages: false },
-            tools.get(content.name),
+            tools.get(content.name) ?? {},
             tui,
             cwd,
           );
@@ -136,16 +229,24 @@ function renderTranscriptSnapshot(
             });
           } else {
             pendingTools.set(content.id, tool);
+            messageTools.set(content.id, tool);
           }
         }
         break;
       }
       case "toolResult": {
-        const tool = pendingTools.get(message.toolCallId);
-        if (tool) {
-          tool.updateResult(message);
-          pendingTools.delete(message.toolCallId);
-        }
+        const inherited = new ToolExecutionComponent(
+          message.toolName,
+          message.toolCallId,
+          {},
+          { showImages: false },
+          {},
+          tui,
+          cwd,
+        );
+        inherited.setExpanded(expanded);
+        inherited.updateResult(message);
+        container.addChild(inherited);
         break;
       }
       case "custom": {
@@ -188,8 +289,26 @@ function renderTranscriptSnapshot(
         break;
       }
     }
+    cache.messages.set(message, { container, tools: messageTools, expanded, streaming });
+    blocks.push(container);
   }
-  return container.render(width);
+  let length = 0;
+  const messageStarts: number[] = [];
+  const lines = blocks.flatMap((block) => {
+    messageStarts.push(length);
+    // Native user-message prompt zones belong to the main terminal, not an embedded overlay.
+    const rendered = block
+      .render(width)
+      .map((line) =>
+        line
+          .replaceAll("\x1b]133;A\x07", "")
+          .replaceAll("\x1b]133;B\x07", "")
+          .replaceAll("\x1b]133;C\x07", ""),
+      );
+    length += rendered.length;
+    return rendered;
+  });
+  return { lines, messageStarts };
 }
 
 /** Interactive, read-only Child Agent hierarchy and transcript status component. */
@@ -198,9 +317,18 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
   private access!: MinimalSubagentsStatusAccess;
   private flattened: FlattenedStatusAgent[] = [];
   private selectedAgentId?: string;
-  private readonly expandedAgentIds = new Set<string>();
-  private readonly transcripts = new Map<string, ChildAgentTranscriptSnapshot>();
+  private view: "tree" | "transcript" = "tree";
+  private transcript?: ChildAgentTranscriptSnapshot;
+  private notice = "";
   private scrollOffset = 0;
+  private following = true;
+  private transcriptLineCount = 0;
+  private transcriptLayout?: TranscriptLayout;
+  private readonly transcriptCache: TranscriptRenderCache = {
+    messages: new WeakMap(),
+    results: new WeakMap(),
+  };
+  private bodyHeight = 1;
   private ensureSelectionVisible = true;
   private toolOutputExpanded = false;
   private disposed = false;
@@ -231,7 +359,14 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
   /** Handle read-only hierarchy navigation and close keys. */
   handleInput(data: string): void {
     if (this.keybindings.matches(data, "tui.select.cancel")) {
-      this.close();
+      if (this.view === "tree") this.close();
+      else {
+        this.view = "tree";
+        this.transcript = undefined;
+        this.scrollOffset = 0;
+        this.ensureSelectionVisible = true;
+        this.tui.requestRender();
+      }
       return;
     }
     if (this.keybindings.matches(data, "tui.select.up")) {
@@ -239,68 +374,108 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     } else if (this.keybindings.matches(data, "tui.select.down")) {
       this.moveSelection(1);
     } else if (this.keybindings.matches(data, "tui.select.confirm")) {
-      this.toggleSelectedAgent();
+      this.openSelectedTranscript();
     } else if (this.keybindings.matches(data, "app.tools.expand")) {
       this.toolOutputExpanded = !this.toolOutputExpanded;
+    } else if (this.view === "transcript" && matchesKey(data, "end")) {
+      this.following = true;
     } else if (this.keybindings.matches(data, "tui.select.pageUp")) {
-      this.scrollOffset = Math.max(0, this.scrollOffset - this.viewportHeight());
-      this.ensureSelectionVisible = false;
+      this.scroll(-this.viewportHeight());
     } else if (this.keybindings.matches(data, "tui.select.pageDown")) {
-      this.scrollOffset += this.viewportHeight();
-      this.ensureSelectionVisible = false;
+      this.scroll(this.viewportHeight());
     } else {
       return;
     }
     this.tui.requestRender();
   }
 
-  /** Render the fixed access header and scrollable Child Agent hierarchy. */
+  /** Render one framed, terminal-bounded tree or Child Session Transcript. */
   render(width: number): string[] {
     if (width <= 0) return [];
-    const header = this.renderHeader(width);
-    const rowStarts = new Map<string, number>();
-    const body: string[] = [];
-    for (const { agent, depth } of this.flattened) {
-      rowStarts.set(agent.agent_id, body.length);
-      body.push(this.renderAgentRow(agent, depth, width));
-      if (!this.expandedAgentIds.has(agent.agent_id)) continue;
-      const transcript = this.transcripts.get(agent.agent_id);
-      if (transcript) {
-        body.push(
-          ...renderTranscriptSnapshot(
-            transcript,
-            this.tui,
-            this.cwd,
-            this.toolOutputExpanded,
-            width,
-          ),
+    const height = Math.max(
+      1,
+      Math.min(
+        Math.floor(this.tui.terminal.rows * 0.9),
+        this.tui.terminal.rows - 2 * STATUS_PANEL_MARGIN,
+      ),
+    );
+    if (width < 6 || height < 5) {
+      return new Text("Esc back · Enlarge terminal", 0, 0).render(width).slice(0, height);
+    }
+    const innerWidth = width - 4;
+    const selected = this.flattened.find(({ agent }) => agent.agent_id === this.selectedAgentId);
+    const transcriptView = this.view === "transcript" && this.transcript;
+    const header = transcriptView
+      ? [
+          this.theme.bold(`Transcript · ${this.selectedAgentId}`),
+          selected ? this.renderAgentRow(selected.agent, 0, innerWidth) : "",
+        ]
+      : this.renderHeader(innerWidth);
+    const toolKey = this.keybindings.getKeys("app.tools.expand").join("/");
+    const helpText = transcriptView
+      ? `Esc tree · End live · ${toolKey} tools · ↑↓/PgUp/PgDn scroll · ${this.following ? "Following" : "Paused"}`
+      : "Esc close · Enter transcript · ↑↓ select · PgUp/PgDn page";
+    const help = new Text(this.theme.fg("text", helpText), 0, 0)
+      .render(innerWidth)
+      .slice(0, Math.min(2, height - 4));
+    const visibleHeader = header.slice(0, Math.max(1, height - help.length - 3));
+    this.bodyHeight = Math.max(1, height - 2 - visibleHeader.length - help.length);
+    let body: string[];
+    if (transcriptView) {
+      const layout = renderTranscriptSnapshot(
+        transcriptView,
+        this.tui,
+        this.cwd,
+        this.toolOutputExpanded,
+        innerWidth,
+        this.transcriptCache,
+      );
+      if (!this.following && this.transcriptLayout) {
+        this.scrollOffset = anchoredTranscriptOffset(
+          this.transcriptLayout,
+          layout,
+          this.scrollOffset,
         );
       }
-    }
-    const viewportHeight = this.viewportHeight();
-    const selectedLine = this.selectedAgentId ? rowStarts.get(this.selectedAgentId) : undefined;
-    if (this.ensureSelectionVisible && selectedLine !== undefined) {
-      if (selectedLine < this.scrollOffset) this.scrollOffset = selectedLine;
-      if (selectedLine >= this.scrollOffset + viewportHeight) {
-        this.scrollOffset = selectedLine - viewportHeight + 1;
+      this.transcriptLayout = layout;
+      body = layout.lines;
+      this.transcriptLineCount = body.length;
+      const maximum = Math.max(0, body.length - this.bodyHeight);
+      this.scrollOffset = this.following ? maximum : Math.min(this.scrollOffset, maximum);
+    } else {
+      body = this.flattened.map(({ agent, depth }) =>
+        this.renderAgentRow(agent, depth, innerWidth),
+      );
+      if (body.length === 0) body.push("No Child Agents yet.");
+      const selectedLine = this.flattened.findIndex(
+        ({ agent }) => agent.agent_id === this.selectedAgentId,
+      );
+      if (this.ensureSelectionVisible && selectedLine >= 0) {
+        if (selectedLine < this.scrollOffset) this.scrollOffset = selectedLine;
+        if (selectedLine >= this.scrollOffset + this.bodyHeight)
+          this.scrollOffset = selectedLine - this.bodyHeight + 1;
       }
+      this.ensureSelectionVisible = false;
+      this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, body.length - this.bodyHeight));
     }
-    this.ensureSelectionVisible = false;
-    this.scrollOffset = Math.min(this.scrollOffset, Math.max(0, body.length - viewportHeight));
-    const visibleBody = body.slice(this.scrollOffset, this.scrollOffset + viewportHeight);
-    const help = truncateToWidth(
-      this.theme.fg(
-        "dim",
-        "↑↓ select  Enter Recent Activity  configured tool key expands output  PgUp/PgDn scroll  Esc close",
-      ),
-      width,
-      "…",
-    );
-    return [...header, ...visibleBody, help];
+    const visibleBody = body.slice(this.scrollOffset, this.scrollOffset + this.bodyHeight);
+    while (visibleBody.length < this.bodyHeight) visibleBody.push("");
+    const border = (text: string) => this.theme.fg("border", text);
+    const rows = [...visibleHeader, ...visibleBody, ...help].map((line) => {
+      const content = truncateToWidth(line, innerWidth, "…");
+      return this.theme.bg(
+        "customMessageBg",
+        `${border("│")} ${content}${" ".repeat(innerWidth - visibleWidth(content))} ${border("│")}`,
+      );
+    });
+    return [border(`╭${"─".repeat(width - 2)}╮`), ...rows, border(`╰${"─".repeat(width - 2)}╯`)];
   }
 
-  /** Invalidate no cached layout because each render derives the current snapshot. */
-  invalidate(): void {}
+  /** Rebuild native transcript components when their theme changes. */
+  invalidate(): void {
+    this.transcriptCache.messages = new WeakMap();
+    this.transcriptCache.results = new WeakMap();
+  }
 
   /** Release the live refresh owner idempotently. */
   dispose(): void {
@@ -315,15 +490,16 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     this.flattened = flattenStatusAgents(this.status);
     const liveIds = new Set(this.flattened.map(({ agent }) => agent.agent_id));
     if (!this.selectedAgentId || !liveIds.has(this.selectedAgentId)) {
+      if (this.view === "transcript") {
+        this.notice = `${this.selectedAgentId} is no longer available.`;
+        this.view = "tree";
+        this.transcript = undefined;
+      }
+      this.ensureSelectionVisible = true;
       this.selectedAgentId = this.flattened[0]?.agent.agent_id;
     }
-    for (const agentId of this.expandedAgentIds) {
-      if (!liveIds.has(agentId)) {
-        this.expandedAgentIds.delete(agentId);
-        this.transcripts.delete(agentId);
-        continue;
-      }
-      this.refreshAgentTranscript(agentId);
+    if (this.view === "transcript" && this.selectedAgentId) {
+      this.refreshAgentTranscript(this.selectedAgentId);
     }
   }
 
@@ -355,13 +531,13 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
       ),
       truncateToWidth(`Coordinator Tools: ${toolState}`, width, "…"),
       truncateToWidth(`Direct Children: ${running} running · ${idle} idle`, width, "…"),
-      "",
+      this.theme.fg("warning", this.notice),
     ];
   }
 
   private renderAgentRow(agent: AgentSummary, depth: number, width: number): string {
     const selected = agent.agent_id === this.selectedAgentId;
-    const disclosure = this.expandedAgentIds.has(agent.agent_id) ? "▾" : "▸";
+    const disclosure = "▸";
     const status = subagentStatusLadder(agent);
     const elapsed = formatSubagentDuration(agent.elapsed_ms);
     const task = agent.task?.replace(/\s+/g, " ").trim();
@@ -371,7 +547,21 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     return truncateToWidth(selected ? this.theme.fg("accent", line) : line, width, "…");
   }
 
+  private scroll(delta: number): void {
+    this.scrollOffset = Math.max(0, this.scrollOffset + delta);
+    this.ensureSelectionVisible = false;
+    if (this.view === "transcript") {
+      const maximum = Math.max(0, this.transcriptLineCount - this.viewportHeight());
+      this.scrollOffset = Math.min(this.scrollOffset, maximum);
+      this.following = this.scrollOffset === maximum;
+    }
+  }
+
   private moveSelection(delta: number): void {
+    if (this.view === "transcript") {
+      this.scroll(delta);
+      return;
+    }
     if (this.flattened.length === 0) return;
     const current = this.flattened.findIndex(
       ({ agent }) => agent.agent_id === this.selectedAgentId,
@@ -381,34 +571,30 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     this.ensureSelectionVisible = true;
   }
 
-  private toggleSelectedAgent(): void {
-    const agentId = this.selectedAgentId;
-    if (!agentId) return;
-    if (this.expandedAgentIds.delete(agentId)) {
-      this.transcripts.delete(agentId);
-      return;
-    }
-    this.expandedAgentIds.add(agentId);
-    this.refreshAgentTranscript(agentId);
+  private openSelectedTranscript(): void {
+    if (this.view === "transcript" || !this.selectedAgentId) return;
+    this.view = "transcript";
+    this.notice = "";
+    this.following = true;
+    this.scrollOffset = 0;
+    this.toolOutputExpanded = false;
+    this.refreshAgentTranscript(this.selectedAgentId);
   }
 
   private refreshAgentTranscript(agentId: string): void {
     try {
-      this.transcripts.set(agentId, this.coordinator.inspectTranscript(agentId));
+      this.transcript = this.coordinator.inspectTranscript(agentId);
     } catch (error) {
-      this.transcripts.set(agentId, {
+      this.transcript = {
         messages: [],
         toolDefinitions: [],
         fallback: error instanceof Error ? error.message : String(error),
-      });
+      };
     }
   }
 
   private viewportHeight(): number {
-    return Math.max(
-      STATUS_PANEL_MIN_VIEWPORT_LINES,
-      this.tui.terminal.rows - STATUS_PANEL_FIXED_LINE_COUNT,
-    );
+    return this.bodyHeight;
   }
 
   /** Settle the custom view and release its refresh timer exactly once. */
@@ -423,6 +609,7 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
 export class MinimalSubagentsStatusPanelController {
   private activePanel?: MinimalSubagentsStatusPanelComponent;
   private activePromise?: Promise<void>;
+  private overlayHandle?: OverlayHandle;
 
   /** Bind the panel owner to one Root Agent session and refresh lifecycle. */
   constructor(
@@ -434,7 +621,10 @@ export class MinimalSubagentsStatusPanelController {
 
   /** Open or focus the single live view; RPC receives a notification and structured modes stay silent. */
   open(): Promise<void> {
-    if (this.activePromise) return this.activePromise;
+    if (this.activePromise) {
+      this.overlayHandle?.focus();
+      return this.activePromise;
+    }
     if (this.context.mode === "rpc") {
       const status = this.coordinator.inspectStatus();
       const direct = "agents" in status ? status.agents : [status.agent];
@@ -449,20 +639,34 @@ export class MinimalSubagentsStatusPanelController {
     if (this.context.mode !== "tui") return Promise.resolve();
 
     const promise = this.context.ui
-      .custom<void>((tui, theme, keybindings, done) => {
-        const panel = new MinimalSubagentsStatusPanelComponent(
-          this.coordinator,
-          this.getAccess,
-          tui,
-          theme,
-          keybindings,
-          this.context.cwd,
-          () => done(undefined),
-          this.startRefresh,
-        );
-        this.activePanel = panel;
-        return panel;
-      })
+      .custom<void>(
+        (tui, theme, keybindings, done) => {
+          const panel = new MinimalSubagentsStatusPanelComponent(
+            this.coordinator,
+            this.getAccess,
+            tui,
+            theme,
+            keybindings,
+            this.context.cwd,
+            () => done(undefined),
+            this.startRefresh,
+          );
+          this.activePanel = panel;
+          return panel;
+        },
+        {
+          overlay: true,
+          overlayOptions: {
+            anchor: "center",
+            width: "90%",
+            maxHeight: "90%",
+            margin: STATUS_PANEL_MARGIN,
+          },
+          onHandle: (handle) => {
+            this.overlayHandle = handle;
+          },
+        },
+      )
       .catch(() => {
         this.context.ui.notify("Subagents status view failed.", "error");
       })
@@ -470,6 +674,7 @@ export class MinimalSubagentsStatusPanelController {
         this.activePanel?.dispose();
         this.activePanel = undefined;
         this.activePromise = undefined;
+        this.overlayHandle = undefined;
       });
     this.activePromise = promise;
     return promise;

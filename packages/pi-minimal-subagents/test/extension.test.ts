@@ -5,6 +5,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
+  CustomEditor,
   DefaultResourceLoader,
   ExtensionRunner,
   ModelRegistry,
@@ -22,7 +23,14 @@ import {
   type Theme,
   type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import {
+  ProcessTerminal,
+  TuiMainScreen,
+  type TUI,
+  type Component,
+  type EditorComponent,
+  type EditorTheme,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
@@ -253,6 +261,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   globalThis.minimalSubagentsForkSnapshots = undefined;
+  vi.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -468,6 +477,60 @@ async function createExtensionHarness(
     },
     setIdle(nextIdle) {
       idle = nextIdle;
+    },
+  };
+}
+
+type EditorFactory = NonNullable<ReturnType<ExtensionUIContext["getEditorComponent"]>>;
+
+async function createShortcutHarness(previousFactory?: EditorFactory) {
+  const cwd = await createTemporaryDirectory("minimal-subagents-shortcut-");
+  const sessionManager = await createPersistedSession(cwd, cwd);
+  const harness = await createExtensionHarness(sessionManager);
+  const tui = new TuiMainScreen(new ProcessTerminal());
+  vi.spyOn(tui, "requestRender").mockImplementation(() => {});
+  const editorTheme: EditorTheme = {
+    borderColor: (text) => text,
+    selectList: {
+      selectedPrefix: (text) => text,
+      selectedText: (text) => text,
+      description: (text) => text,
+      scrollInfo: (text) => text,
+      noMatch: (text) => text,
+    },
+  };
+  const bindings: Pick<KeybindingsManager, "matches"> = { matches: () => false };
+  let currentFactory = previousFactory;
+  let editor: EditorComponent | undefined;
+  const custom = vi.fn();
+  const setEditorComponent: ExtensionUIContext["setEditorComponent"] = (factory) => {
+    currentFactory = factory;
+    // SAFETY: This editor test exercises no application keybindings beyond the checked matches method.
+    editor = factory?.(tui, editorTheme, bindings as KeybindingsManager);
+    tui.setFocus(editor ?? null);
+  };
+  harness.runner.setUIContext(
+    {
+      ...harness.runner.getUIContext(),
+      custom: <T>() => {
+        custom();
+        return new Promise<T>(() => {});
+      },
+      getEditorComponent: () => currentFactory,
+      setEditorComponent,
+    },
+    "tui",
+  );
+  await harness.runner.emit(sessionStartEvent());
+  return {
+    ...harness,
+    tui,
+    custom,
+    setEditorComponent,
+    getFactory: () => currentFactory,
+    editor: () => {
+      if (!editor) throw new Error("Expected the installed main editor");
+      return editor;
     },
   };
 }
@@ -779,12 +842,15 @@ describe("minimal subagents extension lifecycle", () => {
     };
     const theme = {
       fg: (_color, text) => text,
+      bg: (_color, text) => text,
       bold: (text) => text,
-    } satisfies Pick<Theme, "fg" | "bold">;
-    const keybindings = {
+    } satisfies Pick<Theme, "fg" | "bg" | "bold">;
+    const keybindings: Pick<KeybindingsManager, "matches" | "getKeys"> = {
       matches: (data, binding) => data === "escape" && binding === "tui.select.cancel",
-    } satisfies Pick<KeybindingsManager, "matches">;
+      getKeys: () => ["ctrl+o"],
+    };
     let rendered: string[] = [];
+    let customOptions: Parameters<ExtensionUIContext["custom"]>[1];
     const custom: ExtensionUIContext["custom"] = async <T>(
       factory: (
         tui: TUI,
@@ -792,14 +858,16 @@ describe("minimal subagents extension lifecycle", () => {
         keybindings: KeybindingsManager,
         done: (result: T) => void,
       ) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
+      options?: Parameters<ExtensionUIContext["custom"]>[1],
     ): Promise<T> => {
+      customOptions = options;
       const result = Promise.withResolvers<T>();
       const component = await factory(
         // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The status view reads only checked terminal dimensions and the typed requestRender mock.
         tui as unknown as TUI,
-        // SAFETY: The collapsed status render reads only the checked fg and bold methods.
+        // SAFETY: The framed status render reads only the checked fg, bg, and bold methods.
         theme as Theme,
-        // SAFETY: This command test sends only Escape and reads only the checked matches method.
+        // SAFETY: This command test sends only Escape and renders hints through the checked methods.
         keybindings as KeybindingsManager,
         result.resolve,
       );
@@ -811,9 +879,143 @@ describe("minimal subagents extension lifecycle", () => {
 
     await command.handler("", harness.runner.createCommandContext());
 
+    expect(customOptions).toMatchObject({ overlay: true });
     expect(rendered.join("\n")).toContain("Subagents status");
     expect(rendered.join("\n")).toContain("Access: enabled");
     await emitSessionShutdown(harness, "quit");
+  });
+
+  it("opens the same viewer on double Left in the empty editor while the root is working", async () => {
+    const harness = await createShortcutHarness();
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1000);
+    try {
+      harness.setIdle(false);
+      harness.editor().handleInput("\x1b[D");
+      expect(harness.custom).not.toHaveBeenCalled();
+      harness.editor().handleInput("\x1b[1;1:3D"); // Kitty Left release is not another press.
+      clock.mockReturnValue(1500);
+      harness.editor().handleInput("\x1b[D");
+      expect(harness.custom).toHaveBeenCalledOnce();
+      const command = harness.runner.getCommand("subagents");
+      if (!command) throw new Error("Expected /subagents");
+      void command.handler("", harness.runner.createCommandContext());
+      expect(harness.custom).toHaveBeenCalledOnce();
+      expect(harness.editor().getText()).toBe("");
+    } finally {
+      clock.mockRestore();
+      harness.setIdle(true);
+      await emitSessionShutdown(harness, "quit");
+    }
+  });
+
+  it.each([
+    { text: "", keys: ["\x1b[D", "\x1b[D"], gap: 501 },
+    { text: " ", keys: ["\x1b[D", "\x1b[D"], gap: 50 },
+    { text: "draft", keys: ["\x1b[D", "\x1b[D"], gap: 50 },
+    { text: "", keys: ["\x1b[D", "\x1b[C", "\x1b[D"], gap: 50 },
+    { text: "", keys: ["\x1b[D", "\x1b[1;1:2D"], gap: 50 },
+  ])("preserves ordinary editing for $text / $keys at $gap ms", async ({ text, keys, gap }) => {
+    const harness = await createShortcutHarness();
+    const clock = vi.spyOn(performance, "now");
+    try {
+      harness.editor().setText(text);
+      for (const [index, key] of keys.entries()) {
+        clock.mockReturnValue(1000 + index * gap);
+        harness.editor().handleInput(key);
+      }
+      expect(harness.custom).not.toHaveBeenCalled();
+      expect(harness.editor().getText()).toBe(text);
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+  });
+
+  it("resets double Left when the main editor loses focus or changes session branch", async () => {
+    const harness = await createShortcutHarness();
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    try {
+      const editor = harness.editor();
+      editor.handleInput("\x1b[D");
+      const dialog = { render: () => [], invalidate() {}, handleInput: vi.fn() };
+      harness.tui.setFocus(dialog);
+      dialog.handleInput("\x1b[D");
+      dialog.handleInput("\x1b[D");
+      expect(harness.custom).not.toHaveBeenCalled();
+      harness.tui.setFocus(editor);
+      editor.handleInput("\x1b[D");
+      expect(harness.custom).not.toHaveBeenCalled();
+      await harness.runner.emit(sessionTreeEvent);
+      editor.handleInput("\x1b[D");
+      expect(harness.custom).not.toHaveBeenCalled();
+      editor.handleInput("\x1b[D");
+      expect(harness.custom).toHaveBeenCalledOnce();
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+  });
+
+  it("preserves a previous editor's methods and restores its factory on shutdown", async () => {
+    class ExistingEditor extends CustomEditor {
+      #received: string[] = [];
+      override handleInput(data: string): void {
+        this.#received.push(data);
+        super.handleInput(data);
+      }
+      received(): string[] {
+        return this.#received;
+      }
+    }
+    let existing: ExistingEditor | undefined;
+    const previous: EditorFactory = (...args) => {
+      existing = new ExistingEditor(...args);
+      return existing;
+    };
+    const harness = await createShortcutHarness(previous);
+    try {
+      harness.editor().setText("draft");
+      harness.editor().handleInput("\x1b[D");
+      harness.editor().handleInput("\x1b[D");
+      expect(existing?.received()).toEqual(["\x1b[D", "\x1b[D"]);
+      expect(existing?.getCursor()).toMatchObject({ col: 3 });
+      expect(harness.custom).not.toHaveBeenCalled();
+      // SAFETY: The installed proxy retains the previous editor's complete public interface.
+      expect((harness.editor() as ExistingEditor).received()).toEqual(["\x1b[D", "\x1b[D"]);
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+    expect(harness.getFactory()).toBe(previous);
+  });
+
+  it("installs a fresh shortcut after reload without carrying the previous Left press", async () => {
+    const harness = await createShortcutHarness();
+    vi.spyOn(performance, "now").mockReturnValue(1000);
+    harness.editor().handleInput("\x1b[D");
+    await emitSessionShutdown(harness, "reload");
+    expect(harness.getFactory()).toBeUndefined();
+    await harness.runner.emit(sessionStartEvent("reload"));
+    try {
+      harness.editor().handleInput("\x1b[D");
+      expect(harness.custom).not.toHaveBeenCalled();
+      harness.editor().handleInput("\x1b[D");
+      expect(harness.custom).toHaveBeenCalledOnce();
+      expect(harness.extensionErrors).toEqual([]);
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+  });
+
+  it("does not remove a later editor replacement and disables retained wrappers on shutdown", async () => {
+    const harness = await createShortcutHarness();
+    const retained = harness.getFactory();
+    if (!retained) throw new Error("Expected the shortcut factory");
+    const later: EditorFactory = (...args) => retained(...args);
+    harness.setEditorComponent(later);
+    const editor = harness.editor();
+    await emitSessionShutdown(harness, "quit");
+    expect(harness.getFactory()).toBe(later);
+    editor.handleInput("\x1b[D");
+    editor.handleInput("\x1b[D");
+    expect(harness.custom).not.toHaveBeenCalled();
   });
 
   it("restores the selected branch's Subagent Access without changing Child Agents", async () => {

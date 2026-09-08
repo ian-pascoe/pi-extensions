@@ -39,6 +39,7 @@ import {
   type WaitRenderDetails,
 } from "./minimal-subagents-render-contract.js";
 import { stripCoordinatorMessageEnvelope } from "./minimal-subagents-message-envelope.js";
+import type { AgentSummary } from "./minimal-subagents-types.js";
 
 export type { CoordinatorToolName } from "./minimal-subagents-render-contract.js";
 
@@ -96,6 +97,23 @@ function coordinatorMessageText(content: RenderableCoordinatorMessage["content"]
 function toolResultText(result: AgentToolResult<unknown>): string {
   const text = result.content.find((item) => item.type === "text");
   return text?.type === "text" ? text.text : "";
+}
+
+/** Copy the hierarchy with active subtrees first, preserving sibling ties and ancestry. */
+export function orderActiveAgentSubtrees(agents: readonly AgentSummary[]): AgentSummary[] {
+  const orderSiblings = (
+    siblings: readonly AgentSummary[],
+  ): { agent: AgentSummary; active: boolean }[] =>
+    siblings
+      .map((agent) => {
+        const children = orderSiblings(agent.children);
+        return {
+          agent: { ...agent, children: children.map((child) => child.agent) },
+          active: agent.state === "running" || children.some((child) => child.active),
+        };
+      })
+      .sort((left, right) => Number(right.active) - Number(left.active));
+  return orderSiblings(agents).map(({ agent }) => agent);
 }
 
 /** Shared unavailable → running → latest-turn → idle status ladder for one subagent. */

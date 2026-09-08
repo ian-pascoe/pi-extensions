@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -12,6 +12,7 @@ import {
   findCutPoint,
   generateSummaryWithUsage,
   ModelRuntime,
+  parseSessionEntries,
   SessionManager,
   SettingsManager,
   sessionEntryToContextMessages,
@@ -362,6 +363,9 @@ export function verifyChildSessionIdentity(
       `Minimal subagents session identity mismatch: session ID for ${agent.agent_id}`,
     );
   }
+  if (agent.session_leaf_id && !sessionManager.getEntry(agent.session_leaf_id)) {
+    throw new Error(`Minimal subagents session identity mismatch: leaf for ${agent.agent_id}`);
+  }
   const identityBranch = sessionManager.getBranch(agent.session_leaf_id);
   const generation = findLatestForkGeneration(identityBranch);
   const identity =
@@ -400,9 +404,6 @@ export function verifyChildSessionIdentity(
         `Minimal subagents session identity mismatch: root owner for ${agent.agent_id}`,
       );
     }
-  }
-  if (agent.session_leaf_id && !sessionManager.getEntry(agent.session_leaf_id)) {
-    throw new Error(`Minimal subagents session identity mismatch: leaf for ${agent.agent_id}`);
   }
 }
 
@@ -532,6 +533,10 @@ export async function captureChildTurnOutcome(
 class PiChildAgentRuntime implements ChildAgentRuntime {
   private aborted = false;
   private readonly unsubscribe: () => void;
+  private transcriptLeafId: string | null | undefined;
+  private readonly transcriptEntries = new WeakMap<SessionEntry, AgentMessage[]>();
+  private transcriptMessages: AgentMessage[] = [];
+  private transcriptSources = new Set<AgentMessage>();
 
   constructor(
     private readonly session: AgentSession,
@@ -629,10 +634,46 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
   }
 
   snapshotActivityTranscript(): ChildAgentTranscriptSnapshot {
-    const snapshot = selectChildAgentTranscript(
-      this.session.messages,
-      this.session.state.streamingMessage,
+    const manager = this.session.sessionManager;
+    const leafId = manager.getLeafId();
+    if (this.transcriptLeafId !== leafId) {
+      this.transcriptSources = new Set();
+      this.transcriptMessages = manager.getBranch().flatMap((entry) => {
+        const source = sessionEntryToContextMessages(entry);
+        for (const message of source) this.transcriptSources.add(message);
+        let messages = this.transcriptEntries.get(entry);
+        if (!messages) {
+          messages = selectChildAgentTranscript(source).messages;
+          this.transcriptEntries.set(entry, messages);
+        }
+        return messages;
+      });
+      this.transcriptLeafId = leafId;
+    }
+    const state = this.session.state;
+    // Native message_end finalizes agent state before async extension handlers persist it.
+    const pending = state.messages.filter(
+      (message) =>
+        (message.role === "user" ||
+          message.role === "assistant" ||
+          message.role === "toolResult") &&
+        !this.transcriptSources.has(message),
     );
+    const streaming = state.streamingMessage;
+    const tail = selectChildAgentTranscript(
+      pending,
+      streaming && !this.transcriptSources.has(streaming) ? streaming : undefined,
+    );
+    const snapshot: ChildAgentTranscriptSnapshot = {
+      messages: tail.messages.length
+        ? [...this.transcriptMessages, ...tail.messages]
+        : this.transcriptMessages,
+      streamingAssistantIndex:
+        tail.streamingAssistantIndex === undefined
+          ? undefined
+          : this.transcriptMessages.length + tail.streamingAssistantIndex,
+      toolDefinitions: [],
+    };
     const toolNames = new Set<string>();
     for (const message of snapshot.messages) {
       if (message.role !== "assistant") continue;
@@ -740,6 +781,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
   private readonly availableToolNames: Set<string>;
   private readonly discoveredToolNames = new Map<string, Promise<Set<string>>>();
   private readonly sessionFileTrash: SessionFileTrashCapability;
+  private savedTranscript?: { key: string; snapshot: ChildAgentTranscriptSnapshot };
 
   constructor(private readonly options: PiAgentSessionFactoryOptions) {
     this.modelById = new Map(
@@ -761,6 +803,40 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       sessionDir: this.options.sessionDir,
       rootSessionId: this.options.rootSessionId,
     });
+  }
+
+  /** Read one verified saved Child Session Position without opening a writable runtime. */
+  readTranscript(agent: PersistedAgent): ChildAgentTranscriptSnapshot {
+    if (!agent.session_file || !agent.session_id || !agent.session_leaf_id) {
+      throw new Error(`Child Session Position is unavailable for ${agent.agent_id}.`);
+    }
+    const sessionFile = canonicalPath(agent.session_file);
+    const stat = statSync(sessionFile);
+    const key = JSON.stringify([
+      sessionFile,
+      agent.agent_id,
+      agent.parent_id,
+      agent.created_at,
+      agent.session_id,
+      agent.session_leaf_id,
+      stat.dev,
+      stat.ino,
+      stat.size,
+      stat.mtimeMs,
+      stat.ctimeMs,
+    ]);
+    if (this.savedTranscript?.key === key) return this.savedTranscript.snapshot;
+    const entries = parseSessionEntries(readFileSync(sessionFile, "utf8"));
+    if (entries[0]?.type !== "session")
+      throw new Error(`Invalid child session file: ${sessionFile}`);
+    // SessionManager.open can migrate/rewrite files; an in-memory reader cannot write them.
+    const manager = SessionManager.inMemory(this.options.cwd, undefined, entries);
+    verifyChildSessionIdentity(manager, agent, this.options.rootSessionId);
+    const snapshot = selectChildAgentTranscript(
+      manager.getBranch(agent.session_leaf_id).flatMap(sessionEntryToContextMessages),
+    );
+    this.savedTranscript = { key, snapshot };
+    return snapshot;
   }
 
   resolveLaunchMissingDependencies(agent: PersistedAgent): Promise<string[]> {

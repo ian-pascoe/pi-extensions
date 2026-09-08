@@ -29,7 +29,7 @@ filter in `~/.pi/agent/settings.json` using the repository-relative path:
 ```
 
 From this package checkout, load the source directly with
-`pi -e ./src/index.ts`. Requires Node `>=22.19.0` and Pi `>=0.84.1`.
+`pi -e ./src/index.ts`. Requires Node `>=22.19.0` and Pi `>=0.85.1`.
 
 ## Configuration
 
@@ -251,14 +251,38 @@ source file; it never substitutes the source session's newer head.
 
 ## Status and TUI
 
-In TUI mode, `/subagents status` opens a live read-only hierarchy. Rows begin
-collapsed; use Up/Down to select, Enter to expand Recent Activity, the configured
-tool-expansion key to reveal tool output, page keys to scroll, and Escape to
-close. Expanded activity uses Pi's transcript components, updates once per
-second, remains bounded, and omits images. The header reports the effective
-access source, authored settings, direct running/idle counts, and actual
-Coordinator Tool activation. Partial external activation is reported as
-`N/6 active`; status does not repair it.
+In TUI mode, `/subagents` or `/subagents status` opens a large, centered,
+framed overlay. Up/Down selects a Child Agent; Enter opens its Child Session
+Transcript. Escape returns to the tree, then Escape closes the overlay. The
+viewer is read-only: Root Agent input and ongoing agent work remain intact.
+
+Two consecutive Left Arrow presses within 500 ms open the same viewer when
+the main editor is focused and completely empty. Drafts (including whitespace),
+dialogs, and other overlays retain normal navigation. Explicit key-repeat
+reports are ignored; legacy terminals cannot distinguish holding Left from
+two presses.
+
+The viewer and compact widget prioritize sibling subtrees containing running
+Child Agents. Idle ancestors move with active descendants, parents stay above
+their children, and equally active siblings retain their original order. Viewer
+selection follows the Child Agent's identity through live reordering.
+
+The transcript includes inherited context, earlier turns, pre-compaction
+messages, and live output on the selected saved branch. Abandoned branches and
+internal bookkeeping are excluded. Saved history can be inspected without
+restoring a runtime; missing or unverified sessions report an explanation rather
+than substituting another branch. Model-facing Recent Activity remains bounded.
+
+Transcripts open at the latest output and refresh once per second. Up/Down
+scrolls by line, Page Up/Page Down by page. Scrolling up pauses following; End
+returns to live output. Reading position is retained through resize and tool
+expansion. Reasoning is visible, tool output starts collapsed, and Pi's configured
+tool-expansion key (normally Ctrl+O) reveals it. Images appear as explicit text
+placeholders rather than inline images.
+
+The tree header reports the effective access source, authored settings, direct
+running/idle counts, and actual Coordinator Tool activation. Partial external
+activation is reported as `N/6 active`; status does not repair it.
 
 RPC mode receives a concise status notification. JSON and print modes produce
 no observer-only output.

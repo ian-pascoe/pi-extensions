@@ -86,6 +86,9 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
       sessionLeafId: `leaf-${agent.agent_id}`,
     })),
     openRuntime: vi.fn<(agent: PersistedAgent) => Promise<ChildAgentRuntime>>(async () => runtime),
+    readTranscript: vi.fn<NonNullable<AgentSessionFactory["readTranscript"]>>((agent) => {
+      throw new Error(`Child Session Position unavailable for ${agent.agent_id}`);
+    }),
     resolveLaunchMissingDependencies: vi.fn<(agent: PersistedAgent) => Promise<string[]>>(
       async () => [],
     ),
@@ -326,6 +329,35 @@ describe("minimal subagents coordinator", () => {
       messages: [{ role: "toolResult", toolCallId: "call-1" }],
     });
     expect(runtime.snapshotActivityTranscript).toHaveBeenCalledOnce();
+  });
+
+  it("inspects saved history without restoring unavailable runtime dependencies or mutating state", async () => {
+    const { coordinator, sessions, registryEvents } = coordinatorFixture();
+    sessions.resolveRestorationMissingDependencies.mockResolvedValue(["unavailable model"]);
+    const snapshot: ChildAgentTranscriptSnapshot = {
+      messages: [{ role: "user", content: "saved parent context", timestamp: 1 }],
+      toolDefinitions: [],
+    };
+    sessions.readTranscript.mockReturnValue(snapshot);
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const previousEvents = [...registryEvents];
+    coordinator.inspectStatus();
+    expect(sessions.readTranscript).not.toHaveBeenCalled();
+    expect(coordinator.inspectTranscript("worker")).toBe(snapshot);
+    expect(sessions.openRuntime).not.toHaveBeenCalled();
+    expect(registryEvents).toEqual(previousEvents);
+    sessions.readTranscript.mockImplementation(() => {
+      throw new Error("Session identity mismatch");
+    });
+    expect(coordinator.inspectTranscript("worker")).toEqual({
+      messages: [],
+      toolDefinitions: [],
+      fallback: "Session identity mismatch",
+    });
   });
 
   it("falls back to the Launch Contract before initialization and for unavailable agents", async () => {
