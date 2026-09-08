@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-lsp
 
+## 0.4.1
+
+### Patch Changes
+
+- 1a2e2b9: Remove lint workarounds from package code
+
 ## 0.4.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-mcp
 
+## 0.5.1
+
+### Patch Changes
+
+- 1a2e2b9: Remove lint workarounds from package code
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.6.6
+
+### Patch Changes
+
+- 1a2e2b9: Remove lint workarounds from package code
+
 ## 0.6.5
 
 ### Patch Changes
