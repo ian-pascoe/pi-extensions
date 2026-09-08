@@ -13,6 +13,7 @@ import {
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import {
   formatSubagentDuration,
+  orderActiveAgentSubtrees,
   renderSubagentStatusLabel,
   renderSubagentStatusSymbol,
   subagentStatusLadder,
@@ -128,7 +129,7 @@ export function buildMinimalSubagentsWidgetView(
     if (chosenIds.size + additions.length > MINIMAL_SUBAGENTS_WIDGET_ROW_LIMIT) continue;
     for (const item of additions) chosenIds.add(item.agent.agent_id);
   }
-  const rows = flattened
+  const rows = flattenAgentHierarchy(orderActiveAgentSubtrees(agents))
     .filter((item) => chosenIds.has(item.agent.agent_id))
     .map((item): MinimalSubagentsWidgetRow => {
       const structural = !meaningfulIds.has(item.agent.agent_id);

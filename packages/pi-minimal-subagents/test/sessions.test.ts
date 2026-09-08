@@ -135,6 +135,158 @@ function persistedAgent(): PersistedAgent {
 }
 
 describe("minimal subagent sessions", () => {
+  it("reads the complete verified Child Session Position without restoring or rewriting its file", () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-history-"));
+    temporaryDirectories.push(directory);
+    const agent = persistedAgent();
+    const identity = createPersistentChildIdentity({
+      agent,
+      importedMessages: [
+        userMessage("inherited parent question", 1),
+        assistantMessage("inherited answer", 2),
+      ],
+      cwd: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+    });
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    const manager = SessionManager.open(identity.sessionFile, directory, directory);
+    const kept = manager.appendMessage(userMessage("kept child question", 3));
+    manager.appendCompaction("compact summary", kept, 1000);
+    for (let i = 0; i < 30; i++)
+      manager.appendMessage(assistantMessage(`earlier child turn ${i}`, i + 4));
+    manager.appendCustomEntry("internal-bookkeeping", { secret: "not conversation" });
+    manager.appendCustomMessageEntry("hidden", "hidden message", false);
+    agent.session_leaf_id = manager.appendCustomMessageEntry("visible", "visible message", true);
+    manager.branch(kept);
+    manager.appendMessage(assistantMessage("abandoned sibling", 100));
+    const before = readFileSync(identity.sessionFile, "utf8");
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [],
+      eligibleModelIds: [],
+      modelScopeRestricted: false,
+      availableToolNames: [],
+      projectTrusted: true,
+      getCoordinatorTools: () => {
+        throw new Error("history must not restore tools");
+      },
+    });
+
+    const snapshot = factory.readTranscript(agent);
+    expect(snapshot.messages).toHaveLength(35);
+    expect(snapshot.messages[0]).toEqual(userMessage("inherited parent question", 1));
+    expect(snapshot.messages).toContainEqual(
+      expect.objectContaining({ role: "compactionSummary", summary: "compact summary" }),
+    );
+    expect(snapshot.messages.at(-1)).toMatchObject({ role: "custom", content: "visible message" });
+    expect(JSON.stringify(snapshot)).not.toMatch(
+      /abandoned sibling|not conversation|hidden message/,
+    );
+    expect(factory.readTranscript(agent)).toBe(snapshot);
+    expect(readFileSync(identity.sessionFile, "utf8")).toBe(before);
+
+    expect(() => factory.readTranscript({ ...agent, session_leaf_id: undefined })).toThrow(
+      /position/i,
+    );
+    expect(() => factory.readTranscript({ ...agent, session_leaf_id: "missing-leaf" })).toThrow(
+      /leaf/i,
+    );
+    expect(() => factory.readTranscript({ ...agent, agent_id: "impostor" })).toThrow(/ownership/i);
+    expect(() => factory.readTranscript({ ...agent, session_id: "wrong-session" })).toThrow(
+      /session ID/i,
+    );
+    const legacy = before.replace('"version":3', '"version":2');
+    writeFileSync(identity.sessionFile, legacy);
+    expect(factory.readTranscript(agent).messages).toEqual(snapshot.messages);
+    expect(readFileSync(identity.sessionFile, "utf8")).toBe(legacy);
+    writeFileSync(identity.sessionFile, "");
+    expect(() => factory.readTranscript(agent)).toThrow();
+    expect(readFileSync(identity.sessionFile, "utf8")).toBe("");
+    rmSync(identity.sessionFile);
+    expect(() => factory.readTranscript(agent)).toThrow();
+    expect(existsSync(identity.sessionFile)).toBe(false);
+  });
+
+  it("keeps pre-compaction live history stable while streaming becomes committed", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-live-history-"));
+    temporaryDirectories.push(directory);
+    const agent = persistedAgent();
+    const identity = createPersistentChildIdentity({
+      agent,
+      importedMessages: [
+        userMessage("inherited context", 1),
+        assistantMessage("inherited answer", 2),
+      ],
+      cwd: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+    });
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    const manager = SessionManager.open(identity.sessionFile, directory, directory);
+    const kept = manager.appendMessage(userMessage("child question", 3));
+    agent.session_leaf_id = manager.appendCompaction("summary", kept, 1000);
+    const subscriptions = vi.spyOn(AgentSession.prototype, "subscribe");
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    const runtime = await factory.openRuntime(agent);
+    const session = subscriptions.mock.contexts.find(
+      (context): context is AgentSession => context instanceof AgentSession,
+    )!;
+    const nativeState = session.state;
+    const state = vi.spyOn(session, "state", "get");
+    try {
+      const first = runtime.snapshotActivityTranscript!();
+      expect(first.messages[0]).toEqual(userMessage("inherited context", 1));
+      expect(first.messages).toHaveLength(4);
+      const streaming = assistantMessage("live output", 4);
+      state.mockReturnValue({ ...nativeState, streamingMessage: streaming });
+      const live = runtime.snapshotActivityTranscript!();
+      expect(live.messages[0]).toBe(first.messages[0]);
+      expect(live.messages.at(live.streamingAssistantIndex!)).toEqual(streaming);
+      // Native message_end finalizes agent state before async extension handlers persist it.
+      state.mockReturnValue({
+        ...nativeState,
+        messages: [...nativeState.messages, streaming],
+        streamingMessage: undefined,
+      });
+      const finalizing = runtime.snapshotActivityTranscript!();
+      expect(finalizing.messages).toHaveLength(5);
+      expect(finalizing.messages.at(-1)).toEqual(streaming);
+      expect(finalizing.streamingAssistantIndex).toBeUndefined();
+      session.sessionManager.appendMessage(streaming);
+      const committed = runtime.snapshotActivityTranscript!();
+      expect(committed.messages).toHaveLength(5);
+      expect(committed.messages[0]).toBe(first.messages[0]);
+      expect(committed.streamingAssistantIndex).toBeUndefined();
+      state.mockReturnValue(nativeState);
+      expect(runtime.snapshotActivityTranscript!().messages).toEqual(committed.messages);
+      session.sessionManager.branch(kept);
+      expect(runtime.snapshotActivityTranscript!().messages).toHaveLength(3);
+    } finally {
+      state.mockRestore();
+      subscriptions.mockRestore();
+      runtime.dispose();
+    }
+  });
+
   it("retains a finalized assistant response when compaction replaces session context", async () => {
     type Listener = Parameters<AgentSession["subscribe"]>[0];
     const listeners = new Set<Listener>();

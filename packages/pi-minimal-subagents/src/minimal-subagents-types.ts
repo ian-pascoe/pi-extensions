@@ -123,14 +123,14 @@ export interface RecentAgentActivity {
   truncated: boolean;
 }
 
-/** Holds a bounded, image-free process-local Child Agent transcript for trusted status UI. */
+/** Holds the complete selected-branch Child Session Transcript for trusted status UI. */
 export interface ChildAgentTranscriptSnapshot {
   messages: AgentMessage[];
-  /** Index of the current streaming assistant message when it remains in the bounded tail. */
+  /** Index of the current streaming assistant message, when not yet committed. */
   streamingAssistantIndex?: number;
   /** Real Child Agent tool definitions referenced by visible tool calls. */
   toolDefinitions: ToolDefinition[];
-  /** Best-known status or result text when no live Child Agent runtime exists. */
+  /** Explanation when neither live nor verified saved history is available. */
   fallback?: string;
 }
 
@@ -241,7 +241,7 @@ export interface ChildAgentRuntime {
   snapshotCommittedMessages(): AgentMessage[];
   /** Clone child transcript messages including the current streaming assistant tail. */
   snapshotActivityMessages(): AgentMessage[];
-  /** Select the bounded process-local transcript and its real visible tool definitions. */
+  /** Snapshot the full selected branch and streaming output with its real tool definitions. */
   snapshotActivityTranscript?(): ChildAgentTranscriptSnapshot;
   hasDeliveryEvidence(sourceAgentId: string, sourceTurnId: string, deliveryId?: string): boolean;
   getUsage(): Usage | undefined;
@@ -259,6 +259,8 @@ export interface AgentSessionFactory {
   createIdentity(agent: PersistedAgent, importedMessages: AgentMessage[]): PersistedSessionIdentity;
   /** Open one verified persisted Child Agent runtime for launch or restoration. */
   openRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime>;
+  /** Read verified saved history independently of runtime restoration dependencies. */
+  readTranscript?(agent: PersistedAgent): ChildAgentTranscriptSnapshot;
   resolveLaunchMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveRestorationMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveThinkingLevel(modelId: string, requested: ThinkingLevel): ThinkingLevel;

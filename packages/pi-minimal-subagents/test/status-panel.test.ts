@@ -5,7 +5,8 @@ import {
   type KeybindingsManager,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { Text, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import type { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -54,6 +55,19 @@ const ZERO_USAGE: Usage = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
+function assistantMessage(content: AssistantMessage["content"]): AssistantMessage {
+  return {
+    role: "assistant",
+    content,
+    api: "openai-completions",
+    provider: "test",
+    model: "model",
+    usage: ZERO_USAGE,
+    stopReason: "stop",
+    timestamp: 1,
+  };
+}
+
 function panelFixture(
   options: {
     agents?: AgentSummary[];
@@ -85,7 +99,8 @@ function panelFixture(
   const theme = {
     fg: (_color, text) => text,
     bold: (text) => text,
-  } satisfies Pick<Theme, "fg" | "bold">;
+    bg: (_color, text) => text,
+  } satisfies Pick<Theme, "fg" | "bold" | "bg">;
   const bindings = new Map([
     ["up", "tui.select.up"],
     ["down", "tui.select.down"],
@@ -97,7 +112,8 @@ function panelFixture(
   ]);
   const keybindings = {
     matches: (data, binding) => bindings.get(data) === binding,
-  } satisfies Pick<KeybindingsManager, "matches">;
+    getKeys: () => ["ctrl+o"],
+  } satisfies Pick<KeybindingsManager, "matches" | "getKeys">;
   const onClose = vi.fn();
   const panel = new MinimalSubagentsStatusPanelComponent(
     // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel reads only these two checked coordinator methods; both remain observable typed mocks.
@@ -107,8 +123,8 @@ function panelFixture(
     tui as unknown as TUI,
     // SAFETY: These panel render paths use only the checked fg and bold theme methods.
     theme as Theme,
-    // SAFETY: Panel input dispatch reads only the checked matches method.
-    keybindings as KeybindingsManager,
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel reads only the checked input matcher and configured key hints.
+    keybindings as unknown as KeybindingsManager,
     "/project",
     onClose,
     options.startRefresh,
@@ -134,7 +150,42 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
-  it("refreshes expanded rows once per second and preserves bounded rendering", async () => {
+  it("orders active subtrees first and retains the selected Child Agent across reordering", async () => {
+    vi.useFakeTimers();
+    const parent = summary("parent", {
+      children: [summary("parent.idle"), summary("parent.active", { state: "running" })],
+    });
+    const { panel } = panelFixture({
+      agents: [summary("idle"), parent, summary("running", { state: "running" })],
+    });
+    expect(
+      panel
+        .render(100)
+        .map((line) => line.match(/▸ ([\w.]+)/)?.[1])
+        .filter(Boolean),
+    ).toEqual(["parent", "parent.active", "parent.idle", "running", "idle"]);
+    panel.handleInput("down");
+    parent.children[0]!.state = "running";
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(panel.render(100).join("\n")).toContain(">   ▸ parent.active");
+    panel.dispose();
+  });
+
+  it("opens a separate Child Session Transcript and returns to the tree before closing", () => {
+    const { panel, onClose } = panelFixture();
+    panel.handleInput("down");
+    panel.handleInput("enter");
+    const transcript = panel.render(80).join("\n");
+    expect(transcript).toContain("Transcript · parent.child");
+    expect(transcript).not.toContain("Task for idle");
+    panel.handleInput("escape");
+    expect(onClose).not.toHaveBeenCalled();
+    expect(panel.render(80).join("\n")).toContain(">   ▸ parent.child");
+    panel.handleInput("escape");
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes the inspected transcript once per second and preserves bounded rendering", async () => {
     vi.useFakeTimers();
     const { coordinator, panel } = panelFixture();
     panel.handleInput("enter");
@@ -157,7 +208,59 @@ describe("minimal subagents status panel", () => {
     panel.handleInput("pageDown");
     const paged = panel.render(60).join("\n");
     expect(paged).not.toContain("worker-00");
-    expect(paged).toContain("worker-19");
+    expect(paged).toContain("worker-09");
+    panel.handleInput("pageDown");
+    expect(panel.render(60).join("\n")).toContain("worker-19");
+    panel.dispose();
+  });
+
+  it("frames and fills the pane within resized terminal bounds", () => {
+    const { panel, tui } = panelFixture();
+    const rows = panel.render(80);
+    expect(rows[0]).toMatch(/^╭─+╮$/);
+    expect(rows.at(-1)).toMatch(/^╰─+╯$/);
+    expect(rows).toHaveLength(18);
+    expect(rows.every((line) => visibleWidth(line) === 80)).toBe(true);
+    for (const [width, height] of [
+      [36, 10],
+      [2, 4],
+      [80, 3],
+      [20, 40],
+    ]) {
+      tui.terminal.rows = height!;
+      const resized = panel.render(width!);
+      expect(resized.length).toBeLessThanOrEqual(Math.max(1, height! - 2));
+      expect(resized.every((line) => visibleWidth(line) <= width!)).toBe(true);
+    }
+    panel.dispose();
+  });
+
+  it("follows latest output until scrolling up, then resumes with End", () => {
+    const transcript = {
+      messages: [],
+      toolDefinitions: [],
+      fallback: Array.from({ length: 80 }, (_, i) => `line-${i}`).join("\n"),
+    } satisfies ChildAgentTranscriptSnapshot;
+    const { panel } = panelFixture({ transcript });
+    panel.handleInput("enter");
+    expect(panel.render(80).join("\n")).toContain("line-79");
+    expect(panel.render(80).join("\n")).not.toContain("line-0");
+    panel.handleInput("pageUp");
+    const paused = panel
+      .render(80)
+      .join("\n")
+      .match(/line-\d+/g);
+    transcript.fallback += "\nline-80";
+    expect(
+      panel
+        .render(80)
+        .join("\n")
+        .match(/line-\d+/g),
+    ).toEqual(paused);
+    panel.handleInput("\x1b[F");
+    expect(panel.render(80).join("\n")).toContain("line-80");
+    transcript.fallback += "\nline-81";
+    expect(panel.render(80).join("\n")).toContain("line-81");
     panel.dispose();
   });
 
@@ -195,6 +298,239 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
+  it("renders inherited tool results even when their calls are outside inherited context", () => {
+    const { panel } = panelFixture({
+      transcript: {
+        toolDefinitions: [],
+        messages: [
+          {
+            role: "toolResult",
+            toolCallId: "inherited-call",
+            toolName: "read",
+            content: [{ type: "text", text: "[Image: image/png]" }],
+            isError: false,
+            timestamp: 1,
+          },
+        ],
+      },
+    });
+    panel.handleInput("enter");
+    expect(panel.render(80).join("\n")).toContain("[Image: image/png]");
+    panel.dispose();
+  });
+
+  it("reuses historical tool rendering when only the live tail changes", () => {
+    const renderCall = vi.fn(() => new Text("historical tool", 0, 0));
+    const transcript: ChildAgentTranscriptSnapshot = {
+      messages: [
+        assistantMessage([{ type: "toolCall", id: "call", name: "history", arguments: {} }]),
+        {
+          role: "toolResult",
+          toolCallId: "call",
+          toolName: "history",
+          content: [{ type: "text", text: "historical result" }],
+          timestamp: 2,
+          isError: false,
+        },
+      ],
+      toolDefinitions: [
+        {
+          name: "history",
+          label: "History",
+          description: "History",
+          parameters: Type.Object({}),
+          execute: async () => ({ content: [], details: undefined }),
+          renderCall,
+        },
+      ],
+    };
+    const { panel } = panelFixture({ transcript });
+    panel.handleInput("enter");
+    panel.render(100);
+    const calls = renderCall.mock.calls.length;
+    expect(calls).toBeGreaterThan(0);
+    transcript.messages.push(assistantMessage([{ type: "text", text: "new live tail" }]));
+    expect(panel.render(100).join("\n")).toContain("new live tail");
+    expect(renderCall).toHaveBeenCalledTimes(calls);
+    panel.dispose();
+  });
+
+  it("collapses historical tool output without a loaded tool definition", () => {
+    const { panel } = panelFixture({
+      transcript: {
+        toolDefinitions: [],
+        messages: [
+          {
+            role: "toolResult",
+            toolCallId: "call",
+            toolName: "history",
+            content: [
+              {
+                type: "text",
+                text: Array.from({ length: 60 }, (_, i) => `tool-line-${i}`).join("\n"),
+              },
+            ],
+            isError: false,
+            timestamp: 2,
+          },
+        ],
+      },
+    });
+    panel.handleInput("enter");
+    expect(panel.render(80).join("\n")).not.toContain("tool-line-59");
+    panel.handleInput("expand");
+    expect(panel.render(80).join("\n")).toContain("tool-line-59");
+    panel.dispose();
+  });
+
+  it("keeps the reading position when earlier tool output expands", () => {
+    const { panel } = panelFixture({
+      transcript: {
+        toolDefinitions: [],
+        messages: [
+          assistantMessage([{ type: "toolCall", id: "call", name: "history", arguments: {} }]),
+          {
+            role: "toolResult",
+            toolCallId: "call",
+            toolName: "history",
+            content: [
+              {
+                type: "text",
+                text: Array.from({ length: 60 }, (_, i) => `tool-line-${i}`).join("\n"),
+              },
+            ],
+            isError: false,
+            timestamp: 2,
+          },
+          ...Array.from({ length: 12 }, (_, i) => ({
+            role: "user" as const,
+            content: `marker-${i}`,
+            timestamp: i + 3,
+          })),
+        ],
+      },
+    });
+    panel.handleInput("enter");
+    expect(panel.render(80).join("\n")).not.toContain("tool-line-59");
+    panel.handleInput("pageUp");
+    const marker = panel
+      .render(80)
+      .join("\n")
+      .match(/marker-\d+/)?.[0];
+    expect(marker).toBeTruthy();
+    panel.handleInput("expand");
+    expect(
+      panel
+        .render(80)
+        .join("\n")
+        .match(/marker-\d+/)?.[0],
+    ).toBe(marker);
+    panel.dispose();
+  });
+
+  it("anchors paused reading to message text when the terminal width changes", () => {
+    const text = Array.from({ length: 500 }, (_, i) => `word${i.toString().padStart(3, "0")}`).join(
+      " ",
+    );
+    const { panel } = panelFixture({
+      transcript: { messages: [assistantMessage([{ type: "text", text }])], toolDefinitions: [] },
+    });
+    panel.handleInput("enter");
+    panel.render(80);
+    panel.handleInput("pageUp");
+    const word = panel
+      .render(80)
+      .join("\n")
+      .match(/word\d+/)?.[0];
+    expect(word).toBeTruthy();
+    expect(panel.render(40).find((line) => /word\d+/.test(line))).toContain(word);
+    panel.handleInput("\x1b[F");
+    expect(panel.render(40).join("\n")).toContain("word499");
+    panel.dispose();
+  });
+
+  it("does not emit main-terminal prompt markers from the embedded transcript", () => {
+    const { panel } = panelFixture({
+      transcript: {
+        messages: [{ role: "user", content: "Child prompt", timestamp: 1 }],
+        toolDefinitions: [],
+      },
+    });
+    panel.handleInput("enter");
+    const rendered = panel.render(80).join("\n");
+    expect(rendered).toContain("Child prompt");
+    expect(rendered).not.toContain("\x1b]133;");
+    panel.dispose();
+  });
+
+  it("drops cached tool output when the selected branch retreats before its result", async () => {
+    vi.useFakeTimers();
+    const call = assistantMessage([
+      { type: "toolCall", id: "call", name: "history", arguments: {} },
+    ]);
+    const { panel, coordinator } = panelFixture({
+      transcript: {
+        toolDefinitions: [],
+        messages: [
+          call,
+          {
+            role: "toolResult",
+            toolCallId: "call",
+            toolName: "history",
+            content: [{ type: "text", text: "abandoned branch result" }],
+            timestamp: 2,
+            isError: false,
+          },
+        ],
+      },
+    });
+    panel.handleInput("enter");
+    expect(panel.render(100).join("\n")).toContain("abandoned branch result");
+    coordinator.inspectTranscript.mockReturnValue({ toolDefinitions: [], messages: [call] });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const retreated = panel.render(100).join("\n");
+    expect(retreated).toContain("history");
+    expect(retreated).not.toContain("abandoned branch result");
+    panel.dispose();
+  });
+
+  it("scrolls by single lines through blank padding between native messages", () => {
+    const { panel } = panelFixture({
+      transcript: {
+        toolDefinitions: [],
+        messages: Array.from({ length: 30 }, (_, i) => ({
+          role: "user" as const,
+          content: `message-${i}`,
+          timestamp: i,
+        })),
+      },
+    });
+    panel.handleInput("enter");
+    expect(panel.render(80).join("\n")).toContain("message-29");
+    for (let i = 0; i < 12; i++) {
+      panel.handleInput("up");
+      panel.render(80);
+    }
+    const earlier = panel.render(80).join("\n");
+    expect(earlier).toContain("message-22");
+    expect(earlier).not.toContain("message-29");
+    panel.dispose();
+  });
+
+  it("returns to the tree when the inspected Child Agent disappears", async () => {
+    vi.useFakeTimers();
+    const { panel, coordinator, onClose } = panelFixture();
+    panel.handleInput("enter");
+    coordinator.inspectStatus.mockReturnValue({ root_id: "root", agents: [] });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const tree = panel.render(100).join("\n");
+    expect(tree).toContain("no longer available");
+    expect(tree).toContain("No Child Agents yet");
+    expect(tree).not.toContain("live recent activity");
+    expect(onClose).not.toHaveBeenCalled();
+    panel.dispose();
+  });
+
   it("releases an injected refresh owner exactly once", () => {
     const stopRefresh = vi.fn();
     const startRefresh = vi.fn(() => stopRefresh);
@@ -216,6 +552,43 @@ describe("minimal subagents status panel", () => {
 
     await vi.advanceTimersByTimeAsync(2_000);
     expect(coordinator.inspectStatus).toHaveBeenCalledOnce();
+  });
+
+  it("opens one centered native overlay and refocuses repeated opens", async () => {
+    const { coordinator, panel } = panelFixture();
+    panel.dispose();
+    const pending = Promise.withResolvers<void>();
+    const custom = vi.fn<ExtensionContext["ui"]["custom"]>().mockReturnValue(pending.promise);
+    const context = { mode: "tui", cwd: "/project", ui: { custom, notify: vi.fn() } };
+    const controller = new MinimalSubagentsStatusPanelController(
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: These typed coordinator methods cover the panel's read-only boundary.
+      coordinator as unknown as MinimalSubagentsCoordinator,
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Opening the panel uses only mode, cwd, custom, and notify.
+      context as unknown as ExtensionContext,
+      () => access,
+    );
+    const opened = controller.open();
+    const options = custom.mock.calls[0]?.[1];
+    expect(options).toMatchObject({
+      overlay: true,
+      overlayOptions: { anchor: "center", width: "90%", maxHeight: "90%", margin: 1 },
+    });
+    const focus = vi.fn();
+    options?.onHandle?.({
+      focus,
+      hide: vi.fn(),
+      unfocus: vi.fn(),
+      setHidden: vi.fn(),
+      isHidden: () => false,
+      isFocused: () => true,
+      getBounds: () => undefined,
+    });
+    expect(controller.open()).toBe(opened);
+    expect(custom).toHaveBeenCalledOnce();
+    expect(focus).toHaveBeenCalledOnce();
+    pending.resolve();
+    await opened;
+    controller.dispose();
   });
 
   it("uses one RPC notification and stays silent in JSON mode", async () => {

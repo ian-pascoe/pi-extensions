@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   buildSessionContext,
+  CustomEditor,
   getAgentDir,
   SessionManager,
   SettingsManager,
@@ -9,6 +10,7 @@ import {
   type ExtensionCommandContext,
   type ExtensionContext,
   type ExtensionFactory,
+  type ExtensionUIContext,
   type MessageEndEvent,
   type SessionBeforeForkEvent,
   type SessionEntry,
@@ -16,6 +18,7 @@ import {
   type SessionStartEvent,
   type SessionTreeEvent,
 } from "@earendil-works/pi-coding-agent";
+import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
 import {
   createSubagentAccessBranchRecord,
   reconcileCoordinatorToolAccess,
@@ -393,6 +396,80 @@ const productionLifecycleEffects: MinimalSubagentsLifecycleEffects = {
   createSessionFactory: (options) => new PiAgentSessionFactory(options),
 };
 
+/** Compose a focus-local key sequence without taking over the editor's other behavior. */
+function installViewerShortcut(ui: ExtensionUIContext, open: () => void) {
+  const previous = ui.getEditorComponent();
+  let active = true;
+  let previousLeftAt: number | undefined;
+  const reset = () => {
+    previousLeftAt = undefined;
+  };
+  const factory: NonNullable<ReturnType<ExtensionUIContext["getEditorComponent"]>> = (
+    tui,
+    theme,
+    keybindings,
+  ) => {
+    reset();
+    const editor =
+      previous?.(tui, theme, keybindings) ??
+      new CustomEditor(tui, theme, keybindings, { embedWorkingStatus: true });
+    let focused = false;
+    const handleInput = (data: string) => {
+      if (isKeyRelease(data)) {
+        editor.handleInput(data);
+        return;
+      }
+      if (
+        active &&
+        focused &&
+        editor.getText() === "" &&
+        matchesKey(data, "left") &&
+        !isKeyRepeat(data)
+      ) {
+        const now = performance.now();
+        if (previousLeftAt !== undefined && now - previousLeftAt <= 500) {
+          reset();
+          open();
+          return;
+        }
+        previousLeftAt = now;
+      } else {
+        reset();
+      }
+      editor.handleInput(data);
+    };
+    // Forward the editor's complete interface, including app handlers and custom methods.
+    // Binding to the original instance also preserves private fields in custom editors.
+    return new Proxy(editor, {
+      has: (target, property) => property === "focused" || Reflect.has(target, property),
+      get(target, property) {
+        if (property === "focused") return focused;
+        if (property === "handleInput") return handleInput;
+        // oxlint-disable-next-line anti-slop/no-reflect-get -- SAFETY: Forward the SDK editor's open interface, including other extensions' methods, without replacing their receiver.
+        const value = Reflect.get(target, property, target);
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: Proxy forwarding binds callable members; this is not parsing external input.
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+      set(target, property, value) {
+        if (property === "focused") {
+          focused = value;
+          if (!focused) reset();
+        }
+        return Reflect.set(target, property, value, target);
+      },
+    });
+  };
+  ui.setEditorComponent(factory);
+  return {
+    reset,
+    dispose() {
+      active = false;
+      reset();
+      if (ui.getEditorComponent() === factory) ui.setEditorComponent(previous);
+    },
+  };
+}
+
 /** Own coordinator, UI, and prepared-fork state for one root Pi session lifecycle. */
 export class MinimalSubagentsLifecycleController {
   private coordinator: MinimalSubagentsCoordinator | undefined;
@@ -407,6 +484,7 @@ export class MinimalSubagentsLifecycleController {
   };
   private uiController: MinimalSubagentsUiController | undefined;
   private statusPanelController: MinimalSubagentsStatusPanelController | undefined;
+  private viewerShortcut: ReturnType<typeof installViewerShortcut> | undefined;
   private accessSession: ActiveSubagentAccessSession | undefined;
   private preparedFork:
     | { sourceSessionFile: string; selectedBranchSnapshot: RegistrySnapshot }
@@ -619,6 +697,14 @@ export class MinimalSubagentsLifecycleController {
       () => this.currentSubagentStatusAccess(),
     );
 
+    this.viewerShortcut?.dispose();
+    this.viewerShortcut =
+      context.mode === "tui"
+        ? installViewerShortcut(context.ui, () => {
+            void this.statusPanelController?.open();
+          })
+        : undefined;
+
     if (hasHistoricalChildIdentity(context.sessionManager.getBranch())) {
       context.ui.notify(
         "Opened a former subagent session directly. It is now an independent root; former descendants and parent messaging were not restored. Concurrent ownership by its original root is unsupported.",
@@ -666,6 +752,7 @@ export class MinimalSubagentsLifecycleController {
     _event: SessionTreeEvent,
     context: ExtensionContext,
   ): Promise<void> {
+    this.viewerShortcut?.reset();
     if (!this.coordinator) return;
     const snapshot = replayRegistryEntries(
       context.sessionManager.getBranch(),
@@ -805,6 +892,8 @@ export class MinimalSubagentsLifecycleController {
     event: SessionShutdownEvent,
     context: ExtensionContext,
   ): Promise<void> {
+    this.viewerShortcut?.dispose();
+    this.viewerShortcut = undefined;
     this.statusPanelController?.dispose();
     this.statusPanelController = undefined;
     if (this.coordinator) {

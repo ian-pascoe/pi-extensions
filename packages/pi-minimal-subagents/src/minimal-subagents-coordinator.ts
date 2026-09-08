@@ -452,14 +452,22 @@ export class MinimalSubagentsCoordinator {
     };
   }
 
-  /** Lazily inspect one Child Agent's bounded process-local transcript for trusted UI. */
+  /** Lazily inspect one Child Session Transcript without restoring a missing runtime. */
   inspectTranscript(agentId: string): ChildAgentTranscriptSnapshot {
     const agent = this.requireAgent(agentId);
     const runtime = this.runtimes.get(agentId);
     const liveSnapshot = runtime?.snapshotActivityTranscript?.();
     if (liveSnapshot) return liveSnapshot;
     if (runtime) return selectChildAgentTranscript(runtime.snapshotActivityMessages());
+    let historyError: string | undefined;
+    try {
+      const saved = this.dependencies.sessions.readTranscript?.(agent);
+      if (saved) return saved;
+    } catch (error) {
+      historyError = error instanceof Error ? error.message : String(error);
+    }
     const fallback =
+      historyError ||
       agent.unavailable_reason ||
       agent.latest_result?.error ||
       agent.latest_result?.output ||

@@ -100,7 +100,7 @@ describe("minimal subagents context", () => {
     expect(bounded[0]?.content.split("\n").length ?? 0).toBeLessThanOrEqual(20);
   });
 
-  it("selects a bounded image-free transcript while preserving tool call/result pairs", () => {
+  it("retains full Child Session Transcript tool pairs with explicit image placeholders", () => {
     const firstCall = {
       ...assistantMessage("old work"),
       content: [
@@ -136,22 +136,19 @@ describe("minimal subagents context", () => {
       streaming,
     );
 
-    expect(snapshot.messages.length).toBeLessThanOrEqual(48);
-    expect(snapshot.messages[0]).toMatchObject({
-      role: "assistant",
-      content: [
-        {
-          type: "toolCall",
-          id: "call-across-cutoff",
-        },
-      ],
-    });
+    expect(snapshot.messages).toHaveLength(28);
+    expect(snapshot.messages[0]).toEqual(firstCall);
     expect(snapshot.messages).toContainEqual(
       expect.objectContaining({ role: "toolResult", toolCallId: "call-across-cutoff" }),
     );
-    expect(snapshot.messages).not.toContainEqual(
-      expect.objectContaining({ role: "toolResult", toolCallId: "orphan" }),
-    );
+    expect(snapshot.messages).toContainEqual(orphanResult);
+    expect(snapshot.messages).toContainEqual({
+      ...pairedResult,
+      content: [
+        { type: "text", text: "paired" },
+        { type: "text", text: "[Image: image/png]" },
+      ],
+    });
     expect(snapshot.messages.at(snapshot.streamingAssistantIndex ?? -1)).toMatchObject({
       role: "assistant",
       content: [{ type: "text", text: "streaming now" }],
@@ -163,9 +160,38 @@ describe("minimal subagents context", () => {
       ...Array.from({ length: 80 }, (_, index) => userMessage(`newer ${index}`)),
       pairedResult,
     ]);
-    expect(outsidePairWindow.messages).not.toContainEqual(
+    expect(outsidePairWindow.messages).toHaveLength(82);
+    expect(outsidePairWindow.messages).toContainEqual(
       expect.objectContaining({ role: "toolResult", toolCallId: "call-across-cutoff" }),
     );
+  });
+
+  it("keeps image-only conversation visible and never duplicates committed streaming output", () => {
+    const image = { type: "image" as const, data: "private image bytes", mimeType: "image/jpeg" };
+    const assistant = assistantMessage("already committed");
+    const snapshot = selectChildAgentTranscript(
+      [
+        userMessage([image]),
+        { role: "custom", customType: "visible", content: [image], display: true, timestamp: 2 },
+        {
+          role: "custom",
+          customType: "hidden",
+          content: "bookkeeping",
+          display: false,
+          timestamp: 3,
+        },
+        assistant,
+      ],
+      assistant,
+    );
+    expect(snapshot.messages).toHaveLength(3);
+    expect(snapshot.messages.slice(0, 2)).toMatchObject([
+      { role: "user", content: [{ type: "text", text: "[Image: image/jpeg]" }] },
+      { role: "custom", content: [{ type: "text", text: "[Image: image/jpeg]" }] },
+    ]);
+    expect(snapshot.streamingAssistantIndex).toBeUndefined();
+    expect(JSON.stringify(snapshot)).not.toMatch(/private image bytes|bookkeeping/);
+    expect(snapshot.messages[2]).not.toBe(assistant);
   });
 
   it("detects image blocks and writes delegation boundaries into the child prompt", () => {

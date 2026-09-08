@@ -8,8 +8,6 @@ import type {
 } from "./minimal-subagents-types.js";
 
 const RECENT_AGENT_ACTIVITY_LIMIT = 12;
-const CHILD_AGENT_TRANSCRIPT_MESSAGE_LIMIT = 24;
-const CHILD_AGENT_TRANSCRIPT_PAIR_WINDOW = CHILD_AGENT_TRANSCRIPT_MESSAGE_LIMIT * 2;
 const RECENT_AGENT_ACTIVITY_MAX_LINES = 20;
 const RECENT_AGENT_ACTIVITY_MAX_BYTES = 2 * 1024;
 
@@ -47,110 +45,45 @@ function visibleMessageContent(content: string | readonly (TextContent | ImageCo
   return contentText(content, "\n\n") || "(no text content)";
 }
 
-function omitAgentMessageImages(message: AgentMessage): AgentMessage {
+function replaceAgentMessageImages(message: AgentMessage): AgentMessage {
   if (message.role === "user" || message.role === "custom") {
     return {
       ...structuredClone(message),
       content: Array.isArray(message.content)
-        ? message.content
-            .filter((content) => content.type !== "image")
-            .map((content) => structuredClone(content))
+        ? message.content.map((content) =>
+            content.type === "image"
+              ? { type: "text" as const, text: `[Image: ${content.mimeType}]` }
+              : structuredClone(content),
+          )
         : message.content,
     };
   }
   if (message.role === "toolResult") {
     return {
       ...structuredClone(message),
-      content: message.content
-        .filter((content) => content.type !== "image")
-        .map((content) => structuredClone(content)),
+      content: message.content.map((content) =>
+        content.type === "image"
+          ? { type: "text" as const, text: `[Image: ${content.mimeType}]` }
+          : structuredClone(content),
+      ),
     };
   }
   return structuredClone(message);
 }
 
-interface IndexedTranscriptMessage {
-  message: AgentMessage;
-  originalIndex: number;
-  streaming: boolean;
-}
-
-/** Select at most 48 recent raw messages, retaining cross-cutoff tool pairs and omitting images. */
+/** Clone the complete visible UI transcript, replacing images without bounding conversation history. */
 export function selectChildAgentTranscript(
   messages: readonly AgentMessage[],
   streamingAssistantMessage?: AgentMessage,
 ): ChildAgentTranscriptSnapshot {
-  const pairWindow = messages.slice(-CHILD_AGENT_TRANSCRIPT_PAIR_WINDOW);
-  const firstWindowIndex = messages.length - pairWindow.length;
-  const indexed: IndexedTranscriptMessage[] = [
-    ...pairWindow.map((message, windowIndex) => ({
-      message,
-      originalIndex: firstWindowIndex + windowIndex,
-      streaming: false,
-    })),
-    ...(streamingAssistantMessage
-      ? [
-          {
-            message: streamingAssistantMessage,
-            originalIndex: messages.length,
-            streaming: true,
-          },
-        ]
-      : []),
-  ];
-  const tail = indexed.slice(-CHILD_AGENT_TRANSCRIPT_MESSAGE_LIMIT).map((item) => ({
-    ...item,
-    message: omitAgentMessageImages(item.message),
-  }));
-  const selectedIndexes = new Set(tail.map(({ originalIndex }) => originalIndex));
-  const calls = new Map<
-    string,
-    { originalIndex: number; assistant: Extract<AgentMessage, { role: "assistant" }> }
-  >();
-  for (const item of indexed) {
-    if (item.message.role !== "assistant") continue;
-    for (const content of item.message.content) {
-      if (content.type === "toolCall") {
-        calls.set(content.id, { originalIndex: item.originalIndex, assistant: item.message });
-      }
-    }
-  }
-
-  const retained = tail.filter(
-    (item) => item.message.role !== "toolResult" || calls.has(item.message.toolCallId),
-  );
-  const missingCalls = new Map<
-    number,
-    { assistant: Extract<AgentMessage, { role: "assistant" }>; callIds: Set<string> }
-  >();
-  for (const item of retained) {
-    if (item.message.role !== "toolResult") continue;
-    const call = calls.get(item.message.toolCallId);
-    if (!call || selectedIndexes.has(call.originalIndex)) continue;
-    const missing = missingCalls.get(call.originalIndex) ?? {
-      assistant: call.assistant,
-      callIds: new Set<string>(),
-    };
-    missing.callIds.add(item.message.toolCallId);
-    missingCalls.set(call.originalIndex, missing);
-  }
-  const prefixes: IndexedTranscriptMessage[] = [...missingCalls.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([originalIndex, missing]) => ({
-      message: {
-        ...structuredClone(missing.assistant),
-        content: missing.assistant.content
-          .filter((content) => content.type === "toolCall" && missing.callIds.has(content.id))
-          .map((content) => structuredClone(content)),
-      },
-      originalIndex,
-      streaming: false,
-    }));
-  const selected = [...prefixes, ...retained];
-  const streamingAssistantIndex = selected.findIndex(({ streaming }) => streaming);
+  const visible = messages.filter((message) => message.role !== "custom" || message.display);
+  const streaming = streamingAssistantMessage && !messages.includes(streamingAssistantMessage);
   return {
-    messages: selected.map(({ message }) => message),
-    streamingAssistantIndex: streamingAssistantIndex >= 0 ? streamingAssistantIndex : undefined,
+    messages: [
+      ...visible.map(replaceAgentMessageImages),
+      ...(streaming ? [replaceAgentMessageImages(streamingAssistantMessage)] : []),
+    ],
+    streamingAssistantIndex: streaming ? visible.length : undefined,
     toolDefinitions: [],
   };
 }
