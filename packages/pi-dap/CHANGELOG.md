@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-dap
 
+## 0.3.2
+
+### Patch Changes
+
+- 1a2e2b9: Remove lint workarounds from package code
+
 ## 0.3.1
 
 ### Patch Changes

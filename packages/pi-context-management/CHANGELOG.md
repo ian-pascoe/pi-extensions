@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-context-management
 
+## 0.2.1
+
+### Patch Changes
+
+- 1a2e2b9: Remove lint workarounds from package code
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.1.2
+
+### Patch Changes
+
+- 1a2e2b9: Remove lint workarounds from package code
+
 ## 0.1.1
 
 ### Patch Changes

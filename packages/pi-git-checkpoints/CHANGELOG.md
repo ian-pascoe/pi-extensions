@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-git-checkpoints
 
+## 0.2.2
+
+### Patch Changes
+
+- 1a2e2b9: Remove lint workarounds from package code
+
 ## 0.2.1
 
 ### Patch Changes
