@@ -120,6 +120,8 @@ export interface ExecutePiToolBridgeBatchOptions {
   /** Injected parent wall clock used only for clamped presentation durations. */
   readonly now: () => number;
   readonly onTerminate: () => void;
+  /** Receives each final hooked result for human-only Transcript capture, before guest translation. */
+  readonly onResult?: (callId: string, result: AgentToolResult<unknown>, isError: boolean) => void;
   readonly onUpdate?: (callId: string, result: AgentToolResult<unknown>) => void;
   readonly outerAssistantMessage?: AssistantMessage;
   readonly signal: AbortSignal;
@@ -348,6 +350,7 @@ async function finalizeExecutedPiToolCall(
     readonly result: AgentToolResult<unknown>;
   },
   signal: AbortSignal,
+  onResult: ExecutePiToolBridgeBatchOptions["onResult"],
 ): Promise<FinalizedPiToolCall> {
   let result = executed.result;
   let isError = executed.isError;
@@ -382,6 +385,12 @@ async function finalizeExecutedPiToolCall(
   } catch (cause) {
     result = createErrorToolResult(normalizeThrownMessage(cause));
     isError = true;
+  }
+
+  try {
+    onResult?.(prepared.toolCall.id, result, isError);
+  } catch {
+    // Human-only capture must never change a registered tool's result or metadata.
   }
 
   const terminate = result.terminate === true;
@@ -611,8 +620,35 @@ export async function executePiToolBridgeBatch(
       prepared,
       executed,
       options.signal,
+      options.onResult,
     );
     return terminationNotified ? terminatedPiToolCall(prepared.toolCall.id) : finalized;
+  };
+
+  const prepare = async (call: PiToolBridgeCall): Promise<PreparedOrFinalizedPiToolCall> => {
+    const preparation = await preparePiToolCall(
+      captured,
+      call,
+      assistantMessage,
+      context,
+      options.signal,
+    );
+    if (
+      preparation.kind === "finalized" &&
+      !preparation.value.outcome.ok &&
+      preparation.value.outcome.error.code !== "cancellation"
+    ) {
+      try {
+        options.onResult?.(
+          call.callId,
+          createErrorToolResult(preparation.value.outcome.error.message),
+          true,
+        );
+      } catch {
+        // Human-only capture cannot alter validation or tool-call hook semantics.
+      }
+    }
+    return preparation;
   };
 
   const hasSequentialCall = options.calls.some(
@@ -626,13 +662,7 @@ export async function executePiToolBridgeBatch(
         continue;
       }
       const startedAt = options.now();
-      const preparation = await preparePiToolCall(
-        captured,
-        call,
-        assistantMessage,
-        context,
-        options.signal,
-      );
+      const preparation = await prepare(call);
       const finalized =
         preparation.kind === "finalized" ? preparation.value : await finalizePrepared(preparation);
       finalizedCalls.push(timedFinalizedPiToolCall(call, finalized, startedAt, options.now));
@@ -651,13 +681,7 @@ export async function executePiToolBridgeBatch(
   const preparations = await Promise.all(
     options.calls.map(async (call) => {
       const startedAt = options.now();
-      const preparation = await preparePiToolCall(
-        captured,
-        call,
-        assistantMessage,
-        context,
-        options.signal,
-      );
+      const preparation = await prepare(call);
       return { call, preparation, startedAt };
     }),
   );

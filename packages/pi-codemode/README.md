@@ -160,8 +160,25 @@ rendering. Session rows prioritize Cell lifecycle, a short Session ID, Cell
 Ordinal, returned-value shape, Console-call count, nested-tool count, and elapsed
 time. Expanded rows show the full Session ID, explicit call arguments,
 TypeScript source, bounded Console output before structured returned data or the
-error, and bounded nested-tool names, outcomes, and durations. Nested arguments
-and raw nested outputs are never copied into the presentation.
+error, and bounded nested-tool names, outcomes, and durations. These compact
+Presentation Snapshots remain separate from the native nested-tool rows below.
+
+When a Cell finishes, its invoked tools appear as ordinary native tool rows in
+invocation order, including built-in, extension, and MCP tools. They use Pi's
+normal collapsed/expanded rendering (including saved edit diffs), without an
+extra CodeMode expansion. Awaited execution places the rows beneath the Cell;
+background completion appends them at the current Transcript tail, labelled by
+Session and Cell Ordinal. Polling never duplicates them.
+
+The rows are durable human-only custom entries, excluded from model context.
+Successful, failed, and cancelled Cells retain their calls; an unfinished call
+has **outcome unknown**, not an assertion that its side effects were cancelled.
+Late results cannot rewrite a settled display or attach it to a new branch or
+Pi session. Reopening history renders saved data without rerunning any tool.
+Arguments and results are bounded to Pi's 2,000-line/50-KB display budget per
+call. Unsafe, oversized, or unavailable native data uses an explicit bounded
+fallback. Oversized safe results have a private live-session Result Spill when
+available; those files are not guaranteed after reopening history.
 
 Search rows show the query, result range, and next offset without exposing raw
 JSON. Expanding a discovery search shows each exact tool name, display group,

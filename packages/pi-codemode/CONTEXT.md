@@ -32,7 +32,9 @@ _Avoid_: registry, tool list
 
 **CodeMode Transcript**:
 The durable, semantic presentation of CodeMode tool calls and results in Pi's
-conversation history.
+conversation history, including human-only displays of tools invoked within a
+Cell. Those displays remain visible after success, failure, or cancellation and
+when the Pi session is reopened; they add nothing to the agent's context.
 _Avoid_: notebook UI, raw tool JSON
 
 **CodeMode Observer UI**:
