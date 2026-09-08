@@ -78,7 +78,8 @@ test("Notes reads expand Markdown and preserve reference and UTF-16 pagination m
   const args = { action: "read", name: "plan", limit: 20 };
   const result = await tool.execute("read", args, undefined, undefined, context);
   const collapsed = present(tool, result, renderContext(args));
-  expect(collapsed).toContain("Notes · read “plan” · 20 UTF-16 units · more");
+  expect(collapsed).toContain("Notes · read “plan” · more");
+  expect(collapsed).not.toContain("UTF-16");
   expect(collapsed).not.toContain("Decisions");
   const expanded = present(tool, result, renderContext(args, true));
   expect(expanded).toContain("Decisions");
@@ -195,7 +196,8 @@ test("History reads preserve exact serialized fragments rather than interpreting
   };
   const result = { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
   const collapsed = present(tool, result, renderContext(args));
-  expect(collapsed).toContain("History · read entry-a");
+  expect(collapsed).toContain("History · read entry-a · more");
+  expect(collapsed).not.toContain("UTF-16");
   expect(collapsed).not.toContain(content);
   const expanded = present(tool, result, renderContext(args, true));
   expect(expanded).toContain(content);
