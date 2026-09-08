@@ -1,4 +1,3 @@
-import type { JsonValue } from "@earendil-works/pi-ai";
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -7,16 +6,18 @@ import { DEFAULT_MAX_SUBAGENT_DEPTH, THINKING_LEVELS } from "./minimal-subagents
 const MODEL_ROLE_NAME_MAX_LENGTH = 64;
 const MODEL_ROLE_HINT_MAX_LENGTH = 500;
 
-const JsonValueSchema = Type.Unsafe<JsonValue>({});
 const SettingsDocumentSchema = Type.Object({
-  minimalSubagents: Type.Optional(JsonValueSchema),
+  minimalSubagents: Type.Optional(Type.Unknown()),
 });
 const MinimalSubagentsSettingsSchema = Type.Object({
-  enabled: Type.Optional(JsonValueSchema),
-  maxSubagentDepth: Type.Optional(JsonValueSchema),
-  modelRoles: Type.Optional(JsonValueSchema),
+  enabled: Type.Optional(Type.Unknown()),
+  maxSubagentDepth: Type.Optional(Type.Unknown()),
+  modelRoles: Type.Optional(Type.Unknown()),
 });
-const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
+const ModelRoleObjectSchema = Type.Object({
+  model: Type.Optional(Type.Unknown()),
+  hint: Type.Optional(Type.Unknown()),
+});
 const EnabledSettingSchema = Type.Boolean();
 const PositiveSafeIntegerSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const MaxSubagentDepthSettingSchema = Type.Union([PositiveSafeIntegerSchema, Type.Null()]);
@@ -28,7 +29,7 @@ const ExpandedModelRoleSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const ModelRoleEntriesSchema = Type.Record(Type.String(), JsonValueSchema);
+const ModelRoleEntriesSchema = Type.Record(Type.String(), Type.Unknown());
 const ModelRolesSettingSchema = Type.Union([ModelRoleEntriesSchema, Type.Null()]);
 
 type ModelRoleThinkingLevel = (typeof THINKING_LEVELS)[number];
@@ -61,7 +62,7 @@ export interface ResolvedMinimalSubagentsConfig {
 }
 
 interface MinimalSubagentsSettingsDocument {
-  minimalSubagents?: JsonValue;
+  minimalSubagents?: unknown;
 }
 
 interface MinimalSubagentsConfigInput {
@@ -102,7 +103,7 @@ type ModelRoleWireValue =
   | { kind: "delete" }
   | { kind: "shorthand"; model: string }
   | { kind: "expanded"; fields: Static<typeof ExpandedModelRoleSchema> }
-  | { kind: "malformed-expanded"; fields: Record<string, JsonValue> }
+  | { kind: "malformed-expanded"; fields: Static<typeof ModelRoleObjectSchema> }
   | { kind: "invalid" };
 
 type ModelRolesWireValue =
@@ -110,15 +111,17 @@ type ModelRolesWireValue =
   | { kind: "entries"; entries: ReadonlyMap<string, ModelRoleWireValue> }
   | { kind: "invalid" };
 
-function parseMaxSubagentDepthWireValue(value: JsonValue): MaxSubagentDepthWireValue {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Authored settings remain unparsed until the depth schema below validates their value.
+function parseMaxSubagentDepthWireValue(value: unknown): MaxSubagentDepthWireValue {
   if (!Value.Check(MaxSubagentDepthSettingSchema, value)) return { kind: "invalid" };
   return value === null ? { kind: "reset" } : { kind: "depth", value };
 }
 
-function parseModelRoleWireValue(value: JsonValue): ModelRoleWireValue {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Role entries may contain arbitrary settings data; schemas classify them before model/hint validation.
+function parseModelRoleWireValue(value: unknown): ModelRoleWireValue {
   if (value === null) return { kind: "delete" };
   if (Value.Check(ShorthandModelRoleSchema, value)) return { kind: "shorthand", model: value };
-  if (Value.Check(JsonObjectSchema, value)) {
+  if (Value.Check(ModelRoleObjectSchema, value)) {
     return Value.Check(ExpandedModelRoleSchema, value)
       ? { kind: "expanded", fields: value }
       : { kind: "malformed-expanded", fields: value };
@@ -132,7 +135,8 @@ function isExpandedModelRoleWireValue(
   return value.kind === "expanded" || value.kind === "malformed-expanded";
 }
 
-function parseModelRolesWireValue(value: JsonValue): ModelRolesWireValue {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Validate the authored role collection before parsing each untrusted entry.
+function parseModelRolesWireValue(value: unknown): ModelRolesWireValue {
   if (!Value.Check(ModelRolesSettingSchema, value)) return { kind: "invalid" };
   if (value === null) return { kind: "reset" };
   return {

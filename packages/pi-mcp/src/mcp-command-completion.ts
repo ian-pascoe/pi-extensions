@@ -1,4 +1,3 @@
-/* oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional completion descriptions are included only when their source supplies one. */
 import {
   MCP_ADD_LOCAL_VALUE_OPTIONS,
   MCP_ADD_OAUTH_VALUE_OPTIONS,
@@ -80,8 +79,12 @@ export interface McpCommandCompletionItem {
   readonly value: string;
 }
 
+type CompletionItem = {
+  -readonly [Field in keyof McpCommandCompletionItem]: McpCommandCompletionItem[Field];
+};
+
 interface CompletionCandidate {
-  readonly description?: string;
+  description?: string;
   readonly label: string;
   readonly suffix?: "none" | "space";
   readonly token?: string;
@@ -109,11 +112,14 @@ function completionItems(
         left.localeCompare(right),
     )
     .slice(0, MAX_MCP_COMMAND_COMPLETIONS)
-    .map(({ description, label, suffix = "space", token = label }) => ({
-      ...(description === undefined ? {} : { description }),
-      label,
-      value: `${prefix.beforeCurrent}${quoteMcpCommandToken(token, prefix.current.quote)}${suffix === "space" ? " " : ""}`,
-    }));
+    .map(({ description, label, suffix = "space", token = label }) => {
+      const item: CompletionItem = {
+        label,
+        value: `${prefix.beforeCurrent}${quoteMcpCommandToken(token, prefix.current.quote)}${suffix === "space" ? " " : ""}`,
+      };
+      if (description !== undefined) item.description = description;
+      return item;
+    });
   return items.length === 0 ? null : items;
 }
 
@@ -121,7 +127,9 @@ function optionCandidate(name: string, suffix: "none" | "space" = "space"): Comp
   const token = `--${name}`;
   // SAFETY: Unknown option names intentionally produce no description; known names index this closed presentation map.
   const description = OPTION_DESCRIPTIONS[token as keyof typeof OPTION_DESCRIPTIONS];
-  return { ...(description === undefined ? {} : { description }), label: token, suffix };
+  const candidate: CompletionCandidate = { label: token, suffix };
+  if (description !== undefined) candidate.description = description;
+  return candidate;
 }
 
 function availableOptionCandidates(
@@ -381,12 +389,15 @@ async function completePromptArgument(
     if (catalog === undefined) return null;
     return completionItems(
       prefix,
-      (catalog.definition?.arguments ?? []).map(({ description, name }) => ({
-        suffix: "none",
-        ...(description === undefined ? {} : { description }),
-        label: name,
-        token: `${syntax === "inline" ? "--arg=" : ""}${name}=`,
-      })),
+      (catalog.definition?.arguments ?? []).map(({ description, name }) => {
+        const candidate: CompletionCandidate = {
+          suffix: "none",
+          label: name,
+          token: `${syntax === "inline" ? "--arg=" : ""}${name}=`,
+        };
+        if (description !== undefined) candidate.description = description;
+        return candidate;
+      }),
       rawArgument,
     );
   }
@@ -425,11 +436,11 @@ async function completePromptCommand(
     if (prompts === undefined) return null;
     return completionItems(
       prefix,
-      prompts.map(({ prompt }) => ({
-        ...(prompt.description === undefined ? {} : { description: prompt.description }),
-        label: prompt.name,
-        suffix: "none",
-      })),
+      prompts.map(({ prompt }) => {
+        const candidate: CompletionCandidate = { label: prompt.name, suffix: "none" };
+        if (prompt.description !== undefined) candidate.description = prompt.description;
+        return candidate;
+      }),
     );
   }
   const promptName = parsed.positionals[1];
@@ -499,11 +510,11 @@ async function completeResourceCommand(
   if (resources === undefined) return null;
   return completionItems(
     prefix,
-    resources.map(({ resource }) => ({
-      ...(resource.name === undefined ? {} : { description: resource.name }),
-      label: resource.uri,
-      suffix: "none",
-    })),
+    resources.map(({ resource }) => {
+      const candidate: CompletionCandidate = { label: resource.uri, suffix: "none" };
+      if (resource.name !== undefined) candidate.description = resource.name;
+      return candidate;
+    }),
   );
 }
 

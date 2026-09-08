@@ -65,6 +65,13 @@ export interface McpContentResult {
   readonly details: McpContentResultDetails;
 }
 
+type McpStoredContentDraft = {
+  -readonly [Field in keyof McpStoredContent]: McpStoredContent[Field];
+};
+type McpContentResultDetailsDraft = {
+  -readonly [Field in keyof McpContentResultDetails]: McpContentResultDetails[Field];
+};
+
 function hasMcpEmbeddedText(
   resource: McpEmbeddedResource,
 ): resource is Extract<McpEmbeddedResource, { readonly text: string }> {
@@ -155,12 +162,13 @@ export async function createMcpContentResult(
             decodeMcpBase64Content(content.resource.blob, "embedded resource"),
             content.resource.mimeType ?? "application/octet-stream",
           );
-          storedContent.push({
+          const stored: McpStoredContentDraft = {
             kind: "embedded_binary",
-            ...(content.resource.mimeType !== undefined && { mimeType: content.resource.mimeType }),
             path,
             uri: content.resource.uri,
-          });
+          };
+          if (content.resource.mimeType !== undefined) stored.mimeType = content.resource.mimeType;
+          storedContent.push(stored);
           addModelText(
             `[MCP embedded binary resource: ${content.resource.uri} (${content.resource.mimeType ?? "unknown media type"}) stored at: ${path}]`,
           );
@@ -201,12 +209,10 @@ export async function createMcpContentResult(
           ),
         ];
 
-  return {
-    content,
-    details: {
-      ...(spillPath !== undefined && { spillPath }),
-      storedContent,
-      summary: truncation.content,
-    },
+  const details: McpContentResultDetailsDraft = {
+    storedContent,
+    summary: truncation.content,
   };
+  if (spillPath !== undefined) details.spillPath = spillPath;
+  return { content, details };
 }

@@ -53,6 +53,29 @@ describe("minimal subagents configuration", () => {
     });
   });
 
+  it("validates consumed live settings fields without claiming unrelated values are JSON", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: {
+        minimalSubagents: {
+          enabled: false,
+          maxSubagentDepth: undefined,
+          extra: () => "unrelated live value",
+          modelRoles: {
+            valid: { model: "provider/global", hint: undefined },
+            invalid: { model: Symbol("not a model") },
+          },
+        },
+      },
+      projectSettings: {},
+      eligibleModelIds: eligibleModels,
+    });
+    expect(result.subagentAccess.enabled).toBe(false);
+    expect(result.modelRoles).toEqual([{ name: "valid", model: "provider/global" }]);
+    expect(result.warnings).toEqual([
+      "global minimalSubagents.modelRoles.invalid: model must be a non-empty trimmed string",
+    ]);
+  });
+
   it("uses defaults and preserves a valid global value when project settings are invalid", () => {
     const result = resolveMinimalSubagentsConfig({
       globalSettings: { minimalSubagents: { maxSubagentDepth: 3 } },

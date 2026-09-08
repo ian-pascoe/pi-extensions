@@ -58,6 +58,10 @@ export type CodeModeToolSearchResult =
   | { readonly ok: true; readonly page: CodeModeToolSearchPage }
   | { readonly ok: false; readonly code: "validation" | "serialization"; readonly message: string };
 
+type MutableCodeModeToolSearchEntry = {
+  -readonly [Key in keyof CodeModeToolSearchEntry]: CodeModeToolSearchEntry[Key];
+};
+
 type ParsedCodeModeToolSchema = boolean | CodeModeJsonObject;
 type RenderedTool = {
   readonly name: string;
@@ -509,11 +513,12 @@ function searchScore(entry: CodeModeToolSearchEntry, terms: readonly string[]): 
 function summarySearchItem(
   entry: CodeModeToolSearchEntry,
 ): CodeModeToolSearchPage["items"][number] {
-  return {
+  const item: CodeModeToolSearchPage["items"][number] = {
     name: entry.name,
     group: entry.group,
-    ...(entry.description !== undefined && { description: entry.description }),
   };
+  if (entry.description !== undefined) item.description = entry.description;
+  return item;
 }
 
 function declarationSearchItem(
@@ -536,12 +541,13 @@ function declarationSearchItem(
 function unavailableDeclarationSearchItem(
   entry: CodeModeToolSearchEntry,
 ): CodeModeToolSearchPage["items"][number] {
-  return {
+  const item: CodeModeToolSearchPage["items"][number] = {
     name: entry.name,
     group: entry.group,
-    ...(entry.description !== undefined && { description: entry.description }),
     declarationError: "Complete declaration exceeds the 1 MiB CodeMode search result limit",
   };
+  if (entry.description !== undefined) item.description = entry.description;
+  return item;
 }
 
 function createSearchPage(
@@ -648,15 +654,18 @@ export function renderCodeModeToolCatalogue(
   }));
   const selectedNames = selectInlineToolNames(rendered);
   const text = renderCatalogue(rendered, selectedNames);
-  const searchEntries = rendered.map((tool) => ({
-    name: tool.name,
-    group: tool.group,
-    ...(tool.description !== undefined && { description: tool.description }),
-    declaration: renderTool(tool),
-    searchIndex: boundedSearchIndex(
-      `${tool.name}\n${tool.group}\n${tool.description ?? ""}\n${tool.input}\n${tool.output}`,
-    ),
-  }));
+  const searchEntries = rendered.map((tool) => {
+    const entry: MutableCodeModeToolSearchEntry = {
+      name: tool.name,
+      group: tool.group,
+      declaration: renderTool(tool),
+      searchIndex: boundedSearchIndex(
+        `${tool.name}\n${tool.group}\n${tool.description ?? ""}\n${tool.input}\n${tool.output}`,
+      ),
+    };
+    if (tool.description !== undefined) entry.description = tool.description;
+    return entry;
+  });
   return {
     text,
     complete: selectedNames.size === rendered.length,

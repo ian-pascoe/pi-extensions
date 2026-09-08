@@ -593,7 +593,6 @@ interface ProcessMcpClientPoolSlot {
 }
 
 declare global {
-  // eslint-disable-next-line no-var -- Replacement Pi extension instances need one process-wide MCP Client Pool.
   var piMcpClientPoolProcessSlot: ProcessMcpClientPoolSlot | undefined;
 }
 

@@ -13,6 +13,7 @@ import type {
   DapSession,
   DapSessionResult,
   DapStackInput,
+  DapVariablesInput,
 } from "./dap-session.js";
 import type { DapSessionFiles } from "./dap-session-files.js";
 import {
@@ -24,6 +25,8 @@ import {
   type DapToolResultDetails,
 } from "./dap-tool-contract.js";
 import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js";
+
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
 type DapToolDefinition = ToolDefinition<typeof DapToolParametersSchema, DapToolRenderDetails> & {
   readonly outputSchema: typeof DapToolResultDetailsSchema;
@@ -290,14 +293,11 @@ async function dispatchDapOperation(
 ): Promise<DapSessionResult> {
   switch (parameters.operation) {
     case "launch": {
-      const input: DapLaunchInput = {
-        ...(parameters.profile !== undefined && { profile: parameters.profile }),
-        ...(parameters.program !== undefined && {
-          program: resolve(cwd, parameters.program),
-        }),
-        ...(parameters.args !== undefined && { args: parameters.args }),
-        ...(parameters.cwd !== undefined && { cwd: resolve(cwd, parameters.cwd) }),
-      };
+      const input: Mutable<DapLaunchInput> = {};
+      if (parameters.profile !== undefined) input.profile = parameters.profile;
+      if (parameters.program !== undefined) input.program = resolve(cwd, parameters.program);
+      if (parameters.args !== undefined) input.args = parameters.args;
+      if (parameters.cwd !== undefined) input.cwd = resolve(cwd, parameters.cwd);
       return session.launch(input, signal);
     }
     case "set_breakpoints":
@@ -316,18 +316,16 @@ async function dispatchDapOperation(
     case "pause":
       return session.pause(signal);
     case "stack": {
-      const input: DapStackInput = {
-        ...(parameters.thread_id !== undefined && { threadId: parameters.thread_id }),
-        ...(parameters.start !== undefined && { start: parameters.start }),
-        ...(parameters.count !== undefined && { count: parameters.count }),
-      };
+      const input: Mutable<DapStackInput> = {};
+      if (parameters.thread_id !== undefined) input.threadId = parameters.thread_id;
+      if (parameters.start !== undefined) input.start = parameters.start;
+      if (parameters.count !== undefined) input.count = parameters.count;
       return session.stack(input, signal);
     }
     case "variables": {
-      const page = {
-        ...(parameters.start !== undefined && { start: parameters.start }),
-        ...(parameters.count !== undefined && { count: parameters.count }),
-      };
+      const page: Mutable<Pick<DapVariablesInput, "start" | "count">> = {};
+      if (parameters.start !== undefined) page.start = parameters.start;
+      if (parameters.count !== undefined) page.count = parameters.count;
       return "frame_id" in parameters
         ? session.variables({ ...page, frameId: parameters.frame_id }, signal)
         : session.variables(
@@ -336,10 +334,9 @@ async function dispatchDapOperation(
           );
     }
     case "evaluate": {
-      const input: DapEvaluateInput = {
-        expression: parameters.expression,
-        ...(parameters.frame_id !== undefined && { frameId: parameters.frame_id }),
-      };
+      // oxlint-disable-next-line anti-slop/no-known-value-widening -- SAFETY: Mutable retains the exact evaluation input fields, permitting optional frame assignment during construction only.
+      const input: Mutable<DapEvaluateInput> = { expression: parameters.expression };
+      if (parameters.frame_id !== undefined) input.frameId = parameters.frame_id;
       return session.evaluate(input, signal);
     }
     case "status":

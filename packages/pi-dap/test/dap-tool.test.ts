@@ -409,6 +409,40 @@ describe("DAP tool contract", () => {
     ).toBe(true);
   });
 
+  test("omits absent dispatch fields without dropping zero IDs, offsets, or empty arguments", async () => {
+    const fixture = await createToolFixture();
+    const tool = createDapToolDefinition(() => fixture.runtime);
+    const cases: [DapToolParameters, RecordedDapInput, string[]][] = [
+      [{ operation: "launch" }, {}, ["profile", "program", "args", "cwd"]],
+      [{ operation: "launch", args: [] }, { args: [] }, ["profile", "program", "cwd"]],
+      [{ operation: "stack" }, {}, ["threadId", "start", "count"]],
+      [{ operation: "stack", thread_id: 0, start: 0 }, { threadId: 0, start: 0 }, ["count"]],
+      [
+        { operation: "variables", variables_reference: 0 },
+        { variablesReference: 0 },
+        ["frameId", "start", "count"],
+      ],
+      [
+        { operation: "variables", frame_id: 0, start: 0 },
+        { frameId: 0, start: 0 },
+        ["variablesReference", "count"],
+      ],
+      [{ operation: "evaluate", expression: "x" }, { expression: "x" }, ["frameId"]],
+      [
+        { operation: "evaluate", expression: "x", frame_id: 0 },
+        { expression: "x", frameId: 0 },
+        [],
+      ],
+    ];
+    for (const [parameters, expected, absentFields] of cases) {
+      await tool.execute("optional-fields", parameters, undefined, undefined, fixture.context);
+      const input = fixture.session.calls.at(-1)?.input;
+      if (input === undefined) throw new Error("Expected recorded dispatch input");
+      expect(input).toStrictEqual(expected);
+      for (const field of absentFields) expect(Object.hasOwn(input, field)).toBe(false);
+    }
+  });
+
   test("reparses hook-mutated input before effects and spills complete oversized output", async () => {
     const fixture = await createToolFixture();
     const tool = createDapToolDefinition(() => fixture.runtime);

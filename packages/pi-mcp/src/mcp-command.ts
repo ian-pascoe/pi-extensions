@@ -1,5 +1,15 @@
-/* oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional command fields are assembled only when their argv values are present. */
-/* oxlint-disable anti-slop/no-runtime-typeof -- This module is the owning parser boundary for raw command-line strings and tagged parser results. */
+// Construction drafts keep each owner contract's fields while allowing conditional assignment.
+type Mutable<Value> = { -readonly [Field in keyof Value]: Value[Field] };
+type LocalServerDefinition = Mutable<Extract<McpAddServerDefinition, { transport: "stdio" }>>;
+type RemoteServerDefinition = Mutable<Extract<McpAddServerDefinition, { url: string }>>;
+type OAuthServerAuth = Mutable<
+  Extract<NonNullable<RemoteServerDefinition["auth"]>, { type: "oauth" }>
+>;
+type AuthCommand = Mutable<Extract<McpCommand, { kind: "auth" }>>;
+type TestCommand = Mutable<Extract<McpCommand, { kind: "test" }>>;
+type LogsCommand = Mutable<Extract<McpCommand, { kind: "logs" }>>;
+type LogoutOptions = Mutable<McpCommandOptions<"logout">>;
+type CommandExecution = Mutable<McpCommandExecutionResult>;
 
 /** JSON data returned by a command adapter and rendered by the shared command runner. */
 export type McpCommandJsonValue =
@@ -507,12 +517,7 @@ export function classifyMcpAddTransportMode(
 
 function parseRemoteAuth(
   options: McpCommandScannedOptions,
-): McpAddServerDefinition extends infer _Definition
-  ?
-      | Exclude<Extract<McpAddServerDefinition, { url: string }>["auth"], undefined>
-      | undefined
-      | string
-  : never {
+): RemoteServerDefinition["auth"] | string {
   const token = oneValue(options, "token");
   const clientId = oneValue(options, "client-id");
   const clientSecret = oneValue(options, "client-secret");
@@ -527,17 +532,16 @@ function parseRemoteAuth(
     if (token === undefined) return "bearer auth requires --token";
     return { token, type: "bearer" };
   }
-  return {
-    ...(clientId === undefined ? {} : { clientId }),
-    ...(clientSecret === undefined ? {} : { clientSecret }),
-    ...(redirectUri === undefined ? {} : { redirectUri }),
-    scopes: [...scopes],
-    type: "oauth",
-  };
+  const auth: OAuthServerAuth = { scopes: [...scopes], type: "oauth" };
+  if (clientId !== undefined) auth.clientId = clientId;
+  if (clientSecret !== undefined) auth.clientSecret = clientSecret;
+  if (redirectUri !== undefined) auth.redirectUri = redirectUri;
+  return auth;
 }
 
 function parseAdd(args: readonly string[]): McpCommandParseResult {
   const options = parseOptions(args, "add");
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parser's closed result union uses strings for usage failures and objects for validated options.
   if (typeof options === "string") return usageFailure("add", options);
   const name = options.positionals[0];
   if (name === undefined || name.length === 0)
@@ -558,18 +562,20 @@ function parseAdd(args: readonly string[]): McpCommandParseResult {
       return usageFailure("add", "local transport must be stdio");
     }
     const environment = parseAssignments(options.values.get("environment") ?? [], "environment");
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Assignment parsing returns either a usage error string or the validated string map.
     if (typeof environment === "string") return usageFailure("add", environment);
     const cwd = oneValue(options, "cwd");
+    const definition: LocalServerDefinition = {
+      args: options.tail.slice(1),
+      command,
+      enabled: true,
+      environment,
+      transport: "stdio",
+    };
+    if (cwd !== undefined) definition.cwd = cwd;
     return {
       command: {
-        definition: {
-          args: options.tail.slice(1),
-          command,
-          ...(cwd === undefined ? {} : { cwd }),
-          enabled: true,
-          environment,
-          transport: "stdio",
-        },
+        definition,
         kind: "add",
         name,
         scope: parseScope(options),
@@ -588,18 +594,21 @@ function parseAdd(args: readonly string[]): McpCommandParseResult {
   if (transportMode !== "remote" || (transport !== "http" && transport !== "sse"))
     return usageFailure("add", "remote transport must be http or sse");
   const headers = parseAssignments(options.values.get("header") ?? [], "header");
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Assignment parsing returns either a usage error string or the validated string map.
   if (typeof headers === "string") return usageFailure("add", headers);
   const auth = parseRemoteAuth(options);
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Authentication parsing returns a usage error string, an owned auth definition, or absence.
   if (typeof auth === "string") return usageFailure("add", auth);
+  const definition: RemoteServerDefinition = {
+    enabled: true,
+    headers,
+    transport,
+    url,
+  };
+  if (auth !== undefined) definition.auth = auth;
   return {
     command: {
-      definition: {
-        ...(auth === undefined ? {} : { auth }),
-        enabled: true,
-        headers,
-        transport,
-        url,
-      },
+      definition,
       kind: "add",
       name,
       scope: parseScope(options),
@@ -613,6 +622,7 @@ function parseScopedServer(
   args: readonly string[],
 ): McpCommandParseResult {
   const options = parseOptions(args, kind);
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parser's closed result union uses strings for usage failures and objects for validated options.
   if (typeof options === "string") return usageFailure(kind, options);
   if (options.positionals.length !== 1)
     return usageFailure(kind, "exactly one server name is required");
@@ -653,9 +663,11 @@ export function parseMcpCommand(
     return parseScopedServer(commandName, rest);
   if (commandName === "list") {
     const options = parseOptions(rest, "list");
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Select the usage-error arm before inspecting the validated options arm.
     if (typeof options === "string" || options.positionals.length > 0)
       return usageFailure(
         "list",
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Preserve the parser's specific usage error when it returned the string arm.
         typeof options === "string" ? options : "list accepts no arguments",
       );
     if (surface === "runtime" && options.flags.has("json"))
@@ -664,6 +676,7 @@ export function parseMcpCommand(
   }
   if (commandName === "auth") {
     const options = parseOptions(rest, "auth");
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parser's closed result union uses strings for usage failures and objects for validated options.
     if (typeof options === "string") return usageFailure("auth", options);
     if (options.positionals.length !== 1)
       return usageFailure(
@@ -677,20 +690,19 @@ export function parseMcpCommand(
       return usageFailure("auth", "--code and --state must be supplied together");
     if (callback !== undefined && code !== undefined)
       return usageFailure("auth", "use either --callback or --code with --state");
-    return {
-      command: {
-        ...(callback === undefined ? {} : { callback }),
-        ...(code === undefined ? {} : { code }),
-        kind: "auth",
-        noOpen: options.flags.has("no-open"),
-        server: options.positionals[0] ?? "",
-        ...(state === undefined ? {} : { state }),
-      },
-      ok: true,
+    const command: AuthCommand = {
+      kind: "auth",
+      noOpen: options.flags.has("no-open"),
+      server: options.positionals[0] ?? "",
     };
+    if (callback !== undefined) command.callback = callback;
+    if (code !== undefined) command.code = code;
+    if (state !== undefined) command.state = state;
+    return { command, ok: true };
   }
   if (commandName === "logout") {
     const options = parseOptions(rest, "logout");
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parser's closed result union uses strings for usage failures and objects for validated options.
     if (typeof options === "string") return usageFailure("logout", options);
     const all = options.flags.has("all");
     const force = options.flags.has("force");
@@ -708,21 +720,20 @@ export function parseMcpCommand(
   }
   if (commandName === "test") {
     const options = parseOptions(rest, "test");
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parser's closed result union uses strings for usage failures and objects for validated options.
     if (typeof options === "string") return usageFailure("test", options);
     if (surface === "runtime" && options.flags.has("json"))
       return usageFailure("test", "--json is standalone-only");
     const all = options.flags.has("all");
     if ((all && options.positionals.length > 0) || (!all && options.positionals.length !== 1))
       return usageFailure("test", "select one server or explicit --all");
-    return {
-      command: {
-        all,
-        json: options.flags.has("json"),
-        kind: "test",
-        ...(all ? {} : { server: options.positionals[0] ?? "" }),
-      },
-      ok: true,
+    const command: TestCommand = {
+      all,
+      json: options.flags.has("json"),
+      kind: "test",
     };
+    if (!all) command.server = options.positionals[0] ?? "";
+    return { command, ok: true };
   }
   if (commandName === "status") {
     if (rest.length > 0) return usageFailure("status", "status accepts no arguments");
@@ -738,10 +749,12 @@ export function parseMcpCommand(
   }
   if (commandName === "prompt") {
     const options = parseOptions(rest, "prompt");
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The parser's closed result union uses strings for usage failures and objects for validated options.
     if (typeof options === "string") return usageFailure("prompt", options);
     if (options.positionals.length !== 2)
       return usageFailure("prompt", "server and prompt names are required");
     const arguments_ = parseAssignments(options.values.get("arg") ?? [], "argument");
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Assignment parsing returns either a usage error string or the validated string map.
     if (typeof arguments_ === "string") return usageFailure("prompt", arguments_);
     return {
       command: {
@@ -758,18 +771,16 @@ export function parseMcpCommand(
     return { command: { kind: commandName, server: rest[0] ?? "", uri: rest[1] ?? "" }, ok: true };
   }
   const options = parseOptions(rest, "logs");
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Select the usage-error arm before inspecting the validated options arm.
   if (typeof options === "string" || options.positionals.length > 1)
     return usageFailure(
       "logs",
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Preserve the parser's specific usage error when it returned the string arm.
       typeof options === "string" ? options : "logs accepts at most one server name",
     );
-  return {
-    command: {
-      kind: "logs",
-      ...(options.positionals[0] === undefined ? {} : { server: options.positionals[0] }),
-    },
-    ok: true,
-  };
+  const command: LogsCommand = { kind: "logs" };
+  if (options.positionals[0] !== undefined) command.server = options.positionals[0];
+  return { command, ok: true };
 }
 
 function adapterFailure(
@@ -796,13 +807,14 @@ function successResult(
   const output = json
     ? `${JSON.stringify(result.data ?? { message: result.message }, undefined, 2)}\n`
     : `${result.message}${suffix}\n`;
-  return {
+  const execution: CommandExecution = {
     category: "success",
-    ...(result.data === undefined ? {} : { data: result.data }),
     exitCode: 0,
     ok: true,
     output,
   };
+  if (result.data !== undefined) execution.data = result.data;
+  return execution;
 }
 
 function liveAdapter(
@@ -847,29 +859,35 @@ export async function executeMcpCommand(
         result = await adapters.settings.disable({ name: command.name, scope: command.scope });
         if (result.ok && surface === "runtime") await adapters.live?.disconnect(command.name);
         break;
-      case "auth":
-        result = await adapters.auth.authenticate({
-          ...(command.callback === undefined ? {} : { callback: command.callback }),
-          ...(command.code === undefined ? {} : { code: command.code }),
+      case "auth": {
+        const options: Omit<AuthCommand, "kind"> = {
           noOpen: command.noOpen,
           server: command.server,
-          ...(command.state === undefined ? {} : { state: command.state }),
-        });
+        };
+        if (command.callback !== undefined) options.callback = command.callback;
+        if (command.code !== undefined) options.code = command.code;
+        if (command.state !== undefined) options.state = command.state;
+        result = await adapters.auth.authenticate(options);
         break;
-      case "logout":
-        result = await adapters.auth.logout({
+      }
+      case "logout": {
+        const options: LogoutOptions = {
           all: command.all,
           force: command.force,
-          ...(command.server === undefined ? {} : { server: command.server }),
-        });
+        };
+        if (command.server !== undefined) options.server = command.server;
+        result = await adapters.auth.logout(options);
         break;
-      case "test":
-        result = await adapters.test.test({
+      }
+      case "test": {
+        const options: Omit<TestCommand, "kind"> = {
           all: command.all,
           json: command.json,
-          ...(command.server === undefined ? {} : { server: command.server }),
-        });
+        };
+        if (command.server !== undefined) options.server = command.server;
+        result = await adapters.test.test(options);
         break;
+      }
       case "status": {
         const live = liveAdapter(adapters);
         if ("exitCode" in live) return live;

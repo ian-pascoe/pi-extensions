@@ -773,21 +773,17 @@ describe("minimal subagents extension lifecycle", () => {
     const command = harness.runner.getCommand("subagents");
     if (!command) throw new Error("Expected the registered /subagents command");
 
-    // SAFETY: the status view exercises only terminal dimensions and requestRender on TUI.
-    const tui = Object.assign(Object.create(null), {
-      terminal: { rows: 20, columns: 100 },
-      requestRender: vi.fn(),
-    }) as TUI;
-    // SAFETY: the collapsed status render exercises only fg and bold on Theme.
-    const theme = Object.assign(Object.create(null), {
-      fg: (_color: string, text: string) => text,
-      bold: (text: string) => text,
-    }) as Theme;
-    // SAFETY: this command test sends only Escape and exercises only matches.
-    const keybindings = Object.assign(Object.create(null), {
-      matches: (data: string, binding: string) =>
-        data === "escape" && binding === "tui.select.cancel",
-    }) as KeybindingsManager;
+    const tui = {
+      terminal: { rows: 20, columns: 100 } satisfies Pick<TUI["terminal"], "rows" | "columns">,
+      requestRender: vi.fn<TUI["requestRender"]>(),
+    };
+    const theme = {
+      fg: (_color, text) => text,
+      bold: (text) => text,
+    } satisfies Pick<Theme, "fg" | "bold">;
+    const keybindings = {
+      matches: (data, binding) => data === "escape" && binding === "tui.select.cancel",
+    } satisfies Pick<KeybindingsManager, "matches">;
     let rendered: string[] = [];
     const custom: ExtensionUIContext["custom"] = async <T>(
       factory: (
@@ -798,7 +794,15 @@ describe("minimal subagents extension lifecycle", () => {
       ) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
     ): Promise<T> => {
       const result = Promise.withResolvers<T>();
-      const component = await factory(tui, theme, keybindings, result.resolve);
+      const component = await factory(
+        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The status view reads only checked terminal dimensions and the typed requestRender mock.
+        tui as unknown as TUI,
+        // SAFETY: The collapsed status render reads only the checked fg and bold methods.
+        theme as Theme,
+        // SAFETY: This command test sends only Escape and reads only the checked matches method.
+        keybindings as KeybindingsManager,
+        result.resolve,
+      );
       rendered = component.render(80);
       component.handleInput?.("escape");
       return result.promise;

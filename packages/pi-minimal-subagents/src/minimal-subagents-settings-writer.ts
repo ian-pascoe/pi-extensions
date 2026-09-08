@@ -4,8 +4,6 @@ import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
-import { Type } from "typebox";
-import { Value } from "typebox/value";
 
 /** Identifies the standard Pi settings file changed by a Subagent Access command. */
 export type MinimalSubagentsSettingsScope = "global" | "project";
@@ -64,8 +62,10 @@ interface ExistingSettingsDocument {
   readonly mode: number;
 }
 
-const JsonValueSchema = Type.Unsafe<JsonValue>({});
-const SettingsJsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
+function isSettingsJsonObject(value: JsonValue | undefined): value is SettingsJsonObject {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON.parse already established JSON data; distinguish object roots and settings blocks from primitives and arrays.
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 const SETTINGS_LOCK_RETRY_DELAY_MS = 20;
 const SETTINGS_LOCK_RETRIES = 100;
 const NEW_SETTINGS_FILE_MODE = 0o600;
@@ -92,7 +92,8 @@ function parseSettingsDocument(
   scope: MinimalSubagentsSettingsScope,
   path: string,
 ): ParsedSettingsDocument {
-  let parsed: unknown;
+  // JSON.parse is the provenance for this JSON type; the object shape is checked below.
+  let parsed: JsonValue;
   try {
     parsed = JSON.parse(stripUtf8Bom(content));
   } catch (cause) {
@@ -109,11 +110,11 @@ function parseSettingsDocument(
     };
   }
 
-  if (!Value.Check(SettingsJsonObjectSchema, parsed)) {
+  if (!isSettingsJsonObject(parsed)) {
     return { ok: false, error: settingsContractError(scope, path, "expected an object root") };
   }
   const minimalSubagents = parsed.minimalSubagents;
-  if (minimalSubagents !== undefined && !Value.Check(SettingsJsonObjectSchema, minimalSubagents)) {
+  if (minimalSubagents !== undefined && !isSettingsJsonObject(minimalSubagents)) {
     return {
       ok: false,
       error: settingsContractError(
@@ -131,7 +132,7 @@ function mutateMinimalSubagentsEnabled(
   enabled: boolean | undefined,
 ): void {
   const currentMinimalSubagents = settings.minimalSubagents;
-  const minimalSubagents = Value.Check(SettingsJsonObjectSchema, currentMinimalSubagents)
+  const minimalSubagents = isSettingsJsonObject(currentMinimalSubagents)
     ? currentMinimalSubagents
     : {};
 

@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-// oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional command data requires omitting absent fields at the shared command boundary.
-// oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This entrypoint owns trust-store parsing before values reach typed settings adapters.
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -19,8 +17,10 @@ import {
   authenticateMcpOAuth,
   DEFAULT_MCP_OAUTH_REDIRECT_URL,
   McpOAuthProvider,
+  type McpOAuthProviderOptions,
+  type AuthenticateMcpOAuthOptions,
 } from "./mcp-oauth.js";
-import { McpServerClient } from "./mcp-server-client.js";
+import { McpServerClient, type McpServerClientConnectOptions } from "./mcp-server-client.js";
 import { McpSettingsStore, type McpSettingsScope } from "./mcp-settings-store.js";
 import {
   resolveMcpSettings,
@@ -56,8 +56,26 @@ export interface PiMcpCliOptions {
   readonly writeStdout?: (text: string) => void;
 }
 
+type ProviderOptions = {
+  -readonly [Field in keyof McpOAuthProviderOptions]: McpOAuthProviderOptions[Field];
+};
+type ConnectOptions = {
+  -readonly [Field in keyof McpServerClientConnectOptions]: McpServerClientConnectOptions[Field];
+} & { readonly serverId: string };
+type AuthenticationOptions = {
+  -readonly [Field in keyof AuthenticateMcpOAuthOptions]: AuthenticateMcpOAuthOptions[Field];
+};
+type AdapterSuccess = {
+  -readonly [Field in keyof Extract<McpCommandAdapterResult, { ok: true }>]: Extract<
+    McpCommandAdapterResult,
+    { ok: true }
+  >[Field];
+};
+
 function commandSuccess(message: string, data?: McpCommandJsonValue): McpCommandAdapterResult {
-  return { ...(data === undefined ? {} : { data }), message, ok: true };
+  const result: AdapterSuccess = { message, ok: true };
+  if (data !== undefined) result.data = data;
+  return result;
 }
 
 function commandFailure(
@@ -75,6 +93,7 @@ async function readSavedProjectTrust(agentDirectory: string, cwd: string): Promi
     if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return false;
     return false;
   }
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON.parse establishes JSON provenance; trust is read only from boolean own-properties of an object root.
   if (document === null || typeof document !== "object" || Array.isArray(document)) return false;
   let path = resolve(cwd);
   while (true) {
@@ -220,22 +239,25 @@ async function testServerDefinition(
       definition.transport !== "stdio" && definition.auth?.type === "oauth"
         ? definition.auth
         : undefined;
-    const authProvider =
-      definition.transport === "stdio" ||
-      definition.auth?.type === "none" ||
-      definition.auth?.type === "bearer"
-        ? undefined
-        : new McpOAuthProvider({
-            authStore,
-            clientIdentity: authClientIdentity(definition),
-            ...(oauth?.clientId === undefined ? {} : { clientId: oauth.clientId }),
-            ...(oauth?.clientSecret === undefined ? {} : { clientSecret: oauth.clientSecret }),
-            onAuthorizationUrl: () => undefined,
-            redirectUrl: oauth?.redirectUri ?? DEFAULT_MCP_OAUTH_REDIRECT_URL,
-            scopes: oauth?.scopes ?? [],
-            serverUrl: definition.url,
-          });
-    const connectOptions = {
+    let authProvider: McpOAuthProvider | undefined;
+    if (
+      definition.transport !== "stdio" &&
+      definition.auth?.type !== "none" &&
+      definition.auth?.type !== "bearer"
+    ) {
+      const providerOptions: ProviderOptions = {
+        authStore,
+        clientIdentity: authClientIdentity(definition),
+        onAuthorizationUrl: () => undefined,
+        redirectUrl: oauth?.redirectUri ?? DEFAULT_MCP_OAUTH_REDIRECT_URL,
+        scopes: oauth?.scopes ?? [],
+        serverUrl: definition.url,
+      };
+      if (oauth?.clientId !== undefined) providerOptions.clientId = oauth.clientId;
+      if (oauth?.clientSecret !== undefined) providerOptions.clientSecret = oauth.clientSecret;
+      authProvider = new McpOAuthProvider(providerOptions);
+    }
+    const connectOptions: ConnectOptions = {
       clientInfo: { name: "pi-mcp", version: "0.1.0" },
       connectTimeoutMs: settings.connectTimeoutMs,
       definition,
@@ -243,9 +265,8 @@ async function testServerDefinition(
       requestTimeoutMs: settings.requestTimeoutMs,
       serverId: definition.id,
     };
-    client = await McpServerClient.connect(
-      authProvider === undefined ? connectOptions : { ...connectOptions, authProvider },
-    );
+    if (authProvider !== undefined) connectOptions.authProvider = authProvider;
+    client = await McpServerClient.connect(connectOptions);
     return commandSuccess(
       `${definition.id}: connected (${client.negotiatedProtocolVersion ?? "unknown protocol"})`,
       {
@@ -337,13 +358,10 @@ export async function createStandaloneMcpCommandAdapters(
             ? undefined
             : `${command.code} ${command.state}`);
         const oauth = definition.auth?.type === "oauth" ? definition.auth : undefined;
-        const result = await authenticateMcpOAuth({
+        const authenticationOptions: AuthenticationOptions = {
           authStore: state.authStore,
           clientIdentity: authClientIdentity(definition),
-          ...(oauth?.clientId === undefined ? {} : { clientId: oauth.clientId }),
-          ...(oauth?.clientSecret === undefined ? {} : { clientSecret: oauth.clientSecret }),
           noOpen: command.noOpen,
-          ...(oauth?.redirectUri === undefined ? {} : { redirectUrl: oauth.redirectUri }),
           scopes: oauth?.scopes ?? [],
           serverId: definition.id,
           serverUrl: definition.url,
@@ -353,7 +371,12 @@ export async function createStandaloneMcpCommandAdapters(
               : async () => suppliedPaste,
           writeAuthorizationUrl:
             options?.writeAuthorizationUrl ?? ((url) => void process.stdout.write(`${url}\n`)),
-        });
+        };
+        if (oauth?.clientId !== undefined) authenticationOptions.clientId = oauth.clientId;
+        if (oauth?.clientSecret !== undefined)
+          authenticationOptions.clientSecret = oauth.clientSecret;
+        if (oauth?.redirectUri !== undefined) authenticationOptions.redirectUrl = oauth.redirectUri;
+        const result = await authenticateMcpOAuth(authenticationOptions);
         return result.ok
           ? commandSuccess(`${command.server}: authenticated`)
           : commandFailure("authentication", result.error.message);

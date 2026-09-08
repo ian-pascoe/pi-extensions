@@ -42,9 +42,9 @@ function harness(manager = SessionManager.inMemory(), onFailure?: (error: Error)
       manager.appendCustomEntry(customType, data);
     },
   };
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-widen-then-assert -- SAFETY: This framework boundary supplies all ExtensionAPI members used by these tool registrations; persistence is the real SessionManager.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: This framework boundary supplies all ExtensionAPI members used by these tool registrations; persistence is the real SessionManager.
   registerContextTools(api as unknown as ExtensionAPI, onFailure);
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-widen-then-assert -- SAFETY: The tools consume only sessionManager from this framework context; no internal storage collaborator is mocked.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The tools consume only sessionManager from this framework context; no internal storage collaborator is mocked.
   const ctx = { sessionManager: manager } as unknown as ExtensionContext;
   return {
     manager,

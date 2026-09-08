@@ -61,9 +61,8 @@ export type CapturePiAgentSessionResult =
   | { readonly ok: false; readonly warning: string };
 
 function piAgentSessionPrivateFields(session: AgentSession): PiAgentSessionPrivateFields {
-  const sessionObject: object = session;
-  // SAFETY: AgentSession identity and every consumed private field are runtime-gated in this sole compatibility boundary.
-  return sessionObject as PiAgentSessionPrivateFields;
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Pi keeps this version-pinned field private; AgentSession identity is checked before this boundary and the registry before every use. pi-tool-bridge.test.ts covers capability loss and registry replacement.
+  return session as unknown as PiAgentSessionPrivateFields;
 }
 
 function hasCallableSessionCapabilities(session: AgentSession): boolean {

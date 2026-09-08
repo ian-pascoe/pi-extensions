@@ -667,6 +667,7 @@ describe("CodeModeSessionCoordinator", () => {
           getPrototypeOf() { hookCalls += 1; throw new Error("prototype trap"); },
         });
         Object.getOwnPropertyDescriptor = () => { hookCalls += 1; throw new Error("mutated"); };
+        Reflect.apply = () => { hookCalls += 1; throw new Error("mutated apply"); };
         console.log("safe %s %d %i %f %j %o %O", value, value, value, value, value, value, proxy);
         hookCalls
       `,

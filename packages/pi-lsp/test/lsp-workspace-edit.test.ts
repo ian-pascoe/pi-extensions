@@ -364,6 +364,55 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
     expect(await readFile(file, "utf8")).toBe("stale\n");
   });
 
+  test("rejects non-string replacement text before creating a Workspace Edit Preview", async () => {
+    const root = await makeTemporaryDirectory();
+    const file = resolve(root, "file.ts");
+    await writeFile(file, "before\n");
+    const store = new LspWorkspaceEditStore();
+    await expect(
+      store.createPreview({
+        serverId: "typescript",
+        edit: {
+          changes: {
+            [fileUri(file)]: [
+              {
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+                newText: 42,
+              },
+            ],
+          },
+        },
+      }),
+    ).rejects.toThrow("Workspace Edit");
+    expect(store.takeUnreportedPreviewRecords()).toEqual([]);
+    expect(await readFile(file, "utf8")).toBe("before\n");
+  });
+
+  test("rejects malformed replay operations without replacing an available preview", async () => {
+    const root = await makeTemporaryDirectory();
+    const file = resolve(root, "file.ts");
+    await writeFile(file, "before\n");
+    const source = new LspWorkspaceEditStore({ createPreviewId: () => "replay-validation" });
+    const preview = await source.createPreview({
+      edit: textEdit(file, 6, "after"),
+      serverId: "typescript",
+    });
+    const store = new LspWorkspaceEditStore();
+    expect(store.replayPreviewRecords([preview])).toBe(0);
+    expect(
+      store.replayPreviewRecords([
+        { ...preview, operations: [null] },
+        { ...preview, operations: [{ kind: "delete", named_path: file }] },
+        {
+          ...preview,
+          operations: [{ ...preview.operations[0], before: { kind: "file", mode: "invalid" } }],
+        },
+      ]),
+    ).toBe(3);
+    await store.applyPreview(preview.preview_id, store.prepareMutationManifest(preview.preview_id));
+    expect(await readFile(file, "utf8")).toBe("after\n");
+  });
+
   test("acquires sorted canonical queues and honors cancellation before mutation", async () => {
     const root = await makeTemporaryDirectory();
     const a = resolve(root, "a.ts");

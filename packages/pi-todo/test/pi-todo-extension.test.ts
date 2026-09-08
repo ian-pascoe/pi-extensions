@@ -76,7 +76,7 @@ class TodoExtensionHarness {
         this.registeredTool = tool;
       },
     };
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-widen-then-assert -- SAFETY: The extension exercises only the recorded ExtensionAPI methods in this boundary harness.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The extension exercises only the recorded ExtensionAPI methods in this boundary harness.
     todoExtension(api as unknown as ExtensionAPI);
   }
 
@@ -127,7 +127,7 @@ class TodoExtensionHarness {
       },
       waitForIdle: async () => undefined,
     };
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-widen-then-assert -- SAFETY: Tests provide every ExtensionCommandContext member read by the extension paths under test.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Tests provide every ExtensionCommandContext member read by the extension paths under test.
     return context as unknown as ExtensionCommandContext;
   }
 }
@@ -142,7 +142,7 @@ function createTodoTestTheme(): Theme {
     fg: (_color: string, text: string) => text,
     strikethrough: (text: string) => `~${text}~`,
   };
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-widen-then-assert -- SAFETY: Render tests exercise only the three Theme methods supplied above.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Render tests exercise only the three Theme methods supplied above.
   return theme as unknown as Theme;
 }
 
@@ -155,7 +155,7 @@ function renderTodoWidget(harness: TodoExtensionHarness, width: number): string[
   if (widget === undefined || Array.isArray(widget)) {
     throw new Error("Todo extension test harness did not receive the Todo Widget component");
   }
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/no-widen-then-assert -- SAFETY: The Todo Widget does not read the TUI object during rendering.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The Todo Widget does not read the TUI object during rendering.
   const tui = {} as unknown as TUI;
   return renderTodoComponent(widget(tui, createTodoTestTheme()), width);
 }

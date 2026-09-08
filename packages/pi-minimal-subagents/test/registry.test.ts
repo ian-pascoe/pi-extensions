@@ -88,6 +88,82 @@ describe("minimal subagents registry", () => {
     });
   });
 
+  it("replays live events and checkpoints with explicitly undefined optional fields", () => {
+    const agent = persistedAgent();
+    agent.launch_contract.tools = undefined;
+    agent.active_turn_id = undefined;
+    agent.active_turn_started_at = undefined;
+    const events = [
+      createRegistryEvent("root", "agent-created", { agent }),
+      createRegistryEvent("root", "turn-started", {
+        agent_id: "child",
+        turn_id: "child:live",
+        started_at: "2026-01-01T00:00:01.000Z",
+      }),
+      createRegistryEvent("root", "turn-settled", {
+        result: { ...completedResult("child", "child:live"), elapsed_ms: undefined },
+        session_leaf_id: undefined,
+      }),
+    ];
+    const diagnostics: RegistryReplayDiagnostic[] = [];
+    const replayed = replayRegistryEntries(events.map(customEntry), "root", (items) => {
+      diagnostics.push(...items);
+    });
+    expect(replayed.agents).toMatchObject([
+      { agent_id: "child", latest_result: { turn_id: "child:live", status: "completed" } },
+    ]);
+    const checkpoint = createRegistryEvent("root", "checkpoint", { snapshot: replayed });
+    expect(
+      replayRegistryEntries([customEntry(checkpoint)], "root", (items) => {
+        diagnostics.push(...items);
+      }),
+    ).toEqual(replayed);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("ignores foreign-root records before inspecting nested non-JSON fields", () => {
+    const diagnostics: RegistryReplayDiagnostic[] = [];
+    const replayed = replayRegistryEntries(
+      [
+        customEntry({
+          version: 2,
+          root_session_id: "foreign",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "agent-created",
+          agent: { ...persistedAgent(), task: () => "not Registry data" },
+        }),
+      ],
+      "root",
+      (items) => diagnostics.push(...items),
+    );
+    expect(replayed.agents).toEqual([]);
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("diagnoses nested non-JSON owned fields without discarding valid replay state", () => {
+    const diagnostics: RegistryReplayDiagnostic[] = [];
+    const replayed = replayRegistryEntries(
+      [
+        customEntry(createRegistryEvent("root", "agent-created", { agent: persistedAgent() })),
+        customEntry({
+          version: 2,
+          root_session_id: "root",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          event: "checkpoint",
+          snapshot: {
+            agents: [{ ...persistedAgent(), task: Symbol("invalid task") }],
+            tombstones: [],
+            deliveries: [],
+          },
+        }),
+      ],
+      "root",
+      (items) => diagnostics.push(...items),
+    );
+    expect(replayed.agents.map(({ agent_id }) => agent_id)).toEqual(["child"]);
+    expect(diagnostics).toMatchObject([{ entry_index: 1, code: "invalid-checkpoint" }]);
+  });
+
   it("starts at the latest checkpoint and returns clones isolated from checkpoint input", () => {
     const checkpoint = {
       agents: [persistedAgent("kept")],

@@ -20,8 +20,6 @@ import type {
   PositionEncodingKind,
   Range,
   TextEdit,
-  WorkspaceEdit,
-  LSPAny,
 } from "vscode-languageserver-protocol";
 import {
   convertLspProtocolPosition,
@@ -32,10 +30,60 @@ import {
   LspWorkspaceEditPreviewRecordSchema,
   WorkspaceEditOperationSchema,
 } from "./lsp-tool-contract.js";
-import type { Static } from "typebox";
+import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+const ProtocolPositionSchema = Type.Object({ line: Type.Number(), character: Type.Number() });
+const ProtocolRangeSchema = Type.Object({
+  start: ProtocolPositionSchema,
+  end: ProtocolPositionSchema,
+});
+const ProtocolTextEditSchema = Type.Object({ range: ProtocolRangeSchema, newText: Type.String() });
+const ResourceDestinationOptionsSchema = Type.Optional(
+  Type.Object({
+    ignoreIfExists: Type.Optional(Type.Boolean()),
+    overwrite: Type.Optional(Type.Boolean()),
+  }),
+);
+// Only the fields used by preview normalization are promised; protocol extension metadata stays opaque.
+const ProtocolWorkspaceEditSchema = Type.Object({
+  changes: Type.Optional(Type.Record(Type.String(), Type.Array(ProtocolTextEditSchema))),
+  documentChanges: Type.Optional(
+    Type.Array(
+      Type.Union([
+        Type.Object({
+          kind: Type.Optional(Type.Never()),
+          textDocument: Type.Object({ uri: Type.String() }),
+          edits: Type.Array(
+            Type.Object({
+              range: ProtocolRangeSchema,
+              newText: Type.Optional(Type.String()),
+            }),
+          ),
+        }),
+        Type.Object({
+          kind: Type.Literal("create"),
+          uri: Type.String(),
+          options: ResourceDestinationOptionsSchema,
+        }),
+        Type.Object({
+          kind: Type.Literal("delete"),
+          uri: Type.String(),
+          options: Type.Optional(Type.Object({ ignoreIfNotExists: Type.Optional(Type.Boolean()) })),
+        }),
+        Type.Object({
+          kind: Type.Literal("rename"),
+          oldUri: Type.String(),
+          newUri: Type.String(),
+          options: ResourceDestinationOptionsSchema,
+        }),
+      ]),
+    ),
+  ),
+});
 
 /** A canonical file operation exposed to Pi permission hooks before an LSP apply. */
 export interface LspMutationManifestEntry {
@@ -144,7 +192,7 @@ interface LspWorkspaceEditStoreOptions {
 }
 
 interface CreateWorkspaceEditPreviewInput {
-  readonly edit: WorkspaceEdit;
+  readonly edit: unknown;
   readonly serverId: string;
   readonly positionEncoding?: PositionEncodingKind;
 }
@@ -390,6 +438,10 @@ export class LspWorkspaceEditStore {
 
   /** Normalize and persist one language-server Workspace Edit without mutating files. */
   async createPreview(input: CreateWorkspaceEditPreviewInput): Promise<LspWorkspaceEditPreview> {
+    const edit = input.edit;
+    if (!Value.Check(ProtocolWorkspaceEditSchema, edit)) {
+      throw new LspWorkspaceEditError("invalid_destination", "Workspace Edit fields are invalid");
+    }
     const operations: NormalizedWorkspaceOperation[] = [];
     const editableOperations = new Map<string, EditableOperation>();
     const resourceActions = new Map<string, string>();
@@ -458,12 +510,12 @@ export class LspWorkspaceEditStore {
       editableOperations.set(namedPath, operation);
     };
 
-    for (const [uri, edits] of Object.entries(input.edit.changes ?? {})) {
+    for (const [uri, edits] of Object.entries(edit.changes ?? {})) {
       await applyDocumentEdits(uri, edits);
     }
 
-    for (const change of input.edit.documentChanges ?? []) {
-      if (!("kind" in change)) {
+    for (const change of edit.documentChanges ?? []) {
+      if (change.kind === undefined) {
         await applyDocumentEdits(change.textDocument.uri, regularTextEdits(change.edits));
         continue;
       }
@@ -594,10 +646,10 @@ export class LspWorkspaceEditStore {
   }
 
   /** Rebuild branch-local available/applied preview state from persisted tool result records. */
-  replayPreviewRecords(records: readonly LSPAny[]): number {
+  replayPreviewRecords(records: readonly unknown[]): number {
     let rejected = 0;
     for (const record of records) {
-      if (!isWorkspaceEditPreview(record)) {
+      if (!Value.Check(LspWorkspaceEditPreviewRecordSchema, record)) {
         rejected++;
         continue;
       }
@@ -789,27 +841,4 @@ export class LspWorkspaceEditStore {
       }
     }
   }
-}
-
-function isWorkspaceEditPreview(value: LSPAny): value is LspWorkspaceEditPreview {
-  return (
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- This is the persisted-preview parser boundary; every field is refined before replay.
-    typeof value === "object" &&
-    value !== null &&
-    "kind" in value &&
-    value.kind === "workspace_edit_preview" &&
-    "preview_id" in value &&
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Persisted preview field refinement.
-    typeof value.preview_id === "string" &&
-    "server_id" in value &&
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Persisted preview field refinement.
-    typeof value.server_id === "string" &&
-    "summary" in value &&
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Persisted preview field refinement.
-    typeof value.summary === "string" &&
-    "state" in value &&
-    (value.state === "available" || value.state === "applied") &&
-    "operations" in value &&
-    Array.isArray(value.operations)
-  );
 }

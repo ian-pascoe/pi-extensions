@@ -764,14 +764,14 @@ export class DapProtocolClient {
   }
 
   /** Wait for one parsed Debug Adapter event by name, predicate, timeout, or cancellation. */
-  async waitForEvent<TEvent extends DebugProtocol.Event = DebugProtocol.Event>(
+  async waitForEvent(
     eventName: string,
     options: DapProtocolEventWaitOptions = {},
-  ): Promise<TEvent> {
+  ): Promise<DebugProtocol.Event> {
     this.throwIfUnavailable();
     if (options.signal?.aborted === true) throw this.cancelledError(`waiting for ${eventName}`);
     const timeoutMs = options.timeoutMs ?? this.options.timeouts.requestMs;
-    return new Promise<TEvent>((resolve, reject) => {
+    return new Promise<DebugProtocol.Event>((resolve, reject) => {
       let timer: NodeJS.Timeout | undefined;
       const cleanup = () => {
         if (timer !== undefined) clearTimeout(timer);
@@ -782,8 +782,7 @@ export class DapProtocolClient {
       const onEvent = (event: DebugProtocol.Event) => {
         if (event.event !== eventName) return;
         cleanup();
-        // SAFETY: The caller chooses TEvent for the named DAP event; every envelope was parsed before this protocol boundary.
-        resolve(event as TEvent);
+        resolve(event);
       };
       const onAbort = () => {
         cleanup();
@@ -805,11 +804,11 @@ export class DapProtocolClient {
   }
 
   /** Send one correlated DAP request and return its successful response body. */
-  async request<TBody = unknown>(
+  async request(
     command: string,
     argumentsValue?: DapProtocolObject,
     options: DapProtocolRequestOptions = {},
-  ): Promise<TBody> {
+  ): Promise<DapProtocolObject | undefined> {
     this.throwIfUnavailable();
     if (options.signal?.aborted === true) throw this.cancelledError(`${command} request`);
     const sequence = this.nextSequence++;
@@ -863,8 +862,7 @@ export class DapProtocolClient {
       pending?.reject(error);
     }
 
-    // SAFETY: DAP command/response body pairing is declared by @vscode/debugprotocol; callers select the body type for the command they sent.
-    return (await response) as TBody;
+    return response;
   }
 
   /** Attempt DAP terminate/disconnect, then stop the owned Linux process group within shutdownMs. */

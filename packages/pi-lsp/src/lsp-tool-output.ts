@@ -5,14 +5,15 @@ import {
   type AgentToolResult,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import type { LSPAny } from "vscode-languageserver-protocol";
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import { LspToolResultDetailsSchema, type LspToolResultDetails } from "./lsp-tool-contract.js";
 
-function deterministicLspValue(value: LSPAny): LSPAny {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- Recursive protocol output remains opaque until JSON.stringify; only container structure is inspected here.
+function deterministicLspValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(deterministicLspValue);
   if (value instanceof Map) {
-    return [...value.entries()]
+    const entries: [unknown, unknown][] = [...value.entries()];
+    return entries
       .sort(([left], [right]) => String(left).localeCompare(String(right)))
       .map(([key, entryValue]) => [key, deterministicLspValue(entryValue)]);
   }
@@ -27,7 +28,8 @@ function deterministicLspValue(value: LSPAny): LSPAny {
 }
 
 /** Render a protocol result as stable compact JSON while retaining readable URI strings. */
-export function formatLspToolValue(value: LSPAny): string {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Protocol results are serialized without promising a method-specific payload contract.
+export function formatLspToolValue(value: unknown): string {
   const text = JSON.stringify(deterministicLspValue(value));
   return text === undefined ? "null" : text;
 }

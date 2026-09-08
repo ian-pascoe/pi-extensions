@@ -77,6 +77,7 @@ const randomUuid = crypto.randomUUID.bind(crypto);
 // oxlint-disable-next-line typescript/unbound-method -- Capturing this primordial before guest execution prevents a Cell from replacing it.
 const replaceAllStringPrimordial = String.prototype.replaceAll;
 const stringPrototype = String.prototype;
+// Policy exception (anti-slop/no-reflect-apply): capture before Cells can replace Reflect.apply; hostile-value coordinator tests cover guest mutation and reuse of the next Cell.
 const applyFunction = Reflect.apply;
 function replaceAllString(value: string, searchValue: string, replaceValue: string): string {
   return applyFunction(replaceAllStringPrimordial, value, [searchValue, replaceValue]);
@@ -127,14 +128,16 @@ function createCodeModeToolError(code: string, message: string): CodeModeToolErr
   return error;
 }
 
-function isGuestReference(cause: unknown): cause is object {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Arbitrary Cell values are classified without invoking guest code; coordinator hostile-value tests cover this boundary.
+function isGuestReference(value: unknown): value is object {
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: `typeof` cannot invoke guest Proxy traps; coordinator hostile-value tests prove this non-observable classification.
-  return (typeof cause === "object" && cause !== null) || typeof cause === "function";
+  return (typeof value === "object" && value !== null) || typeof value === "function";
 }
 
-function isGuestString(cause: unknown): cause is string {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Cell Console and thrown values remain arbitrary until this non-observable primitive check; coordinator hostile-value tests cover both inputs.
+function isGuestString(value: unknown): value is string {
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: `typeof` cannot invoke guest coercion or Proxy traps; coordinator hostile-value tests prove this non-observable classification.
-  return typeof cause === "string";
+  return typeof value === "string";
 }
 
 function isStringPropertyKey(key: PropertyKey): key is string {
@@ -884,7 +887,6 @@ for (const method of CODEMODE_CONSOLE_METHODS) {
   defineProperty(guestConsole, method, {
     configurable: false,
     enumerable: true,
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Cell Console calls accept arbitrary guest values; formatGuestConsoleArguments safely inspects them before capture.
     value: (...args: unknown[]): undefined => {
       const cell = activeCell;
       if (cell !== undefined && !cell.consoleOverflow) {

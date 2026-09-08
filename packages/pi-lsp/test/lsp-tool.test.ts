@@ -10,7 +10,7 @@ import type {
 import { afterEach, describe, expect, test } from "vitest";
 import {
   PositionEncodingKind,
-  type LSPAny,
+  type ServerCapabilities,
   type WorkspaceEdit,
 } from "vscode-languageserver-protocol/node";
 import type {
@@ -43,10 +43,10 @@ import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
 const temporaryDirectories: string[] = [];
 
 class RecordingLspClient implements LspToolServerClient {
-  readonly capabilities: LSPAny = {};
+  readonly capabilities: ServerCapabilities = {};
   readonly positionEncoding = PositionEncodingKind.UTF16;
   readonly requests: string[] = [];
-  responseByMethod = new Map<string, LSPAny>();
+  responseByMethod = new Map<string, unknown>();
   failureByMethod = new Map<string, Error>();
   shutdownCount = 0;
 
@@ -66,17 +66,18 @@ class RecordingLspClient implements LspToolServerClient {
     };
   }
 
-  async request<TResult>(
+  async request(
     method: string,
-    _parameters: LSPAny,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The recording protocol transport deliberately accepts opaque method payloads, like the real client.
+    _parameters: unknown,
     _signal?: AbortSignal,
-  ): Promise<TResult> {
+    // oxlint-disable-next-line anti-slop/no-unknown-returns -- Fixture responses remain unparsed until the real dispatch/preview boundary checks them.
+  ): Promise<unknown> {
     this.requests.push(method);
     const failure = this.failureByMethod.get(method);
     if (failure !== undefined) throw failure;
     const response = this.responseByMethod.get(method) ?? [];
-    // SAFETY: Each test configures the response for the exact protocol method selected by the typed tool branch.
-    return response as TResult;
+    return response;
   }
 
   async documentDiagnostics(
@@ -189,7 +190,7 @@ async function createToolFixture(
 
 async function executeTool(
   fixture: LspToolFixture,
-  input: LSPAny,
+  input: LspToolParameters,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   return fixture.tool.execute("tool-call", input, undefined, undefined, fixture.context);
 }
@@ -553,6 +554,42 @@ describe("registered LSP tool", () => {
     expect(text).toContain('"originSelectionRange":{"end":{"character":2');
     expect(text).toContain('"targetRange":{"end":{"character":4');
     expect(text).toContain('"targetSelectionRange":{"end":{"character":4');
+    await fixture.close();
+  });
+
+  test("preserves opaque completion metadata without treating lookalike fields as positions", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.responseByMethod.set("textDocument/completion", {
+      isIncomplete: false,
+      items: [
+        {
+          label: "value",
+          data: { line: "opaque", character: 0, enabled: false, empty: "", none: null },
+        },
+      ],
+    });
+    const result = await executeTool(fixture, {
+      operation: "completion",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(JSON.parse(text)).toMatchObject({
+      results: [
+        {
+          value: {
+            isIncomplete: false,
+            items: [
+              {
+                label: "value",
+                data: { line: "opaque", character: 0, enabled: false, empty: "", none: null },
+              },
+            ],
+          },
+        },
+      ],
+    });
     await fixture.close();
   });
 

@@ -1,5 +1,3 @@
-// oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional SDK and store fields must be omitted rather than written as undefined.
-// oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This module owns the strict JSON parser boundary for persisted SDK discovery documents.
 import { execFile as execFileCallback } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -117,11 +115,15 @@ export type AuthenticateMcpOAuthResult =
   | { readonly ok: true }
   | { readonly error: McpOAuthError; readonly ok: false };
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: SDK discovery extensions are recursively classified before entering the strict JSON auth store.
 function parseJsonValue(input: unknown): McpStoreJsonValue | undefined {
   if (
     input === null ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Primitive refinement establishes the persisted JSON contract.
     typeof input === "string" ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Primitive refinement establishes the persisted JSON contract.
     typeof input === "boolean" ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Only finite numeric JSON values enter auth storage.
     (typeof input === "number" && Number.isFinite(input))
   ) {
     return input;
@@ -135,6 +137,7 @@ function parseJsonValue(input: unknown): McpStoreJsonValue | undefined {
     }
     return parsed;
   }
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Only objects reach recursive discovery-field normalization.
   if (typeof input !== "object") return undefined;
   const parsed: Record<string, McpStoreJsonValue> = {};
   for (const [key, item] of Object.entries(input)) {
@@ -146,8 +149,10 @@ function parseJsonValue(input: unknown): McpStoreJsonValue | undefined {
   return parsed;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Discovery-document ingress recursively validates JSON and rejects non-object roots.
 function parseJsonObject(input: unknown): McpStoreJsonObject | undefined {
   const parsed = parseJsonValue(input);
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The auth store requires an object after recursive JSON classification.
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
   // SAFETY: parseJsonValue returned a JSON object after null and array rejection.
   return parsed as McpStoreJsonObject;
@@ -155,6 +160,7 @@ function parseJsonObject(input: unknown): McpStoreJsonObject | undefined {
 
 function discoveryIssuer(entry: McpAuthEntry): string | undefined {
   const metadata = entry.discovery?.authorizationServerMetadata;
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Persisted discovery extension fields are JSON; issuer comparison requires a string.
   return typeof metadata?.issuer === "string"
     ? metadata.issuer
     : entry.discovery?.authorizationServerUrl;
@@ -173,6 +179,17 @@ function issuerMatches(
       new URL(issuer).href === new URL(context.issuer).href)
   );
 }
+
+interface McpStoredDiscoveryState {
+  authorizationServerUrl: string;
+  authorizationServerMetadata?: McpStoreJsonObject;
+  resourceMetadata?: McpStoreJsonObject;
+  resourceMetadataUrl?: string;
+}
+
+type McpOAuthProviderOptionsDraft = {
+  -readonly [Field in keyof McpOAuthProviderOptions]: McpOAuthProviderOptions[Field];
+};
 
 /** Public SDK OAuth provider backed by the strict URL-bound MCP auth store. */
 export class McpOAuthProvider implements OAuthClientProvider {
@@ -205,15 +222,16 @@ export class McpOAuthProvider implements OAuthClientProvider {
   /** Client metadata used for CIMD or Dynamic Client Registration. */
   get clientMetadata(): OAuthClientMetadata {
     const scope = this.options.scopes?.join(" ");
-    return {
+    const metadata: OAuthClientMetadata = {
       client_name: "Pi MCP",
       client_uri: "https://github.com/ian-pascoe/pi-extensions",
       grant_types: ["authorization_code", "refresh_token"],
       redirect_uris: [this.redirectUrl],
       response_types: ["code"],
       token_endpoint_auth_method: this.options.clientSecret ? "client_secret_post" : "none",
-      ...(scope === undefined || scope.length === 0 ? {} : { scope }),
     };
+    if (scope !== undefined && scope.length > 0) metadata.scope = scope;
+    return metadata;
   }
 
   /** Return configured or dynamically registered client information for the validated issuer. */
@@ -221,30 +239,24 @@ export class McpOAuthProvider implements OAuthClientProvider {
     context?: OAuthClientInformationContext,
   ): Promise<StoredOAuthClientInformation | undefined> {
     if (this.options.clientId !== undefined) {
-      return {
-        client_id: this.options.clientId,
-        ...(this.options.clientSecret === undefined
-          ? {}
-          : { client_secret: this.options.clientSecret }),
-        ...(context === undefined ? {} : { issuer: context.issuer }),
-      };
+      const client: StoredOAuthClientInformation = { client_id: this.options.clientId };
+      if (this.options.clientSecret !== undefined) client.client_secret = this.options.clientSecret;
+      if (context !== undefined) client.issuer = context.issuer;
+      return client;
     }
     const entry = await this.readEntry("load client information");
     const client = entry?.clientInformation;
     if (entry === undefined || client === undefined || !issuerMatches(entry, context))
       return undefined;
     const issuer = context?.issuer ?? discoveryIssuer(entry);
-    return {
-      client_id: client.clientId,
-      ...(client.clientIdIssuedAt === undefined
-        ? {}
-        : { client_id_issued_at: client.clientIdIssuedAt }),
-      ...(client.clientSecret === undefined ? {} : { client_secret: client.clientSecret }),
-      ...(client.clientSecretExpiresAt === undefined
-        ? {}
-        : { client_secret_expires_at: client.clientSecretExpiresAt }),
-      ...(issuer === undefined ? {} : { issuer }),
-    };
+    const information: StoredOAuthClientInformation = { client_id: client.clientId };
+    if (client.clientIdIssuedAt !== undefined)
+      information.client_id_issued_at = client.clientIdIssuedAt;
+    if (client.clientSecret !== undefined) information.client_secret = client.clientSecret;
+    if (client.clientSecretExpiresAt !== undefined)
+      information.client_secret_expires_at = client.clientSecretExpiresAt;
+    if (issuer !== undefined) information.issuer = issuer;
+    return information;
   }
 
   /** Persist dynamically registered client information without logging credentials. */
@@ -252,24 +264,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
     client: StoredOAuthClientInformation,
     context?: OAuthClientInformationContext,
   ): Promise<void> {
-    await this.updateEntry(
-      {
-        clientInformation: {
-          clientId: client.client_id,
-          ...(client.client_id_issued_at === undefined
-            ? {}
-            : { clientIdIssuedAt: client.client_id_issued_at }),
-          ...(client.client_secret === undefined ? {} : { clientSecret: client.client_secret }),
-          ...(client.client_secret_expires_at === undefined
-            ? {}
-            : { clientSecretExpiresAt: client.client_secret_expires_at }),
-          ...(this.clientMetadataUrl === undefined
-            ? {}
-            : { metadataDocumentUrl: this.clientMetadataUrl }),
-        },
-      },
-      "save client information",
-    );
+    const clientInformation: NonNullable<McpAuthEntry["clientInformation"]> = {
+      clientId: client.client_id,
+    };
+    if (client.client_id_issued_at !== undefined)
+      clientInformation.clientIdIssuedAt = client.client_id_issued_at;
+    if (client.client_secret !== undefined) clientInformation.clientSecret = client.client_secret;
+    if (client.client_secret_expires_at !== undefined)
+      clientInformation.clientSecretExpiresAt = client.client_secret_expires_at;
+    if (this.clientMetadataUrl !== undefined)
+      clientInformation.metadataDocumentUrl = this.clientMetadataUrl;
+    await this.updateEntry({ clientInformation }, "save client information");
     if (context !== undefined) await this.ensureIssuerRecorded(context.issuer);
   }
 
@@ -284,14 +289,15 @@ export class McpOAuthProvider implements OAuthClientProvider {
       tokens.expiresAt === undefined
         ? undefined
         : Math.max(0, Math.floor(tokens.expiresAt - this.now() / 1_000));
-    return {
+    const stored: StoredOAuthTokens = {
       access_token: tokens.accessToken,
-      ...(expiresIn === undefined ? {} : { expires_in: expiresIn }),
-      ...(issuer === undefined ? {} : { issuer }),
-      ...(tokens.refreshToken === undefined ? {} : { refresh_token: tokens.refreshToken }),
-      ...(tokens.scope === undefined ? {} : { scope: tokens.scope }),
       token_type: tokens.tokenType,
     };
+    if (expiresIn !== undefined) stored.expires_in = expiresIn;
+    if (issuer !== undefined) stored.issuer = issuer;
+    if (tokens.refreshToken !== undefined) stored.refresh_token = tokens.refreshToken;
+    if (tokens.scope !== undefined) stored.scope = tokens.scope;
+    return stored;
   }
 
   /** Persist newly issued or refreshed OAuth tokens in the mode-0600 auth store. */
@@ -299,20 +305,14 @@ export class McpOAuthProvider implements OAuthClientProvider {
     tokens: StoredOAuthTokens,
     context?: OAuthClientInformationContext,
   ): Promise<void> {
-    await this.updateEntry(
-      {
-        tokens: {
-          accessToken: tokens.access_token,
-          ...(tokens.expires_in === undefined
-            ? {}
-            : { expiresAt: this.now() / 1_000 + tokens.expires_in }),
-          ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
-          ...(tokens.scope === undefined ? {} : { scope: tokens.scope }),
-          tokenType: tokens.token_type ?? "Bearer",
-        },
-      },
-      "save tokens",
-    );
+    const stored: NonNullable<McpAuthEntry["tokens"]> = {
+      accessToken: tokens.access_token,
+      tokenType: tokens.token_type ?? "Bearer",
+    };
+    if (tokens.expires_in !== undefined) stored.expiresAt = this.now() / 1_000 + tokens.expires_in;
+    if (tokens.refresh_token !== undefined) stored.refreshToken = tokens.refresh_token;
+    if (tokens.scope !== undefined) stored.scope = tokens.scope;
+    await this.updateEntry({ tokens: stored }, "save tokens");
     const issuer = context?.issuer ?? tokens.issuer;
     if (issuer !== undefined) await this.ensureIssuerRecorded(issuer);
   }
@@ -349,19 +349,16 @@ export class McpOAuthProvider implements OAuthClientProvider {
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
     const authorizationServerMetadata = parseJsonObject(state.authorizationServerMetadata);
     const protectedResourceMetadata = parseJsonObject(state.resourceMetadata);
-    await this.updateEntry(
-      {
-        discovery: {
-          authorizationServerUrl: state.authorizationServerUrl,
-          ...(authorizationServerMetadata === undefined ? {} : { authorizationServerMetadata }),
-          ...(protectedResourceMetadata === undefined ? {} : { protectedResourceMetadata }),
-          ...(state.resourceMetadataUrl === undefined
-            ? {}
-            : { resourceMetadataUrl: state.resourceMetadataUrl }),
-        },
-      },
-      "save discovery state",
-    );
+    const discovery: NonNullable<McpAuthEntry["discovery"]> = {
+      authorizationServerUrl: state.authorizationServerUrl,
+    };
+    if (authorizationServerMetadata !== undefined)
+      discovery.authorizationServerMetadata = authorizationServerMetadata;
+    if (protectedResourceMetadata !== undefined)
+      discovery.protectedResourceMetadata = protectedResourceMetadata;
+    if (state.resourceMetadataUrl !== undefined)
+      discovery.resourceMetadataUrl = state.resourceMetadataUrl;
+    await this.updateEntry({ discovery }, "save discovery state");
   }
 
   /** Restore only URL- and issuer-consistent discovery state for the SDK. */
@@ -370,6 +367,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const discovery = entry?.discovery;
     if (discovery?.authorizationServerUrl === undefined) return undefined;
     const metadata = discovery.authorizationServerMetadata;
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Persisted issuer metadata must be a string before URL consistency checks.
     const issuer = typeof metadata?.issuer === "string" ? metadata.issuer : undefined;
     if (
       !URL.canParse(discovery.authorizationServerUrl) ||
@@ -382,6 +380,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const resource = discovery.protectedResourceMetadata?.resource;
     if (
       resource !== undefined &&
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Persisted resource metadata must be a string before URL and authorization-resource checks.
       (typeof resource !== "string" ||
         !URL.canParse(resource) ||
         !checkResourceAllowed({
@@ -399,17 +398,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
     ) {
       return undefined;
     }
+    const state: McpStoredDiscoveryState = {
+      authorizationServerUrl: discovery.authorizationServerUrl,
+    };
+    if (metadata !== undefined) state.authorizationServerMetadata = metadata;
+    if (discovery.protectedResourceMetadata !== undefined)
+      state.resourceMetadata = discovery.protectedResourceMetadata;
+    if (resourceMetadataUrl !== undefined) state.resourceMetadataUrl = resourceMetadataUrl;
     // SAFETY: McpAuthStore recursively parsed every persisted JSON value. The URL, issuer,
     // and protected-resource fields used by the SDK are refined above; remaining extension
     // fields are opaque JSON preserved from SDK-produced discovery documents.
-    return {
-      authorizationServerUrl: discovery.authorizationServerUrl,
-      ...(metadata === undefined ? {} : { authorizationServerMetadata: metadata }),
-      ...(discovery.protectedResourceMetadata === undefined
-        ? {}
-        : { resourceMetadata: discovery.protectedResourceMetadata }),
-      ...(resourceMetadataUrl === undefined ? {} : { resourceMetadataUrl }),
-    } as OAuthDiscoveryState;
+    return state as OAuthDiscoveryState;
   }
 
   /** Remove the selected SDK credential scope from the bound auth entry. */
@@ -458,10 +457,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
 }
 
 interface OAuthCallbackParameters {
-  readonly code?: string;
-  readonly error?: string;
-  readonly iss?: string;
-  readonly state?: string;
+  code?: string;
+  error?: string;
+  iss?: string;
+  state?: string;
 }
 
 let authorizationActive = false;
@@ -484,12 +483,12 @@ function callbackParameters(searchParams: URLSearchParams): OAuthCallbackParamet
   const error = searchParams.get("error");
   const iss = searchParams.get("iss");
   const state = searchParams.get("state");
-  return {
-    ...(code === null ? {} : { code }),
-    ...(error === null ? {} : { error }),
-    ...(iss === null ? {} : { iss }),
-    ...(state === null ? {} : { state }),
-  };
+  const parameters: OAuthCallbackParameters = {};
+  if (code !== null) parameters.code = code;
+  if (error !== null) parameters.error = error;
+  if (iss !== null) parameters.iss = iss;
+  if (state !== null) parameters.state = state;
+  return parameters;
 }
 
 function parseCallbackInput(input: string, redirectUrl: URL): OAuthCallbackParameters | undefined {
@@ -656,11 +655,9 @@ export async function authenticateMcpOAuth(
       return { error: new McpOAuthError("callback_unavailable", options.serverId), ok: false };
     }
 
-    const provider = new McpOAuthProvider({
+    const providerOptions: McpOAuthProviderOptionsDraft = {
       authStore: options.authStore,
       clientIdentity: options.clientIdentity ?? "@ian-pascoe/pi-mcp",
-      ...(options.clientId === undefined ? {} : { clientId: options.clientId }),
-      ...(options.clientSecret === undefined ? {} : { clientSecret: options.clientSecret }),
       onAuthorizationUrl: async (authorizationUrl) => {
         await options.writeAuthorizationUrl(authorizationUrl.href);
         if (options.noOpen === true) return;
@@ -673,16 +670,17 @@ export async function authenticateMcpOAuth(
         );
       },
       redirectUrl: redirectUrl.href,
-      ...(options.scopes === undefined ? {} : { scopes: options.scopes }),
       serverUrl: options.serverUrl,
-    });
+    };
+    if (options.clientId !== undefined) providerOptions.clientId = options.clientId;
+    if (options.clientSecret !== undefined) providerOptions.clientSecret = options.clientSecret;
+    if (options.scopes !== undefined) providerOptions.scopes = options.scopes;
+    const provider = new McpOAuthProvider(providerOptions);
     const scope = options.scopes?.join(" ");
     await provider.invalidateCredentials("verifier");
-    const firstAuth = auth(provider, {
-      fetchFn,
-      serverUrl: options.serverUrl,
-      ...(scope === undefined || scope.length === 0 ? {} : { scope }),
-    });
+    const authOptions: Parameters<typeof auth>[1] = { fetchFn, serverUrl: options.serverUrl };
+    if (scope !== undefined && scope.length > 0) authOptions.scope = scope;
+    const firstAuth = auth(provider, authOptions);
     authCalls.push(firstAuth);
     const abortFailure = waitForAbort(signal, timeoutSignal, options.serverId);
     const first = await Promise.race([firstAuth, abortFailure]);
@@ -708,13 +706,14 @@ export async function authenticateMcpOAuth(
     if (parameters.code === undefined) {
       return { error: new McpOAuthError("invalid_callback", options.serverId), ok: false };
     }
-    const completionAuth = auth(provider, {
+    const completionOptions: Parameters<typeof auth>[1] = {
       authorizationCode: parameters.code,
       fetchFn,
-      ...(parameters.iss === undefined ? {} : { iss: parameters.iss }),
       serverUrl: options.serverUrl,
-      ...(scope === undefined || scope.length === 0 ? {} : { scope }),
-    });
+    };
+    if (parameters.iss !== undefined) completionOptions.iss = parameters.iss;
+    if (scope !== undefined && scope.length > 0) completionOptions.scope = scope;
+    const completionAuth = auth(provider, completionOptions);
     authCalls.push(completionAuth);
     const completed = await Promise.race([completionAuth, abortFailure]);
     if (completed !== "AUTHORIZED") {

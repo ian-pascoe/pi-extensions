@@ -462,6 +462,9 @@ describe("Pi CodeMode extension", () => {
     expect(first.details).toMatchObject({
       presentation: { nested_tool_count: 0, nested_tools: [] },
     });
+    expect(Object.hasOwn(first, "usage")).toBe(false);
+    expect(Object.hasOwn(first, "addedToolNames")).toBe(false);
+    expect(Object.hasOwn(first, "terminate")).toBe(false);
 
     const updates: AgentToolResult<unknown>[] = [];
     const reused = await executeTool(
@@ -488,6 +491,7 @@ describe("Pi CodeMode extension", () => {
     });
     expect(reused.usage).toEqual(nestedUsage(1));
     expect(reused.addedToolNames).toEqual(["closure_echo"]);
+    expect(Object.hasOwn(reused, "terminate")).toBe(false);
     expect(reused.details).toMatchObject({
       presentation: {
         cell_ordinal: 2,

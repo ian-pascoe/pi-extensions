@@ -25,12 +25,14 @@ function createContext(mode: "tui" | "rpc") {
         component = undefined;
         return;
       }
-      const tui: TUI = Object.create(null);
-      tui.requestRender = requestRender;
-      const theme: Theme = Object.create(null);
-      theme.fg = plainTheme.fg;
-      theme.bold = plainTheme.bold;
-      component = content(tui, theme);
+      const tui = { requestRender } satisfies Pick<TUI, "requestRender">;
+      const theme = { ...plainTheme } satisfies Pick<Theme, "fg" | "bold">;
+      component = content(
+        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The Observer UI widget only calls requestRender; private TUI state prevents direct structural assignment of this checked partial fixture.
+        tui as unknown as TUI,
+        // SAFETY: This rendering path uses only fg and bold from the framework Theme.
+        theme as Theme,
+      );
     }),
   };
   return {
