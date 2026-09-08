@@ -45,9 +45,10 @@ import {
   TypeHierarchySupertypesRequest,
   WorkspaceSymbolRequest,
   WorkspaceSymbolResolveRequest,
-  type LSPAny,
-  type Position,
-  type WorkspaceEdit,
+  Position,
+  type ReferenceParams,
+  type ServerCapabilities,
+  type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
 import {
   convertLspCodePointPosition,
@@ -76,6 +77,7 @@ import {
   MutationManifestSchema,
   type LspToolParameters,
   type LspToolResultDetails,
+  type LspWorkspaceEditPreviewRecord,
   type MutationManifest,
   type ServerOperationOutcome,
 } from "./lsp-tool-contract.js";
@@ -84,9 +86,13 @@ import {
   formatLspToolValue,
 } from "./lsp-tool-output.js";
 import { renderLspToolCall, renderLspToolResult } from "./lsp-tool-rendering.js";
-import { LspWorkspaceEditError, type LspWorkspaceEditStore } from "./lsp-workspace-edit.js";
+import {
+  LspWorkspaceEditError,
+  type LspMutationManifest,
+  type LspWorkspaceEditStore,
+} from "./lsp-workspace-edit.js";
 
-const ProtocolRecordSchema = Type.Record(Type.String(), Type.Any());
+const ProtocolRecordSchema = Type.Record(Type.String(), Type.Unknown());
 const ProtocolStringSchema = Type.String();
 const ProtocolFoldingRangeSchema = Type.Object(
   {
@@ -102,7 +108,7 @@ const ApplyPreviewArgumentsSchema = Type.Object(
   {
     operation: Type.Literal("apply"),
     preview_id: Type.String({ minLength: 1 }),
-    mutation_manifest: Type.Optional(Type.Any()),
+    mutation_manifest: Type.Optional(Type.Unknown()),
   },
   { additionalProperties: true },
 );
@@ -149,7 +155,7 @@ interface PositionReadParameters {
 /** Public language-server client surface consumed by tool dispatch. */
 export interface LspToolServerClient {
   /** Negotiated static capabilities plus supported dynamic registrations. */
-  readonly capabilities: LSPAny;
+  readonly capabilities: ServerCapabilities;
   /** Negotiated protocol character encoding. */
   readonly positionEncoding: PositionEncodingKind;
   /** Report whether one protocol request is currently supported. */
@@ -157,7 +163,8 @@ export interface LspToolServerClient {
   /** Open or update one UTF-8 document before a document request. */
   synchronizeDocument(filePath: string, languageId: string): Promise<LspSynchronizedDocument>;
   /** Send one cancellable protocol request. */
-  request<TResult>(method: string, parameters: LSPAny, signal?: AbortSignal): Promise<TResult>;
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- The dynamic protocol transport establishes no payload fields; dispatch validates fields only where consumed.
+  request(method: string, parameters: unknown, signal?: AbortSignal): Promise<unknown>;
   /** Synchronize and return fresh document diagnostics. */
   documentDiagnostics(
     filePath: string,
@@ -193,7 +200,7 @@ type LspToolDefinition = ToolDefinition<typeof LspToolParametersSchema, LspToolR
 interface LspReadValue {
   readonly root_path: string;
   readonly server_id: string;
-  readonly value: LSPAny;
+  readonly value: unknown;
 }
 
 interface PreparedDocument {
@@ -238,7 +245,7 @@ async function createLspToolOutput(
 
 async function readOutput(
   operation: LspToolParameters["operation"],
-  result: Promise<LspServerReadResult<LSPAny>>,
+  result: Promise<LspServerReadResult<unknown>>,
   dependencies: LspToolDependencies,
 ) {
   const resolved = await result;
@@ -253,7 +260,8 @@ async function readOutput(
   );
 }
 
-function parseLspToolParameters(input: LSPAny): LspToolParameters {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Pi tool arguments are validated by the complete parameter schema at this ingress.
+function parseLspToolParameters(input: unknown): LspToolParameters {
   try {
     return Value.Parse(LspToolParametersSchema, input);
   } catch (cause) {
@@ -295,14 +303,14 @@ function serverOutcomeForFailure(failure: LspServerFailure): ServerOperationOutc
 function operationDetails(
   operation: LspToolParameters["operation"],
   outcomes: readonly ServerOperationOutcome[],
-  previewRecords: readonly LSPAny[] = [],
+  previewRecords: readonly LspWorkspaceEditPreviewRecord[] = [],
 ): LspToolResultDetails {
-  const details: LSPAny = {
+  const details: Extract<LspToolResultDetails, { kind: "operation" }> = {
     kind: "operation",
     operation,
     server_outcomes: [...outcomes],
   };
-  if (previewRecords.length > 0) details.preview_records = previewRecords;
+  if (previewRecords.length > 0) details.preview_records = [...previewRecords];
   return details;
 }
 
@@ -329,28 +337,30 @@ function readOperationOutcomes<T>(result: LspServerReadResult<T>): ServerOperati
   ];
 }
 
-function protocolRecord(value: LSPAny): Record<string, LSPAny> | undefined {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- Protocol records retain unknown fields; consumers validate each inspected value rather than promising a complete response type.
+function protocolRecord(value: unknown): Record<string, unknown> | undefined {
   return Value.Check(ProtocolRecordSchema, value) ? value : undefined;
 }
 
-function protocolPositionValue(value: LSPAny): Position | undefined {
-  const record = protocolRecord(value);
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Only validated, exact position objects are rewritten during protocol output normalization.
+function protocolPositionValue(value: unknown): Position | undefined {
   if (
-    record === undefined ||
-    !Number.isSafeInteger(record.line) ||
-    !Number.isSafeInteger(record.character) ||
-    Object.keys(record).some((key) => key !== "line" && key !== "character")
+    !Position.is(value) ||
+    !Number.isSafeInteger(value.line) ||
+    !Number.isSafeInteger(value.character) ||
+    Object.keys(value).some((key) => key !== "line" && key !== "character")
   ) {
     return undefined;
   }
-  return { line: record.line, character: record.character };
+  return { line: value.line, character: value.character };
 }
 
 function normalizeProtocolFoldingRange(
-  value: LSPAny,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The folding-range schema validates every coordinate consumed by this normalizer.
+  value: unknown,
   text: string,
   encoding: LspPositionEncoding,
-): Record<string, LSPAny> | undefined {
+) {
   if (!Value.Check(ProtocolFoldingRangeSchema, value)) return undefined;
   const start = convertLspProtocolPosition(
     text,
@@ -389,11 +399,13 @@ async function textForProtocolUri(uri: string): Promise<string | undefined> {
 }
 
 async function normalizeProtocolResult(
-  value: LSPAny,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Recursive protocol values are opaque except for locally validated positions, ranges, and URI fields.
+  value: unknown,
   prepared: PreparedDocument | undefined,
   inheritedText?: string,
   inheritedEncoding?: LspPositionEncoding,
-): Promise<LSPAny> {
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Normalization preserves dynamic payloads without claiming a method-specific result type.
+): Promise<unknown> {
   if (Array.isArray(value)) {
     return Promise.all(
       value.map((entry) =>
@@ -402,15 +414,16 @@ async function normalizeProtocolResult(
     );
   }
   if (value instanceof Map) {
+    const entries: [unknown, unknown][] = [...value.entries()];
     return Promise.all(
-      [...value.entries()]
+      entries
         .sort(([left], [right]) => String(left).localeCompare(String(right)))
         .map(async ([key, entryValue]) => ({
           uri: key,
           value: await normalizeProtocolResult(
             entryValue,
             prepared,
-            await textForProtocolUri(key),
+            Value.Check(ProtocolStringSchema, key) ? await textForProtocolUri(key) : undefined,
             inheritedEncoding,
           ),
         })),
@@ -466,41 +479,44 @@ async function normalizeProtocolResult(
   return Object.fromEntries(entries);
 }
 
-function supportsResolveProvider(value: LSPAny): boolean {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Capability values may be booleans or provider objects; only resolveProvider is inspected.
+function supportsResolveProvider(value: unknown): boolean {
   return protocolRecord(value)?.resolveProvider === true;
 }
 
 async function resolveProtocolItems(
   client: LspToolServerClient,
-  value: LSPAny,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Resolve requests forward opaque server items after checking only their container shape.
+  value: unknown,
   method: string,
   signal: AbortSignal | undefined,
-): Promise<LSPAny> {
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Resolved protocol items remain opaque until rendering or mutation validation.
+): Promise<unknown> {
   if (Array.isArray(value)) {
-    return Promise.all(value.map((item) => client.request<LSPAny>(method, item, signal)));
+    return Promise.all(value.map((item) => client.request(method, item, signal)));
   }
   const record = protocolRecord(value);
   if (record === undefined || !Array.isArray(record.items)) return value;
   return {
     ...record,
-    items: await Promise.all(
-      record.items.map((item: LSPAny) => client.request<LSPAny>(method, item, signal)),
-    ),
+    items: await Promise.all(record.items.map((item) => client.request(method, item, signal))),
   };
 }
 
 async function resolveCodeActionItems(
   client: LspToolServerClient,
-  actions: LSPAny,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Code Action responses are raw until the command discriminator or edit parser establishes the consumed fields.
+  actions: unknown,
   signal: AbortSignal | undefined,
-): Promise<LSPAny> {
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Resolve responses are not assumed to satisfy the request's action shape.
+): Promise<unknown> {
   if (!Array.isArray(actions)) return actions;
   return Promise.all(
     actions.map((action) => {
       const record = protocolRecord(action);
       return record !== undefined && Value.Check(ProtocolStringSchema, record.command)
         ? action
-        : client.request<LSPAny>(CodeActionResolveRequest.method, action, signal);
+        : client.request(CodeActionResolveRequest.method, action, signal);
     }),
   );
 }
@@ -510,7 +526,7 @@ function formattingOptions(
     LspToolParameters,
     { operation: "format_document" | "format_range" | "format_on_type" }
   >,
-): LSPAny {
+) {
   return {
     tabSize: parameters.tab_size,
     insertSpaces: parameters.insert_spaces,
@@ -520,29 +536,22 @@ function formattingOptions(
   };
 }
 
-function workspaceEditFromTextEdits(uri: string, edits: LSPAny): WorkspaceEdit {
-  return { changes: { [uri]: Array.isArray(edits) ? edits : [] } };
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Formatting responses become raw Workspace Edits; the preview store validates every edit before use.
+function workspaceEditFromTextEdits(uri: string, edits: unknown) {
+  const textEdits: readonly unknown[] = Array.isArray(edits) ? edits : [];
+  return { changes: { [uri]: textEdits } };
 }
 
-function storeManifestEntries(manifest: LSPAny): readonly LSPAny[] {
-  if (Array.isArray(manifest)) return manifest;
-  const record = protocolRecord(manifest);
-  if (record !== undefined && Array.isArray(record.entries)) return record.entries;
-  throw piLspError("Workspace Edit Preview returned an invalid Mutation Manifest");
-}
-
-function normalizeStoreMutationManifest(manifest: LSPAny): MutationManifest {
-  const entries = storeManifestEntries(manifest).map((entry) => {
-    const record = protocolRecord(entry);
-    if (record === undefined) throw piLspError("Mutation Manifest contains an invalid entry");
-    if (record.operation === "rename") {
+function normalizeStoreMutationManifest(manifest: LspMutationManifest): MutationManifest {
+  const entries = manifest.entries.map((entry) => {
+    if (entry.operation === "rename") {
       return {
         operation: "rename",
-        path: record.path,
-        destination_path: record.destination_path ?? record.to,
+        path: entry.path,
+        destination_path: entry.destination_path,
       };
     }
-    return { operation: record.operation, path: record.path };
+    return { operation: entry.operation, path: entry.path };
   });
   try {
     return Value.Parse(MutationManifestSchema, entries);
@@ -560,7 +569,8 @@ async function workspacePreviewOutput(
   dependencies: LspToolDependencies,
   operation: "format_document" | "format_range" | "format_on_type" | "rename" | "code_actions",
   serverId: string,
-  edit: WorkspaceEdit,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The preview store owns validation of raw server Workspace Edits before filesystem inspection.
+  edit: unknown,
   positionEncoding: PositionEncodingKind,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   const preview = await dependencies.workspaceEdits.createPreview({
@@ -572,7 +582,7 @@ async function workspacePreviewOutput(
   const manifest = normalizeStoreMutationManifest(
     dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
   );
-  const details: LSPAny = {
+  const details: Extract<LspToolResultDetails, { kind: "workspace_edit_preview" }> = {
     kind: "workspace_edit_preview",
     preview_id: preview.preview_id,
     operation,
@@ -593,7 +603,7 @@ async function executePositionRead(
   parameters: PositionReadParameters,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<LSPAny>> {
+): Promise<LspServerReadResult<unknown>> {
   const filePath = absoluteLspFilePath(parameters.file_path, context);
   const methodByOperation = {
     completion: CompletionRequest.method,
@@ -625,18 +635,17 @@ async function executePositionRead(
         character: parameters.character,
       });
       const textDocument = { uri: prepared.document.uri };
-      let requestParameters: LSPAny = { textDocument, position };
+      let requestParameters: TextDocumentPositionParams | ReferenceParams = {
+        textDocument,
+        position,
+      };
       if (parameters.operation === "find_references") {
         requestParameters = {
           ...requestParameters,
           context: { includeDeclaration: parameters.include_declaration ?? true },
         };
       }
-      let value = await prepared.client.request<LSPAny>(
-        capabilityMethod,
-        requestParameters,
-        signal,
-      );
+      let value = await prepared.client.request(capabilityMethod, requestParameters, signal);
 
       if (
         parameters.operation === "incoming_calls" ||
@@ -655,7 +664,7 @@ async function executePositionRead(
         const preparedItems = Array.isArray(value) ? value : [];
         value = (
           await Promise.all(
-            preparedItems.map((item) => client.request<LSPAny>(followupMethod, { item }, signal)),
+            preparedItems.map((item) => client.request(followupMethod, { item }, signal)),
           )
         ).flat();
       } else if (
@@ -675,7 +684,7 @@ async function executeFileRead(
   parameters: FileReadParameters,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<LSPAny>> {
+): Promise<LspServerReadResult<unknown>> {
   const filePath = absoluteLspFilePath(parameters.file_path, context);
   const methodByOperation = {
     diagnostics: "diagnostics",
@@ -698,7 +707,7 @@ async function executeFileRead(
           prepared,
         );
       }
-      let value = await client.request<LSPAny>(
+      let value = await client.request(
         method,
         { textDocument: { uri: prepared.document.uri } },
         signal,
@@ -729,7 +738,7 @@ async function executeInlayHints(
   parameters: Extract<LspToolParameters, { operation: "inlay_hints" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<LSPAny>> {
+): Promise<LspServerReadResult<unknown>> {
   const filePath = absoluteLspFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
@@ -737,7 +746,7 @@ async function executeInlayHints(
     (client) => client.hasCapability(InlayHintRequest.method),
     async (client, route) => {
       const prepared = await prepareLspDocument(client, route, filePath);
-      let value = await client.request<LSPAny>(
+      let value = await client.request(
         InlayHintRequest.method,
         {
           textDocument: { uri: prepared.document.uri },
@@ -761,7 +770,7 @@ async function executeSelectionRanges(
   parameters: Extract<LspToolParameters, { operation: "selection_ranges" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<LSPAny>> {
+): Promise<LspServerReadResult<unknown>> {
   const filePath = absoluteLspFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
@@ -769,7 +778,7 @@ async function executeSelectionRanges(
     (client) => client.hasCapability(SelectionRangeRequest.method),
     async (client, route) => {
       const prepared = await prepareLspDocument(client, route, filePath);
-      const value = await client.request<LSPAny>(
+      const value = await client.request(
         SelectionRangeRequest.method,
         {
           textDocument: { uri: prepared.document.uri },
@@ -790,7 +799,7 @@ async function executeWorkspaceRead(
   >,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<LSPAny>> {
+): Promise<LspServerReadResult<unknown>> {
   const filePath = absoluteLspFilePath(parameters.file_path, context);
   if (parameters.operation === "workspace_diagnostics") {
     return dependencies.manager.runRead(
@@ -811,7 +820,7 @@ async function executeWorkspaceRead(
     parameters.server_id,
     (client) => client.hasCapability(WorkspaceSymbolRequest.method),
     async (client) => {
-      let value = await client.request<LSPAny>(
+      let value = await client.request(
         WorkspaceSymbolRequest.method,
         { query: parameters.query },
         signal,
@@ -878,7 +887,7 @@ async function executeFormattingPreview(
             ch: parameters.trigger_character,
           }
         : requestBase;
-  const edits = await client.request<LSPAny>(method, requestParameters, signal);
+  const edits = await client.request(method, requestParameters, signal);
   return workspacePreviewOutput(
     dependencies,
     parameters.operation,
@@ -903,7 +912,7 @@ async function executeRenamePreview(
   if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
   const { client, route } = resolution.instance;
   const prepared = await prepareLspDocument(client, route, filePath);
-  const edit = await client.request<WorkspaceEdit | null>(
+  const edit = await client.request(
     RenameRequest.method,
     {
       textDocument: { uri: prepared.document.uri },
@@ -937,7 +946,7 @@ async function executeCodeActions(
   if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
   const { client, route } = resolution.instance;
   const prepared = await prepareLspDocument(client, route, filePath);
-  let actions = await client.request<LSPAny>(
+  let actions = await client.request(
     CodeActionRequest.method,
     {
       textDocument: { uri: prepared.document.uri },
@@ -955,8 +964,16 @@ async function executeCodeActions(
   if (supportsResolveProvider(client.capabilities.codeActionProvider)) {
     actions = await resolveCodeActionItems(client, actions, signal);
   }
-  const results: LSPAny[] = [];
-  const previewRecords: LSPAny[] = [];
+  const results: {
+    applicable: boolean;
+    command?: unknown;
+    kind?: unknown;
+    title?: unknown;
+    mutation_manifest?: MutationManifest;
+    preview_id?: string;
+    summary?: string;
+  }[] = [];
+  const previewRecords: LspWorkspaceEditPreviewRecord[] = [];
   for (const action of Array.isArray(actions) ? actions : []) {
     const record = protocolRecord(action);
     if (record === undefined) continue;
@@ -1034,23 +1051,18 @@ async function executeApplyPreview(
       dependencies,
     );
   }
-  const record = protocolRecord(result) ?? {};
-  const movedFiles = Array.isArray(record.moved_files) ? record.moved_files : [];
   const changedPaths = [
-    ...(Array.isArray(record.changed_files) ? record.changed_files : []),
-    ...(Array.isArray(record.created_files) ? record.created_files : []),
-    ...(Array.isArray(record.deleted_files) ? record.deleted_files : []),
-    ...movedFiles.flatMap((move: LSPAny) => {
-      const moveRecord = protocolRecord(move);
-      return moveRecord === undefined ? [] : [moveRecord.from, moveRecord.to];
-    }),
-  ].filter((path): path is string => Value.Check(ProtocolStringSchema, path));
-  const details: LSPAny = {
+    ...result.changed_files,
+    ...result.created_files,
+    ...result.deleted_files,
+    ...result.moved_files.flatMap((move) => [move.from, move.to]),
+  ];
+  const details: Extract<LspToolResultDetails, { kind: "workspace_edit_apply" }> = {
     kind: "workspace_edit_apply",
     preview_id: parameters.preview_id,
     mutation_manifest: canonicalManifest,
     changed_paths: [...new Set(changedPaths)].sort((left, right) => left.localeCompare(right)),
-    state: record.state === "partial_failure" ? "partial_failure" : "applied",
+    state: result.state,
   };
   return createLspToolOutput(formatLspToolValue(result), details, dependencies);
 }

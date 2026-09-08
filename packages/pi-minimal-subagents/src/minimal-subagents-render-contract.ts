@@ -1,8 +1,4 @@
-import type {
-  AgentToolResult,
-  MessageRenderer,
-  ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
@@ -339,8 +335,6 @@ export type RenderStatusAgent = Static<typeof RenderStatusAgentSchema>;
 /** Raw tool arguments supplied by Pi's tool-rendering interface. */
 export type CoordinatorToolCallInput = Parameters<NonNullable<ToolDefinition["renderCall"]>>[0];
 
-type CoordinatorMessageInput = Parameters<MessageRenderer>[0];
-
 /** Parsed tool-call arguments tagged by their coordinator tool name. */
 export type ParsedCoordinatorToolCall =
   | { toolName: "subagent"; args: SpawnCallArguments }
@@ -383,7 +377,8 @@ export function parseCoordinatorToolCall(
 /** Parse one historical tool result exactly once at the transcript rendering boundary. */
 export function parseCoordinatorToolResult(
   toolName: CoordinatorToolName,
-  details: AgentToolResult<unknown>["details"],
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Historical tool details are unparsed until the selected per-tool schema checks them below.
+  details: unknown,
 ): ParsedCoordinatorToolResult | undefined {
   switch (toolName) {
     case "subagent":
@@ -417,7 +412,8 @@ export type CoordinatorMessageRenderDetails = Static<typeof CoordinatorMessageRe
 
 /** Parse optional custom-message details while tolerating legacy field names. */
 export function parseCoordinatorMessageDetails(
-  details: CoordinatorMessageInput["details"],
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Historical custom-message metadata is validated by its owning schema below.
+  details: unknown,
 ): CoordinatorMessageRenderDetails | undefined {
   return Value.Check(CoordinatorMessageRenderDetailsSchema, details) ? details : undefined;
 }

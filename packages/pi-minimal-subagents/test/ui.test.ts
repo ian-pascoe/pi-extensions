@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import {
   buildMinimalSubagentsWidgetView,
   MinimalSubagentsUiController,
@@ -29,13 +31,15 @@ const passthroughTheme = {
 } satisfies MinimalSubagentsWidgetTheme;
 
 function createUiContext(mode: "tui" | "rpc") {
-  const context = Object.create(null);
-  context.mode = mode;
-  context.ui = {
-    setWidget: vi.fn(),
-    theme: passthroughTheme,
+  const context = {
+    mode,
+    ui: { setWidget: vi.fn<ExtensionContext["ui"]["setWidget"]>() },
   };
-  return context;
+  return {
+    ...context,
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The controller reads only mode and the typed setWidget mock; recorded widget factories are not mounted.
+    frameworkContext: context as unknown as ExtensionContext,
+  };
 }
 
 function createHierarchyStatus(agents: AgentSummary[]) {
@@ -122,9 +126,15 @@ describe("minimal subagents UI", () => {
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     let status = createHierarchyStatus([summary("worker", { state: "running" })]);
     const context = createUiContext("tui");
-    const coordinator = Object.create(null);
-    coordinator.inspectStatus = () => status;
-    const controller = new MinimalSubagentsUiController(coordinator, context);
+    const coordinator = { inspectStatus: () => status } satisfies Pick<
+      MinimalSubagentsCoordinator,
+      "inspectStatus"
+    >;
+    const controller = new MinimalSubagentsUiController(
+      // SAFETY: The widget controller reads only inspectStatus from this checked coordinator fixture.
+      coordinator as MinimalSubagentsCoordinator,
+      context.frameworkContext,
+    );
     controller.refresh();
     controller.refresh();
     expect(setIntervalSpy).toHaveBeenCalledOnce();
@@ -151,9 +161,15 @@ describe("minimal subagents UI", () => {
     vi.useFakeTimers();
     let status = createHierarchyStatus([summary("worker", { state: "running" })]);
     const context = createUiContext("tui");
-    const coordinator = Object.create(null);
-    coordinator.inspectStatus = () => status;
-    const controller = new MinimalSubagentsUiController(coordinator, context);
+    const coordinator = { inspectStatus: () => status } satisfies Pick<
+      MinimalSubagentsCoordinator,
+      "inspectStatus"
+    >;
+    const controller = new MinimalSubagentsUiController(
+      // SAFETY: The cooldown path reads only inspectStatus from this checked coordinator fixture.
+      coordinator as MinimalSubagentsCoordinator,
+      context.frameworkContext,
+    );
     controller.refresh();
     status = createHierarchyStatus([
       summary("worker", {
@@ -169,10 +185,16 @@ describe("minimal subagents UI", () => {
   });
 
   it("is inert outside TUI mode", () => {
-    const inspectStatus = vi.fn();
-    const coordinator = Object.create(null);
-    coordinator.inspectStatus = inspectStatus;
-    const controller = new MinimalSubagentsUiController(coordinator, createUiContext("rpc"));
+    const inspectStatus = vi.fn<MinimalSubagentsCoordinator["inspectStatus"]>();
+    const coordinator = { inspectStatus } satisfies Pick<
+      MinimalSubagentsCoordinator,
+      "inspectStatus"
+    >;
+    const controller = new MinimalSubagentsUiController(
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: RPC must not inspect the coordinator; its only widget dependency is the typed inspectStatus mock.
+      coordinator as unknown as MinimalSubagentsCoordinator,
+      createUiContext("rpc").frameworkContext,
+    );
     controller.refresh();
     controller.dispose();
     expect(inspectStatus).not.toHaveBeenCalled();

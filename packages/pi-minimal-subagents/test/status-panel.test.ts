@@ -1,6 +1,12 @@
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
-import { initTheme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import {
+  initTheme,
+  type ExtensionContext,
+  type KeybindingsManager,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import type { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   MinimalSubagentsStatusPanelComponent,
@@ -68,33 +74,41 @@ function panelFixture(
     toolDefinitions: [],
     fallback: "live recent activity",
   };
-  const coordinator = Object.create(null);
-  coordinator.inspectStatus = vi.fn(() => status);
-  coordinator.inspectTranscript = vi.fn(() => transcript);
-  const tui = Object.create(null);
-  tui.terminal = { rows: 20, columns: 100 };
-  tui.requestRender = vi.fn();
-  const theme = Object.create(null);
-  theme.fg = (_color: string, text: string) => text;
-  theme.bold = (text: string) => text;
-  const keybindings = Object.create(null);
-  keybindings.matches = (data: string, binding: string) =>
-    ({
-      up: "tui.select.up",
-      down: "tui.select.down",
-      enter: "tui.select.confirm",
-      escape: "tui.select.cancel",
-      pageUp: "tui.select.pageUp",
-      pageDown: "tui.select.pageDown",
-      expand: "app.tools.expand",
-    })[data] === binding;
+  const coordinator = {
+    inspectStatus: vi.fn(() => status),
+    inspectTranscript: vi.fn(() => transcript),
+  } satisfies Pick<MinimalSubagentsCoordinator, "inspectStatus" | "inspectTranscript">;
+  const tui = {
+    terminal: { rows: 20, columns: 100 } satisfies Pick<TUI["terminal"], "rows" | "columns">,
+    requestRender: vi.fn<TUI["requestRender"]>(),
+  };
+  const theme = {
+    fg: (_color, text) => text,
+    bold: (text) => text,
+  } satisfies Pick<Theme, "fg" | "bold">;
+  const bindings = new Map([
+    ["up", "tui.select.up"],
+    ["down", "tui.select.down"],
+    ["enter", "tui.select.confirm"],
+    ["escape", "tui.select.cancel"],
+    ["pageUp", "tui.select.pageUp"],
+    ["pageDown", "tui.select.pageDown"],
+    ["expand", "app.tools.expand"],
+  ]);
+  const keybindings = {
+    matches: (data, binding) => bindings.get(data) === binding,
+  } satisfies Pick<KeybindingsManager, "matches">;
   const onClose = vi.fn();
   const panel = new MinimalSubagentsStatusPanelComponent(
-    coordinator,
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel reads only these two checked coordinator methods; both remain observable typed mocks.
+    coordinator as unknown as MinimalSubagentsCoordinator,
     () => access,
-    tui,
-    theme,
-    keybindings,
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel uses only checked terminal dimensions and the typed requestRender mock, not a full terminal runtime.
+    tui as unknown as TUI,
+    // SAFETY: These panel render paths use only the checked fg and bold theme methods.
+    theme as Theme,
+    // SAFETY: Panel input dispatch reads only the checked matches method.
+    keybindings as KeybindingsManager,
     "/project",
     onClose,
     options.startRefresh,
@@ -205,22 +219,35 @@ describe("minimal subagents status panel", () => {
   });
 
   it("uses one RPC notification and stays silent in JSON mode", async () => {
-    const coordinator = Object.create(null);
-    coordinator.inspectStatus = vi.fn(() => ({ root_id: "root", agents: [summary("worker")] }));
-    const notify = vi.fn();
-    const rpcContext = Object.create(null);
-    rpcContext.mode = "rpc";
-    rpcContext.cwd = "/project";
-    rpcContext.ui = { notify };
-    await new MinimalSubagentsStatusPanelController(coordinator, rpcContext, () => access).open();
+    const coordinatorFixture = {
+      inspectStatus: vi.fn(() => ({ root_id: "root" as const, agents: [summary("worker")] })),
+    } satisfies Pick<MinimalSubagentsCoordinator, "inspectStatus">;
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Non-TUI status only reads the checked inspectStatus mock, never transcript or runtime members.
+    const coordinator = coordinatorFixture as unknown as MinimalSubagentsCoordinator;
+    const notify = vi.fn<ExtensionContext["ui"]["notify"]>();
+    const rpcContext = {
+      mode: "rpc",
+      cwd: "/project",
+      ui: { notify },
+    } satisfies Pick<ExtensionContext, "mode" | "cwd"> & {
+      ui: Pick<ExtensionContext["ui"], "notify">;
+    };
+    await new MinimalSubagentsStatusPanelController(
+      coordinator,
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The RPC path uses only the checked mode and notify members, with no TUI or session access.
+      rpcContext as unknown as ExtensionContext,
+      () => access,
+    ).open();
     expect(notify).toHaveBeenCalledWith(expect.stringContaining("Coordinator Tools 3/6"), "info");
 
-    const jsonContext = Object.create(null);
-    jsonContext.mode = "json";
-    jsonContext.cwd = "/project";
-    jsonContext.ui = { notify };
-    await new MinimalSubagentsStatusPanelController(coordinator, jsonContext, () => access).open();
-    expect(coordinator.inspectStatus).toHaveBeenCalledOnce();
+    const jsonContext = { ...rpcContext, mode: "json" as const };
+    await new MinimalSubagentsStatusPanelController(
+      coordinator,
+      // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: JSON mode returns before accessing any framework service; the fixture retains the typed notification recorder.
+      jsonContext as unknown as ExtensionContext,
+      () => access,
+    ).open();
+    expect(coordinatorFixture.inspectStatus).toHaveBeenCalledOnce();
     expect(notify).toHaveBeenCalledOnce();
   });
 });

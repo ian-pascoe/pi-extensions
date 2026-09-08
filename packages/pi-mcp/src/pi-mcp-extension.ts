@@ -1,5 +1,3 @@
-// oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional protocol and Pi fields must be omitted when absent at this composition boundary.
-// oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This Pi composition root parses persisted custom-entry and custom-message replay data before restoring it.
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,7 +18,7 @@ import type {
   TextContent,
   ToolUseContent,
 } from "@modelcontextprotocol/client";
-import type { AssistantMessage, Message, UserMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Message, UserMessage } from "@earendil-works/pi-ai";
 import { shouldUseNerdFontIcons } from "@ian-pascoe/pi-utils";
 import type { TSchema } from "typebox";
 import {
@@ -60,7 +58,7 @@ import {
   type McpHostServerTool,
   type McpServerStatus,
 } from "./mcp-host.js";
-import { McpOAuthProvider } from "./mcp-oauth.js";
+import { McpOAuthProvider, type McpOAuthProviderOptions } from "./mcp-oauth.js";
 import { McpObserverUiController } from "./mcp-observer-ui.js";
 import {
   parseMcpPromptReplayMessages,
@@ -127,6 +125,22 @@ const MCP_PROMPT_MESSAGE_TYPE = "pi-mcp-prompt";
 const MCP_RESOURCE_UPDATE_MESSAGE_TYPE = "pi-mcp-resource-update";
 const MCP_SUBSCRIPTIONS_ENTRY_TYPE = "pi-mcp-subscriptions";
 
+type ProviderOptions = {
+  -readonly [Field in keyof McpOAuthProviderOptions]: McpOAuthProviderOptions[Field];
+};
+type RequestContext = {
+  -readonly [
+    Field in keyof McpHostRequestContext<ExtensionContext>
+  ]: McpHostRequestContext<ExtensionContext>[Field];
+};
+type ToolOperationResult = {
+  -readonly [Field in keyof McpToolOperationResult]: McpToolOperationResult[Field];
+};
+type ServerToolDefinition = {
+  -readonly [Field in keyof McpServerToolDefinition]: McpServerToolDefinition[Field];
+};
+
+// oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- This recursive MCP-to-JSON boundary classifies every primitive and normalizes unsupported values before exposing live result details.
 function toMcpJsonValue(value: unknown): JSONValue {
   if (
     value === null ||
@@ -142,6 +156,8 @@ function toMcpJsonValue(value: unknown): JSONValue {
     Object.entries(value).map(([key, item]) => [key, toMcpJsonValue(item)]),
   );
 }
+
+// oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof
 
 function formatMcpServerStatus(status: McpServerStatus): string {
   const safeError = "error" in status ? sanitizeMcpPresentationText(status.error) : undefined;
@@ -244,6 +260,7 @@ async function runExpectedMcpLiveCommand(
   }
 }
 
+// oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- Persisted custom-entry ingress checks the version and each subscription's serverId/uri before replay; unrelated historical fields remain accepted.
 function parseSubscriptionEntry(data: unknown): readonly McpHostResourceSubscription[] | undefined {
   if (data === null || typeof data !== "object" || !("version" in data) || data.version !== 1) {
     return undefined;
@@ -265,6 +282,8 @@ function parseSubscriptionEntry(data: unknown): readonly McpHostResourceSubscrip
   }
   return subscriptions;
 }
+
+// oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof
 
 function replaySubscriptions(context: ExtensionContext): readonly McpHostResourceSubscription[] {
   let subscriptions: readonly McpHostResourceSubscription[] = [];
@@ -318,6 +337,7 @@ function transformPromptMessages(messages: ContextEvent["messages"]): ContextEve
   });
 }
 
+// oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- The official Client validates Prompt results; this boundary selects supported content kinds and checks their mapper-facing fields, preserving legacy array content.
 function isMcpContentBlock(value: unknown): value is McpContentBlock {
   if (value === null || typeof value !== "object" || !("type" in value)) return false;
   if (value.type === "text") return "text" in value && typeof value.text === "string";
@@ -345,6 +365,8 @@ function isMcpContentBlock(value: unknown): value is McpContentBlock {
   );
 }
 
+// oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof
+
 async function mapPromptResult(
   result: McpHostGetPromptResult,
   sessionFiles: McpSessionFiles,
@@ -354,6 +376,7 @@ async function mapPromptResult(
   for (const value of result.messages) {
     if (
       value === null ||
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Guard the SDK Prompt message representation before checking role and content for replay.
       typeof value !== "object" ||
       !("role" in value) ||
       (value.role !== "user" && value.role !== "assistant") ||
@@ -372,16 +395,11 @@ async function mapPromptResult(
 }
 
 function selectedResourceServer(parameters: McpListResourcesParameters): string | undefined {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The Resource-tool boundary preserves string-only routing even for a direct malformed invocation.
   return typeof parameters.server === "string" ? parameters.server : undefined;
 }
 
-function toolProgressUpdate(execution: McpToolExecution, progress: unknown): void {
-  execution.onUpdate?.({
-    content: [{ text: `MCP progress: ${JSON.stringify(progress)}`, type: "text" }],
-    details: { progress: toMcpJsonValue(progress) },
-  });
-}
-
+// oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- MCP sampling content is a protocol rendering boundary: checked text/images become native Pi content, and unsupported blocks retain the existing textual fallback.
 function samplingUserContent(value: unknown): UserMessage["content"] {
   const blocks = Array.isArray(value) ? value : [value];
   return blocks.map((block) => {
@@ -403,6 +421,9 @@ function samplingUserContent(value: unknown): UserMessage["content"] {
   });
 }
 
+// oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof
+
+// oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof -- Sampling tool-use blocks need checked IDs, names, and object inputs before Pi mapping; all other content keeps its textual fallback.
 function samplingAssistantContent(value: unknown): AssistantMessage["content"] {
   const blocks = Array.isArray(value) ? value : [value];
   return blocks.map((block) => {
@@ -432,6 +453,8 @@ function samplingAssistantContent(value: unknown): AssistantMessage["content"] {
     return { text: `[MCP sampling content]\n${JSON.stringify(block)}`, type: "text" as const };
   });
 }
+
+// oxlint-enable anti-slop/no-unknown-parameters, anti-slop/no-runtime-typeof
 
 function samplingMessages(request: CreateMessageRequest): Message[] {
   const timestamp = Date.now();
@@ -470,20 +493,14 @@ async function completeMcpSampling(
     const parameters = tool.inputSchema as TSchema;
     return { description: tool.description ?? tool.name, name: tool.name, parameters };
   });
-  const response = await execution.context.modelRegistry.complete(
-    model,
-    {
-      messages: samplingMessages(request),
-      ...(request.params.systemPrompt === undefined
-        ? {}
-        : { systemPrompt: request.params.systemPrompt }),
-      ...(tools === undefined ? {} : { tools }),
-    },
-    {
-      maxTokens: request.params.maxTokens,
-      ...(execution.signal === undefined ? {} : { signal: execution.signal }),
-    },
-  );
+  const context: Context = { messages: samplingMessages(request) };
+  if (request.params.systemPrompt !== undefined) context.systemPrompt = request.params.systemPrompt;
+  if (tools !== undefined) context.tools = tools;
+  const options: NonNullable<Parameters<typeof execution.context.modelRegistry.complete>[2]> = {
+    maxTokens: request.params.maxTokens,
+  };
+  if (execution.signal !== undefined) options.signal = execution.signal;
+  const response = await execution.context.modelRegistry.complete(model, context, options);
   const content: Array<TextContent | ToolUseContent> = response.content.flatMap<
     TextContent | ToolUseContent
   >((block) => {
@@ -567,7 +584,7 @@ function createMcpRequestContext(
   execution: McpToolExecution,
   pi: ExtensionAPI,
 ): McpHostRequestContext<ExtensionContext> {
-  return {
+  const context: RequestContext = {
     callbacks: {
       onElicitation: (request) => fulfilMcpElicitation(request, execution, pi),
       onListRoots: () => ({
@@ -580,10 +597,16 @@ function createMcpRequestContext(
       }),
       onSampling: (request) => completeMcpSampling(request, execution),
     },
-    onProgress: (progress) => toolProgressUpdate(execution, progress),
+    onProgress: (progress) => {
+      execution.onUpdate?.({
+        content: [{ text: `MCP progress: ${JSON.stringify(progress)}`, type: "text" }],
+        details: { progress: toMcpJsonValue(progress) },
+      });
+    },
     piContext: execution.context,
-    ...(execution.signal === undefined ? {} : { signal: execution.signal }),
   };
+  if (execution.signal !== undefined) context.signal = execution.signal;
+  return context;
 }
 
 function createMcpToolCatalogRuntime(
@@ -591,7 +614,11 @@ function createMcpToolCatalogRuntime(
   sessionFiles: McpSessionFiles,
   pi: ExtensionAPI,
 ): McpToolCatalogRuntime {
-  const mappedTextResult = async (value: unknown): Promise<McpToolOperationResult> => {
+  const mappedTextResult = async (
+    value:
+      | Awaited<ReturnType<McpHost["listResources"]>>
+      | Awaited<ReturnType<McpHost["listResourceTemplates"]>>,
+  ): Promise<McpToolOperationResult> => {
     const mapped = await createMcpContentResult(
       [{ text: JSON.stringify(value, undefined, 2), type: "text" }],
       undefined,
@@ -609,12 +636,13 @@ function createMcpToolCatalogRuntime(
           ? undefined
           : toMcpJsonValue(result.structuredContent);
       const mapped = await createMcpContentResult(result.content, structuredContent, sessionFiles);
-      return {
+      const operation: ToolOperationResult = {
         content: [...mapped.content],
         details: toMcpJsonValue(mapped.details),
-        ...(result.isError === undefined ? {} : { isError: result.isError }),
-        ...(structuredContent === undefined ? {} : { structuredContent }),
       };
+      if (result.isError !== undefined) operation.isError = result.isError;
+      if (structuredContent !== undefined) operation.structuredContent = structuredContent;
+      return operation;
     },
     listResources: async (parameters) =>
       mappedTextResult(await host.listResources(selectedResourceServer(parameters))),
@@ -641,14 +669,12 @@ function catalogServerTool(tool: McpHostServerTool): McpServerToolDefinition {
   const inputSchema = tool.inputSchema as JsonSchemaType;
   // SAFETY: The same validated SDK boundary applies to an optional output schema.
   const outputSchema = tool.outputSchema as JsonSchemaType | undefined;
-  return {
-    ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
-    ...(tool.description === undefined ? {} : { description: tool.description }),
-    inputSchema,
-    name: tool.name,
-    ...(outputSchema === undefined ? {} : { outputSchema }),
-    ...(tool.title === undefined ? {} : { title: tool.title }),
-  };
+  const definition: ServerToolDefinition = { inputSchema, name: tool.name };
+  if (tool.annotations !== undefined) definition.annotations = tool.annotations;
+  if (tool.description !== undefined) definition.description = tool.description;
+  if (outputSchema !== undefined) definition.outputSchema = outputSchema;
+  if (tool.title !== undefined) definition.title = tool.title;
+  return definition;
 }
 
 class ProductionPiMcpSession implements PiMcpExtensionSession {
@@ -775,16 +801,17 @@ const productionPiMcpExtensionEffects: PiMcpExtensionEffects = {
             return undefined;
           }
           const oauth = definition.auth?.type === "oauth" ? definition.auth : undefined;
-          return new McpOAuthProvider({
+          const providerOptions: ProviderOptions = {
             authStore,
             clientIdentity: oauth?.clientId ?? "@ian-pascoe/pi-mcp",
-            ...(oauth?.clientId === undefined ? {} : { clientId: oauth.clientId }),
-            ...(oauth?.clientSecret === undefined ? {} : { clientSecret: oauth.clientSecret }),
             onAuthorizationUrl: () => undefined,
             redirectUrl: oauth?.redirectUri ?? "http://127.0.0.1:19876/mcp/oauth/callback",
             scopes: oauth?.scopes ?? [],
             serverUrl: definition.url,
-          });
+          };
+          if (oauth?.clientId !== undefined) providerOptions.clientId = oauth.clientId;
+          if (oauth?.clientSecret !== undefined) providerOptions.clientSecret = oauth.clientSecret;
+          return new McpOAuthProvider(providerOptions);
         },
         sessionFiles,
         settings,

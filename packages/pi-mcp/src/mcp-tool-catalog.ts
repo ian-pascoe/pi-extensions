@@ -1,4 +1,3 @@
-/* oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional MCP result marker fields are present only when supplied by the protocol operation. */
 import { createHash } from "node:crypto";
 import { scheduler } from "node:timers/promises";
 import {
@@ -25,6 +24,11 @@ import {
   type McpResultMarker,
 } from "./mcp-presentation.js";
 import { createMcpSchemaValidator } from "./mcp-json-schema.js";
+
+type McpResultMarkerDraft = { -readonly [Field in keyof McpResultMarker]: McpResultMarker[Field] };
+type McpResultDetailsDraft = {
+  -readonly [Field in keyof McpResultDetails]: McpResultDetails[Field];
+};
 
 const RESOURCE_TOOL_NAMES = [
   "list_mcp_resources",
@@ -54,16 +58,21 @@ type McpOutputSchemaToolDefinition<TParameters extends TSchema = TSchema> = Tool
   readonly outputSchema: JsonSchemaType;
 };
 
+type McpResultDetailsSchemaProperties = {
+  mcp: typeof McpResultMarkerSchema;
+  result: JsonSchemaType;
+  structuredContent?: JsonSchemaType;
+};
+
 function mcpResultDetailsOutputSchema(structuredContentSchema?: JsonSchemaType): JsonSchemaType {
+  const properties: McpResultDetailsSchemaProperties = {
+    mcp: McpResultMarkerSchema,
+    result: {},
+  };
+  if (structuredContentSchema !== undefined) properties.structuredContent = structuredContentSchema;
   return {
     type: "object",
-    properties: {
-      mcp: McpResultMarkerSchema,
-      result: {},
-      ...(structuredContentSchema === undefined
-        ? {}
-        : { structuredContent: structuredContentSchema }),
-    },
+    properties,
     required: ["mcp", "result"],
     additionalProperties: false,
   };
@@ -490,26 +499,21 @@ export class McpToolCatalog {
         text: `[Pi MCP: MCP output schema validation failed for ${operation}; accompanying content was retained.]`,
       });
     }
-    const mcp: McpResultMarker = {
+    const mcp: McpResultMarkerDraft = {
       isError: result.isError ?? false,
       operation,
-      ...(outputSchemaError === undefined ? {} : { outputSchemaError }),
-      ...(outputSchemaValid === undefined ? {} : { outputSchemaValid }),
       owner: "pi-mcp",
-      ...(prepared === undefined
-        ? {}
-        : { serverId: prepared.serverId, toolName: prepared.definition.name }),
     };
-    return {
-      content,
-      details: {
-        mcp,
-        result: result.details,
-        ...(result.structuredContent === undefined
-          ? {}
-          : { structuredContent: result.structuredContent }),
-      },
-    };
+    if (outputSchemaError !== undefined) mcp.outputSchemaError = outputSchemaError;
+    if (outputSchemaValid !== undefined) mcp.outputSchemaValid = outputSchemaValid;
+    if (prepared !== undefined) {
+      mcp.serverId = prepared.serverId;
+      mcp.toolName = prepared.definition.name;
+    }
+    const details: McpResultDetailsDraft = { mcp, result: result.details };
+    if (result.structuredContent !== undefined)
+      details.structuredContent = result.structuredContent;
+    return { content, details };
   }
 
   private registerResourceTools(): void {

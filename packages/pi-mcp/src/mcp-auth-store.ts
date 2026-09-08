@@ -1,5 +1,3 @@
-// oxlint-disable anti-slop/no-conditional-empty-object-spread -- Exact optional properties require omitting absent credential fields from the persisted wire document.
-// oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This file owns the strict authentication JSON parser boundary; every accepted primitive and object field is refined here.
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -164,10 +162,13 @@ function parseMcpAuthBinding(binding: McpAuthBinding):
     }
   | undefined {
   if (
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Public credential-store ingress rejects malformed runtime bindings before hashing.
     typeof binding !== "object" ||
     binding === null ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- A client identity must be a non-empty string before hashing.
     typeof binding.clientIdentity !== "string" ||
     binding.clientIdentity.length === 0 ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Only a string reaches URL validation below.
     typeof binding.serverUrl !== "string"
   ) {
     return undefined;
@@ -199,6 +200,7 @@ function parseAuthEntryPatch(value: McpAuthEntryPatch): McpAuthEntryPatch | unde
   }
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Persisted auth data passes the strict document schema and binding-hash checks before use.
 function parseAuthDocument(value: unknown): McpAuthDocument | undefined {
   if (!Value.Check(McpAuthDocumentSchema, value)) return undefined;
   for (const [key, entry] of Object.entries(value.entries)) {
@@ -216,16 +218,14 @@ function authDocumentJson(document: McpAuthDocument): McpStoreJsonObject {
 }
 
 function publicEntry(entry: McpAuthStoredEntry): McpAuthEntry {
-  return {
-    ...(entry.authorization === undefined
-      ? {}
-      : { authorization: structuredClone(entry.authorization) }),
-    ...(entry.clientInformation === undefined
-      ? {}
-      : { clientInformation: structuredClone(entry.clientInformation) }),
-    ...(entry.discovery === undefined ? {} : { discovery: structuredClone(entry.discovery) }),
-    ...(entry.tokens === undefined ? {} : { tokens: structuredClone(entry.tokens) }),
-  };
+  const result: Static<typeof McpAuthEntrySchema> = {};
+  if (entry.authorization !== undefined)
+    result.authorization = structuredClone(entry.authorization);
+  if (entry.clientInformation !== undefined)
+    result.clientInformation = structuredClone(entry.clientInformation);
+  if (entry.discovery !== undefined) result.discovery = structuredClone(entry.discovery);
+  if (entry.tokens !== undefined) result.tokens = structuredClone(entry.tokens);
+  return result;
 }
 
 function applyPatch(current: McpAuthStoredEntry, patch: McpAuthEntryPatch): McpAuthStoredEntry {

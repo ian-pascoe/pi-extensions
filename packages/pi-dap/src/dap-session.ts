@@ -296,6 +296,8 @@ interface ActiveDapSession {
   stopping: boolean;
 }
 
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
+
 type InternalDapSessionState =
   | { readonly kind: "idle" }
   | { readonly kind: "active"; readonly active: ActiveDapSession }
@@ -1046,14 +1048,16 @@ export class DapSession {
     })();
     active.cleanupPromise = cleanup;
     if (this.isCurrentActive(active)) {
-      this.state = {
+      // oxlint-disable-next-line anti-slop/no-known-value-widening -- SAFETY: Mutable removes only readonly for construction; all fields retain the terminated-state contract.
+      const terminated: Mutable<Extract<InternalDapSessionState, { kind: "terminated" }>> = {
         kind: "terminated",
         adapterId: active.adapter.id,
         profileId: active.profile.id,
         cleanupPromise: cleanup,
-        ...(active.exitCode !== undefined && { exitCode: active.exitCode }),
-        ...(terminationReason.length > 0 && { terminationReason }),
       };
+      if (active.exitCode !== undefined) terminated.exitCode = active.exitCode;
+      if (terminationReason.length > 0) terminated.terminationReason = terminationReason;
+      this.state = terminated;
       this.publishSnapshot();
     }
     this.settleExecutionWaiters();
@@ -1088,25 +1092,29 @@ export class DapSession {
     if (this.state.kind === "idle") return { state: "idle" };
     if (this.state.kind === "terminated") {
       const terminated = this.state;
-      return {
+      // oxlint-disable-next-line anti-slop/no-known-value-widening -- SAFETY: Mutable preserves every snapshot field type while optional fields are assigned before publication.
+      const snapshot: Mutable<Extract<DapSessionSnapshot, { state: "terminated" }>> = {
         state: "terminated",
         adapterId: terminated.adapterId,
         profileId: terminated.profileId,
-        ...(terminated.exitCode !== undefined && { exitCode: terminated.exitCode }),
-        ...(terminated.terminationReason !== undefined && {
-          terminationReason: terminated.terminationReason,
-        }),
       };
+      if (terminated.exitCode !== undefined) snapshot.exitCode = terminated.exitCode;
+      if (terminated.terminationReason !== undefined) {
+        snapshot.terminationReason = terminated.terminationReason;
+      }
+      return snapshot;
     }
     const active = this.state.active;
     if (active.phase === "stopped") {
-      return {
+      // oxlint-disable-next-line anti-slop/no-known-value-widening -- SAFETY: Mutable preserves every snapshot field type while the optional thread is assigned before publication.
+      const snapshot: Mutable<Extract<DapSessionSnapshot, { state: "stopped" }>> = {
         state: "stopped",
         adapterId: active.adapter.id,
         profileId: active.profile.id,
         stopReason: active.stopReason ?? "unknown",
-        ...(active.threadId !== undefined && { threadId: active.threadId }),
       };
+      if (active.threadId !== undefined) snapshot.threadId = active.threadId;
+      return snapshot;
     }
     return {
       state: active.phase,

@@ -1,6 +1,3 @@
-/* oxlint-disable anti-slop/no-conditional-empty-object-spread -- The result fixture mirrors exact optional adapter data. */
-/* oxlint-disable anti-slop/no-unknown-parameters -- The recording fake intentionally captures differently shaped command option payloads for assertions. */
-
 import { describe, expect, test, vi } from "vitest";
 import {
   executeMcpCommand,
@@ -13,16 +10,24 @@ import {
   type McpCommandJsonValue,
 } from "../src/mcp-command.js";
 
-const success = (message: string, data?: McpCommandJsonValue): McpCommandAdapterResult => ({
-  ...(data === undefined ? {} : { data }),
-  message,
-  ok: true,
-});
+type AdapterSuccess = {
+  -readonly [Field in keyof Extract<McpCommandAdapterResult, { ok: true }>]: Extract<
+    McpCommandAdapterResult,
+    { ok: true }
+  >[Field];
+};
+
+const success = (message: string, data?: McpCommandJsonValue): McpCommandAdapterResult => {
+  const result: AdapterSuccess = { message, ok: true };
+  if (data !== undefined) result.data = data;
+  return result;
+};
 
 function createAdapters(): McpCommandAdapters & {
   readonly calls: Array<{ readonly operation: string; readonly value: unknown }>;
 } {
   const calls: Array<{ readonly operation: string; readonly value: unknown }> = [];
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This adapter-boundary recorder retains heterogeneous command inputs without inspecting them; tests assert their exact payloads.
   const record = async (operation: string, value: unknown): Promise<McpCommandAdapterResult> => {
     calls.push({ operation, value });
     return success(`${operation} complete`, { operation });
@@ -58,6 +63,24 @@ function createAdapters(): McpCommandAdapters & {
 }
 
 describe("MCP command grammar", () => {
+  test.each([undefined, false, 0, ""])("preserves optional command data %s", async (data) => {
+    const adapters = createAdapters();
+    adapters.settings.list = async () => success("listed", data);
+    const result = await executeMcpCommand({ json: false, kind: "list" }, adapters);
+    expect(Object.hasOwn(result, "data")).toBe(data !== undefined);
+    expect(result.data).toBe(data);
+    expect(result.exitCode).toBe(0);
+  });
+
+  test("omits absent auth options and preserves supplied empty strings", async () => {
+    const adapters = createAdapters();
+    await runMcpCommandTokens(["auth", "docs"], "runtime", adapters);
+    await runMcpCommandTokens(["auth", "docs", "--code=", "--state="], "runtime", adapters);
+    expect(adapters.calls).toStrictEqual([
+      { operation: "auth", value: { noOpen: false, server: "docs" } },
+      { operation: "auth", value: { code: "", noOpen: false, server: "docs", state: "" } },
+    ]);
+  });
   test("parses a remote add with project scope, repeated headers, and OAuth fields", () => {
     const parsed = parseMcpCommand(
       [

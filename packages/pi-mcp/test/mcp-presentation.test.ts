@@ -1,4 +1,3 @@
-/* oxlint-disable anti-slop/no-known-value-widening, anti-slop/no-unsafe-dictionary-type -- Test fixtures deliberately assemble historical and malformed renderer-boundary details. */
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -6,7 +5,7 @@ import {
   type MessageRenderOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Box, visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { describe, expect, expectTypeOf, test } from "vitest";
 import {
   parseMcpPromptReplayMessages,
   parseMcpResultDetails,
@@ -17,6 +16,7 @@ import {
   renderMcpToolResult,
   sanitizeMcpPresentationText,
   type McpRenderTheme,
+  type McpResultMarker,
 } from "../src/mcp-presentation.js";
 
 const plainTheme = {
@@ -36,7 +36,7 @@ const collapsed = { expanded: false, isPartial: false } as const;
 const expanded = { expanded: true, isPartial: false } as const;
 const messageExpanded = { expanded: true, outputPad: 1 } satisfies MessageRenderOptions;
 
-function resultDetails(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function resultDetails(overrides: Partial<McpResultMarker> = {}) {
   return {
     mcp: {
       isError: false,
@@ -55,6 +55,22 @@ function resultDetails(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 describe("MCP Transcript Presentation", () => {
+  test("checks historical markers without claiming or removing unparsed fields", () => {
+    const input = {
+      ...resultDetails(),
+      result: { extension: Symbol("unparsed metadata") },
+      structuredContent: () => "historical extension",
+      extra: { retained: true },
+    };
+    const parsed = parseMcpResultDetails(input);
+    expect(parsed).toBe(input);
+    expect(input.extra).toEqual({ retained: true });
+    expect(input.structuredContent()).toBe("historical extension");
+    expectTypeOf<keyof NonNullable<typeof parsed>>().toEqualTypeOf<"mcp" | "result">();
+    expectTypeOf(parsed?.result).toEqualTypeOf<unknown>();
+    expect(parseMcpResultDetails({ mcp: { owner: "pi-mcp", isError: "false" } })).toBeUndefined();
+  });
+
   test("renders original Server Tool identities and deterministic bounded arguments", () => {
     const arguments_ = {
       zeta: { second: 2, first: 1 },
@@ -102,7 +118,7 @@ describe("MCP Transcript Presentation", () => {
   });
 
   test("renders semantic success, MCP failure, schema warning, progress, and stored metadata", () => {
-    const success: AgentToolResult<unknown> = {
+    const success: AgentToolResult<ReturnType<typeof resultDetails>> = {
       content: [
         { type: "text", text: "first" },
         { type: "text", text: "second" },
@@ -114,7 +130,7 @@ describe("MCP Transcript Presentation", () => {
       "✓ completed  ·  2 text blocks  ·  1 image",
     );
 
-    const failed: AgentToolResult<unknown> = {
+    const failed: AgentToolResult<ReturnType<typeof resultDetails>> = {
       content: [{ type: "text", text: "permission denied\nserver detail" }],
       details: resultDetails({ isError: true }),
     };
@@ -122,7 +138,7 @@ describe("MCP Transcript Presentation", () => {
       "× failed  ·  permission denied",
     );
 
-    const warning: AgentToolResult<unknown> = {
+    const warning: AgentToolResult<ReturnType<typeof resultDetails>> = {
       content: [{ type: "text", text: "retained" }],
       details: resultDetails({ outputSchemaError: "wrong shape", outputSchemaValid: false }),
     };
@@ -130,7 +146,7 @@ describe("MCP Transcript Presentation", () => {
       "! completed with output-schema failure",
     );
 
-    const partial: AgentToolResult<unknown> = {
+    const partial: AgentToolResult<{ progress: { progress: number } }> = {
       content: [{ type: "text", text: 'MCP progress: {"progress":42}' }],
       details: { progress: { progress: 42 } },
     };
@@ -150,7 +166,7 @@ describe("MCP Transcript Presentation", () => {
   test("redacts exact values and removes terminal controls without changing result bytes", () => {
     const unsafe =
       "visible secret-value\u001b[31m red\u001b[0m\u001b]0;title\u0007\u001b_payload\u001b\\\u0000\u0085\r\nnext\tvalue";
-    const result: AgentToolResult<unknown> = {
+    const result: AgentToolResult<ReturnType<typeof resultDetails>> = {
       content: [{ type: "text", text: unsafe }],
       details: resultDetails(),
     };
@@ -165,7 +181,7 @@ describe("MCP Transcript Presentation", () => {
   });
 
   test("falls back to useful bounded content for historical details and narrow widths", () => {
-    const historical: AgentToolResult<unknown> = {
+    const historical: AgentToolResult<{ old: boolean }> = {
       content: [{ type: "text", text: "first useful line\nsecond line" }],
       details: { old: true },
     };
@@ -186,7 +202,7 @@ describe("MCP Transcript Presentation", () => {
     expect(lines).toHaveLength(1);
     expect(lines.every((line) => visibleWidth(line) <= 24)).toBe(true);
 
-    const cancelled: AgentToolResult<unknown> = {
+    const cancelled: AgentToolResult<undefined> = {
       content: [{ type: "text", text: "operation aborted by user" }],
       details: undefined,
     };
@@ -226,12 +242,14 @@ describe("MCP Transcript Presentation", () => {
   });
 
   test("keeps expanded result text within Pi display bounds", () => {
-    const details = resultDetails();
-    details.result = {
-      spillPath: `/${"🧪".repeat(2_000)}`,
-      storedContent: Array.from({ length: 20 }, () => ({ path: `/${"🧪".repeat(500)}` })),
+    const details = {
+      ...resultDetails(),
+      result: {
+        spillPath: `/${"🧪".repeat(2_000)}`,
+        storedContent: Array.from({ length: 20 }, () => ({ path: `/${"🧪".repeat(500)}` })),
+      },
     };
-    const oversized: AgentToolResult<unknown> = {
+    const oversized: AgentToolResult<typeof details> = {
       content: [{ type: "text", text: `${"x".repeat(80)}\n`.repeat(DEFAULT_MAX_LINES + 100) }],
       details,
     };

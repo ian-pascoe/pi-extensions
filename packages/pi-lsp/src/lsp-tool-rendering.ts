@@ -9,7 +9,6 @@ import {
 import { Container, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { LSPAny } from "vscode-languageserver-protocol";
 import {
   LspToolResultDetailsSchema,
   type LspToolParameters,
@@ -21,7 +20,7 @@ import { pluralizedCount } from "./lsp-post-edit-diagnostics-rendering.js";
 /** Theme operations used by Pi LSP tool transcript rendering. */
 export type LspRenderTheme = Pick<Theme, "bold" | "fg">;
 
-const LspRenderRecordSchema = Type.Record(Type.String(), Type.Any());
+const LspRenderRecordSchema = Type.Record(Type.String(), Type.Unknown());
 
 function humanizeLspOperation(operation: LspToolParameters["operation"]): string {
   const words = operation.replaceAll("_", " ");
@@ -62,7 +61,8 @@ function fileCountLabel(count: number): string {
   return `${count} file${count === 1 ? "" : "s"}`;
 }
 
-function parsedLspOutput(output: string): LSPAny {
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- Historical output JSON has no method-specific schema; consumers check only the fields they count.
+function parsedLspOutput(output: string): unknown {
   try {
     return JSON.parse(output);
   } catch {
@@ -70,11 +70,13 @@ function parsedLspOutput(output: string): LSPAny {
   }
 }
 
-function renderRecord(value: LSPAny): Record<string, LSPAny> | undefined {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- Historical output records expose only unknown fields, refined at each metric consumption point.
+function renderRecord(value: unknown): Record<string, unknown> | undefined {
   return Value.Check(LspRenderRecordSchema, value) ? value : undefined;
 }
 
-function semanticLspValueCount(value: LSPAny): number {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Historical result metrics inspect container shape without claiming to parse the protocol payload.
+function semanticLspValueCount(value: unknown): number {
   if (value === null || value === undefined) return 0;
   if (Array.isArray(value)) return value.length;
   const record = renderRecord(value);
@@ -82,7 +84,8 @@ function semanticLspValueCount(value: LSPAny): number {
   if (Array.isArray(record.diagnostics)) return record.diagnostics.length;
   if (Array.isArray(record.items)) return record.items.length;
   if (Array.isArray(record.diagnosticsByUri)) {
-    return record.diagnosticsByUri.reduce((count: number, entry: LSPAny) => {
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each historical diagnostics entry is checked as a tuple before its value is counted.
+    return record.diagnosticsByUri.reduce((count: number, entry: unknown) => {
       if (!Array.isArray(entry)) return count;
       return count + semanticLspValueCount(entry[1]);
     }, 0);
@@ -130,7 +133,8 @@ function semanticLspOperationMetric(
   } else if (operation === "code_actions" && Array.isArray(parsed)) {
     count = parsed.length;
   } else if (Array.isArray(record?.results)) {
-    count = record.results.reduce((total: number, result: LSPAny) => {
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each historical server result is checked as a record before counting its opaque value.
+    count = record.results.reduce((total: number, result: unknown) => {
       const resultRecord = renderRecord(result);
       return total + semanticLspValueCount(resultRecord?.value);
     }, 0);

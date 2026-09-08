@@ -349,10 +349,7 @@ async function discoverSourceRepository(
   };
 }
 
-async function writeJsonAtomically<Value extends object>(
-  absolutePath: string,
-  value: Value,
-): Promise<void> {
+async function writeJsonAtomically(absolutePath: string, value: StoreMetadata): Promise<void> {
   const temporaryPath = `${absolutePath}.${randomUUID()}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
   await rename(temporaryPath, absolutePath);

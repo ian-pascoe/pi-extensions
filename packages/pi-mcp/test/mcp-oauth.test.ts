@@ -190,6 +190,54 @@ test("persists SDK OAuth provider state through the URL-bound auth store", async
   });
 });
 
+test("omits absent OAuth fields while preserving zero and empty-string credentials", async () => {
+  const agentDirectory = await mkdtemp(join(tmpdir(), "pi-mcp-oauth-"));
+  temporaryDirectories.push(agentDirectory);
+  const provider = new McpOAuthProvider({
+    authStore: new McpAuthStore(agentDirectory),
+    clientIdentity: "pi-mcp",
+    now: () => 1_000,
+    onAuthorizationUrl: () => undefined,
+    redirectUrl: "http://127.0.0.1:19876/callback",
+    serverUrl: "https://mcp.example.test/rpc",
+  });
+  expect(Object.hasOwn(provider.clientMetadata, "scope")).toBe(false);
+  await provider.saveClientInformation({
+    client_id: "registered",
+    client_id_issued_at: 0,
+    client_secret: "",
+    client_secret_expires_at: 0,
+  });
+  const client = await provider.clientInformation();
+  expect(client).toEqual({
+    client_id: "registered",
+    client_id_issued_at: 0,
+    client_secret: "",
+    client_secret_expires_at: 0,
+  });
+  expect(Object.hasOwn(client!, "issuer")).toBe(false);
+  await provider.saveTokens({
+    access_token: "access",
+    token_type: "Bearer",
+    expires_in: 0,
+    refresh_token: "",
+    scope: "",
+  });
+  const tokens = await provider.tokens();
+  expect(tokens).toEqual({
+    access_token: "access",
+    token_type: "Bearer",
+    expires_in: 0,
+    refresh_token: "",
+    scope: "",
+  });
+  expect(Object.hasOwn(tokens!, "issuer")).toBe(false);
+  await provider.saveDiscoveryState({ authorizationServerUrl: "https://auth.example.test/" });
+  const discovery = await provider.discoveryState();
+  expect(discovery).toEqual({ authorizationServerUrl: "https://auth.example.test/" });
+  expect(Object.hasOwn(discovery!, "resourceMetadata")).toBe(false);
+});
+
 test("restores OAuth discovery when resource metadata allows a query-bearing server URL", async () => {
   const agentDirectory = await mkdtemp(join(tmpdir(), "pi-mcp-oauth-"));
   temporaryDirectories.push(agentDirectory);

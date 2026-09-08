@@ -28,7 +28,6 @@ import {
   RegistryDeliveryTurnEventWireSchema,
   RegistryEnvelopeWireSchema,
   RegistryEventDiscriminantWireSchema,
-  RegistryJsonValueWireSchema,
   RegistryLooseEnvelopeWireSchema,
   RegistryMessageRecordedEventWireSchema,
   RegistryRootProbeWireSchema,
@@ -846,7 +845,8 @@ function validParsedEvent(event: RegistryEventV2): ParsedRegistryEvent {
 type RegistryParseInput = JsonValue | RegistryEventV2;
 
 function parseRegistryEventRecord(
-  value: RegistryParseInput,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Registry entry data is unparsed; ownership is checked first, then envelope and event schemas validate every consumed field.
+  value: unknown,
   rootSessionId: string,
 ): ParsedRegistryEvent {
   if (Value.Check(RegistryRootProbeWireSchema, value) && value.root_session_id !== rootSessionId) {
@@ -1191,10 +1191,6 @@ export function replayRegistryEntries(
   const diagnostics: RegistryReplayDiagnostic[] = [];
   entries.forEach((entry, entryIndex) => {
     if (entry.type !== "custom" || entry.customType !== REGISTRY_ENTRY_TYPE) return;
-    if (!Value.Check(RegistryJsonValueWireSchema, entry.data)) {
-      reportDiagnostic(diagnostics, entryIndex, "invalid-envelope", "record must be JSON");
-      return;
-    }
     const parsed = parseRegistryEventRecord(entry.data, rootSessionId);
     if (parsed.kind === "foreign-root") return;
     if (parsed.kind === "event") {

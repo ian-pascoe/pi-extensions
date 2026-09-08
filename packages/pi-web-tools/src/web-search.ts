@@ -134,7 +134,21 @@ type SearchRequestHeaders = {
 type SearchProviderRequest = {
   readonly url: string;
   readonly headers: SearchRequestHeaders;
-  readonly body: object;
+  readonly body: {
+    readonly jsonrpc: "2.0";
+    readonly id: 1;
+    readonly method: "tools/call";
+    readonly params:
+      | { readonly name: "web_search_exa"; readonly arguments: ExaSearchArguments }
+      | {
+          readonly name: "web_search";
+          readonly arguments: {
+            readonly objective: string;
+            readonly search_queries: string[];
+            readonly session_id: string;
+          };
+        };
+  };
 };
 
 class WebSearchFailure extends Error {

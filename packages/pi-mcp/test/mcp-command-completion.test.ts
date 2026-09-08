@@ -54,6 +54,18 @@ function labels(items: Awaited<ReturnType<typeof completeMcpCommandArguments>>):
 }
 
 describe("MCP command completion", () => {
+  test("omits absent descriptions and preserves empty descriptions", async () => {
+    const host = completionHost();
+    host.listPrompts = async () => [
+      { prompt: { name: "absent" }, serverId: "docs" },
+      { prompt: { description: "", name: "empty" }, serverId: "docs" },
+    ];
+    const items = await completeMcpCommandArguments("prompt docs ", host);
+    expect(items).toStrictEqual([
+      { label: "absent", value: "prompt docs absent" },
+      { description: "", label: "empty", value: "prompt docs empty" },
+    ]);
+  });
   test("completes every runtime command with descriptions and full-prefix replacements", async () => {
     const items = await completeMcpCommandArguments("lo", completionHost());
 

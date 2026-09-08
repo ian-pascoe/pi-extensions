@@ -1,8 +1,4 @@
-import type { JsonValue } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-
-/** Establishes Pi's recursive JSON owner type before Registry envelope parsing. */
-export const RegistryJsonValueWireSchema = Type.Unsafe<JsonValue>({});
 
 const NonnegativeNumberSchema = Type.Number({ minimum: 0 });
 const NonEmptyStringSchema = Type.String({ minLength: 1 });

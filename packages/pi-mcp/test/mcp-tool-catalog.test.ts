@@ -18,6 +18,7 @@ import {
   type McpToolOperationResult,
 } from "../src/mcp-tool-catalog.js";
 import { createMcpSchemaValidator } from "../src/mcp-json-schema.js";
+import { parseMcpResultDetails } from "../src/mcp-presentation.js";
 
 // SAFETY: Catalog execution only forwards this context to the recording runtime, which never reads it.
 const TEST_CONTEXT = {} as ExtensionContext;
@@ -523,7 +524,8 @@ describe("McpToolCatalog", () => {
         return (
           outputSchema !== undefined &&
           "properties" in outputSchema &&
-          outputSchema.properties?.structuredContent === undefined
+          outputSchema.properties !== undefined &&
+          !Object.hasOwn(outputSchema.properties, "structuredContent")
         );
       }),
     ).toBe(true);
@@ -540,11 +542,18 @@ describe("McpToolCatalog", () => {
     const list = pi.tools.get("list_mcp_resources");
     const read = pi.tools.get("read_mcp_resource");
     if (list === undefined || read === undefined) throw new Error("Expected fixed resource tools");
-    await expect(
-      list.execute("list", { server: "docs" }, undefined, undefined, TEST_CONTEXT),
-    ).resolves.toMatchObject({
-      content: [{ type: "text", text: "resources:docs" }],
-    });
+    const listed = await list.execute(
+      "list",
+      { server: "docs" },
+      undefined,
+      undefined,
+      TEST_CONTEXT,
+    );
+    expect(listed.content).toEqual([{ type: "text", text: "resources:docs" }]);
+    const details = parseMcpResultDetails(listed.details);
+    expect(details).toBeDefined();
+    expect(Object.hasOwn(details!, "structuredContent")).toBe(false);
+    expect(Object.keys(details!.mcp).sort()).toEqual(["isError", "operation", "owner"]);
     await expect(
       read.execute(
         "read",

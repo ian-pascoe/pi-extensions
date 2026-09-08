@@ -43,7 +43,7 @@ test("maps MCP text, images, embedded resources, links, and structured content w
       },
       { type: "text", text: '[MCP structured content]\n{"count":2,"state":"complete"}' },
     ]);
-    expect(result.details.spillPath).toBeUndefined();
+    expect(Object.hasOwn(result.details, "spillPath")).toBe(false);
     expect(result.details.storedContent).toEqual([]);
   } finally {
     await files.close();
@@ -88,6 +88,27 @@ test("stores unsupported audio and binary resources privately while keeping path
     await expect(readFile(result.details.storedContent[1]!.path)).resolves.toEqual(
       Buffer.from([0, 255, 7]),
     );
+  } finally {
+    await files.close();
+    await rm(sessionDirectory, { force: true, recursive: true });
+  }
+});
+
+test("omits absent binary MIME metadata without dropping an empty supplied MIME value", async () => {
+  const sessionDirectory = await mkdtemp(join(tmpdir(), "pi-mcp-content-"));
+  const files = await createMcpSessionFiles(sessionDirectory);
+  try {
+    const result = await createMcpContentResult(
+      [
+        { type: "resource", resource: { uri: "file:///missing.bin", blob: "AP8H" } },
+        { type: "resource", resource: { uri: "file:///empty.bin", blob: "AP8H", mimeType: "" } },
+      ],
+      undefined,
+      files,
+    );
+    expect(Object.hasOwn(result.details.storedContent[0]!, "mimeType")).toBe(false);
+    expect(result.details.storedContent[1]?.mimeType).toBe("");
+    expect(Object.hasOwn(result.details, "spillPath")).toBe(false);
   } finally {
     await files.close();
     await rm(sessionDirectory, { force: true, recursive: true });

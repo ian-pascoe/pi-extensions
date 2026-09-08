@@ -179,6 +179,8 @@ describe("DapSession", () => {
 
     const stopped = await session.stop();
     expect(stopped.snapshot.state).toBe("terminated");
+    expect(Object.hasOwn(stopped.snapshot, "exitCode")).toBe(false);
+    expect(Object.hasOwn(stopped.snapshot, "threadId")).toBe(false);
     await expect(session.stop()).resolves.toMatchObject({
       snapshot: expect.objectContaining({ state: "terminated" }),
     });
@@ -309,6 +311,7 @@ describe("DapSession", () => {
     const exited = await session.continue();
 
     expect(exited.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
+    expect(Object.hasOwn(exited.snapshot, "exitCode")).toBe(true);
     expect(exited.output).toBe("finished\n");
     expect(session.status()).toMatchObject({
       snapshot: expect.objectContaining({ state: "terminated", exitCode: 0 }),

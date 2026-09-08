@@ -38,7 +38,6 @@ import {
   type Diagnostic,
   type DocumentDiagnosticReport,
   type InitializeResult,
-  type LSPAny,
   type Position,
   type ProtocolConnection,
   type Registration,
@@ -58,7 +57,7 @@ import type { LspTimeouts } from "./pi-lsp-settings.js";
 const MAX_OPEN_DOCUMENTS = 100;
 const MAX_STDERR_BYTES = 1024 * 1024;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-const LspJsonObjectSchema = Type.Record(Type.String(), Type.Unsafe<LSPAny>({}));
+const LspConfigurationObjectSchema = Type.Record(Type.String(), Type.Unknown());
 const TextDocumentSyncOptionsSchema = Type.Object(
   {
     change: Type.Optional(Type.Integer()),
@@ -96,9 +95,9 @@ export interface LspServerClientOptions {
   /** Complete child environment after settings resolution. */
   readonly environment: NodeJS.ProcessEnv;
   /** Opaque value sent only in the initialize request. */
-  readonly initializationOptions: LSPAny;
+  readonly initializationOptions: unknown;
   /** Opaque value served through workspace configuration. */
-  readonly settings: LSPAny;
+  readonly settings: unknown;
   /** Per-operation time budgets. */
   readonly timeouts: LspServerClientTimeouts;
   /** Mode-safe session file that retains the latest 1 MB of server stderr. */
@@ -217,11 +216,13 @@ function protocolLineEndPosition(text: string, encoding: LspPositionEncoding): P
   };
 }
 
-function configurationSectionValue(settings: LSPAny, section: string | undefined): LSPAny {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- Configuration is opaque server data; checking traversed keys does not establish the selected payload's type.
+function configurationSectionValue(settings: unknown, section: string | undefined): unknown {
   if (section === undefined || section.length === 0) return settings;
-  let current: LSPAny = settings;
+  let current = settings;
   for (const part of section.split(".")) {
-    if (!Value.Check(LspJsonObjectSchema, current) || !(part in current)) return null;
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- A missing section is null, but successful lookups still return an opaque server payload.
+    if (!Value.Check(LspConfigurationObjectSchema, current) || !(part in current)) return null;
     current = current[part] ?? null;
   }
   return current;
@@ -499,7 +500,8 @@ export class LspServerClient {
   /** Send a capability-specific request with the configured timeout and JSON-RPC cancellation. */
   async request<TResult>(
     method: string,
-    parameters: LSPAny,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Dynamic JSON-RPC parameters are forwarded without claiming a method-specific shape.
+    parameters: unknown,
     signal?: AbortSignal,
   ): Promise<TResult> {
     return this.sendRequestWithBudget<TResult>(
@@ -930,7 +932,8 @@ export class LspServerClient {
 
   private async sendRequestWithBudget<TResult>(
     method: string,
-    parameters: LSPAny,
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The request budget wrapper forwards opaque JSON-RPC parameters to the protocol connection.
+    parameters: unknown,
     budgetMs: number,
     operation: string,
     signal?: AbortSignal,

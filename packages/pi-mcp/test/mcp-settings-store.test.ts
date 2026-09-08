@@ -47,6 +47,23 @@ afterEach(async () => {
 });
 
 describe("McpSettingsStore", () => {
+  test.each(['"settings"', "42", "false"])(
+    "rejects primitive document %s without overwriting it",
+    async (document) => {
+      const { store } = await createStore();
+      await writeFile(store.globalSettingsPath, document);
+      expect(await store.readLayers()).toMatchObject({
+        ok: false,
+        error: { code: "invalid_document" },
+      });
+      expect(await store.setServerDefinition("global", "docs", { command: "node" })).toMatchObject({
+        ok: false,
+        error: { code: "invalid_document" },
+      });
+      expect(await readFile(store.globalSettingsPath, "utf8")).toBe(document);
+    },
+  );
+
   test("atomically preserves unrelated settings and the existing file mode", async () => {
     const { store } = await createStore();
     await writeFile(

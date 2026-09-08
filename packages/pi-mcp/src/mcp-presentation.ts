@@ -1,4 +1,3 @@
-/* oxlint-disable anti-slop/no-conditional-empty-object-spread, anti-slop/no-known-value-widening, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type -- MCP Transcript Presentation owns Pi's untyped historical result, tool-argument, and custom-message rendering boundaries. */
 import type { JSONValue } from "@modelcontextprotocol/client";
 import {
   DEFAULT_MAX_BYTES,
@@ -47,7 +46,7 @@ export const McpResultMarkerSchema = Type.Object(
   { additionalProperties: true },
 );
 const McpResultDetailsMarkerSchema = Type.Object(
-  { mcp: McpResultMarkerSchema, result: Type.Any() },
+  { mcp: McpResultMarkerSchema, result: Type.Unknown() },
   { additionalProperties: true },
 );
 
@@ -68,10 +67,14 @@ export interface McpResultMarker {
   readonly toolName?: string;
 }
 
-/** MCP tool details containing host metadata, mapped result details, and optional structured output. */
-export interface McpResultDetails {
+/** Historical details establish the marker, while mapped result metadata stays unparsed. */
+interface McpParsedResultDetails {
   readonly mcp: McpResultMarker;
   readonly result: unknown;
+}
+
+/** Live MCP tool details also retain the protocol's validated JSON structured output. */
+export interface McpResultDetails extends McpParsedResultDetails {
   readonly structuredContent?: JSONValue;
 }
 
@@ -170,10 +173,13 @@ function boundedMcpText(text: string, redact: McpPresentationRedactor): string {
   return truncation.content.length === 0 ? notice : `${truncation.content}\n${notice}`;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- SAFETY: Historical object ingress establishes only a record; every consumed field is checked separately below.
 function isRecord(value: unknown): value is Record<string, unknown> {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Object classification rejects null and arrays before inspecting historical fields.
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- SAFETY: Recursive transcript formatting preserves opaque leaves; JSON serialization is caught by stringifyPresentationValue.
 function sortedPresentationValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortedPresentationValue);
   if (!isRecord(value)) return value;
@@ -184,6 +190,7 @@ function sortedPresentationValue(value: unknown): unknown {
   );
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Arbitrary historical arguments and metadata are serialized only for presentation, with failures contained here.
 function stringifyPresentationValue(value: unknown, pretty = false): string {
   try {
     return (
@@ -194,6 +201,7 @@ function stringifyPresentationValue(value: unknown, pretty = false): string {
   }
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Historical arguments are record-checked before bounded, failure-contained presentation serialization.
 function argumentPreview(arguments_: unknown, redact: McpPresentationRedactor): string | undefined {
   if (!isRecord(arguments_) || Object.keys(arguments_).length === 0) return undefined;
   return Object.keys(arguments_)
@@ -211,6 +219,7 @@ function expansionHint(theme: McpRenderTheme): string {
 
 function renderMcpCall(
   heading: string,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Historical arguments flow only to the record-checked preview and failure-contained serializer.
   arguments_: unknown,
   theme: McpRenderTheme,
   expanded: boolean,
@@ -237,6 +246,7 @@ function renderMcpCall(
 export function renderMcpServerToolCall(
   serverId: string,
   toolName: string,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi replays arbitrary Server Tool arguments; presentation never treats them as validated tool inputs.
   arguments_: unknown,
   theme: McpRenderTheme,
   expanded: boolean,
@@ -266,6 +276,7 @@ function resourceOperationLabel(operation: McpResourcePresentationOperation): st
 /** Render one fixed Resource tool call with its semantic operation and selected target. */
 export function renderMcpResourceToolCall(
   operation: McpResourcePresentationOperation,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Historical Resource arguments are record-checked and their displayed fields refined below.
   arguments_: unknown,
   theme: McpRenderTheme,
   expanded: boolean,
@@ -273,7 +284,9 @@ export function renderMcpResourceToolCall(
 ): Component {
   const record = isRecord(arguments_) ? arguments_ : {};
   const server =
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Historical Resource identity is displayed only when it is a string.
     typeof record.server === "string" ? presentationText(record.server, redact) : undefined;
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Historical Resource identity is displayed only when it is a string.
   const uri = typeof record.uri === "string" ? presentationText(record.uri, redact) : undefined;
   const heading = [
     theme.fg("toolTitle", theme.bold("MCP")),
@@ -287,16 +300,17 @@ export function renderMcpResourceToolCall(
 }
 
 /** Parse existing MCP result details at the persisted custom-tool boundary. */
-export function parseMcpResultDetails(input: unknown): McpResultDetails | undefined {
-  if (!Value.Check(McpResultDetailsMarkerSchema, input)) return undefined;
-  // SAFETY: The result schema established every typed field consumed by presentation and the result bridge while permitting historical additional fields.
-  return input as McpResultDetails;
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: The owning historical-result schema checks the marker without claiming unparsed extra fields.
+export function parseMcpResultDetails(input: unknown): McpParsedResultDetails | undefined {
+  return Value.Check(McpResultDetailsMarkerSchema, input) ? input : undefined;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Every consumed persisted Prompt field is refined before constructing a replay message.
 function parseMcpPromptReplayMessage(value: unknown): McpPromptReplayMessage | undefined {
   if (
     !isRecord(value) ||
     (value.role !== "user" && value.role !== "assistant") ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Persisted Prompt timestamps must be numeric before replay.
     typeof value.timestamp !== "number" ||
     !Array.isArray(value.content)
   ) {
@@ -305,13 +319,16 @@ function parseMcpPromptReplayMessage(value: unknown): McpPromptReplayMessage | u
   const content: McpModelContent[] = [];
   for (const block of value.content) {
     if (!isRecord(block)) return undefined;
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Text replay blocks require an actual string payload.
     if (block.type === "text" && typeof block.text === "string") {
       content.push({ text: block.text, type: "text" });
       continue;
     }
     if (
       block.type === "image" &&
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Image replay blocks require string data and MIME metadata.
       typeof block.data === "string" &&
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Image replay blocks require string data and MIME metadata.
       typeof block.mimeType === "string"
     ) {
       content.push({ data: block.data, mimeType: block.mimeType, type: "image" });
@@ -324,6 +341,7 @@ function parseMcpPromptReplayMessage(value: unknown): McpPromptReplayMessage | u
 
 /** Parse the existing version-1 role-faithful Prompt replay messages without enriching details. */
 export function parseMcpPromptReplayMessages(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: The versioned historical Prompt envelope and each replay message are checked here.
   value: unknown,
 ): readonly McpPromptReplayMessage[] | undefined {
   if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.replayMessages)) {
@@ -376,7 +394,7 @@ interface McpResultSummary {
 
 function mcpResultSummary(
   result: AgentToolResult<unknown>,
-  details: McpResultDetails | undefined,
+  details: McpParsedResultDetails | undefined,
   isError: boolean,
   redact: McpPresentationRedactor,
 ): McpResultSummary {
@@ -436,24 +454,31 @@ function renderMcpFallback(
   return new McpSingleLine(theme.fg(summary.color, summary.text));
 }
 
-function resultMetadata(value: unknown): {
-  readonly spillPath?: string;
-  readonly storedContent: readonly Record<string, unknown>[];
-} {
+interface McpResultMetadata {
+  spillPath?: string;
+  readonly storedContent: readonly {
+    readonly kind?: unknown;
+    readonly mimeType?: unknown;
+    readonly uri?: unknown;
+    readonly path?: unknown;
+  }[];
+}
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Historical metadata is record-checked; stored fields remain unknown until presentation selects strings.
+function resultMetadata(value: unknown): McpResultMetadata {
   if (!isRecord(value)) return { storedContent: [] };
-  const storedContent = Array.isArray(value.storedContent)
-    ? value.storedContent.filter(isRecord)
-    : [];
-  return {
-    ...(typeof value.spillPath === "string" ? { spillPath: value.spillPath } : {}),
-    storedContent,
+  const metadata: McpResultMetadata = {
+    storedContent: Array.isArray(value.storedContent) ? value.storedContent.filter(isRecord) : [],
   };
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Historical spill paths are displayed only after string refinement.
+  if (typeof value.spillPath === "string") metadata.spillPath = value.spillPath;
+  return metadata;
 }
 
 function appendMcpResultDetails(
   container: Container,
   result: AgentToolResult<unknown>,
-  details: McpResultDetails,
+  details: McpParsedResultDetails,
   theme: McpRenderTheme,
   redact: McpPresentationRedactor,
 ): void {
@@ -473,6 +498,7 @@ function appendMcpResultDetails(
   const metadata = resultMetadata(details.result);
   for (const stored of metadata.storedContent.slice(0, MCP_PRESENTATION_METADATA_LIMIT)) {
     const fields = [stored.kind, stored.mimeType, stored.uri, stored.path]
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Unparsed historical stored-content fields are displayed only when they are strings.
       .filter((field): field is string => typeof field === "string")
       .map((field) => boundedMcpMetadataText(field, redact, 240, 256));
     container.addChild(
@@ -545,6 +571,7 @@ export function renderMcpToolResult(
 }
 
 function customMessageText(message: McpPresentationMessage): string {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Pi's custom-message content contract is string or content blocks; this selects the string arm.
   if (typeof message.content === "string") return message.content;
   return message.content
     .filter((block) => block.type === "text")

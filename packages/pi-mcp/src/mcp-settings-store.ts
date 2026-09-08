@@ -1,4 +1,3 @@
-// oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- This file owns the JSON.parse boundary; recursive primitive checks establish the JSON document contract before mutation.
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -93,15 +92,20 @@ function isNodeErrorCode(cause: unknown, code: string): boolean {
   return cause instanceof Error && "code" in cause && cause.code === code;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Store ingress recursively rejects non-JSON values and cycles before persistence.
 function checkMcpStoreJsonValue(value: unknown, ancestors: Set<object>): boolean {
   if (
     value === null ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Primitive classification establishes the JSON store contract.
     typeof value === "boolean" ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Primitive classification establishes the JSON store contract.
     typeof value === "string" ||
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Only finite numeric JSON values may be persisted.
     (typeof value === "number" && Number.isFinite(value))
   ) {
     return true;
   }
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Only non-null objects reach recursive prototype and cycle checks.
   if (typeof value !== "object" || ancestors.has(value)) return false;
   if (!Array.isArray(value)) {
     const prototype = Object.getPrototypeOf(value);
@@ -125,12 +129,20 @@ function checkMcpStoreJsonValue(value: unknown, ancestors: Set<object>): boolean
   }
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Recursive store validation establishes every accepted JSON value.
 function isMcpStoreJsonValue(value: unknown): value is McpStoreJsonValue {
   return checkMcpStoreJsonValue(value, new Set());
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Store object ingress checks the root kind and every nested JSON value before mutation.
 function isMcpStoreJsonObject(value: unknown): value is McpStoreJsonObject {
-  return isMcpStoreJsonValue(value) && value !== null && !Array.isArray(value);
+  return (
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON scalars and arrays must not masquerade as mutable settings documents.
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    isMcpStoreJsonValue(value)
+  );
 }
 
 function sleep(milliseconds: number): Promise<void> {

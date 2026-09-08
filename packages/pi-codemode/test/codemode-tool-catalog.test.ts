@@ -15,6 +15,10 @@ const executeFile = promisify(execFile);
 const require = createRequire(import.meta.url);
 const typescriptDirectory = dirname(require.resolve("typescript/package.json"));
 
+type MutableToolFixture = {
+  -readonly [Key in keyof CodeModeToolCatalogueTool]: CodeModeToolCatalogueTool[Key];
+};
+
 function tool(
   name: string,
   inputSchema: CodeModeToolCatalogueTool["inputSchema"],
@@ -22,13 +26,10 @@ function tool(
   outputSchema?: CodeModeToolCatalogueTool["outputSchema"],
   group = "test",
 ): CodeModeToolCatalogueTool {
-  return {
-    name,
-    group,
-    inputSchema,
-    ...(description !== undefined && { description }),
-    ...(outputSchema !== undefined && { outputSchema }),
-  };
+  const fixture: MutableToolFixture = { name, group, inputSchema };
+  if (description !== undefined) fixture.description = description;
+  if (outputSchema !== undefined) fixture.outputSchema = outputSchema;
+  return fixture;
 }
 
 describe("renderCodeModeToolCatalogue", () => {
@@ -243,6 +244,27 @@ describe("renderCodeModeToolCatalogue", () => {
       },
     });
   }, 20_000);
+
+  test("omits absent descriptions while retaining supplied empty search descriptions", () => {
+    const rendered = renderCodeModeToolCatalogue([tool("absent", { type: "object" })]);
+    const entry = rendered.searchEntries[0];
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    expect(Object.hasOwn(entry, "description")).toBe(false);
+    for (const input of [{}, { query: "absent" }]) {
+      const searched = searchCodeModeToolCatalogue(rendered.searchEntries, input);
+      expect(searched.ok).toBe(true);
+      if (!searched.ok) continue;
+      const item = searched.page.items[0];
+      expect(item).toBeDefined();
+      if (item !== undefined) expect(Object.hasOwn(item, "description")).toBe(false);
+    }
+    const withEmptyDescription = searchCodeModeToolCatalogue([{ ...entry, description: "" }], {});
+    expect(withEmptyDescription).toMatchObject({
+      ok: true,
+      page: { items: [{ description: "" }] },
+    });
+  });
 
   test("searches exact names, browses groups, paginates, and validates input", () => {
     const rendered = renderCodeModeToolCatalogue([

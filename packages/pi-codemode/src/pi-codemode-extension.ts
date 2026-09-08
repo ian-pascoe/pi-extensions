@@ -12,6 +12,7 @@ import {
   renderCodeModeToolCatalogue,
   searchCodeModeToolCatalogue,
   type CodeModeToolCatalogue,
+  type CodeModeToolCatalogueTool,
   type CodeModeToolSchema,
 } from "./codemode-tool-catalog.js";
 import { CodeModeObserverUiController } from "./codemode-observer-ui.js";
@@ -43,6 +44,7 @@ import { capturePiAgentSession, type CapturedPiAgentSession } from "./pi-agent-s
 import { resolveCodeModeSettings } from "./pi-codemode-settings.js";
 import {
   executePiToolBridgeBatch,
+  type ExecutePiToolBridgeBatchOptions,
   type PiToolBridgeCall,
   type PiToolBridgeValue,
 } from "./pi-tool-bridge.js";
@@ -54,6 +56,16 @@ const CodeModeToolSchemaMetadataSchema = Type.Union([
   Type.Boolean(),
   Type.Object({}, { additionalProperties: true }),
 ]);
+
+type MutableCatalogueTool = {
+  -readonly [Key in keyof CodeModeToolCatalogueTool]: CodeModeToolCatalogueTool[Key];
+};
+type MutableBridgeOptions = {
+  -readonly [Key in keyof ExecutePiToolBridgeBatchOptions]: ExecutePiToolBridgeBatchOptions[Key];
+};
+type MutableNestedToolBatchResult = {
+  -readonly [Key in keyof CodeModeNestedToolBatchResult]: CodeModeNestedToolBatchResult[Key];
+};
 
 type PiCodeModeGeneration = {
   readonly captured: CapturedPiAgentSession;
@@ -112,17 +124,15 @@ function renderGenerationCatalogue(
       const outputSchema =
         registeredOutputSchema(captured.session.getToolDefinition(name)) ??
         (toolInfo === undefined ? undefined : resolveKnownToolOutputSchema(toolInfo));
-      return tool === undefined
-        ? []
-        : [
-            {
-              name,
-              group: codeModeToolCatalogueGroup(name, toolInfo?.sourceInfo.source),
-              description: tool.description,
-              inputSchema: tool.parameters,
-              ...(outputSchema !== undefined && { outputSchema }),
-            },
-          ];
+      if (tool === undefined) return [];
+      const catalogueTool: MutableCatalogueTool = {
+        name,
+        group: codeModeToolCatalogueGroup(name, toolInfo?.sourceInfo.source),
+        description: tool.description,
+        inputSchema: tool.parameters,
+      };
+      if (outputSchema !== undefined) catalogueTool.outputSchema = outputSchema;
+      return [catalogueTool];
     }),
   );
 }
@@ -462,22 +472,24 @@ class PiCodeModeLifecycleController {
     };
     const outerAssistantMessage = latestCodeModeAssistantMessage(generation.captured);
     const terminationController = new AbortController();
-    const bridgeOptions = {
+    const bridgeOptions: MutableBridgeOptions = {
       calls: bridgeCalls,
       now: CODEMODE_SYSTEM_RUNTIME.now,
       signal: AbortSignal.any([batch.signal, terminationController.signal]),
       onTerminate: () => terminationController.abort(),
-      ...(outerAssistantMessage !== undefined && { outerAssistantMessage }),
-      ...(batch.onUpdate !== undefined && {
-        onUpdate: (_callId: string, update: AgentToolResult<unknown>) => {
-          const outerUpdate: AgentToolResult<CodeModeResultDetails> = {
-            content: update.content,
-            details: createCodeModePending(batch.sessionId),
-          };
-          batch.onUpdate?.(outerUpdate);
-        },
-      }),
     };
+    if (outerAssistantMessage !== undefined) {
+      bridgeOptions.outerAssistantMessage = outerAssistantMessage;
+    }
+    if (batch.onUpdate !== undefined) {
+      bridgeOptions.onUpdate = (_callId, update) => {
+        const outerUpdate: AgentToolResult<CodeModeResultDetails> = {
+          content: update.content,
+          details: createCodeModePending(batch.sessionId),
+        };
+        batch.onUpdate?.(outerUpdate);
+      };
+    }
     const bridged =
       bridgeCalls.length === 0
         ? undefined
@@ -508,15 +520,16 @@ class PiCodeModeLifecycleController {
           "Pi CodeMode nested tool returned no result",
         ),
     );
-    return {
-      results,
-      ...(bridged !== undefined &&
-        bridged.presentation.length > 0 && { presentation: bridged.presentation }),
-      ...(bridged?.usage !== undefined && { usage: bridged.usage }),
-      ...(bridged !== undefined &&
-        bridged.addedToolNames.length > 0 && { addedToolNames: bridged.addedToolNames }),
-      ...(bridged?.terminate === true && { terminate: true }),
-    };
+    const result: MutableNestedToolBatchResult = { results };
+    if (bridged !== undefined && bridged.presentation.length > 0) {
+      result.presentation = bridged.presentation;
+    }
+    if (bridged?.usage !== undefined) result.usage = bridged.usage;
+    if (bridged !== undefined && bridged.addedToolNames.length > 0) {
+      result.addedToolNames = bridged.addedToolNames;
+    }
+    if (bridged?.terminate === true) result.terminate = true;
+    return result;
   }
 
   private async shutdownSession(): Promise<void> {

@@ -3,11 +3,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import fc from "fast-check";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, test } from "vitest";
 import {
   DapProtocolClient,
   DapProtocolClientError,
   type DapProtocolClientOptions,
+  type DapProtocolObject,
   type DapProtocolTransport,
 } from "../src/dap-protocol-client.js";
 
@@ -84,9 +85,9 @@ describe("DapProtocolClient", () => {
   test("correlates successful and failed responses over stdio", async () => {
     const client = await createClient();
 
-    await expect(client.request<{ value: number }>("echo", { value: 42 })).resolves.toEqual({
-      value: 42,
-    });
+    const response = client.request("echo", { value: 42 });
+    expectTypeOf(response).toEqualTypeOf<Promise<DapProtocolObject | undefined>>();
+    await expect(response).resolves.toEqual({ value: 42 });
     await expect(client.request("fail")).rejects.toMatchObject({
       kind: "request",
       message: expect.stringContaining("fixture failure"),
@@ -195,21 +196,17 @@ describe("DapProtocolClient", () => {
         transport: tcpTransport(),
       });
 
-      const result = await client.request<{
-        argv: string[];
-        inherited?: string;
-        pid: number;
-        port: string;
-        removed?: string;
-      }>("inspect");
+      const result = await client.request("inspect");
 
       expect(client.selectedPort).toBeGreaterThan(0);
-      expect(result.argv).toContain(
-        `port=${String(client.selectedPort)}/${String(client.selectedPort)}`,
-      );
-      expect(result.port).toBe(String(client.selectedPort));
-      expect(result.inherited).toBe("inherited");
-      expect(result.removed).toBeUndefined();
+      expect(result).toMatchObject({
+        argv: expect.arrayContaining([
+          `port=${String(client.selectedPort)}/${String(client.selectedPort)}`,
+        ]),
+        port: String(client.selectedPort),
+        inherited: "inherited",
+      });
+      expect(result).not.toHaveProperty("removed");
     } finally {
       delete process.env.DAP_FIXTURE_INHERITED;
       delete process.env.DAP_FIXTURE_REMOVED;
@@ -223,10 +220,10 @@ describe("DapProtocolClient", () => {
       transport: tcpTransport(port),
     });
 
-    const result = await client.request<{ port: string }>("inspect");
+    const result = await client.request("inspect");
 
     expect(client.selectedPort).toBe(port);
-    expect(result.port).toBe(String(port));
+    expect(result).toMatchObject({ port: String(port) });
   });
 
   test("retries a TCP connection until the Debug Adapter listens", async () => {
