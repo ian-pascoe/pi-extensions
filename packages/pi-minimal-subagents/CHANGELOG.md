@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.7.0
+
+### Minor Changes
+
+- 8dbcc8c: Better subagents UI
+
+### Patch Changes
+
+- be638f6: Update dependencies
+
 ## 0.6.6
 
 ### Patch Changes
