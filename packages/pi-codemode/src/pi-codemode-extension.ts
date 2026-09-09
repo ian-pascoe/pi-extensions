@@ -4,6 +4,8 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionFactory,
+  Theme,
+  ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -17,18 +19,30 @@ import {
 } from "./codemode-tool-catalog.js";
 import { CodeModeObserverUiController } from "./codemode-observer-ui.js";
 import {
+  CODEMODE_NESTED_TOOLS_ENTRY_TYPE,
+  CodeModeNestedToolsTranscriptSchema,
+  captureCodeModeNestedToolCall,
+  completeCodeModeNestedToolCall,
+  codeModeNestedToolResultData,
+  renderCodeModeNestedToolsTranscript,
+  type CodeModeNestedToolSnapshot,
+} from "./codemode-nested-tool-rendering.js";
+import {
   CodeModeSessionCoordinator,
   type CodeModeNestedToolBatch,
   type CodeModeNestedToolBatchResult,
   type CodeModeNestedToolResult,
+  type CodeModeObserverSnapshot,
 } from "./codemode-session-coordinator.js";
 import { CODEMODE_SYSTEM_RUNTIME } from "./codemode-runtime.js";
 import { createCodeModeSessionFiles, type CodeModeSessionFiles } from "./codemode-session-files.js";
 import {
   CODEMODE_SEARCH_TOOL_NAME,
+  CodeModeResultDetailsSchema,
   createCodeModeFailure,
   createCodeModePending,
   isCodeModeJsonObject,
+  parseCodeModeJsonValue,
   type CodeModeJsonValue,
   type CodeModeResultDetails,
   type CodeModeToolOperations,
@@ -67,12 +81,25 @@ type MutableNestedToolBatchResult = {
   -readonly [Key in keyof CodeModeNestedToolBatchResult]: CodeModeNestedToolBatchResult[Key];
 };
 
+type PendingCodeModeTranscript = {
+  readonly ref: string;
+  readonly cellOrdinal: number;
+  readonly branchRevision: number;
+  readonly originLeafId: string | null;
+  readonly calls: Map<string, CodeModeNestedToolSnapshot>;
+};
+
 type PiCodeModeGeneration = {
   readonly captured: CapturedPiAgentSession;
   readonly context: ExtensionContext;
   readonly coordinator: CodeModeSessionCoordinator;
   readonly observer: CodeModeObserverUiController;
   readonly sessionFiles: CodeModeSessionFiles;
+  readonly transcripts: Map<string, PendingCodeModeTranscript>;
+  readonly transcriptRefs: Map<string, string>;
+  readonly transcriptInvalidators: Map<string, () => void>;
+  branchRevision: number;
+  requestRender: () => void;
   exposure?: InstalledCodeModeToolExposure;
   decision: CodeModeToolExposureDecision;
   catalogue: CodeModeToolCatalogue;
@@ -189,7 +216,7 @@ class PiCodeModeLifecycleController {
           ),
         };
       }
-      return generation.coordinator.execute(
+      const operation = await generation.coordinator.execute(
         input,
         signal,
         onUpdate === undefined
@@ -199,6 +226,17 @@ class PiCodeModeLifecycleController {
               onUpdate(update as AgentToolResult<CodeModeResultDetails>);
             },
       );
+      if (operation.presentation === undefined) return operation;
+      const key = `${operation.result.sessionId}:${operation.presentation.cell_ordinal}`;
+      const ref = generation.transcriptRefs.get(key);
+      // Async tools can finish while Pi is still awaiting an outer result hook.
+      if (input.wait !== false) generation.transcriptRefs.delete(key);
+      return ref === undefined
+        ? operation
+        : {
+            ...operation,
+            presentation: { ...operation.presentation, nested_transcript_ref: ref },
+          };
     },
     result: async (input) => {
       const generation = this.generation;
@@ -245,8 +283,45 @@ class PiCodeModeLifecycleController {
 
   /** Registers stable public tools and inert lifecycle handlers without starting a process. */
   register(): void {
+    this.pi.registerEntryRenderer(CODEMODE_NESTED_TOOLS_ENTRY_TYPE, (entry, options, theme) => {
+      const data = entry.data;
+      if (Value.Check(CodeModeNestedToolsTranscriptSchema, data) && data.ref !== undefined) {
+        const liveOwner = [...(this.generation?.transcriptRefs.values() ?? [])].includes(data.ref);
+        const savedOwner = this.generation?.context.sessionManager
+          .buildContextEntries()
+          .some(
+            (item) =>
+              item.type === "message" &&
+              item.message.role === "toolResult" &&
+              item.message.toolName === "codemode_execute" &&
+              Value.Check(CodeModeResultDetailsSchema, item.message.details) &&
+              item.message.details.presentation?.nested_transcript_ref === data.ref,
+          );
+        if (liveOwner || savedOwner) return undefined;
+      }
+      return renderCodeModeNestedToolsTranscript(
+        data,
+        options,
+        theme,
+        (name) => this.generation?.captured.session.getToolDefinition(name),
+        () => this.generation?.requestRender(),
+      );
+    });
+    this.pi.on("agent_end", () => this.generation?.transcriptRefs.clear());
+    this.pi.on("session_tree", () => {
+      if (this.generation !== undefined) {
+        this.generation.branchRevision += 1;
+        this.generation.transcriptRefs.clear();
+        this.generation.transcriptInvalidators.clear();
+      }
+    });
     const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
-      createRenderedCodeModeToolDefinitions(this.operations, CODEMODE_EXECUTE_DESCRIPTION);
+      createRenderedCodeModeToolDefinitions(
+        this.operations,
+        CODEMODE_EXECUTE_DESCRIPTION,
+        undefined,
+        this.renderNestedTranscript,
+      );
     this.pi.registerTool(executeTool);
     this.pi.registerTool(resultTool);
     this.pi.registerTool(cancelTool);
@@ -297,7 +372,10 @@ class PiCodeModeLifecycleController {
       maxSessions: settings.maxSessions,
       runtime: CODEMODE_SYSTEM_RUNTIME,
       resultSpillWriter: sessionFiles,
-      onSnapshotChange: (snapshot) => observer.onSnapshotChange(snapshot),
+      onSnapshotChange: (snapshot) => {
+        this.recordTranscriptTransitions(generation, snapshot);
+        observer.onSnapshotChange(snapshot);
+      },
       onUnexpectedFailure: (failure) => observer.onUnexpectedFailure(failure),
       getToolSnapshot: () => {
         if (!generation.active || this.generation !== generation) {
@@ -320,12 +398,32 @@ class PiCodeModeLifecycleController {
       coordinator,
       observer,
       sessionFiles,
+      transcripts: new Map(),
+      transcriptRefs: new Map(),
+      transcriptInvalidators: new Map(),
+      branchRevision: 0,
+      requestRender: () => {},
       decision: initialDecision,
       catalogue: initialCatalogue,
       executeDescription: catalogueDescription(initialCatalogue),
       active: true,
     };
     this.generation = generation;
+    if (context.mode === "tui") {
+      // Entry renderers receive no TUI. Borrow only redraw through its public widget factory,
+      // then remove the zero-line widget before a frame can display it.
+      try {
+        context.ui.setWidget("pi-codemode-transcript-render", (tui) => {
+          generation.requestRender = () => {
+            if (generation.active) tui.requestRender();
+          };
+          return { render: () => [], invalidate: () => {} };
+        });
+        context.ui.setWidget("pi-codemode-transcript-render", undefined);
+      } catch {
+        // Missing redraw support cannot disable CodeMode execution.
+      }
+    }
 
     try {
       generation.exposure = installCodeModeToolExposure(
@@ -358,6 +456,7 @@ class PiCodeModeLifecycleController {
         this.operations,
         generation.executeDescription,
         (sessionId) => coordinator.formatSessionPrefix(sessionId),
+        this.renderNestedTranscript,
       );
     this.pi.registerTool(executeTool);
     this.pi.registerTool(resultTool);
@@ -365,6 +464,91 @@ class PiCodeModeLifecycleController {
     this.pi.registerTool(sessionsTool);
     this.pi.registerTool(searchTool);
     this.synchronizeGeneration(generation);
+  }
+
+  private readonly renderNestedTranscript = (
+    ref: string,
+    options: ToolRenderResultOptions,
+    theme: Theme,
+    invalidate: () => void,
+  ) => {
+    const entry = this.generation?.context.sessionManager
+      .getBranch()
+      .find(
+        (item) =>
+          item.type === "custom" &&
+          item.customType === CODEMODE_NESTED_TOOLS_ENTRY_TYPE &&
+          Value.Check(CodeModeNestedToolsTranscriptSchema, item.data) &&
+          item.data.ref === ref,
+      );
+    if (entry?.type !== "custom") {
+      const generation = this.generation;
+      if (
+        generation !== undefined &&
+        [...generation.transcripts.values()].some((cell) => cell.ref === ref)
+      ) {
+        generation.transcriptInvalidators.set(ref, invalidate);
+      }
+      return undefined;
+    }
+    return renderCodeModeNestedToolsTranscript(
+      entry.data,
+      options,
+      theme,
+      (name) => this.generation?.captured.session.getToolDefinition(name),
+      () => this.generation?.requestRender(),
+    );
+  };
+
+  private recordTranscriptTransitions(
+    generation: PiCodeModeGeneration,
+    snapshot: CodeModeObserverSnapshot,
+  ): void {
+    if (!generation.active || this.generation !== generation) return;
+    for (const session of snapshot.sessions) {
+      const transcript = generation.transcripts.get(session.sessionId);
+      if (session.current_cell !== undefined) {
+        if (transcript?.cellOrdinal !== session.current_cell.ordinal) {
+          const ref = CODEMODE_SYSTEM_RUNTIME.createSessionId();
+          generation.transcriptRefs.set(
+            `${session.sessionId}:${session.current_cell.ordinal}`,
+            ref,
+          );
+          generation.transcripts.set(session.sessionId, {
+            ref,
+            cellOrdinal: session.current_cell.ordinal,
+            branchRevision: generation.branchRevision,
+            originLeafId: generation.context.sessionManager.getLeafId(),
+            calls: new Map(),
+          });
+        }
+      } else if (
+        transcript !== undefined &&
+        session.last_cell?.ordinal === transcript.cellOrdinal
+      ) {
+        generation.transcripts.delete(session.sessionId);
+        const invalidate = generation.transcriptInvalidators.get(transcript.ref);
+        generation.transcriptInvalidators.delete(transcript.ref);
+        if (transcript.calls.size === 0 || transcript.branchRevision !== generation.branchRevision)
+          continue;
+        if (
+          transcript.originLeafId !== null &&
+          !generation.context.sessionManager
+            .getBranch()
+            .some((entry) => entry.id === transcript.originLeafId)
+        )
+          continue;
+        this.pi.appendEntry(CODEMODE_NESTED_TOOLS_ENTRY_TYPE, {
+          version: 1,
+          ref: transcript.ref,
+          sessionId: session.sessionId,
+          cellOrdinal: transcript.cellOrdinal,
+          cwd: generation.context.cwd,
+          calls: [...transcript.calls.values()],
+        });
+        invalidate?.();
+      }
+    }
   }
 
   private synchronizeCurrentGeneration(): void {
@@ -386,6 +570,7 @@ class PiCodeModeLifecycleController {
       this.operations,
       description,
       (sessionId) => generation.coordinator.formatSessionPrefix(sessionId),
+      this.renderNestedTranscript,
     )[0];
     if (executeDefinition !== undefined) this.pi.registerTool(executeDefinition);
   }
@@ -404,6 +589,51 @@ class PiCodeModeLifecycleController {
           ),
         ),
       };
+    }
+
+    const transcript = generation.transcripts.get(batch.sessionId);
+    const completeTranscriptCall = (
+      callId: string,
+      result: AgentToolResult<unknown>,
+      isError: boolean,
+    ): void => {
+      if (
+        !generation.active ||
+        this.generation !== generation ||
+        transcript === undefined ||
+        transcript.cellOrdinal !== batch.cellOrdinal ||
+        generation.transcripts.get(batch.sessionId) !== transcript
+      )
+        return;
+      const call = transcript.calls.get(callId);
+      if (call === undefined) return;
+      let completed = completeCodeModeNestedToolCall(call, result, isError);
+      if (completed.resultPreview !== undefined) {
+        try {
+          const parsed = parseCodeModeJsonValue(codeModeNestedToolResultData(result), {
+            maxBytes: 8 * 1024 * 1024,
+            normalizeUndefinedForJsonTransport: true,
+          });
+          if (parsed.ok && parsed.value !== undefined) {
+            const spill = generation.sessionFiles.writeResultSpill(
+              JSON.stringify(parsed.value, null, 2),
+            );
+            completed = { ...completed, spillPath: spill.path };
+            void spill.completion.catch(() => undefined);
+          }
+        } catch {
+          // Preserve the completed snapshot even when Result Spill capture or writing fails.
+        }
+      }
+      transcript.calls.set(callId, completed);
+    };
+    if (transcript?.cellOrdinal === batch.cellOrdinal) {
+      for (const call of batch.calls) {
+        transcript.calls.set(
+          call.callId,
+          captureCodeModeNestedToolCall(call.callId, call.toolName, call.input),
+        );
+      }
     }
 
     const exposedNames = new Set(generation.decision.codeModeNames);
@@ -457,6 +687,23 @@ class PiCodeModeLifecycleController {
       }
     }
 
+    for (const result of earlyResults.values()) {
+      completeTranscriptCall(
+        result.callId,
+        {
+          content: [
+            {
+              type: "text",
+              text:
+                result.outcome === "success" ? JSON.stringify(result.result) : result.error.message,
+            },
+          ],
+          details: result.outcome === "success" ? result.result : undefined,
+        },
+        result.outcome === "error",
+      );
+    }
+
     const bridgeCaptured: CapturedPiAgentSession = {
       agent: generation.captured.agent,
       session: generation.captured.session,
@@ -477,6 +724,7 @@ class PiCodeModeLifecycleController {
       now: CODEMODE_SYSTEM_RUNTIME.now,
       signal: AbortSignal.any([batch.signal, terminationController.signal]),
       onTerminate: () => terminationController.abort(),
+      onResult: completeTranscriptCall,
     };
     if (outerAssistantMessage !== undefined) {
       bridgeOptions.outerAssistantMessage = outerAssistantMessage;
@@ -494,6 +742,23 @@ class PiCodeModeLifecycleController {
       bridgeCalls.length === 0
         ? undefined
         : await executePiToolBridgeBatch(bridgeCaptured, bridgeOptions);
+    for (const outcome of bridged?.calls ?? []) {
+      if (
+        !outcome.ok &&
+        outcome.error.code !== "cancellation" &&
+        outcome.error.code !== "termination" &&
+        transcript?.calls.get(outcome.callId)?.outcome === "unknown"
+      ) {
+        completeTranscriptCall(
+          outcome.callId,
+          {
+            content: [{ type: "text", text: outcome.error.message }],
+            details: undefined,
+          },
+          true,
+        );
+      }
+    }
     const bridgedResults = new Map<string, CodeModeNestedToolResult>(
       (bridged?.calls ?? []).map((outcome) => [
         outcome.callId,

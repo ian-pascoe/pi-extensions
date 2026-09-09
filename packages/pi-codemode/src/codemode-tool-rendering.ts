@@ -697,6 +697,12 @@ export function createRenderedCodeModeToolDefinitions(
   operations: CodeModeToolOperations,
   executeDescription?: string,
   formatSessionPrefix: CodeModeSessionPrefixFormatter = shortCodeModeSessionId,
+  renderNestedTranscript?: (
+    ref: string,
+    options: ToolRenderResultOptions,
+    theme: Theme,
+    invalidate: () => void,
+  ) => Component | undefined,
 ): ReturnType<typeof createCodeModeToolDefinitions> {
   const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
     createCodeModeToolDefinitions(operations, executeDescription);
@@ -711,15 +717,28 @@ export function createRenderedCodeModeToolDefinitions(
           context.expanded,
           formatSessionPrefix,
         ),
-      renderResult: (result, options, theme, context) =>
-        renderCodeModeToolResult(
+      renderResult: (result, options, theme, context) => {
+        const summary = renderCodeModeToolResult(
           "codemode_execute",
           result,
           options,
           theme,
           context.isError,
           formatSessionPrefix,
-        ),
+        );
+        const ref = Value.Check(CodeModeResultDetailsSchema, result.details)
+          ? result.details.presentation?.nested_transcript_ref
+          : undefined;
+        const nested =
+          ref === undefined
+            ? undefined
+            : renderNestedTranscript?.(ref, options, theme, context.invalidate);
+        if (nested === undefined) return summary;
+        const container = new Container();
+        container.addChild(summary);
+        container.addChild(nested);
+        return container;
+      },
     },
     {
       ...resultTool,

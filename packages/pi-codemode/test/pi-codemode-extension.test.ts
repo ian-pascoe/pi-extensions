@@ -14,7 +14,9 @@ import {
   SessionManager,
   SettingsManager,
   type ToolDefinition,
+  ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
@@ -29,9 +31,14 @@ import {
   type CodeModeToolSearchPage,
 } from "../src/codemode-tool-contract.js";
 import piCodeModeExtension from "../src/pi-codemode-extension.js";
+import {
+  CODEMODE_NESTED_TOOLS_ENTRY_TYPE,
+  CodeModeNestedToolsTranscriptSchema,
+} from "../src/codemode-nested-tool-rendering.js";
 
 const fixtureDirectories: string[] = [];
 const fixtureSessions: AgentSession[] = [];
+let fixtureToolCallSequence = 0;
 const CODEMODE_RENDERED_TOOL_NAMES = [
   "codemode_execute",
   "codemode_result",
@@ -252,7 +259,7 @@ async function executeTool(
   onUpdate?: (result: AgentToolResult<unknown>) => void,
 ): Promise<AgentToolResult<unknown>> {
   return activeTool(session, name).execute(
-    `test-${name}`,
+    `test-${name}-${++fixtureToolCallSequence}`,
     input,
     new AbortController().signal,
     onUpdate,
@@ -307,6 +314,15 @@ async function pollCodeModeSession(
   throw new Error(`Pi CodeMode extension test: session ${sessionId} remained pending`);
 }
 
+function nestedTranscripts(session: AgentSession) {
+  return session.sessionManager.getBranch().flatMap((entry) => {
+    if (entry.type !== "custom" || entry.customType !== CODEMODE_NESTED_TOOLS_ENTRY_TYPE) return [];
+    if (!Value.Check(CodeModeNestedToolsTranscriptSchema, entry.data))
+      throw new Error("Invalid nested Transcript");
+    return [entry.data];
+  });
+}
+
 function codeModeToolNames(session: AgentSession): string[] {
   return session
     .getAllTools()
@@ -336,6 +352,578 @@ afterEach(async () => {
 });
 
 describe("Pi CodeMode extension", () => {
+  test("keeps fast async completion attached while the outer result is awaiting persistence", async () => {
+    initTheme("dark");
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    const gate = Promise.withResolvers<void>();
+    extensionApi.registerTool({
+      name: "fast_async",
+      label: "Fast",
+      description: "Waits",
+      parameters: Type.Object({}),
+      async execute() {
+        await gate.promise;
+        return { content: [{ type: "text", text: "fast-async-result" }], details: {} };
+      },
+    });
+    await executeTool(session, "codemode_execute", {
+      wait: false,
+      script: "await tools.fast_async({});",
+    });
+    // An outer tool_result hook can delay persistence after execute has returned pending.
+    gate.resolve();
+    await expect.poll(() => nestedTranscripts(session).length).toBe(1);
+    const entry = session.sessionManager.getLeafEntry();
+    if (entry?.type !== "custom") throw new Error("Missing async entry");
+    const renderer = session.extensionRunner.getEntryRenderer(entry.customType);
+    expect(
+      renderer?.(entry, { expanded: false }, session.extensionRunner.getUIContext().theme),
+    ).toBeUndefined();
+    await session.extensionRunner.emit({ type: "agent_end", messages: [] });
+    // With no retained owner after the turn, history still has a standalone fallback.
+    expect(
+      renderer?.(entry, { expanded: false }, session.extensionRunner.getUIContext().theme)
+        ?.render(100)
+        .join("\n"),
+    ).toContain("fast-async-result");
+  });
+
+  test.each(["completed", "failed", "cancelled"])(
+    "refreshes the original async Cell after %s without polling or a tail duplicate",
+    async (terminal) => {
+      initTheme("dark");
+      const { session, extensionApi } = await createCodeModeExtensionFixture();
+      const gate = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      const output =
+        terminal === "cancelled"
+          ? "outcome unknown"
+          : terminal === "failed"
+            ? "ASYNC-FAILURE"
+            : "ASYNC-OWNED-OUTPUT";
+      extensionApi.registerTool({
+        name: "async_owned",
+        label: "Async Owned",
+        description: "Waits",
+        parameters: Type.Object({}),
+        async execute() {
+          started.resolve();
+          await gate.promise;
+          if (terminal === "failed") throw new Error("ASYNC-FAILURE");
+          return { content: [{ type: "text", text: "ASYNC-OWNED-OUTPUT" }], details: {} };
+        },
+      });
+      const args = {
+        sessionId: "async-owner",
+        wait: false,
+        script: "await tools.async_owned({}); return 7;",
+      };
+      const pending = await activeTool(session, "codemode_execute").execute(
+        "async-owner-call",
+        args,
+        new AbortController().signal,
+      );
+      expect(codeModeResult(pending).result).toBe("pending");
+      session.sessionManager.appendMessage({
+        role: "toolResult",
+        toolCallId: "async-owner-call",
+        toolName: "codemode_execute",
+        content: pending.content,
+        details: pending.details,
+        isError: false,
+        timestamp: Date.now(),
+      });
+      // SAFETY: Native rows need only redraw capability, not a terminal.
+      const ui = { requestRender: () => {} } as TUI;
+      const makeRow = () =>
+        new ToolExecutionComponent(
+          "codemode_execute",
+          "async-owner-call",
+          args,
+          {},
+          session.getToolDefinition("codemode_execute"),
+          ui,
+          session.sessionManager.getCwd(),
+        );
+      const row = makeRow();
+      row.updateResult({ ...pending, isError: false });
+      expect(row.render(100).join("\n")).not.toContain(output);
+      await started.promise;
+      if (terminal === "cancelled")
+        await executeTool(session, "codemode_cancel", { sessionId: "async-owner" });
+      gate.resolve();
+      await expect.poll(() => row.render(100).join("\n")).toContain(output);
+      expect(codeModeResult(pending).result).toBe("pending");
+      const entry = session.sessionManager
+        .getBranch()
+        .find(
+          (entry) =>
+            entry.type === "custom" && entry.customType === CODEMODE_NESTED_TOOLS_ENTRY_TYPE,
+        );
+      if (entry?.type !== "custom") throw new Error("Missing durable async Transcript");
+      expect(
+        session.extensionRunner.getEntryRenderer(entry.customType)?.(
+          entry,
+          { expanded: false },
+          session.extensionRunner.getUIContext().theme,
+        ),
+      ).toBeUndefined();
+      const replay = makeRow();
+      replay.updateResult({ ...pending, isError: false });
+      expect(replay.render(100).join("\n")).toContain(output);
+      await executeTool(session, "codemode_result", { sessionId: "async-owner" });
+      expect(nestedTranscripts(session)).toHaveLength(1);
+    },
+  );
+
+  test("places waited native rows before the next precreated outer tool row, including replay", async () => {
+    initTheme("dark");
+    const { session } = await createCodeModeExtensionFixture();
+    const args = {
+      sessionId: "reused-session",
+      script: "await tools.closure_echo({value: 81}); return 'CELL-A-DONE';",
+    };
+    const liveTail: Array<boolean> = [];
+    const unsubscribe = session.subscribe((event) => {
+      if (
+        event.type === "entry_appended" &&
+        event.entry.type === "custom" &&
+        event.entry.customType === CODEMODE_NESTED_TOOLS_ENTRY_TYPE
+      ) {
+        liveTail.push(
+          session.extensionRunner.getEntryRenderer(event.entry.customType)?.(
+            event.entry,
+            { expanded: false },
+            session.extensionRunner.getUIContext().theme,
+          ) !== undefined,
+        );
+      }
+    });
+    // Pi precreates both outer rows from the assistant message, even for sequential tools.
+    // SAFETY: ToolExecutionComponent uses only this redraw capability, not a terminal.
+    const ui = { requestRender: () => {} } as TUI;
+    const createRows = () => [
+      new ToolExecutionComponent(
+        "codemode_execute",
+        "outer-A",
+        args,
+        {},
+        session.getToolDefinition("codemode_execute"),
+        ui,
+        session.sessionManager.getCwd(),
+      ),
+      new ToolExecutionComponent(
+        "outer-B",
+        "outer-B",
+        {},
+        {},
+        undefined,
+        ui,
+        session.sessionManager.getCwd(),
+      ),
+    ];
+    const liveRows = createRows();
+    const result = await activeTool(session, "codemode_execute").execute(
+      "outer-A",
+      args,
+      new AbortController().signal,
+    );
+    unsubscribe();
+    expect(liveTail).toEqual([false]);
+    const savedEntry = session.sessionManager.getLeafEntry();
+    session.sessionManager.appendMessage({
+      role: "toolResult",
+      toolCallId: "outer-A",
+      toolName: "codemode_execute",
+      content: result.content,
+      details: result.details,
+      isError: false,
+      timestamp: Date.now(),
+    });
+    for (const rows of [liveRows, createRows()]) {
+      rows[0]?.updateResult({ ...result, isError: false });
+      rows[1]?.updateResult({ content: [{ type: "text", text: "OUTER-B" }], isError: false });
+      const tail = session.sessionManager
+        .getBranch()
+        .flatMap((entry) =>
+          entry.type === "custom" && entry.customType === CODEMODE_NESTED_TOOLS_ENTRY_TYPE
+            ? [
+                session.extensionRunner.getEntryRenderer(entry.customType)?.(
+                  entry,
+                  { expanded: false },
+                  session.extensionRunner.getUIContext().theme,
+                ),
+              ]
+            : [],
+        );
+      const text = [...rows, ...tail]
+        .flatMap((component) => component?.render(100) ?? [])
+        .join("\n");
+      expect(text.indexOf("registered-closure:81")).toBeGreaterThan(text.indexOf("CELL-A-DONE"));
+      expect(text.indexOf("registered-closure:81")).toBeLessThan(text.indexOf("OUTER-B"));
+      expect(text.match(/registered-closure:81/g)).toHaveLength(1);
+    }
+    if (savedEntry?.type !== "custom") throw new Error("Missing replay entry");
+    session.sessionManager.branch(savedEntry.id);
+    // A crash/branch ending before the owner result must not hide its durable rows.
+    expect(
+      session.extensionRunner
+        .getEntryRenderer(savedEntry.customType)?.(
+          savedEntry,
+          { expanded: false },
+          session.extensionRunner.getUIContext().theme,
+        )
+        ?.render(100)
+        .join("\n"),
+    ).toContain("registered-closure:81");
+    await session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+    const newer = await activeTool(session, "codemode_execute").execute(
+      "outer-A",
+      { ...args, script: "await tools.closure_echo({value: 82});" },
+      new AbortController().signal,
+    );
+    const oldRow = createRows()[0];
+    oldRow?.updateResult({ ...result, isError: false });
+    expect(oldRow?.render(100).join("\n")).toContain("registered-closure:81");
+    expect(oldRow?.render(100).join("\n")).not.toContain("registered-closure:82");
+    oldRow?.updateResult({ ...newer, isError: false });
+    expect(oldRow?.render(100).join("\n")).toContain("registered-closure:82");
+  });
+
+  test("retains a known blocked result even when its sibling never finishes", async () => {
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    extensionApi.on("tool_call", (event) =>
+      event.toolName === "closure_echo"
+        ? { block: true, reason: "blocked-before-execution" }
+        : undefined,
+    );
+    extensionApi.registerTool({
+      name: "hung_sibling",
+      label: "Hung",
+      description: "Waits",
+      parameters: Type.Object({}),
+      async execute() {
+        started.resolve();
+        await gate.promise;
+        return { content: [], details: {} };
+      },
+    });
+    await executeTool(session, "codemode_execute", {
+      sessionId: "blocked",
+      wait: false,
+      script: "await Promise.allSettled([tools.closure_echo({value:1}), tools.hung_sibling({})]);",
+    });
+    await started.promise;
+    await executeTool(session, "codemode_cancel", { sessionId: "blocked" });
+    gate.resolve();
+    expect(nestedTranscripts(session)[0]?.calls.map((call) => call.outcome)).toEqual([
+      "failed",
+      "unknown",
+    ]);
+  });
+
+  test("keeps the known outcome when an unsafe native result cannot be spilled", async () => {
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    let reads = 0;
+    extensionApi.registerTool({
+      name: "unsafe_native",
+      label: "Unsafe",
+      description: "Has an accessor",
+      parameters: Type.Object({}),
+      async execute() {
+        return {
+          content: [],
+          get details() {
+            reads += 1;
+            throw new Error("unsafe-details");
+          },
+        };
+      },
+    });
+    await executeTool(session, "codemode_execute", { script: "await tools.unsafe_native({});" });
+    expect(nestedTranscripts(session)[0]?.calls[0]).toMatchObject({
+      outcome: "success",
+      resultPreview: expect.stringContaining("unsafe"),
+    });
+    // The existing guest bridge may read the accessor; human capture must not add another read.
+    expect(reads).toBe(1);
+  });
+
+  test("captures final hooked results before guest translation", async () => {
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    extensionApi.on("tool_result", (event) =>
+      event.toolName === "closure_echo"
+        ? {
+            content: [{ type: "text", text: "hooked-result" }],
+            details: { hooked: true },
+            isError: true,
+          }
+        : undefined,
+    );
+    const result = await executeTool(session, "codemode_execute", {
+      script: "await tools.closure_echo({value: 5});",
+    });
+    expect(codeModeResult(result).result).toBe("failed");
+    expect(nestedTranscripts(session)[0]?.calls[0]).toMatchObject({
+      outcome: "failed",
+      result: {
+        content: [{ type: "text", text: "hooked-result" }],
+        details: { hooked: true },
+        isError: true,
+      },
+    });
+  });
+
+  test("bounds saved oversized native results and keeps a live Result Spill without changing Cell data", async () => {
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    const text = "oversized-output\n".repeat(5_000);
+    extensionApi.registerTool({
+      name: "large_native",
+      label: "Large Native",
+      description: "Returns large text",
+      parameters: Type.Object({}),
+      async execute() {
+        return { content: [{ type: "text", text }], details: {} };
+      },
+    });
+    const result = await executeTool(session, "codemode_execute", {
+      script: "await tools.large_native({}); return 3;",
+    });
+    expect(codeModeResult(result)).toMatchObject({ result: "success", data: 3 });
+    const call = nestedTranscripts(session)[0]?.calls[0];
+    expect(call?.result).toBeUndefined();
+    expect(call?.resultPreview).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(call))).toBeLessThan(52_000);
+    if (call?.spillPath === undefined) throw new Error("Missing nested Result Spill");
+    await expect
+      .poll(async () => (await readFile(call.spillPath!, "utf8")).length)
+      .toBeGreaterThan(text.length);
+    expect(JSON.stringify(result.content)).not.toContain("oversized-output");
+  });
+
+  test.each(["tree", "reload"])(
+    "does not attach old background results after %s changes ownership",
+    async (change) => {
+      const { session, extensionApi } = await createCodeModeExtensionFixture();
+      const started = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      extensionApi.registerTool({
+        name: "old_branch",
+        label: "Old Branch",
+        description: "Waits on old branch",
+        parameters: Type.Object({}),
+        async execute() {
+          started.resolve();
+          await gate.promise;
+          return { content: [{ type: "text", text: "old-branch-result" }], details: {} };
+        },
+      });
+      await executeTool(session, "codemode_execute", {
+        sessionId: "ownership",
+        wait: false,
+        script: "await tools.old_branch({});",
+      });
+      await started.promise;
+      if (change === "tree") {
+        const leaf = session.sessionManager.getLeafId();
+        await session.extensionRunner.emit({
+          type: "session_tree",
+          newLeafId: leaf,
+          oldLeafId: leaf,
+        });
+      } else {
+        await session.extensionRunner.emit({ type: "session_start", reason: "reload" });
+      }
+      gate.resolve();
+      if (change === "tree") await pollCodeModeSession(session, "ownership");
+      await executeTool(session, "codemode_execute", {
+        script: "await tools.closure_echo({value: 2});",
+      });
+      expect(nestedTranscripts(session)).toHaveLength(1);
+      expect(nestedTranscripts(session)[0]?.calls.map((call) => call.name)).toEqual([
+        "closure_echo",
+      ]);
+    },
+  );
+
+  test("reopens durable native rows without executing the tool or exposing custom entries to the model", async () => {
+    const { session } = await createCodeModeExtensionFixture();
+    await executeTool(session, "codemode_execute", {
+      sessionId: "replay",
+      script: "await tools.closure_echo({value: 77}); return 1;",
+    });
+    const manager = session.sessionManager;
+    const file = join(manager.getCwd(), "replay.jsonl");
+    await writeFile(
+      file,
+      [manager.getHeader(), ...manager.getEntries()]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n",
+    );
+    const reopened = SessionManager.open(file);
+    const entry = reopened
+      .getBranch()
+      .find(
+        (entry) => entry.type === "custom" && entry.customType === CODEMODE_NESTED_TOOLS_ENTRY_TYPE,
+      );
+    if (entry?.type !== "custom") throw new Error("Missing saved Transcript");
+    expect(JSON.stringify(reopened.buildSessionContext().messages)).not.toContain(
+      "registered-closure:77",
+    );
+    const renderer = session.extensionRunner.getEntryRenderer(CODEMODE_NESTED_TOOLS_ENTRY_TYPE);
+    initTheme("dark");
+    const component = renderer?.(
+      entry,
+      { expanded: true },
+      session.extensionRunner.getUIContext().theme,
+    );
+    expect(component?.render(100).join("\n")).toContain("registered-closure:77");
+    expect(nestedTranscripts(session)).toHaveLength(1);
+  });
+
+  test("keeps finished calls and marks unfinished outcomes unknown on cancellation, ignoring late results", async () => {
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    const started = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    extensionApi.registerTool({
+      name: "ignores_abort",
+      label: "Ignores Abort",
+      description: "Ignores cancellation",
+      parameters: Type.Object({}),
+      async execute() {
+        started.resolve();
+        await gate.promise;
+        return { content: [{ type: "text", text: "late-side-effect" }], details: {} };
+      },
+    });
+    await executeTool(session, "codemode_execute", {
+      sessionId: "cancel-transcript",
+      wait: false,
+      script: "await tools.closure_echo({value: 1}); await tools.ignores_abort({});",
+    });
+    await started.promise;
+    await executeTool(session, "codemode_cancel", { sessionId: "cancel-transcript" });
+    expect(nestedTranscripts(session)[0]?.calls.map((call) => [call.name, call.outcome])).toEqual([
+      ["closure_echo", "success"],
+      ["ignores_abort", "unknown"],
+    ]);
+    const saved = JSON.stringify(nestedTranscripts(session));
+    gate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(JSON.stringify(nestedTranscripts(session))).toBe(saved);
+    expect(saved).not.toContain("late-side-effect");
+  });
+
+  test("retains native edit diff and failures independently of the Cell's returned data", async () => {
+    const { session } = await createCodeModeExtensionFixture();
+    const path = join(session.sessionManager.getCwd(), "nested-edit.txt");
+    await writeFile(path, "before\n");
+    const result = await executeTool(session, "codemode_execute", {
+      sessionId: "edit-transcript",
+      script: `await tools.edit({path: ${JSON.stringify(path)}, oldText: 'before', newText: 'after'}); await tools.read({path: 'does-not-exist'});`,
+    });
+    expect(codeModeResult(result).result).toBe("failed");
+    expect(await readFile(path, "utf8")).toBe("after\n");
+    const [transcript] = nestedTranscripts(session);
+    expect(transcript?.calls.map((call) => [call.name, call.outcome])).toEqual([
+      ["edit", "success"],
+      ["read", "failed"],
+    ]);
+    expect(transcript?.calls[0]?.result?.details).toMatchObject({
+      diff: expect.stringContaining("after"),
+    });
+    expect(transcript?.calls[1]?.result?.isError).toBe(true);
+  });
+
+  test("records every parallel call in invocation order when a background Cell finishes without polling", async () => {
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    const gate = Promise.withResolvers<void>();
+    extensionApi.registerTool({
+      name: "gated",
+      label: "Gated",
+      description: "Waits for a test gate",
+      parameters: ClosureEchoParametersSchema,
+      async execute(_id, { value }) {
+        if (value === 0) await gate.promise;
+        return { content: [{ type: "text", text: `finished:${value}` }], details: { value } };
+      },
+    });
+    const pending = await executeTool(session, "codemode_execute", {
+      sessionId: "parallel-transcript",
+      wait: false,
+      script:
+        "await Promise.all(Array.from({length: 25}, (_, value) => tools.gated({value}))); return 7;",
+    });
+    expect(codeModeResult(pending).result).toBe("pending");
+    expect(nestedTranscripts(session)).toEqual([]);
+    gate.resolve();
+    await expect.poll(() => nestedTranscripts(session).length).toBe(1);
+    const [transcript] = nestedTranscripts(session);
+    expect(transcript?.calls.map((call) => call.args?.value)).toEqual(
+      Array.from({ length: 25 }, (_, i) => i),
+    );
+    expect(transcript?.calls.every((call) => call.outcome === "success")).toBe(true);
+    expect(new Set(transcript?.calls.map((call) => call.callId)).size).toBe(25);
+    await pollCodeModeSession(session, "parallel-transcript");
+    await executeTool(session, "codemode_execute", {
+      sessionId: "parallel-transcript",
+      script: "await tools.closure_echo({value: 9});",
+    });
+    expect(nestedTranscripts(session).map((entry) => entry.cellOrdinal)).toEqual([1, 2]);
+  });
+
+  test("retains nested native tool displays once without adding them to model context", async () => {
+    const { session } = await createCodeModeExtensionFixture();
+    const result = await executeTool(session, "codemode_execute", {
+      sessionId: "transcript",
+      script: "await tools.closure_echo({ value: 42 }); return 'only-cell-result';",
+    });
+    expect(codeModeResult(result)).toEqual({
+      result: "success",
+      sessionId: "transcript",
+      data: "only-cell-result",
+    });
+    const entries = session.sessionManager
+      .getBranch()
+      .filter(
+        (entry) => entry.type === "custom" && entry.customType === "pi-codemode:nested-tools",
+      );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      data: {
+        version: 1,
+        sessionId: "transcript",
+        cellOrdinal: 1,
+        calls: [
+          {
+            name: "closure_echo",
+            args: { value: 42 },
+            outcome: "success",
+            result: {
+              content: [{ type: "text", text: "registered-closure:42" }],
+              details: { closure: "registered-closure", value: 42 },
+              isError: false,
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(session.sessionManager.buildSessionContext().messages)).not.toContain(
+      "registered-closure:42",
+    );
+    await executeTool(session, "codemode_result", { sessionId: "transcript" });
+    await executeTool(session, "codemode_result", { sessionId: "transcript" });
+    expect(
+      session.sessionManager
+        .getBranch()
+        .filter(
+          (entry) => entry.type === "custom" && entry.customType === "pi-codemode:nested-tools",
+        ),
+    ).toHaveLength(1);
+  });
+
   test("registers tools inertly, then composes Pi tools through a reusable CodeMode Session", async () => {
     const fixture = await createCodeModeExtensionFixture(
       {
@@ -677,11 +1265,27 @@ describe("Pi CodeMode extension", () => {
       readonly content: ObserverWidgetFactory | undefined;
       readonly placement?: string;
     }> = [];
+    let renderRequests = 0;
+    let transientCaptureCleared = false;
     const setWidget = (
-      _key: string,
+      key: string,
       content: ObserverWidgetFactory | undefined,
       options?: { readonly placement?: string },
     ): void => {
+      if (key === "pi-codemode-transcript-render") {
+        if (content !== undefined) {
+          // SAFETY: This capability-only factory uses requestRender and no terminal operations.
+          content(
+            {
+              requestRender: () => {
+                renderRequests += 1;
+              },
+            } as TUI,
+            fixture.session.extensionRunner.getUIContext().theme,
+          );
+        } else if (content === undefined) transientCaptureCleared = true;
+        return;
+      }
       widgetEvents.push(
         options?.placement === undefined ? { content } : { content, placement: options.placement },
       );
@@ -696,6 +1300,24 @@ describe("Pi CodeMode extension", () => {
       },
     });
     expect(widgetEvents).toEqual([]);
+    expect(transientCaptureCleared).toBe(true);
+    await executeTool(fixture.session, "codemode_execute", {
+      script: "await tools.closure_echo({value: 4});",
+    });
+    const entry = fixture.session.sessionManager
+      .getBranch()
+      .find(
+        (entry) => entry.type === "custom" && entry.customType === CODEMODE_NESTED_TOOLS_ENTRY_TYPE,
+      );
+    if (entry?.type !== "custom") throw new Error("Missing nested entry");
+    fixture.session.extensionRunner
+      .getEntryRenderer(CODEMODE_NESTED_TOOLS_ENTRY_TYPE)?.(
+        entry,
+        { expanded: true },
+        fixture.session.extensionRunner.getUIContext().theme,
+      )
+      ?.render(80);
+    expect(renderRequests).toBeGreaterThan(0);
 
     const started = await executeTool(fixture.session, "codemode_execute", {
       script: "while (true) {}",

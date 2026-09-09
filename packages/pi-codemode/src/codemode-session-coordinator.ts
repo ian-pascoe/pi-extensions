@@ -123,6 +123,8 @@ export type CodeModeNestedToolUpdate = AgentToolResult<unknown>;
 /** One complete guest batch plus its Cell-scoped cancellation and update capabilities. */
 export type CodeModeNestedToolBatch = {
   readonly sessionId: string;
+  /** One-based Cell Ordinal for parent-only Transcript attribution. */
+  readonly cellOrdinal: number;
   readonly batchId: string;
   readonly calls: readonly CodeModeNestedToolCall[];
   /** Exact guest-callable name snapshot installed for this Cell. */
@@ -945,6 +947,7 @@ export class CodeModeSessionCoordinator {
     try {
       const batch = {
         sessionId: record.sessionId,
+        cellOrdinal: cell.ordinal,
         batchId: response.batchId,
         calls: parsedCalls,
         exposedToolNames: cell.exposedToolNames,

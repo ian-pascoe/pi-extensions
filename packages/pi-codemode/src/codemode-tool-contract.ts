@@ -98,6 +98,7 @@ export const CodeModePresentationSnapshotSchema = Type.Object(
     nested_tools: Type.Array(CodeModeNestedToolPresentationSchema, { maxItems: 20 }),
     omitted_nested_tool_count: NonNegativeSafeIntegerSchema,
     spill_path: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096 })),
+    nested_transcript_ref: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   },
   { additionalProperties: false },
 );
