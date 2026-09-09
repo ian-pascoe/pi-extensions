@@ -1,7 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
-import type { RegistryEventV2 } from "../src/minimal-subagents-registry.js";
+import {
+  REGISTRY_ENTRY_TYPE,
+  replayRegistryEntries,
+  type RegistryEventV2,
+} from "../src/minimal-subagents-registry.js";
 import type {
   AgentSessionFactory,
   CallerSnapshot,
@@ -161,6 +165,30 @@ const caller: CallerSnapshot = {
 };
 
 describe("minimal subagents coordinator", () => {
+  it("replays in-memory creation records after the live agent completes a turn", async () => {
+    const { coordinator, registryEvents } = coordinatorFixture();
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Investigate", agent_id: "worker" },
+      caller,
+    );
+    await coordinator.wait("root", "worker", 1_000);
+
+    const reportInvalidRecords = vi.fn();
+    const snapshot = replayRegistryEntries(
+      registryEvents.map((data) => ({ type: "custom", customType: REGISTRY_ENTRY_TYPE, data })),
+      "root-session",
+      reportInvalidRecords,
+    );
+    expect(reportInvalidRecords).not.toHaveBeenCalled();
+    expect(snapshot.agents[0]?.latest_result).toMatchObject({
+      agent_id: "worker",
+      turn_id: spawned.turn_id,
+      status: "completed",
+      output: "done",
+    });
+  });
+
   it("persists child identity before runtime creation and leaves no agent when identity creation fails", async () => {
     const order: string[] = [];
     const { coordinator, sessions } = coordinatorFixture();
