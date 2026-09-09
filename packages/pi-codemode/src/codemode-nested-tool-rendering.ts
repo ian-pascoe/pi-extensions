@@ -173,7 +173,7 @@ export function renderCodeModeNestedToolsTranscript(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Persisted custom-entry data is validated before rendering.
   savedData: unknown,
   options: { readonly expanded: boolean; readonly outputPad?: number },
-  theme: Pick<Theme, "fg" | "bold">,
+  theme: Pick<Theme, "fg" | "bold" | "bg">,
   getToolDefinition: (name: string) => NativeToolDefinition | undefined,
   requestRender: () => void = () => {},
 ): Component {
@@ -303,7 +303,11 @@ export function renderCodeModeNestedToolsTranscript(
                   ? "│  "
                   : "   ";
           // Pi's compositor clips text by columns and leaves terminal image payloads untouched.
-          return compositeTuiLine(line, theme.fg("dim", prefix) + line, 0, width, width);
+          const gutterText = theme.bg(
+            result.isError ? "toolErrorBg" : "toolSuccessBg",
+            theme.fg("dim", prefix),
+          );
+          return compositeTuiLine(line, gutterText + line, 0, width, width);
         });
       },
       invalidate: () => {

@@ -19,7 +19,11 @@ import {
   renderCodeModeNestedToolsTranscript,
 } from "../src/codemode-nested-tool-rendering.js";
 
-const theme: Pick<Theme, "fg" | "bold"> = { fg: (_color, text) => text, bold: (text) => text };
+const theme: Pick<Theme, "fg" | "bold" | "bg"> = {
+  fg: (_color, text) => text,
+  bold: (text) => text,
+  bg: (_color, text) => text,
+};
 
 beforeAll(() => initTheme("dark"));
 
@@ -31,6 +35,36 @@ function renderText(component: Component): string {
 }
 
 describe("nested CodeMode Transcript rendering", () => {
+  test.each([false, true])(
+    "paints the tree gutter with the native row background (isError=%s)",
+    (isError) => {
+      const call = completeCodeModeNestedToolCall(
+        captureCodeModeNestedToolCall("call", "test", {}),
+        {
+          content: [{ type: "text", text: "saved output" }],
+          details: undefined,
+        },
+        isError,
+      );
+      const coloredTheme = {
+        ...theme,
+        bg: (color: string, text: string) =>
+          `\u001b[48;5;${color === "toolErrorBg" ? 1 : 2}m${text}\u001b[49m`,
+      };
+      const component = renderCodeModeNestedToolsTranscript(
+        { version: 1, sessionId: "gutter", cellOrdinal: 1, cwd: "/unused", calls: [call] },
+        { expanded: false },
+        coloredTheme,
+        () => undefined,
+      );
+      const lines = component.render(60);
+      expect(lines.some((line) => line.includes(`\u001b[48;5;${isError ? 1 : 2}m└─ `))).toBe(true);
+      expect(lines.find((line) => stripTerminalSequences(line).includes("saved output"))).toContain(
+        `\u001b[48;5;${isError ? 1 : 2}m   `,
+      );
+    },
+  );
+
   test("adds tree gutters while preserving native width, image payloads, and click expansion", () => {
     const image = "\u001b_Ga=T,f=100;AAAA\u001b\\";
     const clicks: TuiMouseEvent[] = [];
