@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.7.1
+
+### Patch Changes
+
+- b3e76d2: Move development-only TypeScript and Debug Adapter Protocol types out of production dependencies.
+
 ## 0.7.0
 
 ### Minor Changes

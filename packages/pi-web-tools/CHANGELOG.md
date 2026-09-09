@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.1.3
+
+### Patch Changes
+
+- b3e76d2: Simplify internal failure handling while preserving credential-safe tool errors, bounded response reads, cancellation, retries, and private output spills.
+
 ## 0.1.2
 
 ### Patch Changes
