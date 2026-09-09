@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.7.0
+
+### Minor Changes
+
+- bfc9b6e: Show nested tool calls as a durable, human-only native tree inside their original Cell entry, including asynchronous completion without polling. Keep bounded replay data and explicit unknown outcomes for unfinished calls.
+
 ## 0.6.7
 
 ### Patch Changes
