@@ -57,15 +57,11 @@ export type CodeModeNestedToolSnapshot = Static<typeof NestedToolSnapshotSchema>
 export const CodeModeNestedToolsTranscriptSchema = Type.Object({
   version: Type.Literal(1),
   ref: Type.Optional(Type.String()),
-  waited: Type.Optional(Type.Boolean()),
   sessionId: Type.String(),
   cellOrdinal: Type.Integer({ minimum: 1 }),
   cwd: Type.String(),
   calls: Type.Array(NestedToolSnapshotSchema),
 });
-
-/** One completed Cell's nested tool calls, in invocation order. */
-export type CodeModeNestedToolsTranscript = Static<typeof CodeModeNestedToolsTranscriptSchema>;
 
 const TextSchema = Type.String();
 

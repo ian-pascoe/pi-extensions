@@ -83,7 +83,6 @@ type MutableNestedToolBatchResult = {
 
 type PendingCodeModeTranscript = {
   readonly ref: string;
-  waited: boolean;
   readonly cellOrdinal: number;
   readonly branchRevision: number;
   readonly originLeafId: string | null;
@@ -284,11 +283,7 @@ class PiCodeModeLifecycleController {
   register(): void {
     this.pi.registerEntryRenderer(CODEMODE_NESTED_TOOLS_ENTRY_TYPE, (entry, options, theme) => {
       const data = entry.data;
-      if (
-        Value.Check(CodeModeNestedToolsTranscriptSchema, data) &&
-        data.waited &&
-        data.ref !== undefined
-      ) {
+      if (Value.Check(CodeModeNestedToolsTranscriptSchema, data) && data.ref !== undefined) {
         const liveOwner = [...(this.generation?.waitedTranscripts.values() ?? [])].includes(
           data.ref,
         );
@@ -500,7 +495,6 @@ class PiCodeModeLifecycleController {
         if (transcript?.cellOrdinal !== session.current_cell.ordinal) {
           generation.transcripts.set(session.sessionId, {
             ref: CODEMODE_SYSTEM_RUNTIME.createSessionId(),
-            waited: false,
             cellOrdinal: session.current_cell.ordinal,
             branchRevision: generation.branchRevision,
             originLeafId: generation.context.sessionManager.getLeafId(),
@@ -524,7 +518,6 @@ class PiCodeModeLifecycleController {
         this.pi.appendEntry(CODEMODE_NESTED_TOOLS_ENTRY_TYPE, {
           version: 1,
           ref: transcript.ref,
-          waited: transcript.waited,
           sessionId: session.sessionId,
           cellOrdinal: transcript.cellOrdinal,
           cwd: generation.context.cwd,
@@ -611,7 +604,6 @@ class PiCodeModeLifecycleController {
       transcript.calls.set(callId, completed);
     };
     if (transcript?.cellOrdinal === batch.cellOrdinal) {
-      transcript.waited = batch.waited;
       if (batch.waited)
         generation.waitedTranscripts.set(`${batch.sessionId}:${batch.cellOrdinal}`, transcript.ref);
       for (const call of batch.calls) {
