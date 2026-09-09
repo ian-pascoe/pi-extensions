@@ -56,6 +56,9 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "allowScripts": {
+    "deno@2.9.6": true
+  },
   "pi": {
     "extensions": [
       "./packages/pi-minimal-subagents/src/index.ts",
@@ -89,8 +92,5 @@
       "./packages/pi-context-management/skills",
       "./packages/pi-skills-selector/skills"
     ]
-  },
-  "allowScripts": {
-    "deno@2.9.6": true
   }
 }
