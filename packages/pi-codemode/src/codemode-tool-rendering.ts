@@ -701,6 +701,7 @@ export function createRenderedCodeModeToolDefinitions(
     ref: string,
     options: ToolRenderResultOptions,
     theme: Theme,
+    invalidate: () => void,
   ) => Component | undefined,
 ): ReturnType<typeof createCodeModeToolDefinitions> {
   const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
@@ -729,7 +730,9 @@ export function createRenderedCodeModeToolDefinitions(
           ? result.details.presentation?.nested_transcript_ref
           : undefined;
         const nested =
-          ref === undefined ? undefined : renderNestedTranscript?.(ref, options, theme);
+          ref === undefined
+            ? undefined
+            : renderNestedTranscript?.(ref, options, theme, context.invalidate);
         if (nested === undefined) return summary;
         const container = new Container();
         container.addChild(summary);

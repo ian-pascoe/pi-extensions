@@ -4,7 +4,13 @@ import {
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, Text, type Component } from "@earendil-works/pi-tui";
+import {
+  stripTerminalSequences,
+  Text,
+  visibleWidth,
+  type Component,
+  type TuiMouseEvent,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { beforeAll, describe, expect, test } from "vitest";
 import {
@@ -25,6 +31,72 @@ function renderText(component: Component): string {
 }
 
 describe("nested CodeMode Transcript rendering", () => {
+  test("adds tree gutters while preserving native width, image payloads, and click expansion", () => {
+    const image = "\u001b_Ga=T,f=100;AAAA\u001b\\";
+    const clicks: TuiMouseEvent[] = [];
+    const definition: ToolDefinition = {
+      name: "native",
+      label: "Native",
+      description: "Native tree test",
+      parameters: Type.Object({}),
+      execute: async () => {
+        throw new Error("must not execute");
+      },
+      renderShell: "self",
+      renderCall: (_args, _theme, context) => new Text(context.toolCallId, 0, 0),
+      renderResult: (_result, _options, _theme, context) => ({
+        render: (width) => ["x".repeat(width), ...(context.expanded ? ["expanded"] : []), image],
+        invalidate: () => {},
+        handleMouse: (event) => {
+          clicks.push(event);
+          return undefined;
+        },
+      }),
+    };
+    const calls = ["first", "second"].map((id) =>
+      completeCodeModeNestedToolCall(
+        captureCodeModeNestedToolCall(id, "native", {}),
+        { content: [], details: undefined },
+        false,
+      ),
+    );
+    const component = renderCodeModeNestedToolsTranscript(
+      { version: 1, sessionId: "s", cellOrdinal: 1, cwd: "/unused", calls },
+      { expanded: false },
+      theme,
+      () => definition,
+    );
+    const lines = component.render(40);
+    const plain = lines.map(stripTerminalSequences);
+    expect(plain).toContain("├─ first" + " ".repeat(32));
+    expect(plain).toContain("└─ second" + " ".repeat(31));
+    expect(plain).toContain("│  " + "x".repeat(37));
+    expect(lines.filter((line) => line.includes("\u001b_G"))).toEqual([image, image]);
+    component.handleMouse?.({
+      type: "click",
+      button: "left",
+      x: 5,
+      y: 3,
+      screenX: 5,
+      screenY: 3,
+      width: 40,
+      height: lines.length,
+      shift: false,
+      alt: false,
+      ctrl: false,
+    });
+    expect(clicks[0]).toMatchObject({ x: 2, y: 0, width: 37 });
+    expect(renderText(component)).toContain("expanded");
+    for (const width of [1, 3, 8, 40]) {
+      expect(
+        component
+          .render(width)
+          .filter((line) => !line.includes("\u001b_G"))
+          .every((line) => visibleWidth(line) <= width),
+      ).toBe(true);
+    }
+  });
+
   test("captures immutable arguments and native result details for later replay", () => {
     const args = { path: "saved.ts", edits: [{ oldText: "old", newText: "new" }] };
     const result = {
@@ -269,6 +341,7 @@ describe("nested CodeMode Transcript rendering", () => {
     expect(output).toContain("Session session-alpha · Cell 3");
     expect(output).toContain("edit");
     expect(output).toContain("example.ts");
+    expect(output).toMatch(/└─ .*edit/);
     expect(output).toContain("-1 old");
     expect(output).toContain("+1 new");
     expect(output).not.toContain("Successfully replaced");

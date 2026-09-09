@@ -14,7 +14,14 @@ import {
   type AgentToolResult,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import {
+  compositeTuiLine,
+  Container,
+  stripTerminalSequences,
+  Text,
+  type Component,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -197,7 +204,7 @@ export function renderCodeModeNestedToolsTranscript(
   );
   // SAFETY: Pi 0.85.1 ToolExecutionComponent only uses ui.requestRender; this adapter cannot control a terminal.
   const ui = { requestRender } as TUI;
-  for (const call of data.calls) {
+  for (const [callIndex, call] of data.calls.entries()) {
     const builtin = definitions.get(call.name);
     const registered = getToolDefinition(call.name);
     let definition = registered ?? builtin;
@@ -271,12 +278,33 @@ export function renderCodeModeNestedToolsTranscript(
     };
     container.addChild({
       render: (width) => {
+        if (width <= 0) return [];
+        const gutter = width > 3 ? 3 : 0;
+        let lines: string[];
         try {
-          return displayed.render(width);
+          lines = displayed.render(width - gutter);
         } catch {
           displayed = fallback();
-          return displayed.render(width);
+          lines = displayed.render(width - gutter);
         }
+        const branchLine = lines.findIndex(
+          (line) => stripTerminalSequences(line).trim().length > 0,
+        );
+        const last = callIndex === data.calls.length - 1;
+        return lines.map((line, index) => {
+          const prefix =
+            gutter === 0
+              ? ""
+              : index === branchLine
+                ? last
+                  ? "└─ "
+                  : "├─ "
+                : !last || index < branchLine
+                  ? "│  "
+                  : "   ";
+          // Pi's compositor clips text by columns and leaves terminal image payloads untouched.
+          return compositeTuiLine(line, theme.fg("dim", prefix) + line, 0, width, width);
+        });
       },
       invalidate: () => {
         try {
@@ -286,8 +314,14 @@ export function renderCodeModeNestedToolsTranscript(
         }
       },
       handleMouse: (event) => {
+        const gutter = event.width > 3 ? 3 : 0;
+        if (event.x < gutter) return undefined;
         try {
-          return displayed.handleMouse(event);
+          return displayed.handleMouse({
+            ...event,
+            x: event.x - gutter,
+            width: event.width - gutter,
+          });
         } catch {
           displayed = fallback();
           return { handled: true, render: true };

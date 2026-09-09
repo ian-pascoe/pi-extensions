@@ -96,7 +96,8 @@ type PiCodeModeGeneration = {
   readonly observer: CodeModeObserverUiController;
   readonly sessionFiles: CodeModeSessionFiles;
   readonly transcripts: Map<string, PendingCodeModeTranscript>;
-  readonly waitedTranscripts: Map<string, string>;
+  readonly transcriptRefs: Map<string, string>;
+  readonly transcriptInvalidators: Map<string, () => void>;
   branchRevision: number;
   requestRender: () => void;
   exposure?: InstalledCodeModeToolExposure;
@@ -225,10 +226,11 @@ class PiCodeModeLifecycleController {
               onUpdate(update as AgentToolResult<CodeModeResultDetails>);
             },
       );
-      if (input.wait === false || operation.presentation === undefined) return operation;
+      if (operation.presentation === undefined) return operation;
       const key = `${operation.result.sessionId}:${operation.presentation.cell_ordinal}`;
-      const ref = generation.waitedTranscripts.get(key);
-      generation.waitedTranscripts.delete(key);
+      const ref = generation.transcriptRefs.get(key);
+      // Async tools can finish while Pi is still awaiting an outer result hook.
+      if (input.wait !== false) generation.transcriptRefs.delete(key);
       return ref === undefined
         ? operation
         : {
@@ -284,9 +286,7 @@ class PiCodeModeLifecycleController {
     this.pi.registerEntryRenderer(CODEMODE_NESTED_TOOLS_ENTRY_TYPE, (entry, options, theme) => {
       const data = entry.data;
       if (Value.Check(CodeModeNestedToolsTranscriptSchema, data) && data.ref !== undefined) {
-        const liveOwner = [...(this.generation?.waitedTranscripts.values() ?? [])].includes(
-          data.ref,
-        );
+        const liveOwner = [...(this.generation?.transcriptRefs.values() ?? [])].includes(data.ref);
         const savedOwner = this.generation?.context.sessionManager
           .buildContextEntries()
           .some(
@@ -307,8 +307,13 @@ class PiCodeModeLifecycleController {
         () => this.generation?.requestRender(),
       );
     });
+    this.pi.on("agent_end", () => this.generation?.transcriptRefs.clear());
     this.pi.on("session_tree", () => {
-      if (this.generation !== undefined) this.generation.branchRevision += 1;
+      if (this.generation !== undefined) {
+        this.generation.branchRevision += 1;
+        this.generation.transcriptRefs.clear();
+        this.generation.transcriptInvalidators.clear();
+      }
     });
     const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
       createRenderedCodeModeToolDefinitions(
@@ -394,7 +399,8 @@ class PiCodeModeLifecycleController {
       observer,
       sessionFiles,
       transcripts: new Map(),
-      waitedTranscripts: new Map(),
+      transcriptRefs: new Map(),
+      transcriptInvalidators: new Map(),
       branchRevision: 0,
       requestRender: () => {},
       decision: initialDecision,
@@ -464,6 +470,7 @@ class PiCodeModeLifecycleController {
     ref: string,
     options: ToolRenderResultOptions,
     theme: Theme,
+    invalidate: () => void,
   ) => {
     const entry = this.generation?.context.sessionManager
       .getBranch()
@@ -474,7 +481,16 @@ class PiCodeModeLifecycleController {
           Value.Check(CodeModeNestedToolsTranscriptSchema, item.data) &&
           item.data.ref === ref,
       );
-    if (entry?.type !== "custom") return undefined;
+    if (entry?.type !== "custom") {
+      const generation = this.generation;
+      if (
+        generation !== undefined &&
+        [...generation.transcripts.values()].some((cell) => cell.ref === ref)
+      ) {
+        generation.transcriptInvalidators.set(ref, invalidate);
+      }
+      return undefined;
+    }
     return renderCodeModeNestedToolsTranscript(
       entry.data,
       options,
@@ -493,8 +509,13 @@ class PiCodeModeLifecycleController {
       const transcript = generation.transcripts.get(session.sessionId);
       if (session.current_cell !== undefined) {
         if (transcript?.cellOrdinal !== session.current_cell.ordinal) {
+          const ref = CODEMODE_SYSTEM_RUNTIME.createSessionId();
+          generation.transcriptRefs.set(
+            `${session.sessionId}:${session.current_cell.ordinal}`,
+            ref,
+          );
           generation.transcripts.set(session.sessionId, {
-            ref: CODEMODE_SYSTEM_RUNTIME.createSessionId(),
+            ref,
             cellOrdinal: session.current_cell.ordinal,
             branchRevision: generation.branchRevision,
             originLeafId: generation.context.sessionManager.getLeafId(),
@@ -506,6 +527,8 @@ class PiCodeModeLifecycleController {
         session.last_cell?.ordinal === transcript.cellOrdinal
       ) {
         generation.transcripts.delete(session.sessionId);
+        const invalidate = generation.transcriptInvalidators.get(transcript.ref);
+        generation.transcriptInvalidators.delete(transcript.ref);
         if (transcript.calls.size === 0 || transcript.branchRevision !== generation.branchRevision)
           continue;
         if (
@@ -523,6 +546,7 @@ class PiCodeModeLifecycleController {
           cwd: generation.context.cwd,
           calls: [...transcript.calls.values()],
         });
+        invalidate?.();
       }
     }
   }
@@ -604,8 +628,6 @@ class PiCodeModeLifecycleController {
       transcript.calls.set(callId, completed);
     };
     if (transcript?.cellOrdinal === batch.cellOrdinal) {
-      if (batch.waited)
-        generation.waitedTranscripts.set(`${batch.sessionId}:${batch.cellOrdinal}`, transcript.ref);
       for (const call of batch.calls) {
         transcript.calls.set(
           call.callId,

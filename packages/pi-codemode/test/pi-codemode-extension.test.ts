@@ -352,6 +352,130 @@ afterEach(async () => {
 });
 
 describe("Pi CodeMode extension", () => {
+  test("keeps fast async completion attached while the outer result is awaiting persistence", async () => {
+    initTheme("dark");
+    const { session, extensionApi } = await createCodeModeExtensionFixture();
+    const gate = Promise.withResolvers<void>();
+    extensionApi.registerTool({
+      name: "fast_async",
+      label: "Fast",
+      description: "Waits",
+      parameters: Type.Object({}),
+      async execute() {
+        await gate.promise;
+        return { content: [{ type: "text", text: "fast-async-result" }], details: {} };
+      },
+    });
+    await executeTool(session, "codemode_execute", {
+      wait: false,
+      script: "await tools.fast_async({});",
+    });
+    // An outer tool_result hook can delay persistence after execute has returned pending.
+    gate.resolve();
+    await expect.poll(() => nestedTranscripts(session).length).toBe(1);
+    const entry = session.sessionManager.getLeafEntry();
+    if (entry?.type !== "custom") throw new Error("Missing async entry");
+    const renderer = session.extensionRunner.getEntryRenderer(entry.customType);
+    expect(
+      renderer?.(entry, { expanded: false }, session.extensionRunner.getUIContext().theme),
+    ).toBeUndefined();
+    await session.extensionRunner.emit({ type: "agent_end", messages: [] });
+    // With no retained owner after the turn, history still has a standalone fallback.
+    expect(
+      renderer?.(entry, { expanded: false }, session.extensionRunner.getUIContext().theme)
+        ?.render(100)
+        .join("\n"),
+    ).toContain("fast-async-result");
+  });
+
+  test.each(["completed", "failed", "cancelled"])(
+    "refreshes the original async Cell after %s without polling or a tail duplicate",
+    async (terminal) => {
+      initTheme("dark");
+      const { session, extensionApi } = await createCodeModeExtensionFixture();
+      const gate = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      const output =
+        terminal === "cancelled"
+          ? "outcome unknown"
+          : terminal === "failed"
+            ? "ASYNC-FAILURE"
+            : "ASYNC-OWNED-OUTPUT";
+      extensionApi.registerTool({
+        name: "async_owned",
+        label: "Async Owned",
+        description: "Waits",
+        parameters: Type.Object({}),
+        async execute() {
+          started.resolve();
+          await gate.promise;
+          if (terminal === "failed") throw new Error("ASYNC-FAILURE");
+          return { content: [{ type: "text", text: "ASYNC-OWNED-OUTPUT" }], details: {} };
+        },
+      });
+      const args = {
+        sessionId: "async-owner",
+        wait: false,
+        script: "await tools.async_owned({}); return 7;",
+      };
+      const pending = await activeTool(session, "codemode_execute").execute(
+        "async-owner-call",
+        args,
+        new AbortController().signal,
+      );
+      expect(codeModeResult(pending).result).toBe("pending");
+      session.sessionManager.appendMessage({
+        role: "toolResult",
+        toolCallId: "async-owner-call",
+        toolName: "codemode_execute",
+        content: pending.content,
+        details: pending.details,
+        isError: false,
+        timestamp: Date.now(),
+      });
+      // SAFETY: Native rows need only redraw capability, not a terminal.
+      const ui = { requestRender: () => {} } as TUI;
+      const makeRow = () =>
+        new ToolExecutionComponent(
+          "codemode_execute",
+          "async-owner-call",
+          args,
+          {},
+          session.getToolDefinition("codemode_execute"),
+          ui,
+          session.sessionManager.getCwd(),
+        );
+      const row = makeRow();
+      row.updateResult({ ...pending, isError: false });
+      expect(row.render(100).join("\n")).not.toContain(output);
+      await started.promise;
+      if (terminal === "cancelled")
+        await executeTool(session, "codemode_cancel", { sessionId: "async-owner" });
+      gate.resolve();
+      await expect.poll(() => row.render(100).join("\n")).toContain(output);
+      expect(codeModeResult(pending).result).toBe("pending");
+      const entry = session.sessionManager
+        .getBranch()
+        .find(
+          (entry) =>
+            entry.type === "custom" && entry.customType === CODEMODE_NESTED_TOOLS_ENTRY_TYPE,
+        );
+      if (entry?.type !== "custom") throw new Error("Missing durable async Transcript");
+      expect(
+        session.extensionRunner.getEntryRenderer(entry.customType)?.(
+          entry,
+          { expanded: false },
+          session.extensionRunner.getUIContext().theme,
+        ),
+      ).toBeUndefined();
+      const replay = makeRow();
+      replay.updateResult({ ...pending, isError: false });
+      expect(replay.render(100).join("\n")).toContain(output);
+      await executeTool(session, "codemode_result", { sessionId: "async-owner" });
+      expect(nestedTranscripts(session)).toHaveLength(1);
+    },
+  );
+
   test("places waited native rows before the next precreated outer tool row, including replay", async () => {
     initTheme("dark");
     const { session } = await createCodeModeExtensionFixture();

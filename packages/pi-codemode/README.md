@@ -163,12 +163,14 @@ TypeScript source, bounded Console output before structured returned data or the
 error, and bounded nested-tool names, outcomes, and durations. These compact
 Presentation Snapshots remain separate from the native nested-tool rows below.
 
-When a Cell finishes, its invoked tools appear as ordinary native tool rows in
+When a Cell finishes, its invoked tools appear as a tree of native tool rows in
 invocation order, including built-in, extension, and MCP tools. They use Pi's
 normal collapsed/expanded rendering (including saved edit diffs), without an
-extra CodeMode expansion. Awaited execution places the rows beneath the Cell;
-background completion appends them at the current Transcript tail, labelled by
-Session and Cell Ordinal. Polling never duplicates them.
+extra CodeMode expansion. Both awaited and background Cells place their tree
+inside the original `codemode_execute` entry, labelled by Session and Cell
+Ordinal. Background completion refreshes that entry without polling or changing
+the model-facing pending result. Polling never duplicates the tree. History
+without the owning entry retains a standalone Transcript fallback.
 
 The rows are durable human-only custom entries, excluded from model context.
 Successful, failed, and cancelled Cells retain their calls; an unfinished call

@@ -125,7 +125,6 @@ export type CodeModeNestedToolBatch = {
   readonly sessionId: string;
   /** One-based Cell Ordinal for parent-only Transcript attribution. */
   readonly cellOrdinal: number;
-  readonly waited: boolean;
   readonly batchId: string;
   readonly calls: readonly CodeModeNestedToolCall[];
   /** Exact guest-callable name snapshot installed for this Cell. */
@@ -197,13 +196,11 @@ type MutableCodeModeOuterToolMetadata = {
 };
 
 type CreateActiveCodeModeCellOptions = {
-  readonly waited: boolean;
   onUpdate?: (update: CodeModeNestedToolUpdate) => void;
   reclaimedSessionId?: string;
 };
 
 type ActiveCodeModeCell = {
-  readonly waited: boolean;
   readonly cellId: string;
   readonly ordinal: number;
   readonly startedAtMs: number;
@@ -442,7 +439,7 @@ export class CodeModeSessionCoordinator {
       }
 
       const shouldWait = input.wait !== false;
-      const cellOptions: CreateActiveCodeModeCellOptions = { waited: shouldWait };
+      const cellOptions: CreateActiveCodeModeCellOptions = {};
       if (shouldWait && onUpdate !== undefined) cellOptions.onUpdate = onUpdate;
       if (located.reclaimedSessionId !== undefined) {
         cellOptions.reclaimedSessionId = located.reclaimedSessionId;
@@ -746,7 +743,6 @@ export class CodeModeSessionCoordinator {
     const completion = Promise.withResolvers<CodeModeResult>();
     const cellBase: Omit<ActiveCodeModeCell, "reclaimedSessionId"> = {
       cellId: `cell-${++this.cellSequence}`,
-      waited: options.waited,
       ordinal: ++record.cellCount,
       startedAtMs: this.runtime.now(),
       abortController: new AbortController(),
@@ -952,7 +948,6 @@ export class CodeModeSessionCoordinator {
       const batch = {
         sessionId: record.sessionId,
         cellOrdinal: cell.ordinal,
-        waited: cell.waited,
         batchId: response.batchId,
         calls: parsedCalls,
         exposedToolNames: cell.exposedToolNames,
