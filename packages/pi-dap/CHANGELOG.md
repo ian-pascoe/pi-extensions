@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-dap
 
+## 0.3.3
+
+### Patch Changes
+
+- b3e76d2: Move development-only TypeScript and Debug Adapter Protocol types out of production dependencies.
+
 ## 0.3.2
 
 ### Patch Changes
