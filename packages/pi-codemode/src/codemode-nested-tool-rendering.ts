@@ -19,6 +19,7 @@ import {
   Container,
   stripTerminalSequences,
   Text,
+  visibleWidth,
   type Component,
   type TUI,
 } from "@earendil-works/pi-tui";
@@ -303,11 +304,14 @@ export function renderCodeModeNestedToolsTranscript(
                   ? "│  "
                   : "   ";
           // Pi's compositor clips text by columns and leaves terminal image payloads untouched.
-          const gutterText = theme.bg(
-            result.isError ? "toolErrorBg" : "toolSuccessBg",
-            theme.fg("dim", prefix),
+          const background = result.isError ? "toolErrorBg" : "toolSuccessBg";
+          const gutterText = theme.bg(background, theme.fg("dim", prefix));
+          // Paint padding here; the compositor's default padding has no background.
+          const padding = theme.bg(
+            background,
+            " ".repeat(Math.max(0, width - gutter - visibleWidth(line))),
           );
-          return compositeTuiLine(line, gutterText + line, 0, width, width);
+          return compositeTuiLine(line, gutterText + line + padding, 0, width, width);
         });
       },
       invalidate: () => {

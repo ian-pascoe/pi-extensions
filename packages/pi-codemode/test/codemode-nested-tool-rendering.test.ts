@@ -57,6 +57,14 @@ describe("nested CodeMode Transcript rendering", () => {
         coloredTheme,
         () => undefined,
       );
+      for (const width of [3, 8, 60]) {
+        const gutter = width > 3 ? 3 : 0;
+        const spacer = component
+          .render(width)
+          .find((line) => stripTerminalSequences(line).trim() === (gutter ? "│" : ""));
+        expect(spacer).toBeDefined();
+        expect(spacer).toContain(`\u001b[48;5;${isError ? 1 : 2}m${" ".repeat(width - gutter)}`);
+      }
       const lines = component.render(60);
       expect(lines.some((line) => line.includes(`\u001b[48;5;${isError ? 1 : 2}m└─ `))).toBe(true);
       expect(lines.find((line) => stripTerminalSequences(line).includes("saved output"))).toContain(
