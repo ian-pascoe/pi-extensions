@@ -151,28 +151,6 @@ type SearchProviderRequest = {
   };
 };
 
-class WebSearchFailure extends Error {
-  readonly _tag = "WebSearchFailure" as const;
-  readonly operation = "search" as const;
-  readonly retryCount = 0;
-
-  constructor(
-    readonly kind: "transport" | "status" | "body" | "response",
-    readonly provider: SearchProvider,
-    cause?: unknown,
-    readonly status?: number,
-  ) {
-    super(
-      `Web Search ${kind} failure from ${provider}`,
-      cause === undefined ? undefined : { cause },
-    );
-  }
-}
-
-type WebSearchResult<T> =
-  | { readonly _tag: "ok"; readonly value: T }
-  | { readonly _tag: "err"; readonly error: WebSearchFailure };
-
 function fnv1aChecksum(content: string): string | undefined {
   if (content.length === 0) return undefined;
   let hash = 0x811c9dc5;
@@ -232,7 +210,7 @@ async function callSearchProvider(
   parameters: WebSearchParameters,
   options: WebSearchToolOptions,
   signal: AbortSignal,
-): Promise<WebSearchResult<string>> {
+): Promise<string> {
   let request: SearchProviderRequest;
   if (provider === "exa") {
     const arguments_: ExaSearchArguments = {
@@ -285,37 +263,19 @@ async function callSearchProvider(
     };
   }
 
-  let response: Response;
-  try {
-    response = await (options.fetch ?? globalThis.fetch)(request.url, {
-      method: "POST",
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal,
-    });
-  } catch (cause) {
-    return { _tag: "err", error: new WebSearchFailure("transport", provider, cause) };
-  }
+  const response = await (options.fetch ?? globalThis.fetch)(request.url, {
+    method: "POST",
+    headers: request.headers,
+    body: JSON.stringify(request.body),
+    signal,
+  });
   if (!response.ok) {
     await cancelResponse(response);
-    return {
-      _tag: "err",
-      error: new WebSearchFailure("status", provider, undefined, response.status),
-    };
+    throw new Error(`Web Search returned HTTP ${response.status}`);
   }
 
   const body = await readBoundedResponseBody(response, MAX_SEARCH_RESPONSE_BYTES, signal);
-  if (body._tag === "err") {
-    return { _tag: "err", error: new WebSearchFailure("body", provider, body.error) };
-  }
-  try {
-    return {
-      _tag: "ok",
-      value: parseMcpResponse(new TextDecoder().decode(body.value)) ?? NO_SEARCH_RESULTS,
-    };
-  } catch (cause) {
-    return { _tag: "err", error: new WebSearchFailure("response", provider, cause) };
-  }
+  return parseMcpResponse(new TextDecoder().decode(body)) ?? NO_SEARCH_RESULTS;
 }
 
 /** Create the model-invoked Web Search definition. */
@@ -347,27 +307,25 @@ export function createWebSearchTool(
       } catch {
         throw new Error(`Unable to search the web for ${parameters.query}`);
       }
-      const search = await callSearchProvider(
-        provider,
-        context.sessionManager.getSessionId(),
-        input,
-        options,
-        requestSignal(callerSignal),
-      );
-      if (search._tag === "err") {
+      try {
+        const search = await callSearchProvider(
+          provider,
+          context.sessionManager.getSessionId(),
+          input,
+          options,
+          requestSignal(callerSignal),
+        );
+        const output = await createWebToolOutput(search);
+        return {
+          content: [{ type: "text", text: output.content }],
+          details:
+            output.truncation === undefined
+              ? { provider }
+              : { provider, truncation: output.truncation },
+        };
+      } catch {
         throw new Error(`Unable to search the web for ${input.query}`);
       }
-      const output = await createWebToolOutput(search.value);
-      if (output._tag === "err") {
-        throw new Error(`Unable to search the web for ${input.query}`);
-      }
-      return {
-        content: [{ type: "text", text: output.value.content }],
-        details:
-          output.value.truncation === undefined
-            ? { provider }
-            : { provider, truncation: output.value.truncation },
-      };
     },
   });
 }

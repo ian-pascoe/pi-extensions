@@ -80,41 +80,12 @@ type FetchedText = {
 const WEB_FETCH_DESCRIPTION =
   "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML is converted when requested. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
-class WebFetchFailure extends Error {
-  readonly _tag = "WebFetchFailure" as const;
-  readonly operation = "fetch" as const;
-  readonly status: number | undefined;
-  readonly contentType: string | undefined;
-
-  constructor(
-    readonly kind: "url" | "transport" | "status" | "mime" | "body" | "conversion",
-    readonly url: string,
-    readonly retryCount: number,
-    cause?: unknown,
-    status?: number,
-    contentType?: string,
-  ) {
-    super(`Web Fetch ${kind} failure for ${url}`, cause === undefined ? undefined : { cause });
-    this.status = status;
-    this.contentType = contentType;
-  }
-}
-
-type WebFetchResult<T> =
-  | { readonly _tag: "ok"; readonly value: T }
-  | { readonly _tag: "err"; readonly error: WebFetchFailure };
-
-function parseHttpUrl(input: string, safeUrl: string): WebFetchResult<URL> {
-  let url: URL;
-  try {
-    url = new URL(input);
-  } catch (cause) {
-    return { _tag: "err", error: new WebFetchFailure("url", safeUrl, 0, cause) };
-  }
+function parseHttpUrl(input: string): URL {
+  const url = new URL(input);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return { _tag: "err", error: new WebFetchFailure("url", safeUrl, 0) };
+    throw new Error("Web Fetch requires an HTTP or HTTPS URL");
   }
-  return { _tag: "ok", value: url };
+  return url;
 }
 
 function acceptHeader(format: WebFetchFormat): string {
@@ -148,25 +119,15 @@ async function cancelResponse(response: Response): Promise<void> {
 async function fetchOnce(
   fetch: typeof globalThis.fetch,
   url: string,
-  safeUrl: string,
   format: WebFetchFormat,
   userAgent: string,
   signal: AbortSignal,
-  retryCount: number,
-): Promise<WebFetchResult<Response>> {
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: requestHeaders(format, userAgent),
-      signal,
-    });
-    return { _tag: "ok", value: response };
-  } catch (cause) {
-    return {
-      _tag: "err",
-      error: new WebFetchFailure("transport", safeUrl, retryCount, cause),
-    };
-  }
+): Promise<Response> {
+  return fetch(url, {
+    method: "GET",
+    headers: requestHeaders(format, userAgent),
+    signal,
+  });
 }
 
 function isCloudflareChallenge(response: Response): boolean {
@@ -222,101 +183,40 @@ function convertHtmlToMarkdown(html: string): string {
   return turndown.turndown(html);
 }
 
-function convertFetchedContent(
-  content: string,
-  mime: string,
-  format: WebFetchFormat,
-  safeUrl: string,
-  retryCount: number,
-): WebFetchResult<string> {
-  if (mime !== "text/html") return { _tag: "ok", value: content };
-  try {
-    if (format === "markdown") return { _tag: "ok", value: convertHtmlToMarkdown(content) };
-    if (format === "text") return { _tag: "ok", value: extractTextFromHtml(content) };
-    return { _tag: "ok", value: content };
-  } catch (cause) {
-    return {
-      _tag: "err",
-      error: new WebFetchFailure("conversion", safeUrl, retryCount, cause),
-    };
-  }
+function convertFetchedContent(content: string, mime: string, format: WebFetchFormat): string {
+  if (mime !== "text/html" || format === "html") return content;
+  return format === "markdown" ? convertHtmlToMarkdown(content) : extractTextFromHtml(content);
 }
 
 async function fetchText(
   parsedUrl: URL,
-  safeUrl: string,
   format: WebFetchFormat,
   signal: AbortSignal,
   options: WebFetchToolOptions,
-): Promise<WebFetchResult<FetchedText>> {
+): Promise<FetchedText> {
   const fetch = options.fetch ?? globalThis.fetch;
-  const first = await fetchOnce(
-    fetch,
-    parsedUrl.toString(),
-    safeUrl,
-    format,
-    BROWSER_USER_AGENT,
-    signal,
-    0,
-  );
-  if (first._tag === "err") return first;
-  let response = first.value;
-  let retryCount = 0;
+  let response = await fetchOnce(fetch, parsedUrl.toString(), format, BROWSER_USER_AGENT, signal);
   if (isCloudflareChallenge(response)) {
     await cancelResponse(response);
-    const retry = await fetchOnce(
-      fetch,
-      parsedUrl.toString(),
-      safeUrl,
-      format,
-      HONEST_USER_AGENT,
-      signal,
-      1,
-    );
-    if (retry._tag === "err") return retry;
-    response = retry.value;
-    retryCount = 1;
+    response = await fetchOnce(fetch, parsedUrl.toString(), format, HONEST_USER_AGENT, signal);
   }
   if (!response.ok) {
     await cancelResponse(response);
-    return {
-      _tag: "err",
-      error: new WebFetchFailure("status", safeUrl, retryCount, undefined, response.status),
-    };
+    throw new Error(`Web Fetch returned HTTP ${response.status}`);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
   const mime = normalizedMime(contentType);
   if (!isTextualMime(mime)) {
     await cancelResponse(response);
-    return {
-      _tag: "err",
-      error: new WebFetchFailure("mime", safeUrl, retryCount, undefined, undefined, contentType),
-    };
+    throw new Error(`Web Fetch returned unsupported content type ${contentType}`);
   }
 
   const body = await readBoundedResponseBody(response, WEB_FETCH_MAX_RESPONSE_BYTES, signal);
-  if (body._tag === "err") {
-    return {
-      _tag: "err",
-      error: new WebFetchFailure("body", safeUrl, retryCount, body.error),
-    };
-  }
-  const converted = convertFetchedContent(
-    new TextDecoder().decode(body.value),
-    mime,
-    format,
-    safeUrl,
-    retryCount,
-  );
-  if (converted._tag === "err") return converted;
   return {
-    _tag: "ok",
-    value: {
-      content: converted.value,
-      contentType,
-      finalUrl: redactWebUrlUserinfo(response.url || parsedUrl.toString()),
-    },
+    content: convertFetchedContent(new TextDecoder().decode(body), mime, format),
+    contentType,
+    finalUrl: redactWebUrlUserinfo(response.url || parsedUrl.toString()),
   };
 }
 
@@ -352,34 +252,40 @@ export function createWebFetchTool(
         throw unableToFetch("requested URL");
       }
       const safeUrl = redactWebUrlUserinfo(input.url);
-      const parsedUrl = parseHttpUrl(input.url, safeUrl);
-      if (parsedUrl._tag === "err") throw unableToFetch(safeUrl);
+      let parsedUrl: URL;
+      try {
+        parsedUrl = parseHttpUrl(input.url);
+      } catch {
+        throw unableToFetch(safeUrl);
+      }
       const format = input.format ?? "markdown";
       const signal = requestSignal(
         callerSignal,
         input.timeout ?? WEB_FETCH_DEFAULT_TIMEOUT_SECONDS,
       );
       onUpdate?.({ content: [], details: { url: safeUrl, contentType: "", format } });
-      const fetched = await fetchText(parsedUrl.value, safeUrl, format, signal, options);
-      if (fetched._tag === "err") throw unableToFetch(safeUrl);
-      const output = await createWebToolOutput(fetched.value.content);
-      if (output._tag === "err") throw unableToFetch(safeUrl);
-      return {
-        content: [{ type: "text", text: output.value.content }],
-        details:
-          output.value.truncation === undefined
-            ? {
-                url: fetched.value.finalUrl,
-                contentType: fetched.value.contentType,
-                format,
-              }
-            : {
-                url: fetched.value.finalUrl,
-                contentType: fetched.value.contentType,
-                format,
-                truncation: output.value.truncation,
-              },
-      };
+      try {
+        const fetched = await fetchText(parsedUrl, format, signal, options);
+        const output = await createWebToolOutput(fetched.content);
+        return {
+          content: [{ type: "text", text: output.content }],
+          details:
+            output.truncation === undefined
+              ? {
+                  url: fetched.finalUrl,
+                  contentType: fetched.contentType,
+                  format,
+                }
+              : {
+                  url: fetched.finalUrl,
+                  contentType: fetched.contentType,
+                  format,
+                  truncation: output.truncation,
+                },
+        };
+      } catch {
+        throw unableToFetch(safeUrl);
+      }
     },
   });
 }

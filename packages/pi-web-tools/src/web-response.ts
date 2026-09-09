@@ -1,41 +1,3 @@
-/** A response declared or streamed more bytes than its owner accepts. */
-export class WebResponseTooLarge extends Error {
-  readonly _tag = "WebResponseTooLarge" as const;
-  readonly operation = "readResponseBody" as const;
-
-  constructor(readonly maximumBytes: number) {
-    super(`Response body exceeds ${maximumBytes} bytes`);
-  }
-}
-
-/** Response collection stopped because its shared signal aborted. */
-export class WebResponseAborted extends Error {
-  readonly _tag = "WebResponseAborted" as const;
-  readonly operation = "readResponseBody" as const;
-
-  constructor(cause: unknown) {
-    super("Response body read aborted", { cause });
-  }
-}
-
-/** A response stream failed while its owner was collecting bytes. */
-export class WebResponseReadFailed extends Error {
-  readonly _tag = "WebResponseReadFailed" as const;
-  readonly operation = "readResponseBody" as const;
-
-  constructor(cause: unknown) {
-    super("Response body read failed", { cause });
-  }
-}
-
-/** Expected failure while collecting a bounded Web Search or Web Fetch response body. */
-export type WebResponseBodyError = WebResponseTooLarge | WebResponseAborted | WebResponseReadFailed;
-
-/** Bounded bytes or an expected response-reading failure. */
-export type WebResponseBodyResult =
-  | { readonly _tag: "ok"; readonly value: Uint8Array }
-  | { readonly _tag: "err"; readonly error: WebResponseBodyError };
-
 async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
   if (body === null) return;
   await body.cancel().catch(() => undefined);
@@ -46,10 +8,10 @@ export async function readBoundedResponseBody(
   response: Response,
   maximumBytes: number,
   signal?: AbortSignal,
-): Promise<WebResponseBodyResult> {
+): Promise<Uint8Array> {
   if (signal?.aborted) {
     await cancelBody(response.body);
-    return { _tag: "err", error: new WebResponseAborted(signal.reason) };
+    throw new Error("Response body read aborted", { cause: signal.reason });
   }
 
   const declaredLength = response.headers.get("content-length");
@@ -61,10 +23,10 @@ export async function readBoundedResponseBody(
     parsedLength > maximumBytes
   ) {
     await cancelBody(response.body);
-    return { _tag: "err", error: new WebResponseTooLarge(maximumBytes) };
+    throw new Error(`Response body exceeds ${maximumBytes} bytes`);
   }
 
-  if (response.body === null) return { _tag: "ok", value: new Uint8Array() };
+  if (response.body === null) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
@@ -75,26 +37,23 @@ export async function readBoundedResponseBody(
 
   try {
     while (true) {
-      const read = await reader.read().then(
-        (value) => ({ _tag: "ok" as const, value }),
-        (cause: unknown) => ({ _tag: "err" as const, cause }),
-      );
-      if (read._tag === "err") {
-        return signal?.aborted
-          ? { _tag: "err", error: new WebResponseAborted(signal.reason) }
-          : { _tag: "err", error: new WebResponseReadFailed(read.cause) };
-      }
+      const read = await reader.read().catch((cause: unknown): never => {
+        throw new Error(
+          signal?.aborted ? "Response body read aborted" : "Response body read failed",
+          { cause: signal?.aborted ? signal.reason : cause },
+        );
+      });
       if (signal?.aborted) {
-        return { _tag: "err", error: new WebResponseAborted(signal.reason) };
+        throw new Error("Response body read aborted", { cause: signal.reason });
       }
-      if (read.value.done) break;
-      if (totalBytes + read.value.value.byteLength > maximumBytes) {
+      if (read.done) break;
+      if (totalBytes + read.value.byteLength > maximumBytes) {
         await reader.cancel().catch(() => undefined);
-        return { _tag: "err", error: new WebResponseTooLarge(maximumBytes) };
+        throw new Error(`Response body exceeds ${maximumBytes} bytes`);
       }
-      if (read.value.value.byteLength === 0) continue;
-      chunks.push(read.value.value);
-      totalBytes += read.value.value.byteLength;
+      if (read.value.byteLength === 0) continue;
+      chunks.push(read.value);
+      totalBytes += read.value.byteLength;
     }
   } finally {
     signal?.removeEventListener("abort", abortRead);
@@ -107,5 +66,5 @@ export async function readBoundedResponseBody(
     body.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return { _tag: "ok", value: body };
+  return body;
 }

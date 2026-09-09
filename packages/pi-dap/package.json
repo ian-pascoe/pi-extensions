@@ -36,7 +36,7 @@
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
-  "dependencies": {
+  "devDependencies": {
     "@vscode/debugprotocol": "^1.68.0"
   },
   "peerDependencies": {
