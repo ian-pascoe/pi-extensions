@@ -18,6 +18,7 @@ context relevant to the work:
 | `@ian-pascoe/pi-web-tools`          | [`packages/pi-web-tools/CONTEXT.md`](packages/pi-web-tools/CONTEXT.md)                   | Public web search and retrieval         |
 | `@ian-pascoe/pi-todo`               | [`packages/pi-todo/CONTEXT.md`](packages/pi-todo/CONTEXT.md)                             | Minimal session work tracking           |
 | `@ian-pascoe/pi-context-management` | [`packages/pi-context-management/CONTEXT.md`](packages/pi-context-management/CONTEXT.md) | Session Notes, History, and Rollover    |
+| `@ian-pascoe/pi-skills-selector`    | [`packages/pi-skills-selector/CONTEXT.md`](packages/pi-skills-selector/CONTEXT.md)       | Explicit Skill References in user input |
 
 `pi-context-management` implements session-local Notes, selected-branch History retrieval,
 and native Context Checkpoints for capability-compatible Pi runtimes.
