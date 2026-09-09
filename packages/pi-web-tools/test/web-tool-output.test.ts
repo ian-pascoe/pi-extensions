@@ -13,12 +13,6 @@ afterEach(async () => {
   );
 });
 
-async function outputFor(text: string): Promise<WebToolOutput> {
-  const result = await createWebToolOutput(text);
-  if (result._tag === "err") throw result.error;
-  return result.value;
-}
-
 async function recordSpill(result: WebToolOutput): Promise<string> {
   const path = result.truncation?.fullOutputPath;
   if (path === undefined) throw new Error("Expected Web Tool output spill");
@@ -33,7 +27,7 @@ describe("Web Tool output", () => {
     const previousTemporaryDirectory = process.env.TMPDIR;
     process.env.TMPDIR = isolatedTemporaryDirectory;
     try {
-      const result = await outputFor("small result");
+      const result = await createWebToolOutput("small result");
 
       expect(result).toEqual({ content: "small result" });
       expect(await readdir(isolatedTemporaryDirectory)).toEqual([]);
@@ -45,7 +39,7 @@ describe("Web Tool output", () => {
 
   test("bounds byte-truncated content and saves the exact complete text privately", async () => {
     const complete = "😀".repeat(DEFAULT_MAX_BYTES);
-    const result = await outputFor(complete);
+    const result = await createWebToolOutput(complete);
     const path = await recordSpill(result);
 
     expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
@@ -68,7 +62,7 @@ describe("Web Tool output", () => {
       { length: DEFAULT_MAX_LINES + 20 },
       (_, index) => `line ${index}`,
     ).join("\n");
-    const result = await outputFor(complete);
+    const result = await createWebToolOutput(complete);
     const path = await recordSpill(result);
 
     expect(result.content.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);

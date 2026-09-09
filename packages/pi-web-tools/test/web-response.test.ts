@@ -28,9 +28,7 @@ describe("bounded Web response bodies", () => {
       responseFromChunks([new TextEncoder().encode("ab"), new TextEncoder().encode("cd")]),
       4,
     );
-    expect(result._tag).toBe("ok");
-    if (result._tag === "err") throw result.error;
-    expect(new TextDecoder().decode(result.value)).toBe("abcd");
+    expect(new TextDecoder().decode(result)).toBe("abcd");
   });
 
   test("rejects and cancels a declared overflow before reading", async () => {
@@ -39,10 +37,9 @@ describe("bounded Web response bodies", () => {
       cancelled = true;
     });
 
-    await expect(readBoundedResponseBody(response, 5)).resolves.toMatchObject({
-      _tag: "err",
-      error: { _tag: "WebResponseTooLarge" },
-    });
+    await expect(readBoundedResponseBody(response, 5)).rejects.toThrow(
+      "Response body exceeds 5 bytes",
+    );
     expect(cancelled).toBe(true);
   });
 
@@ -61,10 +58,9 @@ describe("bounded Web response bodies", () => {
       }),
     );
 
-    await expect(readBoundedResponseBody(response, 5)).resolves.toMatchObject({
-      _tag: "err",
-      error: { _tag: "WebResponseTooLarge" },
-    });
+    await expect(readBoundedResponseBody(response, 5)).rejects.toThrow(
+      "Response body exceeds 5 bytes",
+    );
     expect(pulls).toBeLessThan(4);
     expect(cancelled).toBe(true);
   });
@@ -83,10 +79,19 @@ describe("bounded Web response bodies", () => {
     const reading = readBoundedResponseBody(response, 5, controller.signal);
     controller.abort();
 
-    await expect(reading).resolves.toMatchObject({
-      _tag: "err",
-      error: { _tag: "WebResponseAborted" },
-    });
+    await expect(reading).rejects.toThrow("Response body read aborted");
     expect(cancelled).toBe(true);
+  });
+
+  test("rejects failed response streams", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error("transport details"));
+        },
+      }),
+    );
+
+    await expect(readBoundedResponseBody(response, 5)).rejects.toThrow("Response body read failed");
   });
 });

@@ -26,38 +26,23 @@ export const WebToolTruncationDetailsSchema = Type.Object(
 /** Exact complete-output metadata returned when a Web Tool result is truncated. */
 export type WebToolTruncationDetails = Static<typeof WebToolTruncationDetailsSchema>;
 
-/** A complete Web Tool result could not be saved after model-visible truncation. */
-export class WebToolOutputError extends Error {
-  readonly _tag = "WebToolOutputFailed" as const;
-  readonly operation = "spillWebToolOutput" as const;
-
-  constructor(cause: unknown) {
-    super("Unable to save complete Web Tool output", { cause });
-  }
-}
-
 /** Model-visible Web Tool text plus optional metadata for its complete private spill. */
 export type WebToolOutput = {
   readonly content: string;
   readonly truncation?: WebToolTruncationDetails;
 };
 
-/** Bounded Web Tool output or an expected private-spill failure. */
-export type WebToolOutputResult =
-  | { readonly _tag: "ok"; readonly value: WebToolOutput }
-  | { readonly _tag: "err"; readonly error: WebToolOutputError };
-
 async function removeTemporaryDirectory(directory: string): Promise<void> {
   await rm(directory, { recursive: true, force: true }).catch(() => undefined);
 }
 
 /** Apply Pi's output limits and save complete truncated text to a private temporary file. */
-export async function createWebToolOutput(text: string): Promise<WebToolOutputResult> {
+export async function createWebToolOutput(text: string): Promise<WebToolOutput> {
   const initial = truncateHead(text, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  if (!initial.truncated) return { _tag: "ok", value: { content: text } };
+  if (!initial.truncated) return { content: text };
 
   let directory: string | undefined;
   let fullOutputPath: string;
@@ -70,19 +55,14 @@ export async function createWebToolOutput(text: string): Promise<WebToolOutputRe
     });
   } catch (cause) {
     if (directory !== undefined) await removeTemporaryDirectory(directory);
-    return { _tag: "err", error: new WebToolOutputError(cause) };
+    throw new Error("Unable to save complete Web Tool output", { cause });
   }
 
   const largestNotice = `[Output truncated: showing ${initial.totalLines} of ${initial.totalLines} lines (${initial.totalBytes} of ${initial.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
   const visibleBytes = DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2;
   if (visibleBytes < 0) {
     await removeTemporaryDirectory(directory);
-    return {
-      _tag: "err",
-      error: new WebToolOutputError(
-        new Error("Web Tool truncation notice exceeds Pi output limit"),
-      ),
-    };
+    throw new Error("Web Tool truncation notice exceeds Pi output limit");
   }
   const visible = truncateHead(text, {
     maxBytes: visibleBytes,
@@ -97,10 +77,7 @@ export async function createWebToolOutput(text: string): Promise<WebToolOutputRe
   };
   const notice = `[Output truncated: showing ${visible.outputLines} of ${visible.totalLines} lines (${visible.outputBytes} of ${visible.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
   return {
-    _tag: "ok",
-    value: {
-      content: visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`,
-      truncation,
-    },
+    content: visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`,
+    truncation,
   };
 }
