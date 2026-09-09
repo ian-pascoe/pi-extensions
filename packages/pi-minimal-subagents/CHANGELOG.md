@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.7.1
+
+### Patch Changes
+
+- 461d335: Snapshot agents in registry creation records so later live-agent mutations cannot invalidate in-memory replay or trigger cascading invalid-record warnings.
+
 ## 0.7.0
 
 ### Minor Changes
