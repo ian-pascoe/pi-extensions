@@ -24,6 +24,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-web-tools`](packages/pi-web-tools)                   | Public web search and textual URL retrieval.                | `pi install npm:@ian-pascoe/pi-web-tools`          |
 | [`@ian-pascoe/pi-todo`](packages/pi-todo)                             | Minimal session-native Todo List for agents.                | `pi install npm:@ian-pascoe/pi-todo`               |
 | [`@ian-pascoe/pi-context-management`](packages/pi-context-management) | Session Notes, History retrieval, and native Rollover.      | `pi install npm:@ian-pascoe/pi-context-management` |
+| [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.      | `pi install npm:@ian-pascoe/pi-skills-selector`    |
 
 The extensions share terminal capability decisions through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
@@ -72,6 +73,7 @@ packages/pi-mcp/src/index.ts
 packages/pi-web-tools/src/index.ts
 packages/pi-todo/src/index.ts
 packages/pi-context-management/src/index.ts
+packages/pi-skills-selector/src/index.ts
 ```
 
 Every selectable configuration skill path is:
@@ -90,6 +92,7 @@ packages/pi-mcp/skills/pi-mcp/SKILL.md
 packages/pi-web-tools/skills/pi-web-tools/SKILL.md
 packages/pi-todo/skills/pi-todo/SKILL.md
 packages/pi-context-management/skills/pi-context-management/SKILL.md
+packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -126,7 +129,7 @@ provenance.
 
 Node `22.19.0` and pnpm `11.21.0` are required.
 
-Published packages support Node `>=22.19.0` and Pi `>=0.84.1`, except Pi Context Management, which requires exactly Pi `0.85.1`.
+Published packages support Node `>=22.19.0` and Pi `>=0.84.1`, except Pi Context Management, which requires exactly Pi `0.85.1`, and Pi Skills Selector, which requires Pi `>=0.85.1` for stacked autocomplete.
 
 ```bash
 pnpm install
@@ -154,6 +157,8 @@ pnpm --filter @ian-pascoe/pi-todo typecheck
 pnpm --filter @ian-pascoe/pi-todo test
 pnpm --filter @ian-pascoe/pi-context-management typecheck
 pnpm --filter @ian-pascoe/pi-context-management test
+pnpm --filter @ian-pascoe/pi-skills-selector typecheck
+pnpm --filter @ian-pascoe/pi-skills-selector test
 pnpm --filter @ian-pascoe/pi-utils test
 ```
 

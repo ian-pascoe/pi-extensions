@@ -242,6 +242,15 @@ importers:
         specifier: ^4.1.4
         version: 4.1.4
 
+  packages/pi-skills-selector:
+    dependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.85.1(ws@8.21.3)(zod@4.5.4)
+      '@earendil-works/pi-tui':
+        specifier: '*'
+        version: 0.85.1
+
   packages/pi-todo:
     dependencies:
       '@earendil-works/pi-ai':
