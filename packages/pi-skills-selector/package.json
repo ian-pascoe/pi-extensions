@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-skills-selector",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "description": "Native Skill Reference autocomplete and link conversion for Pi user input.",
   "keywords": [
