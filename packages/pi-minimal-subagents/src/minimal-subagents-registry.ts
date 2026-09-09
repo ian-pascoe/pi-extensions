@@ -157,7 +157,7 @@ export function createRegistryEvent(
       };
     }
     case "agent-created":
-      return { ...envelope, event, agent: data.agent };
+      return { ...envelope, event, agent: structuredClone(data.agent) };
     case "turn-started":
       return {
         ...envelope,
