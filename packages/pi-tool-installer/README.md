@@ -51,6 +51,9 @@ The first acquisition downloads a native mise release binary and verifies its
 GitHub-published SHA-256 digest. Component acquisition and archive extraction are
 delegated to mise's backends. This is not a claim of independently verified
 provenance for every backend or reproducible transitive dependencies.
+An optional `GITHUB_TOKEN` authenticates only the helper's GitHub API metadata
+request, avoiding shared-IP API limits. It is not forwarded to artifact downloads
+or mise subprocesses; metadata redirects are rejected rather than forwarding it.
 
 Cancellation stops the acquisition process tree. Installed-only resolution does
 not download the helper; explicit updates remain deliberate network actions.
