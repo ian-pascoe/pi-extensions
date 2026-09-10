@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-todo
 
+## 0.1.2
+
+### Patch Changes
+
+- d839d25: Preserve conversation cache prefixes by projecting immutable Todo snapshots at stable journal positions, including across tool groups and compaction.
+
 ## 0.1.1
 
 ### Patch Changes
