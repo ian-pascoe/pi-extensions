@@ -27,7 +27,7 @@ type RegisteredTodoTool = {
   execute(
     toolCallId: string,
     params: TodoActionInput,
-    signal: undefined,
+    signal: AbortSignal | undefined,
     onUpdate: undefined,
     context: ExtensionContext,
   ): Promise<TodoToolResult>;
@@ -57,6 +57,8 @@ class TodoExtensionHarness {
   readonly handlers = new Map<string, ExtensionEventHandler>();
   readonly notifications: Array<{ readonly message: string; readonly type?: string }> = [];
   confirmResult = true;
+  failAppend = false;
+  aborted = false;
   widget: string[] | TodoWidgetFactory | undefined;
   private registeredCommand: RegisteredTodoCommand | undefined;
   private registeredTool: RegisteredTodoTool | undefined;
@@ -64,6 +66,7 @@ class TodoExtensionHarness {
   constructor() {
     const api = {
       appendEntry: (customType: string, data: JsonValue) => {
+        if (this.failAppend) throw new Error("disk full");
         this.entries.push({ customType, data });
       },
       on: (event: string, handler: ExtensionEventHandler) => {
@@ -115,7 +118,10 @@ class TodoExtensionHarness {
     const context = {
       hasUI: mode === "tui",
       mode,
-      sessionManager: { getBranch: () => branch },
+      sessionManager: { getBranch: () => branch, getHeader: () => branch },
+      abort: () => {
+        this.aborted = true;
+      },
       ui: {
         confirm: async () => this.confirmResult,
         notify: (message: string, type?: string) => {
@@ -303,7 +309,7 @@ describe("Pi Todo extension", () => {
     expect(harness.entries).toHaveLength(0);
   });
 
-  test("restores the latest valid branch snapshot and appends cache-friendly model context", async () => {
+  test("restores the latest valid branch snapshot at its immutable journal position", async () => {
     const validStateEntry = {
       type: "custom",
       id: "state-1",
@@ -349,10 +355,57 @@ describe("Pi Todo extension", () => {
           content:
             "Todo List:\n[ ] #2 Pending work\n[>] #4 Current work\n    Keep the cache warm.\n    Then continue.",
           display: false,
-          timestamp: 0,
+          timestamp: Date.parse(validStateEntry.timestamp),
+          details: { version: 1, stateEntryId: "state-1", checkpointId: null },
         },
       ],
     });
+  });
+
+  test("canceled execution does not acknowledge or persist a mutation", async () => {
+    const harness = new TodoExtensionHarness();
+    await expect(
+      harness.tool.execute(
+        "canceled",
+        { action: "add", title: "Not started" },
+        AbortSignal.abort(),
+        undefined,
+        harness.context(),
+      ),
+    ).rejects.toThrow();
+    expect(harness.entries).toEqual([]);
+    expect(resultText(await harness.execute({ action: "list" }, harness.context()))).toBe(
+      "Todo List is empty",
+    );
+  });
+
+  test("failed writes preserve acknowledged widget state and quarantine restoration", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context([], "tui");
+    await harness.execute({ action: "add", title: "Acknowledged" }, context);
+    const before = renderTodoWidget(harness, 80);
+    harness.failAppend = true;
+    await expect(harness.execute({ action: "add", title: "Not saved" }, context)).rejects.toThrow(
+      "disk full",
+    );
+    expect(harness.entries).toHaveLength(1);
+    expect(renderTodoWidget(harness, 80)).toEqual(before);
+    expect(harness.aborted).toBe(true);
+    await expect(
+      harness.emit("session_start", { type: "session_start", reason: "reload" }, context),
+    ).rejects.toThrow("Todo is disabled in this loaded session");
+    await expect(
+      harness.emit("context", { type: "context", messages: [] }, context),
+    ).rejects.toThrow("Todo is disabled in this loaded session");
+    await expect(harness.execute({ action: "list" }, context)).rejects.toThrow(
+      "Todo is disabled in this loaded session",
+    );
+    const reopened = new TodoExtensionHarness();
+    const cleanContext = reopened.context();
+    await reopened.emit("session_start", { type: "session_start", reason: "resume" }, cleanContext);
+    expect(resultText(await reopened.execute({ action: "list" }, cleanContext))).toBe(
+      "Todo List is empty",
+    );
   });
 
   test("renders a compact Todo Widget and confirms manual clearing", async () => {

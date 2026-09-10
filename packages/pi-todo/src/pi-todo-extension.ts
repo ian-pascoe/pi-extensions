@@ -2,15 +2,12 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { Value } from "typebox/value";
+import { projectTodoContext, todoStateFromEntry } from "./todo-context.js";
 import {
   applyTodoAction,
   createEmptyTodoState,
-  formatTodoList,
-  parseTodoStateSnapshot,
   TODO_ACTIONS,
   TODO_STATUSES,
-  TodoStateRecord,
   todoStatusMarker,
   type TodoActionInput,
   type TodoStateSnapshot,
@@ -20,6 +17,17 @@ import {
 } from "./todo-list.js";
 
 const TODO_STATE_ENTRY_TYPE = "pi-todo-state";
+const JOURNAL_FAULT = Symbol.for("@ian-pascoe/pi-todo/journal-fault");
+
+function assertTodoJournalReadable(context: ExtensionContext): void {
+  const manager = context.sessionManager;
+  const marker = Object.getOwnPropertyDescriptor(manager, JOURNAL_FAULT);
+  if (marker !== undefined && marker.value === manager.getHeader()) {
+    throw new Error(
+      "Todo journal write failed; Todo is disabled in this loaded session, including after /reload",
+    );
+  }
+}
 const TODO_WIDGET_ID = "pi-todo";
 const TODO_WIDGET_STATUS_ORDER: readonly TodoStatus[] = ["active", "pending", "completed"];
 const TODO_COLLAPSED_TASK_LIMIT = 5;
@@ -44,14 +52,7 @@ const TodoParameters = Type.Object({
 
 function restoreTodoState(context: ExtensionContext): TodoStateSnapshot {
   for (const entry of context.sessionManager.getBranch().toReversed()) {
-    if (
-      entry.type !== "custom" ||
-      entry.customType !== TODO_STATE_ENTRY_TYPE ||
-      !Value.Check(TodoStateRecord, entry.data)
-    ) {
-      continue;
-    }
-    const snapshot = parseTodoStateSnapshot(entry.data);
+    const snapshot = todoStateFromEntry(entry);
     if (snapshot) return snapshot;
   }
   return createEmptyTodoState();
@@ -113,32 +114,43 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     );
   };
   const commitTodoState = (snapshot: TodoStateSnapshot, context: ExtensionContext): void => {
+    try {
+      pi.appendEntry(TODO_STATE_ENTRY_TYPE, snapshot);
+    } catch (cause) {
+      // Todo-owned metadata survives /reload; no Pi-owned journal or agent fields are changed.
+      Object.defineProperty(context.sessionManager, JOURNAL_FAULT, {
+        value: context.sessionManager.getHeader(),
+        configurable: true,
+      });
+      context.abort();
+      throw cause;
+    }
     state = snapshot;
-    pi.appendEntry(TODO_STATE_ENTRY_TYPE, state);
     updateTodoWidget(context);
   };
   const runTodoAction = (input: TodoActionInput, context: ExtensionContext) => {
+    assertTodoJournalReadable(context);
     const result = applyTodoAction(state, input);
     if (!result.ok) throw result.error;
     if (result.state !== state) commitTodoState(result.state, context);
     return result;
   };
   const restoreState = (context: ExtensionContext): void => {
+    assertTodoJournalReadable(context);
     state = restoreTodoState(context);
     updateTodoWidget(context);
   };
   pi.on("session_start", (_event, context) => restoreState(context));
   pi.on("session_tree", (_event, context) => restoreState(context));
-  pi.on("context", (event) => {
-    if (state.tasks.length === 0) return;
-    const todoListMessage = {
-      role: "custom",
-      customType: "pi-todo-context",
-      content: `Todo List:\n${formatTodoList(state.tasks)}`,
-      display: false,
-      timestamp: 0,
-    } as const;
-    return { messages: [...event.messages, todoListMessage] };
+  pi.on("context", (event, context) => {
+    try {
+      assertTodoJournalReadable(context);
+      return { messages: projectTodoContext(context.sessionManager.getBranch(), event.messages) };
+    } catch (cause) {
+      // Pi logs context exceptions and continues; abort the active run as well.
+      context.abort();
+      throw cause;
+    }
   });
 
   pi.registerTool<typeof TodoParameters, TodoToolDetails | undefined>({
@@ -147,7 +159,8 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     description: "Manage the current session branch's Todo List.",
     parameters: TodoParameters,
     executionMode: "sequential",
-    async execute(_toolCallId, params, _signal, _onUpdate, context) {
+    async execute(_toolCallId, params, signal, _onUpdate, context) {
+      signal?.throwIfAborted();
       const result = runTodoAction(params, context);
       return {
         content: [{ type: "text", text: result.message }],

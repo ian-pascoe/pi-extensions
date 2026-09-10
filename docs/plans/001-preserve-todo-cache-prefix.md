@@ -1,161 +1,99 @@
 # Plan 001: Preserve Todo conversation cache prefixes
 
-> Follow the steps and verification gates in order. Do not implement outside the scope below. On completion, update this plan's row in `docs/plans/README.md` unless the coordinating reviewer owns that file.
->
-> **Drift check:** `git diff --stat 127e85a..HEAD -- packages/pi-todo packages/pi-context-management/test/context-coexistence.test.ts packages/pi-context-management/test/sdk-harness.ts`
-> Compare any changed files against the excerpts before proceeding. Reconcile intentional prerequisite changes; stop on unexplained behavioral drift.
+> Revised implementation approved after the original non-triggering message probe failed. The coordinating reviewer owns the status row in `docs/plans/README.md`, independent review, and final commit.
 
-## Status
+## Status and scope
 
-- Priority: P1
-- Effort: M
-- Risk: MED — request ordering, restoration, and compaction
-- Depends on: none
-- Category: perf / bug
-- Planned at: `127e85a`, 2026-09-09
+- **DONE — 120 tests, both package typechecks, scoped lint/format, and independent standards/spec review pass. Recovery was explicitly deferred by the user; no upstream changes.**
+- Priority: P1; effort: M; risk: MED (ordering, restoration, compaction)
+- Depends on: none; category: perf / bug
+- Planned at `127e85a`, 2026-09-09; diagnostic baseline `17d0643`
+- Implementation verification targets installed Pi 0.85.1. No provider cache-hit improvement is claimed.
 
-## Why this matters
-
-Todo currently appends a temporary snapshot before every model request. Pi 0.85.1's Anthropic serializer marks the final user block as its conversation cache write endpoint. The next request removes that snapshot from its previous position and moves it to the new tail. Even when Tasks do not change, the previously written conversational prefix is missing. A stable byte prefix is insufficient if no cache entry was written at that endpoint.
-
-The fix must preserve old model-visible snapshots, publish new state only when necessary, and still make the correct Todo List available immediately after Rollover. It must not trade away branching or CodeMode correctness for caching. This plan does not claim measured provider cache-hit improvements; its gate is an offline serialized-prefix regression.
-
-## Current state and contracts
-
-- `packages/pi-todo/src/pi-todo-extension.ts:115–125` stores state through `pi.appendEntry("pi-todo-state", state)` inside `commitTodoState`. `runTodoAction` is shared by the direct tool, nested execution through CodeMode's wrapped registry, and `/todo clear`.
-- `pi-todo-extension.ts:132–142` currently contains:
-
-  ```ts
-  pi.on("context", (event) => {
-    if (state.tasks.length === 0) return;
-    const todoListMessage = {
-      role: "custom",
-      customType: "pi-todo-context",
-      content: `Todo List:\n${formatTodoList(state.tasks)}`,
-      display: false,
-      timestamp: 0,
-    } as const;
-    return { messages: [...event.messages, todoListMessage] };
-  });
-  ```
-
-- `todo-list.ts` owns `TodoStateSnapshot`, `TodoStateRecord`, validation, numeric ordering, and `formatTodoList`. Reuse them. `applyTodoAction` is pure; do not move Pi effects into it.
-- `CONTEXT.md` defines **Task**, **Task Status**, and **Todo List**. Preserve unconstrained status changes, duplicate titles, flat Tasks, and current numeric ID semantics.
-- `README.md` currently claims hidden tail context preserves the cacheable prefix. Replace that inaccurate paragraph when implementing.
-- `test/pi-todo-extension.test.ts:306` tests a purported cache-friendly projection, but not two growing serialized requests. Its harness records only the current small ExtensionAPI surface.
-- `packages/pi-context-management/test/context-coexistence.test.ts:9–35` proves real Todo state survives native Rollover and currently requires _no_ persisted `pi-todo-context` custom message. That assertion must change, not be retained as an architectural requirement.
-- Pi custom **entries** are model-invisible; custom **messages** are persisted and become user messages during `convertToLlm`.
-- Installed Pi `dist/core/agent-session.js:1098–1150` implements `sendCustomMessage`: explicit `{ triggerTurn: false }` while streaming defers a custom message until `turn_end`, after the entire assistant/tool-result group. It appends immediately without starting a turn when idle. Do not use implicit steering or `triggerTurn: true` for Todo updates.
-- Context Management can commit a checkpoint inside its context transform (`src/checkpoint-adapter.ts:317–344,389–396`). That path replaces active messages without emitting the ordinary `session_compact` lifecycle event. A `session_compact` listener alone is therefore not a complete Todo restoration solution.
-
-## Chosen implementation shape
-
-1. Keep `pi-todo-state` entries as the authoritative, backward-compatible state journal.
-2. After a successfully committed _model-visible_ state change, publish a full, immutable, hidden `pi-todo-context` custom message with `pi.sendMessage(..., { triggerTurn: false })`. Use `formatTodoList`; include the explicit empty state after clear/removing the final Task. Retain old messages unchanged. Deduplicate identical formatted state, not only object identity: an update that writes the same values need not publish another snapshot.
-3. Bootstrap a legacy/restored branch once at a safe `before_agent_start` message boundary if the active context lacks the applicable full snapshot. Return the message from that hook rather than triggering a second run. Do not publish an empty snapshot on a brand-new empty session. A previous nonempty snapshot followed by a persisted clear must, however, be superseded by an explicit empty snapshot.
-4. Preserve a **pure, fixed-position checkpoint baseline** projection for compaction, instead of the old moving live-state suffix. Derive the baseline from the persisted Todo state immediately **before the selected checkpoint's `firstKeptEntryId`**, and insert it immediately after that checkpoint's `compactionSummary`, before its retained Tail. Later retained/new durable Todo snapshots supersede it chronologically. The baseline must depend only on the immutable checkpoint cutoff and earlier journal records, never on mutable current state. Reapplying it on later requests produces identical content at the same position; another actual checkpoint is the only reason to replace it.
-5. If checkpoint/cutoff-to-message mapping cannot be demonstrated against the real SDK, stop after the probe below. Do not invent synthetic IDs, rebuild another extension's messages, write raw session files, or mutate AgentSession internals from Todo.
-
-The checkpoint baseline is derived from existing durable journal data, not a new mutable summary. This is intentionally narrower than a general context-projection framework.
-
-## Scope
-
-Only these paths may change:
+Allowed paths:
 
 - `packages/pi-todo/src/pi-todo-extension.ts`
-- `packages/pi-todo/src/todo-context.ts` — optional new package-local projection helper if keeping the logic in the extension obscures it
+- `packages/pi-todo/src/todo-context.ts`
 - `packages/pi-todo/test/pi-todo-extension.test.ts`
-- `packages/pi-todo/test/todo-context.test.ts` — optional pure projection tests
+- `packages/pi-todo/test/todo-context.test.ts`
 - `packages/pi-todo/README.md`
 - `packages/pi-context-management/test/context-coexistence.test.ts`
-- `packages/pi-context-management/test/sdk-harness.ts` — only test support for recording full contracts/request projections
-- `packages/pi-context-management/test/prompt-cache-prefix.test.ts` — new offline integration/serializer regressions
-- This plan's status row in `docs/plans/README.md`
+- `packages/pi-context-management/test/sdk-harness.ts` (test support only)
+- `packages/pi-context-management/test/prompt-cache-prefix.test.ts`
+- This plan and its coordinating-reviewer-owned index row
 
-Out of scope: Todo schema/actions/ID semantics, widget rendering, Context Management production adapter, provider production adapters, CodeMode production code, other extensions, dependency additions, release files/version bumps, external state files, and cache-retention configuration.
+No Todo schema/action/ID changes, widget redesign, Context Management production edits, provider or CodeMode production edits, dependencies, release/version files, external state files, or private Pi journal/agent mutation.
 
-## Commands
+## Problem and rejected design
 
-Run from the repository root. Dependencies already exist. The audit observed `pnpm exec` automatically running installation/preparation and refreshing reference repositories, so use the installed binaries for these checks; do not reinstall as part of this plan.
+The original Todo transform appends mutable current state at the end of every request. Pi's Anthropic serializer marks the final user block as a conversation cache write endpoint. On the next request the former snapshot is removed from that endpoint and placed at the new tail, breaking the written prefix even when Tasks do not change.
 
-| Purpose             | Command                                                                                                     | Success  |
-| ------------------- | ----------------------------------------------------------------------------------------------------------- | -------- |
-| Todo tests          | `./node_modules/.bin/vitest run --config "$PWD/vitest.config.ts" --root packages/pi-todo`                   | All pass |
-| Context integration | `./node_modules/.bin/vitest run --config "$PWD/vitest.config.ts" --root packages/pi-context-management`     | All pass |
-| Todo types          | `./node_modules/.bin/tsc --noEmit -p packages/pi-todo/tsconfig.json`                                        | Exit 0   |
-| Context types       | `./node_modules/.bin/tsc --noEmit -p packages/pi-context-management/tsconfig.json`                          | Exit 0   |
-| Lint                | `./node_modules/.bin/oxlint packages/pi-todo/src packages/pi-todo/test packages/pi-context-management/test` | Exit 0   |
-| Format              | `./node_modules/.bin/oxfmt --check packages/pi-todo packages/pi-context-management/test`                    | Exit 0   |
+The initial plan proposed `pi.sendMessage(..., { triggerTurn: false })` after a successful state mutation. The real-SDK probe in diagnostic commit `17d0643` proved that Pi records that message after all sibling tool results, but its running agent loop has a separate message array: the next automatic request omits the message, while a later user prompt includes it. That path cannot meet immediate delivery. The approved revision uses the existing state journal directly, not a second persistence channel or bootstrap message.
 
-Source-TypeScript conventions: explicit `.js` imports under NodeNext, TypeBox boundary validation, Vitest behavior tests, and narrow test fakes. Match the existing Todo harness and Context Management's real-SDK harness rather than introducing a framework.
+## Approved design
 
-## Steps
+1. **One authoritative journal.** Keep backward-compatible immutable `pi-todo-state` records. Reuse `TodoStateRecord`, `parseTodoStateSnapshot`, and `formatTodoList`. The shared `runTodoAction` covers direct tools, CodeMode nested calls, and manual clear. Append successfully before advancing local state or the widget. No `sendMessage`, extra model turn, or mutable last-sent flag.
+2. **Stable full snapshots.** Purely project changed formatted state at its immutable journal position. Retain previous snapshots byte-for-byte. Deduplicate only consecutive identical formatted states, including same-value updates and repeated clears. Clear/removing the final Task supersedes prior nonempty state explicitly. A brand-new empty session has no snapshot.
+3. **Complete tool groups.** A mutation between an assistant's tool calls and its results waits until all that group's results. Multiple mutations remain chronological, including multiple direct calls and a CodeMode Cell that mutates then fails. Match the complete anchor message, not a globally unique tool-call ID assumption.
+4. **Fixed checkpoint baseline.** Read the selected branch's latest compaction and locate its `firstKeptEntryId`. Project the latest valid state strictly before the cutoff immediately after the matching `compactionSummary`. Retained states and later changes supersede it at their respective boundaries. Never derive the baseline from mutable current state. Reapplication is idempotent.
+5. **Preserve foreign context.** Derive anchor messages using the older public standalone `buildSessionContext` export. Do not rebuild or reorder incoming foreign projections. Remove/recreate only Todo projections carrying validated version-1 details (`stateEntryId`, nullable `checkpointId`). A missing/ambiguous anchor or incomplete mutation tool group is an explicit error, not guessed placement.
+6. **Restoration.** Legacy journals require no migration/bootstrap record: they yield the same fixed historical projections. Restore only the selected branch on session start/reload/resume/fork and tree navigation. Invalid records are ignored with the existing structural and semantic validators.
+7. **Failure quarantine.** Pi appends to its live branch before its synchronous file write can fail. Keep a Todo-owned `Symbol.for` metadata marker on the public manager keyed to its native header identity, following the repository's existing Context Store quarantine pattern. This explicitly approved metadata is not mutation of Pi-owned journal/agent fields. A failed append never advances acknowledged Todo state; all further Todo restoration/actions/context fail in that loaded session. `/reload` alone must remain quarantined. Recovery and repair of Pi's pre-existing failed-write history links are explicitly deferred, not completion gates for this cache-prefix change. Reopening is not promised to repair history. Context exceptions are swallowed by Pi, so also call public `ctx.abort()` without awaiting it. Verify the real transport observes cancellation; do not mistake a thrown transform for a stopped request.
 
-### 1. Prove the safe publication and checkpoint-baseline seams
+## Verification sequence and seams
 
-Add characterization cases to `context-coexistence.test.ts` using its real Todo loading path and `createSdkHarness`. Record custom-message events, persisted branch entries, and consecutive requests.
+The approved seams are the Todo ExtensionAPI boundary, pure package-local projection, real Pi SDK request/lifecycle behavior, and the installed offline Anthropic serializer.
 
-Prove all of the following before changing production behavior:
+### 1. Characterize before implementation
 
-- `sendMessage` with explicit `triggerTurn: false` during a direct tool execution is appended after every sibling tool result, is present before the next request, and does not create an extra request after a text-only final response.
-- The same holds when Todo is called within a CodeMode Cell, including a Cell that mutates Todo and subsequently throws.
-- The selected native compaction's `firstKeptEntryId` is findable in the selected branch, and its preceding valid `pi-todo-state` can be recovered. The corresponding incoming `compactionSummary` can be identified without reconstructing the entire request.
-- Empty Tail, nonempty Tail, a cutoff before a Todo mutation, and a cutoff after it produce the correct chronological baseline plus retained updates. Check both native `session.compact()` and Context Management's in-loop Rollover.
+Read installed Pi extension/session/compaction docs and implementation. Retain the original failed-delivery characterization as a diagnostic, not a success claim. Prove journal-derived projection after a complete sibling group remains fixed on the next user request. Prove native `session.compact()` and in-loop Context Management Rollover expose matching summary/cutoff anchors with empty and nonempty Tail. These probes passed before production edits.
 
-Read the installed Pi `docs/extensions.md` completely and the referenced session-format/compaction docs relevant to these seams. Inspect the installed implementation, not an unverified newer reference checkout.
+### 2. Red serializer regression
 
-**Verify:** Run Context integration tests above. Characterization cases pass; no external provider is called. If any seam fails, STOP and report the observed request/journal order before selecting a different design.
+Capture real SDK requests after Pi's real `convertToLlm`. Load the installed Anthropic serializer, supply a fake client, record `onPayload`, and throw an asserted sentinel before transport. Keep an ordinary-history control. Locate the previous conversational block bearing `cache_control`; compare the entire content/role prefix through that endpoint with the next request, removing only cache-control annotations. Assert stable system prompt and full tool definitions. The control passed while the old moving Todo suffix failed for its missing prior snapshot.
 
-### 2. Add regressions that fail under the moving-suffix implementation
+### 3. Implement and cover lifecycle/error behavior
 
-Create `prompt-cache-prefix.test.ts` using the real SDK harness and offline provider serialization. Obtain the Anthropic API implementation from the installed `@earendil-works/pi-ai` package (resolve its entrypoint then the internal `dist/api/anthropic-messages.js` file if the subpath is not exported). Supply a fake client and intercept `onPayload`, save the payload, then throw a sentinel error **before** transport. Assert the sentinel path; never let a real client/network call run. Convert custom messages through Pi's real `convertToLlm`.
+Required behavior gates:
 
-For two growing requests, locate the prior serialized conversational block bearing `cache_control`. Remove only cache-control annotations when comparing content/roles; assert the complete content sequence through that prior endpoint remains the next request's prefix. Keep system/tools identical. This is a structural assertion, not a simulated cache-hit percentage. Include a control case that appends ordinary history without Todo and passes.
+- Growing requests preserve written endpoints for unchanged state and actual later updates.
+- Full snapshots appear immediately after direct/multiple/sibling and nested CodeMode mutations, without splitting tool groups or introducing requests.
+- Same-value updates/list/repeated empty clear add no redundant model snapshots. Remove-final-Task and manual clear expose empty state; canceled confirmation or canceled execution changes nothing.
+- Legacy valid state, invalid records, reload/resume, fork, and tree navigation preserve only selected-branch Tasks and fixed snapshot positions.
+- Native compaction and ordinary/emergency Rollover expose correct state in the first fresh request, including empty and nonempty Tail; later mutations cannot rewrite its baseline or previous endpoint.
+- Foreign message objects/order remain untouched; repeated application is identical. Destroyed or ambiguous anchors fail explicitly.
+- Failed append does not acknowledge new state; speculative native in-memory records cannot become authoritative after `/reload`. Actual provider transport must respect context-abort failure handling. Characterize the existing host history-link failure independently of Todo; automatic recovery is outside the user-approved scope.
 
-**Verify:** Run the new file with `./node_modules/.bin/vitest run --config "$PWD/vitest.config.ts" --root packages/pi-context-management test/prompt-cache-prefix.test.ts`. The ordinary-history control passes; the unchanged-Todo growing-prefix case fails for the missing former snapshot, not an import/transport error.
+### 4. Checks, documentation, review
 
-### 3. Publish durable snapshots and implement fixed checkpoint baselines
+Run from repository root, using installed binaries (avoid `pnpm exec`, which triggered reference-repository preparation during the audit):
 
-Implement the chosen shape in the Todo extension, reusing `runTodoAction` so direct calls, CodeMode calls, and manual clear share one publication path. Commit the existing state entry successfully before publishing the model-visible snapshot. Never acknowledge publication as durable before Pi records it; retries/restoration must consult branch data rather than trust an in-memory last-sent flag alone.
+```bash
+./node_modules/.bin/vitest run --config "$PWD/vitest.config.ts" --root packages/pi-todo
+./node_modules/.bin/vitest run --config "$PWD/vitest.config.ts" --root packages/pi-context-management
+./node_modules/.bin/tsc --noEmit -p packages/pi-todo/tsconfig.json
+./node_modules/.bin/tsc --noEmit -p packages/pi-context-management/tsconfig.json
+./node_modules/.bin/oxlint packages/pi-todo/src packages/pi-todo/test packages/pi-context-management/test
+./node_modules/.bin/oxfmt --check packages/pi-todo packages/pi-context-management/test docs/plans/001-preserve-todo-cache-prefix.md
+```
 
-Restore branch state as before; detect already applicable active snapshots using their custom type and validated versioned details. Preserve historical snapshots byte-for-byte. On initialization of legacy state, publish one current snapshot at the next safe prompt boundary; on repeated reload/resume without a state/context change, publish none. Do not put state in system prompts or tool descriptions.
+Update README to describe immutable journal projections and fixed checkpoint baselines, not a cache-friendly moving suffix. Parent runs independent standards/spec review, verifies scope, updates the index only on success, and commits. Do not push or open a PR.
 
-Implement the pure checkpoint baseline only after Step 1 proves the mapping. It must be idempotent if a transform is reapplied, use the pre-cutoff state (not current state), preserve every foreign message and tool-call/result group, and be stable when current Tasks subsequently change. A baseline inserted before the retained Tail must not overwrite newer retained state logically. If no Todo state existed before the cutoff, omit the baseline rather than inventing one.
+## Known host persistence limitation — recovery deferred
 
-**Verify:** Todo tests, Context integration tests, and both typecheck commands pass. The Step 2 cache-prefix test now passes.
+Independent review and a separate coordinator run reproduced this on installed Pi 0.85.1 using the real SDK, production Todo, a scripted offline provider, and an actual EACCES append failure:
 
-### 4. Finish lifecycle and failure coverage, then correct the documentation
+1. Successfully persist and acknowledge Task A.
+2. The next Todo append updates Pi's live branch/leaf before its synchronous disk append fails.
+3. `ctx.abort()` stops provider continuation, but Pi still persists the failed tool result with the unwritten state entry as its parent, followed by an aborted assistant message.
+4. Reopening the file retains Task A in `getEntries()`, but `getBranch()` starts at the orphan error result and omits Task A and earlier conversation. Reopening alone therefore does **not** recover selected acknowledged history.
 
-Required cases:
+`context-coexistence.test.ts` starts with acknowledged state and characterizes the missing-parent chain and lost selected history. A separate native `pi.appendEntry` tool, without Todo or its context projection, reproduces the same disk failure and disconnected history. This is existing host behavior, not a cache-prefix regression. The Todo safeguards prevent the failed mutation from advancing local acknowledged state or being projected in the faulted loaded session, including after `/reload`.
 
-- Add → unrelated tool → unchanged next user turn retains the previous cache endpoint.
-- Update publishes one new full snapshot; prior snapshots remain unchanged. `list`, same-value update, and repeated empty clear do not append redundant model messages.
-- Remove-final-Task and `/todo clear` publish explicit empty state without triggering a model run; canceled confirmation publishes nothing.
-- Restart/reload/fork/tree restore the selected branch, never a sibling's Tasks, without duplicating already-active snapshots.
-- A legacy journal containing only custom state entries gets one bootstrap; invalid state records are ignored using the existing validator.
-- Ordinary and emergency Rollover preserve the latest Tasks immediately in the first fresh request, including a retained Tail with older and newer Todo snapshots. Subsequent unchanged requests retain the first fresh window's endpoint.
-- Multiple direct Todo calls, nested CodeMode calls, cancellation, and a later Cell failure never split assistant tool calls from their results or lose an acknowledged mutation.
-- Failed state-entry writes do not emit a successful new snapshot. Publication/persistence errors do not silently mark missing snapshots as delivered; unsupported recovery behavior is a STOP condition, not a reason to swallow errors.
+The user explicitly dropped recovery for now and prohibited upstream fixes. No recovery command, checkpoint carryover, branch repair, or automatic reopen guarantee is part of this change. Retain ordinary failure safeguards and this characterization; recovery is deferred, not a release blocker for the cache-prefix scope.
 
-Replace the README's moving-tail claim with the durable-update/fixed-baseline behavior. Update the existing tests that prohibit all persisted `pi-todo-context` messages. Keep widget/rendering expectations unchanged.
+## Compatibility and STOP conditions
 
-**Verify:** All six check commands above exit 0. `git diff --name-only` contains only the allowed scope.
+The local read-only reference tag `v0.84.1` was inspected: `packages/coding-agent/src/index.ts` exports `buildSessionContext`; its session manager has the same single-entry message conversion and `firstKeptEntryId` projection, stable `getHeader()` identity, and append-before-persist ordering. `ExtensionContext.abort(): void` and readonly branch/header access are present. The revised path avoids the known later `triggerTurn: false` fix entirely. Keep the advertised Pi >=0.84.1 floor; this is source compatibility verification, not an executed full 0.84.1 integration suite. Installed 0.85.1 remains the exercised runtime.
 
-## Done criteria
-
-- [ ] Both package test suites and typechecks pass; scoped lint/format pass.
-- [ ] Offline cache-endpoint regressions cover unchanged turns, actual mutations, clear, and post-Rollover.
-- [ ] Full state is delivered for direct and nested tool mutations without extra model runs.
-- [ ] No live-state snapshot is appended by every `context` invocation.
-- [ ] Any remaining context projection is a pure, fixed-position function of an immutable checkpoint cutoff and prior journal state.
-- [ ] Selected-branch restoration, legacy journals, retained Tail ordering, and failed writes are covered.
-- [ ] README no longer describes the old moving suffix as cache-preserving.
-- [ ] Scope verified and index status updated.
-
-## STOP conditions and maintenance
-
-Stop if the public non-triggering message path does not preserve the next-request ordering, the checkpoint baseline cannot be matched unambiguously, another context transform destroys its anchor, the first post-Rollover request loses current Tasks, or production changes outside scope appear necessary. Stop if any verification fails twice after reasonable correction. Do not compensate with provider-specific payload rewriting or private Todo-owned session mutations.
-
-Pi Todo currently advertises Pi >=0.84.1 while the audited runtime is 0.85.1. Verify the public APIs/semantics used against that supported floor before release; report a compatibility decision instead of silently bumping it. Future tool-execution scheduling or native compaction changes must rerun the real-SDK ordering tests. Reviewers should reject fixes that merely compare two empty-history projections or stop showing Todo state to avoid caching costs.
-
-Use a focused branch only if requested; follow existing conventional commit style (for example `fix(pi-todo): preserve conversation cache prefixes`). Do not push or open a PR without instruction.
+Stop if real-SDK ordering, immediate post-Rollover state, aborted transport, or the serialized-prefix gates fail; if another transform destroys required anchors; or if production edits outside scope become necessary. Unknown checkpoint formats without a usable journal cutoff are unsupported once Todo state exists. Do not compensate with provider payload rewriting, raw session-file writes, private Pi mutation, or silently moving state to the tail. Changes to tool scheduling or checkpoint formats must rerun these gates.
