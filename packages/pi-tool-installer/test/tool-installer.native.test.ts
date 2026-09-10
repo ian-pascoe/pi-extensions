@@ -48,7 +48,7 @@ test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
         installation,
       );
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   },
   180_000,
