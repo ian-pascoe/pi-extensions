@@ -30,6 +30,7 @@ const execute = (command: string, args: string[], options: Pick<ExecFileOptions,
   executeFile(command, args, { ...options, encoding: "utf8", timeout: 45_000 });
 const nativeExecutable = (name: string) => (process.platform === "win32" ? `${name}.exe` : name);
 let directory = "";
+let temporaryDirectory = "";
 let installer: ToolInstaller;
 
 function component(installation: ManagedInstallation, name: string): string {
@@ -53,9 +54,9 @@ function environment(installation: ManagedInstallation) {
     XDG_CONFIG_HOME: join(directory, "child-home", ".config"),
     XDG_CACHE_HOME: join(directory, "child-home", ".cache"),
     XDG_DATA_HOME: join(directory, "child-home", ".local", "share"),
-    TMPDIR: join(directory, "tmp"),
-    TEMP: join(directory, "tmp"),
-    TMP: join(directory, "tmp"),
+    TMPDIR: temporaryDirectory,
+    TEMP: temporaryDirectory,
+    TMP: temporaryDirectory,
     PATH: [...installation.binDirectories, process.env.PATH ?? ""].join(delimiter),
   };
 }
@@ -124,6 +125,7 @@ async function symbols(
     });
     expect(result).toEqual(expect.arrayContaining([expect.objectContaining({ name: "answer" })]));
   } catch (error) {
+    await client?.shutdown();
     console.error(await readFile(stderrPath, "utf8"));
     throw error;
   } finally {
@@ -180,18 +182,29 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), "pi catalog 空間 "));
     installer = new ToolInstaller(join(directory, "managed store"));
-    await Promise.all([mkdir(join(directory, "child-home")), mkdir(join(directory, "tmp"))]);
+    // js-debug's Unix socket must fit macOS's 104-byte path limit.
+    temporaryDirectory =
+      process.platform === "darwin" ? await mkdtemp("/tmp/pi-ipc-") : join(directory, "tmp");
+    await Promise.all([
+      mkdir(join(directory, "child-home")),
+      mkdir(temporaryDirectory, { recursive: true }),
+    ]);
     console.info(`Native catalog: ${process.platform}/${process.arch}; ${directory}`);
   });
 
   afterAll(async () => {
     if (!directory) return;
-    // Go's module cache contains read-only directories; do not follow tool symlinks.
-    for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
-      if (entry.isDirectory()) await chmod(join(entry.parentPath, entry.name), 0o700);
+    // Go's POSIX module cache has read-only directories; do not follow tool symlinks.
+    if (process.platform !== "win32") {
+      for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
+        if (entry.isDirectory()) await chmod(join(entry.parentPath, entry.name), 0o700);
+      }
     }
-    await rm(directory, { recursive: true, force: true });
-  }, 60_000);
+    await Promise.all([
+      rm(directory, { recursive: true, force: true }),
+      process.platform === "darwin" && rm(temporaryDirectory, { recursive: true, force: true }),
+    ]);
+  }, 180_000);
 
   test("TypeScript 7 native language server answers TypeScript and JavaScript document requests", async () => {
     const installation = await acquire("typescript", {

@@ -210,9 +210,18 @@ export class ToolInstaller {
         const fetchOptions = { headers: { Accept: "application/vnd.github+json" } };
         if (options.signal)
             fetchOptions.signal = options.signal;
-        const response = await fetch("https://api.github.com/repos/jdx/mise/releases/latest", fetchOptions);
-        if (!response.ok)
-            throw new Error(`Cannot discover mise: HTTP ${response.status}`);
+        const headers = new Headers(fetchOptions.headers);
+        if (process.env.GITHUB_TOKEN)
+            headers.set("Authorization", `Bearer ${process.env.GITHUB_TOKEN}`);
+        const response = await fetch("https://api.github.com/repos/jdx/mise/releases/latest", {
+            ...fetchOptions,
+            headers,
+            redirect: "error",
+        });
+        if (!response.ok) {
+            const rateLimit = response.headers.get("x-ratelimit-remaining");
+            throw new Error(`Cannot discover mise: HTTP ${response.status}${rateLimit === "0" ? ". GitHub API rate limit exhausted; retry later or supply GITHUB_TOKEN." : ""}`);
+        }
         const value = await response.json();
         if (!Value.Check(ReleaseSchema, value))
             throw new Error("Invalid mise release metadata");
