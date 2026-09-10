@@ -126,10 +126,11 @@ export function reconcileCoordinatorToolAccess(
   activeToolNames: readonly string[],
   enabled: boolean,
 ): string[] {
-  const ordinaryToolNames = activeToolNames.filter(
-    (toolName) => !COORDINATOR_TOOL_NAME_SET.has(toolName),
+  const missing = new Set<string>(COORDINATOR_TOOL_NAMES);
+  const retained = activeToolNames.filter(
+    (toolName) => !COORDINATOR_TOOL_NAME_SET.has(toolName) || (enabled && missing.delete(toolName)),
   );
-  return enabled ? [...ordinaryToolNames, ...COORDINATOR_TOOL_NAMES] : ordinaryToolNames;
+  return enabled ? [...retained, ...missing] : retained;
 }
 
 /** Resolve branch state over settings and include read-only Coordinator Tool activation. */

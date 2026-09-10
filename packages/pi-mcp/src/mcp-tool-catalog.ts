@@ -602,17 +602,20 @@ export class McpToolCatalog {
   }
 
   private syncActiveTools(): void {
-    const foreignActiveNames = this.pi
-      .getActiveTools()
-      .filter((name) => !this.ownedToolNames.has(name));
+    const activeNames = this.pi.getActiveTools();
     const ownActiveNames = [
       ...(this.resourceToolsActive ? RESOURCE_TOOL_NAMES : []),
       ...this.registeredServerTools
         .filter(({ prepared }) => this.serverCatalogs.get(prepared.serverId)?.active === true)
         .map(({ name }) => name),
     ];
-    const nextActiveNames = [...foreignActiveNames, ...ownActiveNames];
-    if (JSON.stringify(nextActiveNames) !== JSON.stringify(this.pi.getActiveTools())) {
+    const desiredOwnNames = new Set(ownActiveNames);
+    const nextActiveNames = activeNames.filter(
+      (name) => !this.ownedToolNames.has(name) || desiredOwnNames.has(name),
+    );
+    const retainedNames = new Set(nextActiveNames);
+    nextActiveNames.push(...ownActiveNames.filter((name) => !retainedNames.has(name)));
+    if (JSON.stringify(nextActiveNames) !== JSON.stringify(activeNames)) {
       this.pi.setActiveTools(nextActiveNames);
     }
   }

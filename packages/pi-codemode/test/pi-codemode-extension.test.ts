@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Usage } from "@earendil-works/pi-ai";
+import type { Message, Usage } from "@earendil-works/pi-ai";
+import { splitDeferredTools } from "@earendil-works/pi-ai/utils/deferred-tools";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   AgentSession,
@@ -96,7 +97,7 @@ type CodeModeSettingsTestInput = {
 };
 
 async function createCodeModeExtensionFixture(
-  codemodeSettings?: CodeModeSettingsTestInput,
+  codemodeSettings?: CodeModeSettingsTestInput | false,
   bind = true,
 ): Promise<CodeModeExtensionFixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-codemode-extension-cwd-"));
@@ -106,7 +107,11 @@ async function createCodeModeExtensionFixture(
   await writeFile(join(cwd, ".pi/settings.json"), "{}");
   await writeFile(
     join(agentDirectory, "settings.json"),
-    JSON.stringify(codemodeSettings === undefined ? {} : { codemode: codemodeSettings }),
+    JSON.stringify(
+      codemodeSettings === undefined || codemodeSettings === false
+        ? {}
+        : { codemode: codemodeSettings },
+    ),
   );
 
   let extensionApi: ExtensionAPI | undefined;
@@ -188,7 +193,8 @@ async function createCodeModeExtensionFixture(
     cwd,
     agentDir: agentDirectory,
     settingsManager,
-    extensionFactories: [extensionFactory, piCodeModeExtension],
+    extensionFactories:
+      codemodeSettings === false ? [extensionFactory] : [extensionFactory, piCodeModeExtension],
     noContextFiles: true,
     noPromptTemplates: true,
     noSkills: true,
@@ -1362,6 +1368,112 @@ describe("Pi CodeMode extension", () => {
       data: { hasBash: false },
     });
   });
+
+  test.each([false, true])(
+    "preserves immediate tool definitions across MCP refresh with late foreign tools (CodeMode=%s)",
+    async (codeMode) => {
+      const fixture = await createCodeModeExtensionFixture(
+        codeMode
+          ? { tools: [{ pattern: "mcp__example__hidden", exposure: "codemode-only" }] }
+          : false,
+      );
+      const { session, extensionApi } = fixture;
+      const unexpectedNetworkCall = async (): Promise<never> => {
+        throw new Error("Catalogue reconciliation must not call the MCP Server");
+      };
+      const runtime = {
+        callServerTool: unexpectedNetworkCall,
+        listResources: unexpectedNetworkCall,
+        listResourceTemplates: unexpectedNetworkCall,
+        readResource: unexpectedNetworkCall,
+      };
+      const definitions = ["echo", "hidden"].map((name) => ({
+        name,
+        description: `Example ${name}`,
+        inputSchema: { type: "object", properties: { text: { type: "string" } } },
+      }));
+      // Load the real sibling package without widening this package's TypeScript rootDir.
+      const modulePath = new URL("../../pi-mcp/src/mcp-tool-catalog.js", import.meta.url).href;
+      const {
+        McpToolCatalog,
+      }: {
+        McpToolCatalog: new (
+          pi: ExtensionAPI,
+          host: typeof runtime,
+        ) => {
+          replaceServerTools(serverId: string, tools: typeof definitions): Promise<void>;
+        };
+      } = await import(modulePath);
+      const catalogue = new McpToolCatalog(extensionApi, runtime);
+      await catalogue.replaceServerTools("example", definitions);
+      fixture.registerDynamicTool();
+      extensionApi.registerTool({
+        name: "load_mcp",
+        label: "Load MCP",
+        description: "Activate another Server Tool.",
+        parameters: Type.Object({}),
+        async execute() {
+          await catalogue.replaceServerTools("example", [
+            ...definitions,
+            {
+              name: "a_earlier",
+              description: "New tool",
+              inputSchema: { type: "object", properties: { text: { type: "string" } } },
+            },
+          ]);
+          return { content: [{ type: "text", text: "Loaded" }], details: {} };
+        },
+      });
+      const snapshot = async () => {
+        const prepared = await session.extensionRunner.emitBeforeAgentStart(
+          "synchronize",
+          undefined,
+          session.systemPrompt,
+          { cwd: session.sessionManager.getCwd() },
+        );
+        return {
+          systemPrompt: prepared?.systemPrompt ?? session.systemPrompt,
+          tools: session.agent.state.tools.map(({ name, description, parameters }) => ({
+            name,
+            description,
+            parameters,
+          })),
+        };
+      };
+      const before = await snapshot();
+      const names = before.tools.map(({ name }) => name);
+      expect(names).toContain("mcp__example__echo");
+      expect(names.indexOf("dynamic_later")).toBeGreaterThan(names.indexOf("mcp__example__echo"));
+      expect(names.includes("mcp__example__hidden")).toBe(!codeMode);
+      for (let refresh = 0; refresh < 2; refresh += 1) {
+        await catalogue.replaceServerTools("example", structuredClone(definitions));
+        expect(await snapshot()).toEqual(before);
+      }
+
+      const result = await executeTool(session, "load_mcp", {});
+      expect(result.addedToolNames).toContain("mcp__example__a_earlier");
+      const messages: Message[] = [
+        {
+          role: "toolResult",
+          toolCallId: "load",
+          toolName: "load_mcp",
+          content: result.content,
+          addedToolNames: result.addedToolNames ?? [],
+          isError: false,
+          timestamp: 0,
+        },
+      ];
+      const after = await snapshot();
+      const placement = splitDeferredTools({ tools: after.tools, messages }, true);
+      expect(placement.immediate.map(({ name }) => name)).toEqual(names);
+      expect([...placement.deferred.keys()]).toEqual(["mcp__example__a_earlier"]);
+      const fallback = splitDeferredTools({ tools: after.tools, messages }, false);
+      const fallbackNames = fallback.immediate.map(({ name }) => name);
+      expect(fallbackNames).toContain("mcp__example__a_earlier");
+      expect(fallbackNames.filter((name) => name !== "mcp__example__a_earlier")).toEqual(names);
+      expect(fixture.notifications).toEqual([]);
+    },
+  );
 
   test("defers dynamic catalogue rendering to the next synchronization boundary", async () => {
     const fixture = await createCodeModeExtensionFixture();

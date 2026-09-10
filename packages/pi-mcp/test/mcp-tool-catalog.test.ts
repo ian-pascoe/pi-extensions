@@ -182,6 +182,32 @@ describe("McpToolCatalog", () => {
     );
   });
 
+  test("preserves active tool order across equal freshly allocated catalogs", async () => {
+    const pi = new RecordingPi();
+    const catalog = new McpToolCatalog(pi, new RecordingRuntime());
+    await catalog.replaceServerTools("server", [
+      { name: "echo", description: "Echo", inputSchema: { type: "object" } },
+    ]);
+    pi.registerTool({
+      name: "foreign_late",
+      label: "Foreign late",
+      description: "Foreign tool",
+      parameters: { type: "object" },
+      execute: async () => ({ content: [], details: undefined }),
+    });
+    const before = pi.getActiveTools();
+    expect(before).toEqual(["read", "mcp__server__echo", "foreign_late"]);
+    const changes = pi.activeToolChanges.length;
+
+    for (let refresh = 0; refresh < 2; refresh++) {
+      await catalog.replaceServerTools("server", [
+        { name: "echo", description: "Echo", inputSchema: { type: "object" } },
+      ]);
+      expect(pi.getActiveTools()).toEqual(before);
+      expect(pi.activeToolChanges).toHaveLength(changes);
+    }
+  });
+
   test("changes activation without recompiling or re-registering unchanged Server Tools", async () => {
     const pi = new RecordingPi();
     const catalog = new McpToolCatalog(pi, new RecordingRuntime());
@@ -191,9 +217,36 @@ describe("McpToolCatalog", () => {
     ]);
     const registrations = pi.registeredToolNames.length;
 
+    const resourceToolNames = [
+      "list_mcp_resources",
+      "list_mcp_resource_templates",
+      "read_mcp_resource",
+    ];
     await catalog.setResourceToolsActive(true);
+    expect(pi.getActiveTools()).toEqual([
+      "read",
+      "mcp__server__first",
+      "mcp__server__second",
+      ...resourceToolNames,
+    ]);
     await catalog.setServerActive("server", false);
+    expect(pi.getActiveTools()).toEqual(["read", ...resourceToolNames]);
     await catalog.setServerActive("server", true);
+    expect(pi.getActiveTools()).toEqual([
+      "read",
+      ...resourceToolNames,
+      "mcp__server__first",
+      "mcp__server__second",
+    ]);
+    await catalog.setResourceToolsActive(false);
+    expect(pi.getActiveTools()).toEqual(["read", "mcp__server__first", "mcp__server__second"]);
+    await catalog.setResourceToolsActive(true);
+    expect(pi.getActiveTools()).toEqual([
+      "read",
+      "mcp__server__first",
+      "mcp__server__second",
+      ...resourceToolNames,
+    ]);
 
     expect(pi.registeredToolNames).toHaveLength(registrations);
   });
@@ -485,6 +538,13 @@ describe("McpToolCatalog", () => {
       "mcp__server__second",
     ]);
 
+    pi.registerTool({
+      name: "foreign_late",
+      label: "Foreign late",
+      description: "Foreign tool",
+      parameters: { type: "object" },
+      execute: async () => ({ content: [], details: undefined }),
+    });
     await catalog.replaceServerTools("server", [
       { name: "second", description: "replacement", inputSchema: { type: "object" } },
       { name: "third", inputSchema: { type: "object" } },
@@ -494,15 +554,17 @@ describe("McpToolCatalog", () => {
       "read",
       "foreign_extension_tool",
       "mcp__server__second",
+      "foreign_late",
       "mcp__server__third",
     ]);
 
     await catalog.setServerActive("server", false);
-    expect(pi.getActiveTools()).toEqual(["read", "foreign_extension_tool"]);
+    expect(pi.getActiveTools()).toEqual(["read", "foreign_extension_tool", "foreign_late"]);
     await catalog.setServerActive("server", true);
     expect(pi.getActiveTools()).toEqual([
       "read",
       "foreign_extension_tool",
+      "foreign_late",
       "mcp__server__second",
       "mcp__server__third",
     ]);
