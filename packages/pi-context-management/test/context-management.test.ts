@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
-import { createSdkHarness, reply, toolCall } from "./sdk-harness.js";
+import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
 describe("Context Windows through the Pi SDK", () => {
   it("does not undo a durable native checkpoint when the subsequent live-state update fails", async () => {
@@ -22,8 +22,15 @@ describe("Context Windows through the Pi SDK", () => {
         setMessages(messages);
       },
     });
+    f.responses.push(overflow());
     try {
-      await expect(f.session.compact()).rejects.toThrow("Injected post-append live-state failure");
+      await f.session.prompt("Trigger native overflow");
+      expect(f.events).toContainEqual(
+        expect.objectContaining({
+          type: "compaction_end",
+          errorMessage: expect.stringContaining("Injected post-append live-state failure"),
+        }),
+      );
     } finally {
       Object.defineProperty(f.session.agent.state, "messages", descriptor);
     }
@@ -32,7 +39,7 @@ describe("Context Windows through the Pi SDK", () => {
     expect(checkpoint).toBeDefined();
     expect(f.manager.getLeafId()).toBe(checkpoint?.id);
     await f.session.prompt("Must remain stopped");
-    expect(f.requests).toHaveLength(1);
+    expect(f.requests).toHaveLength(2);
   });
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "keeps ordinary prompts quarantined across resource reload after a real write failure",
@@ -76,36 +83,39 @@ describe("Context Windows through the Pi SDK", () => {
     expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   });
 
-  it("prepares fresh Notes and a Handoff before interactive manual compaction", async () => {
-    const f = await createSdkHarness([contextManagement]);
-    await f.session.bindExtensions({ mode: "tui" });
-    f.responses.push(reply("Ready."));
-    await f.session.prompt("Original task " + "history ".repeat(3000));
-    f.responses.push(
-      toolCall("context_notes", {
-        action: "write",
-        name: "task",
-        content: "Pending decision preserved.",
-      }),
-      toolCall("context_rollover", { handoff: "Fresh Handoff: resolve the pending decision." }),
-      reply("Continued with the pending decision."),
-    );
-    await expect(f.session.compact("preserve the pending decision")).rejects.toThrow(
-      "Compaction cancelled",
-    );
-    await expect.poll(() => f.requests.length).toBe(4);
-    await f.session.waitForIdle();
-    expect(JSON.stringify(f.requests[1])).toContain("Prepare a Context Rollover");
-    expect(JSON.stringify(f.requests[1])).toContain(
-      "Additional instructions: preserve the pending decision",
-    );
-    const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
-    expect(checkpoints).toHaveLength(1);
-    expect(checkpoints[0]?.summary).toContain("Fresh Handoff: resolve the pending decision.");
-    expect(checkpoints[0]?.summary).not.toContain("saved Handoff may be stale");
-    expect(f.providerRequests).toEqual([]);
-    expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
-  });
+  it.each(["tui", "sdk", "rpc"] as const)(
+    "prepares fresh Notes and a Handoff before manual compaction in %s",
+    async (mode) => {
+      const f = await createSdkHarness([contextManagement]);
+      await f.session.bindExtensions({ mode: mode === "sdk" ? "print" : mode });
+      f.responses.push(reply("Ready."));
+      await f.session.prompt("Original task " + "history ".repeat(3000));
+      f.responses.push(
+        toolCall("context_notes", {
+          action: "write",
+          name: "task",
+          content: "Pending decision preserved.",
+        }),
+        toolCall("context_rollover", { handoff: "Fresh Handoff: resolve the pending decision." }),
+        reply("Continued with the pending decision."),
+      );
+      await expect(f.session.compact("preserve the pending decision")).rejects.toThrow(
+        "Compaction cancelled",
+      );
+      await expect.poll(() => f.requests.length).toBe(4);
+      await f.session.waitForIdle();
+      expect(JSON.stringify(f.requests[1])).toContain("Prepare a Context Rollover");
+      expect(JSON.stringify(f.requests[1])).toContain(
+        "Additional instructions: preserve the pending decision",
+      );
+      const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
+      expect(checkpoints).toHaveLength(1);
+      expect(checkpoints[0]?.summary).toContain("Fresh Handoff: resolve the pending decision.");
+      expect(checkpoints[0]?.summary).not.toContain("saved Handoff may be stale");
+      expect(f.providerRequests).toEqual([]);
+      expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
+    },
+  );
 
   it("keeps user-cancelled manual compaction stopped without disabling later prompts", async () => {
     let resumeHook: (() => void) | undefined;
@@ -172,7 +182,7 @@ describe("Context Windows through the Pi SDK", () => {
     expect(f.providerRequests).toEqual([]);
   });
 
-  it("does not repeatedly rebuild a fresh window that live projections make too large", async () => {
+  it("leaves large live projections to native overflow rather than preflight fit guards", async () => {
     const f = await createSdkHarness(
       [
         contextManagement,
@@ -196,47 +206,89 @@ describe("Context Windows through the Pi SDK", () => {
       ],
       { contextWindow: 16_000 },
     );
-    f.responses.push(toolCall("context_rollover", { handoff: "Continue safely." }));
-    await f.session.prompt("Task");
-    expect(f.requests).toHaveLength(1);
-    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-    expect(JSON.stringify(f.session.messages).includes("Fresh Context Window still exceeds")).toBe(
-      true,
+    f.responses.push(
+      toolCall("context_rollover", { handoff: "Continue safely." }),
+      reply("Provider accepted the projection."),
     );
+    await f.session.prompt("Task");
+    expect(f.requests).toHaveLength(2);
+    expect(JSON.stringify(f.requests[1])).toContain("LIVE ".repeat(20_000));
+    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+    expect(JSON.stringify(f.session.messages)).not.toContain("Fresh Context Window still exceeds");
   });
 
-  it("stops before sending static instructions that consume the full context window", async () => {
+  it("does not estimate static instructions to block a native request", async () => {
     const f = await createSdkHarness([contextManagement], {
       contextWindow: 16_000,
       systemPrompt: "STANDING ".repeat(10_000),
     });
+    f.responses.push(reply("Accepted."));
     await f.session.prompt("Task");
-    expect(f.requests).toHaveLength(0);
+    expect(f.requests).toHaveLength(1);
+    expect(f.requests[0]?.systemPrompt).toContain("STANDING ".repeat(10_000));
     expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
   });
 
-  for (const trusted of [false, true]) {
-    it("applies project context settings only when trusted: " + trusted, async () => {
+  it.each([
+    { global: { tailTokens: -1 }, project: undefined, trusted: true, warnings: 1 },
+    { global: undefined, project: "malformed", trusted: true, warnings: 1 },
+    { global: null, project: false, trusted: true, warnings: 1 },
+    { global: undefined, project: { tailTokens: -1 }, trusted: false, warnings: 0 },
+    { global: undefined, project: undefined, trusted: true, warnings: 0 },
+  ])(
+    "ignores legacy settings without writes and warns once per load: %j",
+    async ({ global, project, trusted, warnings }) => {
+      let writes = 0;
       const settings = SettingsManager.fromStorage(
         {
           withLock(scope, fn) {
-            fn(
-              JSON.stringify(
-                scope === "global"
-                  ? { contextManagement: { tailTokens: 0 } }
-                  : { contextManagement: { tailTokens: -1 } },
-              ),
+            const changed = fn(
+              JSON.stringify({
+                contextManagement: scope === "global" ? global : project,
+                compaction: { enabled: true, reserveTokens: 1234, keepRecentTokens: 500 },
+                retry: { enabled: false },
+              }),
             );
+            if (changed !== undefined) writes++;
           },
         },
         { projectTrusted: trusted },
       );
       const f = await createSdkHarness([contextManagement], { settings });
-      f.responses.push(reply("Ready."));
-      await f.session.prompt("Task");
-      expect(f.requests).toHaveLength(trusted ? 0 : 1);
-    });
-  }
+      const notices: string[] = [];
+      await f.session.bindExtensions({
+        mode: "rpc",
+        uiContext: {
+          ...f.session.extensionRunner.getUIContext(),
+          notify: (message) => {
+            notices.push(message);
+          },
+        },
+      });
+      notices.length = 0;
+      for (let load = 1; load <= 2; load++) {
+        await f.session.reload();
+        f.responses.push(reply("Ready."));
+        await f.session.prompt("Task");
+        await f.session.prompt("/context");
+        await f.session.prompt("/context");
+        expect(notices.filter((message) => message.includes("obsolete and ignored"))).toHaveLength(
+          load * warnings,
+        );
+        expect(notices.at(-1)).toContain("Native recent-history retention: 500 tokens.");
+        expect(notices.at(-1)).toContain(
+          `Native usage: ${f.session.getContextUsage()?.tokens} / 200000 tokens.`,
+        );
+      }
+      expect(settings.getCompactionSettings()).toMatchObject({
+        reserveTokens: 1234,
+        keepRecentTokens: 500,
+      });
+      expect(writes).toBe(0);
+      expect(f.requests).toHaveLength(2);
+      expect(f.extensionErrors).toEqual([]);
+    },
+  );
 
   it("inspects without changing History or making a model request", async () => {
     const f = await createSdkHarness([contextManagement]);
@@ -246,7 +298,7 @@ describe("Context Windows through the Pi SDK", () => {
     expect(JSON.stringify(f.manager.getEntries())).toBe(before);
   });
   it.each([512, 12_000, 24_000])(
-    "warns only near 80% of the full window with output limit %i",
+    "does not add independent 80/90 percent warnings or checkpoints with output limit %i",
     async (maxTokens) => {
       const f = await createSdkHarness([contextManagement], { contextWindow: 24_000, maxTokens });
       f.responses.push(reply("Ready.", 8000));
@@ -257,28 +309,18 @@ describe("Context Windows through the Pi SDK", () => {
       expect(JSON.stringify(f.requests[1])).not.toContain("Context budget warning");
       expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
       const next = toolCall("context_notes", { action: "list" });
-      next.usage = reply("", 18_000).usage;
+      next.usage = reply("", 22_000).usage;
       f.responses.push(next, reply("Done."));
       await f.session.prompt("Continue");
-      expect(
-        JSON.stringify(f.requests[2]).includes("Context budget warning"),
-        JSON.stringify({
-          window: f.session.model?.contextWindow,
-          checkpoints: f.manager.getBranch().filter((e) => e.type === "compaction").length,
-          request: JSON.stringify(f.requests[2]).slice(-1500),
-        }),
-      ).toBe(true);
-      expect(JSON.stringify(f.requests[3]).includes("Context budget warning")).toBe(false);
+      expect(f.requests).toHaveLength(4);
+      expect(JSON.stringify(f.requests)).not.toContain("Context budget warning");
       expect(JSON.stringify(f.manager.getBranch()).includes("Context budget warning")).toBe(false);
       expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
     },
   );
-  it.each([
-    { inputTokens: 150_000, checkpoints: 0 },
-    { inputTokens: 180_000, checkpoints: 1 },
-  ])(
-    "creates $checkpoints checkpoints after $inputTokens input tokens with large standing instructions",
-    async ({ inputTokens, checkpoints }) => {
+  it.each([150_000, 180_000])(
+    "does not double-count large standing instructions after %i native input tokens",
+    async (inputTokens) => {
       const f = await createSdkHarness([contextManagement], {
         systemPrompt: "S".repeat(90_000),
         contextSettings: { tailTokens: 0, safetyMarginTokens: 2000 },
@@ -289,10 +331,8 @@ describe("Context Windows through the Pi SDK", () => {
       await f.session.prompt("Continue");
       expect(f.requests).toHaveLength(2);
       expect(JSON.stringify(f.requests)).not.toContain("Context budget warning");
-      expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(
-        checkpoints,
-      );
-      expect(JSON.stringify(f.requests[1]).includes("ORIGINAL-TASK")).toBe(checkpoints === 0);
+      expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+      expect(JSON.stringify(f.requests[1])).toContain("ORIGINAL-TASK");
       expect(JSON.stringify(f.manager.getBranch())).toContain("ORIGINAL-TASK");
       expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
       expect(f.providerRequests).toEqual([]);
@@ -300,7 +340,7 @@ describe("Context Windows through the Pi SDK", () => {
     },
   );
 
-  it("rolls over before sending a large tool result and never replays the completed tool", async () => {
+  it("recovers after native overflow without replaying the completed tool or its large result", async () => {
     let executions = 0;
     const f = await createSdkHarness(
       [
@@ -323,19 +363,20 @@ describe("Context Windows through the Pi SDK", () => {
       ],
       { contextWindow: 16_000, maxTokens: 16_000 },
     );
-    f.responses.push(toolCall("large_output", {}), reply("Recovered from History."));
+    f.responses.push(toolCall("large_output", {}), overflow(), reply("Recovered from History."));
     await f.session.prompt("Process the data");
     expect(executions).toBe(1);
-    expect(f.requests).toHaveLength(2);
-    expect(JSON.stringify(f.requests[1])).not.toContain("DATA-ONLY");
-    expect(JSON.stringify(f.requests[1])).toContain("saved Handoff may be stale or absent");
+    expect(f.requests).toHaveLength(3);
+    expect(JSON.stringify(f.requests[1])).toContain("DATA-ONLY");
+    expect(JSON.stringify(f.requests[2])).not.toContain("DATA-ONLY");
+    expect(JSON.stringify(f.requests[2])).toContain("saved Handoff may be stale or absent");
     expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
     expect(JSON.stringify(f.manager.getBranch())).toContain("DATA-ONLY");
   });
-  it("refuses an oversized Handoff rather than saving or truncating it", async () => {
+  it("enforces the Handoff schema limit rather than estimating its token fit", async () => {
     const f = await createSdkHarness([contextManagement], { contextWindow: 16_000 });
     f.responses.push(
-      toolCall("context_rollover", { handoff: "X".repeat(60_000) }),
+      toolCall("context_rollover", { handoff: "X".repeat(64_001) }),
       reply("Will prepare a shorter Handoff."),
     );
     await f.session.prompt("Small task");
@@ -344,31 +385,29 @@ describe("Context Windows through the Pi SDK", () => {
         .getBranch()
         .some((entry) => entry.type === "custom" && entry.customType === "pi-context-handoff"),
     ).toBe(false);
-    expect(
-      f.manager
-        .getBranch()
-        .filter((entry) => entry.type === "compaction")
-        .every((entry) => !JSON.stringify(entry.details).includes('"reason":"normal"')),
-    ).toBe(true);
+    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+    expect(f.requests[1]?.messages.at(-1)).toMatchObject({ role: "toolResult", isError: true });
   });
   it("commits an agent Handoff mid-loop and resumes the same native Context Window", async () => {
-    const f = await createSdkHarness([contextManagement]);
+    const f = await createSdkHarness([contextManagement], { keepRecentTokens: 500 });
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("OLD-ONLY " + "discard ".repeat(12_000));
     f.responses.push(
       toolCall("context_rollover", { handoff: "Continue checking the blue widget." }),
       reply("Finished."),
     );
-    await f.session.prompt("OLD-ONLY " + "discard ".repeat(12_000));
+    await f.session.prompt("Continue with recent work " + "recent ".repeat(400));
     const checkpoint = f.manager.getBranch().findLast((entry) => entry.type === "compaction");
     expect(checkpoint, JSON.stringify(f.session.messages).slice(-2500)).toBeDefined();
     expect(checkpoint?.summary).toContain("Continue checking the blue widget.");
-    expect(f.requests).toHaveLength(2);
-    expect(JSON.stringify(f.requests[1])).not.toContain("OLD-ONLY");
+    expect(f.requests).toHaveLength(3);
+    expect(JSON.stringify(f.requests[2])).not.toContain("OLD-ONLY");
     expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
     const reopened = SessionManager.open(f.manager.getSessionFile()!);
     expect(JSON.stringify(reopened.buildSessionContext())).toBe(
       JSON.stringify(f.manager.buildSessionContext()),
     );
-    expect(f.requests[1]?.tools).toContain("context_history");
-    expect(f.requests[1]?.systemPrompt).toContain("Standing instructions");
+    expect(f.requests[2]?.tools).toContain("context_history");
+    expect(f.requests[2]?.systemPrompt).toContain("Standing instructions");
   });
 });

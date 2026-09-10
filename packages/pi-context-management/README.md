@@ -4,7 +4,7 @@
 
 Requires Node `>=22.19.0` and a Pi runtime exposing the required checkpoint capabilities. The adapter checks runtime methods, writable hooks, and native append ownership rather than requiring an exact Pi version. Missing or lost capabilities fail closed before checkpoint mutation.
 
-The SDK regression suite passes on Pi `0.85.0` and `0.85.1`; development dependencies remain pinned to `0.85.1`. Runtime checks validate interface shape, not persistence ordering or compatibility with every future Pi release. Pi still lacks arbitrary-time checkpoint mutation through its public extension API.
+Development dependencies and the native compaction scheduling regression baseline are pinned to Pi `0.85.1`. Runtime checks validate interface shape, not persistence ordering or compatibility with every future Pi release. Pi still lacks arbitrary-time checkpoint mutation through its public extension API.
 
 ## Install
 
@@ -21,9 +21,9 @@ pi -e ./packages/pi-context-management/src/index.ts
 | `context_notes`    | List, read, write, append, delete, or literally search named Markdown Notes.                                             |
 | `context_history`  | Browse Context Windows and entries, read exact recorded entry JSON, or perform case-sensitive literal search.            |
 | `context_rollover` | Save an explicit agent-written Handoff and request an immediate native Context Checkpoint after the complete tool batch. |
-| `/context`         | Inspect budget usage, Notes, and recent Context Windows without changing them.                                           |
-| `/compact`         | In the TUI, ask the agent to update Notes, write a fresh Handoff, and roll over.                                         |
-| `/rollover`        | Request the same preparation flow directly, including outside the TUI.                                                   |
+| `/context`         | Inspect Pi's native context usage and compaction settings, Notes, and recent Context Windows.                            |
+| `/compact`         | Ask the agent to update Notes, write a fresh Handoff, and roll over.                                                     |
+| `/rollover`        | Request preparation directly, including when native compaction has no history to compact.                                |
 
 `context_rollover` must be the only direct call in its tool batch. Nested rollover, including through CodeMode, is rejected before checkpoint mutation. The extension does not change CodeMode exposure rules.
 
@@ -37,47 +37,37 @@ Note writes/appends and Rollover Handoffs display their text as tool arguments s
 
 ## Context Windows
 
-A normal Rollover carries standing instructions, the Handoff, a Note Index of at most 4,000 characters, and a Tail of complete recent message/tool-result groups. The Tail allowance is a maximum, not a guaranteed allocation. Oversized groups are omitted whole and remain available through History references.
+A normal Rollover carries standing instructions, the agent-written Handoff, a Note Index of at most 4,000 characters, and a Tail selected by Pi's native retention policy. Tool calls stay with their results; omitted History remains retrievable. The extension does not shrink the Tail to satisfy a separate budget.
 
-In the TUI, `/compact [instructions]` starts a normal agent turn to refresh Notes and write a fresh Handoff before Rollover. `/rollover [instructions]` requests the same preparation directly. Instructions are limited to 2,000 characters. Preparation can be interrupted without creating a checkpoint; already acknowledged Notes remain saved. Pi owns `/compact`, so the extension cancels its immediate native compaction before starting preparation; Pi may display `Compaction cancelled`, followed by the preparation notice. Pi's native model/auth and history checks still apply before this redirect.
+When Pi requests normal automatic or manual compaction, Context Management asks the agent to refresh useful Notes and call `context_rollover` alone with a fresh Handoff. This applies equally to TUI `/compact`, SDK, and remote compaction. The native summarizer is replaced, not called in addition. Preparation uses ordinary agent turns and can therefore make model requests. While preparation is pending, repeated threshold checks do not inject more reminders.
 
-SDK/RPC manual compaction, threshold compaction, overflow, and Emergency Rollover remain immediate and non-interactive, using the last saved Handoff marked stale or absent. These paths add no model or summarization request. All paths use the same native checkpoint representation. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents and CodeMode processes are not replaced or patched.
+`/rollover [instructions]` requests preparation directly, even when Pi's native compaction preparation has no history to compact. Its instructions are limited to 2,000 characters. Pi owns `/compact`, including its model/auth and history checks. A redirected SDK `compact()` call rejects with `Compaction cancelled` while asynchronous fresh preparation proceeds; it does not return an immediate checkpoint result. The TUI may likewise display cancellation before the preparation notice. That cancellation is not a completed checkpoint. If preparation is cancelled, fails, or ends without Rollover, the extension reports noncompletion, leaves the existing conversation intact, and does not silently use a stale Handoff or repeatedly nudge the agent. Already acknowledged Notes remain saved; request `/rollover` explicitly to try again.
+
+Actual native overflow is the exception: an Emergency Rollover immediately uses the last saved Handoff, marked stale or absent, rather than attempting another oversized preparation request. Native overflow includes Pi's recoverable truncated-response case. Recover recent work through History. All paths use the same native checkpoint representation. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents and CodeMode processes are not replaced or patched.
 
 Other extensions may observe or cancel native compaction; registering a listener is not a conflict. Inactive Autoresearch is supported. If another hook supplies compaction content, Context Management stops before checkpoint persistence and names that extension, regardless of load order. Disable the competing override before resuming. Empty observer results cannot trigger Pi's native summarizer fallback.
 
-At 80% of the model's full context window the extension warns the agent to prepare Notes and a Handoff. At 90% it performs an Emergency Rollover using the last saved Handoff, marking it stale or absent and directing recovery through History. Neither threshold subtracts the model's output limit. The input estimate includes standing instructions, tool declarations, and the safety margin. The effective Tail shrinks before the Handoff or standing context is sacrificed; an oversized Handoff fails with an actionable error rather than being truncated.
-
-Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
+Pi alone owns context accounting, automatic compaction timing, and recent-history retention. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
 
 ## Settings
 
-The extension reads `contextManagement` from Pi's global `~/.pi/agent/settings.json` and trusted project `.pi/settings.json`:
+Use Pi's native `compaction` settings in global `~/.pi/agent/settings.json` or trusted project `.pi/settings.json`:
 
 ```json
 {
-  "contextManagement": {
-    "tailTokens": 16000,
-    "warningThreshold": 0.8,
-    "emergencyThreshold": 0.9,
-    "safetyMarginTokens": 2048
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 16384,
+    "keepRecentTokens": 20000
   }
 }
 ```
 
-| Setting              | Default | Constraint                                                                          |
-| -------------------- | ------: | ----------------------------------------------------------------------------------- |
-| `tailTokens`         | `16000` | Non-negative maximum Tail allowance.                                                |
-| `warningThreshold`   |   `0.8` | Fraction of the full context window; less than `emergencyThreshold`.                |
-| `emergencyThreshold` |   `0.9` | Fraction of the full context window; greater than `warningThreshold` and below `1`. |
-| `safetyMarginTokens` |  `2048` | Conservative accounting margin, minimum `256`.                                      |
+These are Pi's defaults: `enabled` controls automatic compaction, `reserveTokens` controls its headroom, and `keepRecentTokens` controls recent-history retention. Disabling automatic compaction leaves manual compaction and explicit Rollover available. `/context` reports native usage and settings, not a separate estimate.
 
-The former `outputReserveTokens` setting has been removed; delete it from existing `contextManagement` settings before reloading.
+The obsolete `contextManagement` block is ignored, including `tailTokens`, `warningThreshold`, `emergencyThreshold`, `safetyMarginTokens`, and `outputReserveTokens`. If present in global or trusted-project settings, it produces one warning per session load pointing to native compaction settings. The extension neither edits configuration nor blocks continuation, even if the obsolete block is malformed. Remove it when convenient; there is no one-to-one migration of percentage thresholds.
 
-Trusted project values override global values. Invalid settings are reported and the extension fails closed rather than guessing a policy. Reload Pi after changing settings.
-
-Budgeting compares two complete estimates: Pi's usage-backed total plus any extra live message projection, and the current messages plus standing instructions/tool declarations. It takes the larger estimate and adds the safety margin once. Before valid usage and immediately after a Context Checkpoint, current-content estimation still reserves standing instructions and tools.
-
-These are rough estimates, not exact request measurements. Older usage can hide later growth in instructions or tools, and live session state can differ from the outgoing request. Such growth may reach the provider's context limit before an Emergency Rollover; Pi's existing overflow recovery remains the backstop. The extension does not intercept provider payloads or restrict other extensions' request changes. `/context` reports the same approximate budget.
+Pi's usage is not an exact outgoing-request measurement. Initial oversized input or later growth in standing instructions, tool declarations, or other extensions' projections can still reach the provider limit. Native overflow recovery is the backstop; the extension does not intercept provider payloads, add a sizing margin, or promise that a fresh Handoff will fit.
 
 ## Failure behavior
 

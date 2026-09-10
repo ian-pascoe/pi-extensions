@@ -1,0 +1,9 @@
+# Let Pi own compaction policy; refresh before normal Rollover
+
+Pi owns context accounting, compaction timing, and recent-history retention. This supersedes the extension's separate budget estimates, percentage warnings, emergency threshold, safety margin, and Tail sizing, including the arithmetic correction in `614e8b9`. A second policy duplicated native accounting and caused premature Context Checkpoints; exact outgoing-request/provenance tracking would add complexity without making that ownership clearer.
+
+Normal automatic and manual compaction—including TUI, SDK, and remote calls—requests fresh Notes and an agent-written Handoff before Rollover. Pending preparation suppresses repeated threshold reminders; failed, cancelled, or unfinished preparation reports noncompletion without replacing the conversation or silently falling back to stale state. Actual native overflow alone permits immediate Emergency Rollover from saved state, avoiding another oversized preparation request. Pi retains ownership of overflow retry; completed tools are not replayed.
+
+[ADR-0001](0001-use-native-compaction-checkpoints.md) remains in force for checkpoint representation, the capability-gated adapter, normal transforms, and fail-closed journal recovery. Explicit `context_rollover` and `/rollover` remain available because native compaction preparation can decline small or already-compacted windows before extension hooks run. Native cut points and retention settings replace custom sizing arithmetic, while complete tool-batch validation remains mandatory.
+
+Obsolete `contextManagement` settings are ignored with one warning per session load for global or trusted-project configuration, pointing to Pi's native `compaction` settings. They never trigger configuration edits or block continuation. Initial oversized input and later standing-context growth may still reach the provider limit: no extension-owned fit guarantee or background summarizer is introduced.

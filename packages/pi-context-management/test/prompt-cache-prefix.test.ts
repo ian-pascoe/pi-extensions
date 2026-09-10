@@ -7,7 +7,7 @@ import type { Context, StreamFunction, StreamOptions } from "@earendil-works/pi-
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import contextManagement from "../src/context-management-extension.js";
-import { createSdkHarness, reply, toolCall } from "./sdk-harness.js";
+import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
 const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
 
@@ -212,10 +212,11 @@ it("preserves the emergency Rollover Todo endpoint without replaying an oversize
   });
   f.responses.push(toolCall("todo", { action: "add", title: "Emergency Task" }), reply("Added."));
   await f.session.prompt("Remember this Task");
-  f.responses.push(toolCall("large_output", {}), reply("Recovered."));
+  f.responses.push(toolCall("large_output", {}), overflow(), reply("Recovered."));
   await f.session.prompt("Read oversized output");
-  expect(f.requests).toHaveLength(4);
-  const fresh = f.requests[3]!;
+  expect(f.requests).toHaveLength(5);
+  expect(JSON.stringify(f.requests[3]?.messages)).toContain("DATA-ONLY");
+  const fresh = f.requests[4]!;
   expect(JSON.stringify(fresh.messages)).toContain("Emergency Task");
   expect(JSON.stringify(fresh.messages)).toContain("saved Handoff may be stale or absent");
   expect(JSON.stringify(fresh.messages)).not.toContain("DATA-ONLY");
@@ -231,11 +232,11 @@ it("preserves the emergency Rollover Todo endpoint without replaying an oversize
 });
 
 for (const transition of ["native", "rollover"] as const) {
-  for (const tailTokens of [0, 500]) {
-    it(`preserves the first ${transition} Todo endpoint with Tail ${tailTokens} through later mutations`, async () => {
+  for (const keepRecentTokens of transition === "native" ? [0, 500] : [500]) {
+    it(`preserves the first ${transition} Todo endpoint with native retention ${keepRecentTokens} through later mutations`, async () => {
       const f = await createSdkHarness([contextManagement], {
         additionalExtensionPaths: [todoPath],
-        contextSettings: { tailTokens },
+        keepRecentTokens,
       });
       f.responses.push(
         toolCall("todo", { action: "add", title: "Before cutoff" }),
@@ -249,7 +250,7 @@ for (const transition of ["native", "rollover"] as const) {
         reply("Updated."),
       );
       await f.session.prompt("Update before the checkpoint");
-      if (transition === "native") await f.session.compact();
+      if (transition === "native") f.responses.push(overflow());
       else f.responses.push(toolCall("context_rollover", { handoff: "Continue the Task." }));
       f.responses.push(reply("Resumed."));
       await f.session.prompt("Continue across the checkpoint");
@@ -260,7 +261,7 @@ for (const transition of ["native", "rollover"] as const) {
           message.role === "user" && JSON.stringify(message.content).includes("Todo List:"),
       );
       expect(JSON.stringify(baseline)).toContain(
-        tailTokens === 0 ? "Retained update" : "Before cutoff",
+        transition === "native" ? "Retained update" : "Before cutoff",
       );
       f.responses.push(reply("Unchanged."));
       await f.session.prompt("Continue unchanged");

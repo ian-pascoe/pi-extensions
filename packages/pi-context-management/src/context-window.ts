@@ -1,14 +1,7 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import {
-  buildSessionContext,
-  estimateTokens,
-  type AgentSession,
-  type SessionEntry,
-} from "@earendil-works/pi-coding-agent";
+import { findCutPoint } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { contextReference, noteIndex, type ReadonlySessionManager } from "./context-store.js";
-import type { ContextSettings } from "./context-settings.js";
 
 export const CheckpointDetails = Type.Object({
   owner: Type.Literal("pi-context-management"),
@@ -17,7 +10,8 @@ export const CheckpointDetails = Type.Object({
   reason: Type.String(),
   sourceSession: Type.String(),
   previousLeaf: Type.Union([Type.String(), Type.Null()]),
-  tailTokens: Type.Number(),
+  // Read older checkpoints without continuing their independent token accounting.
+  tailTokens: Type.Optional(Type.Number()),
 });
 export type CheckpointDetails = Static<typeof CheckpointDetails>;
 export const HandoffRecord = Type.Object({
@@ -40,87 +34,84 @@ export function savedHandoff(manager: ReadonlySessionManager): string | undefine
   return undefined;
 }
 
-/** Contiguous suffix of complete protocol groups; never retain an orphan or failed response. */
-function selectTail(manager: ReadonlySessionManager, limit: number) {
-  const groups: SessionEntry[][] = [];
-  for (const entry of manager.buildContextEntries()) {
-    if (entry.type !== "message" && entry.type !== "custom_message") continue;
+/** Pi chooses retention; only protocol safety can shorten its contiguous suffix. */
+function selectTail(
+  manager: ReadonlySessionManager,
+  reason: string,
+  keepRecentTokens: number,
+  nativeCutoff?: string,
+) {
+  const entries = manager.getBranch();
+  const checkpointIndex = entries.findLastIndex((entry) => entry.type === "compaction");
+  const checkpoint = entries[checkpointIndex];
+  const keptIndex =
+    checkpoint?.type === "compaction"
+      ? entries.findIndex((entry) => entry.id === checkpoint.firstKeptEntryId)
+      : -1;
+  const start = keptIndex >= 0 ? keptIndex : checkpointIndex + 1;
+  let first =
+    nativeCutoff === undefined
+      ? start < entries.length
+        ? findCutPoint(entries, start, entries.length, keepRecentTokens).firstKeptEntryIndex
+        : entries.length
+      : entries.findIndex((entry) => entry.id === nativeCutoff);
+  if (first < start)
+    throw new Error("Context Checkpoint cutoff is outside the active Context Window");
+
+  // Pi removes overflow failures (including a retried length stop) from live messages only.
+  const latestAssistant = entries.findLastIndex(
+    (entry) => entry.type === "message" && entry.message.role === "assistant",
+  );
+  const failed = entries.findLastIndex(
+    (entry, index) =>
+      entry.type === "message" &&
+      entry.message.role === "assistant" &&
+      (entry.message.stopReason === "error" ||
+        entry.message.stopReason === "aborted" ||
+        (reason === "overflow" &&
+          index === latestAssistant &&
+          entry.message.stopReason === "length")),
+  );
+  first = Math.max(first, failed + 1);
+  const pending = new Set<string>();
+  for (const entry of entries.slice(first)) {
+    if (
+      entry.type !== "message" &&
+      entry.type !== "custom_message" &&
+      entry.type !== "branch_summary"
+    )
+      continue;
     if (entry.type === "message" && entry.message.role === "toolResult") {
-      const group = groups.at(-1);
-      const leader = group?.[0];
-      const callId = entry.message.toolCallId;
-      if (
-        leader?.type !== "message" ||
-        leader.message.role !== "assistant" ||
-        !leader.message.content.some((part) => part.type === "toolCall" && part.id === callId)
-      ) {
-        throw new Error(
-          "History contains an orphan tool result; repair the source session before Rollover",
-        );
-      }
-      group!.push(entry);
-    } else groups.push([entry]);
-  }
-  if (limit === 0) {
-    const last = groups.at(-1)?.[0];
-    return {
-      first: undefined,
-      tokens: 0,
-      omitted: last ? contextReference(manager, last.id) : undefined,
-    };
-  }
-  let first: string | undefined;
-  let omitted: string | undefined;
-  let tokens = 0;
-  for (const group of groups.toReversed()) {
-    const leader = group[0]!;
-    if (
-      leader.type === "message" &&
-      leader.message.role === "assistant" &&
-      (leader.message.stopReason === "error" || leader.message.stopReason === "aborted")
-    ) {
-      omitted = contextReference(manager, leader.id);
-      break;
+      if (!pending.delete(entry.message.toolCallId))
+        throw new Error("History contains an orphan or duplicate tool result; Rollover refused");
+      continue;
     }
-    const calls =
-      leader.type === "message" && leader.message.role === "assistant"
-        ? leader.message.content.filter((part) => part.type === "toolCall")
-        : [];
-    const results = group.flatMap((entry) =>
-      entry.type === "message" && entry.message.role === "toolResult"
-        ? [entry.message.toolCallId]
-        : [],
-    );
-    if (
-      calls.length !== results.length ||
-      new Set(results).size !== results.length ||
-      new Set(calls.map((call) => call.id)).size !== calls.length ||
-      !calls.every((call) => results.includes(call.id))
-    ) {
+    if (pending.size)
       throw new Error("History contains an incomplete tool batch; Rollover refused");
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      for (const part of entry.message.content) {
+        if (part.type !== "toolCall") continue;
+        if (pending.has(part.id))
+          throw new Error("History contains duplicate tool calls; Rollover refused");
+        pending.add(part.id);
+      }
     }
-    const size = buildSessionContext(group).messages.reduce(
-      (sum, message) => sum + estimateTokens(message),
-      0,
-    );
-    if (tokens + size > limit) {
-      omitted = contextReference(manager, leader.id);
-      break;
-    }
-    tokens += size;
-    first = leader.id;
   }
-  return { first, tokens, omitted };
+  if (pending.size) throw new Error("History contains an incomplete tool batch; Rollover refused");
+  return {
+    first: entries[first]?.id,
+    omitted: entries[first - 1] ? contextReference(manager, entries[first - 1]!.id) : undefined,
+  };
 }
 
 export function planCheckpoint(
   manager: ReadonlySessionManager,
   handoff: string,
   reason: string,
-  tailTokens: number,
-  indexCharacters = 4000,
+  keepRecentTokens: number,
+  nativeCutoff?: string,
 ) {
-  const tail = selectTail(manager, tailTokens);
+  const tail = selectTail(manager, reason, keepRecentTokens, nativeCutoff);
   const previousLeaf = manager.getLeafId();
   const summary = [
     "Context Window Handoff",
@@ -128,13 +119,11 @@ export function planCheckpoint(
       ? "Agent-written Handoff:"
       : "Emergency/native Rollover: saved Handoff may be stale or absent. Recover recent History before continuing.",
     handoff,
-    indexCharacters > 0
-      ? noteIndex(manager, indexCharacters)
-      : "Note Index omitted for space; list available Notes with context_notes.",
+    noteIndex(manager, 4000),
     previousLeaf
       ? "Recent History: " + contextReference(manager, previousLeaf)
       : "No earlier recorded History.",
-    tail.omitted ? "Omitted complete History group: " + tail.omitted : "",
+    tail.omitted ? "Omitted History: " + tail.omitted : "",
     "References belong to source session " +
       manager.getSessionId() +
       ". An inherited snapshot does not copy its Notes/History store: verify availability with context_history; ask the parent if unavailable.",
@@ -148,100 +137,6 @@ export function planCheckpoint(
     reason,
     sourceSession: manager.getSessionId(),
     previousLeaf,
-    tailTokens: tail.tokens,
   };
   return { summary, firstKeptEntryId: tail.first, details };
-}
-
-export function messageTokens(messages: AgentMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
-}
-
-function textTokens(text: string): number {
-  return Math.ceil(Buffer.byteLength(text, "utf8") / 3);
-}
-
-/** Conservative estimate, not a provider tokenizer. Native overflow recovery remains the backstop. */
-export function contextBudget(
-  session: AgentSession,
-  settings: ContextSettings,
-  messages = session.messages,
-) {
-  const model = session.model;
-  if (!model) throw new Error("Select a model before managing its Context Window");
-  const contextWindow = model.contextWindow;
-  if (contextWindow <= 0) throw new Error("Model context window must be positive");
-  const staticTokens =
-    textTokens(session.agent.state.systemPrompt) +
-    textTokens(
-      JSON.stringify(
-        session.agent.state.tools.map(({ name, description, parameters }) => ({
-          name,
-          description,
-          parameters,
-        })),
-      ),
-    );
-  const measured = session.getContextUsage()?.tokens;
-  const projectedMessageTokens = messageTokens(messages);
-  const sessionMessageTokens = messageTokens(session.messages);
-  const liveExtra = Math.max(0, projectedMessageTokens - sessionMessageTokens);
-  const estimatedTotal = projectedMessageTokens + staticTokens;
-  const usageTotal = (measured ?? 0) + liveExtra;
-  // Pi's usage already includes standing context. Compare complete estimates;
-  // growth hidden below older usage can still require native overflow recovery.
-  const inputTokens = Math.max(estimatedTotal, usageTotal) + settings.safetyMarginTokens;
-  return {
-    inputTokens,
-    staticTokens,
-    contextWindow,
-    ratio: inputTokens / contextWindow,
-    measuredTokens: measured ?? null,
-    source: "conservative estimate",
-  };
-}
-
-/** Essential instructions/Handoff first, bounded Note Index second, then a shrinking complete Tail. */
-export function boundedCheckpoint(
-  session: AgentSession,
-  settings: ContextSettings,
-  handoff: string,
-  reason: string,
-  liveTokens = 0,
-) {
-  const budget = contextBudget(session, settings);
-  budget.staticTokens += liveTokens;
-  const ceiling =
-    Math.floor(budget.contextWindow * settings.emergencyThreshold) -
-    budget.staticTokens -
-    settings.safetyMarginTokens -
-    256;
-  const minimum = planCheckpoint(session.sessionManager, handoff, reason, 0, 0);
-  const minimumTokens = textTokens(minimum.summary);
-  if (minimumTokens >= ceiling)
-    throw new Error(
-      "Essential fresh context cannot fit: shorten the Handoff or standing instructions/tool declarations, or select a larger model",
-    );
-  const indexCharacters = Math.min(4000, Math.max(0, (ceiling - minimumTokens) * 2));
-  const base = planCheckpoint(session.sessionManager, handoff, reason, 0, indexCharacters);
-  const allowance = Math.max(
-    0,
-    Math.floor(budget.contextWindow * settings.warningThreshold) -
-      budget.staticTokens -
-      settings.safetyMarginTokens -
-      textTokens(base.summary) -
-      256,
-  );
-  const plan = planCheckpoint(
-    session.sessionManager,
-    handoff,
-    reason,
-    Math.min(settings.tailTokens, allowance),
-    indexCharacters,
-  );
-  if (textTokens(plan.summary) + plan.details.tailTokens >= ceiling)
-    throw new Error(
-      "Fresh Context Window still exceeds its safe input budget; shorten the Handoff",
-    );
-  return plan;
 }
