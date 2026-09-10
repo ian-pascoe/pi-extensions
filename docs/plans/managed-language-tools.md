@@ -9,10 +9,13 @@ confirmed private Node acquisition on every target and Go acquisition on the hos
 runners, despite earlier local archive HTTP 404s. It also exposed Windows isolation
 and verification failures, macOS launch/path issues, and probe cleanup defects;
 these remain under investigation rather than being excluded from the matrix.
-TypeScript Language Server 6 requires TypeScript 6's
-`tsserver.js`, which the latest TypeScript 7 no longer supplies. Neither pinning the
-compiler to a compatible major nor changing the selected language server has been
-approved.
+The user selected TypeScript 7 rather than a TypeScript 6 compatibility pin.
+Use TypeScript 7's built-in native LSP (`tsc --lsp --stdio`), not the separate
+TypeScript Language Server wrapper that requires the old `tsserver.js` API.
+Fresh private TypeScript 7.0.2 acquisition, initialization, and document-symbol
+requests for both TypeScript and JavaScript passed on Linux x64; the remaining
+five native targets still need verification for this revised selection.
+See the [TypeScript 7 native LSP findings](../research/typescript-7-native-lsp.md).
 
 Vocabulary: [Language Tools](../contexts/language-tools/CONTEXT.md),
 [Pi LSP](../../packages/pi-lsp/CONTEXT.md),
@@ -25,12 +28,12 @@ Ownership decision: [ADR-0004](../adr/0004-own-language-presets-and-share-manage
 Provide useful defaults and automatic installation together in the first release.
 Users do not need to install or configure mise or Neovim separately.
 
-| Language              | LSP                        | Formatting                                           | Initial debugging                                   |
-| --------------------- | -------------------------- | ---------------------------------------------------- | --------------------------------------------------- |
-| TypeScript/JavaScript | TypeScript Language Server | Prettier or Biome, selected by project configuration | vscode-js-debug for direct Node JavaScript launches |
-| Python                | Pyright                    | Ruff or Black, selected by project configuration     | debugpy for direct Python script launches           |
-| Go                    | gopls                      | gofmt                                                | Not initially                                       |
-| Rust                  | rust-analyzer              | rustfmt                                              | Not initially                                       |
+| Language              | LSP                     | Formatting                                           | Initial debugging                                   |
+| --------------------- | ----------------------- | ---------------------------------------------------- | --------------------------------------------------- |
+| TypeScript/JavaScript | TypeScript 7 native LSP | Prettier or Biome, selected by project configuration | vscode-js-debug for direct Node JavaScript launches |
+| Python                | Pyright                 | Ruff or Black, selected by project configuration     | debugpy for direct Python script launches           |
+| Go                    | gopls                   | gofmt                                                | Not initially                                       |
+| Rust                  | rust-analyzer           | rustfmt                                              | Not initially                                       |
 
 Package-owned Language Tool Presets define file matching, roots, commands,
 arguments, initialization settings, and the relevant launch behavior. The shared
@@ -127,7 +130,7 @@ formatting fails; explain unavailable assistance in the result. Explicit LSP
 requests and debug launches report actionable failure instead of apparent success.
 
 Install required runtimes and toolchain components as well as the tool itself.
-This includes the TypeScript server's compiler dependency, Node/Python requirements,
+This includes TypeScript's native compiler/server distribution, Node/Python requirements,
 and components needed for gofmt/rustfmt. No manual language-manager prerequisite
 should be hidden in the out-of-the-box promise.
 
@@ -217,10 +220,10 @@ coverage across backends.
 
 ### Known acquisition work, not verified support
 
-- TypeScript Language Server, Pyright, Prettier, and Biome have package-manager
-  acquisition paths, but their selected versions' runtime requirements must be
-  satisfied privately. TypeScript Language Server also needs TypeScript; isolated
-  package locations must still resolve the selected compiler correctly.
+- TypeScript 7, Pyright, Prettier, and Biome have package-manager acquisition paths,
+  but their selected versions' runtime requirements must be satisfied privately.
+  TypeScript's npm launcher needs Node and its matching optional native platform
+  package; the same `tsc` entrypoint provides compilation and native LSP service.
 - Ruff and rust-analyzer have release-binary acquisition paths. gofmt/rustfmt come
   from toolchain distributions/components rather than independent tool packages.
 - The vscode-js-debug standalone DAP archive contains a JavaScript entrypoint such

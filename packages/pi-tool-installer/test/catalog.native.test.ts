@@ -193,11 +193,10 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
     await rm(directory, { recursive: true, force: true });
   }, 60_000);
 
-  test("TypeScript compiler and language-server initialize and answer a document request", async () => {
+  test("TypeScript 7 native language server answers TypeScript and JavaScript document requests", async () => {
     const installation = await acquire("typescript", {
       node: "core:node",
       compiler: "npm:typescript",
-      server: "npm:typescript-language-server",
     });
     const compiler = join(component(installation, "compiler"), "node_modules/typescript");
     const result = await execute(
@@ -208,29 +207,20 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
     expect(result.stdout.trim()).toBe(
       `Version ${installation.components.compiler?.version ?? "missing"}`,
     );
-    const tsserver = join(compiler, "lib/tsserver.js");
-    await access(tsserver).catch((cause) => {
-      throw new Error(
-        `TypeScript ${installation.components.compiler?.version ?? "unknown"} lacks lib/tsserver.js; TypeScript Language Server ${installation.components.server?.version ?? "unknown"} requires the TypeScript 6 compiler API. No compatible-version substitution was made.`,
-        { cause },
+    for (const [extension, language] of [
+      ["ts", "typescript"],
+      ["js", "javascript"],
+    ] as const) {
+      const file = join(await workspace(installation.id), `program.${extension}`);
+      await writeFile(file, `export const answer${extension === "ts" ? ": number" : ""} = 42;\n`);
+      await symbols(
+        installation,
+        nodeExecutable(installation),
+        [join(compiler, "bin/tsc"), "--lsp", "--stdio"],
+        file,
+        language,
       );
-    });
-    const file = join(await workspace(installation.id), "program.ts");
-    await writeFile(file, "export const answer: number = 42;\n");
-    await symbols(
-      installation,
-      nodeExecutable(installation),
-      [
-        join(
-          component(installation, "server"),
-          "node_modules/typescript-language-server/lib/cli.mjs",
-        ),
-        "--stdio",
-      ],
-      file,
-      "typescript",
-      { tsserver: { path: tsserver } },
-    );
+    }
   }, 360_000);
 
   test("Pyright initializes and answers a Python document request", async () => {
