@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-context-management",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": false,
   "description": "Session-native Notes, History, and agent-owned Context Windows for Pi.",
   "keywords": [
