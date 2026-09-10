@@ -18,6 +18,8 @@ permissions:
 
 env:
   NO_UPDATE_NOTIFIER: "1"
+  # Avoid multiplying Vitest worker pools across packages on small runners.
+  PNPM_CONFIG_WORKSPACE_CONCURRENCY: "1"
 
 jobs:
   language-tools:
