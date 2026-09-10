@@ -4,9 +4,12 @@ Status: accepted design, 2026-09-10. **Installer implementation and native probe
 are in progress; package defaults are not integrated.** A private Node installation
 and launch passed on Linux x64, including concurrent resolution, cancelled-update
 preservation, and installed-only reuse. The complete six-platform catalog gate has
-not passed. Go 1.27.1 is advertised upstream but its official Linux archive returns
-HTTP 404; this is an explicit acquisition blocker, not a reason to downgrade.
-A second incompatibility is TypeScript Language Server 6 requiring TypeScript 6's
+not passed. The [first six-platform run](https://github.com/ian-pascoe/pi-extensions/actions/runs/34515150171)
+confirmed private Node acquisition on every target and Go acquisition on the hosted
+runners, despite earlier local archive HTTP 404s. It also exposed Windows isolation
+and verification failures, macOS launch/path issues, and probe cleanup defects;
+these remain under investigation rather than being excluded from the matrix.
+TypeScript Language Server 6 requires TypeScript 6's
 `tsserver.js`, which the latest TypeScript 7 no longer supplies. Neither pinning the
 compiler to a compatible major nor changing the selected language server has been
 approved.
