@@ -19,6 +19,7 @@ import {
   SessionManager,
   SettingsManager,
   type ExtensionFactory,
+  type ExtensionError,
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 
@@ -107,8 +108,12 @@ export async function createSdkHarness(
   });
   const events: AgentSessionEvent[] = [];
   session.subscribe((event) => events.push(event));
-  const requests: Array<{ systemPrompt: string; messages: Context["messages"]; tools: string[] }> =
-    [];
+  const requests: Array<{
+    systemPrompt: string;
+    messages: Context["messages"];
+    tools: string[];
+    toolDefinitions: Context["tools"];
+  }> = [];
   const responses: AssistantMessage[] = [];
   session.agent.streamFunction = (currentModel, context, requestOptions) => {
     requestOptions?.signal?.throwIfAborted();
@@ -116,6 +121,11 @@ export async function createSdkHarness(
       systemPrompt: context.systemPrompt ?? "",
       messages: structuredClone(context.messages),
       tools: (context.tools ?? []).map((tool) => tool.name),
+      toolDefinitions: context.tools?.map(({ name, description, parameters }) => ({
+        name,
+        description,
+        parameters: structuredClone(parameters),
+      })),
     });
     const next = responses.shift();
     if (!next) throw new Error("Unexpected model request (including an accidental summarizer)");
@@ -135,8 +145,20 @@ export async function createSdkHarness(
     });
     return stream;
   };
-  await session.bindExtensions({ mode: "rpc" });
-  return { dir, manager, settings, session, requests, responses, events, providerRequests };
+  const extensionErrors: ExtensionError[] = [];
+  // RPC supplies an error listener too; bindings make /reload emit session_start.
+  await session.bindExtensions({ mode: "rpc", onError: (error) => extensionErrors.push(error) });
+  return {
+    dir,
+    manager,
+    settings,
+    session,
+    requests,
+    responses,
+    events,
+    providerRequests,
+    extensionErrors,
+  };
 }
 
 export function reply(text: string, inputTokens = 100): AssistantMessage {
