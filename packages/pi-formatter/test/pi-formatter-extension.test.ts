@@ -3,10 +3,20 @@ import { existsSync } from "node:fs";
 import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
 import crossSpawn from "cross-spawn";
 import { fileURLToPath } from "node:url";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, resolve } from "node:path";
 import {
+  createWriteTool,
   DefaultResourceLoader,
   ExtensionRunner,
   initTheme,
@@ -57,7 +67,7 @@ interface FormatterTestToolResult {
 }
 
 async function makeTemporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(resolve(tmpdir(), prefix));
+  const directory = await realpath(await mkdtemp(resolve(tmpdir(), prefix)));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -65,8 +75,9 @@ async function makeTemporaryDirectory(prefix: string): Promise<string> {
 async function createFormatterHarness(
   globalSettings: FormatterSettingsDocumentInput,
   signal?: AbortSignal,
+  cwd?: string,
 ): Promise<FormatterHarness> {
-  const cwd = await makeTemporaryDirectory("pi-formatter-extension-cwd-");
+  cwd ??= await makeTemporaryDirectory("pi-formatter-extension-cwd-");
   const agentDirectory = await makeTemporaryDirectory("pi-formatter-extension-agent-");
   const sessionDirectory = await makeTemporaryDirectory("pi-formatter-extension-session-");
   await writeFile(resolve(agentDirectory, "settings.json"), JSON.stringify(globalSettings));
@@ -363,7 +374,7 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
     await writeFile(
       shim,
       process.platform === "win32"
-        ? `@"${process.execPath}" "${pathScript}" %*\r\n`
+        ? `@"${process.execPath}" "%~dp0formatter.cjs" %*\r\n`
         : `#!${process.execPath}\nrequire(${JSON.stringify(pathScript)})`,
     );
     await chmod(shim, 0o755);
@@ -394,6 +405,149 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
       text: expect.stringContaining("external failure"),
     });
     expect(await readFile(path, "utf8")).toBe(`original:managed:managed:PATH:project:${node}`);
+  });
+
+  test.each(["native", "npm-script", "npm-shim"])(
+    "Biome %s acquires Node only when its executable requires it",
+    async (kind) => {
+      vi.stubEnv("PATH", "");
+      const harness = await createFormatterHarness({ formatter: { autoInstall: false } });
+      const store = resolve(harness.agentDirectory, "managed-tools");
+      await mkdir(store);
+      await writeFile(
+        resolve(store, process.platform === "win32" ? "mise.exe" : "mise"),
+        "fixture",
+      );
+      await writeFile(resolve(harness.cwd, "biome.json"), "{}");
+      const script = "require('node:fs').appendFileSync(process.argv.at(-1), ':biome')";
+      const bin = resolve(harness.cwd, "bin");
+      await mkdir(bin);
+      if (kind === "native") {
+        const command = resolve(bin, process.platform === "win32" ? "biome.exe" : "biome");
+        await copyFile(process.execPath, command);
+        await chmod(command, 0o755);
+        await writeFile(`${command}.cjs`, script);
+      } else if (kind === "npm-script") {
+        const command = resolve(harness.cwd, "node_modules/@biomejs/biome/bin/biome");
+        await mkdir(dirname(command), { recursive: true });
+        await writeFile(command, script);
+      } else {
+        const command = resolve(bin, process.platform === "win32" ? "biome.cmd" : "biome");
+        const entry = resolve(harness.cwd, "formatter.cjs");
+        await writeFile(entry, script);
+        await writeFile(
+          command,
+          process.platform === "win32"
+            ? '@node "%~dp0..\\formatter.cjs" %*\r\n'
+            : `#!/usr/bin/env node\nrequire(${JSON.stringify(entry)})`,
+        );
+        await chmod(command, 0o755);
+      }
+      const path = resolve(harness.cwd, "example.ts");
+      await writeFile(path, "original");
+      const mutate = () =>
+        harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        );
+      const result = await mutate();
+      const installer = new ToolInstaller(store);
+      expect(await installer.installed("formatter-biome")).toBeUndefined();
+      if (kind === "native") expect(result).toBeUndefined();
+      else {
+        expect(result?.content?.at(-1)).toMatchObject({
+          text: expect.stringContaining("assistance unavailable"),
+        });
+        expect(await readFile(path, "utf8")).toBe("original");
+        await writeFile(resolve(harness.agentDirectory, "settings.json"), "{}");
+        await harness.runner.emit({ type: "session_start", reason: "reload" });
+        expect(await mutate()).toBeUndefined();
+        expect(
+          Object.keys((await installer.installed("formatter-biome"))?.components ?? {}),
+        ).toEqual(["node"]);
+      }
+      expect(await readFile(path, "utf8")).toBe("original:biome");
+    },
+  );
+
+  test.each(["rustfmt", "prettier"])(
+    "%s uses ancestor executables only inside the project boundary or through PATH",
+    async (id) => {
+      vi.stubEnv("PATH", "");
+      const outer = await makeTemporaryDirectory("pi-formatter-boundary-");
+      const cwd = resolve(outer, "project");
+      const bin = resolve(outer, "bin");
+      await mkdir(cwd);
+      await mkdir(bin);
+      const node = resolve(bin, process.platform === "win32" ? "node.exe" : "node");
+      await copyFile(process.execPath, node);
+      await chmod(node, 0o755);
+      const script = "require('node:fs').appendFileSync(process.argv.at(-1), ':formatted')";
+      const formatter = resolve(bin, process.platform === "win32" ? "rustfmt.exe" : "rustfmt");
+      await copyFile(process.execPath, formatter);
+      await chmod(formatter, 0o755);
+      await writeFile(`${formatter}.cjs`, script);
+      const prettier = resolve(cwd, "node_modules/prettier/bin/prettier.cjs");
+      await mkdir(dirname(prettier), { recursive: true });
+      await writeFile(prettier, script);
+      await writeFile(resolve(cwd, ".prettierrc"), "{}");
+      const harness = await createFormatterHarness(
+        { formatter: { autoInstall: false } },
+        undefined,
+        cwd,
+      );
+      const path = resolve(cwd, id === "rustfmt" ? "example.rs" : "example.ts");
+      await writeFile(path, "original");
+      const mutate = () =>
+        harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        );
+      expect((await mutate())?.content?.at(-1)).toMatchObject({
+        text: expect.stringContaining("assistance unavailable"),
+      });
+      expect(await readFile(path, "utf8")).toBe("original");
+      vi.stubEnv("PATH", bin);
+      expect(await mutate()).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe("original:formatted");
+      vi.stubEnv("PATH", "");
+      await writeFile(resolve(outer, ".git"), "gitdir: fixture-worktree");
+      expect(await mutate()).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe("original:formatted:formatted");
+    },
+  );
+
+  test("uses a declared non-Git package above the session working directory", async () => {
+    vi.stubEnv("PATH", "");
+    const root = await makeTemporaryDirectory("pi-formatter-nongit-package-");
+    const cwd = resolve(root, "packages/nested");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(
+      resolve(root, "package.json"),
+      JSON.stringify({ devDependencies: { prettier: "*" } }),
+    );
+    const script = resolve(root, "node_modules/prettier/bin/prettier.cjs");
+    const node = resolve(
+      root,
+      "node_modules/.bin",
+      process.platform === "win32" ? "node.exe" : "node",
+    );
+    await mkdir(dirname(script), { recursive: true });
+    await mkdir(dirname(node), { recursive: true });
+    await copyFile(process.execPath, node);
+    await chmod(node, 0o755);
+    await writeFile(script, "require('node:fs').appendFileSync(process.argv.at(-1), ':package')");
+    const harness = await createFormatterHarness(
+      { formatter: { autoInstall: false } },
+      undefined,
+      cwd,
+    );
+    const path = resolve(cwd, "example.ts");
+    await writeFile(path, "original");
+    expect(
+      await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path }, details: undefined }),
+      ),
+    ).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe("original:package");
   });
 
   test("update advances only installed owned presets and reports old/new, no-change, and failures", async () => {
@@ -887,6 +1041,62 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
     });
     expect(await readFile(filePath, "utf8")).toBe("original:continued");
   });
+
+  test.each(["explicit", "built-in"])(
+    "%s file formatting shares the native write queue for its entire read-modify-write window",
+    async (mode) => {
+      const script = `const fs=require('node:fs'),p=process.argv.at(-1),text=fs.readFileSync(p,'utf8');const finish=()=>fs.writeFileSync(p,text+':formatted');if(text==='A'){fs.writeFileSync(p+'.ready','');const timer=setInterval(()=>{if(fs.existsSync(p+'.release')){clearInterval(timer);finish()}},10)}else finish();`;
+      const settings: FormatterSettingsDocumentInput =
+        mode === "explicit"
+          ? {
+              formatter: {
+                autoInstall: false,
+                formatters: { queued: formatterDefinition(["-e", script, "$FILE"]) },
+              },
+            }
+          : { formatter: { autoInstall: false } };
+      const harness = await createFormatterHarness(settings);
+      if (mode === "built-in") {
+        const entry = resolve(harness.cwd, "node_modules/prettier/bin/prettier.cjs");
+        const node = resolve(
+          harness.cwd,
+          "bin",
+          process.platform === "win32" ? "node.exe" : "node",
+        );
+        await mkdir(dirname(entry), { recursive: true });
+        await mkdir(dirname(node), { recursive: true });
+        await writeFile(entry, script);
+        await copyFile(process.execPath, node);
+        await chmod(node, 0o755);
+        await writeFile(resolve(harness.cwd, ".prettierrc"), "{}");
+      }
+      const path = resolve(harness.cwd, mode === "explicit" ? "example.txt" : "example.ts");
+      const writer = createWriteTool(harness.cwd);
+      const mutate = async (id: string, content: string) => {
+        const input = { path, content };
+        const result = await writer.execute(id, input);
+        return harness.runner.emitToolResult({
+          type: "tool_result",
+          toolName: "write",
+          toolCallId: id,
+          input,
+          ...result,
+          isError: false,
+        });
+      };
+      const first = mutate("first", "A");
+      await expect.poll(() => existsSync(`${path}.ready`), { timeout: 5000 }).toBe(true);
+      const second = mutate("second", "B");
+      try {
+        await new Promise((done) => setTimeout(done, 100));
+        expect(await readFile(path, "utf8")).toBe("A");
+      } finally {
+        await writeFile(`${path}.release`, "");
+        await Promise.all([first, second]);
+      }
+      expect(await readFile(path, "utf8")).toBe("B:formatted");
+    },
+  );
 
   test("cancels an active formatter without leaving it able to write after middleware returns", async () => {
     const controller = new AbortController();

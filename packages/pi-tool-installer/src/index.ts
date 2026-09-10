@@ -5,6 +5,7 @@ import {
   chmod,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -32,6 +33,16 @@ const InstallationSchema = Type.Object({
   binDirectories: Type.Array(Type.String()),
   environment: EnvironmentSchema,
 });
+const ContextSchema = Type.Object({
+  binDirectories: InstallationSchema.properties.binDirectories,
+  environment: EnvironmentSchema,
+});
+const SelectionSchema = Type.Object({
+  ...InstallationSchema.properties,
+  contexts: Type.Optional(Type.Array(ContextSchema)),
+});
+type Selection = Static<typeof SelectionSchema>;
+
 const ReleaseSchema = Type.Object({
   tag_name: Type.String({ pattern: "^v\\d+\\.\\d+\\.\\d+$" }),
   assets: Type.Array(
@@ -120,12 +131,14 @@ function validateInstallation(
 async function validateDirectories(
   installation: ManagedInstallation,
   directory: string,
+  contexts: Static<typeof ContextSchema>[] = [],
 ): Promise<void> {
   const root = await realpath(directory);
-  for (const path of [
+  for (const path of new Set([
     ...Object.values(installation.components).map((component) => component.directory),
     ...installation.binDirectories,
-  ]) {
+    ...contexts.flatMap((context) => context.binDirectories),
+  ])) {
     if (!(await stat(path)).isDirectory() || !contained(root, await realpath(path)))
       throw new Error(`Invalid managed installation directory: ${path}`);
   }
@@ -148,10 +161,15 @@ export class ToolInstaller {
       if (Value.Check(FileErrorSchema, error)) return undefined;
       throw error;
     }
-    return selection;
+    return {
+      id: selection.id,
+      components: selection.components,
+      binDirectories: selection.binDirectories,
+      environment: selection.environment,
+    };
   }
 
-  private async selection(id: string): Promise<ManagedInstallation | undefined> {
+  private async selection(id: string): Promise<Selection | undefined> {
     validId(id);
     let text: string;
     try {
@@ -161,9 +179,15 @@ export class ToolInstaller {
       throw error;
     }
     const value: unknown = JSON.parse(text);
-    if (!Value.Check(InstallationSchema, value))
+    if (
+      !Value.Check(SelectionSchema, value) ||
+      (value.contexts && value.contexts.length !== Object.keys(value.components).length)
+    )
       throw new Error(`Invalid installation record for ${id}`);
-    return validateInstallation(value, id, this.directory);
+    validateInstallation(value, id, this.directory);
+    for (const context of value.contexts ?? [])
+      validateInstallation({ ...value, ...context }, id, this.directory);
+    return value;
   }
 
   async ensure(
@@ -174,20 +198,84 @@ export class ToolInstaller {
     validateRequest(request);
     const existing = await this.installed(request.id);
     if (existing && matches(existing, request)) return existing;
+    const unavailable = new Error(
+      `${request.id} is not installed. Enable automatic downloads or configure an external executable.`,
+    );
     if (!options.allowDownload) {
-      throw new Error(
-        `${request.id} is not installed. Enable automatic downloads or configure an external executable.`,
-      );
+      try {
+        await access(this.directory);
+      } catch (error) {
+        if (Value.Check(FileErrorSchema, error)) throw unavailable;
+        throw error;
+      }
     }
     return this.withInstallationLock(options, async (signal) => {
       const installed = await this.installed(request.id);
       if (installed && matches(installed, request)) return installed;
-      return this.acquire(
-        request,
-        { ...options, signal },
-        installed ?? (await this.selection(request.id)),
-      );
+      const previous = installed ?? (await this.selection(request.id));
+      const reused = await this.reuse(request, { ...options, signal }, previous);
+      if (reused) return reused;
+      if (!options.allowDownload) throw unavailable;
+      return this.acquire(request, { ...options, signal }, previous);
     });
+  }
+
+  private async reuse(
+    request: ToolRequest,
+    options: InstallationOptions,
+    previous?: ManagedInstallation,
+  ): Promise<ManagedInstallation | undefined> {
+    let files: string[];
+    try {
+      files = await readdir(join(this.directory, "selections"));
+    } catch (error) {
+      if (Value.Check(FileErrorSchema, error)) return undefined;
+      throw error;
+    }
+    const requirements = Object.entries(request.requirements);
+    for (const file of files.sort()) {
+      options.signal?.throwIfAborted();
+      if (!file.endsWith(".json") || !idPattern.test(file.slice(0, -5))) continue;
+      const selection = await this.selection(file.slice(0, -5));
+      if (!selection) continue;
+      const components = Object.values(selection.components);
+      if (
+        !requirements.every(([key, selector], index) => {
+          const component = components[index];
+          const retained = previous?.components[key];
+          return (
+            component?.selector === selector &&
+            (retained?.selector !== selector ||
+              (retained.version === component.version &&
+                retained.directory === component.directory))
+          );
+        })
+      )
+        continue;
+      // A prefix keeps its complete prerequisite graph, never a mixture of donors.
+      const context =
+        selection.contexts?.[requirements.length - 1] ??
+        (requirements.length === components.length ? selection : undefined);
+      if (!context) continue;
+      try {
+        return await this.publish(
+          {
+            id: request.id,
+            components: Object.fromEntries(
+              requirements.map(([key], index) => [key, components[index]!]),
+            ),
+            binDirectories: context.binDirectories,
+            environment: context.environment,
+          },
+          options,
+          selection.contexts?.slice(0, requirements.length),
+        );
+      } catch (error) {
+        if (Value.Check(FileErrorSchema, error)) continue;
+        throw error;
+      }
+    }
+    return undefined;
   }
 
   async update(
@@ -430,8 +518,8 @@ export class ToolInstaller {
     let environment = this.environment();
     const basePaths = new Set((environment.PATH ?? "").split(delimiter));
     const components: ManagedInstallation["components"] = {};
+    const contexts: Static<typeof ContextSchema>[] = [];
     const tools: string[] = [];
-    let additions: Record<string, string> = {};
     for (const [key, selector] of Object.entries(request.requirements)) {
       const selected = previous?.components[key];
       let version = selected?.selector === selector ? selected.version : undefined;
@@ -496,23 +584,34 @@ export class ToolInstaller {
       );
       if (!Value.Check(EnvironmentSchema, value))
         throw new Error("Invalid mise environment result");
-      additions = value;
+      const additions = value;
       environment = { ...environment, ...additions };
+      const binDirectories = (environment.PATH ?? "")
+        .split(delimiter)
+        .filter((path) => !basePaths.has(path));
+      delete additions.PATH;
+      contexts.push({ binDirectories, environment: additions });
     }
-    const binDirectories = (environment.PATH ?? "")
-      .split(delimiter)
-      .filter((path) => !basePaths.has(path));
-    delete additions.PATH;
-    const installation = validateInstallation(
-      { id: request.id, components, binDirectories, environment: additions },
-      request.id,
-      this.directory,
-    );
-    await validateDirectories(installation, this.directory);
-    const destination = join(this.directory, "selections", `${request.id}.json`);
+    const context = contexts.at(-1)!;
+    return this.publish({ id: request.id, components, ...context }, options, contexts);
+  }
+
+  private async publish(
+    installation: ManagedInstallation,
+    options: InstallationOptions,
+    contexts?: Static<typeof ContextSchema>[],
+  ): Promise<ManagedInstallation> {
+    validateInstallation(installation, installation.id, this.directory);
+    for (const context of contexts ?? [])
+      validateInstallation({ ...installation, ...context }, installation.id, this.directory);
+    await validateDirectories(installation, this.directory, contexts);
+    const destination = join(this.directory, "selections", `${installation.id}.json`);
     const staged = `${destination}.${randomUUID()}.tmp`;
     try {
-      await writeFile(staged, JSON.stringify(installation), { flag: "wx", mode: 0o600 });
+      await writeFile(staged, JSON.stringify({ ...installation, contexts }), {
+        flag: "wx",
+        mode: 0o600,
+      });
       options.signal?.throwIfAborted();
       await rename(staged, destination);
     } finally {

@@ -138,7 +138,12 @@ export function completeLspCommandArguments(
       }
     }
   }
-  const matches = candidates.filter((item) => item.value.startsWith(normalized));
+  // Match pasted Windows separators without changing the escaped completion value.
+  const matches = candidates.filter(
+    (item) =>
+      item.value.startsWith(normalized) ||
+      item.value.replaceAll("\\\\", "\\").startsWith(normalized),
+  );
   return matches.length === 0 ? null : matches;
 }
 

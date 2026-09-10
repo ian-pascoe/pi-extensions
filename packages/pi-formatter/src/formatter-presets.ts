@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { access, open, readFile, stat } from "node:fs/promises";
 import { delimiter, dirname, extname, join, resolve } from "node:path";
 import {
   type ToolInstaller,
@@ -30,12 +30,12 @@ export const formatterPresetIds = [
 ] as const;
 export type FormatterPresetId = (typeof formatterPresetIds)[number];
 
-function* ancestors(path: string): Generator<string> {
+function* ancestors(path: string, boundary?: string): Generator<string> {
   let directory = path;
   for (;;) {
     yield directory;
     const parent = dirname(directory);
-    if (parent === directory) return;
+    if (parent === directory || directory === boundary) return;
     directory = parent;
   }
 }
@@ -191,9 +191,27 @@ async function executable(path: string): Promise<boolean> {
   }
 }
 
-async function findNode(root: string): Promise<string | undefined> {
+async function nativeExecutable(path: string): Promise<boolean> {
+  const file = await open(path, "r");
+  try {
+    const { buffer, bytesRead } = await file.read(Buffer.alloc(4), 0, 4, 0);
+    if (bytesRead < 4) return false;
+    // PE, ELF, Mach-O, and universal Mach-O; shell/npm shims still need Node.
+    return (
+      buffer.readUInt16BE(0) === 0x4d5a ||
+      [
+        0x7f454c46, 0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca,
+        0xcafebabf, 0xbfbafeca,
+      ].includes(buffer.readUInt32BE(0))
+    );
+  } finally {
+    await file.close();
+  }
+}
+
+async function findNode(root: string, projectRoot: string): Promise<string | undefined> {
   const name = process.platform === "win32" ? "node.exe" : "node";
-  for (const directory of ancestors(root)) {
+  for (const directory of ancestors(root, projectRoot)) {
     for (const relative of [join("node_modules", ".bin", name), join("bin", name)]) {
       const path = join(directory, relative);
       if (await executable(path)) return path;
@@ -230,6 +248,7 @@ const pathDirectories = () => (process.env.PATH ?? "").split(delimiter).filter(B
 async function externalFormatter(
   id: FormatterPresetId,
   root: string,
+  projectRoot: string,
 ): Promise<{ command: string; script: boolean } | undefined> {
   const script =
     id === "prettier"
@@ -238,7 +257,7 @@ async function externalFormatter(
         ? "@biomejs/biome/bin/biome"
         : undefined;
   const names = process.platform === "win32" ? [`${id}.exe`, `${id}.cmd`] : [id];
-  for (const directory of ancestors(root)) {
+  for (const directory of ancestors(root, projectRoot)) {
     if (script) {
       const path = join(directory, "node_modules", script);
       if (await fileExists(path)) return { command: path, script: true };
@@ -327,12 +346,16 @@ export async function resolvePresetDefinition(
   root: string,
   installer: ToolInstaller,
   options: InstallationOptions & { allowDownload: boolean },
+  projectRoot = root,
 ): Promise<FormatterDefinition> {
   options.signal?.throwIfAborted();
-  const external = await externalFormatter(id, root);
+  const external = await externalFormatter(id, root, projectRoot);
   let installation: ManagedInstallation | undefined;
-  const javascript = id === "prettier" || id === "biome";
-  let node = javascript ? await findNode(root) : undefined;
+  const javascript =
+    id === "prettier" ||
+    (id === "biome" &&
+      (!external || external.script || !(await nativeExecutable(external.command))));
+  let node = javascript ? await findNode(root, projectRoot) : undefined;
   if (!external) {
     let request = formatterRequest(id);
     if (javascript && node && !(await installer.installed(request.id))?.components.node) {

@@ -129,8 +129,14 @@ Use Pi's `/reload` after settings edits.
 
 Resolution order is **explicit settings → project-local tool/runtime → PATH → managed copy**.
 Project executable discovery includes ancestor `node_modules`, `.bin`, Python `.venv`/`venv`,
-`bin`, and `.cargo/bin` directories. Node runtime selection is independent of tool selection:
-a project/PATH Node can run managed Prettier/Biome. Black's managed private Python environment
+`bin`, and `.cargo/bin` directories, bounded by the nearest Git/worktree root. Outside Git, the
+boundary is Pi's working directory (or the changed file's directory for files outside it). A selected
+Formatter Marker above that boundary extends discovery only when its directory also contains
+`package.json` or `pyproject.toml`; a parent configuration file alone remains a preference, not
+ownership of its executables. Other ancestor bins, including system/user bins, are considered only
+through PATH. Node runtime selection is independent of tool selection:
+a project/PATH Node can run managed Prettier/Biome. Standalone native Biome needs no Node; its npm
+scripts and executable shims retain the Node prerequisite. Black's managed private Python environment
 remains separate from the project's Python environment. External failures warn; they do not
 silently substitute managed executables.
 
@@ -167,7 +173,10 @@ the command or session shutdown. Progress statuses are cleared when operations e
 Formatting runs after successful native `edit` and `write`, Codex-style `apply_patch` results,
 and applied Pi LSP Workspace Edit Previews. Changed/created files and rename destinations are
 formatted; deleted or vanished files are skipped. Explicit formatters run sequentially, and all
-formatting completes before later tool-result middleware. Successful output is silent.
+formatting completes before later tool-result middleware. File Formatter processes hold Pi's native
+per-file mutation queue through process exit, so concurrent native edits/writes cannot be overwritten
+by an earlier formatter's stale snapshot. Workspace Formatters do not declare exact destination paths;
+their commands remain responsible for coordinating broader mutations. Successful output is silent.
 
 The Git collection loads Pi Formatter before Pi LSP so Post-edit Diagnostics observe formatted
 content. Separately installed extensions depend on Pi's configured extension order. Formatter

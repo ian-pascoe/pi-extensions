@@ -28,6 +28,7 @@ export declare class ToolInstaller {
     ensure(request: ToolRequest, options: InstallationOptions & {
         allowDownload: boolean;
     }): Promise<ManagedInstallation>;
+    private reuse;
     update(request: ToolRequest, options: InstallationOptions): Promise<{
         previous: ManagedInstallation;
         current: ManagedInstallation;
@@ -37,5 +38,6 @@ export declare class ToolInstaller {
     private helper;
     private run;
     private acquire;
+    private publish;
 }
 export {};
