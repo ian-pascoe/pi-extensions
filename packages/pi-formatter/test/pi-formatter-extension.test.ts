@@ -209,7 +209,9 @@ afterEach(async () => {
   await Promise.all(
     temporaryDirectories
       .splice(0)
-      .map((directory) => rm(directory, { force: true, recursive: true })),
+      .map((directory) =>
+        rm(directory, { force: true, recursive: true, maxRetries: 10, retryDelay: 100 }),
+      ),
   );
 });
 
