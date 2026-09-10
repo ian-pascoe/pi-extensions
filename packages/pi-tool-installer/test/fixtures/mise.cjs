@@ -22,6 +22,23 @@ if (command === "latest") {
   if (!version) throw new Error(`No fixture version for ${selector}`);
   console.log(version);
 } else if (command === "install") {
+  if (tools.some((tool) => tool.startsWith("pipx:"))) {
+    // Windows Aqua resolves @path text as a release version during executable lookup.
+    if (tools.some((tool) => tool.startsWith("aqua:") && tool.includes("@path:")))
+      throw new Error("Aqua cannot resolve executable paths from a path version");
+    const uv = (process.env.PATH ?? "").split(delimiter).find((path) => {
+      const marker = join(path, "..", "complete");
+      return existsSync(marker) && readFileSync(marker, "utf8").startsWith("aqua:astral-sh/uv@");
+    });
+    if (!uv) throw new Error("Private UV is not available on the child PATH");
+    const python = tools.find((tool) => tool.startsWith("core:python@path:"));
+    if (
+      !python ||
+      process.env.UV_PYTHON !==
+        join(directory(python), process.platform === "win32" ? "python.exe" : "bin/python3")
+    )
+      throw new Error("Exact shared Python runtime is missing");
+  }
   for (const tool of tools) {
     const path = directory(tool);
     if (existsSync(join(path, "complete"))) continue;

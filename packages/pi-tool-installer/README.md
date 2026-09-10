@@ -60,8 +60,11 @@ failed or cancelled updates leave the prior selection intact. Existing concrete
 versions are retained. Missing directories are distinct from corrupt metadata.
 
 Only pipx installations get a namespace keyed by the concrete tool and preceding
-dependency graph. Its mise data, system-data, and cache directories are scoped;
-preceding Python/uv installations are reused through native `@path:` ToolArgs.
+dependency graph. Its mise data, system-data, and cache directories are scoped.
+Python is reused through a native `@path:` ToolArg; UV is resolved from the already
+prefixed private child PATH. Both remain in the namespace identity. Passing Aqua
+UV as an `@path:` ToolArg can crash mise's Windows executable/version resolution,
+so it is not repeated in the scoped toolset.
 An exact `UV_PYTHON` selects the shared full-patch interpreter outside that namespace,
 so mise does not rewrite its venv links to moving minor-version aliases. No runtime
 copies or hand-edited links are involved. Python downloads, uv configuration, and
@@ -154,11 +157,16 @@ update regression (12 checks per target). The bootstrap check now launches two
 separate Node processes. The Python check keeps Black 26.5.1 while changing Python
 3.14.6 → 3.14.7, verifies old/new formatting and full-patch runtime identity, checks
 unchanged old runtime metadata and absence of namespace runtime copies, then tests
-native install failure, cancellation on Black download output, hard process death,
-and retry/offline reuse. Eleven routine tests cover the public installer API offline,
-replacing only external download/process boundaries.
+native install failure, cancellation on UV's Black installation progress, hard process
+death, and retry/offline reuse. The trigger uses dependency-resolution output because
+small wheels can omit download status lines. Twelve routine tests cover the public
+installer API offline, replacing only external download/process boundaries. The pipx
+regression also verifies that updating shared UV changes the environment identity
+without copying Python or dropping the private UV executable path.
 
-The hardened two-test installer suite passed locally on Linux x64. Local full-catalog
-runs also exposed upstream Go archive HTTP 404 and unauthenticated GitHub backend
-rate limits; these failures are not suppressed. Updated six-target evidence, package
-precedence, and offline SDK prefix/coexistence proofs remain separate gates.
+The hardened two-test installer suite and focused Black/debugpy catalog checks passed
+locally on Linux x64 after the Windows composition fix. Native Windows confirmation
+remains pending. Local full-catalog runs also exposed upstream Go archive HTTP 404
+and unauthenticated GitHub backend rate limits; these failures are not suppressed.
+Updated six-target evidence, package precedence, and offline SDK prefix/coexistence
+proofs remain separate gates.

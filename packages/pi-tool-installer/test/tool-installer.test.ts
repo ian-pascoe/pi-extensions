@@ -71,6 +71,36 @@ test("ensure reconciles requirements without upgrading unchanged prerequisites",
   expect(updated?.current.components.node?.version).toBe("24.1.0");
 });
 
+test("pipx updates reuse shared runtimes and retain UV in their installation identity", async () => {
+  const versions = {
+    "core:python": "3.14.7",
+    "aqua:astral-sh/uv": "0.12.12",
+    "pipx:black": "26.5.1",
+  };
+  const { installer, control } = await fixture(versions);
+  const request = {
+    id: "black",
+    requirements: { python: "core:python", uv: "aqua:astral-sh/uv", formatter: "pipx:black" },
+  };
+  const previous = await installer.ensure(request, { allowDownload: true });
+  const oldUv = previous.components.uv;
+  if (!oldUv) throw new Error("Missing shared UV");
+  expect(previous.binDirectories).toContain(join(oldUv.directory, "bin"));
+  await control({ ...versions, "aqua:astral-sh/uv": "0.12.13" });
+  const updated = await installer.update(request, {});
+  if (!updated) throw new Error("Missing Black update");
+  expect(updated.previous).toEqual(previous);
+  expect(updated.current.components.python).toEqual(previous.components.python);
+  expect(updated.current.components.formatter?.version).toBe("26.5.1");
+  expect(updated.current.components.formatter?.directory).not.toBe(
+    previous.components.formatter?.directory,
+  );
+  expect(updated.current.components.uv?.version).toBe("0.12.13");
+  await expect(installer.ensure(request, { allowDownload: false })).resolves.toEqual(
+    updated.current,
+  );
+});
+
 test("changed selectors replace the selected component and native version prefixes are not appended twice", async () => {
   const { installer, control } = await fixture({ "npm:@biomejs/biome@2": "2.1.0" });
   const request = { id: "formatter", requirements: { formatter: "npm:@biomejs/biome@2" } };

@@ -174,20 +174,23 @@ test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
       const cancelled = request("3.14.6");
       cancelled.requirements.formatter = "pipx:black[uvx_args=--no-cache]@26.5.1";
       const controller = new AbortController();
-      let downloading = false;
+      // uv omits download lines for small wheels; dependency resolution is emitted
+      // from the running installation on every target, before packages are installed.
+      const installationProgress = "pipx:black@26.5.1 Resolved ";
+      let installing = false;
       await expect(
         installer.update(cancelled, {
           signal: controller.signal,
           onProgress: (message) => {
             onProgress(message);
-            if (message.includes("Downloading black")) {
-              downloading = true;
-              controller.abort(new Error("Cancel during native Black download"));
+            if (message.includes(installationProgress)) {
+              installing = true;
+              controller.abort(new Error("Cancel during native Black installation"));
             }
           },
         }),
-      ).rejects.toThrow("Cancel during native Black download");
-      expect(downloading).toBe(true);
+      ).rejects.toThrow("Cancel during native Black installation");
+      expect(installing).toBe(true);
       await expect(installer.installed("black-update")).resolves.toEqual(updated.current);
       expect(await runBlack(previous)).toBe(oldOutput);
       await runBlack(updated.current);
@@ -201,10 +204,10 @@ test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
       await expect(
         execute(
           process.execPath,
-          [worker, directory, "update", JSON.stringify(interrupted), "Downloading black"],
+          [worker, directory, "update", JSON.stringify(interrupted), installationProgress],
           { timeout: 170_000 },
         ),
-      ).rejects.toMatchObject({ stderr: expect.stringContaining("Downloading black") });
+      ).rejects.toMatchObject({ stderr: expect.stringContaining(installationProgress) });
       await expect(installer.installed("black-update")).resolves.toEqual(retried.current);
       expect(await runBlack(previous)).toBe(oldOutput);
       await runBlack(retried.current);

@@ -384,6 +384,9 @@ export class ToolInstaller {
                 const python = Object.values(components).find((component) => toolName(component.selector) === "core:python");
                 if (!python)
                     throw new Error(`${selector} requires a preceding managed Python runtime`);
+                // Aqua's Windows bin lookup treats @path as a version. Reuse UV from the
+                // private child PATH instead, while retaining it in the namespace identity.
+                prerequisites = [`${toolName(python.selector)}@path:${python.directory}`];
                 installEnvironment = {
                     ...environment,
                     MISE_DATA_DIR: join(namespace, "data"),
