@@ -75,7 +75,9 @@ The former `outputReserveTokens` setting has been removed; delete it from existi
 
 Trusted project values override global values. Invalid settings are reported and the extension fails closed rather than guessing a policy. Reload Pi after changing settings.
 
-Budget figures are approximate because Pi combines provider measurements with estimates for later content. `/context` distinguishes measured usage from estimated transition state.
+Budgeting compares two complete estimates: Pi's usage-backed total plus any extra live message projection, and the current messages plus standing instructions/tool declarations. It takes the larger estimate and adds the safety margin once. Before valid usage and immediately after a Context Checkpoint, current-content estimation still reserves standing instructions and tools.
+
+These are rough estimates, not exact request measurements. Older usage can hide later growth in instructions or tools, and live session state can differ from the outgoing request. Such growth may reach the provider's context limit before an Emergency Rollover; Pi's existing overflow recovery remains the backstop. The extension does not intercept provider payloads or restrict other extensions' request changes. `/context` reports the same approximate budget.
 
 ## Failure behavior
 

@@ -183,11 +183,14 @@ export function contextBudget(
       ),
     );
   const measured = session.getContextUsage()?.tokens;
-  const liveExtra = Math.max(0, messageTokens(messages) - messageTokens(session.messages));
-  const inputTokens =
-    Math.max(messageTokens(messages), (measured ?? 0) + liveExtra) +
-    staticTokens +
-    settings.safetyMarginTokens;
+  const projectedMessageTokens = messageTokens(messages);
+  const sessionMessageTokens = messageTokens(session.messages);
+  const liveExtra = Math.max(0, projectedMessageTokens - sessionMessageTokens);
+  const estimatedTotal = projectedMessageTokens + staticTokens;
+  const usageTotal = (measured ?? 0) + liveExtra;
+  // Pi's usage already includes standing context. Compare complete estimates;
+  // growth hidden below older usage can still require native overflow recovery.
+  const inputTokens = Math.max(estimatedTotal, usageTotal) + settings.safetyMarginTokens;
   return {
     inputTokens,
     staticTokens,

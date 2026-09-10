@@ -251,13 +251,13 @@ describe("Context Windows through the Pi SDK", () => {
       const f = await createSdkHarness([contextManagement], { contextWindow: 24_000, maxTokens });
       f.responses.push(reply("Ready.", 8000));
       await f.session.prompt("Keep working");
-      f.responses.push(reply("Still working.", 17_000));
+      f.responses.push(reply("Still working.", 18_000));
       await f.session.prompt("Continue below the warning threshold");
       expect(f.requests).toHaveLength(2);
       expect(JSON.stringify(f.requests[1])).not.toContain("Context budget warning");
       expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
       const next = toolCall("context_notes", { action: "list" });
-      next.usage = reply("", 17_000).usage;
+      next.usage = reply("", 18_000).usage;
       f.responses.push(next, reply("Done."));
       await f.session.prompt("Continue");
       expect(
@@ -273,6 +273,33 @@ describe("Context Windows through the Pi SDK", () => {
       expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
     },
   );
+  it.each([
+    { inputTokens: 150_000, checkpoints: 0 },
+    { inputTokens: 180_000, checkpoints: 1 },
+  ])(
+    "creates $checkpoints checkpoints after $inputTokens input tokens with large standing instructions",
+    async ({ inputTokens, checkpoints }) => {
+      const f = await createSdkHarness([contextManagement], {
+        systemPrompt: "S".repeat(90_000),
+        contextSettings: { tailTokens: 0, safetyMarginTokens: 2000 },
+      });
+      f.responses.push(reply("Ready", inputTokens), reply("Continued"));
+      await f.session.prompt("ORIGINAL-TASK");
+      expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+      await f.session.prompt("Continue");
+      expect(f.requests).toHaveLength(2);
+      expect(JSON.stringify(f.requests)).not.toContain("Context budget warning");
+      expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(
+        checkpoints,
+      );
+      expect(JSON.stringify(f.requests[1]).includes("ORIGINAL-TASK")).toBe(checkpoints === 0);
+      expect(JSON.stringify(f.manager.getBranch())).toContain("ORIGINAL-TASK");
+      expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
+      expect(f.providerRequests).toEqual([]);
+      expect(f.extensionErrors).toEqual([]);
+    },
+  );
+
   it("rolls over before sending a large tool result and never replays the completed tool", async () => {
     let executions = 0;
     const f = await createSdkHarness(
