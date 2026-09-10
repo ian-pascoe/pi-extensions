@@ -18,3 +18,10 @@ changes do not render a new TypeScript catalogue immediately. The next
 `before_agent_start` hook, direct catalogue search, or CodeMode Session snapshot
 renders the latest coherent catalogue once. This avoids quadratic startup work
 when extensions register large tool sets one tool at a time.
+
+Deliver the synchronized Tool Catalogue through direct `codemode_search` results
+and each Cell's frozen discovery snapshot, rather than rewriting the immediate
+`codemode_execute` definition. Constant execution and discovery guidance trades a
+possible discovery call before unfamiliar tool use for a stable reusable provider
+prefix. Real changes to other directly exposed tool definitions remain visible;
+native deferred loading may preserve the immediate prefix for additions.

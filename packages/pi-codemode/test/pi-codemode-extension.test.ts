@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message, Usage } from "@earendil-works/pi-ai";
+import type { Message, StreamFunction, StreamOptions, Usage } from "@earendil-works/pi-ai";
 import { splitDeferredTools } from "@earendil-works/pi-ai/utils/deferred-tools";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
@@ -330,6 +330,73 @@ function codeModeToolNames(session: AgentSession): string[] {
     .getAllTools()
     .map(({ name }) => name)
     .filter((name) => name.startsWith("codemode_"));
+}
+
+async function serializeAnthropicRequest(session: AgentSession, messages: Message[]) {
+  const entry = import.meta.resolve("@earendil-works/pi-ai");
+  const api: { stream: StreamFunction<"anthropic-messages", StreamOptions & { client: object }> } =
+    await import(new URL("./api/anthropic-messages.js", entry).href);
+  const prepared = await session.extensionRunner.emitBeforeAgentStart(
+    "synchronize",
+    undefined,
+    session.systemPrompt,
+    { cwd: session.sessionManager.getCwd() },
+  );
+  const sentinel = "STOP BEFORE ANTHROPIC TRANSPORT";
+  let captured: unknown;
+  let transports = 0;
+  const response = await api
+    .stream(
+      getModel("anthropic", "claude-sonnet-4-5"),
+      {
+        systemPrompt: prepared?.systemPrompt ?? session.systemPrompt,
+        tools: session.agent.state.tools,
+        messages,
+      },
+      {
+        client: {
+          beta: {
+            messages: {
+              create() {
+                transports += 1;
+                throw new Error("Unexpected transport");
+              },
+            },
+          },
+        },
+        sessionId: "plan-004-fixed-routing-key",
+        cacheRetention: "short",
+        onPayload(payload) {
+          captured = structuredClone(payload);
+          throw new Error(sentinel);
+        },
+      },
+    )
+    .result();
+  expect(response.stopReason).toBe("error");
+  expect(response.errorMessage).toContain(sentinel);
+  expect(transports).toBe(0);
+  const payloadSchema = Type.Object({
+    tools: Type.Array(Type.Unknown(), { minItems: 1 }),
+    system: Type.Array(Type.Unknown(), { minItems: 1 }),
+    messages: Type.Array(
+      Type.Object({
+        role: Type.String(),
+        content: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+      }),
+      { minItems: 1 },
+    ),
+  });
+  if (!Value.Check(payloadSchema, captured))
+    throw new Error("Unexpected installed Anthropic payload");
+  return captured;
+}
+
+function executeContract(session: AgentSession) {
+  const definition = session.getToolDefinition("codemode_execute");
+  if (definition === undefined) throw new Error("Missing CodeMode execute definition");
+  const { name, description, parameters, promptSnippet, promptGuidelines } = definition;
+  return structuredClone({ name, description, parameters, promptSnippet, promptGuidelines });
 }
 
 function executeDescription(session: AgentSession): string {
@@ -933,6 +1000,7 @@ describe("Pi CodeMode extension", () => {
       },
       false,
     );
+    const unboundContract = executeContract(fixture.session);
 
     expect(codeModeToolNames(fixture.session)).toEqual([
       "codemode_execute",
@@ -956,6 +1024,7 @@ describe("Pi CodeMode extension", () => {
       "codemode_sessions",
       "codemode_search",
     ]);
+    expect(executeContract(fixture.session)).toEqual(unboundContract);
     const executeDefinition = fixture.session.getToolDefinition("codemode_execute");
     const searchDefinition = fixture.session.getToolDefinition("codemode_search");
     expect(executeDefinition?.renderCall).toEqual(expect.any(Function));
@@ -978,9 +1047,8 @@ describe("Pi CodeMode extension", () => {
       "- Reuse a CodeMode Session for related work. Prefer direct tools for simple one-off calls, full raw output, and confirmation-sensitive or destructive actions; use CodeMode mutations only when conditional sequencing is the point, and fall back to direct tools when the CodeMode boundary does not fit.",
     );
     expect(fixture.session.getActiveToolNames()).not.toContain("closure_echo");
-    expect(executeDescription(fixture.session)).toContain('readonly ["codemode_search"]');
-    expect(executeDescription(fixture.session)).toMatch(
-      /CodeMode tool catalogue: (?:COMPLETE|PARTIAL)/,
+    expect(executeDescription(fixture.session)).not.toMatch(
+      /Current CodeMode tool declarations|COMPLETE|PARTIAL|readonly \[/,
     );
     expect(
       codeModeToolSearchPage(
@@ -1012,10 +1080,8 @@ describe("Pi CodeMode extension", () => {
     expect(
       codeModeSessionsResult(await executeTool(fixture.session, "codemode_sessions", {})).sessions,
     ).toEqual([]);
-    expect(
-      executeDescription(fixture.session).split("\n\nCurrent CodeMode tool declarations:")[0],
-    ).toBe(
-      "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; an unknown supplied ID creates that Session. A new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.",
+    expect(executeDescription(fixture.session)).toBe(
+      "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; an unknown supplied ID creates that Session. A new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results. Discover tools with direct codemode_search before a Cell or tools.codemode_search inside one. Search an intent for exact flat names, then search an exact name for its complete declaration. Call tools[name](input).",
     );
 
     const started = await executeTool(fixture.session, "codemode_execute", {
@@ -1160,7 +1226,7 @@ describe("Pi CodeMode extension", () => {
     });
   }, 20_000);
 
-  test("searches and calls a tool omitted from a partial inline catalogue", async () => {
+  test("discovers and calls a tool from a large catalogue without inline declarations", async () => {
     const fixture = await createCodeModeExtensionFixture();
     const largeParameters = Type.Object(
       Object.fromEntries(
@@ -1192,7 +1258,7 @@ describe("Pi CodeMode extension", () => {
       cwd: ".",
     });
     const description = executeDescription(fixture.session);
-    expect(description).toContain("CodeMode tool catalogue: PARTIAL");
+    expect(description).not.toMatch(/Current CodeMode tool declarations|COMPLETE|PARTIAL/);
     expect(description).not.toContain(`readonly [${JSON.stringify(targetName)}]`);
 
     const result = await executeTool(fixture.session, "codemode_execute", {
@@ -1471,22 +1537,232 @@ describe("Pi CodeMode extension", () => {
     },
   );
 
-  test("defers dynamic catalogue rendering to the next synchronization boundary", async () => {
+  test("preserves serialized Anthropic tools and system across live CodeMode-only discovery", async () => {
+    const fixture = await createCodeModeExtensionFixture({
+      tools: [{ pattern: "*", exposure: "codemode-only" }],
+    });
+    const { session } = fixture;
+    const messages: Message[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Use the live Tool Catalogue." }],
+        timestamp: 0,
+      },
+    ];
+    const before = await serializeAnthropicRequest(session, messages);
+    expect(await serializeAnthropicRequest(session, messages)).toEqual(before);
+
+    fixture.registerDynamicTool();
+    const found = await executeTool(session, "codemode_search", { query: "dynamic_later" });
+    expect(codeModeToolSearchPage(found)).toMatchObject({
+      items: [
+        {
+          name: "dynamic_later",
+          declaration: expect.stringContaining('readonly ["dynamic_later"]'),
+        },
+      ],
+    });
+    messages.push(
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "discover",
+            name: "codemode_search",
+            arguments: { query: "dynamic_later" },
+          },
+        ],
+        api: "anthropic-messages",
+        provider: "anthropic",
+        model: "claude-sonnet-4-5",
+        usage: nestedUsage(0),
+        stopReason: "toolUse",
+        timestamp: 0,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "discover",
+        toolName: "codemode_search",
+        content: found.content,
+        isError: false,
+        timestamp: 0,
+      },
+    );
+    const after = await serializeAnthropicRequest(session, messages);
+    expect(JSON.stringify(after.tools)).toBe(JSON.stringify(before.tools));
+    expect(JSON.stringify(after.system)).toBe(JSON.stringify(before.system));
+    expect(after.messages).toHaveLength(before.messages.length + 2);
+    // Pi moves the history cache marker; prior message content must remain unchanged.
+    const content = (items: typeof before.messages) =>
+      items.map(({ role, content: blocks }) => ({
+        role,
+        content: blocks.map(({ cache_control: _cache, ...block }) => block),
+      }));
+    expect(content(after.messages.slice(0, before.messages.length))).toEqual(
+      content(before.messages),
+    );
+    expect(after.messages.at(-1)).toMatchObject({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "discover", content: JSON.stringify(found.details) },
+      ],
+    });
+    expect(await serializeAnthropicRequest(session, messages)).toEqual(after);
+    expect(fixture.notifications).toEqual([]);
+  });
+
+  test("keeps the execute contract stable across CodeMode-only catalogue transitions", async () => {
+    const fixture = await createCodeModeExtensionFixture({
+      tools: [{ pattern: "*", exposure: "codemode-only" }],
+    });
+    const { session, extensionApi } = fixture;
+    const requestedNames = session.getAllTools().map(({ name }) => name);
+    const directNames = session.getActiveToolNames();
+    const before = executeContract(session);
+    const synchronize = () =>
+      session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, session.systemPrompt, {
+        cwd: session.sessionManager.getCwd(),
+      });
+
+    fixture.registerDynamicTool();
+    expect(session.getActiveToolNames()).toEqual(directNames);
+    expect(executeContract(session)).toEqual(before);
+    await synchronize();
+    expect(executeContract(session)).toEqual(before);
+    const discovered = codeModeToolSearchPage(
+      await executeTool(session, "codemode_search", { query: "dynamic_later" }),
+    );
+    expect(discovered).toMatchObject({
+      total: 1,
+      items: [
+        {
+          name: "dynamic_later",
+          declaration: expect.stringContaining('readonly ["text"]: string'),
+        },
+      ],
+    });
+    expect(executeContract(session)).toEqual(before);
+
+    const started = codeModeResult(
+      await executeTool(session, "codemode_execute", {
+        script:
+          'const savedDynamic = tools.dynamic_later; const page = await tools.codemode_search({ query: "dynamic_later" }); return { found: page.items[0], called: await tools[page.items[0].name]({ text: "discovered" }) };',
+      }),
+    );
+    expect(started).toMatchObject({
+      result: "success",
+      data: {
+        found: discovered.items[0],
+        called: { content: [{ type: "text", text: "discovered" }] },
+      },
+    });
+    expect(executeContract(session)).toEqual(before);
+
+    extensionApi.registerTool({
+      name: "dynamic_later",
+      label: "Dynamic Later",
+      description: "Replacement number input.",
+      parameters: Type.Object({ count: Type.Number() }, { additionalProperties: false }),
+      async execute(_id, input) {
+        return {
+          content: [{ type: "text", text: String(input.count) }],
+          details: { count: input.count },
+        };
+      },
+    });
+    const replaced = codeModeToolSearchPage(
+      await executeTool(session, "codemode_search", { query: "dynamic_later" }),
+    );
+    expect(replaced).toMatchObject({
+      total: 1,
+      items: [
+        {
+          name: "dynamic_later",
+          description: "Replacement number input.",
+          declaration: expect.stringContaining('readonly ["count"]: number'),
+        },
+      ],
+    });
+    expect(executeContract(session)).toEqual(before);
+    expect(
+      codeModeResult(
+        await executeTool(session, "codemode_execute", {
+          sessionId: started.sessionId,
+          script: "return await savedDynamic({ count: 3 });",
+        }),
+      ),
+    ).toMatchObject({ result: "success", data: { details: { count: 3 } } });
+    expect(executeContract(session)).toEqual(before);
+
+    // Restore the full requested set, including retained CodeMode-only tools.
+    extensionApi.setActiveTools(requestedNames);
+    expect(session.getActiveToolNames()).toEqual(directNames);
+    expect(executeContract(session)).toEqual(before);
+    expect(
+      codeModeToolSearchPage(
+        await executeTool(session, "codemode_search", {
+          query: "dynamic_later",
+        }),
+      ).items.map(({ name }) => name),
+    ).not.toContain("dynamic_later");
+    expect(executeContract(session)).toEqual(before);
+    expect(
+      codeModeResult(
+        await executeTool(session, "codemode_execute", {
+          sessionId: started.sessionId,
+          script:
+            'const page = await tools.codemode_search({ query: "dynamic_later" }); try { await savedDynamic({ count: 3 }); return "unexpected"; } catch (error) { return { code: error.code, searchIncludesDynamic: page.items.some((item) => item.name === "dynamic_later"), hasTool: Object.hasOwn(tools, "dynamic_later") }; }',
+        }),
+      ),
+    ).toMatchObject({
+      result: "success",
+      data: { code: "unknown-tool", searchIncludesDynamic: false, hasTool: false },
+    });
+    expect(executeContract(session)).toEqual(before);
+    for (let refresh = 0; refresh < 2; refresh += 1) {
+      await synchronize();
+      expect(executeContract(session)).toEqual(before);
+      expect(session.getActiveToolNames()).toEqual(directNames);
+    }
+    expect(before.description).not.toMatch(
+      /Current CodeMode tool declarations|COMPLETE|PARTIAL|readonly \[/,
+    );
+    expect(fixture.notifications).toEqual([]);
+  });
+
+  test("discovers dynamic tools at a model-turn boundary without rewriting execute", async () => {
     const fixture = await createCodeModeExtensionFixture();
+    const before = executeContract(fixture.session);
     fixture.registerDynamicTool();
 
     expect(fixture.session.getActiveToolNames()).toContain("dynamic_later");
-    expect(executeDescription(fixture.session)).not.toContain('readonly ["dynamic_later"]');
-
+    expect(executeContract(fixture.session)).toEqual(before);
     await fixture.session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, "test", {
       cwd: ".",
     });
-
-    expect(executeDescription(fixture.session)).toContain('readonly ["dynamic_later"]');
+    expect(executeContract(fixture.session)).toEqual(before);
+    expect(
+      codeModeToolSearchPage(
+        await executeTool(fixture.session, "codemode_search", {
+          query: "dynamic_later",
+        }),
+      ),
+    ).toMatchObject({
+      total: 1,
+      items: [
+        {
+          name: "dynamic_later",
+          declaration: expect.stringContaining('readonly ["dynamic_later"]'),
+        },
+      ],
+    });
   });
 
   test("keeps direct exposure, guest exposure, and the dynamic catalogue coherent", async () => {
-    const fixture = await createCodeModeExtensionFixture();
+    const fixture = await createCodeModeExtensionFixture({
+      tools: [{ pattern: "*", exposure: "direct-and-codemode" }],
+    });
     expect(executeDescription(fixture.session)).not.toContain('readonly ["dynamic_later"]');
     const beforeRegistration = codeModeResult(
       await executeTool(fixture.session, "codemode_execute", {
@@ -1521,6 +1797,9 @@ describe("Pi CodeMode extension", () => {
     );
 
     fixture.registerDynamicTool("Replacement dynamic catalogue description.");
+    expect(activeTool(fixture.session, "dynamic_later").description).toBe(
+      "Replacement dynamic catalogue description.",
+    );
     const changedMidBatch = await executeTool(fixture.session, "codemode_execute", {
       script:
         'const beforeHide = await tools.codemode_search({ query: "dynamic_later" }); const outcomes = await Promise.all([tools.hide_dynamic({}), tools.dynamic_later({ text: "must not run" }).then(() => "ran", (error) => error.code)]); const afterHide = await tools.codemode_search({ query: "dynamic_later" }); return { outcome: outcomes[1], before: beforeHide.items[0]?.description, after: afterHide.items[0]?.description };',
