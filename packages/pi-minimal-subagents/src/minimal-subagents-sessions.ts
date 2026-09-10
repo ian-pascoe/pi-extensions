@@ -826,12 +826,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       stat.ctimeMs,
     ]);
     if (this.savedTranscript?.key === key) return this.savedTranscript.snapshot;
-    const entries = parseSessionEntries(readFileSync(sessionFile, "utf8"));
-    if (entries[0]?.type !== "session")
-      throw new Error(`Invalid child session file: ${sessionFile}`);
-    // SessionManager.open can migrate/rewrite files; an in-memory reader cannot write them.
-    const manager = SessionManager.inMemory(this.options.cwd, undefined, entries);
-    verifyChildSessionIdentity(manager, agent, this.options.rootSessionId);
+    const manager = this.readSession(agent);
     const snapshot = selectChildAgentTranscript(
       manager.getBranch(agent.session_leaf_id).flatMap(sessionEntryToContextMessages),
     );
@@ -839,11 +834,41 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     return snapshot;
   }
 
+  /** Inspect durable evidence without starting child extensions or changing the saved branch. */
+  hasDeliveryEvidence(
+    agent: PersistedAgent,
+    sourceAgentId: string,
+    sourceTurnId: string,
+    deliveryId?: string,
+  ): boolean {
+    return findDeliveryEvidence(
+      this.readSession(agent).getBranch(agent.session_leaf_id),
+      sourceAgentId,
+      sourceTurnId,
+      deliveryId,
+    );
+  }
+
+  private readSession(agent: PersistedAgent): SessionManager {
+    if (!agent.session_file || !agent.session_id || !agent.session_leaf_id) {
+      throw new Error(`Child Session Position is unavailable for ${agent.agent_id}.`);
+    }
+    const sessionFile = canonicalPath(agent.session_file);
+    const entries = parseSessionEntries(readFileSync(sessionFile, "utf8"));
+    if (entries[0]?.type !== "session")
+      throw new Error(`Invalid child session file: ${sessionFile}`);
+    // SessionManager.open can migrate/rewrite files; an in-memory reader cannot write them.
+    const manager = SessionManager.inMemory(this.options.cwd, undefined, entries);
+    verifyChildSessionIdentity(manager, agent, this.options.rootSessionId);
+    return manager;
+  }
+
   resolveLaunchMissingDependencies(agent: PersistedAgent): Promise<string[]> {
     return this.findMissingDependencies(agent, false);
   }
 
-  resolveRestorationMissingDependencies(agent: PersistedAgent): Promise<string[]> {
+  async resolveRestorationMissingDependencies(agent: PersistedAgent): Promise<string[]> {
+    this.readSession(agent);
     return this.findMissingDependencies(agent, this.options.modelScopeRestricted);
   }
 

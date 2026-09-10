@@ -90,6 +90,9 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
       sessionLeafId: `leaf-${agent.agent_id}`,
     })),
     openRuntime: vi.fn<(agent: PersistedAgent) => Promise<ChildAgentRuntime>>(async () => runtime),
+    hasDeliveryEvidence: vi.fn<NonNullable<AgentSessionFactory["hasDeliveryEvidence"]>>(
+      () => false,
+    ),
     readTranscript: vi.fn<NonNullable<AgentSessionFactory["readTranscript"]>>((agent) => {
       throw new Error(`Child Session Position unavailable for ${agent.agent_id}`);
     }),
@@ -1282,7 +1285,175 @@ describe("minimal subagents coordinator", () => {
     ).rejects.toThrow("Minimal subagents agent ID is tombstoned: team");
   });
 
-  it("restores interrupted, missing, clone-failed, and runtime-failed agents as explicit states", async () => {
+  it("restores inactive child metadata without opening runtimes", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    const agents = Array.from({ length: 44 }, (_, index) => {
+      const agent = persistedAgent(`worker-${index}`, "root");
+      agent.latest_result = {
+        agent_id: agent.agent_id,
+        turn_id: `${agent.agent_id}:finished`,
+        status: index < 42 ? "completed" : "cancelled",
+        output: "saved result",
+      };
+      return agent;
+    });
+
+    await coordinator.restore({ agents, tombstones: [], deliveries: [] });
+
+    expect(sessions.openRuntime).not.toHaveBeenCalled();
+    expect(coordinator.snapshot().agents).toEqual(agents);
+    expect(coordinator.status("root")).toMatchObject({
+      agents: agents.map((agent) => ({ agent_id: agent.agent_id })),
+    });
+    expect(coordinator.status("root", "worker-0")).toMatchObject({
+      agent: { latest_result: agents[0]?.latest_result },
+    });
+    coordinator.inspectTranscript("worker-0");
+    await expect(coordinator.wait("root", "worker-0")).resolves.toMatchObject({
+      event: "turn",
+      status: "completed",
+      output: "saved result",
+    });
+    await coordinator.cancel("root", "worker-42");
+    await coordinator.delete("root", "worker-43");
+    await coordinator.prepareFork("/root/source.jsonl");
+    await coordinator.shutdown();
+    expect(sessions.openRuntime).not.toHaveBeenCalled();
+  });
+
+  it("opens only the messaged restored child and reuses its runtime", async () => {
+    const runtime = childRuntime();
+    const { coordinator, sessions } = coordinatorFixture(runtime);
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root"), persistedAgent("other", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    expect(sessions.openRuntime).not.toHaveBeenCalled();
+    await Promise.all([
+      coordinator.sendAgentMessage("root", { agent_id: "worker", message: "resume" }, "root:1"),
+      coordinator.sendAgentMessage("root", { agent_id: "worker", message: "follow up" }, "root:2"),
+    ]);
+    await coordinator.waitForSettledOperations();
+    expect(sessions.openRuntime).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ agent_id: "worker", session_leaf_id: "runtime-leaf" }),
+    );
+    expect(runtime.runMessage).toHaveBeenCalled();
+    await coordinator.shutdown();
+    expect(runtime.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps initial launch failures observable through a later wait", async () => {
+    const { coordinator, sessions } = coordinatorFixture();
+    sessions.openRuntime.mockRejectedValue(new Error("extension startup failed"));
+    await coordinator.spawn("root", { agent_id: "worker", task: "start" }, caller);
+    await coordinator.waitForSettledOperations();
+    await expect(coordinator.wait("root", "worker")).resolves.toMatchObject({
+      event: "turn",
+      status: "failed",
+      error: "extension startup failed",
+    });
+    await coordinator.shutdown();
+  });
+
+  it("does not start restored child work when shutdown overtakes runtime initialization", async () => {
+    const runtime = childRuntime();
+    const { coordinator, sessions } = coordinatorFixture(runtime);
+    await coordinator.restore({
+      agents: [persistedAgent("worker", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const opening = Promise.withResolvers<ChildAgentRuntime>();
+    sessions.openRuntime.mockReturnValue(opening.promise);
+    const message = coordinator.sendAgentMessage(
+      "root",
+      { agent_id: "worker", message: "resume" },
+      "root:turn",
+    );
+    await vi.waitFor(() => expect(sessions.openRuntime).toHaveBeenCalledOnce());
+    const shutdown = coordinator.shutdown();
+    opening.resolve(runtime);
+    await shutdown;
+    await expect(message).resolves.toMatchObject({ disposition: "failed" });
+    expect(runtime.runMessage).not.toHaveBeenCalled();
+    expect(runtime.dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])(
+    "reconciles cold-recipient delivery evidence (saved: %s)",
+    async (saved) => {
+      const runtime = childRuntime();
+      const { coordinator, sessions } = coordinatorFixture(runtime);
+      sessions.hasDeliveryEvidence.mockReturnValue(saved);
+      const child = persistedAgent("team.child", "team");
+      child.latest_result = {
+        agent_id: child.agent_id,
+        turn_id: "team.child:done",
+        status: "completed",
+        output: "child result",
+      };
+      await coordinator.restore({
+        agents: [persistedAgent("team", "root"), child, persistedAgent("unrelated", "root")],
+        tombstones: [],
+        deliveries: [
+          {
+            source_agent_id: child.agent_id,
+            source_turn_id: child.latest_result.turn_id,
+            destination_agent_id: "team",
+            path: "message",
+            settled: false,
+            sequence: 2,
+            result: child.latest_result,
+          },
+        ],
+        coordination_deliveries: [
+          {
+            delivery_id: "message:saved",
+            destination_agent_id: "team",
+            path: "message",
+            settled: false,
+            sequence: 1,
+            message: {
+              customType: "minimal-subagents.message",
+              content: "resume coordination",
+              details: {
+                source_agent_id: "root",
+                source_turn_id: "root:turn",
+                destination_agent_id: "team",
+                message_id: "saved",
+                delivery_id: "message:saved",
+              },
+            },
+          },
+        ],
+        next_delivery_sequence: 3,
+      });
+      await coordinator.waitForSettledOperations();
+      expect(sessions.hasDeliveryEvidence).toHaveBeenCalledWith(
+        expect.objectContaining({ agent_id: "team" }),
+        "root",
+        "root:turn",
+        "message:saved",
+      );
+      if (saved) {
+        expect(sessions.openRuntime).not.toHaveBeenCalled();
+        expect(runtime.runMessage).not.toHaveBeenCalled();
+        expect(coordinator.snapshot()).toMatchObject({
+          deliveries: [],
+          coordination_deliveries: [],
+        });
+      } else {
+        expect(sessions.openRuntime).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ agent_id: "team" }),
+        );
+        expect(runtime.runMessage).toHaveBeenCalledTimes(2);
+      }
+      await coordinator.shutdown();
+    },
+  );
+
+  it("restores interrupted, missing, clone-failed, and deferred runtime-failed agents as explicit states", async () => {
     const { coordinator, notify, sessions } = coordinatorFixture();
     const interrupted = persistedAgent("interrupted", "root");
     interrupted.active_turn_id = "interrupted:turn-active";
@@ -1321,6 +1492,17 @@ describe("minimal subagents coordinator", () => {
     expect(coordinator.inspectStatus("clone-failed")).toMatchObject({
       agent: { availability: "unavailable", unavailable_reason: "fork disk full" },
     });
+    expect(sessions.openRuntime).not.toHaveBeenCalled();
+    expect(coordinator.inspectStatus("runtime-failed")).toMatchObject({
+      agent: { availability: "available" },
+    });
+    await expect(
+      coordinator.sendAgentMessage(
+        "root",
+        { agent_id: "runtime-failed", message: "resume" },
+        "root:resume",
+      ),
+    ).resolves.toMatchObject({ disposition: "failed", error: "session corrupt" });
     expect(coordinator.inspectStatus("runtime-failed")).toMatchObject({
       agent: { availability: "unavailable", unavailable_reason: "session corrupt" },
     });
@@ -1350,9 +1532,7 @@ describe("minimal subagents coordinator", () => {
     expect(coordinator.inspectStatus("healthy")).toMatchObject({
       agent: { availability: "available" },
     });
-    expect(sessions.openRuntime).toHaveBeenCalledWith(
-      expect.objectContaining({ agent_id: "healthy" }),
-    );
+    expect(sessions.openRuntime).not.toHaveBeenCalled();
   });
 
   it("prepares a fork by cancelling active root work and cloning its session", async () => {

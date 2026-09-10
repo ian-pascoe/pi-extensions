@@ -261,6 +261,13 @@ export interface AgentSessionFactory {
   openRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime>;
   /** Read verified saved history independently of runtime restoration dependencies. */
   readTranscript?(agent: PersistedAgent): ChildAgentTranscriptSnapshot;
+  /** Read verified selected-branch evidence without opening a runtime. */
+  hasDeliveryEvidence?(
+    agent: PersistedAgent,
+    sourceAgentId: string,
+    sourceTurnId: string,
+    deliveryId?: string,
+  ): boolean;
   resolveLaunchMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveRestorationMissingDependencies(agent: PersistedAgent): Promise<string[]>;
   resolveThinkingLevel(modelId: string, requested: ThinkingLevel): ThinkingLevel;

@@ -18,6 +18,7 @@ import {
 import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
+import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import {
   captureChildTurnOutcome,
   createPersistentChildIdentity,
@@ -135,7 +136,7 @@ function persistedAgent(): PersistedAgent {
 }
 
 describe("minimal subagent sessions", () => {
-  it("reads the complete verified Child Session Position without restoring or rewriting its file", () => {
+  it("reads and validates the complete verified Child Session Position without restoring or rewriting its file", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-history-"));
     temporaryDirectories.push(directory);
     const agent = persistedAgent();
@@ -189,7 +190,20 @@ describe("minimal subagent sessions", () => {
       /abandoned sibling|not conversation|hidden message/,
     );
     expect(factory.readTranscript(agent)).toBe(snapshot);
+    await expect(factory.resolveRestorationMissingDependencies(agent)).resolves.toEqual([
+      "provider/model",
+      "read",
+    ]);
     expect(readFileSync(identity.sessionFile, "utf8")).toBe(before);
+    for (const invalid of [
+      { ...agent, session_leaf_id: undefined },
+      { ...agent, session_leaf_id: "missing-leaf" },
+      { ...agent, agent_id: "impostor" },
+      { ...agent, session_id: "wrong-session" },
+    ]) {
+      await expect(factory.resolveRestorationMissingDependencies(invalid)).rejects.toThrow();
+      expect(readFileSync(identity.sessionFile, "utf8")).toBe(before);
+    }
 
     expect(() => factory.readTranscript({ ...agent, session_leaf_id: undefined })).toThrow(
       /position/i,
@@ -204,13 +218,174 @@ describe("minimal subagent sessions", () => {
     const legacy = before.replace('"version":3', '"version":2');
     writeFileSync(identity.sessionFile, legacy);
     expect(factory.readTranscript(agent).messages).toEqual(snapshot.messages);
+    await expect(factory.resolveRestorationMissingDependencies(agent)).resolves.toEqual([
+      "provider/model",
+      "read",
+    ]);
     expect(readFileSync(identity.sessionFile, "utf8")).toBe(legacy);
     writeFileSync(identity.sessionFile, "");
     expect(() => factory.readTranscript(agent)).toThrow();
+    await expect(factory.resolveRestorationMissingDependencies(agent)).rejects.toThrow();
     expect(readFileSync(identity.sessionFile, "utf8")).toBe("");
     rmSync(identity.sessionFile);
     expect(() => factory.readTranscript(agent)).toThrow();
+    await expect(factory.resolveRestorationMissingDependencies(agent)).rejects.toThrow();
     expect(existsSync(identity.sessionFile)).toBe(false);
+  });
+
+  it("starts child extensions only when a restored recipient receives new work", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-lazy-restore-"));
+    temporaryDirectories.push(directory);
+    const starts = join(directory, "session-starts.jsonl");
+    const extension = join(directory, "observer.ts");
+    writeFileSync(starts, "");
+    writeFileSync(
+      extension,
+      `import { appendFileSync } from "node:fs";
+       export default function (pi) {
+         pi.on("session_start", (_event, ctx) => {
+           appendFileSync(${JSON.stringify(starts)}, ctx.sessionManager.getSessionId() + "\\n");
+         });
+       }`,
+    );
+    writeFileSync(join(directory, "settings.json"), JSON.stringify({ extensions: [extension] }));
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    const agents = ["completed", "cancelled"].map((status, index) => {
+      const agent = persistedAgent();
+      agent.agent_id = agent.friendly_id = `child-${index}`;
+      const identity = factory.createIdentity(agent, [assistantMessage("saved answer", 1)]);
+      agent.session_file = identity.sessionFile;
+      agent.session_id = identity.sessionId;
+      agent.session_leaf_id = identity.sessionLeafId;
+      agent.latest_result = {
+        agent_id: agent.agent_id,
+        turn_id: `${agent.agent_id}:saved`,
+        status: status === "completed" ? "completed" : "cancelled",
+        output: "saved answer",
+      };
+      return agent;
+    });
+    const openRuntime = factory.openRuntime.bind(factory);
+    const opened = vi.spyOn(factory, "openRuntime").mockImplementation(async (agent) => {
+      const runtime = await openRuntime(agent);
+      // Keep real SDK extension startup, but never send a model request.
+      vi.spyOn(runtime, "runMessage").mockResolvedValue({ status: "completed", output: "done" });
+      return runtime;
+    });
+    const coordinator = new MinimalSubagentsCoordinator({
+      sessions: factory,
+      registry: { rootSessionId: "root", append: () => undefined },
+      root: {
+        queueCoordinatorMessage: async () => undefined,
+        isIdle: () => true,
+        hasDeliveryEvidence: () => false,
+      },
+      automaticDeliveryGraceMs: 0,
+    });
+    try {
+      await coordinator.restore({ agents, tombstones: [], deliveries: [] });
+      for (const agent of agents) {
+        expect(coordinator.status("root", agent.agent_id)).toMatchObject({
+          agent: { availability: "available", recent_activity: expect.any(Array) },
+        });
+        expect(coordinator.inspectTranscript(agent.agent_id).messages).toEqual([
+          assistantMessage("saved answer", 1),
+        ]);
+        await expect(coordinator.wait("root", agent.agent_id)).resolves.toMatchObject({
+          event: "turn",
+          ...agent.latest_result,
+        });
+      }
+      expect(opened).not.toHaveBeenCalled();
+      expect(readFileSync(starts, "utf8")).toBe("");
+      for (const message of ["continue", "one more question"]) {
+        await expect(
+          coordinator.sendAgentMessage("root", { agent_id: "child-0", message }, "root:turn"),
+        ).resolves.toMatchObject({ disposition: "queued" });
+        await coordinator.waitForSettledOperations();
+      }
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(opened.mock.calls[0]?.[0].agent_id).toBe("child-0");
+      expect(readFileSync(starts, "utf8")).toBe(`${agents[0]!.session_id}\n`);
+    } finally {
+      await coordinator.shutdown();
+      opened.mockRestore();
+    }
+  });
+
+  it("reads terminal, coordination, and wait evidence only from the saved child branch", () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-saved-evidence-"));
+    temporaryDirectories.push(directory);
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [],
+      eligibleModelIds: [],
+      modelScopeRestricted: false,
+      availableToolNames: [],
+      projectTrusted: true,
+      getCoordinatorTools: () => {
+        throw new Error("evidence must not start a runtime");
+      },
+    });
+    const agent = persistedAgent();
+    const identity = factory.createIdentity(agent, [assistantMessage("persist", 1)]);
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    const manager = SessionManager.open(identity.sessionFile, directory, directory);
+    const branchPoint = manager.getLeafId()!;
+    const details = { source_agent_id: "source", source_turn_id: "terminal" };
+    manager.appendCustomMessageEntry("minimal-subagents.result", "result", false, details);
+    manager.appendCustomMessageEntry("minimal-subagents.message", "message", false, {
+      ...details,
+      source_turn_id: "coordination",
+      delivery_id: "message:1",
+    });
+    const waitEntry = toolResultEntry("subagent_wait", {
+      ...details,
+      source_turn_id: "wait",
+      event: "turn",
+      messages: [{ delivery_id: "message:2" }],
+    });
+    if (waitEntry.type !== "message" || waitEntry.message.role !== "toolResult")
+      throw new Error("Expected wait message");
+    agent.session_leaf_id = manager.appendMessage(waitEntry.message);
+    manager.branch(branchPoint);
+    manager.appendCustomMessageEntry("minimal-subagents.result", "abandoned", false, {
+      ...details,
+      source_turn_id: "abandoned",
+    });
+    const before = readFileSync(identity.sessionFile, "utf8");
+    expect(factory.hasDeliveryEvidence(agent, "source", "terminal")).toBe(true);
+    expect(factory.hasDeliveryEvidence(agent, "source", "coordination", "message:1")).toBe(true);
+    expect(factory.hasDeliveryEvidence(agent, "source", "coordination")).toBe(false);
+    expect(factory.hasDeliveryEvidence(agent, "source", "wait")).toBe(true);
+    expect(factory.hasDeliveryEvidence(agent, "source", "wait", "message:2")).toBe(true);
+    expect(factory.hasDeliveryEvidence(agent, "source", "wait", "message:wrong")).toBe(false);
+    expect(factory.hasDeliveryEvidence(agent, "other", "terminal")).toBe(false);
+    expect(factory.hasDeliveryEvidence(agent, "source", "abandoned")).toBe(false);
+    expect(() =>
+      factory.hasDeliveryEvidence({ ...agent, session_leaf_id: "missing" }, "source", "terminal"),
+    ).toThrow(/leaf/i);
+    expect(() =>
+      factory.hasDeliveryEvidence({ ...agent, session_id: "wrong" }, "source", "terminal"),
+    ).toThrow(/session ID/i);
+    expect(readFileSync(identity.sessionFile, "utf8")).toBe(before);
   });
 
   it("keeps pre-compaction live history stable while streaming becomes committed", async () => {

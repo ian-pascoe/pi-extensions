@@ -1172,7 +1172,13 @@ describe("minimal subagents extension lifecycle", () => {
     const harness = await createExtensionHarness(sessionManager);
 
     await harness.runner.emit(sessionStartEvent());
-    expect(harness.sessionFactory.openedAgentIds).toEqual(["branch-a"]);
+    expect(harness.sessionFactory.openedAgentIds).toEqual([]);
+    const statusTool = harness.runner.getToolDefinition("subagent_status")!;
+    await expect(
+      statusTool.execute("status-a", {}, undefined, undefined, harness.runner.createContext()),
+    ).resolves.toMatchObject({
+      details: { agents: [{ agent_id: "branch-a" }] },
+    });
 
     sessionManager.branch(branchPoint);
     appendRegistryCheckpoint(sessionManager, sessionManager.getSessionId(), {
@@ -1181,7 +1187,12 @@ describe("minimal subagents extension lifecycle", () => {
       deliveries: [],
     });
     await harness.runner.emit(sessionTreeEvent);
-    expect(harness.sessionFactory.openedAgentIds).toEqual(["branch-a", "branch-b"]);
+    expect(harness.sessionFactory.openedAgentIds).toEqual([]);
+    await expect(
+      statusTool.execute("status-b", {}, undefined, undefined, harness.runner.createContext()),
+    ).resolves.toMatchObject({
+      details: { agents: [{ agent_id: "branch-b" }] },
+    });
 
     await emitSessionShutdown(harness, "quit");
   });
@@ -1292,7 +1303,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.extensionErrors).toEqual([]);
     expect(harness.sessionFactory.clonedAgentIds).toEqual(["selected-child"]);
     expect(harness.sessionFactory.adoptedAgentIds).toEqual(["selected-child"]);
-    expect(harness.sessionFactory.openedAgentIds).toEqual(["selected-child"]);
+    expect(harness.sessionFactory.openedAgentIds).toEqual([]);
     expect(harness.sessionFactory.clonedAgentIds).not.toContain("newer-source-head");
     expect(
       replayRegistryEntries(destination.getBranch(), destination.getSessionId()).tombstones,

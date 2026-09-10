@@ -226,8 +226,14 @@ Deleting a child first verifies its session header and persistent identity,
 then uses the optional `trash` command when available and falls back to
 unlinking its session file. Deletion prunes pending delivery state and retained
 recent-message projections sourced from the complete deleted subtree. Restore
-and clone perform the same ownership check and reopen the recorded child-session
-leaf.
+and clone perform the same ownership check against the recorded child-session
+leaf. Restoration loads metadata and validates saved sessions without starting
+child runtimes or their extension services (including MCP Servers). Status,
+saved transcripts, settled-result waits, cancellation of idle children, and
+session management do not start runtimes. A message or an undelivered child-bound
+result opens only its recipient's runtime on demand; saved Delivery Evidence
+prevents already-delivered work from reopening it. Runtime initialization errors
+are reported when that child is first needed.
 
 Registry replay and Delivery Evidence are scoped to the Root Agent's active
 session-tree branch. Registry writes use V2 records with complete field,
