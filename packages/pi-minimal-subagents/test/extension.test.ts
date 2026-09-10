@@ -1040,9 +1040,15 @@ describe("minimal subagents extension lifecycle", () => {
     await harness.runner.emit(sessionTreeEvent);
     expect(harness.getActiveTools()).toContain("subagent");
 
+    const active = [...harness.getActiveTools(), "mcp_late"];
+    harness.setActiveTools(active);
+    sessionManager.branch(branchPoint);
+    await harness.runner.emit(sessionTreeEvent);
+    expect(harness.getActiveTools()).toEqual(active);
+
     sessionManager.branch(disabledLeaf);
     await harness.runner.emit(sessionTreeEvent);
-    expect(harness.getActiveTools()).toEqual(["read"]);
+    expect(harness.getActiveTools()).toEqual(["read", "mcp_late"]);
 
     await emitSessionShutdown(harness, "quit");
 
@@ -1075,7 +1081,7 @@ describe("minimal subagents extension lifecycle", () => {
     await emitSessionShutdown(harness, "quit");
   });
 
-  it("keeps active Child Agents and terminal delivery running while Root Agent access is disabled", async () => {
+  it("preserves tool order on redundant enable/reset and keeps Child Agents running across access changes", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-disable-running-cwd-");
     const sessionDirectory = await createTemporaryDirectory(
       "minimal-subagents-disable-running-sessions-",
@@ -1101,8 +1107,18 @@ describe("minimal subagents extension lifecycle", () => {
 
     const command = harness.runner.getCommand("subagents");
     if (!command) throw new Error("Expected the registered /subagents command");
+    const active = [...harness.getActiveTools(), "mcp_late"];
+    harness.setActiveTools(active);
+    for (const action of ["enable", "enable", "reset"]) {
+      await command.handler(action, harness.runner.createCommandContext());
+      expect(harness.getActiveTools()).toEqual(active);
+      expect(sessionFactory.runtimes.get("running-child")).toMatchObject({
+        isRunning: true,
+        abortCount: 0,
+      });
+    }
     await command.handler("disable", harness.runner.createCommandContext());
-    expect(harness.getActiveTools()).toEqual(["read"]);
+    expect(harness.getActiveTools()).toEqual(["read", "mcp_late"]);
     expect(sessionFactory.runtimes.get("running-child")).toMatchObject({
       isRunning: true,
       abortCount: 0,

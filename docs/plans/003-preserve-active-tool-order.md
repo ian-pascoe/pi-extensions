@@ -12,7 +12,7 @@
 - Depends on: none
 - Category: perf / bug
 - Planned at: `127e85a`, 2026-09-09
-- Execution status: TODO
+- Execution status: DONE — completion gates and both review axes pass.
 
 ## Why this matters
 
@@ -125,19 +125,29 @@ Do not demand that genuinely new tools produce identical full requests. For supp
 
 ## Done criteria
 
-- [ ] Both reproduced no-op reorder cases now return the identical ordered active names.
-- [ ] Partial enable, disable, resource activation, removal, and reactivation tests pass.
-- [ ] No old immediate tool changes relative position solely because a catalogue is refreshed.
-- [ ] Standalone and CodeMode coexistence cases pass.
-- [ ] All listed completion commands exit 0; `git diff --check` exits 0.
-- [ ] `git diff --name-only` and `git status --short` show no implementation changes outside scope attributable to this task.
-- [ ] Index row updated with verification evidence.
+- [x] Both reproduced no-op reorder cases now return the identical ordered active names.
+- [x] Partial enable, disable, resource activation, removal, and reactivation tests pass.
+- [x] No old immediate tool changes relative position solely because a catalogue is refreshed.
+- [x] Standalone and CodeMode coexistence cases pass.
+- [x] All listed completion commands exit 0; `git diff --check` exits 0.
+- [x] `git diff --name-only` and `git status --short` show no implementation changes outside scope attributable to this task.
+- [x] Index row updated with verification evidence.
 
 ## Git workflow and STOP conditions
 
 Work on the operator-selected branch; never reset unrelated changes. No automatic commit, push, PR, or publication. If later authorized to commit, match repository style, e.g. `fix(pi-mcp): preserve active tool order on catalogue refresh`.
 
 Stop if the lifecycle harness has moved, preserving order requires changing capability semantics or upstream Pi, or CodeMode continually overrides the desired order in a way requiring production policy changes. Report the exact conflicting case. Stop after two unsuccessful attempts at a verification gate rather than removing regression assertions.
+
+## Execution evidence
+
+Implemented from `3f18c1e` on the operator-approved `fix/preserve-active-tool-order` branch. The specified drift check against `127e85a` was empty. Production changes are confined to the two existing reconciliation functions; no Subagent Access lifecycle or CodeMode production policy changes were needed.
+
+- **Red:** Subagent Access had two ordered-list failures: redundant enable regrouped interleaved tools, and partial enable moved existing Coordinator Tools. The other 34 focused tests passed. MCP had three ordering failures: equal fresh refresh moved a late foreign tool, Resource activation moved surviving Server Tools, and removal/replacement moved a foreign tool ahead of a survivor. Its other nine tests passed.
+- **Green:** all listed focused commands pass: 36 Subagent Access/lifecycle tests, 12 MCP catalogue tests, and 31 CodeMode extension tests. Existing lifecycle tests cover repeated enable/reset without child cancellation, selected-branch restoration, and continued delivery after disabling access.
+- **Coexistence:** the real MCP catalogue runs through the existing Pi SDK fixture with and without CodeMode. Repeated no-op snapshots compare ordered `name`, `description`, and `parameters` plus the effective system prompt. An actual wrapped loader supplies `addedToolNames` to Pi's native deferred-tool splitter: supported deferral retains the exact previous immediate sequence; fallback exposes the addition while preserving survivor order. No network/model calls are required.
+- **Gate correction:** two initial CodeMode attempts failed on dynamic-import resolution and an overly strict fallback expectation that a real addition must be globally last. CodeMode legitimately keeps its controls last. The operator authorized retaining the corrected survivor-order assertion and continuing after the stop gate; exact no-op and native-immediate comparisons were not weakened.
+- **Completion:** all three package typechecks, the listed lint command, modified-file format checks, and whitespace checks pass. The full workspace suite passes **1,069 tests across 107 files in 15 packages**, using installed binaries after building Pi Utils. Only scoped files changed. Standards and Spec reviews against `3f18c1e` each report zero findings. Commit is authorized; push/publication is not.
 
 ## Maintenance notes
 

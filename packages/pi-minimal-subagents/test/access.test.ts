@@ -113,6 +113,39 @@ describe("Coordinator Tool access", () => {
     });
   });
 
+  it("preserves an already-enabled sequence with interleaved and late ordinary tools", () => {
+    const active = [
+      "read",
+      "subagent_status",
+      "mcp_early",
+      "subagent",
+      "agent_message",
+      "subagent_wait",
+      "subagent_cancel",
+      "subagent_delete",
+      "mcp_late",
+    ];
+    expect(reconcileCoordinatorToolAccess(active, true)).toEqual(active);
+  });
+
+  it("keeps first Coordinator Tool positions and ordinary duplicates, appending only missing tools", () => {
+    const active = ["read", "subagent_wait", "read", "subagent", "subagent_wait", "mcp_late"];
+    const enabled = reconcileCoordinatorToolAccess(active, true);
+    expect(enabled).toEqual([
+      "read",
+      "subagent_wait",
+      "read",
+      "subagent",
+      "mcp_late",
+      "agent_message",
+      "subagent_status",
+      "subagent_cancel",
+      "subagent_delete",
+    ]);
+    expect(reconcileCoordinatorToolAccess(enabled, true)).toEqual(enabled);
+    expect(reconcileCoordinatorToolAccess(active, false)).toEqual(["read", "read", "mcp_late"]);
+  });
+
   it("reconciles access idempotently while preserving unrelated tool names and order", () => {
     const coordinatorNames = new Set<string>(COORDINATOR_TOOL_NAMES);
     const ordinaryToolName = fc
