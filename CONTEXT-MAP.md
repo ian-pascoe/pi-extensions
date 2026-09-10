@@ -29,5 +29,13 @@ It inherits the observed session's extensions and grants tools separately. When 
 Management is available and its tools are granted, they address the private Advisor
 Session rather than the observed agent's Notes, History, or Context Checkpoints.
 
-The contexts are package-local vocabulary authorities. Repository-wide decisions
-live in [`docs/adr/`](docs/adr/).
+The contexts are package-local vocabulary authorities. Repository-wide decisions live in [`docs/adr/`](docs/adr/).
+
+## Shared design contexts
+
+- [Language Tools](docs/contexts/language-tools/CONTEXT.md) — Language Tool Presets,
+  Managed Installations, and updates shared by Pi LSP, Pi DAP, and Pi Formatter.
+  [ADR-0004](docs/adr/0004-own-language-presets-and-share-managed-installation.md)
+  and the [accepted design](docs/plans/managed-language-tools.md) describe the planned
+  ownership change. This feature is not implemented; the package contexts above
+  still describe their current settings-only runtime boundaries.
