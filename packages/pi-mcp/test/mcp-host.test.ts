@@ -774,6 +774,39 @@ test("signals catalog deactivation and activation across an automatic reconnect"
   await host.shutdown();
 });
 
+test.each([
+  [undefined, ""],
+  ["", ""],
+  [" \n\t ", ""],
+  [
+    " \nUse exact guidance.\n  Keep internal spacing.\n ",
+    "## MCP Server: current\nUse exact guidance.\n  Keep internal spacing.",
+  ],
+])("omits generated tool rosters for Server Instructions %j", async (instructions, expected) => {
+  const factory = new FakeFactory();
+  const client = new FakeClient({ tools: true }, instructions);
+  client.tools = [{ inputSchema: { type: "object" }, name: "current_tool" }];
+  factory.queue("current", client);
+  const host = new McpHost({
+    clientFactory: factory,
+    piCwd: "/project",
+    sessionFiles: sessionFiles(),
+    settings: settings([stdioDefinition("current")]),
+  });
+
+  try {
+    host.start();
+    await host.waitForInitialConnections();
+    expect(host.getStatus("current")?.state).toBe("connected");
+    expect(await host.listTools("current")).toEqual([
+      { serverId: "current", tool: client.tools[0] },
+    ]);
+    expect(host.instructionSnapshot().text).toBe(expected);
+  } finally {
+    await host.shutdown();
+  }
+});
+
 test("returns current model-ready Server Instructions without waiting", async () => {
   vi.useFakeTimers();
   const clock = new FakeClock();
@@ -799,15 +832,13 @@ test("returns current model-ready Server Instructions without waiting", async ()
 
     initialCatalogSynchronization.resolve();
     await host.waitForInitialConnections();
-    expect(host.instructionSnapshot().text).toContain("Current instructions");
-    expect(host.instructionSnapshot().text).toContain("current_tool");
+    expect(host.instructionSnapshot().text).toBe("## MCP Server: current\nCurrent instructions");
 
     const disconnectCatalogSynchronization = Promise.withResolvers<void>();
     catalogSynchronization = disconnectCatalogSynchronization.promise;
     factory.events.get("current")?.onClose();
     await vi.advanceTimersByTimeAsync(50);
-    expect(host.instructionSnapshot().text).toContain("Current instructions");
-    expect(host.instructionSnapshot().text).toContain("current_tool");
+    expect(host.instructionSnapshot().text).toBe("## MCP Server: current\nCurrent instructions");
 
     disconnectCatalogSynchronization.resolve();
     await flush();
@@ -955,16 +986,37 @@ test("removes Server Instructions when a catalog update deactivates tools", asyn
   }
 });
 
-test("updates Instruction Snapshot tool names after catalog synchronization", async () => {
+test("preserves real Instruction Snapshot text across synchronized catalog changes", async () => {
   vi.useFakeTimers();
   const factory = new FakeFactory();
   const client = new FakeClient({ tools: true }, "Current instructions");
   client.tools = [{ inputSchema: { type: "object" }, name: "current_tool" }];
   factory.queue("current", client);
   let catalogSynchronization = Promise.resolve();
-  const host = new McpHost({
+  const pi = new FakeCatalogPi();
+  const catalog = new McpToolCatalog(pi, {
+    callServerTool: vi.fn(),
+    listResourceTemplates: vi.fn(),
+    listResources: vi.fn(),
+    readResource: vi.fn(),
+  });
+  const host: McpHost = new McpHost({
     clientFactory: factory,
-    onCatalogChanged: () => catalogSynchronization,
+    onCatalogChanged: async (serverId) => {
+      await catalogSynchronization;
+      if (host.getStatus(serverId)?.state !== "connected") {
+        await catalog.setServerActive(serverId, false);
+        return "inactive";
+      }
+      await catalog.replaceServerTools(
+        serverId,
+        (await host.listTools(serverId)).map(({ tool }) => ({
+          name: tool.name,
+          inputSchema: { type: "object" },
+        })),
+      );
+      return "active";
+    },
     piCwd: "/project",
     sessionFiles: sessionFiles(),
     settings: settings([stdioDefinition("current")]),
@@ -974,22 +1026,84 @@ test("updates Instruction Snapshot tool names after catalog synchronization", as
     host.start();
     await vi.advanceTimersByTimeAsync(50);
     await host.waitForInitialConnections();
+    const snapshot = host.instructionSnapshot().text;
+    expect(snapshot).toBe("## MCP Server: current\nCurrent instructions");
+    expect(pi.getActiveTools()).toEqual(["mcp__current__current_tool"]);
 
     const nextCatalogSynchronization = Promise.withResolvers<void>();
     catalogSynchronization = nextCatalogSynchronization.promise;
+    client.tools = [{ inputSchema: { type: "object" }, name: "next_tool" }];
     const changed = factory.events.get("current")?.onCatalogChanged("tools", ["next_tool"]);
     await vi.advanceTimersByTimeAsync(50);
-    expect(host.instructionSnapshot().text).toContain("current_tool");
-    expect(host.instructionSnapshot().text).not.toContain("next_tool");
+    expect(host.instructionSnapshot().text).toBe(snapshot);
+    expect(pi.getActiveTools()).toEqual(["mcp__current__current_tool"]);
 
     nextCatalogSynchronization.resolve();
     await changed;
-    expect(host.instructionSnapshot().text).toContain("next_tool");
+    expect(host.instructionSnapshot().text).toBe(snapshot);
+    expect(pi.getActiveTools()).toEqual(["mcp__current__next_tool"]);
+    expect(client.listTools).toHaveBeenCalledTimes(2);
+
+    // Add, reorder, remove, and refresh equal tools without changing Server membership.
+    for (const names of [
+      ["next_tool", "added_tool"],
+      ["added_tool", "next_tool"],
+      ["next_tool"],
+      ["next_tool"],
+    ]) {
+      client.tools = names.map((name) => ({ inputSchema: { type: "object" }, name }));
+      const refresh = factory.events.get("current")?.onCatalogChanged("tools", names);
+      await vi.advanceTimersByTimeAsync(50);
+      await refresh;
+      expect(host.instructionSnapshot().text).toBe(snapshot);
+      expect(pi.getActiveTools()).toEqual(
+        names.includes("added_tool")
+          ? ["mcp__current__next_tool", "mcp__current__added_tool"]
+          : ["mcp__current__next_tool"],
+      );
+    }
+    expect(client.listTools).toHaveBeenCalledTimes(6);
   } finally {
     await host.shutdown();
     vi.useRealTimers();
   }
 });
+
+test.each([
+  ["zulu", "alpha"],
+  ["alpha", "zulu"],
+])(
+  "orders instructed Servers deterministically when %s becomes ready before %s",
+  async (first, second) => {
+    const factory = new FakeFactory();
+    const connections = new Map(
+      ["alpha", "zulu"].map((id) => [id, Promise.withResolvers<McpOwnedHostClient>()]),
+    );
+    for (const [id, connection] of connections) factory.queue(id, connection.promise);
+    const host = new McpHost({
+      clientFactory: factory,
+      piCwd: "/project",
+      sessionFiles: sessionFiles(),
+      settings: settings([stdioDefinition("zulu"), stdioDefinition("alpha")]),
+    });
+
+    try {
+      host.start();
+      connections.get(first)?.resolve(new FakeClient({}, `${first} guidance`));
+      await flush();
+      expect(host.instructionSnapshot().text).toBe(`## MCP Server: ${first}\n${first} guidance`);
+      connections.get(second)?.resolve(new FakeClient({}, `${second} guidance`));
+      await host.waitForInitialConnections();
+      expect(host.instructionSnapshot().text).toBe(
+        "## MCP Server: alpha\nalpha guidance\n\n## MCP Server: zulu\nzulu guidance",
+      );
+      await host.disableServer("alpha");
+      expect(host.instructionSnapshot().text).toBe("## MCP Server: zulu\nzulu guidance");
+    } finally {
+      await host.shutdown();
+    }
+  },
+);
 
 test.each(["stdio", "http", "sse"] as const)(
   "reuses a pooled %s MCP Client across sequential MCP Hosts",

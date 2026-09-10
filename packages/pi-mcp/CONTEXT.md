@@ -30,7 +30,7 @@ MCP Server-provided guidance presented to the model by the MCP Host. It is not P
 _Avoid_: System prompt, host policy
 
 **Instruction Snapshot**:
-The immutable, deterministically ordered Server Instructions included in one model request. It reflects the model-active Server Tool catalogs when the request begins, changes atomically with catalog activation or deactivation, and may differ between turns.
+The immutable, deterministically ordered, attributed Server Instructions captured as a system suffix at agent start from catalogs whose synchronization has completed, without waiting for startup; tool rosters are excluded. The run retains this snapshot during tool-loop requests, and a later agent start refreshes real guidance even though live tool activation, revocation, and policy enforcement can change earlier. The former per-request atomicity definition overstated the existing implementation; this boundary and its limitation are recorded in [ADR-0002](docs/adr/0002-implement-a-complete-mcp-host.md).
 _Avoid_: Live instructions, instruction cache
 
 **MCP Observer UI**:
