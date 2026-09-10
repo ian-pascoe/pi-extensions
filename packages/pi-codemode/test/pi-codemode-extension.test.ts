@@ -107,11 +107,7 @@ async function createCodeModeExtensionFixture(
   await writeFile(join(cwd, ".pi/settings.json"), "{}");
   await writeFile(
     join(agentDirectory, "settings.json"),
-    JSON.stringify(
-      codemodeSettings === undefined || codemodeSettings === false
-        ? {}
-        : { codemode: codemodeSettings },
-    ),
+    JSON.stringify(codemodeSettings ? { codemode: codemodeSettings } : {}),
   );
 
   let extensionApi: ExtensionAPI | undefined;
