@@ -2,11 +2,11 @@
 
 ## Finding
 
-For managed TypeScript tooling, use the stable `typescript@7.0.2` npm package and
-launch its single `tsc` entry point as:
+For managed TypeScript tooling, resolve the latest stable `typescript` npm package
+(`7.0.2` at probe time) and launch its single `tsc` entry point with private Node:
 
 ```text
-<typescript-package>/bin/tsc --lsp --stdio
+<private-node> <typescript-package>/bin/tsc --lsp --stdio
 ```
 
 Do **not** use `typescript-language-server` (6.0.0) for this path: it expects the
@@ -40,7 +40,7 @@ protocol evidence for the recipe, not merely a version or executable check.
 
 Each platform package is an OS/CPU-scoped Microsoft package containing `lib/tsc`
 (or `lib/tsc.exe` on Windows). Registry metadata marks the six packages with the
-corresponding `os`/`cpu` pair and supplies an npm integrity signature. This proves
+corresponding `os`/`cpu` pair and supplies an npm integrity digest. This proves
 that release assets are declared and published; it is not a substitute for native
 execution evidence on every cell. The six-cell native matrix remains a release
 gate.
@@ -63,7 +63,7 @@ stable release announcement says the native implementation is now published as
 ## Primary sources
 
 - [TypeScript npm `7.0.2` registry metadata](https://registry.npmjs.org/typescript/7.0.2) — version, one `tsc` bin, Node engine, and platform-package dependencies.
-- [Linux x64 package metadata](https://registry.npmjs.org/@typescript%2ftypescript-linux-x64/7.0.2), [Linux ARM64](https://registry.npmjs.org/@typescript%2ftypescript-linux-arm64/7.0.2), [macOS x64](https://registry.npmjs.org/@typescript%2ftypescript-darwin-x64/7.0.2), [macOS ARM64](https://registry.npmjs.org/@typescript%2ftypescript-darwin-arm64/7.0.2), [Windows x64](https://registry.npmjs.org/@typescript%2ftypescript-win32-x64/7.0.2), and [Windows ARM64](https://registry.npmjs.org/@typescript%2ftypescript-win32-arm64/7.0.2) — OS/CPU declarations and signed tarball metadata.
+- [Linux x64 package metadata](https://registry.npmjs.org/@typescript%2ftypescript-linux-x64/7.0.2), [Linux ARM64](https://registry.npmjs.org/@typescript%2ftypescript-linux-arm64/7.0.2), [macOS x64](https://registry.npmjs.org/@typescript%2ftypescript-darwin-x64/7.0.2), [macOS ARM64](https://registry.npmjs.org/@typescript%2ftypescript-darwin-arm64/7.0.2), [Windows x64](https://registry.npmjs.org/@typescript%2ftypescript-win32-x64/7.0.2), and [Windows ARM64](https://registry.npmjs.org/@typescript%2ftypescript-win32-arm64/7.0.2) — OS/CPU declarations and tarball integrity metadata.
 - [Published `lib/tsc.js` launcher](https://registry.npmjs.org/typescript/-/typescript-7.0.2.tgz) — package tarball containing the launcher and native-binary forwarding implementation.
 - [Microsoft: Announcing TypeScript 7.0](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) — stable npm installation, native `tsc`, LSP support, and API/embedded-language limitations.
 - [Microsoft TypeScript 7 native source (`tsc/cmd/tsgo/lsp.go`)](https://github.com/microsoft/TypeScript/blob/v7.0.2/tsc/cmd/tsgo/lsp.go) — release source for `--stdio` and stdio transport.
