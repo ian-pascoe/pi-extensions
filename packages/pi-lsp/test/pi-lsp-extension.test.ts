@@ -342,10 +342,17 @@ describe("Pi LSP extension lifecycle", () => {
         harness.runner.createContext(),
       );
       const cancelled = expect(pending).rejects.toThrow("cancelled");
-      await expect.poll(() => readFile(marker, "utf8").catch(() => "")).not.toBe("");
-      const pid = Number(await readFile(marker, "utf8"));
-      controller.abort();
-      await cancelled;
+      let pid: number;
+      try {
+        // Keep readiness below the production version probe's five-second deadline.
+        await expect
+          .poll(() => readFile(marker, "utf8").catch(() => ""), { timeout: 4_000 })
+          .not.toBe("");
+        pid = Number(await readFile(marker, "utf8"));
+      } finally {
+        controller.abort();
+        await cancelled;
+      }
       await expect
         .poll(() => {
           try {
@@ -360,7 +367,7 @@ describe("Pi LSP extension lifecycle", () => {
     } finally {
       await shutdownExtension(harness);
     }
-  });
+  }, 15_000);
 
   test("cancels one concurrent caller without cancelling its sibling acquisition and reuses the installation without a helper", async () => {
     const { harness, store, control } = await managedHarness();
