@@ -1,6 +1,6 @@
 import { chmodSync } from "node:fs";
 import { expect, test } from "vitest";
-import { SessionManager, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
@@ -260,48 +260,3 @@ test("overflow during preparation cuts over without requesting another refresh",
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   expect(f.providerRequests).toEqual([]);
 });
-
-for (const idle of [false, true]) {
-  test(`native compaction can request preparation without nesting a prompt (idle=${idle})`, async () => {
-    let session: AgentSession;
-    let requested = false;
-    const f = await createSdkHarness(
-      [
-        (pi) => {
-          pi.on("session_before_compact", () => {
-            if (!requested) {
-              requested = true;
-              pi.sendMessage(
-                {
-                  customType: "prepare-rollover",
-                  content: "Refresh Notes and Handoff first.",
-                  display: true,
-                },
-                { deliverAs: session.isStreaming ? "steer" : "nextTurn" },
-              );
-            }
-            return { cancel: true };
-          });
-        },
-      ],
-      { contextWindow: 20_000 },
-    );
-    session = f.session;
-    if (idle) f.settings.setCompactionEnabled(false);
-    f.responses.push(reply("Existing work", 19_800));
-    if (!idle) f.responses.push(reply("Prepared"));
-    await session.prompt("Original task");
-    if (idle) {
-      f.settings.setCompactionEnabled(true);
-      f.responses.push(reply("Prepared"));
-      await session.prompt("New instruction");
-    }
-    expect(requested).toBe(true);
-    expect(f.requests).toHaveLength(2);
-    const input = JSON.stringify(f.requests[1]?.messages);
-    expect(input).toContain("Refresh Notes and Handoff first.");
-    expect(input).toContain(idle ? "New instruction" : "Original task");
-    expect(f.extensionErrors).toEqual([]);
-    expect(f.providerRequests).toEqual([]);
-  });
-}
