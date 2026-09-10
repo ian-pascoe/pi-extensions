@@ -180,7 +180,7 @@ async function debugScript(
 
 describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed catalog", () => {
   beforeAll(async () => {
-    directory = await mkdtemp(join(tmpdir(), "pi catalog 空間 "));
+    directory = await realpath(await mkdtemp(join(tmpdir(), "pi catalog 空間 ")));
     installer = new ToolInstaller(join(directory, "managed store"));
     // js-debug's Unix socket must fit macOS's 104-byte path limit.
     temporaryDirectory =
