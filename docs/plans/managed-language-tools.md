@@ -1,20 +1,20 @@
 # Managed language tools
 
-Status: accepted design, 2026-09-10. **Installer implementation and native probes
-are in progress; package defaults are not integrated.** A private Node installation
-and launch passed on Linux x64, including concurrent resolution, cancelled-update
-preservation, and installed-only reuse. The complete six-platform catalog gate has
-not passed. The [first six-platform run](https://github.com/ian-pascoe/pi-extensions/actions/runs/34515150171)
-confirmed private Node acquisition on every target and Go acquisition on the hosted
-runners, despite earlier local archive HTTP 404s. It also exposed Windows isolation
-and verification failures, macOS launch/path issues, and probe cleanup defects;
-these remain under investigation rather than being excluded from the matrix.
+Status: accepted design, 2026-09-10. **The initial six-platform acquisition and
+launch gate passed; shared installer hardening and package integration remain.**
+[Run 34520581283](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
+at `59c17f0` passed all 11 checks on each of the six native targets. See the
+[verified baselines and concrete versions](../../packages/pi-tool-installer/README.md#initial-verified-baselines).
+The probes include first-use private acquisition, LSP document requests, formatter
+output, and JavaScript/Python debugging. This does not yet prove separate-process
+coordination, actual-install interruption, immutable Python updates, or extension
+lifecycle/precedence and SDK prefix stability. Package defaults are not integrated.
+
 The user selected TypeScript 7 rather than a TypeScript 6 compatibility pin.
 Use TypeScript 7's built-in native LSP (`tsc --lsp --stdio`), not the separate
 TypeScript Language Server wrapper that requires the old `tsserver.js` API.
 Fresh private TypeScript 7.0.2 acquisition, initialization, and document-symbol
-requests for both TypeScript and JavaScript passed on Linux x64; the remaining
-five native targets still need verification for this revised selection.
+requests for both TypeScript and JavaScript passed on all six native targets.
 See the [TypeScript 7 native LSP findings](../research/typescript-7-native-lsp.md).
 
 Vocabulary: [Language Tools](../contexts/language-tools/CONTEXT.md),
