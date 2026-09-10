@@ -29,12 +29,16 @@ const installation = await installer.ensure(request, {
 - `installed(id)` reads an existing selection without running a helper or accessing
   the network. Missing selections or directories return `undefined`; malformed
   metadata and paths escaping the store are rejected.
-- `ensure(request, options)` reuses a selection only when its ordered requirement
-  identities match. When downloads are allowed, it reconciles changed requirements,
-  resolving only new/changed selectors and retaining unchanged selectors' concrete
-  versions. Missing directories can be reacquired at their recorded versions.
-  Installed-only Mode reports unavailability without bootstrapping the helper.
-  Requirements are processed in insertion order so a runtime precedes its tool.
+- `ensure(request, options)` reuses matching ordered requirement identities. It can
+  adopt an existing selection's complete graph or proven ordered prefix under a
+  different ID, remapping component names without running the helper. For example,
+  Formatter can reuse a Go/Rust toolchain acquired for LSP. Only requested components
+  and their original execution context enter the new selection; prerequisite graphs
+  are never stitched together. When downloads are allowed, changed requirements
+  resolve only new/changed selectors and retain unchanged selectors' concrete versions.
+  Missing directories can be reacquired at their recorded versions. Installed-only
+  Mode reports unavailability without bootstrapping the helper. Requirements are
+  processed in insertion order so a runtime precedes its tool.
 - `update(request, options)` deliberately resolves latest versions for an existing
   selection. It returns `{ previous, current }`, or `undefined` for an unused ID.
   It does not install unused presets as a side effect.
@@ -58,6 +62,14 @@ A heartbeat lock coordinates Pi processes sharing a store. Selection records are
 published by rename only after all components install and their directories validate;
 failed or cancelled updates leave the prior selection intact. Existing concrete
 versions are retained. Missing directories are distinct from corrupt metadata.
+
+Selection records keep an optional private `contexts` array: each entry records the
+native executable directories and environment after the corresponding ordered
+acquisition step. Prefix reuse uses that exact context, not a trailing tool's settings
+or guessed filesystem layouts. These snapshots are not added to public API results.
+Earlier pre-release records without snapshots remain usable by their original ID or
+as complete graphs. Shorter-prefix adoption needs a deliberate `update` to refresh
+that metadata; Installed-only Mode never performs that network action implicitly.
 
 Only pipx installations get a namespace keyed by the concrete tool and preceding
 dependency graph. Its mise data, system-data, and cache directories are scoped.
@@ -159,10 +171,14 @@ separate Node processes. The Python check keeps Black 26.5.1 while changing Pyth
 unchanged old runtime metadata and absence of namespace runtime copies, then tests
 native install failure, cancellation on UV's Black installation progress, hard process
 death, and retry/offline reuse. The trigger uses dependency-resolution output because
-small wheels can omit download status lines. Twelve routine tests cover the public
+small wheels can omit download status lines. Fifteen routine tests cover the public
 installer API offline, replacing only external download/process boundaries. The pipx
 regression also verifies that updating shared UV changes the environment identity
-without copying Python or dropping the private UV executable path.
+without copying Python or dropping the private UV executable path. Cross-ID reuse
+checks preserve the donor selection, exclude trailing-tool environment changes,
+retain existing runtime versions, and reject incompatible graphs or corrupt context.
+The native Go/Rust probes execute their formatters through separately selected,
+installed-only toolchain prefixes.
 
 The hardened two-test installer suite and focused Black/debugpy catalog checks passed
 locally on Linux x64 after the Windows composition fix. Native Windows confirmation

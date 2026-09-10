@@ -56,6 +56,7 @@ if (command === "latest") {
 } else if (command === "env") {
   console.log(
     JSON.stringify({
+      ...control.environments?.[tools.at(-1)],
       PATH: [...tools.map((tool) => join(directory(tool), "bin")), process.env.PATH].join(
         delimiter,
       ),

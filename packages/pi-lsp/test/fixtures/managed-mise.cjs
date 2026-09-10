@@ -69,7 +69,7 @@ async function main() {
       fs.writeFileSync(
         executable,
         process.platform === "win32"
-          ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`
+          ? `@echo off\r\n"${process.execPath}" "%~dp0..\\server.cjs" %*\r\n`
           : `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`,
       );
       fs.chmodSync(executable, 0o755);

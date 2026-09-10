@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +58,7 @@ test("ensure reconciles requirements without upgrading unchanged prerequisites",
     id: "formatter",
     requirements: { node: "core:node", formatter: "npm:prettier" },
   };
+  await installer.ensure({ ...changed, id: "other-formatter" }, { allowDownload: true });
   await expect(installer.ensure(changed, { allowDownload: false })).rejects.toThrow(
     "not installed",
   );
@@ -69,6 +70,146 @@ test("ensure reconciles requirements without upgrading unchanged prerequisites",
   const updated = await installer.update(changed, {});
   expect(updated?.previous).toEqual(current);
   expect(updated?.current.components.node?.version).toBe("24.1.0");
+});
+
+test("installed-only reuses another selection's toolchain without its trailing tool or environment", async () => {
+  const versions = { "core:go": "1.27.1", "go:golang.org/x/tools/gopls": "0.23.0" };
+  const { installer, directory, control } = await fixture(versions);
+  await writeFile(
+    join(directory, "fixture.json"),
+    JSON.stringify({
+      latest: versions,
+      environments: {
+        "core:go@1.27.1": { INSTALLER_FIXTURE_CONTEXT: "runtime" },
+        "go:golang.org/x/tools/gopls@0.23.0": { INSTALLER_FIXTURE_CONTEXT: "server" },
+      },
+    }),
+  );
+  const previous = await installer.ensure(
+    { id: "lsp-gopls", requirements: { go: "core:go", server: "go:golang.org/x/tools/gopls" } },
+    { allowDownload: true },
+  );
+  const original = await readFile(join(directory, "selections/lsp-gopls.json"), "utf8");
+  await rm(join(directory, process.platform === "win32" ? "mise.exe" : "mise"));
+  vi.mocked(spawn).mockClear();
+  const request = { id: "formatter-gofmt", requirements: { formatter: "core:go" } };
+  const [current, concurrent] = await Promise.all([
+    installer.ensure(request, { allowDownload: false }),
+    new ToolInstaller(directory).ensure(request, { allowDownload: false }),
+  ]);
+  expect(current).toEqual({
+    id: request.id,
+    components: { formatter: previous.components.go },
+    binDirectories: [join(previous.components.go!.directory, "bin")],
+    environment: { INSTALLER_FIXTURE_CONTEXT: "runtime" },
+  });
+  expect(concurrent).toEqual(current);
+  expect(await readFile(join(current.components.formatter!.directory, "complete"), "utf8")).toBe(
+    "core:go@1.27.1",
+  );
+  await expect(new ToolInstaller(directory).installed(request.id)).resolves.toEqual(current);
+  await expect(installer.installed("lsp-gopls")).resolves.toEqual(previous);
+  expect(await readFile(join(directory, "selections/lsp-gopls.json"), "utf8")).toBe(original);
+  expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+  await writeFile(join(directory, process.platform === "win32" ? "mise.exe" : "mise"), "fixture");
+  // No server version is available: updating the adopted prefix must not request it.
+  await control({ "core:go": "1.28.0" });
+  const updated = await installer.update(request, {});
+  expect(Object.keys(updated!.current.components)).toEqual(["formatter"]);
+  expect(updated?.current.components.formatter?.version).toBe("1.28.0");
+  await expect(installer.installed("lsp-gopls")).resolves.toEqual(previous);
+});
+
+test("legacy complete graphs remain reusable without guessing missing prefix context", async () => {
+  const { installer, directory } = await fixture({
+    "core:python": "3.14.7",
+    "aqua:astral-sh/uv": "0.12.12",
+    "pipx:black": "26.5.1",
+  });
+  const request = {
+    id: "black",
+    requirements: { python: "core:python", uv: "aqua:astral-sh/uv", formatter: "pipx:black" },
+  };
+  const previous = await installer.ensure(request, { allowDownload: true });
+  // Pre-release records contain the final context but no per-prefix provenance.
+  await writeFile(join(directory, "selections/black.json"), JSON.stringify(previous));
+  await rm(join(directory, process.platform === "win32" ? "mise.exe" : "mise"));
+  vi.mocked(spawn).mockClear();
+  await expect(installer.ensure(request, { allowDownload: false })).resolves.toEqual(previous);
+  const reused = await installer.ensure(
+    {
+      id: "formatter-black",
+      requirements: {
+        interpreter: "core:python",
+        resolver: "aqua:astral-sh/uv",
+        tool: "pipx:black",
+      },
+    },
+    { allowDownload: false },
+  );
+  expect(reused).toEqual({
+    ...previous,
+    id: "formatter-black",
+    components: {
+      interpreter: previous.components.python,
+      resolver: previous.components.uv,
+      tool: previous.components.formatter,
+    },
+  });
+  for (const requirements of [
+    { python: "core:python" },
+    { python: "core:python", formatter: "pipx:black" },
+    { uv: "aqua:astral-sh/uv", python: "core:python", formatter: "pipx:black" },
+  ]) {
+    await expect(
+      installer.ensure({ id: "missing-graph", requirements }, { allowDownload: false }),
+    ).rejects.toThrow("not installed");
+    await expect(installer.installed("missing-graph")).resolves.toBeUndefined();
+  }
+  await expect(installer.installed(request.id)).resolves.toEqual(previous);
+  expect(vi.mocked(spawn)).not.toHaveBeenCalled();
+});
+
+test("reuse rejects corrupt context and missing requirements but ignores unrequested files", async () => {
+  const { installer, directory } = await fixture({
+    "core:go": "1.27.1",
+    "go:golang.org/x/tools/gopls": "0.23.0",
+  });
+  const previous = await installer.ensure(
+    { id: "lsp-gopls", requirements: { go: "core:go", server: "go:golang.org/x/tools/gopls" } },
+    { allowDownload: true },
+  );
+  const path = join(directory, "selections/lsp-gopls.json");
+  const record = JSON.parse(await readFile(path, "utf8"));
+  const request = { id: "formatter-gofmt", requirements: { formatter: "core:go" } };
+  await rm(join(directory, process.platform === "win32" ? "mise.exe" : "mise"));
+  vi.mocked(spawn).mockClear();
+  await expect(
+    installer.ensure(request, {
+      allowDownload: false,
+      signal: AbortSignal.abort(new Error("Cancelled reuse")),
+    }),
+  ).rejects.toThrow("Cancelled reuse");
+  for (const contexts of [
+    [],
+    [{ ...record.contexts[0], environment: { PATH: directory } }, record.contexts[1]],
+    [{ ...record.contexts[0], binDirectories: [join(directory, "..")] }, record.contexts[1]],
+  ]) {
+    await writeFile(path, JSON.stringify({ ...record, contexts }));
+    await expect(installer.ensure(request, { allowDownload: false })).rejects.toThrow("Invalid");
+    await expect(installer.installed(request.id)).resolves.toBeUndefined();
+  }
+  await writeFile(path, JSON.stringify(record));
+  await rm(previous.components.server!.directory, { recursive: true });
+  const reused = await installer.ensure(request, { allowDownload: false });
+  expect(reused.components).toEqual({ formatter: previous.components.go });
+  expect(await readFile(path, "utf8")).toBe(JSON.stringify(record));
+  await rm(previous.components.go!.directory, { recursive: true });
+  await expect(installer.ensure(request, { allowDownload: false })).rejects.toThrow(
+    "not installed",
+  );
+  await expect(installer.installed(request.id)).resolves.toBeUndefined();
+  expect(vi.mocked(spawn)).not.toHaveBeenCalled();
 });
 
 test("pipx updates reuse shared runtimes and retain UV in their installation identity", async () => {
@@ -194,7 +335,7 @@ test("installed rejects malformed selection metadata rather than treating it as 
   }
 });
 
-test("installed-only mode reports a missing installation without acquiring its helper", async () => {
+test("installed-only mode reports a missing installation without creating its store or helper", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-tool-installer-"));
   directories.push(directory);
   const installer = new ToolInstaller(join(directory, "store"));
@@ -206,6 +347,7 @@ test("installed-only mode reports a missing installation without acquiring its h
     ),
   ).rejects.toThrow("Enable automatic downloads or configure an external executable");
   await expect(installer.installed("typescript")).resolves.toBeUndefined();
+  await expect(access(installer.directory)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 test("explicit updates leave unused presets uninstalled", async () => {

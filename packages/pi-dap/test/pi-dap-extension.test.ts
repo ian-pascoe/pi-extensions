@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -172,7 +172,7 @@ async function acquisition(
     "external fixture",
   );
   await writeFile(
-    resolve(store, "fixture.json"),
+    resolve(store, "fixture.json.next"),
     JSON.stringify({
       ...control,
       adapter: pathToFileURL(resolve(import.meta.dirname, "fixtures/fake-managed-js-adapter.mjs"))
@@ -180,6 +180,7 @@ async function acquisition(
       dapFixture: resolve(import.meta.dirname, "fixtures/fake-dap-session-adapter.mjs"),
     }),
   );
+  await rename(resolve(store, "fixture.json.next"), resolve(store, "fixture.json"));
 }
 
 function managed(harness: ExtensionHarness) {

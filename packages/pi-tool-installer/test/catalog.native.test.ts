@@ -328,6 +328,13 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
       go: "core:go",
       server: "go:golang.org/x/tools/gopls",
     });
+    const formatter = await installer.ensure(
+      { id: "formatter-gofmt", requirements: { formatter: "core:go" } },
+      { allowDownload: false },
+    );
+    expect(formatter.components).toEqual({ formatter: installation.components.go });
+    expect(formatter.environment.GOROOT).toBe(installation.environment.GOROOT);
+    await expect(installer.installed(installation.id)).resolves.toEqual(installation);
     const runtime = await execute(
       join(component(installation, "go"), "bin", nativeExecutable("go")),
       ["version"],
@@ -341,9 +348,9 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
     await writeFile(join(root, "go.mod"), "module example.com/probe\n\ngo 1.20\n");
     await writeFile(file, "package probe\nfunc answer() int{return 42}\n");
     await execute(
-      join(component(installation, "go"), "bin", nativeExecutable("gofmt")),
+      join(component(formatter, "formatter"), "bin", nativeExecutable("gofmt")),
       ["-w", file],
-      { env: environment(installation) },
+      { env: environment(formatter) },
     );
     expect(await readFile(file, "utf8")).toBe("package probe\n\nfunc answer() int { return 42 }\n");
     await symbols(
@@ -360,6 +367,17 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
       rust: "core:rust",
       server: "aqua:rust-lang/rust-analyzer",
     });
+    const formatter = await installer.ensure(
+      { id: "formatter-rustfmt", requirements: { formatter: "core:rust" } },
+      { allowDownload: false },
+    );
+    expect(formatter.components).toEqual({ formatter: installation.components.rust });
+    expect(formatter.environment).toMatchObject({
+      CARGO_HOME: installation.environment.CARGO_HOME,
+      RUSTUP_HOME: installation.environment.RUSTUP_HOME,
+      RUSTUP_TOOLCHAIN: installation.components.rust?.version,
+    });
+    await expect(installer.installed(installation.id)).resolves.toEqual(installation);
     const root = await workspace(installation.id);
     const file = join(root, "lib.rs");
     await writeFile(
@@ -371,9 +389,9 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
     await writeFile(sibling, siblingSource);
     await writeFile(file, "mod sibling;\npub async fn answer()->i32{42}\n");
     await execute(
-      join(component(installation, "rust"), nativeExecutable("rustfmt")),
+      join(component(formatter, "formatter"), nativeExecutable("rustfmt")),
       ["--edition", "2024", "--config", "skip_children=true", file],
-      { env: environment(installation) },
+      { env: environment(formatter) },
     );
     expect(await readFile(file, "utf8")).toBe(
       "mod sibling;\npub async fn answer() -> i32 {\n    42\n}\n",

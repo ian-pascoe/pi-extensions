@@ -1,8 +1,19 @@
 import { readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, join, matchesGlob, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  matchesGlob,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import {
   getAgentDir,
   SettingsManager,
+  withFileMutationQueue,
   type ExtensionFactory,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -201,79 +212,85 @@ function runFormatterCommand(
   cwd: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  path: string | undefined,
 ): Promise<FormatterCommandFailure | undefined> {
-  return new Promise((complete) => {
-    let stderr = "";
-    let failure: FormatterCommandFailure | undefined;
-    try {
-      signal?.throwIfAborted();
-      const child = spawn(definition.command, args, {
-        cwd,
-        env: formatterProcessEnvironment(definition.environment),
-        shell: false,
-        detached: process.platform !== "win32",
-        windowsHide: true,
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      const kill = () => {
-        if (!child.pid) return;
-        if (process.platform === "win32") {
-          const killer = spawn(
-            join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
-            ["/pid", String(child.pid), "/T", "/F"],
-            { stdio: "ignore", windowsHide: true },
-          );
-          killer.on("error", () => child.kill("SIGKILL"));
-          killer.on("close", (code) => {
-            if (code !== 0) child.kill("SIGKILL");
-          });
-        } else {
-          try {
-            process.kill(-child.pid, "SIGKILL");
-          } catch {
-            child.kill("SIGKILL");
+  const run = () =>
+    new Promise<FormatterCommandFailure | undefined>((complete) => {
+      let stderr = "";
+      let failure: FormatterCommandFailure | undefined;
+      try {
+        signal?.throwIfAborted();
+        const child = spawn(definition.command, args, {
+          cwd,
+          env: formatterProcessEnvironment(definition.environment),
+          shell: false,
+          detached: process.platform !== "win32",
+          windowsHide: true,
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        const kill = () => {
+          if (!child.pid) return;
+          if (process.platform === "win32") {
+            const killer = spawn(
+              join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+              ["/pid", String(child.pid), "/T", "/F"],
+              { stdio: "ignore", windowsHide: true },
+            );
+            killer.on("error", () => child.kill("SIGKILL"));
+            killer.on("close", (code) => {
+              if (code !== 0) child.kill("SIGKILL");
+            });
+          } else {
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              child.kill("SIGKILL");
+            }
           }
-        }
-      };
-      const cancel = () => {
-        failure = { kind: "spawn_error", message: "Formatting cancelled" };
-        kill();
-      };
-      signal?.addEventListener("abort", cancel, { once: true });
-      if (signal?.aborted) cancel();
-      const timer = setTimeout(() => {
-        failure = { kind: "timeout", timeoutMs };
-        kill();
-      }, timeoutMs);
-      child.stderr?.setEncoding("utf8");
-      child.stderr?.on("data", (chunk: string) => {
-        stderr = (stderr + chunk).slice(-MAX_FORMATTER_STDERR_CHARACTERS);
-      });
-      child.on("error", (cause: Error) => {
-        failure = { kind: "spawn_error", message: cause.message };
-      });
-      child.on("close", (exitCode, signalName) => {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", cancel);
-        complete(
-          failure ??
-            (exitCode === 0
-              ? undefined
-              : {
-                  kind: "exit_error",
-                  exitCode,
-                  signal: signalName,
-                  stderr: stderr.trim(),
-                }),
-        );
-      });
-    } catch (cause) {
-      complete({
-        kind: "spawn_error",
-        message: cause instanceof Error ? cause.message : String(cause),
-      });
-    }
-  });
+        };
+        const cancel = () => {
+          failure = { kind: "spawn_error", message: "Formatting cancelled" };
+          kill();
+        };
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+        const timer = setTimeout(() => {
+          failure = { kind: "timeout", timeoutMs };
+          kill();
+        }, timeoutMs);
+        child.stderr?.setEncoding("utf8");
+        child.stderr?.on("data", (chunk: string) => {
+          stderr = (stderr + chunk).slice(-MAX_FORMATTER_STDERR_CHARACTERS);
+        });
+        child.on("error", (cause: Error) => {
+          failure = { kind: "spawn_error", message: cause.message };
+        });
+        child.on("close", (exitCode, signalName) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", cancel);
+          complete(
+            failure ??
+              (exitCode === 0
+                ? undefined
+                : {
+                    kind: "exit_error",
+                    exitCode,
+                    signal: signalName,
+                    stderr: stderr.trim(),
+                  }),
+          );
+        });
+      } catch (cause) {
+        complete({
+          kind: "spawn_error",
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+    });
+  return (path === undefined ? run() : withFileMutationQueue(path, run)).catch((cause) => ({
+    kind: "spawn_error",
+    message: cause instanceof Error ? cause.message : String(cause),
+  }));
 }
 
 function formatFormatterFailure(
@@ -332,7 +349,14 @@ async function formatMutationPaths(
       const args = definition.args.map((argument) =>
         path === undefined ? argument : argument.replaceAll("$FILE", path),
       );
-      const failure = await runFormatterCommand(definition, args, root, settings.timeoutMs, signal);
+      const failure = await runFormatterCommand(
+        definition,
+        args,
+        root,
+        settings.timeoutMs,
+        signal,
+        path,
+      );
       if (failure !== undefined) {
         warnings.push(
           formatFormatterFailure(
@@ -352,17 +376,37 @@ async function formatMutationPaths(
     try {
       const selected = await selectFormatterPreset(path);
       if (!selected || settings.explicitIds.has(selected.id)) continue;
-      const definition = await resolvePresetDefinition(selected.id, dirname(path), installer, {
-        allowDownload: settings.autoInstall,
-        signal,
-        onProgress,
-      });
+      const fromCwd = relative(cwd, path);
+      let fallbackRoot =
+        isAbsolute(fromCwd) || fromCwd === ".." || fromCwd.startsWith(`..${sep}`)
+          ? dirname(path)
+          : cwd;
+      const fromMarker = relative(selected.root, fallbackRoot);
+      if (
+        fromMarker &&
+        !isAbsolute(fromMarker) &&
+        fromMarker !== ".." &&
+        !fromMarker.startsWith(`..${sep}`) &&
+        (await readdir(selected.root)).some(
+          (name) => name === "package.json" || name === "pyproject.toml",
+        )
+      )
+        fallbackRoot = selected.root;
+      const projectRoot = await findFormatterRoot(path, [".git"], fallbackRoot, false);
+      const definition = await resolvePresetDefinition(
+        selected.id,
+        dirname(path),
+        installer,
+        { allowDownload: settings.autoInstall, signal, onProgress },
+        projectRoot,
+      );
       const failure = await runFormatterCommand(
         definition,
         definition.args.map((arg) => arg.replaceAll("$FILE", path)),
         selected.root,
         settings.timeoutMs,
         signal,
+        path,
       );
       if (failure) warnings.push(formatFormatterFailure(definition, path, failure));
     } catch (error) {

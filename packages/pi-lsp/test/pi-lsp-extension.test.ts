@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -47,6 +48,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 const temporaryDirectories: string[] = [];
 const agentSessions: AgentSession[] = [];
+const harnessRunners: ExtensionRunner[] = [];
 
 const typescriptSettings = {
   lsp: {
@@ -72,7 +74,7 @@ interface ExtensionHarness {
 }
 
 async function makeTemporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(resolve(tmpdir(), prefix));
+  const directory = await realpath(await mkdtemp(resolve(tmpdir(), prefix)));
   temporaryDirectories.push(directory);
   return directory;
 }
@@ -181,6 +183,7 @@ async function createExtensionHarness(
     },
     "rpc",
   );
+  harnessRunners.push(runner);
   return {
     agentDirectory,
     notifications,
@@ -207,7 +210,7 @@ async function externalTypeScript(directory: string, name: string, version: stri
   await writeFile(
     command,
     process.platform === "win32"
-      ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`
+      ? `@echo off\r\n"${process.execPath}" "%~dp0typescript-fixture.cjs" %*\r\n`
       : `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`,
   );
   await chmod(command, 0o755);
@@ -294,6 +297,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const runner of harnessRunners.splice(0))
+    await runner.emit({ type: "session_shutdown", reason: "quit" });
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   const original = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -543,6 +548,7 @@ describe("Pi LSP extension lifecycle", () => {
         await shutdownExtension(harness);
       }
     },
+    15_000,
   );
 
   test.each(["7.0.2", "6.0.0"])(
@@ -1094,81 +1100,95 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("stops only the selected root and accepts quoted paths without changing enablement", async () => {
-    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
-    const harness = await createExtensionHarness(false, {
-      lsp: {
-        servers: {
-          fake: {
-            command: process.execPath,
-            args: [fakeServerPath],
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-            rootMarkers: ["workspace.json"],
+  test.each(["first root", String.raw`first\root with spaces`])(
+    "stops only the selected root %s and accepts quoted paths without changing enablement",
+    async (rootName) => {
+      const fakeServerPath = fileURLToPath(
+        new URL("fixtures/fake-lsp-server.mjs", import.meta.url),
+      );
+      const harness = await createExtensionHarness(false, {
+        lsp: {
+          servers: {
+            fake: {
+              command: process.execPath,
+              args: [fakeServerPath],
+              languages: [{ extensions: [".ts"], languageId: "typescript" }],
+              rootMarkers: ["workspace.json"],
+            },
           },
         },
-      },
-    });
-    const firstRoot = resolve(harness.sessionManager.getCwd(), "first root");
-    const secondRoot = resolve(harness.sessionManager.getCwd(), "second");
-    for (const root of [firstRoot, secondRoot]) {
-      await mkdir(root);
-      await writeFile(resolve(root, "workspace.json"), "{}");
-      await writeFile(resolve(root, "source.ts"), "const value = 1;");
-    }
-    await startExtension(harness);
-    const command = harness.runner.getCommand("lsp");
-    const tool = harness.runner.getToolDefinition("lsp");
-    if (command === undefined || tool === undefined) throw new Error("Expected /lsp and lsp");
-    for (const root of [firstRoot, secondRoot]) {
-      await tool.execute(
-        "start",
-        { operation: "capabilities", server_id: "fake", file_path: resolve(root, "source.ts") },
+      });
+      const firstRoot = resolve(harness.sessionManager.getCwd(), rootName);
+      const secondRoot = resolve(harness.sessionManager.getCwd(), "second");
+      for (const root of [firstRoot, secondRoot]) {
+        await mkdir(root, { recursive: true });
+        await writeFile(resolve(root, "workspace.json"), "{}");
+        await writeFile(resolve(root, "source.ts"), "const value = 1;");
+      }
+      await startExtension(harness);
+      const command = harness.runner.getCommand("lsp");
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (command === undefined || tool === undefined) throw new Error("Expected /lsp and lsp");
+      for (const root of [firstRoot, secondRoot]) {
+        await tool.execute(
+          "start",
+          { operation: "capabilities", server_id: "fake", file_path: resolve(root, "source.ts") },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        );
+      }
+      expect(await command.getArgumentCompletions?.("sto")).toEqual([
+        { value: "stop", label: "stop" },
+      ]);
+      expect(await command.getArgumentCompletions?.("disable f")).toContainEqual(
+        expect.objectContaining({ value: "disable fake" }),
+      );
+      expect(await command.getArgumentCompletions?.("disable fake --g")).toEqual([
+        { value: "disable fake --global", label: "--global" },
+      ]);
+      expect(
+        await command.getArgumentCompletions?.(`stop fake "${firstRoot.slice(0, -2)}`),
+      ).toEqual([{ value: `stop fake ${JSON.stringify(firstRoot)}`, label: firstRoot }]);
+      expect(
+        await command.getArgumentCompletions?.(
+          `stop fake ${JSON.stringify(firstRoot).slice(0, -3)}`,
+        ),
+      ).toEqual([{ value: `stop fake ${JSON.stringify(firstRoot)}`, label: firstRoot }]);
+      await command.handler(
+        `stop fake ${JSON.stringify(firstRoot)}`,
+        harness.runner.createCommandContext(),
+      );
+      const result = await tool.execute(
+        "status",
+        { operation: "status" },
         undefined,
         undefined,
         harness.runner.createContext(),
       );
-    }
-    expect(await command.getArgumentCompletions?.("sto")).toEqual([
-      { value: "stop", label: "stop" },
-    ]);
-    expect(await command.getArgumentCompletions?.("disable f")).toContainEqual(
-      expect.objectContaining({ value: "disable fake" }),
-    );
-    expect(await command.getArgumentCompletions?.("disable fake --g")).toEqual([
-      { value: "disable fake --global", label: "--global" },
-    ]);
-    expect(await command.getArgumentCompletions?.(`stop fake "${firstRoot.slice(0, -2)}`)).toEqual([
-      { value: `stop fake ${JSON.stringify(firstRoot)}`, label: firstRoot },
-    ]);
-    await command.handler(
-      `stop fake ${JSON.stringify(firstRoot)}`,
-      harness.runner.createCommandContext(),
-    );
-    const result = await tool.execute(
-      "status",
-      { operation: "status" },
-      undefined,
-      undefined,
-      harness.runner.createContext(),
-    );
-    const text = result.content.find((item) => item.type === "text");
-    if (text?.type !== "text") throw new Error("Expected status text");
-    expect(JSON.parse(text.text)).toMatchObject({
-      servers: [
-        { rootPath: firstRoot, state: "stopped" },
-        { rootPath: secondRoot, state: "running" },
-      ],
-    });
-    expect(harness.sessionManager.getBranch()).toEqual([]);
-    await tool.execute(
-      "lazy-restart",
-      { operation: "capabilities", server_id: "fake", file_path: resolve(firstRoot, "source.ts") },
-      undefined,
-      undefined,
-      harness.runner.createContext(),
-    );
-    await shutdownExtension(harness);
-  });
+      const text = result.content.find((item) => item.type === "text");
+      if (text?.type !== "text") throw new Error("Expected status text");
+      expect(JSON.parse(text.text)).toMatchObject({
+        servers: [
+          { rootPath: firstRoot, state: "stopped" },
+          { rootPath: secondRoot, state: "running" },
+        ],
+      });
+      expect(harness.sessionManager.getBranch()).toEqual([]);
+      await tool.execute(
+        "lazy-restart",
+        {
+          operation: "capabilities",
+          server_id: "fake",
+          file_path: resolve(firstRoot, "source.ts"),
+        },
+        undefined,
+        undefined,
+        harness.runner.createContext(),
+      );
+      await shutdownExtension(harness);
+    },
+  );
 
   test("offers server status, lifecycle actions, and toggle scope through native selectors", async () => {
     const harness = await createExtensionHarness(false, typescriptSettings);
