@@ -21,9 +21,9 @@ import { readJsonDocument, workspacePackageManifestSchema } from "./root-project
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const piMcpPackageName = "@ian-pascoe/pi-mcp";
-const piTpsTrackerPackageName = "@ian-pascoe/pi-tps-tracker";
 const piUtilsPackageName = "@ian-pascoe/pi-utils";
-const piUtilsConsumerPackageNames = new Set([piMcpPackageName, piTpsTrackerPackageName]);
+const piToolInstallerPackageName = "@ian-pascoe/pi-tool-installer";
+const compiledLibraryPackageNames = new Set([piUtilsPackageName, piToolInstallerPackageName]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
 
@@ -67,8 +67,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 15,
-    `expected 15 workspace manifests, found ${manifests.length}`,
+    manifests.length === 16,
+    `expected 16 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -89,7 +89,7 @@ function parsePackJson(stdout, packageName) {
 
 function validatePackedFileList(packageName, files) {
   const paths = files.map((file) => file.path).sort();
-  if (packageName === piUtilsPackageName) {
+  if (compiledLibraryPackageNames.has(packageName)) {
     for (const requiredPath of [
       "LICENSE",
       "README.md",
@@ -135,7 +135,7 @@ function validatePackedFileList(packageName, files) {
   }
 }
 
-function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) {
+function validatePackedManifest(sourceManifest, packedManifest, libraryVersions) {
   const packageName = sourceManifest.name;
   for (const field of [
     "name",
@@ -154,7 +154,14 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
     );
   }
   assertPackCondition(packedManifest.private === false, `${packageName} is not publishable`);
-  if (packageName === piUtilsPackageName) {
+  for (const [libraryName, version] of libraryVersions) {
+    if (sourceManifest.dependencies?.[libraryName] === undefined) continue;
+    assertPackCondition(
+      packedManifest.dependencies?.[libraryName] === `^${version}`,
+      `${packageName} has an invalid ${libraryName} dependency`,
+    );
+  }
+  if (compiledLibraryPackageNames.has(packageName)) {
     assertPackCondition(
       packedManifest.main === "./dist/index.js" &&
         packedManifest.types === "./dist/index.d.ts" &&
@@ -168,12 +175,6 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
     );
     assertPackCondition(!packedManifest.pi, `${packageName} must not register a Pi extension`);
     return;
-  }
-  if (piUtilsConsumerPackageNames.has(packageName)) {
-    assertPackCondition(
-      packedManifest.dependencies?.[piUtilsPackageName] === `^${piUtilsVersion}`,
-      `${packageName} has an invalid ${piUtilsPackageName} dependency`,
-    );
   }
   assertPackCondition(
     JSON.stringify(packedManifest.pi?.extensions) === JSON.stringify(["./src/index.ts"]),
@@ -271,6 +272,27 @@ async function assertTarballLoads(packageName, tarballPath, dependencyTarballs =
       );
       return;
     }
+    if (packageName === piToolInstallerPackageName) {
+      const originalFetch = globalThis.fetch;
+      let requestedNetwork = false;
+      globalThis.fetch = () => {
+        requestedNetwork = true;
+        throw new Error("Installer package loading and installed() must not access the network");
+      };
+      try {
+        const { ToolInstaller } = await import(
+          pathToFileURL(resolve(installedPackageDirectory, "dist/index.js")).href
+        );
+        const installation = await new ToolInstaller(agentDirectory).installed("probe");
+        assertPackCondition(
+          installation === undefined && !requestedNetwork,
+          `${packageName} did not inspect an empty managed store offline`,
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      return;
+    }
     const entrypoint = resolve(installedPackageDirectory, "src/index.ts");
     const result = await discoverAndLoadExtensions([entrypoint], installDirectory, agentDirectory);
     assertPackCondition(
@@ -326,14 +348,19 @@ async function assertTarballLoads(packageName, tarballPath, dependencyTarballs =
 const packDirectory = await mkdtemp(resolve(tmpdir(), "pi-package-packs-"));
 try {
   const workspaces = (await discoverWorkspaceManifests()).sort((left, right) => {
-    if (left.manifest.name === piUtilsPackageName) return -1;
-    if (right.manifest.name === piUtilsPackageName) return 1;
+    const libraryOrder =
+      Number(compiledLibraryPackageNames.has(right.manifest.name)) -
+      Number(compiledLibraryPackageNames.has(left.manifest.name));
+    if (libraryOrder !== 0) return libraryOrder;
     return left.manifest.name.localeCompare(right.manifest.name);
   });
-  const piUtilsVersion = workspaces.find(({ manifest }) => manifest.name === piUtilsPackageName)
-    ?.manifest.version;
-  assertPackCondition(piUtilsVersion !== undefined, `workspace omits ${piUtilsPackageName}`);
-  let piUtilsTarballPath;
+  const libraryVersions = new Map();
+  for (const name of compiledLibraryPackageNames) {
+    const version = workspaces.find(({ manifest }) => manifest.name === name)?.manifest.version;
+    assertPackCondition(version !== undefined, `workspace omits ${name}`);
+    libraryVersions.set(name, version);
+  }
+  const libraryTarballs = new Map();
   for (const { manifest, packageDirectory } of workspaces) {
     const packed = parsePackJson(
       (
@@ -354,27 +381,29 @@ try {
     );
     validatePackedFileList(manifest.name, packed.files);
     const tarballPath = resolve(packDirectory, basename(packed.filename));
-    if (manifest.name === piUtilsPackageName) piUtilsTarballPath = tarballPath;
+    if (compiledLibraryPackageNames.has(manifest.name))
+      libraryTarballs.set(manifest.name, tarballPath);
     const packedManifestText = (
       await runCommand("tar", ["-xOf", tarballPath, "package/package.json"])
     ).stdout;
-    validatePackedManifest(manifest, JSON.parse(packedManifestText), piUtilsVersion);
-    const dependsOnPiUtils = piUtilsConsumerPackageNames.has(manifest.name);
-    assertPackCondition(
-      !dependsOnPiUtils || piUtilsTarballPath !== undefined,
-      `${manifest.name} was packed before ${piUtilsPackageName}`,
-    );
-    await assertTarballLoads(
-      manifest.name,
-      tarballPath,
-      dependsOnPiUtils && piUtilsTarballPath !== undefined ? [piUtilsTarballPath] : [],
-    );
-    if (manifest.name !== piUtilsPackageName) await rm(tarballPath, { force: true });
+    validatePackedManifest(manifest, JSON.parse(packedManifestText), libraryVersions);
+    const dependencyTarballs = [];
+    for (const name of compiledLibraryPackageNames) {
+      if (manifest.dependencies?.[name] === undefined) continue;
+      const dependencyTarball = libraryTarballs.get(name);
+      assertPackCondition(
+        dependencyTarball !== undefined,
+        `${manifest.name} was packed before ${name}`,
+      );
+      dependencyTarballs.push(dependencyTarball);
+    }
+    await assertTarballLoads(manifest.name, tarballPath, dependencyTarballs);
+    if (!compiledLibraryPackageNames.has(manifest.name)) await rm(tarballPath, { force: true });
   }
 } finally {
   await rm(packDirectory, { recursive: true, force: true });
 }
 
 console.log(
-  "Validated fifteen package tarballs, fourteen source entrypoints, package skills, the shared utility, and the Pi MCP CLI.",
+  "Validated sixteen package tarballs, fourteen source entrypoints, package skills, both shared libraries, and the Pi MCP CLI.",
 );

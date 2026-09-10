@@ -24,7 +24,10 @@ import {
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const piUtilsDistDirectory = resolve(repositoryRoot, "packages/pi-utils/dist");
+const compiledLibraryDistDirectories = new Set([
+  resolve(repositoryRoot, "packages/pi-utils/dist"),
+  resolve(repositoryRoot, "packages/pi-tool-installer/dist"),
+]);
 const excludedDirectoryNames = new Set([".git", ".repos", "coverage", "dist", "node_modules"]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
@@ -35,7 +38,7 @@ function assertGitInstallCondition(condition, message) {
 
 function includeWorkingTreePath(source) {
   const name = basename(source);
-  if (source === piUtilsDistDirectory) return true;
+  if (compiledLibraryDistDirectories.has(source)) return true;
   if (excludedDirectoryNames.has(name)) return false;
   if (name.endsWith(".tgz")) return false;
   return true;
@@ -183,6 +186,12 @@ try {
     recursive: true,
     filter: includeWorkingTreePath,
   });
+  for (const directory of compiledLibraryDistDirectories) {
+    const packageName = basename(dirname(directory));
+    for (const entrypoint of ["index.js", "index.d.ts"]) {
+      await access(resolve(installDirectory, "packages", packageName, "dist", entrypoint));
+    }
+  }
   await runNpmProductionInstall(installDirectory);
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
@@ -195,5 +204,5 @@ try {
 }
 
 console.log(
-  "Validated the clean npm production Git-install path with the shared utility and fourteen package skills.",
+  "Validated the clean npm production Git-install path with both shared libraries and fourteen package skills.",
 );

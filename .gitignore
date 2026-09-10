@@ -4,6 +4,8 @@ node_modules/
 dist/
 !packages/pi-utils/dist/
 !packages/pi-utils/dist/**
+!packages/pi-tool-installer/dist/
+!packages/pi-tool-installer/dist/**
 # Code Coverage
 coverage/
 # NPM Packs

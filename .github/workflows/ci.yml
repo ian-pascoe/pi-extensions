@@ -3,6 +3,11 @@ name: CI
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      native_only:
+        description: Run only the managed-tool native acquisition probes
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -15,7 +20,43 @@ env:
   NO_UPDATE_NOTIFIER: "1"
 
 jobs:
+  language-tools:
+    if: github.event_name == 'workflow_dispatch'
+    name: Managed tools (${{ matrix.os }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, os: linux, arch: x64 }
+          - { runner: ubuntu-24.04-arm, os: linux, arch: arm64 }
+          - { runner: macos-15-intel, os: darwin, arch: x64 }
+          - { runner: macos-15, os: darwin, arch: arm64 }
+          - { runner: windows-2025, os: win32, arch: x64 }
+          - { runner: windows-11-arm, os: win32, arch: arm64 }
+    env:
+      PI_TOOL_INSTALLER_NATIVE: "1"
+      EXPECTED_OS: ${{ matrix.os }}
+      EXPECTED_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install pnpm and Node.js
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          runtime: node@22.19.0
+          cache: true
+          install: false
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify native architecture and probe managed tools
+        run: |
+          node -e "const a = require('node:assert/strict'); a.equal(process.platform, process.env.EXPECTED_OS); a.equal(process.arch, process.env.EXPECTED_ARCH); console.log(process.platform, process.arch, process.version)"
+          pnpm --dir packages/pi-tool-installer exec vitest run --config ../../vitest.config.ts --root . native.test.ts --reporter=verbose --disableConsoleIntercept
+
   verify:
+    if: ${{ !inputs.native_only }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -32,6 +73,7 @@ jobs:
         run: pnpm verify
 
   artifact-checks:
+    if: ${{ !inputs.native_only }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
