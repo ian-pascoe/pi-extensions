@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-mcp
 
+## 0.5.2
+
+### Patch Changes
+
+- 87bfb13: Preserve existing active-tool order during MCP catalogue refreshes and Subagent Access reconciliation to avoid unnecessary prompt-cache invalidation. Append only newly active tools while retaining capability removal and Coordinator Tool deduplication.
+- c573b98: Omit generated tool rosters from MCP Instruction Snapshots so roster-only catalogue changes no longer alter system instructions. Preserve genuine Server Instructions and catalogue readiness gates, and clarify the existing agent-start snapshot boundary.
+
 ## 0.5.1
 
 ### Patch Changes

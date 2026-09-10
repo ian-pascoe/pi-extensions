@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.7.2
+
+### Patch Changes
+
+- d07a898: Restore Child Agent metadata and validate saved sessions without eagerly starting child runtimes or their extension services. Open only recipients that need new work, and inspect saved delivery evidence without starting runtimes to prevent duplicate replay.
+- 87bfb13: Preserve existing active-tool order during MCP catalogue refreshes and Subagent Access reconciliation to avoid unnecessary prompt-cache invalidation. Append only newly active tools while retaining capability removal and Coordinator Tool deduplication.
+
 ## 0.7.1
 
 ### Patch Changes

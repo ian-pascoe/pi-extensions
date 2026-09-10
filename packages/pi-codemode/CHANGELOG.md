@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-codemode
 
+## 0.7.2
+
+### Patch Changes
+
+- 2850166: Stabilize tool description
+
 ## 0.7.1
 
 ### Patch Changes
