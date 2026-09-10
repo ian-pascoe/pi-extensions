@@ -53,7 +53,7 @@ function validateInstallation(installation, id, directory) {
     }
     for (const path of installation.binDirectories) {
         if (!contained(directory, path))
-            throw new Error("Invalid managed executable directory");
+            throw new Error(`Invalid managed executable directory: ${path}`);
     }
     if (Object.keys(installation.environment).some((key) => key.toUpperCase() === "PATH")) {
         throw new Error("Invalid managed environment");
@@ -170,6 +170,8 @@ export class ToolInstaller {
             ...environment,
             HOME: home,
             USERPROFILE: home,
+            CARGO_HOME: join(home, ".cargo"),
+            RUSTUP_HOME: join(home, ".rustup"),
             APPDATA: join(home, "AppData", "Roaming"),
             LOCALAPPDATA: join(home, "AppData", "Local"),
             XDG_CONFIG_HOME: join(home, ".config"),
@@ -185,6 +187,7 @@ export class ToolInstaller {
                 ].join(delimiter)
                 : "/usr/bin:/bin:/usr/sbin:/sbin",
             MISE_DATA_DIR: join(this.directory, "data"),
+            MISE_SYSTEM_DATA_DIR: join(this.directory, "data"),
             MISE_CACHE_DIR: join(this.directory, "cache"),
             MISE_CONFIG_DIR: join(this.directory, "config"),
             MISE_FETCH_REMOTE_VERSIONS_CACHE: "0s",
@@ -297,7 +300,14 @@ export class ToolInstaller {
         });
     }
     async acquire(request, options) {
-        await Promise.all(["home", "work", "tmp", "selections"].map((name) => mkdir(join(this.directory, name), { recursive: true, mode: 0o700 })));
+        await Promise.all([
+            "home",
+            "work",
+            "tmp",
+            "selections",
+            join("home", "AppData", "Local"),
+            join("home", "AppData", "Roaming"),
+        ].map((name) => mkdir(join(this.directory, name), { recursive: true, mode: 0o700 })));
         const helper = await this.helper(options);
         let environment = this.environment();
         const basePaths = new Set((environment.PATH ?? "").split(delimiter));

@@ -1,5 +1,16 @@
 import { execFile, type ExecFileOptions } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -144,7 +155,9 @@ async function debugScript(
       stopReason: "breakpoint",
     });
     const stack = await session.stack();
-    expect(stack.stackFrames?.[0]?.source?.path).toBe(file);
+    const sourcePath = stack.stackFrames?.[0]?.source?.path;
+    if (!sourcePath) throw new Error("The stopped frame has no source path");
+    expect(await realpath(sourcePath)).toBe(await realpath(file));
     expect((await session.evaluate({ expression: "answer" })).evaluation?.result).toBe("42");
     const finished = await session.continue();
     expect(finished.snapshot.state).toBe("terminated");
@@ -152,6 +165,11 @@ async function debugScript(
     await session.launch({ profile: adapter.id, program: file, cwd: dirname(file) });
     await session.stop();
     expect(session.status().snapshot.state).toBe("terminated");
+  } catch (error) {
+    for (const name of await readdir(files.directoryPath)) {
+      console.error((await readFile(join(files.directoryPath, name), "utf8")).slice(-16_000));
+    }
+    throw error;
   } finally {
     await session.stop();
     await files.close();
@@ -167,8 +185,13 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
   });
 
   afterAll(async () => {
-    if (directory) await rm(directory, { recursive: true, force: true });
-  });
+    if (!directory) return;
+    // Go's module cache contains read-only directories; do not follow tool symlinks.
+    for (const entry of await readdir(directory, { recursive: true, withFileTypes: true })) {
+      if (entry.isDirectory()) await chmod(join(entry.parentPath, entry.name), 0o700);
+    }
+    await rm(directory, { recursive: true, force: true });
+  }, 60_000);
 
   test("TypeScript compiler and language-server initialize and answer a document request", async () => {
     const installation = await acquire("typescript", {
@@ -289,11 +312,10 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
     const installation = await acquire("ruff", { formatter: "aqua:astral-sh/ruff" });
     const file = join(await workspace(installation.id), "program.py");
     await writeFile(file, "answer= 42\n");
-    const command = join(
-      component(installation, "formatter"),
-      ".mise-bins",
-      nativeExecutable("ruff"),
-    );
+    const command = installation.binDirectories
+      .map((path) => join(path, nativeExecutable("ruff")))
+      .find((path) => existsSync(path));
+    if (!command) throw new Error("No Ruff executable in the managed executable directories");
     await execute(command, ["format", file], { env: environment(installation) });
     expect(await readFile(file, "utf8")).toBe("answer = 42\n");
   }, 360_000);
@@ -303,6 +325,14 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
       go: "core:go",
       server: "go:golang.org/x/tools/gopls",
     });
+    const runtime = await execute(
+      join(component(installation, "go"), "bin", nativeExecutable("go")),
+      ["version"],
+      { env: environment(installation) },
+    );
+    expect(runtime.stdout.trim()).toBe(
+      `go version go${installation.components.go?.version} ${process.platform === "win32" ? "windows" : process.platform}/${process.arch === "x64" ? "amd64" : process.arch}`,
+    );
     const root = await workspace(installation.id);
     const file = join(root, "program.go");
     await writeFile(join(root, "go.mod"), "module example.com/probe\n\ngo 1.20\n");
@@ -316,7 +346,7 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
     await symbols(
       installation,
       join(component(installation, "server"), "bin", nativeExecutable("gopls")),
-      [],
+      ["-rpc.trace"],
       file,
       "go",
     );
