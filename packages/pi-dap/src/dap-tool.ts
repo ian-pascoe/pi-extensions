@@ -22,6 +22,7 @@ import {
   DapToolResultDetailsSchema,
   type DapPresentationDetails,
   type DapToolParameters,
+  type DapToolProgressDetails,
   type DapToolRenderDetails,
   type DapToolResultDetails,
 } from "./dap-tool-contract.js";
@@ -295,6 +296,7 @@ async function dispatchDapOperation(
   session: DapToolSession,
   cwd: string,
   signal: AbortSignal | undefined,
+  onProgress: (message: string) => void,
 ): Promise<DapSessionResult> {
   switch (parameters.operation) {
     case "launch": {
@@ -303,7 +305,7 @@ async function dispatchDapOperation(
       if (parameters.program !== undefined) input.program = resolve(cwd, parameters.program);
       if (parameters.args !== undefined) input.args = parameters.args;
       if (parameters.cwd !== undefined) input.cwd = resolve(cwd, parameters.cwd);
-      return session.launch(input, signal);
+      return session.launch(input, signal, onProgress);
     }
     case "set_breakpoints":
       return session.setBreakpoints(
@@ -378,7 +380,7 @@ export function createDapToolDefinition(
     ].join("\n"),
     promptSnippet: "Debug a program through one configured Debug Session",
     promptGuidelines: [
-      "Use dap to set source breakpoints, launch a configured Debug Session, control the Debuggee, and inspect stopped Stack Frames and variables.",
+      "Use dap to set source breakpoints, launch a direct JavaScript/Python script or configured Launch Profile, control the Debuggee, and inspect stopped Stack Frames and variables.",
     ],
     parameters: DapToolProviderParametersSchema,
     prepareArguments: parseDapToolParameters,
@@ -393,15 +395,20 @@ export function createDapToolDefinition(
       if (runtime === undefined) throw piDapError("Pi conversation session is not active");
       notifyDapToolObserver(() => runtime.observer?.onToolStart(parameters));
       const startedAt = Date.now();
+      let acquisitionMessage: string | undefined;
       const updateProgress = () => {
         if (!isDapExecutionWaitOperation(parameters.operation)) return;
+        const details: DapToolProgressDetails = {
+          kind: "progress",
+          operation: parameters.operation,
+          elapsed_ms: Date.now() - startedAt,
+        };
+        if (acquisitionMessage !== undefined) details.message = acquisitionMessage;
         onUpdate?.({
-          content: [{ type: "text", text: `${parameters.operation} waiting` }],
-          details: {
-            kind: "progress",
-            operation: parameters.operation,
-            elapsed_ms: Date.now() - startedAt,
-          },
+          content: [
+            { type: "text", text: acquisitionMessage ?? `${parameters.operation} waiting` },
+          ],
+          details,
         });
       };
       updateProgress();
@@ -410,7 +417,16 @@ export function createDapToolDefinition(
         : undefined;
       progressInterval?.unref?.();
       try {
-        const result = await dispatchDapOperation(parameters, runtime.session, context.cwd, signal);
+        const result = await dispatchDapOperation(
+          parameters,
+          runtime.session,
+          context.cwd,
+          signal,
+          (message) => {
+            acquisitionMessage = message;
+            updateProgress();
+          },
+        );
         const output = await createDapToolOutput(
           parameters.operation,
           result,

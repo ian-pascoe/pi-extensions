@@ -366,11 +366,19 @@ describe.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")("native managed cat
       join(root, "Cargo.toml"),
       '[package]\nname = "native_probe"\nversion = "0.1.0"\nedition = "2024"\n[lib]\npath = "lib.rs"\n',
     );
-    await writeFile(file, "pub fn answer()->i32{42}\n");
-    await execute(join(component(installation, "rust"), nativeExecutable("rustfmt")), [file], {
-      env: environment(installation),
-    });
-    expect(await readFile(file, "utf8")).toBe("pub fn answer() -> i32 {\n    42\n}\n");
+    const sibling = join(root, "sibling.rs");
+    const siblingSource = "pub fn value( )->i32{1}\n";
+    await writeFile(sibling, siblingSource);
+    await writeFile(file, "mod sibling;\npub async fn answer()->i32{42}\n");
+    await execute(
+      join(component(installation, "rust"), nativeExecutable("rustfmt")),
+      ["--edition", "2024", "--config", "skip_children=true", file],
+      { env: environment(installation) },
+    );
+    expect(await readFile(file, "utf8")).toBe(
+      "mod sibling;\npub async fn answer() -> i32 {\n    42\n}\n",
+    );
+    expect(await readFile(sibling, "utf8")).toBe(siblingSource);
     await symbols(
       installation,
       join(component(installation, "server"), nativeExecutable("rust-analyzer")),

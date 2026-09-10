@@ -175,7 +175,14 @@ function handleRequest(request) {
       return;
     case "evaluate":
       respond(request, {
-        result: String(request.arguments?.expression ?? ""),
+        result:
+          request.arguments?.expression === "__fixture_launch_arguments"
+            ? JSON.stringify(launchArguments)
+            : request.arguments?.expression === "__fixture_adapter_version"
+              ? (process.env.PI_DAP_MANAGED_VERSION ?? "external")
+              : request.arguments?.expression === "__fixture_adapter_tmp"
+                ? (process.env.TMPDIR ?? "")
+                : String(request.arguments?.expression ?? ""),
         variablesReference: 0,
       });
       return;

@@ -10,6 +10,7 @@ const DEFAULT_DAP_TIMEOUTS = {
 } as const;
 
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
+const AutoInstallSchema = Type.Boolean();
 const PositiveMillisecondsSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const JsonValueSchema = Type.Any();
 const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
@@ -87,6 +88,10 @@ export interface DapTimeouts {
 
 /** Reports resolved trusted DAP configuration while quarantining invalid map entries. */
 export interface ResolvedDapSettings {
+  readonly autoInstall?: boolean;
+  /** Explicit IDs include null and quarantined entries, which must not revive built-ins. */
+  readonly configuredAdapterIds?: ReadonlySet<string>;
+  readonly configuredProfileIds?: ReadonlySet<string>;
   readonly adapters: ReadonlyMap<string, DapAdapterDefinition>;
   readonly profiles: ReadonlyMap<string, DapLaunchProfile>;
   readonly timeouts: DapTimeouts;
@@ -121,6 +126,7 @@ type ParsedDapProfile =
     };
 
 interface ParsedDapLayer {
+  readonly autoInstall?: boolean | undefined;
   readonly adapters: ReadonlyMap<string, ParsedDapAdapter>;
   readonly profiles: ReadonlyMap<string, ParsedDapProfile>;
   readonly timeouts: DapTimeoutOverrides;
@@ -309,12 +315,17 @@ function readDapLayer(settings: DapSettingsDocumentInput, scope: SettingsScope):
   }
 
   const unknownWarnings = Object.keys(settings.dap)
-    .filter((field) => field !== "adapters" && field !== "profiles" && field !== "timeouts")
+    .filter((field) => !["adapters", "profiles", "timeouts", "autoInstall"].includes(field))
     .map((field) => `${scope} dap.${field}: unknown field`);
+  const autoInstall = settings.dap.autoInstall;
+  if (autoInstall !== undefined && !Value.Check(AutoInstallSchema, autoInstall)) {
+    unknownWarnings.push(`${scope} dap.autoInstall: expected a boolean`);
+  }
   const parsedAdapters = parseDapAdapters(settings.dap.adapters, scope);
   const parsedProfiles = parseDapProfiles(settings.dap.profiles, scope);
   const parsedTimeouts = parseDapTimeouts(settings.dap.timeouts, scope);
   return {
+    autoInstall: Value.Check(AutoInstallSchema, autoInstall) ? autoInstall : undefined,
     adapters: parsedAdapters.adapters,
     profiles: parsedProfiles.profiles,
     timeouts: parsedTimeouts.timeouts,
@@ -386,6 +397,15 @@ export function resolveDapSettings(reader: DapSettingsReader): ResolvedDapSettin
   }
 
   return {
+    autoInstall: projectLayer.autoInstall ?? globalLayer.autoInstall ?? true,
+    configuredAdapterIds: new Set([
+      ...globalLayer.adapters.keys(),
+      ...projectLayer.adapters.keys(),
+    ]),
+    configuredProfileIds: new Set([
+      ...globalLayer.profiles.keys(),
+      ...projectLayer.profiles.keys(),
+    ]),
     adapters,
     profiles,
     timeouts: Object.assign({}, DEFAULT_DAP_TIMEOUTS, globalLayer.timeouts, projectLayer.timeouts),

@@ -14,6 +14,8 @@ import {
   type DapReverseRequestResult,
 } from "./dap-protocol-client.js";
 import { RetainedDapOutput, type DapSessionFiles } from "./dap-session-files.js";
+import type { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
+import { resolveDapPreset } from "./dap-managed-tools.js";
 import type {
   DapAdapterDefinition,
   DapLaunchProfile,
@@ -269,6 +271,7 @@ export interface DapSessionResult {
 
 /** Construction values owned for one conversation-level Debug Session controller. */
 export interface DapSessionOptions {
+  readonly installer?: ToolInstaller;
   readonly cwd: string;
   readonly settings: ResolvedDapSettings;
   readonly sessionFiles: DapSessionFiles;
@@ -392,26 +395,77 @@ export class DapSession {
   private readonly executionWaiters = new Set<() => void>();
   private state: InternalDapSessionState = { kind: "idle" };
   private shutdownPromise: Promise<void> | undefined;
+  private pendingLaunch: Promise<DapSessionResult> | undefined;
+  private launchController: AbortController | undefined;
 
   /** Construct an inert Debug Session controller; launch starts the first Debug Adapter. */
   constructor(private readonly options: DapSessionOptions) {}
 
-  /** Launch one configured Launch Profile and wait for its first stop, exit, cancellation, or execution timeout. */
-  async launch(input: DapLaunchInput = {}, signal?: AbortSignal): Promise<DapSessionResult> {
+  /** Launch one profile, reserving the single session while acquisition or startup is pending. */
+  async launch(
+    input: DapLaunchInput = {},
+    signal?: AbortSignal,
+    onProgress?: (message: string) => void,
+  ): Promise<DapSessionResult> {
+    if (this.pendingLaunch !== undefined || this.state.kind === "active")
+      throw new DapSessionError("state", "launch requires no active Debug Session");
+    if (this.shutdownPromise !== undefined)
+      throw new DapSessionError("state", "Pi session has shut down");
+    const controller = new AbortController();
+    this.launchController = controller;
+    const combinedSignal =
+      signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
+    const pending = this.launchSession(input, combinedSignal, onProgress);
+    this.pendingLaunch = pending;
+    try {
+      return await pending;
+    } finally {
+      this.pendingLaunch = undefined;
+      this.launchController = undefined;
+    }
+  }
+
+  private async launchSession(
+    input: DapLaunchInput = {},
+    signal?: AbortSignal,
+    onProgress?: (message: string) => void,
+  ): Promise<DapSessionResult> {
     if (this.state.kind === "active") {
       throw new DapSessionError("state", "launch requires no active Debug Session");
     }
     if (this.state.kind === "terminated") await this.state.cleanupPromise;
     this.output.drain();
 
-    const profile = this.resolveLaunchProfile(input.profile);
-    const adapter = this.options.settings.adapters.get(profile.adapterId);
+    const preset =
+      this.options.installer === undefined
+        ? undefined
+        : await resolveDapPreset(
+            input,
+            this.options.cwd,
+            this.options.settings,
+            this.options.installer,
+            signal,
+            onProgress,
+          );
+    const profile = preset?.profile ?? this.resolveLaunchProfile(input.profile);
+    const adapter = preset?.adapter ?? this.options.settings.adapters.get(profile.adapterId);
     if (adapter === undefined) {
       throw new DapSessionError(
         "configuration",
         `Launch Profile ${profile.id} references unavailable Adapter Definition ${profile.adapterId}`,
       );
     }
+    let adapterEnvironment = adapter.environment;
+    if (preset?.profile.id === "javascript" && process.platform === "darwin") {
+      const temporaryDirectory = await this.options.sessionFiles.getAdapterTemporaryDirectory();
+      adapterEnvironment = {
+        ...adapterEnvironment,
+        TMPDIR: temporaryDirectory,
+        TEMP: temporaryDirectory,
+        TMP: temporaryDirectory,
+      };
+    }
+    if (preset !== undefined) onProgress?.(`Launching ${profile.id}`);
     // ponytail: shallow copy suffices — only top-level launch keys are replaced below.
     const launchArguments = { ...profile.arguments };
     const adapterProtocolId = Value.Check(DapAdapterProtocolIdSchema, profile.arguments.type)
@@ -431,7 +485,7 @@ export class DapSession {
         cwd: this.options.cwd,
         command: adapter.command,
         args: adapter.args,
-        environment: adapter.environment,
+        environment: adapterEnvironment,
         transport: protocolTransport(adapter),
         timeouts: {
           startupMs: this.options.settings.timeouts.startupMs,
@@ -679,6 +733,7 @@ export class DapSession {
 
   /** Idempotently stop the active Debug Session and preserve Desired Breakpoints. */
   async stop(): Promise<DapSessionResult> {
+    await this.cancelPendingLaunch();
     const active = this.currentActive();
     if (active === undefined) {
       if (this.state.kind === "terminated") await this.state.cleanupPromise;
@@ -692,6 +747,7 @@ export class DapSession {
   async shutdown(): Promise<void> {
     if (this.shutdownPromise !== undefined) return this.shutdownPromise;
     this.shutdownPromise = (async () => {
+      await this.cancelPendingLaunch();
       const active = this.currentActive();
       if (active !== undefined) {
         await this.finishActiveSession(active, "Pi session shutdown");
@@ -700,6 +756,15 @@ export class DapSession {
       }
     })();
     return this.shutdownPromise;
+  }
+
+  private async cancelPendingLaunch(): Promise<void> {
+    this.launchController?.abort(new Error("launch cancelled"));
+    try {
+      await this.pendingLaunch;
+    } catch {
+      // The launch caller owns its failure; stop and shutdown only await cleanup.
+    }
   }
 
   private resolveLaunchProfile(profileId: string | undefined): DapLaunchProfile {

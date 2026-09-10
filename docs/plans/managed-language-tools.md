@@ -1,14 +1,16 @@
 # Managed language tools
 
-Status: accepted design, 2026-09-10. **The initial six-platform acquisition and
-launch gate passed; shared installer hardening and package integration remain.**
+Status: implementation under verification, 2026-09-10. **The initial six-platform
+acquisition and launch gate passed; final integration and release gates remain.**
 [Run 34520581283](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
 at `59c17f0` passed all 11 checks on each of the six native targets. See the
 [verified baselines and concrete versions](../../packages/pi-tool-installer/README.md#initial-verified-baselines).
 The probes include first-use private acquisition, LSP document requests, formatter
 output, and JavaScript/Python debugging. This does not yet prove separate-process
 coordination, actual-install interruption, immutable Python updates, or extension
-lifecycle/precedence and SDK prefix stability. Package defaults are not integrated.
+lifecycle/precedence and SDK prefix stability. Package-owned defaults and their
+offline SDK proofs are implemented; the hardened native matrix and final repository
+checks must pass before this plan is considered complete.
 
 The user selected TypeScript 7 rather than a TypeScript 6 compatibility pin.
 Use TypeScript 7's built-in native LSP (`tsc --lsp --stdio`), not the separate
@@ -167,7 +169,7 @@ pinned to an extension release. Resolve and record the concrete installed versio
 "latest" must not make a running tool or an existing installation change on every
 request. Reuse installed versions until explicitly updated.
 
-Proposed user commands:
+User commands:
 
 ```text
 /lsp update
@@ -178,7 +180,9 @@ Proposed user commands:
 
 Each package's update command covers its installed Managed Installations; an
 optional definition ID targets one. The existing /lsp command gains this operation;
-Pi Formatter and Pi DAP need corresponding commands. They do not currently exist.
+Pi Formatter and Pi DAP provide corresponding commands. Idle TUI updates use an
+Escape-cancellable loader; RPC/headless updates expose `/<package> update cancel`.
+Cancellation waits for acquisition cleanup before completing the command.
 
 Updates must:
 
@@ -218,7 +222,7 @@ validate archive extraction paths. Record limitations honestly: exact top-level
 versions do not prove reproducible transitive dependencies or universal checksum
 coverage across backends.
 
-### Known acquisition work, not verified support
+### Acquisition mappings
 
 - TypeScript 7, Pyright, Prettier, and Biome have package-manager acquisition paths,
   but their selected versions' runtime requirements must be satisfied privately.
@@ -266,10 +270,10 @@ Current source seams to inspect before changing them:
   dap-protocol-client.ts, and dap-tool.ts.
 
 Check installed Pi APIs and exports, not only reference HEAD. Native settings/trust,
-reload/session cleanup, and tool registration remain with Pi. Pi DAP already has
-onUpdate progress; Pi LSP currently ignores that callback; formatter middleware
-has a context cancellation signal but no tool progress callback. Choose appropriate
-native UI/status and result reporting rather than assuming identical facilities.
+reload/session cleanup, and tool registration remain with Pi. Pi DAP and Pi LSP use tool onUpdate progress; formatter middleware
+has a context cancellation signal but no tool progress callback and reports through
+native status and mutation-result feedback. Idle updates own a cancellable operation
+lifetime rather than relying on an active agent turn.
 
 Formatter middleware must still finish before subsequent LSP diagnostics middleware.
 Neither installer failure nor aborted assistance may erase an already-completed

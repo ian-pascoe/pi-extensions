@@ -1,5 +1,8 @@
 # Pi LSP context
 
+Shared terms (Language Tool Preset, Explicit Definition, Managed Installation, External Installation,
+Installed-only Mode, and Tool Update) are defined in [Language Tools](../../docs/contexts/language-tools/CONTEXT.md).
+
 ## Glossary
 
 - **Activation Gate** — an optional requirement that at least one configured root marker be present for a Server Definition to apply to a candidate file.
@@ -10,7 +13,7 @@
 - **Workspace Edit Preview** — a proposed set of language-server changes with the source versions needed to reject a stale application.
 - **Validated Workspace Edit** — a Workspace Edit Preview whose source versions and paths still match at application time. It is applied as one guarded batch with rollback on failure, not as a crash-atomic filesystem transaction.
 - **Result Spill** — the complete LSP operation output referenced when the model-visible result reaches Pi's standard output limit.
-- **Server Definition** — a configured language-server command, language mapping, workspace-root policy, Activation Gate, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID; an invalid project replacement shadows the global definition and is quarantined.
+- **Server Definition** — an explicit or preset language-server command, language mapping, workspace-root policy, Activation Gate, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID; an invalid project replacement shadows the global definition and is quarantined.
 - **Server Instance** — one running language-server process for a Server Definition and a detected workspace root.
 - **Stop** — ending a Server Instance without preventing a later lazy start for its Server Definition.
 - **Disabled Server Definition** — a Server Definition that is ineligible to start Server Instances until it is enabled.
@@ -26,7 +29,10 @@ Language-server requests to apply edits are also converted into Workspace Edit P
 
 Language-server documents are valid UTF-8 text. Content edits follow existing symlinks and identify the canonical target in the Mutation Manifest; resource operations act on the named directory entry. Conflicting or non-file workspace edits are rejected before they become applicable previews.
 
-Server Definitions come only from the `lsp` key in Pi's global and trusted project settings. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and retain failure state until explicit recovery. Read operations may query several matching Server Instances; a mutation must identify one when several match.
+Explicit Definitions come from the `lsp` key in Pi's global and trusted project settings. Package-owned
+Language Tool Presets provide TypeScript 7 native LSP, Pyright, gopls, and rust-analyzer fallbacks.
+An Explicit Definition matching a file suppresses all presets for that file, regardless of ID,
+Activation Gate, or enablement. A null or quarantined same-ID replacement also shadows the preset. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and retain failure state until explicit recovery. Read operations may query several matching Server Instances; a mutation must identify one when several match.
 
 An Activation Gate is evaluated independently for every candidate file. A Server Definition that
 does not pass its gate is excluded from automatic routing without warning. Changes to root markers
@@ -35,6 +41,10 @@ distinguish a missing required root marker from a language mismatch.
 
 When several Server Instances handle a read, successful results remain useful even if another instance fails. Failures stay labeled by server rather than replacing successful output.
 
-The extension does not own language-server installation, a built-in server catalog, formatting outside LSP, static parsing, or debugging. Those capabilities belong in separate additions only after demonstrated need.
+The extension owns language routing and preset launch policy; the shared installer owns private
+acquisition and durable executable selection. External Installations precede Managed Installations.
+Acquisition happens only on actual need, and Installed-only Mode retains existing installations
+without automatic downloads. Tool Updates affect subsequent starts, not running Server Instances.
+Formatting outside LSP, static parsing, and debugging remain outside this context.
 
 Post-edit Diagnostics apply whenever a Supported Mutation Tool reports affected files, including partial failures. Only Server Instances that advertise document diagnostics participate. A successful mutation remains successful when Post-edit Diagnostics are unavailable. Pi's standard output limit never discards LSP output; excess output remains available as a Result Spill.

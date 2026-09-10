@@ -1,25 +1,20 @@
 # Pi Formatter context
 
+Pi Formatter owns post-edit formatting selection and execution. Shared installation vocabulary
+is defined by [Language Tools](../../docs/contexts/language-tools/CONTEXT.md); acquisition belongs
+to the shared installer, while Formatter Definitions and Formatter Markers belong here.
+
 ## Glossary
 
 - **Activation Gate** — an optional requirement that at least one configured root marker be present for a Formatter Definition to apply to a candidate file.
-- **Formatter Definition** — a configured command, file matching policy, workspace-root policy, Activation Gate, environment, and stable formatter ID. A project Formatter Definition completely replaces a global definition with the same ID; `null` or an invalid project replacement shadows the global definition.
-- **File Formatter** — a Formatter Definition whose arguments contain `$FILE`. It runs once for each matching changed file.
-- **Workspace Formatter** — a Formatter Definition whose arguments omit `$FILE`. It runs once per matching workspace root reported by a mutation.
+- **Formatter Definition** — a command, file matching policy, workspace-root policy, Activation Gate, environment, and stable formatter ID. An Explicit Definition replaces a same-ID Language Tool Preset; a project definition completely replaces a same-ID global definition.
+- **File Formatter** — a Formatter Definition whose arguments contain `$FILE`, applied to each matching changed file.
+- **Workspace Formatter** — a Formatter Definition whose arguments omit `$FILE`, applied once per matching workspace root reported by a mutation.
+- **Formatter Marker** — a formatter-specific configuration file or parsed manifest declaration indicating a project's formatter preference. The nearest applicable directory owns the preference; a generic manifest alone is not a marker.
+- **Explicit Definition** — a user-configured Formatter Definition, taking precedence over matching Language Tool Presets even when IDs differ or execution fails.
+- **Language Tool Preset** — a package-owned fallback Formatter Definition and its acquisition requirements, distinct from an Explicit Definition.
+- **Managed Installation** — a privately acquired formatter and supporting runtimes/toolchain components, distinct from a project-local or PATH-owned External Installation.
+- **Installed-only Mode** — a policy permitting existing External and Managed Installations without automatic downloads; explicit Tool Updates remain deliberate network actions.
+- **Tool Update** — an explicit advance of an installed, formatter-owned Managed Installation to latest upstream for subsequent formatting, retaining the working selection on failure or cancellation.
 - **Supported Mutation Tool** — a file-modifying Pi tool whose destination paths can be identified exactly: native `edit`, native `write`, Codex-style `apply_patch`, or Pi LSP preview application.
-- **Quarantined Setting** — an invalid configuration entry or field that is warned about and excluded without disabling unrelated valid configuration.
-
-## Behavior boundary
-
-Pi Formatter runs matching Formatter Definitions sequentially after a Supported Mutation Tool
-reports changed destination files. Formatting completes before later tool-result middleware runs.
-A successful mutation remains successful when formatting fails. Deleted and vanished files are
-not formatter targets.
-
-An Activation Gate is evaluated independently for every candidate file. A Formatter Definition
-that does not pass its gate is expected to do nothing, without warning. Changes to root markers
-take effect on the next formatting event.
-
-Formatter Definitions come only from the `formatter` key in Pi's global and trusted project
-settings. Pi's standard reload lifecycle reloads configuration. The extension owns no formatter
-catalog, executable installation, shell interpretation, or repository change discovery.
+- **Quarantined Setting** — an invalid configuration entry or field that is warned about and excluded without disabling unrelated valid configuration. A quarantined same-ID definition still shadows inherited and built-in definitions.

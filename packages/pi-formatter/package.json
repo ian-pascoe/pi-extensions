@@ -2,7 +2,7 @@
   "name": "@ian-pascoe/pi-formatter",
   "version": "0.2.0",
   "private": false,
-  "description": "Configured automatic post-edit formatting for Pi",
+  "description": "Project-aware automatic post-edit formatting and managed tools for Pi",
   "keywords": [
     "formatter",
     "pi",
@@ -34,6 +34,14 @@
   "scripts": {
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ian-pascoe/pi-tool-installer": "^0.1.0",
+    "cross-spawn": "^7.0.6",
+    "smol-toml": "^1.8.0"
+  },
+  "devDependencies": {
+    "@types/cross-spawn": "^6.0.6"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

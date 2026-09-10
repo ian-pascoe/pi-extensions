@@ -27,6 +27,7 @@ const FormatterDefinitionSchema = Type.Object(
 );
 const FormatterLayerSchema = Type.Object(
   {
+    autoInstall: Type.Optional(Type.Any()),
     formatters: Type.Optional(Type.Any()),
     timeoutMs: Type.Optional(Type.Any()),
   },
@@ -62,6 +63,8 @@ export interface FormatterDefinition {
 
 /** Contains resolved trusted formatter definitions and non-fatal configuration warnings. */
 export interface ResolvedFormatterSettings {
+  readonly autoInstall: boolean;
+  readonly explicitIds: ReadonlySet<string>;
   readonly formatters: ReadonlyMap<string, FormatterDefinition>;
   readonly timeoutMs: number;
   readonly warnings: readonly string[];
@@ -81,8 +84,9 @@ export type FormatterSettingsDocumentInput =
   | { readonly formatter?: JsonValue };
 
 interface ParsedFormatterLayer {
+  readonly autoInstall?: boolean | undefined;
   readonly definitions: ReadonlyMap<string, FormatterDefinitionWire | null>;
-  readonly timeoutMs?: number;
+  readonly timeoutMs?: number | undefined;
   readonly warnings: readonly string[];
 }
 
@@ -119,11 +123,16 @@ function readFormatterLayer(
 
   const warnings: string[] = [];
   for (const field of Object.keys(formatter)) {
-    if (field !== "formatters" && field !== "timeoutMs") {
+    if (field !== "formatters" && field !== "timeoutMs" && field !== "autoInstall") {
       warnings.push(`${scope} formatter.${field}: unknown field`);
     }
   }
 
+  let autoInstall: boolean | undefined;
+  if (formatter.autoInstall !== undefined) {
+    if (Value.Check(Type.Boolean(), formatter.autoInstall)) autoInstall = formatter.autoInstall;
+    else warnings.push(`${scope} formatter.autoInstall: expected a boolean`);
+  }
   let timeoutMs: number | undefined;
   if (formatter.timeoutMs !== undefined) {
     if (Value.Check(PositiveMillisecondsSchema, formatter.timeoutMs)) {
@@ -178,7 +187,12 @@ function readFormatterLayer(
     }
   }
 
-  return timeoutMs === undefined ? { definitions, warnings } : { definitions, timeoutMs, warnings };
+  return {
+    definitions,
+    warnings,
+    timeoutMs,
+    autoInstall,
+  };
 }
 
 function resolveFormatterDefinition(
@@ -216,6 +230,8 @@ export function resolveFormatterSettings(
     formatters.set(id, resolveFormatterDefinition(id, definition));
   }
   return {
+    autoInstall: projectLayer.autoInstall ?? globalLayer.autoInstall ?? true,
+    explicitIds: new Set([...globalLayer.definitions.keys(), ...projectLayer.definitions.keys()]),
     formatters,
     timeoutMs: projectLayer.timeoutMs ?? globalLayer.timeoutMs ?? DEFAULT_FORMATTER_TIMEOUT_MS,
     warnings: [...globalLayer.warnings, ...projectLayer.warnings],

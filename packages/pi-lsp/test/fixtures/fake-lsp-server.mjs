@@ -19,6 +19,7 @@ const state = {
   applyEdit: null,
 };
 let clientRequestsReady = Promise.resolve();
+const documentText = new Map();
 
 function send(message) {
   const json = JSON.stringify(message);
@@ -39,8 +40,10 @@ function respondError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-function diagnostics(message = "fake diagnostic") {
-  return process.env.FAKE_DIAGNOSTICS === "one"
+function diagnostics(message = "fake diagnostic", uri) {
+  if (process.env.FAKE_DIAGNOSTICS === "document")
+    message = documentText.get(uri) ?? "missing document";
+  return process.env.FAKE_DIAGNOSTICS === "one" || process.env.FAKE_DIAGNOSTICS === "document"
     ? [
         {
           range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
@@ -98,6 +101,7 @@ async function handleRequest(message) {
         renameProvider: { prepareProvider: true },
         textDocumentSync: { openClose: true, change: 2, save: { includeText: true } },
         hoverProvider: true,
+        documentSymbolProvider: true,
       };
       if (process.env.FAKE_NO_PULL !== "1") {
         capabilities.diagnosticProvider = {
@@ -111,12 +115,22 @@ async function handleRequest(message) {
         capabilities,
       });
       return;
+    case "textDocument/documentSymbol":
+      respond(message.id, [
+        {
+          name: process.env.FAKE_SYMBOL_NAME ?? "answer",
+          kind: 14,
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          selectionRange: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        },
+      ]);
+      return;
     case "textDocument/diagnostic":
       if (process.env.FAKE_DELAY_DIAGNOSTICS === "1") return;
       respond(message.id, {
         kind: "full",
         resultId: "fake-document-result",
-        items: diagnostics(),
+        items: diagnostics(undefined, message.params.textDocument.uri),
       });
       return;
     case "workspace/diagnostic":
@@ -188,7 +202,11 @@ function publishDiagnostics(document) {
   send({
     jsonrpc: "2.0",
     method: "textDocument/publishDiagnostics",
-    params: { uri: document.uri, version: document.version, diagnostics: diagnostics() },
+    params: {
+      uri: document.uri,
+      version: document.version,
+      diagnostics: diagnostics(undefined, document.uri),
+    },
   });
 }
 
@@ -209,10 +227,12 @@ function handleNotification(message) {
       return;
     case "textDocument/didOpen":
       state.opened.push(message.params.textDocument);
+      documentText.set(message.params.textDocument.uri, message.params.textDocument.text);
       publishDiagnostics(message.params.textDocument);
       return;
     case "textDocument/didChange": {
       const document = message.params.textDocument;
+      documentText.set(document.uri, message.params.contentChanges[0]?.text ?? "");
       state.changed.push({ ...document, contentChanges: message.params.contentChanges });
       publishDiagnostics(document);
       return;

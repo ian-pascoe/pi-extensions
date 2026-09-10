@@ -1,3 +1,6 @@
+import { join } from "node:path";
+import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
+import { DapUpdateCommand } from "./dap-update-command.js";
 import {
   getAgentDir,
   SettingsManager,
@@ -12,6 +15,7 @@ import { createDapToolDefinition, type DapToolRuntime } from "./dap-tool.js";
 import { resolveDapSettings } from "./pi-dap-settings.js";
 
 interface ActivePiDapSession extends DapToolRuntime {
+  readonly updates: DapUpdateCommand;
   readonly observer: DapObserverUiController;
   readonly session: DapSession;
   readonly sessionFiles: DapSessionFiles;
@@ -31,6 +35,14 @@ export class PiDapLifecycleController {
   /** Register the stable tool definition and Pi conversation session lifecycle handlers. */
   register(): void {
     this.pi.registerTool(createDapToolDefinition(() => this.activeSession));
+    this.pi.registerCommand("dap", {
+      description:
+        "Update installed managed Debug Adapters: update [javascript|python], update cancel",
+      handler: async (args, context) => {
+        if (!this.activeSession) throw new Error("Pi DAP: Pi conversation session is not active");
+        await this.activeSession.updates.execute(args, context);
+      },
+    });
     this.pi.on("session_start", (_event, context) => this.startSession(context));
     this.pi.on("session_shutdown", () => this.shutdownSession());
   }
@@ -47,10 +59,13 @@ export class PiDapLifecycleController {
 
     const sessionFiles = await createDapSessionFiles(context.sessionManager.getSessionDir());
     const observer = new DapObserverUiController(context);
+    const installer = new ToolInstaller(join(this.getAgentDirectory(), "managed-tools"));
     this.activeSession = {
       observer,
+      updates: new DapUpdateCommand(installer),
       session: new DapSession({
         cwd: context.cwd,
+        installer,
         settings,
         sessionFiles,
         onSnapshotChange: (snapshot) => observer.onSessionSnapshot(snapshot),
@@ -70,7 +85,7 @@ export class PiDapLifecycleController {
     const shutdown = (async () => {
       activeSession.observer.dispose();
       try {
-        await activeSession.session.shutdown();
+        await Promise.all([activeSession.updates.shutdown(), activeSession.session.shutdown()]);
       } finally {
         await activeSession.sessionFiles.close();
       }

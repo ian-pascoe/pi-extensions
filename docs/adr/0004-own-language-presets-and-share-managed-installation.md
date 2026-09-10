@@ -4,10 +4,10 @@ status: accepted
 
 # Own language presets and share private tool installation
 
-Pi LSP, Pi DAP, and Pi Formatter will own their Language Tool Presets while sharing
+Pi LSP, Pi DAP, and Pi Formatter own their Language Tool Presets while sharing
 one internal installer backed by a privately provisioned mise: editor registries
 supply useful references and package metadata, but not these extensions' routing,
-formatting, or launch semantics. Automatic first-use installation will include
+formatting, or launch semantics. Automatic first-use installation includes
 required runtimes in a private per-user store, without changing project files,
 system installations, or the user's PATH; this deliberately accepts installation
 and supply-chain responsibility to provide out-of-the-box support on native x64
@@ -25,6 +25,6 @@ not acquire ownership of protocol lifecycle, formatter selection, project builds
 or arbitrary launch inference.
 
 The [accepted design](../plans/managed-language-tools.md) records scope, precedence,
-updates, failure behavior, and verification gates. This is an accepted direction,
-not an implemented feature; existing package documentation still describes the
-current settings-only runtime until implementation lands.
+updates, failure behavior, and verification gates. The compiled
+[`pi-tool-installer`](../../packages/pi-tool-installer) library owns acquisition;
+package documentation describes the presets and their existing protocol boundaries.
