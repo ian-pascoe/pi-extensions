@@ -6,6 +6,57 @@ import contextManagement from "../src/context-management-extension.js";
 import { readNotes } from "../src/context-store.js";
 import { createSdkHarness, reply, toolCall } from "./sdk-harness.js";
 
+it("records non-triggering Todo snapshots but omits them from automatic continuation", async () => {
+  const snapshotText = "TODO PUBLICATION PROBE: immutable snapshot";
+  const publicationProbe: ExtensionFactory = (pi) => {
+    pi.on("tool_result", (event) => {
+      if (event.toolName !== "todo") return;
+      pi.sendMessage(
+        { customType: "todo-publication-probe", content: snapshotText, display: false },
+        { triggerTurn: false },
+      );
+    });
+  };
+  const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
+  const f = await createSdkHarness([contextManagement, publicationProbe], {
+    additionalExtensionPaths: [todoPath],
+  });
+  f.responses.push(
+    toolCall("todo", { action: "add", title: "Inspect blue widget" }),
+    reply("Todo saved."),
+  );
+  await f.session.prompt("Record a Task, then continue");
+  const branch = f.manager.getBranch();
+  const resultIndex = branch.findIndex(
+    (entry) => entry.type === "message" && entry.message.role === "toolResult",
+  );
+  const snapshotIndex = branch.findIndex(
+    (entry) => entry.type === "custom_message" && entry.customType === "todo-publication-probe",
+  );
+  expect(resultIndex).toBeGreaterThan(-1);
+  expect(snapshotIndex).toBeGreaterThan(resultIndex);
+  expect(f.session.messages).toContainEqual(
+    expect.objectContaining({ role: "custom", content: snapshotText }),
+  );
+  expect(f.requests).toHaveLength(2);
+  expect(f.providerRequests).toEqual([]);
+  // Plan 001 STOP gate: turn_end persists the message, but the running loop retains
+  // its older context snapshot. A new user prompt is required to observe the append.
+  expect(JSON.stringify(f.requests[1]?.messages)).not.toContain(snapshotText);
+  f.responses.push(reply("Continued."));
+  await f.session.prompt("Continue on the next user turn");
+  expect(f.requests).toHaveLength(3);
+  expect(JSON.stringify(f.requests[2]?.messages)).toContain(snapshotText);
+  expect(
+    f.manager
+      .getBranch()
+      .filter(
+        (entry) => entry.type === "custom_message" && entry.customType === "todo-publication-probe",
+      ),
+  ).toHaveLength(1);
+  expect(f.providerRequests).toEqual([]);
+});
+
 it("preserves the real Todo extension's live projection across a native Rollover", async () => {
   const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
   const f = await createSdkHarness([contextManagement], { additionalExtensionPaths: [todoPath] });
