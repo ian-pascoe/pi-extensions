@@ -7,6 +7,7 @@ import {
   ModelRegistry,
   ModelRuntime,
   SessionManager,
+  type ContextEvent,
   type ExtensionCommandContext,
   type SessionShutdownEvent,
   type SessionStartEvent,
@@ -29,9 +30,10 @@ async function temporaryDirectory(prefix: string): Promise<string> {
   return directory;
 }
 
-async function createRunner(session: PiMcpExtensionSession): Promise<ExtensionRunner> {
+async function createRunner(session?: PiMcpExtensionSession): Promise<ExtensionRunner> {
   const cwd = await temporaryDirectory("pi-mcp-extension-cwd-");
   const agentDirectory = await temporaryDirectory("pi-mcp-extension-agent-");
+  vi.stubEnv("PI_CODING_AGENT_DIR", agentDirectory);
   const sessionDirectory = await temporaryDirectory("pi-mcp-extension-session-");
   const sessionManager = SessionManager.create(cwd, sessionDirectory);
   const loader = new DefaultResourceLoader({
@@ -40,7 +42,9 @@ async function createRunner(session: PiMcpExtensionSession): Promise<ExtensionRu
     extensionFactories: [
       {
         name: "pi-mcp-extension-test",
-        factory: createPiMcpExtension({ createSession: async () => session }),
+        factory: createPiMcpExtension(
+          session === undefined ? undefined : { createSession: async () => session },
+        ),
       },
     ],
     noContextFiles: true,
@@ -99,6 +103,7 @@ async function createRunner(session: PiMcpExtensionSession): Promise<ExtensionRu
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -129,13 +134,14 @@ describe("Pi MCP extension lifecycle", () => {
     expect(completeCommandArguments).toHaveBeenCalledWith("rec");
   });
 
-  test("starts in the background and reads current instructions before every turn", async () => {
+  test("reads current instructions at each agent start without blocking startup", async () => {
     let releaseStart: (() => void) | undefined;
     const startBlocked = new Promise<void>((resolveStart) => {
       releaseStart = resolveStart;
     });
     const closeReasons: string[] = [];
     let instructions: string | undefined;
+    const instructionSnapshot = vi.fn(() => instructions);
     const session: PiMcpExtensionSession = {
       close: async (reason) => {
         closeReasons.push(reason);
@@ -144,7 +150,7 @@ describe("Pi MCP extension lifecycle", () => {
         level: "info",
         message: "ok",
       }),
-      instructionSnapshot: () => instructions,
+      instructionSnapshot,
       redactPresentationText: (text) => text,
       start: () => startBlocked,
       transformContext: (messages) => messages,
@@ -169,18 +175,100 @@ describe("Pi MCP extension lifecycle", () => {
       contextFiles: [],
       skills: [],
     };
+    const chainedPrompt = "base\n\nEarlier extension instructions";
     await expect(
-      runner.emitBeforeAgentStart("first", undefined, "base", promptContext),
+      runner.emitBeforeAgentStart("first", undefined, chainedPrompt, promptContext),
     ).resolves.toBeUndefined();
+    expect(instructionSnapshot).toHaveBeenCalledTimes(1);
 
     instructions = "Server Instructions\n- fixture: keep exact bytes";
-    const nextTurn = await runner.emitBeforeAgentStart("second", undefined, "base", promptContext);
-    expect(nextTurn?.systemPrompt).toBe("base\n\nServer Instructions\n- fixture: keep exact bytes");
+    const history: ContextEvent["messages"] = [
+      { role: "user", content: "Fixed input", timestamp: 1 },
+    ];
+    expect(await runner.emitContext(history)).toEqual(history);
+    expect(await runner.emitContext(history)).toEqual(history);
+    expect(instructionSnapshot).toHaveBeenCalledTimes(1);
+
+    const nextStart = await runner.emitBeforeAgentStart(
+      "second",
+      undefined,
+      chainedPrompt,
+      promptContext,
+    );
+    expect(nextStart).toEqual({
+      systemPrompt: `${chainedPrompt}\n\nServer Instructions\n- fixture: keep exact bytes`,
+    });
+    expect(
+      await runner.emitBeforeAgentStart("unchanged", undefined, chainedPrompt, promptContext),
+    ).toEqual(nextStart);
+    expect(instructionSnapshot).toHaveBeenCalledTimes(3);
+
+    instructions = "Changed Server Instructions";
+    expect(await runner.emitContext(history)).toEqual(history);
+    expect(instructionSnapshot).toHaveBeenCalledTimes(3);
+    expect(nextStart?.systemPrompt).toBe(
+      `${chainedPrompt}\n\nServer Instructions\n- fixture: keep exact bytes`,
+    );
+    expect(
+      await runner.emitBeforeAgentStart("changed", undefined, chainedPrompt, promptContext),
+    ).toEqual({ systemPrompt: `${chainedPrompt}\n\nChanged Server Instructions` });
+
+    instructions = undefined;
+    expect(await runner.emitContext(history)).toEqual(history);
+    expect(instructionSnapshot).toHaveBeenCalledTimes(4);
+    expect(
+      await runner.emitBeforeAgentStart("removed", undefined, chainedPrompt, promptContext),
+    ).toBeUndefined();
+    expect(instructionSnapshot).toHaveBeenCalledTimes(5);
 
     releaseStart?.();
     await runner.emit({ type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent);
     await runner.emit({ type: "session_shutdown", reason: "quit" } satisfies SessionShutdownEvent);
     expect(closeReasons).toEqual(["quit"]);
+  });
+
+  test("replays saved MCP Prompt expansion deterministically without consulting a Server", async () => {
+    const runner = await createRunner();
+    await runner.emit({ type: "session_start", reason: "startup" } satisfies SessionStartEvent);
+    const history: ContextEvent["messages"] = [
+      {
+        role: "custom",
+        customType: "pi-mcp-prompt",
+        content: "MCP Prompt unavailable/review",
+        display: true,
+        timestamp: 1,
+        details: {
+          version: 1,
+          mcpMessages: [
+            { role: "user", content: { type: "text", text: "Unmapped protocol content" } },
+          ],
+          replayMessages: [
+            { role: "user", content: [{ type: "text", text: "Saved expansion" }], timestamp: 1 },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "Saved response" }],
+              timestamp: 2,
+            },
+          ],
+        },
+      },
+    ];
+    const original = structuredClone(history);
+    try {
+      const first = await runner.emitContext(history);
+      expect(first).toMatchObject([
+        { role: "user", content: [{ type: "text", text: "Saved expansion" }], timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "Saved response" }], timestamp: 2 },
+      ]);
+      expect(await runner.emitContext(history)).toEqual(first);
+      expect(await runner.emitContext(first)).toEqual(first);
+      expect(history).toEqual(original);
+    } finally {
+      await runner.emit({
+        type: "session_shutdown",
+        reason: "quit",
+      } satisfies SessionShutdownEvent);
+    }
   });
 
   test.each(["reload", "new", "resume", "fork"] as const)(

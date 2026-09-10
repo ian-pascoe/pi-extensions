@@ -744,17 +744,8 @@ export class McpHost {
       .sort((left, right) => left.definition.id.localeCompare(right.definition.id))
       .flatMap((entry) => {
         const instructions = entry.instructionText?.trim();
-        const toolNames = [...entry.instructionToolNames].sort();
-        if (instructions === undefined && toolNames.length === 0) return [];
-        return [
-          [
-            `## MCP Server: ${entry.definition.id}`,
-            instructions === undefined ? undefined : instructions,
-            toolNames.length === 0 ? undefined : `Tools: ${toolNames.join(", ")}`,
-          ]
-            .filter((line): line is string => line !== undefined)
-            .join("\n"),
-        ];
+        if (!instructions) return [];
+        return [`## MCP Server: ${entry.definition.id}\n${instructions}`];
       });
     return { text: sections.join("\n\n") };
   }
