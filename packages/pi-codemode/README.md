@@ -253,10 +253,9 @@ termination, or process failure destroys that session's heap.
 
 ## Registered tools
 
-The `codemode_execute` description contains a token-bounded catalogue of
-complete generated TypeScript declarations for currently exposed registered
-tools. It marks the catalogue `COMPLETE` or `PARTIAL`; a partial catalogue keeps
-the remaining declarations available through:
+The `codemode_execute` description contains constant execution and discovery
+guidance, independent of the live Tool Catalogue. Discover current declarations
+with direct `codemode_search` before a Cell or `tools.codemode_search` inside one:
 
 ```ts
 const page = await tools.codemode_search({
@@ -272,13 +271,12 @@ Empty or fuzzy queries return compact items containing the exact flat `name`,
 display-only `group`, and bounded `description`. Search that exact `name` to get
 its complete `declaration`. A pathological declaration above the search response
 bound instead has an explicit `declarationError`. Call a discovered tool with
-`tools[item.name](input)`; every exposed name remains callable even when its
-declaration is omitted from the inline catalogue.
+`tools[item.name](input)`. Unfamiliar tools may require a discovery call in exchange
+for an execute definition that stays reusable across catalogue changes.
 
-`codemode_search` is also a direct Pi tool, so declarations can be discovered
-before starting a Cell. Direct search reads the current exposure catalogue;
-in-Cell search reads the Cell's frozen exposure snapshot. Both expose only
-CodeMode-callable tools and use the same search implementation. Dynamic registry
+Direct search reads the current Tool Catalogue; in-Cell search reads the Cell's
+frozen exposure snapshot. Both expose only CodeMode-callable tools and use the
+same search implementation. Dynamic registry
 changes update execution policy immediately, but catalogue rendering waits until
 the next model turn or CodeMode access needs a synchronized snapshot. This keeps
 bulk tool registration from rebuilding the complete catalogue after every tool.

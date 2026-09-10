@@ -64,7 +64,7 @@ import {
 } from "./pi-tool-bridge.js";
 
 const CODEMODE_EXECUTE_DESCRIPTION =
-  "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; an unknown supplied ID creates that Session. A new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results.";
+  "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; an unknown supplied ID creates that Session. A new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results. Discover tools with direct codemode_search before a Cell or tools.codemode_search inside one. Search an intent for exact flat names, then search an exact name for its complete declaration. Call tools[name](input).";
 const CODEMODE_SEARCH_BATCH_LIMIT = 20;
 const CodeModeToolSchemaMetadataSchema = Type.Union([
   Type.Boolean(),
@@ -103,16 +103,8 @@ type PiCodeModeGeneration = {
   exposure?: InstalledCodeModeToolExposure;
   decision: CodeModeToolExposureDecision;
   catalogue: CodeModeToolCatalogue;
-  executeDescription: string;
   active: boolean;
 };
-
-function catalogueDescription(catalogue: CodeModeToolCatalogue): string {
-  const coverage = catalogue.complete
-    ? `COMPLETE: all ${catalogue.totalCount} declarations are shown.`
-    : `PARTIAL: ${catalogue.shownCount} of ${catalogue.totalCount} declarations are shown. Use \`tools.${CODEMODE_SEARCH_TOOL_NAME}({ query: "<intent>" })\` to discover exact flat names, then search the exact name for its complete declaration.`;
-  return `${CODEMODE_EXECUTE_DESCRIPTION}\n\nCurrent CodeMode tool declarations:\n\n${coverage}\n\n\`\`\`ts\n${catalogue.text}\`\`\``;
-}
 
 type RegisteredToolDefinition = ReturnType<CapturedPiAgentSession["session"]["getToolDefinition"]>;
 
@@ -405,7 +397,6 @@ class PiCodeModeLifecycleController {
       requestRender: () => {},
       decision: initialDecision,
       catalogue: initialCatalogue,
-      executeDescription: catalogueDescription(initialCatalogue),
       active: true,
     };
     this.generation = generation;
@@ -454,7 +445,7 @@ class PiCodeModeLifecycleController {
     const [executeTool, resultTool, cancelTool, sessionsTool, searchTool] =
       createRenderedCodeModeToolDefinitions(
         this.operations,
-        generation.executeDescription,
+        CODEMODE_EXECUTE_DESCRIPTION,
         (sessionId) => coordinator.formatSessionPrefix(sessionId),
         this.renderNestedTranscript,
       );
@@ -563,16 +554,6 @@ class PiCodeModeLifecycleController {
     const catalogue = renderGenerationCatalogue(generation.captured, decision);
     generation.decision = decision;
     generation.catalogue = catalogue;
-    const description = catalogueDescription(catalogue);
-    if (description === generation.executeDescription) return;
-    generation.executeDescription = description;
-    const executeDefinition = createRenderedCodeModeToolDefinitions(
-      this.operations,
-      description,
-      (sessionId) => generation.coordinator.formatSessionPrefix(sessionId),
-      this.renderNestedTranscript,
-    )[0];
-    if (executeDefinition !== undefined) this.pi.registerTool(executeDefinition);
   }
 
   private async executeNestedToolBatch(
