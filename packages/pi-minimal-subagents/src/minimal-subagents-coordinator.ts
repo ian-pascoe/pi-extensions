@@ -655,19 +655,6 @@ export class MinimalSubagentsCoordinator {
           });
           continue;
         }
-        const runtime = await this.dependencies.sessions.openRuntime(agent);
-        if (restoreEpoch !== this.lifecycleEpoch) {
-          runtime.dispose();
-          return;
-        }
-        if (!runtime.sessionLeafId) {
-          runtime.dispose();
-          throw new Error(
-            `Minimal subagents session restoration: no selected session leaf for ${agent.agent_id}`,
-          );
-        }
-        this.runtimes.set(agent.agent_id, runtime);
-        agent.session_leaf_id = runtime.sessionLeafId;
         agent.availability = "available";
         if (previousAvailability !== "available")
           agent.latest_activity_at = this.now().toISOString();
@@ -926,6 +913,7 @@ export class MinimalSubagentsCoordinator {
         new Error(agent.clone_error ?? `No persistent session exists for ${agent.agent_id}`),
       );
     }
+    const openingForTurn = agent.active_turn_id !== undefined;
     const initialization = this.dependencies.sessions
       .openRuntime(agent)
       .then((runtime) => {
@@ -933,8 +921,28 @@ export class MinimalSubagentsCoordinator {
           runtime.dispose();
           throw new Error(`Minimal subagents runtime replaced while opening ${agent.agent_id}`);
         }
+        if (!runtime.sessionLeafId) {
+          runtime.dispose();
+          throw new Error(
+            `Minimal subagents session restoration: no selected session leaf for ${agent.agent_id}`,
+          );
+        }
         this.runtimes.set(agent.agent_id, runtime);
+        agent.session_leaf_id = runtime.sessionLeafId;
         return runtime;
+      })
+      .catch((error) => {
+        if (!openingForTurn && this.agents.get(agent.agent_id) === agent) {
+          agent.availability = "unavailable";
+          agent.latest_activity_at = this.now().toISOString();
+          agent.unavailable_reason = error instanceof Error ? error.message : String(error);
+          this.dependencies.notify?.({
+            type: "unavailable",
+            agentId: agent.agent_id,
+            message: `${agent.agent_id} unavailable: ${agent.unavailable_reason}`,
+          });
+        }
+        throw error;
       })
       .finally(() => {
         if (this.runtimeInitializations.get(agent.agent_id) === initialization) {
@@ -1307,6 +1315,7 @@ export class MinimalSubagentsCoordinator {
     }
     const target = this.requireUsableAgent(targetId, "message");
     const runtime = this.runtimes.get(targetId) ?? (await this.ensureRuntime(target));
+    this.assertAccepting();
     if (!isCurrentDelivery()) {
       throw new Error("Minimal subagents delivery abandoned after session branch change");
     }
@@ -1430,34 +1439,45 @@ export class MinimalSubagentsCoordinator {
   }
 
   private hasDeliveryEvidence(delivery: PersistedDelivery): boolean {
-    if (delivery.destination_agent_id === "root") {
-      return this.dependencies.root.hasDeliveryEvidence(
-        delivery.source_agent_id,
-        delivery.source_turn_id,
-      );
-    }
-    return (
-      this.runtimes
-        .get(delivery.destination_agent_id)
-        ?.hasDeliveryEvidence(delivery.source_agent_id, delivery.source_turn_id) ?? false
+    return this.hasRecipientDeliveryEvidence(
+      delivery.destination_agent_id,
+      delivery.source_agent_id,
+      delivery.source_turn_id,
     );
   }
 
   private hasCoordinationDeliveryEvidence(delivery: PersistedCoordinationDelivery): boolean {
-    const sourceAgentId = delivery.message.details.source_agent_id;
-    const sourceTurnId = delivery.message.details.source_turn_id;
-    if (delivery.destination_agent_id === "root") {
-      return this.dependencies.root.hasDeliveryEvidence(
-        sourceAgentId,
-        sourceTurnId,
-        delivery.delivery_id,
-      );
-    }
-    return (
-      this.runtimes
-        .get(delivery.destination_agent_id)
-        ?.hasDeliveryEvidence(sourceAgentId, sourceTurnId, delivery.delivery_id) ?? false
+    return this.hasRecipientDeliveryEvidence(
+      delivery.destination_agent_id,
+      delivery.message.details.source_agent_id,
+      delivery.message.details.source_turn_id,
+      delivery.delivery_id,
     );
+  }
+
+  private hasRecipientDeliveryEvidence(
+    targetId: string,
+    sourceAgentId: string,
+    sourceTurnId: string,
+    deliveryId?: string,
+  ): boolean {
+    const endpoint = targetId === "root" ? this.dependencies.root : this.runtimes.get(targetId);
+    if (endpoint) return endpoint.hasDeliveryEvidence(sourceAgentId, sourceTurnId, deliveryId);
+    const agent = this.agents.get(targetId);
+    if (!agent) return false;
+    try {
+      return (
+        this.dependencies.sessions.hasDeliveryEvidence?.(
+          agent,
+          sourceAgentId,
+          sourceTurnId,
+          deliveryId,
+        ) ?? false
+      );
+    } catch {
+      // Unverified sessions cannot prove delivery; runtime opening reports their failure.
+      return false;
+    }
   }
 
   private settleDelivery(delivery: PersistedDelivery): void {
@@ -1518,7 +1538,9 @@ export class MinimalSubagentsCoordinator {
       capability_ceiling: [...agent.capability_ceiling],
       spawn_entry_id: agent.spawn_entry_id,
       recent_messages: structuredClone(agent.recent_messages),
-      recent_activity: buildRecentAgentActivity(runtime?.snapshotActivityMessages() ?? []),
+      recent_activity: buildRecentAgentActivity(
+        runtime?.snapshotActivityMessages() ?? this.inspectTranscript(agent.agent_id).messages,
+      ),
       latest_result: agent.latest_result ? structuredClone(agent.latest_result) : undefined,
       missing_dependencies: [...agent.missing_dependencies],
       unavailable_reason: agent.unavailable_reason,
