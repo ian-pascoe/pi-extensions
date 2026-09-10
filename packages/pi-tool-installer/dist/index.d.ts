@@ -2,6 +2,7 @@ import { type Static, Type } from "typebox";
 declare const InstallationSchema: Type.TObject<{
     id: Type.TString;
     components: Type.TRecord<"^.*$", Type.TObject<{
+        selector: Type.TString;
         version: Type.TString;
         directory: Type.TString;
     }>>;
@@ -23,6 +24,7 @@ export declare class ToolInstaller {
     readonly directory: string;
     constructor(directory: string);
     installed(id: string): Promise<ManagedInstallation | undefined>;
+    private selection;
     ensure(request: ToolRequest, options: InstallationOptions & {
         allowDownload: boolean;
     }): Promise<ManagedInstallation>;
