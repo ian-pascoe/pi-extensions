@@ -49,6 +49,7 @@ afterEach(async () => {
   );
 });
 
+// 27 real Node helper launches share CPU with downloads/builds in the native matrix.
 test("ensure reconciles requirements without upgrading unchanged prerequisites", async () => {
   const { installer, control } = await fixture({ "core:node": "22.1.0", "npm:prettier": "3.1.0" });
   const initial = { id: "formatter", requirements: { node: "core:node" } };
@@ -70,7 +71,7 @@ test("ensure reconciles requirements without upgrading unchanged prerequisites",
   const updated = await installer.update(changed, {});
   expect(updated?.previous).toEqual(current);
   expect(updated?.current.components.node?.version).toBe("24.1.0");
-});
+}, 30_000);
 
 test("installed-only reuses another selection's toolchain without its trailing tool or environment", async () => {
   const versions = { "core:go": "1.27.1", "go:golang.org/x/tools/gopls": "0.23.0" };
@@ -120,6 +121,7 @@ test("installed-only reuses another selection's toolchain without its trailing t
   await expect(installer.installed("lsp-gopls")).resolves.toEqual(previous);
 });
 
+// The three-component graph launches 12 helpers before metadata-only reuse checks.
 test("legacy complete graphs remain reusable without guessing missing prefix context", async () => {
   const { installer, directory } = await fixture({
     "core:python": "3.14.7",
@@ -168,7 +170,7 @@ test("legacy complete graphs remain reusable without guessing missing prefix con
   }
   await expect(installer.installed(request.id)).resolves.toEqual(previous);
   expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-});
+}, 15_000);
 
 test("reuse rejects corrupt context and missing requirements but ignores unrequested files", async () => {
   const { installer, directory } = await fixture({
@@ -212,6 +214,7 @@ test("reuse rejects corrupt context and missing requirements but ignores unreque
   expect(vi.mocked(spawn)).not.toHaveBeenCalled();
 });
 
+// Initial acquisition and update each launch 12 helpers under native-matrix load.
 test("pipx updates reuse shared runtimes and retain UV in their installation identity", async () => {
   const versions = {
     "core:python": "3.14.7",
@@ -240,7 +243,7 @@ test("pipx updates reuse shared runtimes and retain UV in their installation ide
   await expect(installer.ensure(request, { allowDownload: false })).resolves.toEqual(
     updated.current,
   );
-});
+}, 30_000);
 
 test("changed selectors replace the selected component and native version prefixes are not appended twice", async () => {
   const { installer, control } = await fixture({ "npm:@biomejs/biome@2": "2.1.0" });
