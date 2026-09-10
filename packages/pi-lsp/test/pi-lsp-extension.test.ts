@@ -1,4 +1,14 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -6,6 +16,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   type AgentSession,
+  type KeybindingsManager,
+  initTheme,
   createAgentSession,
   DefaultResourceLoader,
   ExtensionRunner,
@@ -18,11 +30,20 @@ import {
   type ToolResultEvent,
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { ProcessTerminal, TuiMainScreen, type Component } from "@earendil-works/pi-tui";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
+import { serializeAnthropicRequest } from "./fixtures/serialize-anthropic-request.js";
+
+// Replace only the external acquisition executable, retaining the installer and LSP client.
+// oxlint-disable-next-line anti-slop/no-module-mocking
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return { ...original, spawn: vi.fn(original.spawn) };
+});
 
 const temporaryDirectories: string[] = [];
 const agentSessions: AgentSession[] = [];
@@ -46,6 +67,8 @@ interface ExtensionHarness {
   readonly sessionDirectory: string;
   readonly sessionManager: SessionManager;
   readonly settingsManager: SettingsManager;
+  readonly statuses: (string | undefined)[];
+  setSignal(signal: AbortSignal | undefined): void;
 }
 
 async function makeTemporaryDirectory(prefix: string): Promise<string> {
@@ -57,11 +80,23 @@ async function makeTemporaryDirectory(prefix: string): Promise<string> {
 async function createExtensionHarness(
   projectTrusted: boolean,
   globalSettings: LspSettingsDocumentInput = {},
+  presets = false,
 ): Promise<ExtensionHarness> {
   const cwd = await makeTemporaryDirectory("pi-lsp-extension-cwd-");
   const agentDirectory = await makeTemporaryDirectory("pi-lsp-extension-agent-");
   const sessionDirectory = await makeTemporaryDirectory("pi-lsp-extension-sessions-");
-  await writeFile(resolve(agentDirectory, "settings.json"), JSON.stringify(globalSettings));
+  const wire = JSON.parse(JSON.stringify(globalSettings));
+  if (!presets) {
+    wire.lsp ??= {};
+    wire.lsp.servers = {
+      typescript: null,
+      pyright: null,
+      gopls: null,
+      "rust-analyzer": null,
+      ...wire.lsp.servers,
+    };
+  }
+  await writeFile(resolve(agentDirectory, "settings.json"), JSON.stringify(wire));
   await mkdir(resolve(cwd, ".pi"));
   await writeFile(
     resolve(cwd, ".pi/settings.json"),
@@ -102,6 +137,7 @@ async function createExtensionHarness(
     sessionManager,
     new ModelRegistry(modelRuntime),
   );
+  let signal: AbortSignal | undefined;
   runner.bindCore(
     {
       sendMessage: () => undefined,
@@ -124,7 +160,7 @@ async function createExtensionHarness(
       getScopedModels: () => [],
       isIdle: () => true,
       isProjectTrusted: () => projectTrusted,
-      getSignal: () => undefined,
+      getSignal: () => signal,
       abort: () => undefined,
       hasPendingMessages: () => false,
       shutdown: () => undefined,
@@ -134,10 +170,14 @@ async function createExtensionHarness(
     },
   );
   const notifications: string[] = [];
+  const statuses: (string | undefined)[] = [];
   runner.setUIContext(
     {
       ...runner.getUIContext(),
       notify: (message) => notifications.push(message),
+      setStatus: (_key, text) => {
+        statuses.push(text);
+      },
     },
     "rpc",
   );
@@ -149,7 +189,64 @@ async function createExtensionHarness(
     sessionDirectory,
     sessionManager,
     settingsManager,
+    statuses,
+    setSignal: (value) => {
+      signal = value;
+    },
   };
+}
+
+async function externalTypeScript(directory: string, name: string, version: string) {
+  await mkdir(directory, { recursive: true });
+  const script = resolve(directory, "typescript-fixture.cjs");
+  await writeFile(
+    script,
+    `if (process.argv.includes("--version")) console.log("Version ${version}"); else { process.env.FAKE_SYMBOL_NAME = ${JSON.stringify(name)}; import(${JSON.stringify(new URL("fixtures/fake-lsp-server.mjs", import.meta.url).href)}); }\n`,
+  );
+  const command = resolve(directory, process.platform === "win32" ? "tsc.cmd" : "tsc");
+  await writeFile(
+    command,
+    process.platform === "win32"
+      ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`
+      : `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`,
+  );
+  await chmod(command, 0o755);
+}
+
+async function managedHarness(settings: LspSettingsDocumentInput = {}) {
+  const harness = await createExtensionHarness(false, settings, true);
+  const store = resolve(harness.agentDirectory, "managed-tools");
+  await mkdir(store);
+  await writeFile(resolve(store, process.platform === "win32" ? "mise.exe" : "mise"), "fixture");
+  const control = async (options: { wait?: boolean; fail?: boolean; version?: string }) =>
+    writeFile(
+      resolve(store, "fixture.json"),
+      JSON.stringify({
+        ...options,
+        server: new URL("fixtures/fake-lsp-server.mjs", import.meta.url).href,
+      }),
+    );
+  await control({});
+  const original = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  vi.mocked(spawn).mockImplementation((command, args, options) =>
+    /mise(?:\.exe)?$/u.test(String(command))
+      ? original.spawn(
+          process.execPath,
+          [
+            fileURLToPath(new URL("fixtures/managed-mise.cjs", import.meta.url)),
+            ...(args ?? []).slice(2),
+          ],
+          options ?? {},
+        )
+      : original.spawn(command, args ?? [], options ?? {}),
+  );
+  vi.stubEnv("PATH", "");
+  vi.stubGlobal("fetch", () => Promise.reject(new Error("Unexpected network")));
+  await writeFile(
+    resolve(harness.sessionManager.getCwd(), "source.ts"),
+    "export const answer = 42;\n",
+  );
+  return { harness, store, control };
 }
 
 async function startExtension(harness: ExtensionHarness): Promise<void> {
@@ -190,7 +287,17 @@ async function piLspSessionDirectories(sessionDirectory: string): Promise<string
   return (await readdir(sessionDirectory)).filter((entry) => entry.startsWith("pi-lsp-"));
 }
 
+beforeEach(() => {
+  vi.stubGlobal("fetch", () =>
+    Promise.reject(new Error("Unexpected network in offline LSP tests")),
+  );
+});
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  const original = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  vi.mocked(spawn).mockImplementation(original.spawn);
   for (const session of agentSessions.splice(0)) {
     try {
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -206,6 +313,661 @@ afterEach(async () => {
 });
 
 describe("Pi LSP extension lifecycle", () => {
+  test("cancels a hung external TypeScript version shim and its subprocess before returning", async () => {
+    const harness = await createExtensionHarness(false, { lsp: { autoInstall: false } }, true);
+    const cwd = harness.sessionManager.getCwd();
+    const bin = resolve(cwd, "node_modules", ".bin");
+    await externalTypeScript(bin, "unused", "7.0.2");
+    const marker = resolve(cwd, "probe-pids");
+    await writeFile(
+      resolve(bin, "typescript-fixture.cjs"),
+      `const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(marker)}, String(child.pid)); setInterval(() => {}, 1000);\n`,
+    );
+    vi.stubEnv("PATH", "");
+    await startExtension(harness);
+    try {
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      const controller = new AbortController();
+      const pending = tool.execute(
+        "probe",
+        { operation: "document_symbols", file_path: "source.ts" },
+        controller.signal,
+        undefined,
+        harness.runner.createContext(),
+      );
+      const cancelled = expect(pending).rejects.toThrow("cancelled");
+      await expect.poll(() => readFile(marker, "utf8").catch(() => "")).not.toBe("");
+      const pid = Number(await readFile(marker, "utf8"));
+      controller.abort();
+      await cancelled;
+      await expect
+        .poll(() => {
+          try {
+            process.kill(pid, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(false);
+      expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+    } finally {
+      await shutdownExtension(harness);
+    }
+  });
+
+  test("cancels one concurrent caller without cancelling its sibling acquisition and reuses the installation without a helper", async () => {
+    const { harness, store, control } = await managedHarness();
+    await control({ wait: true });
+    await startExtension(harness);
+    try {
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      const controller = new AbortController();
+      const first = tool.execute(
+        "cancel-me",
+        { operation: "document_symbols", file_path: "source.ts" },
+        controller.signal,
+        undefined,
+        harness.runner.createContext(),
+      );
+      const cancelled = expect(first).rejects.toThrow("cancelled");
+      let settled = false;
+      const second = tool
+        .execute(
+          "keep-me",
+          { operation: "document_symbols", file_path: "source.ts" },
+          undefined,
+          (result) => {
+            for (const item of result.content ?? [])
+              if (item.type === "text") harness.statuses.push(item.text);
+          },
+          harness.runner.createContext(),
+        )
+        .finally(() => {
+          settled = true;
+        });
+      await expect.poll(() => harness.statuses.join("\n")).toContain("Installing");
+      controller.abort();
+      await cancelled;
+      expect(settled).toBe(false);
+      await writeFile(resolve(store, "release"), "");
+      expect(await second).toMatchObject({
+        details: { server_outcomes: [{ server_id: "typescript", outcome: "success" }] },
+      });
+      await rm(resolve(store, process.platform === "win32" ? "mise.exe" : "mise"));
+      await writeFile(
+        resolve(harness.agentDirectory, "settings.json"),
+        JSON.stringify({ lsp: { autoInstall: false } }),
+      );
+      await harness.runner.emit({ type: "session_start", reason: "reload" });
+      expect(
+        await tool.execute(
+          "offline",
+          { operation: "document_symbols", file_path: "source.ts" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        ),
+      ).toMatchObject({ content: [{ text: expect.stringContaining("7.0.2") }] });
+      expect(await readdir(store)).not.toContain(
+        process.platform === "win32" ? "mise.exe" : "mise",
+      );
+    } finally {
+      await shutdownExtension(harness);
+    }
+  });
+
+  test("keeps multiple Explicit Definitions and a labeled failing command without substituting defaults", async () => {
+    const fake = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const languages = [{ extensions: [".ts"], languageId: "typescript" }];
+    const harness = await createExtensionHarness(
+      false,
+      {
+        lsp: {
+          autoInstall: true,
+          servers: {
+            customA: { command: process.execPath, args: [fake], languages },
+            customB: { command: process.execPath, args: [fake], languages },
+            customBroken: { command: "explicit-command-must-not-be-replaced", languages },
+          },
+        },
+      },
+      true,
+    );
+    await writeFile(
+      resolve(harness.sessionManager.getCwd(), "source.ts"),
+      "export const answer = 42;\n",
+    );
+    await startExtension(harness);
+    try {
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      const result = await tool.execute(
+        "explicit",
+        { operation: "document_symbols", file_path: "source.ts" },
+        undefined,
+        undefined,
+        harness.runner.createContext(),
+      );
+      expect(result.details).toMatchObject({
+        server_outcomes: [
+          { server_id: "customA", outcome: "success" },
+          { server_id: "customB", outcome: "success" },
+          { server_id: "customBroken", outcome: "unavailable" },
+        ],
+      });
+      expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+    } finally {
+      await shutdownExtension(harness);
+    }
+  });
+
+  test.each(["tui", "rpc"] as const)(
+    "cancels idle Tool Updates in %s and waits for cleanup before allowing another update",
+    async (mode) => {
+      const { harness, control, store } = await managedHarness();
+      await startExtension(harness);
+      const tool = harness.runner.getToolDefinition("lsp");
+      const command = harness.runner.getCommand("lsp");
+      if (!tool || !command) throw new Error("Expected lsp");
+      await tool.execute(
+        "install",
+        { operation: "document_symbols", file_path: "source.ts" },
+        undefined,
+        undefined,
+        harness.runner.createContext(),
+      );
+      await control({ version: "7.1.0", wait: true });
+      let component: Component | undefined;
+      let closed = false;
+      const tui = new TuiMainScreen(new ProcessTerminal());
+      const render = vi.spyOn(tui, "requestRender").mockImplementation(() => {});
+      if (mode === "tui") {
+        initTheme("dark");
+        const keybindingApi: {
+          KeybindingsManager: { create(directory: string): KeybindingsManager };
+        } = await import(
+          new URL("./core/keybindings.js", import.meta.resolve("@earendil-works/pi-coding-agent"))
+            .href
+        );
+        harness.runner.setUIContext(
+          {
+            ...harness.runner.getUIContext(),
+            custom: (factory) =>
+              new Promise((done) => {
+                void Promise.resolve(
+                  factory(
+                    tui,
+                    harness.runner.getUIContext().theme,
+                    keybindingApi.KeybindingsManager.create(harness.agentDirectory),
+                    (value) => {
+                      closed = true;
+                      done(value);
+                    },
+                  ),
+                ).then((value) => {
+                  component = value;
+                });
+              }),
+          },
+          "tui",
+        );
+      }
+      try {
+        const pending = command.handler("update typescript", harness.runner.createCommandContext());
+        await expect.poll(() => harness.statuses.join("\n")).toContain("Installing");
+        if (mode === "tui") {
+          component?.handleInput?.("\u001b");
+          expect(closed).toBe(false);
+        } else await command.handler("update cancel", harness.runner.createCommandContext());
+        await pending;
+        expect(harness.notifications.at(-1)).toContain("cancelled");
+        expect(harness.statuses.at(-1)).toBeUndefined();
+        expect(
+          await tool.execute(
+            "old",
+            { operation: "document_symbols", file_path: "source.ts" },
+            undefined,
+            undefined,
+            harness.runner.createContext(),
+          ),
+        ).toMatchObject({ content: [{ text: expect.stringContaining("7.0.2") }] });
+        await writeFile(resolve(store, "release"), "");
+        await command.handler("update typescript", harness.runner.createCommandContext());
+        expect(harness.notifications.at(-1)).toContain("7.1.0");
+        if (mode === "tui") expect(closed).toBe(true);
+      } finally {
+        render.mockRestore();
+        await shutdownExtension(harness);
+      }
+    },
+  );
+
+  test.each(["7.0.2", "6.0.0"])(
+    "prefers eligible project then PATH TypeScript shims without managing External Installations (project %s)",
+    async (version) => {
+      const harness = await createExtensionHarness(false, { lsp: { autoInstall: false } }, true);
+      const cwd = harness.sessionManager.getCwd();
+      const pathBin = await makeTemporaryDirectory("pi-lsp-path 空間 ");
+      await externalTypeScript(resolve(cwd, "node_modules", ".bin"), "project-server", version);
+      await externalTypeScript(pathBin, "path-server", "7.0.2");
+      await copyFile(
+        process.execPath,
+        resolve(pathBin, process.platform === "win32" ? "node.exe" : "node"),
+      );
+      await chmod(resolve(pathBin, process.platform === "win32" ? "node.exe" : "node"), 0o755);
+      vi.stubEnv("PATH", pathBin);
+      await writeFile(resolve(cwd, "source.ts"), "export const answer = 42;\n");
+      await startExtension(harness);
+      try {
+        const tool = harness.runner.getToolDefinition("lsp");
+        const command = harness.runner.getCommand("lsp");
+        if (!tool || !command) throw new Error("Expected lsp");
+        expect(
+          await tool.execute(
+            "external",
+            { operation: "document_symbols", file_path: "source.ts" },
+            undefined,
+            undefined,
+            harness.runner.createContext(),
+          ),
+        ).toMatchObject({
+          content: [
+            {
+              text: expect.stringContaining(
+                version.startsWith("7") ? "project-server" : "path-server",
+              ),
+            },
+          ],
+        });
+        await command.handler("update", harness.runner.createCommandContext());
+        expect(harness.notifications.at(-1)).toContain(
+          "External Installations were left untouched",
+        );
+        expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+        expect(process.env.PATH).toBe(pathBin);
+      } finally {
+        await shutdownExtension(harness);
+      }
+    },
+  );
+
+  test("retains the external Rust toolchain policy when reusing a managed rust-analyzer", async () => {
+    const { harness, store, control } = await managedHarness();
+    await control({ version: "1.98.1" });
+    vi.stubEnv("RUSTUP_TOOLCHAIN", undefined);
+    const cwd = harness.sessionManager.getCwd();
+    await writeFile(resolve(cwd, "source.rs"), "fn main() {}\n");
+    await startExtension(harness);
+    try {
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      const symbols = () =>
+        tool.execute(
+          "rust-symbols",
+          { operation: "document_symbols", file_path: "source.rs" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        );
+      expect(await symbols()).toMatchObject({
+        content: [{ text: expect.stringContaining("RUSTUP_TOOLCHAIN=1.98.1") }],
+      });
+      const bin = resolve(cwd, "bin");
+      await mkdir(bin);
+      for (const name of ["rustc", "cargo"]) {
+        const executable = resolve(bin, name + (process.platform === "win32" ? ".exe" : ""));
+        await copyFile(process.execPath, executable);
+        await chmod(executable, 0o755);
+      }
+      await rm(resolve(store, process.platform === "win32" ? "mise.exe" : "mise"));
+      for (const toolchain of ["nightly-user", undefined]) {
+        vi.stubEnv("RUSTUP_TOOLCHAIN", toolchain);
+        await harness.runner.emit({ type: "session_start", reason: "reload" });
+        expect(await symbols()).toMatchObject({
+          content: [{ text: expect.stringContaining(`RUSTUP_TOOLCHAIN=${toolchain ?? "unset"}`) }],
+        });
+        expect(process.env.RUSTUP_TOOLCHAIN).toBe(toolchain);
+      }
+    } finally {
+      await shutdownExtension(harness);
+    }
+  });
+
+  test("resolves an external Node independently while acquiring only missing TypeScript, ignoring a project TypeScript 6 compiler", async () => {
+    const { harness, store } = await managedHarness();
+    const cwd = harness.sessionManager.getCwd();
+    const runtime = resolve(cwd, "bin");
+    await mkdir(runtime);
+    await copyFile(
+      process.execPath,
+      resolve(runtime, process.platform === "win32" ? "node.exe" : "node"),
+    );
+    await chmod(resolve(runtime, process.platform === "win32" ? "node.exe" : "node"), 0o755);
+    await externalTypeScript(resolve(cwd, "node_modules", ".bin"), "must-not-run-ts6", "6.0.0");
+    await startExtension(harness);
+    try {
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      expect(
+        await tool.execute(
+          "native",
+          { operation: "document_symbols", file_path: "source.ts" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        ),
+      ).toMatchObject({ content: [{ text: expect.stringContaining("7.0.2") }] });
+      const installed = JSON.parse(
+        await readFile(resolve(store, "selections", "lsp-typescript.json"), "utf8"),
+      );
+      expect(Object.keys(installed.components)).toEqual(["compiler"]);
+      expect(process.env.PATH).toBe("");
+    } finally {
+      await shutdownExtension(harness);
+    }
+  });
+
+  test("preserves standalone SDK serialized tools, system and history prefixes through acquire, update and reload while running Instances stay pinned", async () => {
+    const { harness, store, control } = await managedHarness();
+    await control({ wait: true });
+    const model = getModel("anthropic", "claude-sonnet-4-5");
+    const modelRuntime = await ModelRuntime.create({
+      authPath: resolve(harness.agentDirectory, "auth.json"),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const { session } = await createAgentSession({
+      cwd: harness.sessionManager.getCwd(),
+      agentDir: harness.agentDirectory,
+      model,
+      modelRuntime,
+      resourceLoader: harness.resourceLoader,
+      sessionManager: harness.sessionManager,
+      settingsManager: harness.settingsManager,
+    });
+    agentSessions.push(session);
+    await session.bindExtensions({ mode: "rpc", uiContext: harness.runner.getUIContext() });
+    const history = [
+      { role: "user" as const, content: "Inspect the source without changing it", timestamp: 1 },
+    ];
+    session.agent.state.messages = history;
+    for (const message of history) session.sessionManager.appendMessage(message);
+    const before = await serializeAnthropicRequest(session, history);
+    const tool = session.getToolDefinition("lsp");
+    const command = session.extensionRunner.getCommand("lsp");
+    if (!tool || !command) throw new Error("Expected lsp command and tool");
+    const execute = () =>
+      tool.execute(
+        "symbols",
+        { operation: "document_symbols", file_path: "source.ts" },
+        undefined,
+        (result) => {
+          for (const item of result.content ?? [])
+            if (item.type === "text") harness.statuses.push(item.text);
+        },
+        session.extensionRunner.createContext(),
+      );
+    const first = execute();
+    await expect.poll(() => harness.statuses.join("\n")).toContain("Installing");
+    expect(await serializeAnthropicRequest(session, history)).toEqual(before);
+    await writeFile(resolve(store, "release"), "");
+    expect(await first).toMatchObject({ content: [{ text: expect.stringContaining("7.0.2") }] });
+    await control({ version: "7.1.0" });
+    await command.handler("update typescript", session.extensionRunner.createCommandContext());
+    expect(harness.notifications.at(-1)).toContain("7.0.2 →");
+    expect(harness.notifications.at(-1)).toContain("7.1.0");
+    expect(await execute()).toMatchObject({
+      content: [{ text: expect.stringContaining("7.0.2") }],
+    });
+    await tool.execute(
+      "restart",
+      { operation: "restart", server_id: "typescript", file_path: "source.ts" },
+      undefined,
+      undefined,
+      session.extensionRunner.createContext(),
+    );
+    expect(await execute()).toMatchObject({
+      content: [{ text: expect.stringContaining("7.1.0") }],
+    });
+    await control({ version: "7.2.0", fail: true });
+    await command.handler("update typescript", session.extensionRunner.createCommandContext());
+    expect(harness.notifications.at(-1)).toContain("previous installation retained");
+    expect(await execute()).toMatchObject({
+      content: [{ text: expect.stringContaining("7.1.0") }],
+    });
+    expect(await serializeAnthropicRequest(session, history)).toEqual(before);
+    expect(session.messages).toEqual(history);
+    await session.reload();
+    expect(await serializeAnthropicRequest(session, history)).toEqual(before);
+    expect(session.messages).toEqual(history);
+  }, 15000);
+
+  test.each(["cancel", "failure", "reload"])(
+    "preserves successful mutations when first-use assistance ends by %s",
+    async (ending) => {
+      const { harness, control } = await managedHarness();
+      await control(ending === "failure" ? { fail: true } : { wait: true });
+      await startExtension(harness);
+      const abort = new AbortController();
+      harness.setSignal(abort.signal);
+      const details = { bytesWritten: 26 };
+      const pending = harness.runner.emitToolResult({
+        type: "tool_result",
+        toolCallId: "managed-write",
+        toolName: "write",
+        input: { path: "source.ts", content: "export const answer = 42;\n" },
+        content: [{ type: "text", text: "Wrote source.ts" }],
+        details,
+        isError: false,
+      });
+      await expect.poll(() => harness.statuses.join("\n")).toContain("Installing");
+      if (ending === "cancel") abort.abort();
+      if (ending === "reload")
+        await harness.runner.emit({ type: "session_start", reason: "reload" });
+      const result = await pending;
+      expect(result?.isError).toBe(false);
+      expect(result?.details).toBe(details);
+      expect(result?.content?.[0]).toEqual({ type: "text", text: "Wrote source.ts" });
+      expect(result?.content?.at(-1)).toMatchObject({
+        text: expect.stringContaining("unavailable server"),
+      });
+      expect(harness.statuses.at(-1)).toBeUndefined();
+      if (ending === "reload") {
+        await harness.runner.emit({
+          type: "turn_end",
+          turnIndex: 0,
+          message: completedAssistantMessage(),
+          toolResults: [],
+        });
+        expect(harness.sessionManager.getBranch()).toEqual([]);
+      }
+      await Promise.all([shutdownExtension(harness), shutdownExtension(harness)]);
+    },
+  );
+
+  test.each([null, { command: "broken", languages: [] }, "disabled"])(
+    "never resurrects a null, invalid, or disabled same-ID preset: %j",
+    async (definition) => {
+      const lsp =
+        definition === "disabled"
+          ? { autoInstall: false, enablement: { typescript: false } }
+          : { autoInstall: false, servers: { typescript: definition } };
+      const harness = await createExtensionHarness(false, { lsp }, true);
+      await startExtension(harness);
+      try {
+        const tool = harness.runner.getToolDefinition("lsp");
+        if (!tool) throw new Error("Expected lsp");
+        await expect(
+          tool.execute(
+            "blocked",
+            { operation: "capabilities", server_id: "typescript", file_path: "source.ts" },
+            undefined,
+            undefined,
+            harness.runner.createContext(),
+          ),
+        ).rejects.toThrow(definition === "disabled" ? "disabled" : "does not match");
+        expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+      } finally {
+        await shutdownExtension(harness);
+      }
+    },
+  );
+
+  test("explicit matching definitions under different IDs suppress every fallback even when gated or disabled", async () => {
+    const harness = await createExtensionHarness(
+      false,
+      {
+        lsp: {
+          autoInstall: false,
+          enablement: { disabled: false },
+          servers: {
+            gated: {
+              command: "must-not-run",
+              languages: [{ extensions: [".ts"], languageId: "typescript" }],
+              requireRootMarker: true,
+              rootMarkers: ["required.json"],
+            },
+            disabled: {
+              command: "must-not-run",
+              languages: [{ extensions: [".ts"], languageId: "typescript" }],
+            },
+          },
+        },
+      },
+      true,
+    );
+    await startExtension(harness);
+    try {
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      await expect(
+        tool.execute(
+          "suppressed",
+          { operation: "document_symbols", file_path: "source.ts" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        ),
+      ).rejects.toThrow("does not match");
+      expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+    } finally {
+      await shutdownExtension(harness);
+    }
+  });
+
+  test("waits for first managed acquisition with visible progress, then answers the original document request", async () => {
+    const harness = await createExtensionHarness(false, {}, true);
+    const store = resolve(harness.agentDirectory, "managed-tools");
+    await mkdir(store);
+    await writeFile(resolve(store, process.platform === "win32" ? "mise.exe" : "mise"), "fixture");
+    await writeFile(
+      resolve(store, "fixture.json"),
+      JSON.stringify({
+        wait: true,
+        server: new URL("fixtures/fake-lsp-server.mjs", import.meta.url).href,
+      }),
+    );
+    const original =
+      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(spawn).mockImplementation((command, args, options) =>
+      /mise(?:\.exe)?$/u.test(String(command))
+        ? original.spawn(
+            process.execPath,
+            [
+              fileURLToPath(new URL("fixtures/managed-mise.cjs", import.meta.url)),
+              ...(args ?? []).slice(2),
+            ],
+            options ?? {},
+          )
+        : original.spawn(command, args ?? [], options ?? {}),
+    );
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network"));
+    const previousPath = process.env.PATH;
+    process.env.PATH = "";
+    try {
+      await writeFile(
+        resolve(harness.sessionManager.getCwd(), "source.ts"),
+        "export const answer = 42;\n",
+      );
+      await startExtension(harness);
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      const progress: string[] = [];
+      let settled = false;
+      const pending = tool
+        .execute(
+          "first",
+          { operation: "document_symbols", file_path: "source.ts" },
+          undefined,
+          (result) => {
+            for (const item of result.content ?? [])
+              if (item.type === "text") progress.push(item.text);
+          },
+          harness.runner.createContext(),
+        )
+        .finally(() => {
+          settled = true;
+        });
+      await expect.poll(() => progress.join("\n"), { timeout: 1500 }).toContain("Installing");
+      expect(settled).toBe(false);
+      await writeFile(resolve(store, "release"), "");
+      expect(await pending).toMatchObject({
+        details: { server_outcomes: [{ server_id: "typescript", outcome: "success" }] },
+      });
+      const command = harness.runner.getCommand("lsp");
+      if (!command) throw new Error("Expected /lsp");
+      await command.handler("update", harness.runner.createCommandContext());
+      expect(harness.notifications.at(-1)).toContain("typescript: no change");
+      expect(harness.notifications.at(-1)).toContain("7.0.2");
+      expect(await readdir(resolve(store, "selections"))).toEqual(["lsp-typescript.json"]);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      process.env.PATH = previousPath;
+      fetch.mockRestore();
+      await shutdownExtension(harness);
+      vi.mocked(spawn).mockImplementation(original.spawn);
+    }
+  }, 15000);
+  test("discovers presets without acquisition and reports Installed-only unavailability on first request", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network"));
+    const previousPath = process.env.PATH;
+    process.env.PATH = "";
+    const harness = await createExtensionHarness(false, { lsp: { autoInstall: false } }, true);
+    try {
+      await startExtension(harness);
+      const tool = harness.runner.getToolDefinition("lsp");
+      if (!tool) throw new Error("Expected lsp");
+      const context = harness.runner.createContext();
+      const status = await tool.execute(
+        "status",
+        { operation: "status" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(status.content).toEqual([
+        { type: "text", text: expect.stringContaining('"serverId":"gopls"') },
+      ]);
+      await expect(
+        tool.execute(
+          "first",
+          { operation: "document_symbols", file_path: "main.go" },
+          undefined,
+          undefined,
+          context,
+        ),
+      ).rejects.toThrow("automatic downloads");
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+    } finally {
+      process.env.PATH = previousPath;
+      fetch.mockRestore();
+      await shutdownExtension(harness);
+    }
+  });
   test("persists explicit session toggles and rolls them back with selected branch history", async () => {
     const harness = await createExtensionHarness(false, typescriptSettings);
     const before = harness.sessionManager.appendMessage(completedAssistantMessage());

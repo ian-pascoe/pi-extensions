@@ -1,7 +1,8 @@
 # Pi DAP
 
-Pi DAP gives an agent one interactive debugging session through a configured
-Debug Adapter Protocol adapter.
+Pi DAP gives an agent one interactive debugging session through a built-in or
+explicitly configured Debug Adapter Protocol adapter. Shared installation vocabulary
+is defined in [Language Tools](../../docs/contexts/language-tools/CONTEXT.md).
 
 ## Language
 
@@ -26,11 +27,11 @@ The current human-facing summary of a Debug Session, derived only from activity 
 _Avoid_: Session state, debugger state
 
 **Adapter definition**:
-Named configuration describing how Pi starts or connects to a debug adapter.
+Named configuration describing how Pi starts or connects to a debug adapter, supplied explicitly or by a Language Tool Preset.
 _Avoid_: Adapter catalog, debugger configuration
 
 **Launch profile**:
-Named configuration describing how a debug adapter starts a debuggee.
+Named configuration describing how a debug adapter starts a debuggee, supplied explicitly or by a direct-script Language Tool Preset.
 _Avoid_: Launch configuration, run profile
 
 **Breakpoint**:

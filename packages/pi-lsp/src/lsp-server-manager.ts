@@ -56,7 +56,14 @@ export interface LspManagedServerClient {
 }
 
 /** Provides all parsed inputs needed to start one language-server process. */
+export interface LspServerOperationOptions {
+  readonly signal?: AbortSignal | undefined;
+  readonly onProgress?: ((message: string) => void) | undefined;
+}
+
+/** Inputs for one lazy server start, including acquisition progress. */
 export interface LspServerStartInput {
+  readonly onProgress?: ((message: string) => void) | undefined;
   /** Complete configured Server Definition. */
   readonly definition: LspServerDefinition;
   /** Marks a started instance unavailable after a process or protocol failure. */
@@ -261,6 +268,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   private readonly clients = new Map<string, TClient>();
   private readonly inFlightStarts = new Map<string, Promise<LspServerResolution<TClient>>>();
   private readonly inFlightStops = new Map<string, Promise<void>>();
+  private readonly startWaiters = new Map<string, Set<LspServerOperationOptions>>();
   private readonly knownRoutes = new Map<string, LspServerRoute>();
   private readonly unavailable = new Map<string, string>();
   private readonly instanceLifetimes = new Map<string, AbortController>();
@@ -336,12 +344,20 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   private async routeFile(filePath: string): Promise<readonly LspServerRoute[]> {
     const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
     const ancestors = await readLspAncestorDirectories(absolutePath);
-    const definitions = [...this.input.settings.servers.values()].map((definition) => ({
-      languages: definition.languages,
-      requireRootMarker: definition.requireRootMarker,
-      rootMarkers: definition.rootMarkers,
-      serverId: definition.id,
-    }));
+    const configured = [...this.input.settings.servers.values()];
+    const hasExplicitMatch = configured.some(
+      (definition) =>
+        !definition.preset &&
+        definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
+    );
+    const definitions = configured
+      .filter((definition) => !definition.preset || !hasExplicitMatch)
+      .map((definition) => ({
+        languages: definition.languages,
+        requireRootMarker: definition.requireRootMarker,
+        rootMarkers: definition.rootMarkers,
+        serverId: definition.id,
+      }));
     return routeLspServersForFile(definitions, absolutePath, this.input.cwd, ancestors);
   }
 
@@ -359,6 +375,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     serverId: string | undefined,
     isCapable: (client: TClient) => boolean,
     operation: (client: TClient, route: LspServerRoute) => Promise<T>,
+    options: LspServerOperationOptions = {},
   ): Promise<LspServerReadResult<T>> {
     const routes = await this.selectRoutes(filePath, serverId);
     if (routes.length === 0) {
@@ -370,7 +387,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
 
     const outcomes = await Promise.all(
       routes.map(async (route): Promise<LspServerSuccess<T> | LspServerFailure | undefined> => {
-        const resolution = await this.ensureClient(route);
+        const resolution = await this.ensureClient(route, options);
         if (resolution.kind === "failure") return resolution.failure;
         if (!isCapable(resolution.instance.client)) {
           if (serverId === undefined) return undefined;
@@ -418,13 +435,14 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     filePath: string,
     serverId: string | undefined,
     isCapable: (client: TClient) => boolean,
+    options: LspServerOperationOptions = {},
   ): Promise<LspServerResolution<TClient>> {
     const routes = await this.selectRoutes(filePath, serverId);
     if (routes.length === 0) {
       return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
     }
 
-    const resolutions = await Promise.all(routes.map((route) => this.ensureClient(route)));
+    const resolutions = await Promise.all(routes.map((route) => this.ensureClient(route, options)));
     const capable = resolutions.filter(
       (resolution): resolution is Extract<LspServerResolution<TClient>, { kind: "success" }> =>
         resolution.kind === "success" && isCapable(resolution.instance.client),
@@ -460,30 +478,38 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   }
 
   /** Start one exact Server Instance and return its negotiated capabilities. */
-  async getCapabilities(serverId: string, filePath: string): Promise<LspServerResolution<TClient>> {
+  async getCapabilities(
+    serverId: string,
+    filePath: string,
+    options: LspServerOperationOptions = {},
+  ): Promise<LspServerResolution<TClient>> {
     const routes = await this.selectRoutes(filePath, serverId);
     const route = routes[0];
     if (route === undefined) {
       return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
     }
-    return this.ensureClient(route);
+    return this.ensureClient(route, options);
   }
 
   /** Clear sticky failure state, stop the old process, and start the exact Server Instance again. */
-  async restartServer(serverId: string, filePath: string): Promise<LspServerResolution<TClient>> {
+  async restartServer(
+    serverId: string,
+    filePath: string,
+    options: LspServerOperationOptions = {},
+  ): Promise<LspServerResolution<TClient>> {
     const routes = await this.selectRoutes(filePath, serverId);
     const route = routes[0];
     if (route === undefined) {
       return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
     }
-    if (!this.getEnablement(serverId).enabled) return this.ensureClient(route);
+    if (!this.getEnablement(serverId).enabled) return this.ensureClient(route, options);
     this.knownRoutes.set(lspInstanceKey(serverId, route.rootPath), route);
     try {
       await this.stopServer(serverId, route.rootPath);
     } catch {
       // Restart still attempts a fresh process after an old failed client's cleanup error.
     }
-    return this.ensureClient(route);
+    return this.ensureClient(route, options);
   }
 
   /** Stop one known Instance without preventing its next lazy startup. */
@@ -561,7 +587,15 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     };
   }
 
-  private ensureClient(route: LspServerRoute): Promise<LspServerResolution<TClient>> {
+  private ensureClient(
+    route: LspServerRoute,
+    options: LspServerOperationOptions,
+  ): Promise<LspServerResolution<TClient>> {
+    if (options.signal?.aborted)
+      return Promise.resolve({
+        kind: "failure",
+        failure: unavailableFailure(route, "request cancelled"),
+      });
     if (this.closed) {
       return Promise.resolve({
         kind: "failure",
@@ -582,7 +616,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     const stopping = this.inFlightStops.get(key);
     if (stopping !== undefined) {
       return stopping.then(
-        () => this.ensureClient(route),
+        () => this.ensureClient(route, options),
         (cause): LspServerResolution<TClient> => ({
           kind: "failure",
           failure: unavailableFailure(route, describeLspError(cause)),
@@ -606,7 +640,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       });
     }
     const inFlight = this.inFlightStarts.get(key);
-    if (inFlight !== undefined) return inFlight;
+    if (inFlight !== undefined) return this.waitForStart(key, route, inFlight, options);
     if (definition === undefined) {
       return Promise.resolve({
         kind: "failure",
@@ -621,7 +655,40 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     void start.finally(() => {
       if (this.inFlightStarts.get(key) === start) this.inFlightStarts.delete(key);
     });
-    return start;
+    return this.waitForStart(key, route, start, options);
+  }
+
+  private async waitForStart(
+    key: string,
+    route: LspServerRoute,
+    start: Promise<LspServerResolution<TClient>>,
+    options: LspServerOperationOptions,
+  ): Promise<LspServerResolution<TClient>> {
+    const waiters = this.startWaiters.get(key) ?? new Set<LspServerOperationOptions>();
+    // Each call owns a distinct waiter even when callers reuse their options object.
+    const waiter = { ...options };
+    waiters.add(waiter);
+    this.startWaiters.set(key, waiters);
+    let cancel: (() => void) | undefined;
+    const aborted = new Promise<LspServerResolution<TClient>>((done) => {
+      cancel = () =>
+        done({ kind: "failure", failure: unavailableFailure(route, "request cancelled") });
+      options.signal?.addEventListener("abort", cancel, { once: true });
+      if (options.signal?.aborted) cancel();
+    });
+    try {
+      return await Promise.race([start, aborted]);
+    } finally {
+      if (cancel) options.signal?.removeEventListener("abort", cancel);
+      waiters.delete(waiter);
+      if (waiters.size === 0) {
+        this.startWaiters.delete(key);
+        if (this.inFlightStarts.has(key)) {
+          this.instanceLifetimes.get(key)?.abort();
+          await start;
+        }
+      }
+    }
   }
 
   private async startClient(
@@ -633,6 +700,9 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     try {
       const client = await this.input.startClient({
         definition,
+        onProgress: (message) => {
+          for (const waiter of this.startWaiters.get(key) ?? []) waiter.onProgress?.(message);
+        },
         onUnavailable: (error) => {
           if (this.instanceLifetimes.get(key) === lifetime) {
             this.unavailable.set(key, describeLspError(error));
@@ -642,7 +712,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         signal: lifetime.signal,
         timeouts: this.input.settings.timeouts,
       });
-      if (this.instanceLifetimes.get(key) !== lifetime) {
+      if (this.instanceLifetimes.get(key) !== lifetime || lifetime.signal.aborted) {
         await client.shutdown();
         return {
           kind: "failure",
@@ -658,7 +728,8 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       return { kind: "success", instance: { client, definition, route } };
     } catch (error) {
       const message = describeLspError(error);
-      if (this.instanceLifetimes.get(key) === lifetime) this.unavailable.set(key, message);
+      if (this.instanceLifetimes.get(key) === lifetime && !lifetime.signal.aborted)
+        this.unavailable.set(key, message);
       return { kind: "failure", failure: unavailableFailure(route, message) };
     }
   }

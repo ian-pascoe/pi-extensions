@@ -16,9 +16,9 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-tps-tracker`](packages/pi-tps-tracker)               | Assistant output-token throughput.                          | `pi install npm:@ian-pascoe/pi-tps-tracker`        |
 | [`@ian-pascoe/pi-git-status-widget`](packages/pi-git-status-widget)   | Refreshing Git worktree status.                             | `pi install npm:@ian-pascoe/pi-git-status-widget`  |
 | [`@ian-pascoe/pi-git-checkpoints`](packages/pi-git-checkpoints)       | Git-backed worktree checkpoints for tree navigation.        | `pi install npm:@ian-pascoe/pi-git-checkpoints`    |
-| [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                   | Configured automatic post-edit formatting.                  | `pi install npm:@ian-pascoe/pi-formatter`          |
-| [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                               | Configured language-server tools and post-edit diagnostics. | `pi install npm:@ian-pascoe/pi-lsp`                |
-| [`@ian-pascoe/pi-dap`](packages/pi-dap)                               | Configured Debug Adapter Protocol sessions.                 | `pi install npm:@ian-pascoe/pi-dap`                |
+| [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                   | Marker-aware post-edit formatting with managed tools.       | `pi install npm:@ian-pascoe/pi-formatter`          |
+| [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                               | Language-server defaults, tools, and post-edit diagnostics. | `pi install npm:@ian-pascoe/pi-lsp`                |
+| [`@ian-pascoe/pi-dap`](packages/pi-dap)                               | Direct JavaScript/Python debugging and configured sessions. | `pi install npm:@ian-pascoe/pi-dap`                |
 | [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                     | Persistent TypeScript composition of registered Pi tools.   | `pi install npm:@ian-pascoe/pi-codemode`           |
 | [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                               | Model Context Protocol hosting for configured MCP servers.  | `pi install npm:@ian-pascoe/pi-mcp`                |
 | [`@ian-pascoe/pi-web-tools`](packages/pi-web-tools)                   | Public web search and textual URL retrieval.                | `pi install npm:@ian-pascoe/pi-web-tools`          |
@@ -28,7 +28,9 @@ independently or together from this Git repository.
 
 The extensions share terminal capability decisions through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
-dependency, not a Pi extension or configuration skill.
+dependency, not a Pi extension or configuration skill. LSP, DAP, and Formatter also
+share [`@ian-pascoe/pi-tool-installer`](packages/pi-tool-installer), which privately
+acquires missing language tools and runtimes without a separate Pi installation.
 
 ## Install the collection from Git
 
@@ -108,12 +110,14 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Minimal Subagents can use optional `trash`; deletion otherwise unlinks.
 - TPS Tracker can use optional `tiktoken`; absent official usage and tokenizer,
   it estimates four characters per token.
-- Pi Formatter requires separately installed formatter binaries.
-- Pi LSP requires separately installed language-server binaries. This repository
-  uses the installed TypeScript 7 `tsc --lsp --stdio` server.
-- Pi DAP requires a separately managed Debug Adapter executable. The repository's
-  `vscode-js-debug` development dependency supports its local Node smoke profile; its files are
-  not packed or installed with `@ian-pascoe/pi-dap`.
+- Pi LSP and Formatter provide TypeScript/JavaScript, Python, Go, and Rust defaults;
+  Pi DAP provides direct Node JavaScript and Python script launches. Missing tools
+  and runtimes are acquired privately on first use, requiring outbound network
+  access. Explicit configuration and project/PATH tools take precedence. Set the
+  package's `autoInstall` setting to `false` for Installed-only Mode; explicit
+  update commands remain network actions. See package READMEs for formatter
+  selection, additional debug profiles, and the [verified native platform
+  baselines](packages/pi-tool-installer/README.md#initial-verified-baselines).
 - Pi CodeMode installs Deno 2.9.5 and runs TypeScript Cells directly in a
   permission-denied Deno subprocess; registered Pi tools still execute with
   their normal host permissions.
@@ -160,6 +164,7 @@ pnpm --filter @ian-pascoe/pi-context-management test
 pnpm --filter @ian-pascoe/pi-skills-selector typecheck
 pnpm --filter @ian-pascoe/pi-skills-selector test
 pnpm --filter @ian-pascoe/pi-utils test
+pnpm --filter @ian-pascoe/pi-tool-installer test
 ```
 
 Read [`CONTEXT-MAP.md`](CONTEXT-MAP.md), ADRs, and

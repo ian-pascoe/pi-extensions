@@ -93,6 +93,8 @@ test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
       const runtime = await execute(
         python,
         [
+          "-X",
+          "utf8",
           "-c",
           "import sys,os; print(sys.version.split()[0]); print(os.path.realpath(sys._base_executable))",
         ],
@@ -104,7 +106,10 @@ test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
       expect(runtime.stdout).toContain(installation.components.python?.directory);
       const formatted = await execute(
         python,
-        ["-c", "import black; print(black.format_str('answer= 42\\n', mode=black.Mode()), end='')"],
+        [
+          "-c",
+          "import sys,black; sys.stdout.buffer.write(black.format_str('answer= 42\\n', mode=black.Mode()).encode())",
+        ],
         {
           env: { ...process.env, ...installation.environment, PYTHONDONTWRITEBYTECODE: "1" },
         },

@@ -2,9 +2,12 @@ import { parseArgs } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { LspServerManager, LspServerStatusEntry } from "./lsp-server-manager.js";
+import { LSP_PRESETS } from "./lsp-presets.js";
 
 /** One user-selected lifecycle action; startup remains lazy. */
 export type LspCommand =
+  | { readonly action: "update"; readonly serverId?: string }
+  | { readonly action: "cancel-update" }
   | { readonly action: "stop"; readonly serverId: string; readonly rootPath?: string }
   | {
       readonly action: "enable" | "disable";
@@ -97,10 +100,15 @@ export function completeLspCommandArguments(
   manager: CommandStatusManager | undefined,
 ): AutocompleteItem[] | null {
   const normalized = prefix.trimStart();
-  const actionMatch = /^(stop|enable|disable)\s+/u.exec(normalized);
+  const actionMatch = /^(stop|enable|disable|update)\s+/u.exec(normalized);
   let candidates: AutocompleteItem[] = [];
   if (actionMatch === null) {
-    candidates = ["stop", "enable", "disable"].map((value) => ({ value, label: value }));
+    candidates = ["stop", "enable", "disable", "update"].map((value) => ({ value, label: value }));
+  } else if (actionMatch[1] === "update") {
+    candidates = ["cancel", ...LSP_PRESETS.map(({ id }) => id)].map((id) => ({
+      value: `${actionMatch[0]}${id}`,
+      label: id,
+    }));
   } else if (manager !== undefined) {
     const actionPrefix = actionMatch[0];
     const argument = normalized.slice(actionPrefix.length);
@@ -135,7 +143,7 @@ export function completeLspCommandArguments(
 }
 
 const USAGE =
-  "Pi LSP: usage: /lsp stop <server-id> [root] | enable|disable <server-id> [--global|--project]";
+  "Pi LSP: usage: /lsp stop <server-id> [root] | enable|disable <server-id> [--global|--project] | update [preset-id|cancel]";
 
 function commandTokens(args: string): string[] {
   const tokens: string[] = [];
@@ -179,6 +187,10 @@ export function parseLspCommandArguments(args: string): LspCommand {
     tokens: true,
   });
   const [action, serverId, rootPath, ...rest] = positionals;
+  if (action === "update" && rootPath === undefined && !values.global && !values.project) {
+    if (serverId === "cancel") return { action: "cancel-update" };
+    return serverId === undefined ? { action } : { action, serverId };
+  }
   if (
     !serverId ||
     rootPath === "" ||

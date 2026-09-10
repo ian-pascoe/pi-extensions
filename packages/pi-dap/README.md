@@ -1,6 +1,6 @@
 # @ian-pascoe/pi-dap
 
-Configured [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
+Managed and explicitly configured [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/)
 (DAP) sessions for [Pi](https://github.com/earendil-works/pi).
 
 ## Install
@@ -13,10 +13,46 @@ pi install git:github.com/ian-pascoe/pi-extensions
 
 For a local checkout, run `pi -e ./packages/pi-dap/src/index.ts`.
 
-Debug Adapter executables are user-managed. Pi DAP has no adapter discovery,
-installer, or catalog. The repository-only `vscode-js-debug` development
-dependency supports this repository's Node smoke test; its files are not packed
-or installed with the package.
+## Direct scripts, without configuration
+
+Launch a direct Node JavaScript file (`.js`, `.mjs`, `.cjs`) or Python script (`.py`):
+
+```json
+{ "operation": "launch", "program": "app.js" }
+```
+
+The built-in Launch Profile IDs are `javascript` and `python`. They stop on entry
+and use the internal console. TypeScript loaders, frameworks, test runners, and
+build steps require an explicit Launch Profile; Pi DAP does not infer them or
+install project dependencies.
+
+Explicit selections and an existing sole configured profile retain ownership.
+Otherwise, Pi DAP prefers project-local tools/runtimes, then PATH, then a private
+Managed Installation. JavaScript discovery checks ancestor `node_modules/.bin/node`
+(or `node.exe`), `node_modules/node/bin/node`, and standalone entrypoints under
+`node_modules/@vscode/js-debug/src` or `node_modules/vscode-js-debug/src`; PATH can
+provide Node and `dapDebugServer.js`. Python discovery checks ancestor `.venv` and
+`venv` interpreters, then `python3`/`python` on PATH, probing those interpreters for
+`debugpy.adapter`. Native Windows interpreter paths use `Scripts/python.exe`.
+Discovery starts at the script's directory, or the supplied launch `cwd`.
+
+Adapter Python and Debuggee Python are selected separately: private debugpy can
+launch your project's interpreter without installing debugpy into its environment.
+Executables and script paths are passed as argv, not shell command strings.
+
+Missing adapters and supporting Node/Python runtimes are automatically installed
+on the first actual launch. That launch waits with visible tool progress and can
+be cancelled; startup and discovery do not download anything. Managed binaries,
+metadata, and cross-process coordination live in `<Pi agent directory>/managed-tools`,
+shared with Pi LSP and Pi Formatter. Pi settings remain the configuration authority.
+The private installer does not modify user PATH, shell configuration, project
+manifests, or external tool installations.
+
+First installation selects latest upstream. Existing versions are reused without
+registry refresh until an explicit update. For Installed-only Mode, set
+`"dap": { "autoInstall": false }`: existing external and managed tools still work,
+while missing tools fail without acquiring even the Installer Helper. This is not
+a network sandbox; explicit updates remain deliberate network operations.
 
 ## Settings
 
@@ -26,6 +62,7 @@ project `.pi/settings.json`:
 ```json
 {
   "dap": {
+    "autoInstall": true,
     "timeouts": {
       "startupMs": 10000,
       "requestMs": 10000,
@@ -72,15 +109,47 @@ profile maps merge by ID: a project entry replaces the complete global entry;
 `null` removes it. Invalid project replacements still shadow global entries.
 Invalid entries are quarantined independently and produce path-qualified
 warnings at session start, while unrelated valid entries stay available.
-Untrusted project settings are ignored. Use Pi `/reload` to reload settings.
+Untrusted project settings are ignored. Null and invalid same-ID Adapter Definitions
+or Launch Profiles also shadow built-ins. Any configured profile map entry suppresses
+unselected inference, including quarantined entries; select or repair a profile
+rather than silently replacing failed configuration. Explicit commands never fall
+back to a managed replacement. `autoInstall` is a boolean, defaults to `true`, and
+trusted-project values override global values. Use Pi `/reload` to reload settings.
 
-### Node and TypeScript
+### Supported Adapters and platforms
 
-Node/TypeScript through Microsoft `vscode-js-debug` is the Supported Adapter
-workflow. For example, set the Node adapter command to `node` and point its TCP
-arguments at `dapDebugServer.js` followed by `$PORT`, as above. Other
-standards-based adapters are Experimental: they may work through DAP but have
-no compatibility promise.
+Microsoft `vscode-js-debug` for Node JavaScript and `debugpy` for Python are the
+Supported Adapters. Explicit profiles can configure TypeScript launchers. Other
+standards-based adapters remain Experimental.
+
+Native x64 and ARM64 Linux, macOS, and Windows are equal release targets. The
+initial acquisition/launch probes passed on Ubuntu 24.04.5, macOS 15.7.9, Windows
+Server 2025 x64, and Windows 11 Enterprise ARM64, using host Node 22.19.0 and
+Pi 0.85.1. See the [installer's verified baselines](https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-tool-installer#initial-verified-baselines)
+for exact tool versions and verification limits. Those versions are evidence,
+not release pins. macOS built-in JavaScript launches use a short private IPC
+directory to respect Unix socket path limits.
+
+## `/dap update [id]`
+
+```text
+/dap update
+/dap update javascript
+/dap update python
+/dap update cancel
+```
+
+Updates cover only installed managed DAP presets, never unused presets or
+project-local/PATH tools. Results show old/new component versions, no-change
+outcomes, and per-tool failures. A failed or cancelled update retains the prior
+working installation. Live Debug Sessions stay on their original executables;
+the next launch resolves the updated selection.
+
+The interactive loader supports Escape and waits for cancellation cleanup before
+closing. RPC clients receive status/notifications and can issue `/dap update cancel`;
+RPC's ordinary agent abort does not cancel idle commands. JSON/print have no
+interactive cancellation UI; SDK hosts can cancel by shutting down the session.
+Reload/shutdown also cancels pending launches and updates idempotently.
 
 ## `dap` tool
 
@@ -92,8 +161,9 @@ step_in           step_out          pause             stack
 variables         evaluate          status            stop
 ```
 
-`launch` selects a profile (it may be omitted only when exactly one valid
-profile exists). `program`, `args`, and `cwd` replace the same profile
+`launch` selects a profile. It may be omitted when exactly one valid configured
+profile exists, or when no profile is configured and `program` selects a built-in
+direct script profile. `program`, `args`, and `cwd` replace the same profile
 arguments; relative `program` and `cwd` paths resolve from Pi's project working
 directory. A Debug Session is single-active: launching while one is active
 fails. Desired Breakpoints are complete per-file lists and survive `stop` and
@@ -149,7 +219,8 @@ tool result and Result Spill retain the original bytes.
 
 ## V1 boundary
 
-V1 supports configured stdio and TCP adapters on Linux, one active Debug
+Pi DAP supports configured stdio and TCP adapters, built-in direct-script profiles,
+one active Debug
 Session, source breakpoints, core execution control, stack/variables/evaluation,
 and headless `runInTerminal`. The Supported `vscode-js-debug` workflow uses one
 adapter-owned primary target channel; it is not a second model-facing Debug

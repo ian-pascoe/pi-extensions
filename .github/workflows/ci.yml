@@ -56,6 +56,12 @@ jobs:
         run: |
           node -e "const a = require('node:assert/strict'); a.equal(process.platform, process.env.EXPECTED_OS); a.equal(process.arch, process.env.EXPECTED_ARCH); console.log(process.platform, process.arch, process.version)"
           pnpm --dir packages/pi-tool-installer exec vitest run --config ../../vitest.config.ts --root . --reporter=verbose --disableConsoleIntercept
+      - name: Verify package precedence, acquisition, and cancellation
+        if: ${{ !cancelled() }}
+        run: >-
+          pnpm -r --no-bail
+          --filter @ian-pascoe/pi-lsp --filter @ian-pascoe/pi-formatter --filter @ian-pascoe/pi-dap
+          exec vitest run --config ../../vitest.config.ts --root . extension.test.ts --reporter=verbose
 
   verify:
     if: ${{ !inputs.native_only }}

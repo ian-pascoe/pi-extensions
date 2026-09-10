@@ -281,7 +281,7 @@ export function renderLspToolResult(
   isError: boolean,
 ): Component {
   const output = toolResultText(result);
-  if (options.isPartial) return new Text(theme.fg("accent", "Running…"), 0, 0);
+  if (options.isPartial) return new Text(theme.fg("accent", output || "Running…"), 0, 0);
   if (isError || !Value.Check(LspToolResultDetailsSchema, result.details)) {
     const visibleOutput = options.expanded
       ? output

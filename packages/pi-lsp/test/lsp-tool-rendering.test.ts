@@ -122,7 +122,7 @@ describe("Pi LSP tool rendering", () => {
           false,
         ),
       ),
-    ).toBe("Running…");
+    ).toBe("waiting");
 
     expect(
       renderLines(

@@ -306,6 +306,27 @@ export class LspServerClient {
       );
     }
 
+    // A failed spawn has stdio objects too; do not write initialize to their destroyed streams.
+    await new Promise<void>((done, reject) => {
+      const spawned = () => {
+        childProcess.removeListener("error", failed);
+        done();
+      };
+      const failed = (cause: Error) => {
+        childProcess.removeListener("spawn", spawned);
+        reject(
+          new LspServerClientError(
+            "spawn",
+            options.serverId,
+            options.stderrPath,
+            `failed to start ${options.command}: ${cause.message}`,
+            { cause },
+          ),
+        );
+      };
+      childProcess.once("spawn", spawned);
+      childProcess.once("error", failed);
+    });
     const connection = createProtocolConnection(childProcess.stdout, childProcess.stdin);
     const client = new LspServerClient(options, childProcess, connection);
     client.bindProcessLifecycle();

@@ -244,6 +244,7 @@ export type DapToolResultDetails = Static<typeof DapToolResultDetailsSchema>;
 export const DapToolProgressDetailsSchema = Type.Object(
   {
     kind: Type.Literal("progress"),
+    message: Type.Optional(Type.String()),
     operation: DapExecutionWaitOperationSchema,
     elapsed_ms: Type.Integer({ minimum: 0 }),
   },

@@ -1,6 +1,6 @@
 # @ian-pascoe/pi-lsp
 
-Configured language-server tools and post-edit diagnostics for
+Language-server tools, managed defaults, and post-edit diagnostics for
 [Pi](https://github.com/earendil-works/pi).
 
 ## Install
@@ -13,9 +13,54 @@ pi install git:github.com/ian-pascoe/pi-extensions
 
 For a local checkout, run `pi -e ./packages/pi-lsp/src/index.ts`.
 
-Install every language-server executable separately. Pi LSP contains no server catalog or
-installer. It launches configured commands over stdio with the Pi process's environment and
-permissions.
+No language manager or separate server installation is required for these built-in presets:
+
+| Preset ID       | Files                                    | Server                                  | Workspace markers                                          |
+| --------------- | ---------------------------------------- | --------------------------------------- | ---------------------------------------------------------- |
+| `typescript`    | TS/JS, including JSX and module variants | TypeScript 7 native `tsc --lsp --stdio` | `tsconfig.json`, `jsconfig.json`, `package.json`, `.git`   |
+| `pyright`       | `.py`, `.pyi`                            | Pyright                                 | `pyrightconfig.json`, `pyproject.toml`, `setup.py`, `.git` |
+| `gopls`         | `.go`, `go.mod`, `go.work`               | gopls                                   | `go.work`, `go.mod`, `.git`                                |
+| `rust-analyzer` | `.rs`                                    | rust-analyzer                           | `Cargo.toml`, `.git`                                       |
+
+The nearest marker selects the workspace root; otherwise Pi's working directory is used.
+Explicit matching Server Definitions suppress **all** built-in fallbacks for those files, even
+under different IDs, and retain explicit multi-server behavior. Their Activation Gates and
+Disabled state do not grant permission to substitute a default. Same-ID null or invalid definitions
+also shadow a preset. Explicit failing commands are never silently replaced.
+
+For presets, project-local executables precede PATH executables, then Managed Installations.
+Server and supporting runtime selection are independent. Project candidates include ancestor
+`node_modules/.bin` and the root's `bin`, `.bin`, `.venv/bin`, `.venv/Scripts`, `.cargo/bin`, and
+`.go/bin`. A TypeScript 6 `tsc` is not a native LSP candidate. Pi LSP does not use
+`typescript-language-server` or the removed `tsserver.js` API.
+
+### Managed installations
+
+The first actual LSP operation or applicable Post-edit Diagnostics waits for missing tools and
+prerequisites, with progress. Nothing is downloaded on startup, discovery, or `status`. Node,
+Go, or Rust prerequisites are acquired privately when needed; gopls acquisition also needs a
+private Go compiler even when the running server will prefer an external Go toolchain.
+
+All projects, worktrees, and Pi processes share `<Pi agent directory>/managed-tools` (normally
+`~/.pi/agent/managed-tools`). The bundled installer provisions private mise automatically, stages
+installations, and coordinates concurrent processes. Only child-process environments change:
+user PATH, shell files, project dependencies, and external tool versions are untouched.
+
+First installation and explicit Tool Updates select latest upstream and record concrete versions.
+Existing versions are reused without registry refresh until updated. Native x64 and ARM64 Linux,
+macOS, and Windows acquisition/launch baselines are documented in the
+[shared installer](../pi-tool-installer/README.md#initial-verified-baselines); that native evidence
+is separate from offline extension lifecycle tests.
+
+Set `lsp.autoInstall` to `false` for **Installed-only Mode**:
+
+```json
+{ "lsp": { "autoInstall": false } }
+```
+
+It defaults to `true`; trusted project values override global values. Existing external and managed
+installations still work. Missing tools report unavailability without downloading even the helper.
+Explicit `/lsp update` remains a deliberate network action, so this is not a network sandbox.
 
 ## Settings
 
@@ -89,6 +134,9 @@ roots and the effective enablement scope; opening it never starts a server. Text
 /lsp enable typescript
 /lsp disable typescript --project
 /lsp enable typescript --global
+/lsp update
+/lsp update typescript
+/lsp update cancel
 ```
 
 - **Stop** ends one known Server Instance and clears its failure state. The next matching request
@@ -97,6 +145,16 @@ roots and the effective enablement scope; opening it never starts a server. Text
 - **Disable** prevents automatic and explicit startup of the entire Server Definition, stops all
   its Instances in this session, and clears their failed runtime state.
 - **Enable** permits lazy startup without launching a process.
+- **Update** advances only already installed managed presets (optionally one preset ID), reporting
+  old/new versions, no change, or failure per tool. It never installs unused presets or modifies
+  External Installations. Failed or cancelled updates retain the working selection. Running
+  Server Instances keep their original executables; Stop followed by lazy startup, `restart`,
+  or `/reload` selects the new version.
+- During a Tool Update, press **Escape** in the TUI loader. RPC clients can send another prompt
+  containing `/lsp update cancel`; native RPC `abort` only cancels an active agent turn, not an
+  idle slash command. RPC gets status notifications rather than a custom terminal component.
+  Print/JSON mode reports progress to stderr and has no interactive cancellation UI; shutdown
+  cancels pending work. Updates remain awaited until acquisition cleanup finishes.
 
 Unflagged enable/disable choices are custom session entries. They survive `/reload` and saved-session
 resume, but follow the selected branch: navigating before a choice rolls it back, and forks inherit
@@ -221,6 +279,10 @@ duplicates from independent servers and never change the original tool's success
 Only servers that advertise document diagnostics participate; formatting-only servers remain
 available for explicit LSP formatting operations without appearing in Post-edit Diagnostics.
 Files excluded by every matching server's Activation Gate or disable state are skipped silently.
+First-use acquisition progress appears in native status UI (stderr in headless modes). Escape
+cancels assistance through Pi's active-turn signal. Failed or cancelled assistance preserves the
+already successful mutation result and reports unavailable diagnostics; it never schedules a
+later detached diagnostic operation.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. Clean results and files without a
@@ -235,10 +297,14 @@ session temp directory and failure messages name that path.
 
 Documents must be valid UTF-8. Each server keeps at most 100 synchronized documents and closes
 least-recently-used documents. Session shutdown requests a graceful LSP shutdown, then terminates
-the process within the configured timeout.
+the process within the configured timeout. Reload and shutdown also abort pending acquisitions
+and Tool Updates, await cleanup, and leave durable Managed Installations intact.
 
 ## Security
 
 Trusted project settings can launch arbitrary local executables with all permissions of the Pi
-process. Review settings and server binaries before trusting a project. Mutation manifests can be
+process. Review settings and server binaries before trusting a project. Built-in acquisition uses
+source-owned tool identities; package registries and release artifacts remain supply-chain inputs.
+See the shared installer's integrity and isolation limits; concrete top-level versions do not make
+transitive packages reproducible. Mutation manifests can be
 blocked by another extension, but Pi LSP itself intentionally imposes no workspace path boundary.

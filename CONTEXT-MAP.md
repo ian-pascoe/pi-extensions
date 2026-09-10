@@ -31,6 +31,7 @@ live in [`docs/adr/`](docs/adr/).
 - [Language Tools](docs/contexts/language-tools/CONTEXT.md) — Language Tool Presets,
   Managed Installations, and updates shared by Pi LSP, Pi DAP, and Pi Formatter.
   [ADR-0004](docs/adr/0004-own-language-presets-and-share-managed-installation.md)
-  and the [accepted design](docs/plans/managed-language-tools.md) describe the planned
-  ownership change. This feature is not implemented; the package contexts above
-  still describe their current settings-only runtime boundaries.
+  and the [accepted design](docs/plans/managed-language-tools.md) describe the
+  ownership boundary. Package-owned presets share the compiled
+  [`pi-tool-installer` library](packages/pi-tool-installer) for private acquisition;
+  routing, formatting, and debug lifecycle remain with their respective packages.

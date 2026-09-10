@@ -40,6 +40,8 @@ export interface DapSessionFiles {
   writeResultSpill(output: string): Promise<string>;
   /** Create a private stderr file path for one Debug Adapter launch. */
   getAdapterStderrPath(): Promise<string>;
+  /** Lazily reserve a short private IPC directory (macOS Unix sockets have a 104-byte limit). */
+  getAdapterTemporaryDirectory(): Promise<string>;
   /** Remove all session files after queued writes finish. */
   close(): Promise<void>;
 }
@@ -48,6 +50,7 @@ class DapSessionFileStore implements DapSessionFiles {
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private nextFileIndex = 0;
+  private temporaryDirectory: string | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(readonly directoryPath: string) {}
@@ -70,13 +73,23 @@ class DapSessionFileStore implements DapSessionFiles {
     });
   }
 
+  getAdapterTemporaryDirectory(): Promise<string> {
+    return this.enqueueWrite(async () => {
+      this.temporaryDirectory ??= await mkdtemp("/tmp/pi-dap-ipc-");
+      await chmod(this.temporaryDirectory, 0o700);
+      return this.temporaryDirectory;
+    });
+  }
+
   close(): Promise<void> {
     if (this.closePromise !== undefined) return this.closePromise;
     this.closed = true;
-    this.closePromise = this.writeQueue.then(
-      () => rm(this.directoryPath, { force: true, recursive: true }),
-      () => rm(this.directoryPath, { force: true, recursive: true }),
-    );
+    const removeFiles = async () => {
+      await rm(this.directoryPath, { force: true, recursive: true });
+      if (this.temporaryDirectory !== undefined)
+        await rm(this.temporaryDirectory, { force: true, recursive: true });
+    };
+    this.closePromise = this.writeQueue.then(removeFiles, removeFiles);
     return this.closePromise;
   }
 

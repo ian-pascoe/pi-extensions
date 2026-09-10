@@ -68,6 +68,7 @@ import {
   type LspServerManager,
   type LspServerReadResult,
   type LspServerRoute,
+  type LspServerOperationOptions,
 } from "./lsp-server-manager.js";
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import {
@@ -185,6 +186,8 @@ export interface LspToolRegistrar {
 
 /** Runtime owners used by the single registered Pi LSP tool. */
 export interface LspToolDependencies {
+  /** Per-call startup cancellation and acquisition progress, never durable state. */
+  readonly startOptions?: LspServerOperationOptions;
   /** Session-scoped lazy language-server registry. */
   readonly manager: LspServerManager<LspToolServerClient>;
   /** Session-scoped Workspace Edit Preview and Validated Workspace Edit store. */
@@ -676,6 +679,7 @@ async function executePositionRead(
 
       return normalizeProtocolResult(value, prepared);
     },
+    dependencies.startOptions,
   );
 }
 
@@ -730,6 +734,7 @@ async function executeFileRead(
       }
       return normalizeProtocolResult(value, prepared);
     },
+    dependencies.startOptions,
   );
 }
 
@@ -762,6 +767,7 @@ async function executeInlayHints(
       }
       return normalizeProtocolResult(value, prepared);
     },
+    dependencies.startOptions,
   );
 }
 
@@ -788,6 +794,7 @@ async function executeSelectionRanges(
       );
       return normalizeProtocolResult(value, prepared);
     },
+    dependencies.startOptions,
   );
 }
 
@@ -813,6 +820,7 @@ async function executeWorkspaceRead(
           undefined,
           normalizeLspPositionEncoding(client.positionEncoding),
         ),
+      dependencies.startOptions,
     );
   }
   return dependencies.manager.runRead(
@@ -840,6 +848,7 @@ async function executeWorkspaceRead(
         normalizeLspPositionEncoding(client.positionEncoding),
       );
     },
+    dependencies.startOptions,
   );
 }
 
@@ -863,6 +872,7 @@ async function executeFormattingPreview(
     filePath,
     parameters.server_id,
     (client) => client.hasCapability(method),
+    dependencies.startOptions,
   );
   if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
   const { client, route } = resolution.instance;
@@ -908,6 +918,7 @@ async function executeRenamePreview(
     filePath,
     parameters.server_id,
     (client) => client.hasCapability(RenameRequest.method),
+    dependencies.startOptions,
   );
   if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
   const { client, route } = resolution.instance;
@@ -942,6 +953,7 @@ async function executeCodeActions(
     filePath,
     parameters.server_id,
     (client) => client.hasCapability(CodeActionRequest.method),
+    dependencies.startOptions,
   );
   if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
   const { client, route } = resolution.instance;
@@ -1099,9 +1111,19 @@ export function createLspToolDefinition(
         mutation_manifest: normalizeStoreMutationManifest(storeManifest),
       });
     },
-    async execute(_toolCallId, input, signal, _onUpdate, context) {
+    async execute(_toolCallId, input, signal, onUpdate, context) {
       const parameters = parseLspToolParameters(input);
-      const dependencies = getDependencies();
+      const dependencies: LspToolDependencies = {
+        ...getDependencies(),
+        startOptions: {
+          signal,
+          onProgress: (text) =>
+            onUpdate?.({
+              content: [{ type: "text", text }],
+              details: operationDetails(parameters.operation, []),
+            }),
+        },
+      };
       switch (parameters.operation) {
         case "status": {
           const status = dependencies.manager.getStatus();
@@ -1124,8 +1146,16 @@ export function createLspToolDefinition(
           const filePath = absoluteLspFilePath(parameters.file_path, context);
           const resolution =
             parameters.operation === "capabilities"
-              ? await dependencies.manager.getCapabilities(parameters.server_id, filePath)
-              : await dependencies.manager.restartServer(parameters.server_id, filePath);
+              ? await dependencies.manager.getCapabilities(
+                  parameters.server_id,
+                  filePath,
+                  dependencies.startOptions,
+                )
+              : await dependencies.manager.restartServer(
+                  parameters.server_id,
+                  filePath,
+                  dependencies.startOptions,
+                );
           if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
           return createLspToolOutput(
             formatLspToolValue({

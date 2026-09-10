@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message, StreamFunction, StreamOptions, Usage } from "@earendil-works/pi-ai";
+import type { Message, Usage } from "@earendil-works/pi-ai";
 import { splitDeferredTools } from "@earendil-works/pi-ai/utils/deferred-tools";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
@@ -21,6 +21,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
+import { serializeAnthropicRequest } from "./fixtures/serialize-anthropic-request.js";
 import {
   CodeModeResultDetailsSchema,
   CodeModeResultSchema,
@@ -330,66 +331,6 @@ function codeModeToolNames(session: AgentSession): string[] {
     .getAllTools()
     .map(({ name }) => name)
     .filter((name) => name.startsWith("codemode_"));
-}
-
-async function serializeAnthropicRequest(session: AgentSession, messages: Message[]) {
-  const entry = import.meta.resolve("@earendil-works/pi-ai");
-  const api: { stream: StreamFunction<"anthropic-messages", StreamOptions & { client: object }> } =
-    await import(new URL("./api/anthropic-messages.js", entry).href);
-  const prepared = await session.extensionRunner.emitBeforeAgentStart(
-    "synchronize",
-    undefined,
-    session.systemPrompt,
-    { cwd: session.sessionManager.getCwd() },
-  );
-  const sentinel = "STOP BEFORE ANTHROPIC TRANSPORT";
-  let captured: unknown;
-  let transports = 0;
-  const response = await api
-    .stream(
-      getModel("anthropic", "claude-sonnet-4-5"),
-      {
-        systemPrompt: prepared?.systemPrompt ?? session.systemPrompt,
-        tools: session.agent.state.tools,
-        messages,
-      },
-      {
-        client: {
-          beta: {
-            messages: {
-              create() {
-                transports += 1;
-                throw new Error("Unexpected transport");
-              },
-            },
-          },
-        },
-        sessionId: "plan-004-fixed-routing-key",
-        cacheRetention: "short",
-        onPayload(payload) {
-          captured = structuredClone(payload);
-          throw new Error(sentinel);
-        },
-      },
-    )
-    .result();
-  expect(response.stopReason).toBe("error");
-  expect(response.errorMessage).toContain(sentinel);
-  expect(transports).toBe(0);
-  const payloadSchema = Type.Object({
-    tools: Type.Array(Type.Unknown(), { minItems: 1 }),
-    system: Type.Array(Type.Unknown(), { minItems: 1 }),
-    messages: Type.Array(
-      Type.Object({
-        role: Type.String(),
-        content: Type.Array(Type.Record(Type.String(), Type.Unknown())),
-      }),
-      { minItems: 1 },
-    ),
-  });
-  if (!Value.Check(payloadSchema, captured))
-    throw new Error("Unexpected installed Anthropic payload");
-  return captured;
 }
 
 function executeContract(session: AgentSession) {

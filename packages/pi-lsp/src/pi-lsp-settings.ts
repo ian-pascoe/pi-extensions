@@ -78,6 +78,8 @@ export interface LspServerDefinition {
   readonly command: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly id: string;
+  /** Source-owned fallback; never accepted from user settings. */
+  readonly preset?: boolean;
   readonly initializationOptions?: JsonValue;
   readonly languages: readonly LspLanguageMapping[];
   /** Require any root marker above a candidate file; false falls back to Pi's working directory. */
@@ -105,6 +107,10 @@ export interface LspServerEnablement {
 
 /** Reports resolved trusted configuration, retaining valid entries when other settings are invalid. */
 export interface ResolvedLspSettings {
+  /** Defaults to true; false permits existing installations without acquiring a helper. */
+  readonly autoInstall?: boolean;
+  /** Null and quarantined IDs remain unavailable to the fallback layer. */
+  readonly excludedServerIds?: ReadonlySet<string>;
   readonly enablement: ReadonlyMap<string, LspServerEnablement>;
   readonly servers: ReadonlyMap<string, LspServerDefinition>;
   readonly timeouts: LspTimeouts;
@@ -124,6 +130,7 @@ type PiSettingsDocument = ReturnType<SettingsManager["getGlobalSettings"]>;
 export type LspSettingsDocumentInput = PiSettingsDocument | { readonly lsp?: JsonValue };
 
 interface ParsedLspLayer {
+  readonly autoInstall?: boolean | undefined;
   readonly enablement: ReadonlyMap<string, LspServerEnablement>;
   readonly servers: ReadonlyMap<string, ParsedLspServerDefinition>;
   readonly timeouts: LspTimeoutsWire;
@@ -279,12 +286,23 @@ function readLspLayer(
     };
   }
   const warnings = Object.keys(settings.lsp)
-    .filter((field) => field !== "servers" && field !== "timeouts" && field !== "enablement")
+    .filter(
+      (field) =>
+        field !== "servers" &&
+        field !== "timeouts" &&
+        field !== "enablement" &&
+        field !== "autoInstall",
+    )
     .map((field) => `${scope} lsp.${field}: unknown field`);
+  const autoInstall = settings.lsp.autoInstall;
+  if (autoInstall !== undefined && !Value.Check(Type.Boolean(), autoInstall)) {
+    warnings.push(`${scope} lsp.autoInstall: expected a boolean`);
+  }
   const parsedServers = parseLspServerDefinitions(settings.lsp.servers, scope);
   const parsedTimeouts = parseLspTimeouts(settings.lsp.timeouts, scope);
   const parsedEnablement = parseLspEnablement(settings.lsp.enablement, scope);
   return {
+    autoInstall: Value.Check(Type.Boolean(), autoInstall) ? autoInstall : undefined,
     enablement: parsedEnablement.enablement,
     servers: parsedServers.servers,
     timeouts: parsedTimeouts.timeouts,
@@ -378,6 +396,8 @@ export function resolveLspSettings(reader: LspSettingsReader): ResolvedLspSettin
   const globalLayer = readLspLayer(reader.getGlobalSettings(), "global");
   const projectLayer = readLspLayer(reader.getProjectSettings(), "project");
   return {
+    autoInstall: projectLayer.autoInstall ?? globalLayer.autoInstall ?? true,
+    excludedServerIds: new Set([...globalLayer.servers, ...projectLayer.servers].map(([id]) => id)),
     enablement: new Map([...globalLayer.enablement, ...projectLayer.enablement]),
     servers: mergeLspServers(globalLayer, projectLayer),
     timeouts: mergeLspTimeouts(globalLayer, projectLayer),

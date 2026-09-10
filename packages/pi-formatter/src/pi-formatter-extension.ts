@@ -1,14 +1,17 @@
-import { spawn } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, matchesGlob, resolve } from "node:path";
+import { basename, dirname, extname, join, matchesGlob, resolve } from "node:path";
 import {
   getAgentDir,
   SettingsManager,
   type ExtensionFactory,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
+import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
+import spawn from "cross-spawn";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { registerFormatterCommand } from "./formatter-command.js";
+import { resolvePresetDefinition, selectFormatterPreset } from "./formatter-presets.js";
 import {
   resolveFormatterSettings,
   type FormatterDefinition,
@@ -201,43 +204,68 @@ function runFormatterCommand(
 ): Promise<FormatterCommandFailure | undefined> {
   return new Promise((complete) => {
     let stderr = "";
-    let finished = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let failure: FormatterCommandFailure | undefined;
     try {
+      signal?.throwIfAborted();
       const child = spawn(definition.command, args, {
         cwd,
         env: formatterProcessEnvironment(definition.environment),
         shell: false,
-        signal,
+        detached: process.platform !== "win32",
+        windowsHide: true,
         stdio: ["ignore", "ignore", "pipe"],
       });
-      const finish = (failure: FormatterCommandFailure | undefined): void => {
-        if (finished) return;
-        finished = true;
-        if (timer !== undefined) clearTimeout(timer);
-        complete(failure);
+      const kill = () => {
+        if (!child.pid) return;
+        if (process.platform === "win32") {
+          const killer = spawn(
+            join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+            ["/pid", String(child.pid), "/T", "/F"],
+            { stdio: "ignore", windowsHide: true },
+          );
+          killer.on("error", () => child.kill("SIGKILL"));
+          killer.on("close", (code) => {
+            if (code !== 0) child.kill("SIGKILL");
+          });
+        } else {
+          try {
+            process.kill(-child.pid, "SIGKILL");
+          } catch {
+            child.kill("SIGKILL");
+          }
+        }
       };
-      timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        finish({ kind: "timeout", timeoutMs });
+      const cancel = () => {
+        failure = { kind: "spawn_error", message: "Formatting cancelled" };
+        kill();
+      };
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) cancel();
+      const timer = setTimeout(() => {
+        failure = { kind: "timeout", timeoutMs };
+        kill();
       }, timeoutMs);
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk: string) => {
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
         stderr = (stderr + chunk).slice(-MAX_FORMATTER_STDERR_CHARACTERS);
       });
       child.on("error", (cause: Error) => {
-        finish({ kind: "spawn_error", message: cause.message });
+        failure = { kind: "spawn_error", message: cause.message };
       });
       child.on("close", (exitCode, signalName) => {
-        if (exitCode === 0) finish(undefined);
-        else {
-          finish({
-            kind: "exit_error",
-            exitCode,
-            signal: signalName,
-            stderr: stderr.trim(),
-          });
-        }
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", cancel);
+        complete(
+          failure ??
+            (exitCode === 0
+              ? undefined
+              : {
+                  kind: "exit_error",
+                  exitCode,
+                  signal: signalName,
+                  stderr: stderr.trim(),
+                }),
+        );
       });
     } catch (cause) {
       complete({
@@ -270,7 +298,9 @@ async function formatMutationPaths(
   paths: readonly string[],
   cwd: string,
   settings: ResolvedFormatterSettings,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
+  installer: ToolInstaller,
+  onProgress: (message: string) => void,
 ): Promise<readonly string[]> {
   const existing = await existingFormatterPaths(cwd, paths);
   const warnings = [...existing.warnings];
@@ -314,6 +344,33 @@ async function formatMutationPaths(
       }
     }
   }
+  for (const path of existing.paths) {
+    if (
+      [...settings.formatters.values()].some((definition) => formatterMatchesPath(definition, path))
+    )
+      continue;
+    try {
+      const selected = await selectFormatterPreset(path);
+      if (!selected || settings.explicitIds.has(selected.id)) continue;
+      const definition = await resolvePresetDefinition(selected.id, dirname(path), installer, {
+        allowDownload: settings.autoInstall,
+        signal,
+        onProgress,
+      });
+      const failure = await runFormatterCommand(
+        definition,
+        definition.args.map((arg) => arg.replaceAll("$FILE", path)),
+        selected.root,
+        settings.timeoutMs,
+        signal,
+      );
+      if (failure) warnings.push(formatFormatterFailure(definition, path, failure));
+    } catch (error) {
+      warnings.push(
+        `Pi Formatter: assistance unavailable for ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   return warnings;
 }
 
@@ -322,8 +379,14 @@ export function createPiFormatterExtension(
   getAgentDirectory: () => string = getAgentDir,
 ): ExtensionFactory {
   let settings: ResolvedFormatterSettings | undefined;
+  const installer = new ToolInstaller(join(getAgentDirectory(), "managed-tools"));
+  let lifetime = new AbortController();
+  const mutations = new Set<Promise<readonly string[]>>();
   return (pi) => {
+    const stopUpdates = registerFormatterCommand(pi, installer, () => lifetime.signal);
     pi.on("session_start", (_event, context) => {
+      lifetime.abort();
+      lifetime = new AbortController();
       const reader = SettingsManager.create(context.cwd, getAgentDirectory(), {
         projectTrusted: context.isProjectTrusted(),
       });
@@ -332,12 +395,35 @@ export function createPiFormatterExtension(
         context.ui.notify(`Pi Formatter settings:\n- ${settings.warnings.join("\n- ")}`, "warning");
       }
     });
+    pi.on("session_shutdown", async (_event, context) => {
+      lifetime.abort();
+      await Promise.allSettled([...mutations, stopUpdates()]);
+      context.ui.setStatus("pi-formatter-update", undefined);
+    });
     pi.on("tool_result", async (event, context) => {
       const paths = extractFormatterMutationPaths(event);
       if (paths === undefined || paths.length === 0 || settings === undefined) return undefined;
-      const warnings = await formatMutationPaths(paths, context.cwd, settings, context.signal);
-      if (warnings.length === 0) return undefined;
-      return { content: [...event.content, { type: "text", text: warnings.join("\n") }] };
+      const signal = context.signal
+        ? AbortSignal.any([context.signal, lifetime.signal])
+        : lifetime.signal;
+      const statusKey = `pi-formatter:${event.toolCallId}`;
+      const pending = formatMutationPaths(
+        paths,
+        context.cwd,
+        settings,
+        signal,
+        installer,
+        (message) => context.ui.setStatus(statusKey, message),
+      );
+      mutations.add(pending);
+      try {
+        const warnings = await pending;
+        if (warnings.length === 0) return undefined;
+        return { content: [...event.content, { type: "text", text: warnings.join("\n") }] };
+      } finally {
+        mutations.delete(pending);
+        context.ui.setStatus(statusKey, undefined);
+      }
     });
   };
 }

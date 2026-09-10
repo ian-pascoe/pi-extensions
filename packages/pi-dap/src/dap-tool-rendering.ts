@@ -466,7 +466,7 @@ function renderProgress(details: DapToolProgressDetails, theme: DapRenderTheme):
   return new Text(
     theme.fg(
       "accent",
-      `${progressingDapOperation(details.operation)}… ${Math.floor(details.elapsed_ms / 1_000)}s`,
+      `${details.message === undefined ? progressingDapOperation(details.operation) : boundedDapPreview(details.message)}… ${Math.floor(details.elapsed_ms / 1_000)}s`,
     ),
     0,
     0,

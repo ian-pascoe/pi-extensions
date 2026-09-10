@@ -1,7 +1,15 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
+import {
+  installedLspRequest,
+  LSP_PRESETS,
+  resolveLspPreset,
+  withLspPresets,
+} from "./lsp-presets.js";
 import {
   getAgentDir,
+  BorderedLoader,
   SettingsManager,
   type ExtensionAPI,
   type ExtensionContext,
@@ -63,6 +71,7 @@ export interface PiLspLifecycleEffects {
 
 interface ActivePiLspSession {
   readonly cwd: string;
+  readonly installer: ToolInstaller;
   configuredEnablement: ReadonlyMap<string, LspServerEnablement>;
   readonly manager: LspServerManager<LspServerClient>;
   readonly sessionFiles: LspSessionFiles;
@@ -176,6 +185,7 @@ class ManagerPostEditDiagnosticsRunner {
   constructor(
     private readonly session: ActivePiLspSession,
     private readonly signal: AbortSignal | undefined,
+    private readonly onProgress: (message: string) => void,
   ) {}
 
   async run(
@@ -214,6 +224,7 @@ class ManagerPostEditDiagnosticsRunner {
             ),
           );
         },
+        { signal: this.signal, onProgress: this.onProgress },
       );
       const successfulOutcomes = result.successes.flatMap(({ value }) => value);
       outcomes.push(...successfulOutcomes);
@@ -236,9 +247,18 @@ async function appendSessionPostEditDiagnostics(
   session: ActivePiLspSession,
   context: ExtensionContext,
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
-  const patch = await appendPostEditDiagnostics(event, (paths) =>
-    new ManagerPostEditDiagnosticsRunner(session, context.signal).run(paths),
-  );
+  const statusKey = `pi-lsp-install-${event.toolCallId}`;
+  let patch: PostEditDiagnosticsResultPatch | undefined;
+  try {
+    patch = await appendPostEditDiagnostics(event, (paths) =>
+      new ManagerPostEditDiagnosticsRunner(session, context.signal, (message) => {
+        if (context.hasUI) context.ui.setStatus(statusKey, message);
+        else process.stderr.write(`Pi LSP: ${message}\n`);
+      }).run(paths),
+    );
+  } finally {
+    if (context.hasUI) context.ui.setStatus(statusKey, undefined);
+  }
   if (patch === undefined) return undefined;
   const appendedValue = patch.content.at(-1);
   if (!Value.Check(AppendedTextContentSchema, appendedValue)) return undefined;
@@ -269,6 +289,9 @@ export class PiLspLifecycleController {
   private session: ActivePiLspSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private historyRevision = 0;
+  private update:
+    | { readonly controller: AbortController; readonly settled: Promise<void> }
+    | undefined;
 
   /** Bind one lifecycle controller to Pi and production or test construction effects. */
   constructor(
@@ -280,7 +303,7 @@ export class PiLspLifecycleController {
   register(): void {
     registerLspTool(this.pi, () => this.activeSession());
     this.pi.registerCommand("lsp", {
-      description: "Manage language-server enablement and Instances",
+      description: "Manage language-server enablement, Instances, and managed Tool Updates",
       getArgumentCompletions: (prefix) =>
         completeLspCommandArguments(prefix, this.session?.manager),
       handler: (args, context) => this.handleCommand(args, context),
@@ -306,7 +329,8 @@ export class PiLspLifecycleController {
     const settingsManager = SettingsManager.create(context.cwd, this.effects.getAgentDirectory(), {
       projectTrusted: context.isProjectTrusted(),
     });
-    const settings = resolveLspSettings(settingsManager);
+    const settings = withLspPresets(resolveLspSettings(settingsManager));
+    const installer = new ToolInstaller(join(this.effects.getAgentDirectory(), "managed-tools"));
     if (settings.warnings.length > 0) {
       context.ui.notify(`Pi LSP settings:\n- ${settings.warnings.join("\n- ")}`, "warning");
     }
@@ -326,7 +350,21 @@ export class PiLspLifecycleController {
     const manager = new LspServerManager<LspServerClient>({
       cwd: context.cwd,
       settings,
-      startClient: async ({ definition, onUnavailable, rootPath, timeouts, signal }) => {
+      startClient: async ({
+        definition: configured,
+        onProgress,
+        onUnavailable,
+        rootPath,
+        timeouts,
+        signal,
+      }) => {
+        const definition = await resolveLspPreset(
+          configured,
+          rootPath,
+          installer,
+          settings.autoInstall !== false,
+          { signal, onProgress: (message) => onProgress?.(message) },
+        );
         let client: LspServerClient | undefined;
         client = await LspServerClient.start({
           serverId: definition.id,
@@ -355,6 +393,7 @@ export class PiLspLifecycleController {
     this.session = {
       cwd: context.cwd,
       configuredEnablement: settings.enablement,
+      installer,
       manager,
       sessionFiles,
       workspaceEdits,
@@ -386,6 +425,19 @@ export class PiLspLifecycleController {
           ? await selectLspCommand(session.manager, context, isCurrent)
           : parseLspCommandArguments(args);
       if (command === undefined || !isCurrent()) return;
+      if (command.action === "cancel-update") {
+        this.update?.controller.abort(new Error("Pi LSP: Tool Update cancelled"));
+        notifyLspCommand(
+          context,
+          this.update ? "Pi LSP: cancelling Tool Update" : "Pi LSP: no Tool Update is running",
+          "info",
+        );
+        return;
+      }
+      if (command.action === "update") {
+        await this.updateManagedTools(session, command.serverId, context, isCurrent);
+        return;
+      }
       if (
         !session.manager.getStatus().servers.some(({ serverId }) => serverId === command.serverId)
       ) {
@@ -455,6 +507,103 @@ export class PiLspLifecycleController {
     }
   }
 
+  private async updateManagedTools(
+    session: ActivePiLspSession,
+    serverId: string | undefined,
+    context: ExtensionCommandContext,
+    isCurrent: () => boolean,
+  ): Promise<void> {
+    if (this.update)
+      throw new Error("Pi LSP: a Tool Update is already running; use /lsp update cancel");
+    const presets = LSP_PRESETS.filter(({ id }) => serverId === undefined || id === serverId);
+    if (presets.length === 0)
+      throw new Error(
+        `Pi LSP: ${serverId} is not a managed Language Tool Preset; External Installations are never updated`,
+      );
+    const controller = new AbortController();
+    const signal = context.signal
+      ? AbortSignal.any([controller.signal, context.signal])
+      : controller.signal;
+    const completion = Promise.withResolvers<void>();
+    this.update = { controller, settled: completion.promise };
+    const statusKey = "pi-lsp-update";
+    const progress = (message: string) => {
+      if (!isCurrent()) return;
+      if (context.hasUI) context.ui.setStatus(statusKey, `${message} — /lsp update cancel`);
+      else process.stderr.write(`Pi LSP: ${message} — /lsp update cancel\n`);
+    };
+    const work = async (signal: AbortSignal) => {
+      let found = false;
+      for (const preset of presets) {
+        if (signal.aborted) break;
+        try {
+          const installed = await session.installer.installed(`lsp-${preset.id}`);
+          if (!installed) continue;
+          found = true;
+          const versions = (installation: typeof installed) =>
+            Object.entries(installation.components)
+              .map(([key, value]) => `${key} ${value.version}`)
+              .join(", ");
+          const result = await session.installer.update(installedLspRequest(preset.id, installed), {
+            signal,
+            onProgress: progress,
+          });
+          if (!result || !isCurrent()) continue;
+          const previous = versions(result.previous);
+          const current = versions(result.current);
+          notifyLspCommand(
+            context,
+            previous === current
+              ? `Pi LSP: ${preset.id}: no change (${current})`
+              : `Pi LSP: ${preset.id}: ${previous} → ${current}; running Instances keep their existing executables`,
+            "info",
+          );
+        } catch (error) {
+          if (isCurrent())
+            notifyLspCommand(
+              context,
+              `Pi LSP: ${preset.id}: ${signal.aborted ? "cancelled" : "update failed"}: ${error instanceof Error ? error.message : String(error)}; previous installation retained`,
+              "error",
+            );
+        }
+      }
+      if (!found && isCurrent())
+        notifyLspCommand(
+          context,
+          signal.aborted
+            ? "Pi LSP: Tool Update cancelled"
+            : "Pi LSP: no installed Managed Installations to update; unused presets and External Installations were left untouched",
+          "info",
+        );
+    };
+    try {
+      let invoked = false;
+      const failure = await context.ui.custom<Error | undefined>((tui, theme, _keys, done) => {
+        invoked = true;
+        const loader = new BorderedLoader(tui, theme, "Updating Pi LSP tools (Escape cancels)");
+        loader.onAbort = () => controller.abort(new Error("Pi LSP: Tool Update cancelled"));
+        const finish = (error?: Error) => {
+          loader.dispose();
+          done(error);
+        };
+        void work(AbortSignal.any([signal, loader.signal])).then(
+          () => finish(),
+          (error) => finish(error instanceof Error ? error : new Error(String(error))),
+        );
+        return loader;
+      });
+      if (failure) throw failure;
+      if (!invoked) await work(signal);
+    } finally {
+      try {
+        if (context.hasUI) context.ui.setStatus(statusKey, undefined);
+      } finally {
+        this.update = undefined;
+        completion.resolve();
+      }
+    }
+  }
+
   private activeSession(): ActivePiLspSession {
     if (this.session === undefined) throw new Error("Pi LSP: session runtime is inactive");
     return this.session;
@@ -477,7 +626,7 @@ export class PiLspLifecycleController {
     if (session === undefined) return undefined;
     return appendSessionPostEditDiagnostics(event, session, context).then((patch) => {
       if (patch === undefined) return undefined;
-      this.pendingPostEditDiagnosticOutcomes.push(...patch.outcomes);
+      if (this.session === session) this.pendingPostEditDiagnosticOutcomes.push(...patch.outcomes);
       return { content: patch.content, details: patch.details, isError: patch.isError };
     });
   }
@@ -497,10 +646,12 @@ export class PiLspLifecycleController {
     }
     const session = this.session;
     this.session = undefined;
+    this.update?.controller.abort(new Error("Pi LSP: session runtime is shut down"));
+    const update = this.update?.settled;
     this.pendingPostEditDiagnosticOutcomes.length = 0;
     const shutdown = (async () => {
       try {
-        await session.manager.shutdown();
+        await Promise.all([session.manager.shutdown(), update]);
       } finally {
         await session.sessionFiles.close();
       }

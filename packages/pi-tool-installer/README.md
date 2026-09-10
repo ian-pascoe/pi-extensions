@@ -3,7 +3,7 @@
 Shared compiled library for private Managed Installations. It is not a Pi extension
 and does not register tools, read Pi settings, or choose language presets.
 
-**Work in progress:** LSP, DAP, and Formatter do not use this library yet. The
+LSP, DAP, and Formatter use this library for first-use acquisition and updates. The
 [six-platform acquisition and launch gate](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
 passed at `59c17f0`: 11 native checks per target, 66 total. This proves acquisition
 and launch, not the complete installation/update or extension integration contract.
