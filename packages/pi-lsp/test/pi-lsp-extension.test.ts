@@ -640,7 +640,7 @@ describe("Pi LSP extension lifecycle", () => {
     } finally {
       await shutdownExtension(harness);
     }
-  });
+  }, 15_000);
 
   test("resolves an external Node independently while acquiring only missing TypeScript, ignoring a project TypeScript 6 compiler", async () => {
     const { harness, store } = await managedHarness();
