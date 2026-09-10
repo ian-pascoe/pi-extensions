@@ -55,7 +55,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           node -e "const a = require('node:assert/strict'); a.equal(process.platform, process.env.EXPECTED_OS); a.equal(process.arch, process.env.EXPECTED_ARCH); console.log(process.platform, process.arch, process.version)"
-          pnpm --dir packages/pi-tool-installer exec vitest run --config ../../vitest.config.ts --root . native.test.ts --reporter=verbose --disableConsoleIntercept
+          pnpm --dir packages/pi-tool-installer exec vitest run --config ../../vitest.config.ts --root . --reporter=verbose --disableConsoleIntercept
 
   verify:
     if: ${{ !inputs.native_only }}

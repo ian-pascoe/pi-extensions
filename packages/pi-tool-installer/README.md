@@ -7,10 +7,10 @@ and does not register tools, read Pi settings, or choose language presets.
 [six-platform acquisition and launch gate](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
 passed at `59c17f0`: 11 native checks per target, 66 total. This proves acquisition
 and launch, not the complete installation/update or extension integration contract.
-In particular, mise's pipx backend rewrites Python interpreter links to moving
-minor-version aliases. A separate Linux experiment verified dependency-specific
-pipx namespaces with shared, concrete Python runtimes; that solution still needs
-integration and public update/cancellation regression tests.
+The hardened installer now uses dependency-specific pipx namespaces with shared,
+concrete Python runtimes. Public API regressions passed locally on Linux x64 for
+immutable updates, real-install cancellation/failure/retry, and separate-process
+coordination/interruption. These changes still need the six-target gate.
 
 ## API
 
@@ -27,18 +27,27 @@ const installation = await installer.ensure(request, {
 ```
 
 - `installed(id)` reads an existing selection without running a helper or accessing
-  the network. Missing selections return `undefined`.
-- `ensure(request, options)` reuses that selection, or acquires the latest concrete
-  versions when downloads are allowed. Requirements are processed in insertion
-  order so a runtime can precede a tool that needs it.
+  the network. Missing selections or directories return `undefined`; malformed
+  metadata and paths escaping the store are rejected.
+- `ensure(request, options)` reuses a selection only when its ordered requirement
+  identities match. When downloads are allowed, it reconciles changed requirements,
+  resolving only new/changed selectors and retaining unchanged selectors' concrete
+  versions. Missing directories can be reacquired at their recorded versions.
+  Installed-only Mode reports unavailability without bootstrapping the helper.
+  Requirements are processed in insertion order so a runtime precedes its tool.
 - `update(request, options)` deliberately resolves latest versions for an existing
   selection. It returns `{ previous, current }`, or `undefined` for an unused ID.
   It does not install unused presets as a side effect.
 
-Results contain concrete component versions and installation directories,
+Results contain each component's `selector`, concrete `version`, and installation `directory`,
 `binDirectories`, and child-process `environment` additions without PATH. Callers
 own executable paths, arguments, runtime selection, Pi settings, and progress UI.
 Use reviewed, package-owned acquisition selectors; never accept workspace recipes.
+Native mise ToolArgs with a trailing version/prefix (including scoped npm packages)
+are supported without double-appending versions. Language Tool Presets must still
+use latest selectors; the native update fixture uses explicit versions solely to
+control its old/new runtime comparison. Earlier unreleased prototype records without
+selector identity are rejected rather than guessed.
 
 ## Isolation and durability
 
@@ -46,8 +55,22 @@ The helper runs in a private working directory with no mise configuration or hoo
 a private HOME and data/cache/config/temp directories, and a system-only PATH.
 Acquisition changes neither the calling process environment nor shell startup files.
 A heartbeat lock coordinates Pi processes sharing a store. Selection records are
-published by rename only after all components install; failed or cancelled updates
-leave the prior selection intact. Existing concrete versions are retained.
+published by rename only after all components install and their directories validate;
+failed or cancelled updates leave the prior selection intact. Existing concrete
+versions are retained. Missing directories are distinct from corrupt metadata.
+
+Only pipx installations get a namespace keyed by the concrete tool and preceding
+dependency graph. Its mise data, system-data, and cache directories are scoped;
+preceding Python/uv installations are reused through native `@path:` ToolArgs.
+An exact `UV_PYTHON` selects the shared full-patch interpreter outside that namespace,
+so mise does not rewrite its venv links to moving minor-version aliases. No runtime
+copies or hand-edited links are involved. Python downloads, uv configuration, and
+bytecode writes are disabled for this composition.
+
+Mise retains ownership of component install locks and incomplete markers. The store
+heartbeat lock coordinates selection publication; a dead owner's lock expires.
+A hard-killed Pi process can leave mise finishing an unselected concrete install;
+retry uses mise's component lock/completion checks before publishing a selection.
 
 The first acquisition downloads a native mise release binary and verifies its
 GitHub-published SHA-256 digest. Component acquisition and archive extraction are
@@ -57,8 +80,10 @@ An optional `GITHUB_TOKEN` authenticates only the helper's GitHub API metadata
 request, avoiding shared-IP API limits. It is not forwarded to artifact downloads
 or mise subprocesses; metadata redirects are rejected rather than forwarding it.
 
-Cancellation stops the acquisition process tree. Installed-only resolution does
-not download the helper; explicit updates remain deliberate network actions.
+Cancellation stops the acquisition process tree. Progress includes native helper
+stderr lines, allowing cancellation during actual downloads rather than only version
+resolution. Installed-only resolution does not download the helper; explicit updates
+remain deliberate network actions.
 
 ## Verification
 
@@ -71,6 +96,7 @@ pnpm --dir packages/pi-tool-installer test
 Real downloads and native launches require an explicit opt-in:
 
 ```sh
+pnpm --dir packages/pi-tool-installer build
 PI_TOOL_INSTALLER_NATIVE=1 pnpm --dir packages/pi-tool-installer exec vitest run --config ../../vitest.config.ts --root . native.test.ts
 ```
 
@@ -123,7 +149,16 @@ gopls; macOS debugger IPC uses a separate short private temporary directory.
 GitHub shared-IP rate limits can still prevent mise backend downloads: the optional
 helper metadata token does not authenticate those subprocesses.
 
-Separate-process concurrency, interruption during an actual install, immutable
-Python updates, package precedence, and offline SDK prefix/coexistence proofs
-remain later gates; the bootstrap probe's two installer instances are not separate
-Pi processes.
+The suite retains all 11 original catalog/bootstrap checks and adds a native Python
+update regression (12 checks per target). The bootstrap check now launches two
+separate Node processes. The Python check keeps Black 26.5.1 while changing Python
+3.14.6 → 3.14.7, verifies old/new formatting and full-patch runtime identity, checks
+unchanged old runtime metadata and absence of namespace runtime copies, then tests
+native install failure, cancellation on Black download output, hard process death,
+and retry/offline reuse. Eleven routine tests cover the public installer API offline,
+replacing only external download/process boundaries.
+
+The hardened two-test installer suite passed locally on Linux x64. Local full-catalog
+runs also exposed upstream Go archive HTTP 404 and unauthenticated GitHub backend
+rate limits; these failures are not suppressed. Updated six-target evidence, package
+precedence, and offline SDK prefix/coexistence proofs remain separate gates.

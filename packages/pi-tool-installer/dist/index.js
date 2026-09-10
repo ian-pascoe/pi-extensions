@@ -1,15 +1,19 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, realpath, rename, rm, stat, writeFile, } from "node:fs/promises";
 import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+const idPattern = /^[a-z][a-z0-9-]*$/;
+const IdSchema = Type.String({ pattern: idPattern.source });
+const SelectorSchema = Type.String({ pattern: "^(core|npm|aqua|go|pipx|github):[^\\s]+$" });
+const VersionSchema = Type.String({ pattern: "^v?\\d[a-zA-Z0-9.+_-]*$" });
 const EnvironmentSchema = Type.Record(Type.String(), Type.String());
 const InstallationSchema = Type.Object({
     id: Type.String(),
-    components: Type.Record(Type.String(), Type.Object({ version: Type.String(), directory: Type.String() })),
+    components: Type.Record(IdSchema, Type.Object({ selector: SelectorSchema, version: VersionSchema, directory: Type.String() }), { minProperties: 1, additionalProperties: false }),
     binDirectories: Type.Array(Type.String()),
     environment: EnvironmentSchema,
 });
@@ -21,15 +25,25 @@ const ReleaseSchema = Type.Object({
     })),
 });
 const FileErrorSchema = Type.Object({ code: Type.Literal("ENOENT") });
-const idPattern = /^[a-z][a-z0-9-]*$/;
-const IdSchema = Type.String({ pattern: idPattern.source });
 const RequestSchema = Type.Object({
     id: IdSchema,
-    requirements: Type.Record(IdSchema, Type.String({ pattern: "^(core|npm|aqua|go|pipx|github):[^\\s]+$" }), { minProperties: 1, additionalProperties: false }),
+    requirements: Type.Record(IdSchema, SelectorSchema, {
+        minProperties: 1,
+        additionalProperties: false,
+    }),
 }, { additionalProperties: false });
+function toolName(selector) {
+    const at = selector.lastIndexOf("@");
+    return at > selector.indexOf(":") + 1 && at > selector.lastIndexOf("]")
+        ? selector.slice(0, at)
+        : selector;
+}
 function validateRequest(request) {
     if (!Value.Check(RequestSchema, request))
         throw new Error("Invalid managed tool request");
+}
+function matches(installation, request) {
+    return (JSON.stringify(Object.entries(installation?.components ?? {}).map(([key, value]) => [key, value.selector])) === JSON.stringify(Object.entries(request.requirements)));
 }
 function validId(id) {
     if (!idPattern.test(id))
@@ -60,6 +74,16 @@ function validateInstallation(installation, id, directory) {
     }
     return installation;
 }
+async function validateDirectories(installation, directory) {
+    const root = await realpath(directory);
+    for (const path of [
+        ...Object.values(installation.components).map((component) => component.directory),
+        ...installation.binDirectories,
+    ]) {
+        if (!(await stat(path)).isDirectory() || !contained(root, await realpath(path)))
+            throw new Error(`Invalid managed installation directory: ${path}`);
+    }
+}
 /** A private per-user store. Construction and installed() never acquire tools. */
 export class ToolInstaller {
     directory;
@@ -67,6 +91,20 @@ export class ToolInstaller {
         this.directory = resolve(directory);
     }
     async installed(id) {
+        const selection = await this.selection(id);
+        if (!selection)
+            return undefined;
+        try {
+            await validateDirectories(selection, this.directory);
+        }
+        catch (error) {
+            if (Value.Check(FileErrorSchema, error))
+                return undefined;
+            throw error;
+        }
+        return selection;
+    }
+    async selection(id) {
         validId(id);
         let text;
         try {
@@ -80,26 +118,22 @@ export class ToolInstaller {
         const value = JSON.parse(text);
         if (!Value.Check(InstallationSchema, value))
             throw new Error(`Invalid installation record for ${id}`);
-        const installation = validateInstallation(value, id, this.directory);
-        for (const component of Object.values(installation.components)) {
-            await access(component.directory);
-        }
-        return installation;
+        return validateInstallation(value, id, this.directory);
     }
     async ensure(request, options) {
         options.signal?.throwIfAborted();
         validateRequest(request);
         const existing = await this.installed(request.id);
-        if (existing)
+        if (existing && matches(existing, request))
             return existing;
         if (!options.allowDownload) {
             throw new Error(`${request.id} is not installed. Enable automatic downloads or configure an external executable.`);
         }
         return this.withInstallationLock(options, async (signal) => {
             const installed = await this.installed(request.id);
-            if (installed)
+            if (installed && matches(installed, request))
                 return installed;
-            return this.acquire(request, { ...options, signal });
+            return this.acquire(request, { ...options, signal }, installed ?? (await this.selection(request.id)));
         });
     }
     async update(request, options) {
@@ -270,11 +304,17 @@ export class ToolInstaller {
             });
             let stdout = "";
             let stderr = "";
+            let progress = "";
             child.stdout.setEncoding("utf8").on("data", (data) => {
                 stdout += data;
             });
             child.stderr.setEncoding("utf8").on("data", (data) => {
                 stderr = (stderr + data).slice(-64_000);
+                const lines = (progress + data).split(/\r?\n/);
+                progress = (lines.pop() ?? "").slice(-64_000);
+                for (const line of lines)
+                    if (line.trim())
+                        options.onProgress?.(line.trim());
             });
             const cancel = () => {
                 if (!child.pid)
@@ -308,7 +348,7 @@ export class ToolInstaller {
             });
         });
     }
-    async acquire(request, options) {
+    async acquire(request, options, previous) {
         await Promise.all([
             "home",
             "work",
@@ -324,19 +364,45 @@ export class ToolInstaller {
         const tools = [];
         let additions = {};
         for (const [key, selector] of Object.entries(request.requirements)) {
-            options.onProgress?.(`Resolving latest ${selector}`);
-            const version = await this.run(helper, ["latest", selector], environment, options);
-            if (!/^[v\d][a-zA-Z0-9.+_-]*$/.test(version))
-                throw new Error(`Invalid concrete version for ${selector}: ${version}`);
-            const concrete = `${selector}@${version}`;
+            const selected = previous?.components[key];
+            let version = selected?.selector === selector ? selected.version : undefined;
+            if (!version) {
+                options.onProgress?.(`Resolving latest ${selector}`);
+                version = await this.run(helper, ["latest", selector], environment, options);
+            }
+            if (!Value.Check(VersionSchema, version))
+                throw new Error(`Invalid concrete version for ${selector}: ${String(version)}`);
+            const concrete = `${toolName(selector)}@${version}`;
+            let installEnvironment = environment;
+            let prerequisites = tools;
+            if (selector.startsWith("pipx:")) {
+                // pipx links must target the shared full-patch Python, outside this namespace.
+                // Its cache is scoped too: mise keeps incomplete-install markers there.
+                prerequisites = Object.values(components).map((component) => `${toolName(component.selector)}@path:${component.directory}`);
+                const graph = JSON.stringify([prerequisites, concrete]);
+                const namespace = join(this.directory, "pipx", createHash("sha256").update(graph).digest("hex"));
+                const python = Object.values(components).find((component) => toolName(component.selector) === "core:python");
+                if (!python)
+                    throw new Error(`${selector} requires a preceding managed Python runtime`);
+                installEnvironment = {
+                    ...environment,
+                    MISE_DATA_DIR: join(namespace, "data"),
+                    MISE_SYSTEM_DATA_DIR: join(namespace, "system-data"),
+                    MISE_CACHE_DIR: join(namespace, "cache"),
+                    UV_PYTHON: join(python.directory, process.platform === "win32" ? "python.exe" : "bin/python3"),
+                    UV_PYTHON_DOWNLOADS: "never",
+                    UV_NO_CONFIG: "1",
+                    PYTHONDONTWRITEBYTECODE: "1",
+                };
+            }
             options.onProgress?.(`Installing ${concrete}`);
-            await this.run(helper, ["install", ...tools, concrete], environment, options);
-            const directory = await this.run(helper, ["where", concrete], environment, options);
+            await this.run(helper, ["install", ...prerequisites, concrete], installEnvironment, options);
+            const directory = await this.run(helper, ["where", concrete], installEnvironment, options);
             if (!contained(this.directory, directory))
                 throw new Error(`mise resolved outside its private store: ${directory}`);
-            components[key] = { version, directory };
-            tools.push(concrete);
-            const value = JSON.parse(await this.run(helper, ["env", "--json", ...tools], environment, options));
+            components[key] = { selector, version, directory };
+            const value = JSON.parse(await this.run(helper, ["env", "--json", ...prerequisites, concrete], installEnvironment, options));
+            tools.push(selector.startsWith("pipx:") ? `${toolName(selector)}@path:${directory}` : concrete);
             if (!Value.Check(EnvironmentSchema, value))
                 throw new Error("Invalid mise environment result");
             additions = value;
@@ -347,6 +413,7 @@ export class ToolInstaller {
             .filter((path) => !basePaths.has(path));
         delete additions.PATH;
         const installation = validateInstallation({ id: request.id, components, binDirectories, environment: additions }, request.id, this.directory);
+        await validateDirectories(installation, this.directory);
         const destination = join(this.directory, "selections", `${request.id}.json`);
         const staged = `${destination}.${randomUUID()}.tmp`;
         try {
