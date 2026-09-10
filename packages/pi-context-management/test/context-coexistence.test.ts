@@ -6,7 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
 import { readNotes } from "../src/context-store.js";
-import { createSdkHarness, reply, toolCall } from "./sdk-harness.js";
+import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
 it("records non-triggering Todo snapshots but omits them from automatic continuation", async () => {
   const snapshotText = "TODO PUBLICATION PROBE: immutable snapshot";
@@ -294,8 +294,8 @@ it("restores selected-branch Tasks through tree navigation, reload, resume, and 
 });
 
 for (const transition of ["native", "rollover"] as const) {
-  for (const tailTokens of [0, 500]) {
-    it(`maps ${transition} checkpoint to its immutable cutoff with Tail ${tailTokens}`, async () => {
+  for (const keepRecentTokens of transition === "native" ? [0, 500] : [500]) {
+    it(`maps ${transition} checkpoint to its immutable cutoff with native retention ${keepRecentTokens}`, async () => {
       const anchors: Array<{ baseline: unknown; cutoff: string; summaryIndex: number }> = [];
       const inspect: ExtensionFactory = (pi) => {
         pi.on("context", (event, context) => {
@@ -324,7 +324,7 @@ for (const transition of ["native", "rollover"] as const) {
       const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
       const f = await createSdkHarness([contextManagement, inspect], {
         additionalExtensionPaths: [todoPath],
-        contextSettings: { tailTokens },
+        keepRecentTokens,
       });
       f.responses.push(
         toolCall("todo", { action: "add", title: "Before cutoff" }),
@@ -339,8 +339,7 @@ for (const transition of ["native", "rollover"] as const) {
       );
       await f.session.prompt("Update retained Task");
       if (transition === "native") {
-        await f.session.compact();
-        f.responses.push(reply("Resumed."));
+        f.responses.push(overflow(), reply("Resumed."));
       } else {
         f.responses.push(
           toolCall("context_rollover", { handoff: "Continue the Task." }),
@@ -351,7 +350,7 @@ for (const transition of ["native", "rollover"] as const) {
       expect(anchors.length).toBeGreaterThan(0);
       expect(anchors.every((anchor) => anchor.summaryIndex === 0)).toBe(true);
       expect(anchors.at(-1)?.baseline).toMatchObject({
-        tasks: [{ title: tailTokens === 0 ? "After cutoff" : "Before cutoff" }],
+        tasks: [{ title: transition === "native" ? "After cutoff" : "Before cutoff" }],
       });
       expect(f.providerRequests).toEqual([]);
     });
@@ -360,7 +359,10 @@ for (const transition of ["native", "rollover"] as const) {
 
 it("preserves the real Todo extension's live projection across a native Rollover", async () => {
   const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
-  const f = await createSdkHarness([contextManagement], { additionalExtensionPaths: [todoPath] });
+  const f = await createSdkHarness([contextManagement], {
+    additionalExtensionPaths: [todoPath],
+    keepRecentTokens: 500,
+  });
   expect(f.session.resourceLoader.getExtensions().errors).toEqual([]);
   expect(f.session.getAllTools().map((tool) => tool.name)).toContain("todo");
   f.responses.push(
@@ -372,7 +374,7 @@ it("preserves the real Todo extension's live projection across a native Rollover
     toolCall("context_rollover", { handoff: "Continue the widget task." }),
     reply("Done."),
   );
-  await f.session.prompt("Roll over");
+  await f.session.prompt("Roll over " + "recent ".repeat(400));
   expect(f.requests).toHaveLength(4);
   expect(JSON.stringify(f.requests[3]).includes("Inspect blue widget")).toBe(true);
   expect(JSON.stringify(f.requests[3]).includes("OLD-ONLY")).toBe(false);
@@ -483,8 +485,8 @@ it("keeps a real CodeMode Deno binding alive through native compaction", async (
   );
   await f.session.prompt("OLD-ONLY " + "discard ".repeat(12_000));
   expect(JSON.stringify(f.requests[1]).includes('"data":41')).toBe(true);
-  await f.session.compact();
   f.responses.push(
+    overflow(),
     toolCall("codemode_execute", {
       script: "retainedBinding += 1; return retainedBinding;",
       sessionId: "retained",
@@ -493,7 +495,9 @@ it("keeps a real CodeMode Deno binding alive through native compaction", async (
     reply("Binding survived."),
   );
   await f.session.prompt("Continue the existing Cell session");
-  expect(JSON.stringify(f.requests[3]).includes('"data":42')).toBe(true);
+  expect(f.requests).toHaveLength(5);
+  expect(JSON.stringify(f.requests[3])).not.toContain("OLD-ONLY");
+  expect(JSON.stringify(f.requests[4]).includes('"data":42')).toBe(true);
   f.responses.push(
     toolCall("codemode_execute", {
       script:
@@ -512,8 +516,8 @@ it("keeps a real CodeMode Deno binding alive through native compaction", async (
   ).toBe(false);
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   expect(
-    JSON.stringify(f.requests[5]).includes('"result":"failed"'),
-    JSON.stringify(f.requests[5]).slice(-1800),
+    JSON.stringify(f.requests[6]).includes('"result":"failed"'),
+    JSON.stringify(f.requests[6]).slice(-1800),
   ).toBe(true);
 }, 30_000);
 
@@ -537,13 +541,18 @@ for (const position of ["before", "after"]) {
       position === "before"
         ? [companion, todo, contextManagement]
         : [contextManagement, todo, companion],
+      { keepRecentTokens: 500 },
     );
     f.responses.push(
       toolCall("todo", { action: "add", title: "Task alongside MCP" }),
       reply("Ready."),
     );
     await f.session.prompt("OLD-ONLY " + "discard ".repeat(12_000));
-    f.manager.appendCustomMessageEntry("fixture-mcp-prompt", "Encoded prompt", false);
+    f.manager.appendCustomMessageEntry(
+      "fixture-mcp-prompt",
+      "Encoded prompt " + "recent ".repeat(400),
+      false,
+    );
     f.session.agent.state.messages = f.manager.buildSessionContext().messages;
     f.responses.push(
       toolCall("context_rollover", { handoff: "Continue with the MCP prompt." }),

@@ -25,11 +25,11 @@ The durable definition of a new Context Window, consisting of its Handoff and re
 _Avoid_: Git Checkpoint, virtual-only boundary
 
 **Rollover**:
-A transition to a new Context Window through a Context Checkpoint, without starting a new Pi session or resetting the working environment, normally requested by the agent.
+A transition to a new Context Window through a Context Checkpoint, without starting a new Pi session or resetting the working environment, normally preceded by fresh agent-maintained Notes and an agent-written Handoff.
 _Avoid_: New session, environment reset
 
 **Emergency Rollover**:
-An automatic Rollover at a context safety limit, carrying the last saved state and access to History without requiring a fresh agent-written checkpoint.
+A Rollover after native context overflow, carrying the last saved state and access to History without requiring a fresh agent-written Handoff.
 _Avoid_: Automatic summary, normal Rollover
 
 **Handoff**:
@@ -37,5 +37,5 @@ The agent-written continuation brief carried into the next Context Window to exp
 _Avoid_: History, automatic summary
 
 **Tail**:
-A bounded portion of recent History carried across a Rollover for immediate conversational continuity, keeping tool calls together with their corresponding results.
+The portion of recent History retained by Pi across a Rollover for immediate conversational continuity, keeping tool calls together with their corresponding results.
 _Avoid_: Handoff, summary

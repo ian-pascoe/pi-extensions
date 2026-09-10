@@ -1,4 +1,3 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   AgentSession,
   SessionManager,
@@ -16,9 +15,12 @@ const Callable = Type.Function([], Type.Unknown());
 const Capabilities = Type.Object({
   abortCompaction: Callable,
   getContextUsage: Callable,
+  sendUserMessage: Callable,
+  sendCustomMessage: Callable,
   resourceLoader: Type.Object({ getExtensions: Callable }),
   extensionRunner: Type.Object({ emit: Callable, hasHandlers: Callable }),
   settingsManager: Type.Object({
+    getCompactionSettings: Callable,
     getGlobalSettings: Callable,
     getProjectSettings: Callable,
     isProjectTrusted: Callable,
@@ -70,12 +72,6 @@ export interface CheckpointAdapterOptions {
     readonly handler: ExtensionHandler<SessionBeforeCompactEvent, unknown>;
     readonly onConflict: (error: Error) => void;
   };
-  /** Checks the final public projections. A native commit reapplies those projections once, then validates without allowing another commit. */
-  readonly afterTransformContext?: (
-    messages: AgentMessage[],
-    signal: AbortSignal | undefined,
-    canRollover: boolean,
-  ) => AgentMessage[] | void | Promise<AgentMessage[] | void>;
 }
 
 /** The sole capability-gated mutable Pi integration; the caller owns safe batch placement and policy. */
@@ -176,7 +172,6 @@ export function captureCheckpointAdapter(
   let refresh = false;
   let failure: Error | undefined;
   let committedCheckpointId: string | undefined;
-  let verifyingProjection = false;
   const appendDescriptor = Object.getOwnPropertyDescriptor(manager, "appendCompaction");
   if (
     manager.appendCompaction !== SessionManager.prototype.appendCompaction ||
@@ -320,24 +315,9 @@ export function captureCheckpointAdapter(
     if (!active) return previousTransform.call(agent, messages, signal);
     ready();
     signal?.throwIfAborted();
-    const before = committedCheckpointId;
-    let projected = await previousTransform.call(agent, messages, signal);
-    signal?.throwIfAborted();
-    projected = (await options.afterTransformContext?.(projected, signal, true)) ?? projected;
+    const projected = await previousTransform.call(agent, messages, signal);
     ready();
     signal?.throwIfAborted();
-    if (committedCheckpointId !== before) {
-      projected = await previousTransform.call(agent, agent.state.messages.slice(), signal);
-      signal?.throwIfAborted();
-      verifyingProjection = true;
-      try {
-        projected = (await options.afterTransformContext?.(projected, signal, false)) ?? projected;
-      } finally {
-        verifyingProjection = false;
-      }
-      ready();
-      signal?.throwIfAborted();
-    }
     return projected;
   };
 
@@ -367,10 +347,6 @@ export function captureCheckpointAdapter(
     commit(summary, firstKeptEntryId, tokensBefore, details, signal) {
       ready();
       signal?.throwIfAborted();
-      if (verifyingProjection)
-        throw new Error(
-          "Fresh Context Window still does not fit; refusing a second rebuild before one request",
-        );
       if (!summary.trim() || !Number.isFinite(tokensBefore) || tokensBefore < 0) {
         throw new Error(
           "Context Checkpoint requires a nonempty Handoff and finite nonnegative token count",

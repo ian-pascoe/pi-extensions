@@ -1,5 +1,4 @@
 import { Type } from "typebox";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Value } from "typebox/value";
 import type {
   ExtensionAPI,
@@ -24,13 +23,11 @@ import {
   CheckpointDetails,
   HANDOFF_ENTRY,
   HandoffRecord,
-  messageTokens,
-  boundedCheckpoint,
-  contextBudget,
+  planCheckpoint,
   savedHandoff,
 } from "./context-window.js";
 
-import { resolveContextSettings, type ContextSettings } from "./context-settings.js";
+import { hasLegacyContextSettings } from "./context-settings.js";
 
 const RolloverParameters = Type.Object(
   { handoff: Type.String({ minLength: 1, maxLength: 64_000 }) },
@@ -43,10 +40,11 @@ export default function contextManagement(pi: ExtensionAPI): void {
   let pending: { handoff: string; signal: AbortSignal | undefined } | undefined;
   let manualRollover: { instructions: string; signal: AbortSignal } | undefined;
   let failure: Error | undefined;
-  let settings: ContextSettings | undefined;
+  let preparation: "ready" | "pending" | "unfinished" = "ready";
+  let queuedPreparationSignal: AbortSignal | undefined;
   let nativeLeaf: string | null | undefined;
   let nativeCommittedBefore: string | undefined;
-  let warnedWindow: string | undefined;
+
   const fail = (error: Error, ctx: ExtensionContext) => {
     failure = error;
     adapter?.fault(error);
@@ -65,95 +63,25 @@ export default function contextManagement(pi: ExtensionAPI): void {
     assertContextJournalReadable(adapter.session.sessionManager);
     return adapter;
   };
-  const requireSettings = () => {
-    if (!settings) throw new Error("Context Management settings unavailable");
-    return settings;
-  };
   pi.on("session_start", (_event, ctx) => {
     adapter?.dispose();
     pending = undefined;
     manualRollover = undefined;
     failure = undefined;
     nativeLeaf = undefined;
-    warnedWindow = undefined;
+    preparation = "ready";
     try {
       adapter = captureCheckpointAdapter(pi, {
         compaction: {
           handler: beforeCompact,
           onConflict: (error) => fail(error, ctx),
         },
-        afterTransformContext(messages, signal, mayRebuild) {
-          signal?.throwIfAborted();
-          try {
-            const owner = requireAdapter();
-            const configuration = requireSettings();
-            const budget = contextBudget(owner.session, configuration, messages);
-            if (budget.ratio < configuration.emergencyThreshold) {
-              const window =
-                ctx.sessionManager.getBranch().findLast((entry) => entry.type === "compaction")
-                  ?.id ?? "initial";
-              if (budget.ratio >= configuration.warningThreshold && warnedWindow !== window) {
-                warnedWindow = window;
-                // This fixed-size reminder fits inside the configured >=256-token safety margin.
-                const warning: AgentMessage = {
-                  role: "custom",
-                  customType: "pi-context-budget",
-                  display: false,
-                  timestamp: 0,
-                  content:
-                    "Context budget warning (~" +
-                    Math.round(budget.ratio * 100) +
-                    "% of full context window). Update Notes and prepare a Handoff; call context_rollover alone before the emergency threshold.",
-                };
-                ctx.ui.notify("Context budget warning: prepare a Handoff and Rollover.", "warning");
-                return [...messages, warning];
-              }
-              return;
-            }
-            const branch = ctx.sessionManager.getBranch();
-            const checkpoint = branch.findLastIndex((entry) => entry.type === "compaction");
-            if (
-              !mayRebuild ||
-              (checkpoint >= 0 &&
-                !branch
-                  .slice(checkpoint + 1)
-                  .some((entry) => entry.type === "message" || entry.type === "custom_message"))
-            ) {
-              throw new Error(
-                "Fresh Context Window still exceeds the emergency budget; reduce live context/instructions or choose a larger model",
-              );
-            }
-            const liveTokens = Math.max(
-              0,
-              messageTokens(messages) - messageTokens(owner.session.messages),
-            );
-            const plan = boundedCheckpoint(
-              owner.session,
-              configuration,
-              savedHandoff(ctx.sessionManager) ??
-                "No saved Handoff. Recover the user's task from recent History and Notes.",
-              "emergency",
-              liveTokens,
-            );
-            owner.commit(
-              plan.summary,
-              plan.firstKeptEntryId,
-              budget.inputTokens,
-              plan.details,
-              signal,
-            );
-            ctx.ui.notify(
-              "Emergency Rollover: saved Handoff may be stale or absent. Recover recent History before continuing.",
-              "warning",
-            );
-          } catch (cause) {
-            const error = cause instanceof Error ? cause : new Error(String(cause));
-            fail(error, ctx);
-            throw error;
-          }
-        },
       });
-      settings = resolveContextSettings(adapter.session.settingsManager);
+      if (hasLegacyContextSettings(adapter.session.settingsManager))
+        ctx.ui.notify(
+          "contextManagement settings are obsolete and ignored. Use Pi compaction.enabled, reserveTokens, and keepRecentTokens instead.",
+          "warning",
+        );
       requireAdapter();
       ensureReferenceOrigin(pi, ctx.sessionManager);
     } catch (cause) {
@@ -165,6 +93,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
     adapter = undefined;
     pending = undefined;
     manualRollover = undefined;
+    preparation = "ready";
   });
   pi.on("input", (_event, ctx) => {
     try {
@@ -177,8 +106,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
   });
   registerContextTools(pi, fail);
   pi.registerCommand("context", {
-    description:
-      "Inspect Context budget, Notes, and recent Context Windows without changing History",
+    description: "Inspect native Context usage, Notes, and recent Context Windows",
     async handler(args, ctx) {
       if (args.trim()) {
         ctx.ui.notify("Usage: /context", "info");
@@ -186,39 +114,20 @@ export default function contextManagement(pi: ExtensionAPI): void {
       }
       try {
         const owner = requireAdapter();
-        const configuration = requireSettings();
-        const budget = contextBudget(owner.session, configuration);
+        const usage = owner.session.getContextUsage();
+        const configuration = owner.session.settingsManager.getCompactionSettings();
         const checkpoints = ctx.sessionManager
           .getBranch()
           .filter((entry) => entry.type === "compaction");
-        const latest = checkpoints.at(-1);
-        const effective =
-          latest && Value.Check(CheckpointDetails, latest.details)
-            ? latest.details.tailTokens
-            : "not yet retained";
         ctx.ui.notify(
           [
-            "Context Management (" + budget.source + ")",
-            "Input ~" +
-              budget.inputTokens +
+            "Context Management (native Pi accounting)",
+            "Native usage: " +
+              (usage?.tokens ?? "unavailable after transition") +
               " / " +
-              budget.contextWindow +
-              " tokens (full context window).",
-            "Latest native measurement: " +
-              (budget.measuredTokens ?? "unavailable after transition") +
-              ". Safety margin: " +
-              configuration.safetyMarginTokens +
-              ".",
-            "Tail configured ≤" +
-              configuration.tailTokens +
-              "; last effective Tail: " +
-              effective +
-              ".",
-            "Warn at " +
-              Math.round(configuration.warningThreshold * 100) +
-              "%; emergency at " +
-              Math.round(configuration.emergencyThreshold * 100) +
-              "%.",
+              (usage?.contextWindow ?? owner.session.model?.contextWindow ?? "unknown") +
+              " tokens.",
+            "Native recent-history retention: " + configuration.keepRecentTokens + " tokens.",
             noteIndex(ctx.sessionManager, 2000),
             "Recent Context Windows (" + (checkpoints.length + 1) + " total):",
             ...checkpoints
@@ -236,28 +145,79 @@ export default function contextManagement(pi: ExtensionAPI): void {
   });
   function requestRollover(args: string, ctx: ExtensionContext): void {
     try {
-      requireAdapter();
-      if (args.length > 2000) throw new Error("Keep Rollover instructions below 2000 characters");
+      const owner = requireAdapter();
+      if (preparation === "pending") return;
+      queuedPreparationSignal = undefined;
+      preparation = "pending";
       ctx.ui.notify("Preparing Notes and a fresh Handoff before Rollover.", "info");
-      pi.sendUserMessage(
-        "Prepare a Context Rollover for the current task: update useful Notes, then call context_rollover as the only direct tool call with an explicit Handoff containing the objective, decisions, current state, and next actions. Continue the task after the checkpoint." +
-          (args.trim() ? "\nAdditional instructions: " + args.trim() : ""),
-        { deliverAs: "followUp" },
+      void owner.session.sendUserMessage(preparationPrompt(args), { deliverAs: "steer" }).then(
+        () => {
+          // A handled input can finish without ever starting an agent run.
+          if (adapter === owner && owner.session.isIdle) finishPreparation(ctx);
+        },
+        (cause) => {
+          if (adapter !== owner) return;
+          finishPreparation(ctx);
+          ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
+        },
       );
     } catch (cause) {
       ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
     }
   }
+  function preparationPrompt(args = ""): string {
+    return (
+      "Prepare a Context Rollover for the current task: update useful Notes, then call context_rollover as the only direct tool call with an explicit Handoff containing the objective, decisions, current state, and next actions. Continue the task after the checkpoint." +
+      (args.trim() ? "\nAdditional instructions: " + args.trim() : "")
+    );
+  }
+  function finishPreparation(ctx: ExtensionContext): void {
+    if (preparation !== "pending") return;
+    preparation = "unfinished";
+    ctx.ui.notify(
+      "Rollover was not completed; the current Context Window was retained. Request /rollover to try again.",
+      "warning",
+    );
+  }
+  pi.on("context", (_event, ctx) => {
+    // Pi can restart queued steering with a new controller after post-run compaction aborts.
+    if (preparation === "pending" && queuedPreparationSignal?.aborted) ctx.abort();
+  });
+  pi.on("agent_settled", async (_event, ctx) => {
+    const cancelled = preparation === "pending" && queuedPreparationSignal?.aborted;
+    queuedPreparationSignal = undefined;
+    finishPreparation(ctx);
+    if (!cancelled) return;
+    try {
+      // Keep queued input in History, then supersede the cancelled preparation durably.
+      await requireAdapter().session.sendCustomMessage(
+        {
+          customType: "pi-context-prepare-cancelled",
+          content:
+            "The preceding Context Rollover preparation was cancelled. Do not resume it unless explicitly requested; continue the user's task without Rollover.",
+          display: false,
+        },
+        { triggerTurn: false },
+      );
+    } catch (cause) {
+      quarantineContextJournal(ctx.sessionManager);
+      fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
+    }
+  });
   pi.registerCommand("rollover", {
     description: "Ask the agent to update Notes, write its Handoff, and request Rollover",
     async handler(args, ctx) {
+      if (args.length > 2000) {
+        ctx.ui.notify("Keep Rollover instructions below 2000 characters", "error");
+        return;
+      }
       requestRollover(args, ctx);
     },
   });
   pi.on("session_tree", () => {
     pending = undefined;
     manualRollover = undefined;
-    warnedWindow = undefined;
+    preparation = "ready";
   });
   pi.on("before_agent_start", (event) => ({
     systemPrompt:
@@ -303,13 +263,6 @@ export default function contextManagement(pi: ExtensionAPI): void {
         throw new Error(
           "Rollover must be the sole direct tool call; nested/non-isolated placement is unsafe",
         );
-      // Validate essentials before acknowledging; the current call/result group is not complete yet.
-      boundedCheckpoint(
-        requireAdapter().session,
-        { ...requireSettings(), tailTokens: 0 },
-        params.handoff,
-        "normal",
-      );
       const record = { version: 1, handoff: params.handoff };
       if (!Value.Check(HandoffRecord, record)) throw new Error("Invalid Handoff");
       try {
@@ -338,14 +291,20 @@ export default function contextManagement(pi: ExtensionAPI): void {
     if (!request || request.signal?.aborted) return;
     try {
       const owner = requireAdapter();
-      const plan = boundedCheckpoint(owner.session, requireSettings(), request.handoff, "normal");
+      const plan = planCheckpoint(
+        owner.session.sessionManager,
+        request.handoff,
+        "normal",
+        owner.session.settingsManager.getCompactionSettings().keepRecentTokens,
+      );
       owner.commit(
         plan.summary,
         plan.firstKeptEntryId,
-        messageTokens(owner.session.messages),
+        owner.session.getContextUsage()?.tokens ?? 0,
         plan.details,
         request.signal,
       );
+      preparation = "ready";
       ctx.ui.notify("Context Window rolled over; History and Notes preserved.", "info");
     } catch (cause) {
       fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
@@ -355,18 +314,31 @@ export default function contextManagement(pi: ExtensionAPI): void {
     if (event.signal.aborted) return { cancel: true };
     try {
       const owner = requireAdapter();
-      if (event.reason === "manual" && ctx.mode === "tui") {
+      if (event.reason === "manual") {
         manualRollover = { instructions: event.customInstructions ?? "", signal: event.signal };
+        return { cancel: true };
+      }
+      if (event.reason !== "overflow") {
+        if (preparation === "ready") {
+          queuedPreparationSignal = event.signal;
+          preparation = "pending";
+          ctx.ui.notify("Preparing Notes and a fresh Handoff before Rollover.", "info");
+          pi.sendMessage(
+            { customType: "pi-context-prepare", content: preparationPrompt(), display: true },
+            { deliverAs: owner.session.isStreaming ? "steer" : "nextTurn" },
+          );
+        }
         return { cancel: true };
       }
       nativeLeaf = ctx.sessionManager.getLeafId();
       nativeCommittedBefore = owner.lastCommittedCheckpointId;
-      const plan = boundedCheckpoint(
-        owner.session,
-        requireSettings(),
+      const plan = planCheckpoint(
+        ctx.sessionManager,
         savedHandoff(ctx.sessionManager) ??
           "No saved Handoff. Recover the user's task from recent History and Notes.",
         event.reason,
+        event.preparation.settings.keepRecentTokens,
+        event.preparation.firstKeptEntryId,
       );
       return {
         compaction: {
@@ -384,6 +356,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
   pi.on("session_before_compact", beforeCompact);
   pi.on("session_compact", (event, ctx) => {
     nativeLeaf = undefined;
+    preparation = "ready";
     if (!Value.Check(CheckpointDetails, event.compactionEntry.details)) {
       fail(new Error("Another extension replaced the Context Checkpoint"), ctx);
       return;

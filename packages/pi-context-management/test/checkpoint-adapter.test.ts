@@ -116,13 +116,7 @@ test.each(["checkpoint", "cutoff"] as const)(
 );
 
 test("reload replaces its own callbacks while preserving a later extension's wrapper", async () => {
-  let oldChecks = 0;
-  let newChecks = 0;
-  const f = await fixture({
-    afterTransformContext() {
-      oldChecks++;
-    },
-  });
+  const f = await fixture();
   const original = f.session.agent.transformContext;
   if (!original) throw new Error("Missing Pi context transform");
   const later: NonNullable<typeof original> = async (messages, signal) => [
@@ -136,17 +130,11 @@ test("reload replaces its own callbacks while preserving a later extension's wra
     },
   ];
   f.session.agent.transformContext = later;
-  const replacement = captureCheckpointAdapter(f.api, {
-    afterTransformContext() {
-      newChecks++;
-    },
-  });
+  const replacement = captureCheckpointAdapter(f.api);
   afterEach(() => replacement.dispose());
   expect(() => f.adapter.cutoff(undefined)).toThrow(/disposed/);
   f.responses.push(reply("Ready."));
   await f.session.prompt("First request");
-  expect(oldChecks).toBe(0);
-  expect(newChecks).toBe(1);
   expect(JSON.stringify(f.requests[0])).toContain("LATER WRAPPER");
   replacement.dispose();
   expect(Object.getOwnPropertyDescriptor(f.session.extensionRunner, "emit")).toBeUndefined();
@@ -154,7 +142,6 @@ test("reload replaces its own callbacks while preserving a later extension's wra
   expect(f.session.agent.transformContext).toBe(later);
   f.responses.push(reply("Still running."));
   await f.session.prompt("After disposal");
-  expect(newChecks).toBe(1);
   expect(JSON.stringify(f.requests[1])).toContain("LATER WRAPPER");
 });
 
@@ -233,22 +220,6 @@ test.each([
   },
 );
 
-test("a projection still too large after one checkpoint cannot cause a second rebuild", async () => {
-  let armed = false;
-  const f = await fixture({
-    afterTransformContext() {
-      if (armed) f.adapter.commit("Only one rebuild.", undefined, 100, {});
-    },
-  });
-  f.responses.push(reply("Ready."));
-  await f.session.prompt("Original task");
-  armed = true;
-  await f.session.prompt("Cannot fit");
-  expect(f.requests).toHaveLength(1);
-  expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-  expect(f.session.agent.state.errorMessage).toMatch(/second rebuild/);
-});
-
 test("an initial unflushed session rejects checkpointing without preventing a shorter request", async () => {
   const f = await fixture();
   const before = f.manager.getEntries();
@@ -261,28 +232,8 @@ test("an initial unflushed session rejects checkpointing without preventing a sh
   expect(f.requests).toHaveLength(1);
 });
 
-test("outgoing live projections are reapplied once after a native emergency checkpoint", async () => {
-  let armed = false;
-  const checks: boolean[] = [];
-  const f = await fixture({
-    afterTransformContext(messages, _signal, canRollover) {
-      if (!armed) return;
-      checks.push(canRollover);
-      expect(JSON.stringify(messages)).toContain("LIVE PROJECTION");
-      if (canRollover) f.adapter.commit("New emergency Handoff.", undefined, 100, {});
-      else
-        return [
-          ...messages,
-          {
-            role: "custom",
-            customType: "warning",
-            content: "BOUNDED WARNING",
-            display: false,
-            timestamp: 0,
-          },
-        ];
-    },
-  });
+test("normal context projections survive an explicit native checkpoint", async () => {
+  const f = await fixture();
   f.api.on("context", (event) => ({
     messages: [
       ...event.messages,
@@ -295,16 +246,12 @@ test("outgoing live projections are reapplied once after a native emergency chec
       },
     ],
   }));
-  f.responses.push(reply("Ready."));
+  f.responses.push(toolCall("checkpoint_test", {}), reply("Finished."));
   await f.session.prompt("OLD ARCHIVED MATERIAL");
-  armed = true;
-  f.responses.push(reply("Finished."));
-  await f.session.prompt("Continue");
-  expect(checks).toEqual([true, false]);
-  expect(JSON.stringify(f.requests[1])).toContain("New emergency Handoff.");
+  expect(f.requests).toHaveLength(2);
+  expect(JSON.stringify(f.requests[1])).toContain("Continue the blue widget.");
   expect(JSON.stringify(f.requests[1])).toContain("LIVE PROJECTION");
-  expect(JSON.stringify(f.requests[1])).toContain("BOUNDED WARNING");
-  expect(JSON.stringify(f.manager.buildSessionContext())).not.toContain("BOUNDED WARNING");
+  expect(JSON.stringify(f.manager.buildSessionContext())).not.toContain("LIVE PROJECTION");
   expect(JSON.stringify(f.requests[1])).not.toContain("OLD ARCHIVED MATERIAL");
   expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
 });

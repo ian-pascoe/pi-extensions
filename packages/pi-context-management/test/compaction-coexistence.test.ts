@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
-import { createSdkHarness, reply } from "./sdk-harness.js";
+import { createSdkHarness, overflow, reply } from "./sdk-harness.js";
 
 const compactionHandlers = (session: AgentSession) =>
   session.resourceLoader
@@ -28,11 +28,12 @@ for (const position of ["before", "after"] as const) {
       await f.session.prompt("Ordinary task " + "history ".repeat(3000));
       expect(f.requests).toHaveLength(1);
       const handlers = compactionHandlers(f.session);
-      await f.session.compact();
+      f.responses.push(overflow(), reply("Recovered."));
+      await f.session.prompt("Trigger native overflow");
       expect(compactionHandlers(f.session)).toEqual(handlers);
       expect(f.providerRequests).toHaveLength(0);
       expect(calls).toBe(1);
-      expect(f.requests).toHaveLength(1);
+      expect(f.requests).toHaveLength(3);
       expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
       expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
     },

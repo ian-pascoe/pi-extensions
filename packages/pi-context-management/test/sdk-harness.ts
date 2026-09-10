@@ -24,7 +24,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 interface HarnessOptions {
-  contextSettings?: Partial<import("../src/context-settings.js").ContextSettings>;
+  contextSettings?: unknown;
   settings?: SettingsManager;
   contextWindow?: number;
   maxTokens?: number;
@@ -170,6 +170,15 @@ export function reply(text: string, inputTokens = 100): AssistantMessage {
     output: 10,
     totalTokens: inputTokens + 10,
   };
+  return message;
+}
+
+export function overflow(partialCall = false): AssistantMessage {
+  const message = partialCall
+    ? toolCall("context_notes", { action: "list" }, "never-executed")
+    : reply("PROVIDER-FAILED-RESPONSE");
+  message.stopReason = "error";
+  message.errorMessage = "prompt is too long: 300000 tokens > 200000 maximum";
   return message;
 }
 
