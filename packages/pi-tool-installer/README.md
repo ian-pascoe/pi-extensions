@@ -4,13 +4,17 @@ Shared compiled library for private Managed Installations. It is not a Pi extens
 and does not register tools, read Pi settings, or choose language presets.
 
 LSP, DAP, and Formatter use this library for first-use acquisition and updates. The
-[six-platform acquisition and launch gate](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
-passed at `59c17f0`: 11 native checks per target, 66 total. This proves acquisition
-and launch, not the complete installation/update or extension integration contract.
-The hardened installer now uses dependency-specific pipx namespaces with shared,
-concrete Python runtimes. Public API regressions passed locally on Linux x64 for
-immutable updates, real-install cancellation/failure/retry, and separate-process
-coordination/interruption. These changes still need the six-target gate.
+[full verification gate](https://github.com/ian-pascoe/pi-extensions/actions/runs/34545535384)
+passed at source commit `2398fc42e4a704e8573a900ae1eb57e630a96364` on 2026-09-11:
+12 native checks per target, 72 total, across native Linux/macOS/Windows x64 and
+ARM64. These cover acquisition, launch, immutable Python updates, real-install
+cancellation/failure/retry, and separate-process coordination/interruption.
+All six targets also passed 15 offline installer and 110 extension checks each;
+repository verification, tarball validation, and clean Git-install validation passed.
+
+The initial [acquisition/launch gate](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
+at `59c17f0` passed the original 11 native checks per target on 2026-09-10.
+The final run retains those checks and adds the hardened update/integration proofs.
 
 ## API
 
@@ -112,49 +116,50 @@ Real downloads and native launches require an explicit opt-in:
 
 ```sh
 pnpm --dir packages/pi-tool-installer build
-PI_TOOL_INSTALLER_NATIVE=1 pnpm --dir packages/pi-tool-installer exec vitest run --config ../../vitest.config.ts --root . native.test.ts
+PI_TOOL_INSTALLER_NATIVE=1 pnpm --dir packages/pi-tool-installer exec vitest run --config ../../vitest.config.ts --root . --maxWorkers=1 native.test.ts
 ```
 
 The CI workflow's `native_only=true` manual dispatch runs these probes on native
 Linux, macOS, and Windows x64 and ARM64 runners. Missing upstream artifacts are
 failures, not permission to downgrade or omit a platform.
 
-### Initial verified baselines
+### Verified baselines
 
-The initial minimum **verified** OS/runtime baselines are below. Older releases,
+The minimum **verified** OS/runtime baselines are below. Older releases,
 other Linux distributions, musl, and emulated architectures are not covered by this
 evidence. Host tests use Node 22.19.0 and Pi 0.85.1; the privately acquired Node
 runtime is separate from the host runtime.
 
 | Native target | Verified OS baseline               | Result    |
 | ------------- | ---------------------------------- | --------- |
-| Linux x64     | Ubuntu 24.04.5 LTS                 | 11 passed |
-| Linux ARM64   | Ubuntu 24.04.5 LTS                 | 11 passed |
-| macOS x64     | macOS 15.7.9, build 24G830         | 11 passed |
-| macOS ARM64   | macOS 15.7.9, build 24G830         | 11 passed |
-| Windows x64   | Windows Server 2025, build 26100   | 11 passed |
-| Windows ARM64 | Windows 11 Enterprise, build 26200 | 11 passed |
+| Linux x64     | Ubuntu 24.04.5 LTS                 | 12 passed |
+| Linux ARM64   | Ubuntu 24.04.5 LTS                 | 12 passed |
+| macOS x64     | macOS 15.7.9, build 24G830         | 12 passed |
+| macOS ARM64   | macOS 15.7.9, build 24G830         | 12 passed |
+| Windows x64   | Windows Server 2025, build 26100   | 12 passed |
+| Windows ARM64 | Windows 11 Enterprise, build 26200 | 12 passed |
 
-All six jobs resolved the same concrete versions on 2026-09-10. These are evidence,
+All six successful jobs resolved the same concrete versions on 2026-09-11. These are evidence,
 not release pins; new installations and explicit updates still resolve upstream.
 
-| Component             | Verified version |
-| --------------------- | ---------------- |
-| Node                  | 26.8.2           |
-| Python                | 3.14.7           |
-| uv                    | 0.12.12          |
-| TypeScript native LSP | 7.0.2            |
-| Pyright               | 1.1.413          |
-| Prettier              | 3.9.6            |
-| Biome                 | 2.5.12           |
-| Black                 | 26.5.1           |
-| Ruff                  | 0.16.6           |
-| Go / gofmt            | 1.27.1           |
-| gopls                 | 0.23.0           |
-| Rust / rustfmt        | 1.98.1           |
-| rust-analyzer         | 2026-09-07       |
-| vscode-js-debug       | 1.117.0          |
-| debugpy               | 1.8.21           |
+| Component               | Verified version |
+| ----------------------- | ---------------- |
+| Installer Helper (mise) | 2026.9.5         |
+| Node                    | 26.8.2           |
+| Python                  | 3.14.7           |
+| uv                      | 0.12.12          |
+| TypeScript native LSP   | 7.0.2            |
+| Pyright                 | 1.1.414          |
+| Prettier                | 3.9.6            |
+| Biome                   | 2.5.12           |
+| Black                   | 26.5.1           |
+| Ruff                    | 0.16.6           |
+| Go / gofmt              | 1.27.1           |
+| gopls                   | 0.23.0           |
+| Rust / rustfmt          | 1.98.1           |
+| rust-analyzer           | 2026-09-07       |
+| vscode-js-debug         | 1.117.0          |
+| debugpy                 | 1.8.21           |
 
 The probes include TypeScript and JavaScript document-symbol requests, Python/Go/
 Rust LSP requests, formatter output, and JavaScript/Python debugging with
@@ -180,9 +185,16 @@ retain existing runtime versions, and reject incompatible graphs or corrupt cont
 The native Go/Rust probes execute their formatters through separately selected,
 installed-only toolchain prefixes.
 
-The hardened two-test installer suite and focused Black/debugpy catalog checks passed
-locally on Linux x64 after the Windows composition fix. Native Windows confirmation
-remains pending. Local full-catalog runs also exposed upstream Go archive HTTP 404
-and unauthenticated GitHub backend rate limits; these failures are not suppressed.
-Updated six-target evidence, package precedence, and offline SDK prefix/coexistence
-proofs remain separate gates.
+The final gate passed all nine jobs across attempts 1 and 2 at the same source
+commit. Attempt 1 passed eight jobs; Windows ARM's Go archive transfer stalled after
+upstream response-body errors and hit the five-minute acquisition deadline. Attempt 2
+reran only Windows ARM and passed all 27 installer and 110 extension checks, retaining
+the other eight successes. Earlier upstream HTTP failures and shared-IP rate limits
+were not suppressed or worked around by forwarding credentials to mise.
+
+CI serializes package jobs and native test files to avoid competing worker pools,
+without serializing the explicit concurrent-acquisition scenarios inside tests.
+The extension checks cover precedence, cancellation, updates, and coexistence;
+offline SDK tests compare ordered serialized tool definitions, system prompts, and
+history across actual root/child sessions. The final Pyright version above supersedes
+1.1.413 from the initial acquisition gate; versions remain evidence, not release pins.
