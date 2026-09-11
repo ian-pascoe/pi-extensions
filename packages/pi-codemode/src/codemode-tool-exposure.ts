@@ -46,6 +46,11 @@ export function decideCodeModeToolExposure(
       unavailableNames.push(toolName);
       continue;
     }
+    // Rollover requires its own direct tool batch to commit a Context Checkpoint.
+    if (toolName === "context_rollover") {
+      directNames.push(toolName);
+      continue;
+    }
     let exposure: CodeModeExposureRule["exposure"] = "direct-and-codemode";
     for (const rule of rules) {
       if (rule.matches(toolName)) exposure = rule.exposure;

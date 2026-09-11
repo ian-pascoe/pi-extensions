@@ -191,6 +191,14 @@ preset is not an enforced read-only boundary. Status reports effective adapter
 tools while the Launch Contract continues to record the originally granted
 capability names.
 
+When Context Management is configured in a Child Session, its `context_history`,
+`context_notes`, and `context_rollover` tools are always available, even with
+`tools: "none"` or an exact restricted list. These session-maintenance tools are
+added to the effective runtime tools without changing the Launch Contract or
+ordinary-tool ceiling. This also applies to nested children and persisted children
+when their runtimes reopen after reload or resume. Without that extension, no
+context tools are added and Pi's native compaction remains unchanged.
+
 `agent_message` reports whether a message was delivered through an active
 parent wait, queued for the recipient, or failed. `subagent_wait` can return an
 intermediate Wait Event containing a Coordination Message before the child turn

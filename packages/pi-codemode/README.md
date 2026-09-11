@@ -327,7 +327,11 @@ last match wins. Project `tools` replaces the global array, while project
 An unmatched active tool defaults to `direct-and-codemode`; an inactive tool
 remains unavailable even when it matches a rule. Exposure rules redistribute
 Pi's active tools but never reactivate tools disabled by Pi or another extension.
-The five registered `codemode_*` tools are always direct-only.
+The five registered `codemode_*` tools are always direct-only. An active
+`context_rollover` is also always direct-only, regardless of exposure rules:
+Rollover requires its own direct tool batch and is absent from the Tool Catalogue
+and Cells. `context_notes` and `context_history` follow ordinary exposure rules
+and default to both interfaces.
 Pi's global allowed/excluded registry remains authoritative. Invalid fields or
 patterns disable CodeMode for that session without changing Pi's active tools.
 

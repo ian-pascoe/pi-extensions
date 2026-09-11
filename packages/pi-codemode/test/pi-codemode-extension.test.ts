@@ -10,6 +10,7 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   type ExtensionAPI,
+  type ExtensionFactory,
   type ExtensionUIContext,
   initTheme,
   SessionManager,
@@ -1399,6 +1400,77 @@ describe("Pi CodeMode extension", () => {
 
     await executeTool(fixture.session, "codemode_cancel", { sessionId: pending.sessionId });
   }, 30_000);
+
+  test.each(["direct-and-codemode", "codemode-only"] as const)(
+    "keeps real Context Management Rollover direct-only under %s without changing the provider prefix",
+    async (exposure) => {
+      const fixture = await createCodeModeExtensionFixture(
+        { tools: [{ pattern: "*", exposure }] },
+        false,
+      );
+      const { session, extensionApi } = fixture;
+      // Load the real companion without widening this package's TypeScript rootDir.
+      const modulePath = new URL("../../pi-context-management/src/index.js", import.meta.url).href;
+      const { default: contextManagement }: { default: ExtensionFactory } = await import(
+        modulePath
+      );
+      await contextManagement(extensionApi);
+      const requestedNames = extensionApi.getActiveTools();
+      await session.bindExtensions({ mode: "rpc" });
+      expect(session.getActiveToolNames()).toContain("context_rollover");
+      expect(session.getActiveToolNames().includes("context_notes")).toBe(
+        exposure === "direct-and-codemode",
+      );
+      expect(session.getActiveToolNames().includes("context_history")).toBe(
+        exposure === "direct-and-codemode",
+      );
+      const messages: Message[] = [
+        { role: "user", content: "Maintain context without nested Rollover.", timestamp: 0 },
+      ];
+      const before = await serializeAnthropicRequest(session, messages);
+      const catalogue = codeModeToolSearchPage(
+        await executeTool(session, "codemode_search", { query: "context" }),
+      );
+      expect(catalogue.items.map(({ name }) => name).sort()).toEqual([
+        "context_history",
+        "context_notes",
+      ]);
+      const result = codeModeResult(
+        await executeTool(session, "codemode_execute", {
+          script: `
+            await tools.context_notes({ action: "write", name: "cell-note", content: "Saved in Cell" });
+            const note = await tools.context_notes({ action: "read", name: "cell-note" });
+            const history = await tools.context_history({ action: "windows" });
+            const search = await tools.codemode_search({ query: "context" });
+            return { note, history, names: search.items.map(item => item.name).sort(), rollover: Object.hasOwn(tools, "context_rollover") };
+          `,
+          wait: true,
+        }),
+      );
+      expect(result).toMatchObject({
+        result: "success",
+        data: {
+          note: { content: [{ type: "text", text: expect.stringContaining("Saved in Cell") }] },
+          history: { content: [{ type: "text", text: expect.stringContaining("windows") }] },
+          names: ["context_history", "context_notes"],
+          rollover: false,
+        },
+      });
+      const after = await serializeAnthropicRequest(session, messages);
+      expect(after.tools).toEqual(before.tools);
+      expect(after.system).toEqual(before.system);
+      expect(after.messages).toEqual(before.messages);
+
+      extensionApi.setActiveTools(requestedNames.filter((name) => name !== "context_rollover"));
+      expect(session.getActiveToolNames()).not.toContain("context_rollover");
+      expect(
+        codeModeToolSearchPage(await executeTool(session, "codemode_search", { query: "context" }))
+          .items.map(({ name }) => name)
+          .sort(),
+      ).toEqual(["context_history", "context_notes"]);
+    },
+    30_000,
+  );
 
   test("does not reactivate a tool disabled before exposure policy installs", async () => {
     const fixture = await createCodeModeExtensionFixture(

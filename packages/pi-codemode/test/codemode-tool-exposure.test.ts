@@ -54,6 +54,32 @@ describe("decideCodeModeToolExposure", () => {
     });
   });
 
+  test.each(["direct-and-codemode", "codemode-only"] as const)(
+    "keeps requested Rollover direct-only despite %s rules",
+    (exposure) => {
+      const rules = [{ pattern: "*", exposure, matches: () => true }];
+      expect(
+        decideCodeModeToolExposure(
+          ["context_notes", "context_rollover", "context_history"],
+          ["context_notes", "context_rollover", "context_history"],
+          rules,
+        ),
+      ).toEqual({
+        codeModeNames: ["context_notes", "context_history"],
+        directNames:
+          exposure === "codemode-only"
+            ? ["context_rollover"]
+            : ["context_notes", "context_rollover", "context_history"],
+        unavailableNames: [],
+      });
+      expect(decideCodeModeToolExposure(["context_rollover"], [], rules)).toEqual({
+        codeModeNames: [],
+        directNames: [],
+        unavailableNames: ["context_rollover"],
+      });
+    },
+  );
+
   test("does not reactivate a replaced shell tool through an exposure rule", () => {
     const settings = resolveCodeModeSettings({
       getGlobalSettings: () => ({

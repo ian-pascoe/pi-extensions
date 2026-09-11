@@ -1128,9 +1128,15 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     verifyChildSessionIdentity(sessionManager, agent, this.options.rootSessionId);
     if (agent.session_leaf_id) sessionManager.branch(agent.session_leaf_id);
     const coordinatorTools = this.options.getCoordinatorTools(agent.agent_id);
+    // Context Management owns compaction even when the child has no ordinary tools.
+    const contextToolNames = ["context_history", "context_notes", "context_rollover"].filter(
+      (name) =>
+        resourceLoader.getExtensions().extensions.some((extension) => extension.tools.has(name)),
+    );
     const allowedToolNames = [
       ...agent.launch_contract.ordinary_tools,
       ...coordinatorTools.map((tool) => tool.name),
+      ...contextToolNames,
     ];
     const runtimeToolAdapters = this.options.getRuntimeToolAdapters?.() ?? [];
     const adapterToolNames = new Set(runtimeToolAdapters.flatMap((adapter) => adapter.toolNames));

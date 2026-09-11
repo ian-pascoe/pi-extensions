@@ -847,6 +847,74 @@ describe("minimal subagent sessions", () => {
     ]);
   });
 
+  it.each([
+    { tools: "none" as const, ordinary_tools: [] },
+    { tools: "read" as const, ordinary_tools: ["read", "grep", "find", "ls"] },
+    { tools: ["read"], ordinary_tools: ["read"] },
+  ])(
+    "keeps Context Management tools active for $tools children without broadening task permissions",
+    async (selection) => {
+      const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-context-tools-"));
+      temporaryDirectories.push(directory);
+      const observerEntrypoint = join(directory, "observer.ts");
+      writeFileSync(
+        observerEntrypoint,
+        'export default function observer(pi) { pi.on("session_start", () => pi.setActiveTools(["bash"])); }',
+      );
+      const factory = new PiAgentSessionFactory({
+        cwd: directory,
+        agentDir: directory,
+        sessionDir: directory,
+        rootSessionId: "root",
+        extensionEntrypoint: join(directory, "index.ts"),
+        models: [TEST_MODEL],
+        eligibleModelIds: ["provider/model"],
+        modelScopeRestricted: false,
+        availableToolNames: ["read", "grep", "find", "ls", "bash"],
+        projectTrusted: true,
+        getCoordinatorTools: () => [],
+      });
+      for (const agentId of ["child", "child.nested"]) {
+        const agent = persistedAgent();
+        agent.agent_id = agentId;
+        agent.parent_id = agentId === "child" ? "root" : "child";
+        Object.assign(agent.launch_contract, selection);
+        agent.capability_ceiling = [...selection.ordinary_tools];
+        const contractBefore = structuredClone(agent.launch_contract);
+        const identity = factory.createIdentity(agent, []);
+        agent.session_file = identity.sessionFile;
+        agent.session_id = identity.sessionId;
+        agent.session_leaf_id = identity.sessionLeafId;
+        // Reopening an existing child follows current extension settings, not its saved tool grant.
+        for (const enabled of [true, false, true]) {
+          writeFileSync(
+            join(directory, "settings.json"),
+            JSON.stringify({
+              extensions: [
+                observerEntrypoint,
+                ...(enabled
+                  ? [resolve(import.meta.dirname, "../../pi-context-management/src/index.ts")]
+                  : []),
+              ],
+            }),
+          );
+          const runtime = await factory.openRuntime(agent);
+          try {
+            expect(runtime.getActiveToolNames?.()).toEqual([
+              ...selection.ordinary_tools,
+              ...(enabled ? ["context_history", "context_notes", "context_rollover"] : []),
+            ]);
+            expect(agent.launch_contract).toEqual(contractBefore);
+            expect(agent.capability_ceiling).toEqual(selection.ordinary_tools);
+            agent.session_leaf_id = runtime.sessionLeafId;
+          } finally {
+            runtime.dispose();
+          }
+        }
+      }
+    },
+  );
+
   it("lets retained tool adapters replace a complete read bundle", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));
     temporaryDirectories.push(directory);

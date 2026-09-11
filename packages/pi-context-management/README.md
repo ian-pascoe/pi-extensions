@@ -25,9 +25,11 @@ pi -e ./packages/pi-context-management/src/index.ts
 | `/compact`         | Ask the agent to update Notes, write a fresh Handoff, and roll over.                                                     |
 | `/rollover`        | Request preparation directly, including when native compaction has no history to compact.                                |
 
-`context_rollover` must be the only direct call in its tool batch. Nested rollover, including through CodeMode, is rejected before checkpoint mutation. The extension does not change CodeMode exposure rules.
+`context_rollover` must be the only direct call in its tool batch. Nested rollover, including through CodeMode, is rejected before checkpoint mutation. Pi CodeMode keeps Rollover direct-only and excludes it from its Tool Catalogue; Notes and History remain available both directly and through CodeMode by default.
 
 Notes use labels rather than filesystem paths. A session branch may hold up to 128 Notes; a Note name is 1–64 characters and content is at most 64,000 UTF-16 units. Lists and search return at most 20 results per page. Exact reads use zero-based UTF-16 offsets and return at most 2,000 units per call. Stable references have the form `context:<source-session>:<entry>`.
+
+When this extension is configured for Child Agents, Pi Minimal Subagents automatically provides all three context tools, including with `tools: "none"` or restricted task-tool lists. New, nested, and reopened children receive these session-maintenance tools without changing their recorded task-tool permissions. If the extension is not loaded in a child, Pi's native compaction remains unchanged.
 
 History is read-only and limited to recorded entries on the selected branch. Forks inherit entries on their selected path and then diverge; abandoned siblings and unrelated sessions are excluded. Context-only Child Agent inheritance does not copy the source Notes/History store, so an inherited reference may be unavailable locally. Foreign references resolve only when a persisted owned record proves the issuer had that entry; otherwise browse the current branch for a fresh reference. Reads do not open arbitrary external spill paths or reconstruct unavailable originals.
 
