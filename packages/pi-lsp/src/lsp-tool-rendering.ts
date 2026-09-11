@@ -12,6 +12,7 @@ import { Value } from "typebox/value";
 import {
   LspToolResultDetailsSchema,
   type LspToolParameters,
+  type LspToolProviderParameters,
   type LspToolResultDetails,
   type ServerOperationOutcome,
 } from "./lsp-tool-contract.js";
@@ -34,7 +35,7 @@ function workspaceRelativeLspPath(cwd: string, filePath: string): string {
   return relativePath !== "" && !relativePath.startsWith("..") ? relativePath : normalizedPath;
 }
 
-function lspCallTarget(parameters: LspToolParameters, cwd: string): string | undefined {
+function lspCallTarget(parameters: LspToolProviderParameters, cwd: string): string | undefined {
   if ("file_path" in parameters) {
     const filePath = workspaceRelativeLspPath(cwd, parameters.file_path);
     if ("line" in parameters && "character" in parameters) {
@@ -244,9 +245,15 @@ function appendExpandedMutationDetails(
   for (const path of paths) container.addChild(new Text(theme.fg("muted", path), 0, 0));
 }
 
-/** Render one Pi LSP tool call using Pi's supplied theme and native expansion state. */
+/**
+ * Render one Pi LSP tool call using Pi's supplied theme and native expansion state.
+ *
+ * Pi renders the call with the provider-facing arguments the model sent, before the strict
+ * per-operation validator runs at the tool ingress, so the renderer reads only the fields it
+ * displays and tolerates any combination the model may produce.
+ */
 export function renderLspToolCall(
-  parameters: LspToolParameters,
+  parameters: LspToolProviderParameters,
   theme: LspRenderTheme,
   expanded: boolean,
   cwd: string,

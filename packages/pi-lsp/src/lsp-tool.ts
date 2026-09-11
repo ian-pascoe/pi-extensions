@@ -72,6 +72,7 @@ import {
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import {
   LspToolParametersSchema,
+  LspToolProviderParametersSchema,
   LspToolResultDetailsSchema,
   LspWorkspaceEditPreviewRecordSchema,
   MutationManifestSchema,
@@ -180,7 +181,9 @@ export interface LspToolServerClient {
 /** Narrow Pi registration surface used to install exactly one LSP tool. */
 export interface LspToolRegistrar {
   /** Register the session-bound strict LSP ToolDefinition. */
-  registerTool(tool: ToolDefinition<typeof LspToolParametersSchema, LspToolResultDetails>): void;
+  registerTool(
+    tool: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>,
+  ): void;
 }
 
 /** Runtime owners used by the single registered Pi LSP tool. */
@@ -193,7 +196,10 @@ export interface LspToolDependencies {
   readonly sessionFiles: LspSessionFiles;
 }
 
-type LspToolDefinition = ToolDefinition<typeof LspToolParametersSchema, LspToolResultDetails> & {
+type LspToolDefinition = ToolDefinition<
+  typeof LspToolProviderParametersSchema,
+  LspToolResultDetails
+> & {
   readonly outputSchema: typeof LspToolResultDetailsSchema;
 };
 
@@ -1080,7 +1086,7 @@ export function createLspToolDefinition(
     promptGuidelines: [
       "Use lsp read operations for semantic source navigation and diagnostics; use preview-producing lsp operations followed by lsp apply for language-server mutations.",
     ],
-    parameters: LspToolParametersSchema,
+    parameters: LspToolProviderParametersSchema,
     outputSchema: LspToolResultDetailsSchema,
     renderCall: (argumentsValue, theme, context) =>
       renderLspToolCall(argumentsValue, theme, context.expanded, context.cwd),

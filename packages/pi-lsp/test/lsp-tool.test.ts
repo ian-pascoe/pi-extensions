@@ -21,9 +21,10 @@ import type {
 import { LspServerManager } from "../src/lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "../src/lsp-session-files.js";
 import {
-  LspToolParametersSchema,
+  LspToolProviderParametersSchema,
   LspToolResultDetailsSchema,
   type LspToolParameters,
+  type LspToolProviderParameters,
   type LspToolResultDetails,
 } from "../src/lsp-tool-contract.js";
 import {
@@ -104,9 +105,12 @@ class RecordingLspClient implements LspToolServerClient {
 }
 
 class RecordingLspToolRegistrar implements LspToolRegistrar {
-  readonly tools: ToolDefinition<typeof LspToolParametersSchema, LspToolResultDetails>[] = [];
+  readonly tools: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>[] =
+    [];
 
-  registerTool(tool: ToolDefinition<typeof LspToolParametersSchema, LspToolResultDetails>): void {
+  registerTool(
+    tool: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>,
+  ): void {
     this.tools.push(tool);
   }
 }
@@ -117,7 +121,7 @@ interface LspToolFixture {
   readonly dependencies: LspToolDependencies;
   readonly filePath: string;
   readonly sessionFiles: LspSessionFiles;
-  readonly tool: ToolDefinition<typeof LspToolParametersSchema, LspToolResultDetails>;
+  readonly tool: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>;
   close(): Promise<void>;
 }
 
@@ -190,7 +194,7 @@ async function createToolFixture(
 
 async function executeTool(
   fixture: LspToolFixture,
-  input: LspToolParameters,
+  input: LspToolProviderParameters,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   return fixture.tool.execute("tool-call", input, undefined, undefined, fixture.context);
 }
