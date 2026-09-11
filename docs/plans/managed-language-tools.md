@@ -1,16 +1,31 @@
 # Managed language tools
 
-Status: implementation under verification, 2026-09-10. **The initial six-platform
-acquisition and launch gate passed; final integration and release gates remain.**
-[Run 34520581283](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
-at `59c17f0` passed all 11 checks on each of the six native targets. See the
-[verified baselines and concrete versions](../../packages/pi-tool-installer/README.md#initial-verified-baselines).
-The probes include first-use private acquisition, LSP document requests, formatter
-output, and JavaScript/Python debugging. This does not yet prove separate-process
-coordination, actual-install interruption, immutable Python updates, or extension
-lifecycle/precedence and SDK prefix stability. Package-owned defaults and their
-offline SDK proofs are implemented; the hardened native matrix and final repository
-checks must pass before this plan is considered complete.
+Status: **implemented and verified, 2026-09-11.**
+[Run 34545535384](https://github.com/ian-pascoe/pi-extensions/actions/runs/34545535384)
+at source commit `2398fc42e4a704e8573a900ae1eb57e630a96364` passed all nine jobs:
+
+- All six native targets: 12 native checks and 15 offline installer checks each
+  (72 native and 90 offline total), including separate-process coordination,
+  actual-install interruption/retry, immutable Python updates, and protocol launches.
+- All six targets: 30 LSP, 51 Formatter, and 29 DAP extension checks each (660 total),
+  covering precedence, lifecycle, cancellation, updates, and SDK coexistence.
+- Full repository verification, package-tarball validation, and clean Git-install
+  validation. Full package suites include 138 LSP, 57 Formatter, and 91 DAP tests;
+  offline SDK proofs compare ordered serialized tools, system prompts, and history
+  across actual root/child sessions and concurrent calls.
+
+Attempt 1 passed eight jobs; the Windows ARM Go archive transfer stalled after
+upstream response-body errors. Attempt 2 reran only that job at the same commit and
+passed, retaining the other eight results. No platform, assertion, or acquisition
+policy was relaxed. CI serializes package jobs and native test files to avoid
+competing worker pools; explicit concurrency checks remain concurrent.
+
+The initial [run 34520581283](https://github.com/ian-pascoe/pi-extensions/actions/runs/34520581283)
+at `59c17f0` passed the original 11 acquisition/launch checks per target on 2026-09-10.
+See the final [verified baselines and concrete versions](../../packages/pi-tool-installer/README.md#verified-baselines).
+Standards and specification reviews were completed and their required findings
+resolved. Local release checks and normal Git hooks pass; Changesets cover all four
+releasable packages. This records verification, not publication.
 
 The user selected TypeScript 7 rather than a TypeScript 6 compatibility pin.
 Use TypeScript 7's built-in native LSP (`tsc --lsp --stdio`), not the separate
