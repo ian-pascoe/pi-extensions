@@ -21,6 +21,7 @@ import {
   DapToolResultDetailsSchema,
   type DapPresentationDetails,
   type DapToolParameters,
+  type DapToolProviderParameters,
   type DapToolProgressDetails,
   type DapToolRenderDetails,
   type DapToolResultDetails,
@@ -100,7 +101,7 @@ function boundedDapPreview(text: string, width = 160): string {
   return `${sliceByColumn(singleLine, 0, width - 1, true).trimEnd()}…`;
 }
 
-function dapCallTarget(parameters: DapToolParameters, cwd: string): string | undefined {
+function dapCallTarget(parameters: DapToolProviderParameters, cwd: string): string | undefined {
   switch (parameters.operation) {
     case "launch":
       return [
@@ -112,15 +113,26 @@ function dapCallTarget(parameters: DapToolParameters, cwd: string): string | und
         .filter((value): value is string => value !== undefined)
         .join(" · ");
     case "set_breakpoints":
-      return `${workspaceRelativeDapPath(cwd, parameters.file_path)} · ${parameters.breakpoints.length}`;
+      return [
+        parameters.file_path === undefined
+          ? undefined
+          : workspaceRelativeDapPath(cwd, parameters.file_path),
+        parameters.breakpoints?.length,
+      ]
+        .filter((value) => value !== undefined)
+        .join(" · ");
     case "stack":
       return parameters.thread_id === undefined ? undefined : `thread #${parameters.thread_id}`;
     case "variables":
-      return "frame_id" in parameters
+      return parameters.frame_id !== undefined
         ? `frame #${parameters.frame_id}`
-        : `reference #${parameters.variables_reference}`;
+        : parameters.variables_reference === undefined
+          ? undefined
+          : `reference #${parameters.variables_reference}`;
     case "evaluate":
-      return boundedDapPreview(parameters.expression, 72);
+      return parameters.expression === undefined
+        ? undefined
+        : boundedDapPreview(parameters.expression, 72);
     default:
       return undefined;
   }
@@ -137,7 +149,7 @@ function appendField(
 
 function appendExpandedCall(
   container: Container,
-  parameters: DapToolParameters,
+  parameters: DapToolProviderParameters,
   theme: DapRenderTheme,
   cwd: string,
 ): void {
@@ -163,7 +175,9 @@ function appendExpandedCall(
         );
       return;
     case "set_breakpoints":
-      appendField(container, theme, "File", workspaceRelativeDapPath(cwd, parameters.file_path));
+      if (parameters.file_path !== undefined)
+        appendField(container, theme, "File", workspaceRelativeDapPath(cwd, parameters.file_path));
+      if (parameters.breakpoints === undefined) return;
       appendField(container, theme, "Breakpoints", parameters.breakpoints.length);
       for (const breakpoint of parameters.breakpoints.slice(0, 20)) {
         container.addChild(
@@ -183,20 +197,16 @@ function appendExpandedCall(
       if (parameters.start !== undefined) appendField(container, theme, "Start", parameters.start);
       if (parameters.count !== undefined) appendField(container, theme, "Count", parameters.count);
       return;
-    case "variables":
-      appendField(
-        container,
-        theme,
-        "Source",
-        "frame_id" in parameters
-          ? `frame #${parameters.frame_id}`
-          : `reference #${parameters.variables_reference}`,
-      );
+    case "variables": {
+      const target = dapCallTarget(parameters, cwd);
+      if (target !== undefined) appendField(container, theme, "Source", target);
       if (parameters.start !== undefined) appendField(container, theme, "Start", parameters.start);
       if (parameters.count !== undefined) appendField(container, theme, "Count", parameters.count);
       return;
+    }
     case "evaluate":
-      appendField(container, theme, "Expression", boundedDapPreview(parameters.expression));
+      if (parameters.expression !== undefined)
+        appendField(container, theme, "Expression", boundedDapPreview(parameters.expression));
       if (parameters.frame_id !== undefined)
         appendField(container, theme, "Frame", `#${parameters.frame_id}`);
       return;
@@ -207,7 +217,7 @@ function appendExpandedCall(
 
 /** Render one DAP call with only the arguments explicitly supplied to the tool. */
 export function renderDapToolCall(
-  parameters: DapToolParameters,
+  parameters: DapToolProviderParameters,
   theme: DapRenderTheme,
   expanded: boolean,
   cwd: string,

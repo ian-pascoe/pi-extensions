@@ -27,3 +27,6 @@ whose fields reuse the same per-field schemas — is what Pi now registers and w
 contract test asserts the registered schema is an object and pins it to the validation branches:
 every operation the branches use must be accepted, the two field sets must be equal, and each field
 must reuse the branch schema verbatim, so the two cannot drift.
+
+The tool description lists the required fields for every operation, derived from the strict
+branches, so models retain argument guidance without reintroducing a top-level union.

@@ -1,6 +1,7 @@
 import { type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  LspToolOperationRequirements,
   LspToolParametersSchema,
   LspToolProviderParametersSchema,
 } from "../src/lsp-tool-contract.js";
@@ -30,6 +31,25 @@ describe("Pi LSP tool contract", () => {
     expect(LspToolProviderParametersSchema.type).toBe("object");
     expect("anyOf" in LspToolProviderParametersSchema).toBe(false);
     expect(LspToolProviderParametersSchema.required).toContain("operation");
+  });
+
+  test("documents every operation's required fields without making the provider schema a union", () => {
+    const documented = LspToolOperationRequirements.split("\n").flatMap((line) => {
+      const [operations, fields] = line.split(": ");
+      if (operations === undefined || fields === undefined) throw new Error("Missing requirements");
+      return operations.split(", ").map((operation) => ({
+        operation,
+        required: fields === "none" ? [] : fields.split(", ").sort(),
+      }));
+    });
+    const expected = LspToolParametersSchema.anyOf.map((branch) => ({
+      operation: branch.properties.operation.const,
+      required: branch.required.filter((field) => field !== "operation").sort(),
+    }));
+    expect(documented).toHaveLength(expected.length);
+    expect(documented).toEqual(expect.arrayContaining(expected));
+    expect(LspToolProviderParametersSchema.required).toEqual(["operation"]);
+    expect(LspToolOperationRequirements.split("\n")).toContain("status: none");
   });
 
   test("provider parameters accept every operation and every field the branches use", () => {

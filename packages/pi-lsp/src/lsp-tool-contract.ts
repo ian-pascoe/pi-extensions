@@ -300,6 +300,18 @@ export const LspToolParametersSchema = Type.Union([
   ),
 ]);
 
+/** Model-visible required fields, derived from the strict branches rather than a second operation map. */
+export const LspToolOperationRequirements = [
+  ...Map.groupBy(LspToolParametersSchema.anyOf, (branch) =>
+    branch.required.filter((field) => field !== "operation").join(", "),
+  ),
+]
+  .map(
+    ([fields, branches]) =>
+      `${branches.map((branch) => branch.properties.operation.const).join(", ")}: ${fields || "none"}`,
+  )
+  .join("\n");
+
 /**
  * Provider-facing arguments for the single Pi `lsp` tool.
  *

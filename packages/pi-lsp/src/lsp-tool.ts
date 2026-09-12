@@ -71,6 +71,7 @@ import {
 } from "./lsp-server-manager.js";
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import {
+  LspToolOperationRequirements,
   LspToolParametersSchema,
   LspToolProviderParametersSchema,
   LspToolResultDetailsSchema,
@@ -1081,7 +1082,8 @@ export function createLspToolDefinition(
     name: "lsp",
     label: "LSP",
     description:
-      "Query configured language servers and create/apply guarded Workspace Edit Previews. All paths accept an optional leading @. Lines and characters are one-based Unicode code points. Output is limited to 2,000 lines or 50 KB; complete truncated output is saved as a Result Spill.",
+      "Query configured language servers and create/apply guarded Workspace Edit Previews. All paths accept an optional leading @. Lines and characters are one-based Unicode code points. Output is limited to 2,000 lines or 50 KB; complete truncated output is saved as a Result Spill.\nRequired fields by operation (in addition to operation):\n" +
+      LspToolOperationRequirements,
     promptSnippet: "Query configured language servers and preview guarded LSP mutations",
     promptGuidelines: [
       "Use lsp read operations for semantic source navigation and diagnostics; use preview-producing lsp operations followed by lsp apply for language-server mutations.",

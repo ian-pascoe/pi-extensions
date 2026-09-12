@@ -65,7 +65,7 @@ const EvaluateParametersSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** Strict model-facing contract for the package's twelve DAP operations. */
+/** Strict ingress contract for the package's twelve DAP operations. */
 export const DapToolParametersSchema = Type.Union([
   LaunchParametersSchema,
   SetBreakpointsParametersSchema,
@@ -80,6 +80,39 @@ export const DapToolParametersSchema = Type.Union([
   EmptyOperationSchema("status"),
   EmptyOperationSchema("stop"),
 ]);
+
+/** Provider-facing object schema; the strict union still validates every call at ingress. */
+export const DapToolProviderParametersSchema = Type.Object(
+  {
+    operation: Type.Unsafe<DapToolParameters["operation"]>({
+      type: "string",
+      enum: [
+        ...new Set(
+          DapToolParametersSchema.anyOf.flatMap((branch) =>
+            "anyOf" in branch
+              ? branch.anyOf.map((variant) => variant.properties.operation.const)
+              : [branch.properties.operation.const],
+          ),
+        ),
+      ],
+    }),
+    profile: LaunchParametersSchema.properties.profile,
+    program: LaunchParametersSchema.properties.program,
+    args: LaunchParametersSchema.properties.args,
+    cwd: LaunchParametersSchema.properties.cwd,
+    file_path: Type.Optional(SetBreakpointsParametersSchema.properties.file_path),
+    breakpoints: Type.Optional(SetBreakpointsParametersSchema.properties.breakpoints),
+    thread_id: StackParametersSchema.properties.thread_id,
+    ...VariablesPageSchema,
+    frame_id: EvaluateParametersSchema.properties.frame_id,
+    variables_reference: Type.Optional(DapIdSchema),
+    expression: Type.Optional(EvaluateParametersSchema.properties.expression),
+  },
+  { additionalProperties: false },
+);
+
+/** Unvalidated provider-facing arguments used by Pi's call renderer. */
+export type DapToolProviderParameters = Static<typeof DapToolProviderParametersSchema>;
 
 /** Parsed input for one invocation of the strict `dap` tool. */
 export type DapToolParameters = Static<typeof DapToolParametersSchema>;

@@ -2,6 +2,7 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { describe, expect, test } from "vitest";
 import type { DapToolRenderDetails, DapToolResultDetails } from "../src/dap-tool-contract.js";
 import {
+  renderDapToolCall,
   renderDapToolResult,
   sanitizeDapObserverText,
   type DapRenderTheme,
@@ -46,6 +47,28 @@ function result(
 }
 
 describe("Pi DAP transcript rendering", () => {
+  test("renders provider arguments before required operation fields arrive", () => {
+    for (const operation of ["set_breakpoints", "variables", "evaluate"] as const) {
+      for (const expanded of [false, true]) {
+        const rendered = renderLines(
+          renderDapToolCall({ operation }, plainTheme, expanded, "/workspace"),
+        );
+        expect(rendered).toContain("DAP");
+        expect(rendered).not.toContain("undefined");
+      }
+    }
+    expect(
+      renderLines(
+        renderDapToolCall(
+          { operation: "set_breakpoints", file_path: "/workspace/app.ts", breakpoints: [] },
+          plainTheme,
+          true,
+          "/workspace",
+        ),
+      ),
+    ).toContain("app.ts · 0");
+  });
+
   test("renders state, operation-specific, partial, and cancellation summaries", () => {
     const cases: readonly [DapToolResultDetails, string][] = [
       [finalDetails(), "● stopped · breakpoint"],

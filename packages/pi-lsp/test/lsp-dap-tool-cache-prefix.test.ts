@@ -20,6 +20,7 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -39,7 +40,7 @@ interface TurnContext {
   readonly tools: Tool[];
 }
 
-interface LspCacheFixture {
+interface ToolCacheFixture {
   readonly session: AgentSession;
   readonly turns: TurnContext[];
   readonly responses: AssistantMessage[];
@@ -50,19 +51,27 @@ function deepSeekModel() {
   // The model from the reported defect: `openai-completions` against a provider that validates
   // tool schemas strictly, so the OpenAI-compatible serializer is the code path under test.
   const model = getModel("deepseek", "deepseek-v4-flash");
-  if (model === undefined) throw new Error("Pi LSP cache test: missing pinned DeepSeek model");
+  if (model === undefined) throw new Error("Tool cache test: missing pinned DeepSeek model");
   return model;
 }
 
 /** Real Pi collaborators; the only scripted collaborator is the external model stream. */
-async function createLspCacheFixture(): Promise<LspCacheFixture> {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-lsp-cache-prefix-"));
+async function createToolCacheFixture(
+  toolNames: readonly ("lsp" | "dap")[],
+): Promise<ToolCacheFixture> {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-lsp-dap-cache-prefix-"));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
   await mkdir(agentDir);
   const settings = SettingsManager.inMemory({ retry: { enabled: false } });
   const projectModel = deepSeekModel();
   const providerRequests: string[] = [];
+  // Load the sibling extension without widening this package's TypeScript rootDir.
+  const {
+    createPiDapExtension,
+  }: {
+    createPiDapExtension: (getAgentDirectory: () => string) => ExtensionFactory;
+  } = await import(new URL("../../pi-dap/src/pi-dap-extension.js", import.meta.url).href);
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
@@ -73,10 +82,13 @@ async function createLspCacheFixture(): Promise<LspCacheFixture> {
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [
-      {
-        name: "pi-lsp-cache-prefix-test",
-        factory: createPiLspExtension({ getAgentDirectory: () => agentDir }),
-      },
+      ...toolNames.map((name) => ({
+        name: `pi-${name}-cache-prefix-test`,
+        factory:
+          name === "lsp"
+            ? createPiLspExtension({ getAgentDirectory: () => agentDir })
+            : createPiDapExtension(() => agentDir),
+      })),
       (pi) =>
         pi.registerProvider("deepseek", {
           api: "openai-completions",
@@ -163,6 +175,7 @@ const OpenAiCompletionsPayload = Type.Object(
           function: Type.Object(
             {
               name: Type.String(),
+              description: Type.String(),
               parameters: Type.Record(Type.String(), Type.Unknown()),
             },
             { additionalProperties: true },
@@ -205,7 +218,7 @@ async function serializeTurn(turn: TurnContext) {
           fetches++;
           throw new Error("Unexpected network attempt");
         },
-        sessionId: "lsp-tool-cache-prefix",
+        sessionId: "lsp-dap-tool-cache-prefix",
         cacheRetention: "short",
         onPayload(payload) {
           captured = structuredClone(payload);
@@ -231,59 +244,69 @@ afterEach(async () => {
 });
 
 /**
- * Upstream issue #125: `lsp` declared its parameters as a union of 35 per-operation branches,
- * so the registered schema serialised to a top-level `anyOf` with no `type` and strict providers
- * (DeepSeek) rejected every request while the tool was registered — including turns that never
- * used LSP. This proof covers both halves: the registered schema is object-shaped, and the fix
- * leaves the ordered prompt prefix (tools and system prompt) byte-stable across turns.
+ * Issues #125 and #126: top-level unions made strict providers reject unrelated turns.
+ * Test each extension alone and both together: schemas stay object-shaped, argument guidance
+ * reaches the provider, and the ordered tool/system/history prefix stays stable across turns.
  */
-test("serializes object-shaped lsp parameters and a stable tool/system prefix across turns", async () => {
-  const fixture = await createLspCacheFixture();
-  expect(fixture.session.getToolDefinition("lsp")).toBeDefined();
+test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", "dap"] }] as const)(
+  "serializes object-shaped $toolNames parameters and a stable prefix",
+  async ({ toolNames }) => {
+    const fixture = await createToolCacheFixture(toolNames);
+    for (const name of toolNames) expect(fixture.session.getToolDefinition(name)).toBeDefined();
 
-  fixture.responses.push(fauxAssistantMessage("Ready."));
-  await fixture.session.prompt("Start");
-  fixture.responses.push(fauxAssistantMessage("Still ready."));
-  await fixture.session.prompt("Continue");
-  expect(fixture.turns, "expected two consecutive real turns").toHaveLength(2);
-  const [first, second] = fixture.turns;
-  if (first === undefined || second === undefined) {
-    throw new Error("Pi LSP cache test: expected two captured turns");
-  }
+    fixture.responses.push(fauxAssistantMessage("Ready."));
+    await fixture.session.prompt("Start");
+    fixture.responses.push(fauxAssistantMessage("Still ready."));
+    await fixture.session.prompt("Continue");
+    expect(fixture.turns, "expected two consecutive real turns").toHaveLength(2);
+    const [first, second] = fixture.turns;
+    if (first === undefined || second === undefined) {
+      throw new Error("Tool cache test: expected two captured turns");
+    }
 
-  const before = await serializeTurn(first);
-  const after = await serializeTurn(second);
+    const before = await serializeTurn(first);
+    const after = await serializeTurn(second);
 
-  // (a) The registered `lsp` tool's parameters serialize to an OBJECT-shaped JSON Schema at the
-  // OpenAI-compatible `function.parameters` position. A top-level union serializes to `anyOf`
-  // with no `type`, which strict providers reject before generating.
-  const registered = before.tools.filter((tool) => tool.function.name === "lsp");
-  expect(registered).toHaveLength(1);
-  const parameters = registered[0]?.function.parameters;
-  if (parameters === undefined) throw new Error("Pi LSP cache test: expected lsp parameters");
-  const observedSchema = JSON.stringify(parameters).slice(0, 400);
-  expect(
-    parameters.type,
-    `registered lsp parameters must serialize as type "object"; got ${observedSchema}`,
-  ).toBe("object");
-  expect(
-    Object.hasOwn(parameters, "anyOf"),
-    `registered lsp parameters must not carry a top-level anyOf; got ${observedSchema}`,
-  ).toBe(false);
-  expect(parameters.required).toContain("operation");
-  expect(parameters.additionalProperties).toBe(false);
+    // (a) Every registered tool reaches the provider as a root object, never a top-level union.
+    expect(before.tools.map((tool) => tool.function.name)).toEqual(toolNames);
+    for (const { function: tool } of before.tools) {
+      expect(tool.description).toBe(fixture.session.getToolDefinition(tool.name)?.description);
+      if (tool.name === "lsp") {
+        expect(tool.description).toContain("format_document: file_path, tab_size, insert_spaces");
+        expect(tool.description).toContain(
+          "capabilities, restart, workspace_diagnostics: server_id, file_path",
+        );
+      } else {
+        expect(tool.description).toContain(
+          "variables: exactly one of frame_id or variables_reference is required (never both)",
+        );
+      }
+      const parameters = tool.parameters;
+      const observedSchema = JSON.stringify(parameters).slice(0, 400);
+      expect(
+        parameters.type,
+        `registered ${tool.name} parameters must serialize as type "object"; got ${observedSchema}`,
+      ).toBe("object");
+      expect(
+        Object.hasOwn(parameters, "anyOf"),
+        `registered ${tool.name} parameters must not carry a top-level anyOf; got ${observedSchema}`,
+      ).toBe(false);
+      expect(parameters.required).toEqual(["operation"]);
+      expect(parameters.additionalProperties).toBe(false);
+    }
 
-  // (b) Prefix stability: the ordered tool definitions and the system prompt are identical across
-  // the two consecutive turns, so the fix does not reshuffle or destabilise the prompt prefix.
-  expect(after.tools).toEqual(before.tools);
-  expect(after.tools.map((tool) => tool.function.name)).toEqual(
-    before.tools.map((tool) => tool.function.name),
-  );
-  expect(after.messages[0]).toEqual(before.messages[0]);
-  expect(second.systemPrompt).toBe(first.systemPrompt);
-  expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages);
+    // (b) Prefix stability: the ordered tool definitions and the system prompt are identical across
+    // the two consecutive turns, so the fix does not reshuffle or destabilise the prompt prefix.
+    expect(after.tools).toEqual(before.tools);
+    expect(after.tools.map((tool) => tool.function.name)).toEqual(
+      before.tools.map((tool) => tool.function.name),
+    );
+    expect(after.messages[0]).toEqual(before.messages[0]);
+    expect(second.systemPrompt).toBe(first.systemPrompt);
+    expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages);
 
-  // (c) Both turns were serialized offline: no transport was attempted and no direct provider
-  // request escaped (the scripted stream is the only model collaborator).
-  expect(fixture.providerRequests).toEqual([]);
-});
+    // (c) Both turns were serialized offline: no transport was attempted and no direct provider
+    // request escaped (the scripted stream is the only model collaborator).
+    expect(fixture.providerRequests).toEqual([]);
+  },
+);

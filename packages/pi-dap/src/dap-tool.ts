@@ -18,6 +18,7 @@ import type {
 import type { DapSessionFiles } from "./dap-session-files.js";
 import {
   DapToolParametersSchema,
+  DapToolProviderParametersSchema,
   DapToolResultDetailsSchema,
   type DapPresentationDetails,
   type DapToolParameters,
@@ -28,7 +29,10 @@ import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js"
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
-type DapToolDefinition = ToolDefinition<typeof DapToolParametersSchema, DapToolRenderDetails> & {
+type DapToolDefinition = ToolDefinition<
+  typeof DapToolProviderParametersSchema,
+  DapToolRenderDetails
+> & {
   readonly outputSchema: typeof DapToolResultDetailsSchema;
 };
 
@@ -73,7 +77,8 @@ function piDapError(cause: unknown): Error {
   return new Error(message.startsWith("Pi DAP:") ? message : `Pi DAP: ${message}`, { cause });
 }
 
-function parseDapToolParameters(input: DapToolParameters): DapToolParameters {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Pi arguments are validated against the strict operation branches at ingress.
+function parseDapToolParameters(input: unknown): DapToolParameters {
   try {
     return Value.Parse(DapToolParametersSchema, input);
   } catch (cause) {
@@ -361,13 +366,22 @@ export function createDapToolDefinition(
   return {
     name: "dap",
     label: "DAP",
-    description:
+    description: [
       "Launch and inspect one configured Debug Session through the Debug Adapter Protocol. Paths are relative to Pi's project directory. Output is limited to 2,000 lines or 50 KB; complete truncated output is saved as a Result Spill.",
+      "Only supply the fields listed for the selected operation:",
+      "launch: optional profile, program, args, cwd; profile may be omitted only when exactly one valid Launch Profile exists.",
+      "set_breakpoints: required file_path and breakpoints; lines are one-based, and [] clears the file's breakpoints.",
+      "stack: optional thread_id, start, count.",
+      "variables: exactly one of frame_id or variables_reference is required (never both); optional start, count.",
+      "evaluate: required expression; optional frame_id.",
+      "continue, next, step_in, step_out, pause, status, stop: operation only.",
+    ].join("\n"),
     promptSnippet: "Debug a program through one configured Debug Session",
     promptGuidelines: [
       "Use dap to set source breakpoints, launch a configured Debug Session, control the Debuggee, and inspect stopped Stack Frames and variables.",
     ],
-    parameters: DapToolParametersSchema,
+    parameters: DapToolProviderParametersSchema,
+    prepareArguments: parseDapToolParameters,
     outputSchema: DapToolResultDetailsSchema,
     renderCall: (argumentsValue, theme, context) =>
       renderDapToolCall(argumentsValue, theme, context.expanded, context.cwd),
