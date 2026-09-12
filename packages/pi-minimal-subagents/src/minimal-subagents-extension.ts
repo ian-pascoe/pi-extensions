@@ -182,7 +182,7 @@ function createRootConversationEndpoint(
 }
 
 function shouldSurfaceNotification(notification: CoordinatorNotification): boolean {
-  return ["failure", "interruption", "unavailable", "fork-clone-failure"].includes(
+  return ["failure", "interruption", "unavailable", "fork-clone-failure", "tool-warning"].includes(
     notification.type,
   );
 }
@@ -192,7 +192,8 @@ function notificationLevel(notification: CoordinatorNotification): "info" | "war
   if (
     notification.type === "cancellation" ||
     notification.type === "interruption" ||
-    notification.type === "unavailable"
+    notification.type === "unavailable" ||
+    notification.type === "tool-warning"
   ) {
     return "warning";
   }
@@ -605,6 +606,7 @@ export class MinimalSubagentsLifecycleController {
       sessions: sessionFactory,
       root: createRootConversationEndpoint(this.pi, context),
       maxSubagentDepth: minimalSubagentsConfig.maxSubagentDepth,
+      toolsets: minimalSubagentsConfig.toolsets,
       registry: {
         rootSessionId,
         append: (registryEvent) => this.pi.appendEntry(REGISTRY_ENTRY_TYPE, registryEvent),

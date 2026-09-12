@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type {
   AssistantMessage,
+  Context,
   Model,
   ToolResultMessage,
   Usage,
@@ -19,6 +20,7 @@ import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
+import { resolveMinimalSubagentsSettings } from "../src/minimal-subagents-config.js";
 import {
   captureChildTurnOutcome,
   createPersistentChildIdentity,
@@ -846,6 +848,183 @@ describe("minimal subagent sessions", () => {
       otherEntrypoint,
     ]);
   });
+
+  it.each([false, true])(
+    "keeps configured context tools and ordered definitions across child turns and restoration (CodeMode: %s)",
+    async (withCodeMode) => {
+      const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-configured-tools-"));
+      temporaryDirectories.push(directory);
+      const requestsPath = join(directory, "requests.jsonl");
+      const providerPath = join(directory, "offline-provider.ts");
+      writeFileSync(requestsPath, "");
+      writeFileSync(
+        providerPath,
+        `import { appendFileSync } from "node:fs";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+export default function (pi) {
+  pi.registerProvider("provider", {
+    api: "openai-completions",
+    baseUrl: "http://127.0.0.1:1/v1",
+    apiKey: "offline-test-key",
+    models: [${JSON.stringify(TEST_MODEL)}],
+    streamSimple(model, context) {
+      appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify(context) + "\\n");
+      const call = context.messages.at(-1)?.role === "user";
+      const message = {
+        role: "assistant", api: model.api, provider: model.provider, model: model.id,
+        timestamp: Date.now(), usage: ${JSON.stringify(ZERO_USAGE)},
+        content: call
+          ? [{ type: "toolCall", id: "notes-" + context.messages.length, name: "context_notes", arguments: { action: "list" } }]
+          : [{ type: "text", text: "completed with native Notes" }],
+        stopReason: call ? "toolUse" : "stop",
+      };
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason, message }));
+      return stream;
+    },
+  });
+}
+`,
+      );
+      const settingsPath = join(directory, "settings.json");
+      const settings = {
+        extensions: [
+          providerPath,
+          resolve(import.meta.dirname, "../../pi-context-management/src/index.ts"),
+          ...(withCodeMode ? [resolve(import.meta.dirname, "../../pi-codemode/src/index.ts")] : []),
+        ],
+        minimalSubagents: {
+          baseToolset: ["context_*", ...(withCodeMode ? ["codemode_*"] : [])],
+          readToolset: [],
+          modifyToolset: [],
+        },
+        codemode: { tools: [{ pattern: "context_*", exposure: "direct-and-codemode" }] },
+        compaction: { enabled: false },
+        retry: { enabled: false },
+      };
+      writeFileSync(settingsPath, JSON.stringify(settings));
+      const toolNames = [
+        "context_notes",
+        "context_history",
+        "context_rollover",
+        ...(withCodeMode
+          ? [
+              "codemode_execute",
+              "codemode_result",
+              "codemode_cancel",
+              "codemode_sessions",
+              "codemode_search",
+            ]
+          : []),
+      ];
+      const createCoordinator = () => {
+        const config = resolveMinimalSubagentsSettings(
+          SettingsManager.create(directory, directory, { projectTrusted: true }),
+          ["provider/model"],
+        );
+        expect(config.warnings).toEqual([]);
+        return new MinimalSubagentsCoordinator({
+          toolsets: config.toolsets,
+          sessions: new PiAgentSessionFactory({
+            cwd: directory,
+            agentDir: directory,
+            sessionDir: directory,
+            rootSessionId: "root",
+            extensionEntrypoint: join(directory, "minimal-subagents.ts"),
+            models: [TEST_MODEL],
+            eligibleModelIds: ["provider/model"],
+            modelScopeRestricted: false,
+            availableToolNames: toolNames,
+            projectTrusted: true,
+            getCoordinatorTools: () => [],
+          }),
+          registry: { rootSessionId: "root", append: () => undefined },
+          root: {
+            queueCoordinatorMessage: async () => undefined,
+            isIdle: () => true,
+            hasDeliveryEvidence: () => false,
+          },
+          automaticDeliveryGraceMs: 0,
+        });
+      };
+      let coordinator = createCoordinator();
+      try {
+        await coordinator.spawn(
+          "root",
+          {
+            agent_id: "notes-child",
+            task: "List native Notes",
+            tools: "none",
+            project_context: "omit",
+          },
+          {
+            messages: [],
+            model: "provider/model",
+            thinkingLevel: "medium",
+            ordinaryTools: [],
+            capabilityCeiling: toolNames,
+            spawnEntryId: "entry",
+          },
+        );
+        expect(coordinator.snapshot().agents[0]?.launch_contract.ordinary_tools).toEqual(toolNames);
+        await expect(coordinator.wait("root", "notes-child", 10_000)).resolves.toMatchObject({
+          event: "turn",
+          status: "completed",
+          output: "completed with native Notes",
+        });
+        await coordinator.sendAgentMessage(
+          "root",
+          { agent_id: "notes-child", message: "List Notes again" },
+          "root:turn",
+        );
+        await coordinator.waitForSettledOperations();
+        await expect(coordinator.wait("root", "notes-child", 10_000)).resolves.toMatchObject({
+          event: "turn",
+          status: "completed",
+          output: "completed with native Notes",
+        });
+        await coordinator.waitForSettledOperations();
+        const snapshot = coordinator.snapshot();
+        await coordinator.shutdown();
+        settings.minimalSubagents.baseToolset = [];
+        writeFileSync(settingsPath, JSON.stringify(settings));
+        coordinator = createCoordinator();
+        await coordinator.restore(snapshot);
+        expect(coordinator.snapshot().agents[0]?.launch_contract.ordinary_tools).toEqual(toolNames);
+        await coordinator.sendAgentMessage(
+          "root",
+          { agent_id: "notes-child", message: "List Notes after restoring" },
+          "root:restored",
+        );
+        await coordinator.waitForSettledOperations();
+        await expect(coordinator.wait("root", "notes-child", 10_000)).resolves.toMatchObject({
+          event: "turn",
+          status: "completed",
+          output: "completed with native Notes",
+        });
+        const requests: Context[] = readFileSync(requestsPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(requests).toHaveLength(6);
+        expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(toolNames);
+        expect(requests[0]?.systemPrompt).toContain("Context Management:");
+        for (const request of requests.slice(1)) {
+          expect(request.tools).toEqual(requests[0]!.tools);
+        }
+        for (const index of [1, 3, 5]) {
+          expect(requests[index]?.messages.at(-1)).toMatchObject({
+            role: "toolResult",
+            toolName: "context_notes",
+            isError: false,
+          });
+        }
+      } finally {
+        await coordinator.shutdown();
+      }
+    },
+    30_000,
+  );
 
   it("lets retained tool adapters replace a complete read bundle", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));

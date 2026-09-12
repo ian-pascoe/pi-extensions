@@ -81,7 +81,11 @@ function childRuntime(
   } satisfies ChildAgentRuntime;
 }
 
-function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs = 0) {
+function coordinatorFixture(
+  runtime = childRuntime(),
+  automaticDeliveryGraceMs = 0,
+  options: Pick<CoordinatorDependencies, "toolsets"> = {},
+) {
   const registryEvents: RegistryEventV2[] = [];
   const sessions = {
     createIdentity: vi.fn<AgentSessionFactory["createIdentity"]>((agent) => ({
@@ -146,6 +150,7 @@ function coordinatorFixture(runtime = childRuntime(), automaticDeliveryGraceMs =
     maxSubagentDepth: 2,
     automaticDeliveryGraceMs,
     now: () => new Date("2026-01-01T00:00:00.000Z"),
+    ...options,
   } satisfies CoordinatorDependencies;
   return {
     coordinator: new MinimalSubagentsCoordinator(dependencies),
@@ -168,6 +173,160 @@ const caller: CallerSnapshot = {
 };
 
 describe("minimal subagents coordinator", () => {
+  it("launches cumulative configured toolsets with concrete deduplicated extension tools", async () => {
+    const { coordinator } = coordinatorFixture(childRuntime(), 0, {
+      toolsets: {
+        baseToolset: ["context_*"],
+        readToolset: ["read", "@(grep|lsp)"],
+        modifyToolset: ["{edit,write}", "lsp", "dap"],
+      },
+    });
+    await coordinator.spawn(
+      "root",
+      { task: "Use configured tools", agent_id: "worker", tools: "modify" },
+      {
+        ...caller,
+        capabilityCeiling: [
+          "read",
+          "grep",
+          "bash",
+          "edit",
+          "write",
+          "lsp",
+          "dap",
+          "context_history",
+          "context_notes",
+          "context_rollover",
+        ],
+      },
+    );
+    await coordinator.wait("root", "worker", 1_000);
+    const expected = [
+      "context_history",
+      "context_notes",
+      "context_rollover",
+      "read",
+      "grep",
+      "lsp",
+      "edit",
+      "write",
+      "dap",
+    ];
+    expect(coordinator.status("root", "worker")).toMatchObject({
+      agent: {
+        launch_contract: { tools: "modify", ordinary_tools: expected },
+        capability_ceiling: expected,
+      },
+    });
+    await coordinator.shutdown();
+  });
+
+  it.each([
+    { tools: "none" as const, expected: ["context_notes"] },
+    { tools: [], expected: ["context_notes"] },
+    { tools: ["bash"], expected: ["context_notes", "bash"] },
+    { tools: undefined, expected: ["context_notes", "read"] },
+    { tools: "read" as const, expected: ["context_notes", "read", "lsp"] },
+  ])("adds base tools without widening the $tools selection", async ({ tools, expected }) => {
+    const { coordinator } = coordinatorFixture(childRuntime(), 0, {
+      toolsets: {
+        baseToolset: ["context_*"],
+        readToolset: ["read", "lsp"],
+        modifyToolset: ["bash"],
+      },
+    });
+    await coordinator.spawn(
+      "root",
+      { task: "Select tools", agent_id: "worker", tools },
+      { ...caller, capabilityCeiling: ["read", "bash", "lsp", "context_notes", "Context_other"] },
+    );
+    await coordinator.wait("root", "worker", 1_000);
+    expect(coordinator.status("root", "worker")).toMatchObject({
+      agent: { launch_contract: { ordinary_tools: expected }, capability_ceiling: expected },
+    });
+    await coordinator.shutdown();
+  });
+
+  it("warns and skips configured tools outside a restored parent's ceiling without weakening explicit requests", async () => {
+    const { coordinator, notify } = coordinatorFixture(childRuntime(), 0, {
+      toolsets: {
+        baseToolset: ["context_*", "agent_message"],
+        readToolset: ["read"],
+        modifyToolset: ["write", "missing_plugin"],
+      },
+    });
+    await coordinator.restore({
+      agents: [persistedAgent("parent", "root")],
+      tombstones: [],
+      deliveries: [],
+    });
+    const parentCaller = coordinator.snapshotChildCaller("parent", "entry");
+    await coordinator.spawn(
+      "parent",
+      { task: "Work with permitted tools", agent_id: "worker", tools: "modify" },
+      parentCaller,
+    );
+    await coordinator.wait("parent", "parent.worker", 1_000);
+    expect(coordinator.status("parent", "parent.worker")).toMatchObject({
+      agent: { launch_contract: { ordinary_tools: ["read"] }, capability_ceiling: ["read"] },
+    });
+    expect(notify).toHaveBeenCalledWith({
+      type: "tool-warning",
+      agentId: "parent.worker",
+      message: expect.stringMatching(
+        /context_\*[\s\S]*agent_message[\s\S]*write[\s\S]*missing_plugin/,
+      ),
+    });
+    for (const tool of ["write", "context_*", "agent_message"]) {
+      await expect(
+        coordinator.spawn(
+          "parent",
+          { task: "Must not expand explicit requests", agent_id: "denied", tools: [tool] },
+          parentCaller,
+        ),
+      ).rejects.toThrow(/capability ceiling exceeded|coordinator tools are injected separately/);
+    }
+    await coordinator.shutdown();
+  });
+
+  it("skips configured tools unavailable in child resources but still requires explicit tools and the model", async () => {
+    const { coordinator, sessions, notify } = coordinatorFixture(childRuntime(), 0, {
+      toolsets: { baseToolset: ["context_*"], readToolset: [], modifyToolset: [] },
+    });
+    sessions.resolveLaunchMissingDependencies.mockResolvedValue(["context_local"]);
+    const rootCaller = { ...caller, capabilityCeiling: ["read", "context_local"] };
+    await coordinator.spawn(
+      "root",
+      { task: "Optional root-only integration", agent_id: "worker", tools: "none" },
+      rootCaller,
+    );
+    await coordinator.wait("root", "worker", 1_000);
+    expect(coordinator.status("root", "worker")).toMatchObject({
+      agent: { launch_contract: { ordinary_tools: [] }, capability_ceiling: [] },
+    });
+    expect(notify).toHaveBeenCalledWith({
+      type: "tool-warning",
+      agentId: "worker",
+      message: expect.stringContaining("context_local"),
+    });
+    await expect(
+      coordinator.spawn(
+        "root",
+        { task: "Required tool", agent_id: "required", tools: ["context_local"] },
+        rootCaller,
+      ),
+    ).rejects.toThrow("launch dependencies unavailable: context_local");
+    sessions.resolveLaunchMissingDependencies.mockResolvedValue(["provider/model"]);
+    await expect(
+      coordinator.spawn(
+        "root",
+        { task: "Required model", agent_id: "model", tools: "none" },
+        rootCaller,
+      ),
+    ).rejects.toThrow("launch dependencies unavailable: provider/model");
+    await coordinator.shutdown();
+  });
+
   it("replays in-memory creation records after the live agent completes a turn", async () => {
     const { coordinator, registryEvents } = coordinatorFixture();
     const spawned = await coordinator.spawn(

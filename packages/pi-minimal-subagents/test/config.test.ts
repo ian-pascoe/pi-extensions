@@ -5,8 +5,113 @@ import {
 } from "../src/minimal-subagents-config.js";
 
 const eligibleModels = ["provider/global", "provider/project"];
+const defaultToolsets = {
+  baseToolset: [],
+  readToolset: ["read", "grep", "find", "ls"],
+  modifyToolset: ["bash", "edit", "write"],
+};
 
 describe("minimal subagents configuration", () => {
+  it("preserves built-in preset defaults with an empty base toolset", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: {},
+      projectSettings: {},
+      eligibleModelIds: eligibleModels,
+    });
+
+    expect(result.toolsets).toEqual({
+      baseToolset: [],
+      readToolset: ["read", "grep", "find", "ls"],
+      modifyToolset: ["bash", "edit", "write"],
+    });
+  });
+
+  it("replaces each authored toolset array while inheriting omitted keys", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: {
+        minimalSubagents: {
+          baseToolset: ["context_*"],
+          readToolset: ["read", "lsp"],
+          modifyToolset: ["bash", "dap"],
+        },
+      },
+      projectSettings: {
+        minimalSubagents: { readToolset: [], modifyToolset: ["write", "edit"] },
+      },
+      eligibleModelIds: eligibleModels,
+    });
+
+    expect(result.toolsets).toEqual({
+      baseToolset: ["context_*"],
+      readToolset: [],
+      modifyToolset: ["write", "edit"],
+    });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns and skips invalid patterns without blocking valid toolset settings", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: {
+        minimalSubagents: {
+          baseToolset: ["context_*"],
+          readToolset: ["read"],
+          modifyToolset: ["dap"],
+        },
+      },
+      projectSettings: {
+        minimalSubagents: {
+          baseToolset: null,
+          readToolset: [
+            "{read,grep}",
+            "@(find|ls)",
+            "?",
+            "!bash",
+            1,
+            "",
+            "#comment",
+            "x".repeat(65_537),
+          ],
+          modifyToolset: "bash",
+        },
+      },
+      eligibleModelIds: eligibleModels,
+    });
+
+    expect(result.toolsets).toEqual({
+      baseToolset: ["context_*"],
+      readToolset: ["{read,grep}", "@(find|ls)", "?", "!bash"],
+      modifyToolset: ["dap"],
+    });
+    expect(result.warnings).toEqual([
+      "project minimalSubagents.baseToolset: expected an array of patterns",
+      "project minimalSubagents.readToolset[4]: expected a non-empty string",
+      "project minimalSubagents.readToolset[5]: expected a non-empty string",
+      "project minimalSubagents.readToolset[6]: invalid minimatch pattern",
+      "project minimalSubagents.readToolset[7]: invalid minimatch pattern",
+      "project minimalSubagents.modifyToolset: expected an array of patterns",
+    ]);
+  });
+
+  it("ignores untrusted project toolsets and their validation warnings", () => {
+    const result = resolveMinimalSubagentsSettings(
+      {
+        getGlobalSettings: () => ({ minimalSubagents: { baseToolset: ["context_*"] } }),
+        getProjectSettings: () => ({
+          minimalSubagents: { baseToolset: [], readToolset: ["lsp"], modifyToolset: false },
+        }),
+        isProjectTrusted: () => false,
+      },
+      eligibleModels,
+    );
+
+    expect(result.toolsets).toEqual({
+      baseToolset: ["context_*"],
+      readToolset: ["read", "grep", "find", "ls"],
+      modifyToolset: ["bash", "edit", "write"],
+    });
+    expect(result.warnings).toEqual([]);
+  });
+
   it("merges expanded project roles, deletes inherited roles, and applies project depth", () => {
     const result = resolveMinimalSubagentsConfig({
       globalSettings: {
@@ -40,6 +145,7 @@ describe("minimal subagents configuration", () => {
         globalEnabled: undefined,
         projectEnabled: undefined,
       },
+      toolsets: defaultToolsets,
       modelRoles: [
         { name: "budget", model: "provider/project", thinkingLevel: "high" },
         {
@@ -133,6 +239,7 @@ describe("minimal subagents configuration", () => {
         globalEnabled: undefined,
         projectEnabled: undefined,
       },
+      toolsets: defaultToolsets,
       modelRoles: [
         { name: "shorthandOff", model: "provider/shorthand", thinkingLevel: "off" },
         { name: "shorthandLow", model: "provider/shorthand", thinkingLevel: "low" },
@@ -174,6 +281,7 @@ describe("minimal subagents configuration", () => {
         globalEnabled: undefined,
         projectEnabled: undefined,
       },
+      toolsets: defaultToolsets,
       modelRoles: [
         { name: "exactHigh", model: "provider/real:high" },
         { name: "exactOther", model: "provider/real:8b", hint: "Exact model" },
@@ -203,6 +311,7 @@ describe("minimal subagents configuration", () => {
         projectEnabled: undefined,
       },
       modelRoles: [],
+      toolsets: defaultToolsets,
       warnings: [],
     });
   });

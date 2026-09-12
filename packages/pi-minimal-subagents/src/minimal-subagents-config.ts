@@ -1,7 +1,13 @@
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { DEFAULT_MAX_SUBAGENT_DEPTH, THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
+import {
+  DEFAULT_MAX_SUBAGENT_DEPTH,
+  DEFAULT_TOOLSETS,
+  THINKING_LEVELS,
+} from "./minimal-subagents-capabilities.js";
+import type { MinimalSubagentsToolsets } from "./minimal-subagents-types.js";
 
 const MODEL_ROLE_NAME_MAX_LENGTH = 64;
 const MODEL_ROLE_HINT_MAX_LENGTH = 500;
@@ -13,12 +19,17 @@ const MinimalSubagentsSettingsSchema = Type.Object({
   enabled: Type.Optional(Type.Unknown()),
   maxSubagentDepth: Type.Optional(Type.Unknown()),
   modelRoles: Type.Optional(Type.Unknown()),
+  baseToolset: Type.Optional(Type.Unknown()),
+  readToolset: Type.Optional(Type.Unknown()),
+  modifyToolset: Type.Optional(Type.Unknown()),
 });
 const ModelRoleObjectSchema = Type.Object({
   model: Type.Optional(Type.Unknown()),
   hint: Type.Optional(Type.Unknown()),
 });
 const EnabledSettingSchema = Type.Boolean();
+const ToolsetSchema = Type.Array(Type.Unknown());
+const ToolPatternSchema = Type.String({ minLength: 1 });
 const PositiveSafeIntegerSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const MaxSubagentDepthSettingSchema = Type.Union([PositiveSafeIntegerSchema, Type.Null()]);
 const ShorthandModelRoleSchema = Type.String();
@@ -58,6 +69,7 @@ export interface ResolvedMinimalSubagentsConfig {
   maxSubagentDepth: number;
   subagentAccess: ResolvedSubagentAccessSettings;
   modelRoles: MinimalSubagentsModelRole[];
+  toolsets: MinimalSubagentsToolsets;
   warnings: string[];
 }
 
@@ -88,7 +100,7 @@ interface ScopedSettingValue {
   value: ModelRoleWireValue;
 }
 
-interface ParsedMinimalSubagentsSettings {
+interface ParsedMinimalSubagentsSettings extends Partial<MinimalSubagentsToolsets> {
   enabled?: boolean;
   maxSubagentDepth?: MaxSubagentDepthWireValue;
   modelRoles?: ModelRolesWireValue;
@@ -169,6 +181,32 @@ function readMinimalSubagentsSettings(
     }
     if (minimalSubagents.modelRoles !== undefined) {
       parsed.modelRoles = parseModelRolesWireValue(minimalSubagents.modelRoles);
+    }
+    for (const key of ["baseToolset", "readToolset", "modifyToolset"] as const) {
+      const value = minimalSubagents[key];
+      if (value === undefined) continue;
+      const path = `${scope} minimalSubagents.${key}`;
+      if (!Value.Check(ToolsetSchema, value)) {
+        warnings.push(`${path}: expected an array of patterns`);
+        continue;
+      }
+      const patterns: string[] = [];
+      for (const [index, pattern] of value.entries()) {
+        if (!Value.Check(ToolPatternSchema, pattern)) {
+          warnings.push(`${path}[${index}]: expected a non-empty string`);
+          continue;
+        }
+        try {
+          if (new Minimatch(pattern).makeRe() !== false) {
+            patterns.push(pattern);
+            continue;
+          }
+        } catch {
+          // Invalid minimatch patterns are nonblocking configuration warnings.
+        }
+        warnings.push(`${path}[${index}]: invalid minimatch pattern`);
+      }
+      parsed[key] = patterns;
     }
     return parsed;
   }
@@ -384,6 +422,14 @@ export function resolveMinimalSubagentsConfig(
     maxSubagentDepth,
     subagentAccess: resolveSubagentAccessSettings(globalConfig.enabled, projectConfig.enabled),
     modelRoles: parseModelRoles(modelRoleEntries, input.eligibleModelIds, warnings),
+    toolsets: {
+      baseToolset: projectConfig.baseToolset ??
+        globalConfig.baseToolset ?? [...DEFAULT_TOOLSETS.baseToolset],
+      readToolset: projectConfig.readToolset ??
+        globalConfig.readToolset ?? [...DEFAULT_TOOLSETS.readToolset],
+      modifyToolset: projectConfig.modifyToolset ??
+        globalConfig.modifyToolset ?? [...DEFAULT_TOOLSETS.modifyToolset],
+    },
     warnings,
   };
 }
