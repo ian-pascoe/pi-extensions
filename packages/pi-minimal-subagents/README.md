@@ -209,7 +209,8 @@ that tool's available operations, regardless of preset name.
 CodeMode still controls whether a granted tool is direct, CodeMode-only, or both.
 If a child needs CodeMode-only tools, also grant `codemode_*` in its toolsets so
 it has the tools needed to discover and call them. This does not bypass CodeMode's
-own restrictions on nested calls.
+own restrictions on nested calls. Exposure rules also apply to injected
+Coordinator Tools; delegation still determines which Coordinator Tools are granted.
 
 ## Capabilities and persistence
 

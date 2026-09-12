@@ -21,6 +21,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { resolveMinimalSubagentsSettings } from "../src/minimal-subagents-config.js";
+import { createCoordinatorToolDefinitions } from "../src/minimal-subagents-tools.js";
+import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import {
   captureChildTurnOutcome,
   createPersistentChildIdentity,
@@ -882,17 +884,25 @@ describe("minimal subagent sessions", () => {
     ]);
   });
 
-  it.each(["standalone", "direct-only", "direct-and-codemode", "codemode-only"])(
+  it.each([
+    "standalone",
+    "direct-only",
+    "direct-and-codemode",
+    "codemode-only",
+    "codemode-only-all",
+  ])(
     "keeps configured context tools and ordered definitions across child turns and restoration (%s)",
     async (exposure) => {
       const withCodeMode = exposure !== "standalone";
-      const hiddenContextTools = exposure === "codemode-only";
+      const hiddenContextTools = exposure.startsWith("codemode-only");
+      const hiddenCoordinatorTools = exposure === "codemode-only-all";
+      const coordinatorToolNames = ["agent_message", "subagent_wait", "subagent_status"];
       const notesCall = hiddenContextTools
         ? {
             name: "codemode_execute",
             arguments: {
               script:
-                'return { notes: await tools.context_notes({ action: "list" }), names: Object.keys(tools).sort() };',
+                'return { notes: await tools.context_notes({ action: "list" }), coordination: await tools.subagent_status({}), names: Object.keys(tools).sort() };',
               wait: true,
             },
           }
@@ -945,7 +955,14 @@ export default function (pi) {
         },
         codemode: {
           tools: [
-            { pattern: "context_*", exposure: withCodeMode ? exposure : "direct-and-codemode" },
+            {
+              pattern: hiddenCoordinatorTools ? "*" : "context_*",
+              exposure: hiddenContextTools
+                ? "codemode-only"
+                : withCodeMode
+                  ? exposure
+                  : "direct-and-codemode",
+            },
           ],
         },
         compaction: { enabled: false },
@@ -972,7 +989,7 @@ export default function (pi) {
           ["provider/model"],
         );
         expect(config.warnings).toEqual([]);
-        return new MinimalSubagentsCoordinator({
+        const coordinator: MinimalSubagentsCoordinator = new MinimalSubagentsCoordinator({
           toolsets: config.toolsets,
           sessions: new PiAgentSessionFactory({
             cwd: directory,
@@ -985,7 +1002,15 @@ export default function (pi) {
             modelScopeRestricted: false,
             availableToolNames: toolNames,
             projectTrusted: true,
-            getCoordinatorTools: () => [],
+            getCoordinatorTools: (callerId) =>
+              createCoordinatorToolDefinitions({
+                coordinator,
+                callerId,
+                schemas: createCoordinatorToolSchemas(["provider/model"]),
+                captureCaller: () => {
+                  throw new Error("Nondelegating child must not spawn");
+                },
+              }),
           }),
           registry: { rootSessionId: "root", append: () => undefined },
           root: {
@@ -995,6 +1020,7 @@ export default function (pi) {
           },
           automaticDeliveryGraceMs: 0,
         });
+        return coordinator;
       };
       let coordinator = createCoordinator();
       try {
@@ -1056,9 +1082,10 @@ export default function (pi) {
           .split("\n")
           .map((line) => JSON.parse(line));
         expect(requests).toHaveLength(6);
-        expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(
-          hiddenContextTools ? toolNames.slice(3) : toolNames,
-        );
+        expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+          ...(hiddenContextTools ? toolNames.slice(3) : toolNames),
+          ...(hiddenCoordinatorTools ? [] : coordinatorToolNames),
+        ]);
         expect(requests[0]?.systemPrompt).toContain("Context Management:");
         for (const request of requests.slice(1)) {
           expect(request.tools).toEqual(requests[0]!.tools);
@@ -1073,11 +1100,15 @@ export default function (pi) {
                   result: "success",
                   data: {
                     notes: { details: { notes: [], total: 0, nextOffset: null } },
+                    coordination: { details: { agents: [] } },
                     names: [
+                      "agent_message",
                       "codemode_search",
                       "context_history",
                       "context_notes",
                       "context_rollover",
+                      "subagent_status",
+                      "subagent_wait",
                     ],
                   },
                 }
