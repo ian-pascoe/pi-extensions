@@ -300,8 +300,64 @@ export const LspToolParametersSchema = Type.Union([
   ),
 ]);
 
+/** Model-visible required fields, derived from the strict branches rather than a second operation map. */
+export const LspToolOperationRequirements = [
+  ...Map.groupBy(LspToolParametersSchema.anyOf, (branch) =>
+    branch.required.filter((field) => field !== "operation").join(", "),
+  ),
+]
+  .map(
+    ([fields, branches]) =>
+      `${branches.map((branch) => branch.properties.operation.const).join(", ")}: ${fields || "none"}`,
+  )
+  .join("\n");
+
+/**
+ * Provider-facing arguments for the single Pi `lsp` tool.
+ *
+ * Function-calling providers require a tool's `parameters` to be a JSON Schema of
+ * `type: "object"`. A top-level union serialises to `anyOf` with no `type`, and providers that
+ * validate strictly reject **every** request while such a tool is registered (DeepSeek returns
+ * `400 invalid_request_error` before generating, including for turns that never use the tool).
+ *
+ * This flat object is therefore what Pi registers and what the model sees. Strictness is
+ * unchanged: `LspToolParametersSchema` stays the per-operation validator applied to the
+ * arguments at the tool ingress, so an incomplete or contradictory combination is still
+ * rejected with the existing `Pi LSP: invalid tool arguments` failure.
+ */
+export const LspToolProviderParametersSchema = Type.Object(
+  {
+    operation: LspOperationNameSchema,
+    file_path: Type.Optional(FilePathSchema),
+    server_id: OptionalServerIdSchema,
+    line: Type.Optional(Type.Integer({ minimum: 1 })),
+    character: Type.Optional(Type.Integer({ minimum: 1 })),
+    include_declaration: Type.Optional(Type.Boolean()),
+    query: Type.Optional(Type.String()),
+    positions: Type.Optional(Type.Array(OneBasedPositionSchema, { minItems: 1 })),
+    range: Type.Optional(OneBasedRangeSchema),
+    trigger_character: Type.Optional(Type.String({ minLength: 1 })),
+    new_name: Type.Optional(Type.String({ minLength: 1 })),
+    only_kinds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+    preview_id: Type.Optional(Type.String({ minLength: 1 })),
+    mutation_manifest: Type.Optional(MutationManifestSchema),
+    // Formatting options used by the formatting branches. They are optional here because this flat
+    // object serves every operation; the strict per-operation branch still decides which of them a
+    // given call must supply, so the ingress validator rejects an incomplete combination.
+    tab_size: Type.Optional(FormattingOptionsSchema.tab_size),
+    insert_spaces: Type.Optional(FormattingOptionsSchema.insert_spaces),
+    trim_trailing_whitespace: FormattingOptionsSchema.trim_trailing_whitespace,
+    insert_final_newline: FormattingOptionsSchema.insert_final_newline,
+    trim_final_newlines: FormattingOptionsSchema.trim_final_newlines,
+  },
+  { additionalProperties: false },
+);
+
 /** One valid input branch for the Pi LSP tool after TypeBox validation. */
 export type LspToolParameters = Static<typeof LspToolParametersSchema>;
+
+/** Provider-facing arguments Pi registers for the `lsp` tool, rebuilt into one strict branch at the tool ingress. */
+export type LspToolProviderParameters = Static<typeof LspToolProviderParametersSchema>;
 
 /** One canonical Mutation Manifest operation exposed to pre-execution permission hooks. */
 export type MutationManifestEntry = Static<typeof MutationManifestEntrySchema>;

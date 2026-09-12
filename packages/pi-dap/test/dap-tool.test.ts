@@ -22,6 +22,7 @@ import {
   DapToolParametersSchema,
   DapToolResultDetailsSchema,
   type DapToolParameters,
+  type DapToolProviderParameters,
 } from "../src/dap-tool-contract.js";
 import { createDapToolDefinition, type DapToolRuntime } from "../src/dap-tool.js";
 
@@ -332,6 +333,42 @@ describe("DAP tool contract", () => {
     ).toBe(false);
   });
 
+  test("rejects invalid arguments during preparation and execution before runtime or observers", async () => {
+    const fixture = await createToolFixture();
+    const observer = {
+      onToolStart: vi.fn(),
+      onToolSuccess: vi.fn(),
+      onToolFailure: vi.fn(),
+    };
+    const getRuntime = vi.fn(() => ({ ...fixture.runtime, observer }));
+    const tool = createDapToolDefinition(getRuntime);
+    expect(tool.prepareArguments).toBeTypeOf("function");
+    for (const input of [
+      { operation: "set_breakpoints", file_path: "a.ts" },
+      { operation: "set_breakpoints", breakpoints: [] },
+      { operation: "set_breakpoints", file_path: "a.ts", breakpoints: [{ line: 0 }] },
+      { operation: "evaluate" },
+      { operation: "variables" },
+      { operation: "variables", frame_id: 0, variables_reference: 1 },
+      { operation: "variables", frame_id: -1 },
+      { operation: "stack", count: 0 },
+      { operation: "status", unknown: true },
+      { operation: "continue", thread_id: 0 },
+    ]) {
+      expect(() => tool.prepareArguments?.(input)).toThrow("Pi DAP: invalid tool arguments");
+      // SAFETY: Deliberately invalid model or hook input must be reparsed before any effects.
+      const invalid = input as DapToolProviderParameters;
+      await expect(
+        tool.execute("invalid", invalid, undefined, undefined, fixture.context),
+      ).rejects.toThrow("Pi DAP: invalid tool arguments");
+    }
+    expect(getRuntime).not.toHaveBeenCalled();
+    expect(observer.onToolStart).not.toHaveBeenCalled();
+    expect(observer.onToolSuccess).not.toHaveBeenCalled();
+    expect(observer.onToolFailure).not.toHaveBeenCalled();
+    expect(fixture.session.calls).toEqual([]);
+  });
+
   test("dispatches all operations, maps paths, forwards cancellation, and validates details", async () => {
     const fixture = await createToolFixture();
     const tool = createDapToolDefinition(() => fixture.runtime);
@@ -363,6 +400,8 @@ describe("DAP tool contract", () => {
     ];
 
     for (const input of inputs) {
+      expect(tool.prepareArguments?.(input)).toEqual(input);
+      expect(Value.Check(tool.parameters, input)).toBe(true);
       const result = await tool.execute(
         "dap-call",
         input,
