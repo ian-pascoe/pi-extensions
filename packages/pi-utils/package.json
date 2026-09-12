@@ -31,6 +31,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./pi-agent-session-discovery": {
+      "types": "./dist/pi-agent-session-discovery.d.ts",
+      "import": "./dist/pi-agent-session-discovery.js"
     }
   },
   "publishConfig": {
@@ -42,6 +46,14 @@
     "prepack": "pnpm build",
     "test": "pnpm build && vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22.19.0"

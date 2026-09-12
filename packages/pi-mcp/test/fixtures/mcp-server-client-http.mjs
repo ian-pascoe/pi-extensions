@@ -71,7 +71,7 @@ const nodeServer = createServer(async (request, response) => {
       response.writeHead(202).end();
       const result = jsonResponse(message);
       if (message.method === "tools/call" && result !== undefined) {
-        result.result.content[0].text = `sse-ok:${request.headers["x-fixture"] ?? "missing"}`;
+        result.result.content[0].text = `sse-ok:${String(request.headers["x-fixture"] ?? "missing")}`;
       }
       if (result !== undefined) {
         sseResponse?.write(`event: message\ndata: ${JSON.stringify(result)}\n\n`);

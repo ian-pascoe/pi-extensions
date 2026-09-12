@@ -543,7 +543,7 @@ export class MinimalSubagentsCoordinator {
       const runtime = this.runtimes.get(agent.agent_id);
       try {
         if (agent.active_turn_id) await this.cancelActiveTurn(agent);
-        runtime?.dispose();
+        await runtime?.dispose();
         this.runtimes.delete(agent.agent_id);
         if (agent.session_file) {
           await this.dependencies.sessions.trashSession(agent);
@@ -595,7 +595,7 @@ export class MinimalSubagentsCoordinator {
     await Promise.allSettled(
       abandonedRuntimes.map((runtime) => (runtime.isRunning ? runtime.abort() : Promise.resolve())),
     );
-    for (const runtime of abandonedRuntimes) runtime.dispose();
+    for (const runtime of abandonedRuntimes) await runtime.dispose();
     this.runtimes.clear();
     this.runtimeInitializations.clear();
     this.pendingAgentIds.clear();
@@ -865,7 +865,7 @@ export class MinimalSubagentsCoordinator {
     await Promise.allSettled(this.runtimeInitializations.values());
     await Promise.allSettled(this.backgroundOperations);
     await Promise.allSettled(this.recipientQueues.values());
-    for (const runtime of this.runtimes.values()) runtime.dispose();
+    for (const runtime of this.runtimes.values()) await runtime.dispose();
     this.runtimes.clear();
   }
 
@@ -883,7 +883,7 @@ export class MinimalSubagentsCoordinator {
       const runtime = await this.ensureRuntime(agent);
       if (this.agents.get(agentId) !== agent || agent.active_turn_id !== turnId) {
         if (!this.agents.has(agentId) || !this.acceptingOperations) {
-          runtime.dispose();
+          await runtime.dispose();
           this.runtimes.delete(agentId);
         }
         return;
@@ -916,13 +916,13 @@ export class MinimalSubagentsCoordinator {
     const openingForTurn = agent.active_turn_id !== undefined;
     const initialization = this.dependencies.sessions
       .openRuntime(agent)
-      .then((runtime) => {
+      .then(async (runtime) => {
         if (this.agents.get(agent.agent_id) !== agent) {
-          runtime.dispose();
+          await runtime.dispose();
           throw new Error(`Minimal subagents runtime replaced while opening ${agent.agent_id}`);
         }
         if (!runtime.sessionLeafId) {
-          runtime.dispose();
+          await runtime.dispose();
           throw new Error(
             `Minimal subagents session restoration: no selected session leaf for ${agent.agent_id}`,
           );

@@ -925,6 +925,7 @@ describe("minimal subagents coordinator", () => {
     );
     await source.coordinator.reconcileDeliveries();
     await source.coordinator.sendAgentMessage("worker", { message: "progress 2" }, spawned.turn_id);
+    await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
     finishPrompt({ status: "completed", output: "complete after reload" });
     await vi.waitFor(() =>
       expect(source.coordinator.inspectStatus("worker")).toMatchObject({

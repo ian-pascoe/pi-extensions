@@ -9,6 +9,7 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 import { Agent } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
   AgentSession,
   SessionManager,
@@ -136,6 +137,107 @@ function persistedAgent(): PersistedAgent {
 }
 
 describe("minimal subagent sessions", () => {
+  it.each(["complete", "cancel"] as const)(
+    "keeps observer work inside the owned child outcome (%s)",
+    async (ending) => {
+      const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-observed-"));
+      temporaryDirectories.push(directory);
+      const agent = persistedAgent();
+      const identity = createPersistentChildIdentity({
+        agent,
+        importedMessages: [],
+        cwd: directory,
+        sessionDir: directory,
+        rootSessionId: "root",
+      });
+      agent.session_file = identity.sessionFile;
+      agent.session_id = identity.sessionId;
+      agent.session_leaf_id = identity.sessionLeafId;
+      let releaseReview: (() => void) | undefined;
+      let began = false;
+      let disposed = false;
+      let stopped = false;
+      let requests = 0;
+      let authSetup: Promise<void> | undefined;
+      const model = { ...TEST_MODEL, provider: "anthropic" };
+      agent.launch_contract.model = "anthropic/model";
+      const factory = new PiAgentSessionFactory({
+        cwd: directory,
+        agentDir: directory,
+        sessionDir: directory,
+        rootSessionId: "root",
+        extensionEntrypoint: join(directory, "minimal-subagents.ts"),
+        models: [model],
+        eligibleModelIds: ["anthropic/model"],
+        modelScopeRestricted: false,
+        availableToolNames: ["read"],
+        projectTrusted: false,
+        getCoordinatorTools: () => [],
+        observeSession(session, agentId) {
+          authSetup = session.modelRuntime.setRuntimeApiKey("anthropic", "test-only");
+          expect(agentId).toBe("child");
+          session.agent.streamFunction = () => {
+            const stream = createAssistantMessageEventStream();
+            const message = assistantMessage(
+              ++requests === 1 ? "original" : "corrected",
+              Date.now(),
+            );
+            stream.push({ type: "done", reason: "stop", message });
+            stream.end(message);
+            return stream;
+          };
+          return {
+            beginTurn() {
+              began = true;
+            },
+            async finishTurn() {
+              await new Promise<void>((resolveReview) => {
+                releaseReview = resolveReview;
+              });
+              if (stopped) return;
+              await session.sendCustomMessage(
+                { customType: "advisor-test", content: "Correct this", display: true },
+                { triggerTurn: true },
+              );
+            },
+            async abort() {
+              stopped = true;
+              releaseReview?.();
+            },
+            async dispose() {
+              disposed = true;
+            },
+          };
+        },
+      });
+      const runtime = await factory.openRuntime(agent);
+      await authSetup;
+      let delivered = false;
+      const turn = runtime.runPrompt("task", false, "provider/model", "off").then((outcome) => {
+        delivered = true;
+        return outcome;
+      });
+      try {
+        await vi.waitFor(() => expect(releaseReview).toBeDefined());
+        expect(began).toBe(true);
+        expect(delivered).toBe(false);
+        if (ending === "cancel") await runtime.abort();
+        else releaseReview?.();
+        const outcome = await turn;
+        expect(outcome).toMatchObject({
+          status: ending === "cancel" ? "cancelled" : "completed",
+          output: ending === "cancel" ? "original" : "corrected",
+        });
+        expect(requests).toBe(ending === "cancel" ? 1 : 2);
+      } finally {
+        releaseReview?.();
+        await turn;
+        await runtime.dispose();
+      }
+      expect(disposed).toBe(true);
+    },
+  );
+
   it("reads and validates the complete verified Child Session Position without restoring or rewriting its file", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-history-"));
     temporaryDirectories.push(directory);
@@ -458,7 +560,7 @@ describe("minimal subagent sessions", () => {
     } finally {
       state.mockRestore();
       subscriptions.mockRestore();
-      runtime.dispose();
+      await runtime.dispose();
     }
   });
 
@@ -539,7 +641,7 @@ describe("minimal subagent sessions", () => {
     } finally {
       secondPrompt.mockRestore();
       steer.mockRestore();
-      runtime.dispose();
+      await runtime.dispose();
     }
   });
 
@@ -983,7 +1085,7 @@ export default function projectAdapter(pi) {
       expect(existsSync(globalObserverMarker)).toBe(true);
       expect(existsSync(projectAdapterMarker)).toBe(true);
     } finally {
-      runtime.dispose();
+      await runtime.dispose();
     }
 
     const shellAgent = persistedAgent();
@@ -1011,7 +1113,7 @@ export default function projectAdapter(pi) {
       await vi.waitFor(() => expect(existsSync(lateToolMarker)).toBe(true));
       expect(shellRuntime.getActiveToolNames?.()).toEqual(["read", "exec_command", "write_stdin"]);
     } finally {
-      shellRuntime.dispose();
+      await shellRuntime.dispose();
     }
   }, 15_000);
 

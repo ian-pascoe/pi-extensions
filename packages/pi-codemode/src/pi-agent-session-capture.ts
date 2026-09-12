@@ -1,5 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
@@ -97,36 +98,9 @@ function captureFailure(message: string): CapturePiAgentSessionResult {
 export function capturePiAgentSession(
   pi: Pick<ExtensionAPI, "getAllTools">,
 ): CapturePiAgentSessionResult {
-  const prototype = AgentSession.prototype;
-  const descriptor = Object.getOwnPropertyDescriptor(prototype, "getAllTools");
-  if (descriptor === undefined || !Value.Check(PiCallableSchema, descriptor.value)) {
-    return captureFailure("AgentSession.getAllTools is not the tested data method");
-  }
-
-  const originalGetAllTools = descriptor.value;
-  let capturedSession: AgentSession | undefined;
-  Object.defineProperty(prototype, "getAllTools", {
-    ...descriptor,
-    value(this: AgentSession) {
-      // oxlint-disable-next-line typescript/no-this-alias -- SAFETY: Capturing the exact synchronous receiver is the approved transient AgentSession discovery mechanism; pi-tool-bridge.test.ts verifies descriptor restoration.
-      capturedSession = this;
-      return originalGetAllTools.call(this);
-    },
-  });
-
-  try {
-    pi.getAllTools();
-  } catch (cause) {
-    return captureFailure(
-      `getAllTools capture failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-  } finally {
-    Object.defineProperty(prototype, "getAllTools", descriptor);
-  }
-
-  if (!(capturedSession instanceof AgentSession)) {
-    return captureFailure("getAllTools did not delegate to an AgentSession");
-  }
+  const discovery = discoverPiAgentSession(pi);
+  if (!discovery.ok) return captureFailure(discovery.warning);
+  const capturedSession = discovery.session;
   if (!hasCallableSessionCapabilities(capturedSession)) {
     return captureFailure("AgentSession does not expose the pinned public capabilities");
   }

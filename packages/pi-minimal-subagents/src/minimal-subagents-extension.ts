@@ -80,6 +80,7 @@ import { MinimalSubagentsUiController } from "./minimal-subagents-ui.js";
 import type {
   AgentSessionFactory,
   CallerSnapshot,
+  ChildSessionObserver,
   CoordinatorNotification,
   ForkSnapshot,
   PersistedAgent,
@@ -584,6 +585,19 @@ export class MinimalSubagentsLifecycleController {
       projectTrusted: context.isProjectTrusted(),
       maxSubagentDepth: minimalSubagentsConfig.maxSubagentDepth,
       onChildSessionActivity: () => activeCoordinator?.scheduleDeliveryReconciliation(),
+      observeSession: (session, agentId, resourceInputs) => {
+        let observer: ChildSessionObserver | undefined;
+        this.pi.events.emit("pi-minimal-subagents:observe-session", {
+          rootSessionId,
+          agentId,
+          session,
+          resourceInputs,
+          attach: (attached: ChildSessionObserver) => {
+            observer = attached;
+          },
+        });
+        return observer;
+      },
       getCoordinatorTools: (callerId) => {
         const coordinator = requireActiveCoordinator();
         return createCoordinatorToolDefinitions({

@@ -218,6 +218,14 @@ export interface CoordinatorMessage {
   };
 }
 
+/** Optional review work attached by the root and awaited by the existing child owner. */
+export interface ChildSessionObserver {
+  beginTurn(): void;
+  finishTurn(): Promise<void>;
+  abort(): Promise<void>;
+  dispose(): Promise<void>;
+}
+
 /** Process-local adapter around one SDK-created Pi child session. */
 export interface ChildAgentRuntime {
   readonly sessionLeafId: string | undefined;
@@ -232,7 +240,7 @@ export interface ChildAgentRuntime {
   /** Queue one typed coordinator message into the child session. */
   queueCoordinatorMessage(message: CoordinatorMessage): Promise<void>;
   abort(): Promise<void>;
-  dispose(): void;
+  dispose(): void | Promise<void>;
   /** Return the live Runtime Profile, or undefined when the SDK session has no model. */
   getRuntimeProfile(): RuntimeProfile | undefined;
   /** Return the effective ordinary tools after child extensions apply runtime adapters. */
