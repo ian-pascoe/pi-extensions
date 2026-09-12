@@ -206,6 +206,11 @@ still apply; the saved grant is not silently rewritten. Toolsets configure names
 not tool operations: granting `lsp`, `dap`, or another multifunction tool grants
 that tool's available operations, regardless of preset name.
 
+CodeMode still controls whether a granted tool is direct, CodeMode-only, or both.
+If a child needs CodeMode-only tools, also grant `codemode_*` in its toolsets so
+it has the tools needed to discover and call them. This does not bypass CodeMode's
+own restrictions on nested calls.
+
 ## Capabilities and persistence
 
 Child sessions are persistent Pi sessions. Their launch contracts bound model,

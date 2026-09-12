@@ -67,6 +67,7 @@ const PI_BUILTIN_ORDINARY_TOOL_NAMES = new Set([
   "find",
   "ls",
   "bash",
+  "powershell",
   "edit",
   "write",
 ]);
@@ -129,11 +130,25 @@ function installChildToolCapabilityPolicy(
   session: AgentSession,
   allowedToolNames: readonly string[],
   runtimeToolAdapters: readonly RuntimeToolAdapter[],
+  preserveGrantedTools = true,
 ): void {
   const applyActiveTools = session.setActiveToolsByName.bind(session);
   session.setActiveToolsByName = (requestedToolNames) => {
+    const permitted = resolveChildActiveToolNames(
+      allowedToolNames,
+      requestedToolNames,
+      runtimeToolAdapters,
+    );
+    // Inside an exposure wrapper, ordinary tools may intentionally be hidden. The
+    // outer policy restores grants before that wrapper applies its own selection.
     applyActiveTools(
-      resolveChildActiveToolNames(allowedToolNames, requestedToolNames, runtimeToolAdapters),
+      preserveGrantedTools
+        ? permitted
+        : permitted.filter(
+            (name) =>
+              requestedToolNames.includes(name) ||
+              COORDINATOR_TOOL_NAMES.some((coordinatorName) => coordinatorName === name),
+          ),
     );
   };
   session.setActiveToolsByName(session.getActiveToolNames());
@@ -1154,8 +1169,8 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       session.dispose();
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
     }
-    // The inner policy filters names added by extension wrappers such as Pi CodeMode.
-    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
+    // The inner policy bounds extension-selected exposure without restoring hidden ordinary tools.
+    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters, false);
     await session.bindExtensions({ mode: "print" });
     // The outer policy filters names before extension wrappers build their own tool catalogues.
     installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);

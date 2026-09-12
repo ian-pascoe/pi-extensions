@@ -53,24 +53,15 @@ export interface ToolResolutionContext {
   ordinaryTools: readonly string[];
   capabilityCeiling: readonly string[];
   toolsets?: MinimalSubagentsToolsets;
-  onWarning?: (message: string) => void;
 }
 
 /** Expand configured presets within the ceiling while keeping explicit requests strict. */
 export function resolveOrdinaryToolSelection(
   selection: ToolSelection | undefined,
   context: ToolResolutionContext,
-): string[] {
+) {
   const requested =
-    selection === undefined
-      ? [...context.ordinaryTools]
-      : selection === "none"
-        ? []
-        : selection === "read"
-          ? []
-          : selection === "modify"
-            ? []
-            : selection;
+    selection === undefined ? context.ordinaryTools : Array.isArray(selection) ? selection : [];
   const uniqueRequested = [...new Set(requested)];
   const coordinatorTools = new Set<string>(COORDINATOR_TOOL_NAMES);
   const requestedCoordinatorTools = uniqueRequested.filter((name) => coordinatorTools.has(name));
@@ -92,19 +83,24 @@ export function resolveOrdinaryToolSelection(
   if (selection === "read" || selection === "modify") keys.push("readToolset");
   if (selection === "modify") keys.push("modifyToolset");
   const permitted = excludeCoordinatorTools(context.capabilityCeiling);
+  const warnings: string[] = [];
   const configured = keys.flatMap((key) =>
     toolsets[key].flatMap((pattern) => {
       const matcher = new Minimatch(pattern);
       const matches = permitted.filter((name) => matcher.match(name));
       if (matches.length === 0) {
-        context.onWarning?.(
+        warnings.push(
           `minimalSubagents.${key}: ${JSON.stringify(pattern)} matched no permitted ordinary tools (unavailable, outside the caller's capability ceiling, or Coordinator Tools); skipped`,
         );
       }
       return matches;
     }),
   );
-  return [...new Set([...configured, ...uniqueRequested])];
+  return {
+    ordinaryTools: [...new Set([...configured, ...uniqueRequested])],
+    requiredTools: uniqueRequested,
+    warnings,
+  };
 }
 
 /** Return an agent's hierarchy depth where the interactive root is depth zero. */

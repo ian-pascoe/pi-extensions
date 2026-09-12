@@ -138,6 +138,39 @@ function persistedAgent(): PersistedAgent {
 }
 
 describe("minimal subagent sessions", () => {
+  it("recognizes native PowerShell as an available child tool", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-powershell-"));
+    temporaryDirectories.push(directory);
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: ["powershell"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    const agent = persistedAgent();
+    agent.launch_contract.tools = "modify";
+    agent.launch_contract.ordinary_tools = ["powershell"];
+    agent.capability_ceiling = ["powershell"];
+    await expect(factory.resolveLaunchMissingDependencies(agent)).resolves.toEqual([]);
+    const identity = factory.createIdentity(agent, []);
+    agent.session_file = identity.sessionFile;
+    agent.session_id = identity.sessionId;
+    agent.session_leaf_id = identity.sessionLeafId;
+    const runtime = await factory.openRuntime(agent);
+    try {
+      expect(runtime.getActiveToolNames?.()).toEqual(["powershell"]);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
   it("reads and validates the complete verified Child Session Position without restoring or rewriting its file", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-history-"));
     temporaryDirectories.push(directory);
@@ -849,9 +882,21 @@ describe("minimal subagent sessions", () => {
     ]);
   });
 
-  it.each([false, true])(
-    "keeps configured context tools and ordered definitions across child turns and restoration (CodeMode: %s)",
-    async (withCodeMode) => {
+  it.each(["standalone", "direct-only", "direct-and-codemode", "codemode-only"])(
+    "keeps configured context tools and ordered definitions across child turns and restoration (%s)",
+    async (exposure) => {
+      const withCodeMode = exposure !== "standalone";
+      const hiddenContextTools = exposure === "codemode-only";
+      const notesCall = hiddenContextTools
+        ? {
+            name: "codemode_execute",
+            arguments: {
+              script:
+                'return { notes: await tools.context_notes({ action: "list" }), names: Object.keys(tools).sort() };',
+              wait: true,
+            },
+          }
+        : { name: "context_notes", arguments: { action: "list" } };
       const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-configured-tools-"));
       temporaryDirectories.push(directory);
       const requestsPath = join(directory, "requests.jsonl");
@@ -874,7 +919,7 @@ export default function (pi) {
         role: "assistant", api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), usage: ${JSON.stringify(ZERO_USAGE)},
         content: call
-          ? [{ type: "toolCall", id: "notes-" + context.messages.length, name: "context_notes", arguments: { action: "list" } }]
+          ? [{ type: "toolCall", id: "notes-" + context.messages.length, ...${JSON.stringify(notesCall)} }]
           : [{ type: "text", text: "completed with native Notes" }],
         stopReason: call ? "toolUse" : "stop",
       };
@@ -898,7 +943,11 @@ export default function (pi) {
           readToolset: [],
           modifyToolset: [],
         },
-        codemode: { tools: [{ pattern: "context_*", exposure: "direct-and-codemode" }] },
+        codemode: {
+          tools: [
+            { pattern: "context_*", exposure: withCodeMode ? exposure : "direct-and-codemode" },
+          ],
+        },
         compaction: { enabled: false },
         retry: { enabled: false },
       };
@@ -1007,7 +1056,9 @@ export default function (pi) {
           .split("\n")
           .map((line) => JSON.parse(line));
         expect(requests).toHaveLength(6);
-        expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(toolNames);
+        expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(
+          hiddenContextTools ? toolNames.slice(3) : toolNames,
+        );
         expect(requests[0]?.systemPrompt).toContain("Context Management:");
         for (const request of requests.slice(1)) {
           expect(request.tools).toEqual(requests[0]!.tools);
@@ -1015,8 +1066,22 @@ export default function (pi) {
         for (const index of [1, 3, 5]) {
           expect(requests[index]?.messages.at(-1)).toMatchObject({
             role: "toolResult",
-            toolName: "context_notes",
+            toolName: notesCall.name,
             isError: false,
+            details: hiddenContextTools
+              ? {
+                  result: "success",
+                  data: {
+                    notes: { details: { notes: [], total: 0, nextOffset: null } },
+                    names: [
+                      "codemode_search",
+                      "context_history",
+                      "context_notes",
+                      "context_rollover",
+                    ],
+                  },
+                }
+              : { notes: [], total: 0, nextOffset: null },
           });
         }
       } finally {

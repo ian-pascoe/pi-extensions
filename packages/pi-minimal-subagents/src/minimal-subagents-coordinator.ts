@@ -207,12 +207,14 @@ export class MinimalSubagentsCoordinator {
     const model = parameters.model ?? caller.model;
     const requestedThinking = parameters.thinking_level ?? caller.thinkingLevel;
     const thinkingLevel = this.dependencies.sessions.resolveThinkingLevel(model, requestedThinking);
-    const toolWarnings: string[] = [];
-    const ordinaryTools = resolveOrdinaryToolSelection(parameters.tools, {
+    const {
+      ordinaryTools,
+      requiredTools,
+      warnings: toolWarnings,
+    } = resolveOrdinaryToolSelection(parameters.tools, {
       ordinaryTools: excludeCoordinatorTools(caller.ordinaryTools),
       capabilityCeiling: excludeCoordinatorTools(caller.capabilityCeiling),
       toolsets: this.dependencies.toolsets,
-      onWarning: (message) => toolWarnings.push(message),
     });
     const committedMessages = structuredClone(caller.messages);
     const imported = assembleImportedContext(sessionContext, committedMessages);
@@ -254,16 +256,9 @@ export class MinimalSubagentsCoordinator {
       const missingDependencies =
         await this.dependencies.sessions.resolveLaunchMissingDependencies(agent);
       this.assertAccepting();
-      const requiredTools = new Set(
-        parameters.tools === undefined
-          ? caller.ordinaryTools
-          : Array.isArray(parameters.tools)
-            ? parameters.tools
-            : [],
-      );
       const optionalMissing = new Set(
         missingDependencies.filter(
-          (name) => name !== model && ordinaryTools.includes(name) && !requiredTools.has(name),
+          (name) => name !== model && ordinaryTools.includes(name) && !requiredTools.includes(name),
         ),
       );
       const requiredMissing = missingDependencies.filter((name) => !optionalMissing.has(name));
