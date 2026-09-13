@@ -4,6 +4,7 @@
       "source": "..",
       "autoload": false,
       "extensions": [
+        "+packages/pi-advisor/src/index.ts",
         "+packages/pi-bible-verses/src/index.ts",
         "+packages/pi-context-management/src/index.ts",
         "+packages/pi-dap/src/index.ts",
@@ -20,6 +21,7 @@
         "+packages/pi-codemode/src/index.ts"
       ],
       "skills": [
+        "+packages/pi-advisor/skills/pi-advisor/SKILL.md",
         "+packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
         "+packages/pi-context-management/skills/pi-context-management/SKILL.md",
         "+packages/pi-dap/skills/pi-dap/SKILL.md",
@@ -40,6 +42,7 @@
       "source": "git:github.com/ian-pascoe/pi-extensions",
       "autoload": false,
       "extensions": [
+        "-packages/pi-advisor/src/index.ts",
         "-packages/pi-bible-verses/src/index.ts",
         "-packages/pi-context-management/src/index.ts",
         "-packages/pi-dap/src/index.ts",
@@ -56,6 +59,7 @@
         "-packages/pi-codemode/src/index.ts"
       ],
       "skills": [
+        "-packages/pi-advisor/skills/pi-advisor/SKILL.md",
         "-packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
         "-packages/pi-context-management/skills/pi-context-management/SKILL.md",
         "-packages/pi-dap/skills/pi-dap/SKILL.md",
@@ -70,6 +74,16 @@
         "-packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
         "-packages/pi-web-tools/skills/pi-web-tools/SKILL.md",
         "-packages/pi-codemode/skills/pi-codemode/SKILL.md"
+      ]
+    },
+    {
+      "source": "npm:@ian-pascoe/pi-advisor",
+      "autoload": false,
+      "extensions": [
+        "-src/index.ts"
+      ],
+      "skills": [
+        "-skills/pi-advisor/SKILL.md"
       ]
     },
     {
@@ -283,7 +297,13 @@
     "servers": {
       "typescript": {
         "command": "pnpm",
-        "args": ["--workspace-root", "exec", "tsc", "--lsp", "--stdio"],
+        "args": [
+          "--workspace-root",
+          "exec",
+          "tsc",
+          "--lsp",
+          "--stdio"
+        ],
         "languages": [
           {
             "extensions": [
@@ -348,5 +368,19 @@
         "requireRootMarker": true
       }
     }
+  },
+  "advisor": {
+    "enabled": false,
+    "model": "openai-codex/gpt-6-astra",
+    "thinkingLevel": "xhigh",
+    "allowedTools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "context_notes",
+      "context_history",
+      "context_rollover"
+    ]
   }
 }
