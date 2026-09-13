@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.8.0
+
+### Minor Changes
+
+- d17acac: Add configurable base, read, and modify toolsets using CodeMode-compatible minimatch patterns. Presets accumulate without duplication, optional tools warn rather than blocking launches, and existing child capability contracts remain unchanged. Recognize Pi's native PowerShell tool and preserve CodeMode-only exposure within child capability ceilings.
+
 ## 0.7.2
 
 ### Patch Changes

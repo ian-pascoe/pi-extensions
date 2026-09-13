@@ -5,20 +5,30 @@ import { mkdtemp } from "node:fs/promises";
 import { expect, test } from "vitest";
 import { createLspSessionFiles } from "../src/lsp-session-files.js";
 
-test("writes complete Result Spill output to a private session directory", async () => {
-  const sessionDirectory = await mkdtemp(join(tmpdir(), "pi-lsp-session-"));
-  const files = await createLspSessionFiles(sessionDirectory);
-  try {
-    const spillPath = await files.writeResultSpill("full output\nwith every line");
+test.each(["persisted", "in-memory"])(
+  "writes private Result Spills and cleans up for %s Pi sessions",
+  async (mode) => {
+    const sessionDirectory =
+      mode === "persisted" ? await mkdtemp(join(tmpdir(), "pi-lsp-session-")) : "";
+    const files = await createLspSessionFiles(sessionDirectory);
+    try {
+      const spillPath = await files.writeResultSpill("full output\nwith every line");
 
-    expect(await readFile(spillPath, "utf8")).toBe("full output\nwith every line");
-    expect((await stat(files.directoryPath)).mode & 0o777).toBe(0o700);
-    expect((await stat(spillPath)).mode & 0o777).toBe(0o600);
-  } finally {
-    await files.close();
-    await rm(sessionDirectory, { force: true, recursive: true });
-  }
-});
+      expect(dirname(files.directoryPath)).toBe(sessionDirectory || tmpdir());
+      expect(await readFile(spillPath, "utf8")).toBe("full output\nwith every line");
+      expect((await stat(files.directoryPath)).mode & 0o777).toBe(0o700);
+      expect((await stat(spillPath)).mode & 0o777).toBe(0o600);
+
+      await files.close();
+      await expect(stat(files.directoryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await files.close();
+      if (sessionDirectory !== "") {
+        await rm(sessionDirectory, { force: true, recursive: true });
+      }
+    }
+  },
+);
 
 test("reserves empty mode-safe stderr paths and removes session files on shutdown", async () => {
   const sessionDirectory = await mkdtemp(join(tmpdir(), "pi-lsp-session-"));

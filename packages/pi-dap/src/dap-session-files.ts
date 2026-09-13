@@ -1,4 +1,5 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /** Maximum unread Debuggee output retained in bytes. */
@@ -93,8 +94,9 @@ class DapSessionFileStore implements DapSessionFiles {
 
 /** Create a private directory for Result Spills and Debug Adapter stderr. */
 export async function createDapSessionFiles(sessionDirectory: string): Promise<DapSessionFiles> {
-  await mkdir(sessionDirectory, { mode: 0o700, recursive: true });
-  const directoryPath = await mkdtemp(join(sessionDirectory, "pi-dap-"));
+  const parentDirectory = sessionDirectory.length > 0 ? sessionDirectory : tmpdir();
+  await mkdir(parentDirectory, { mode: 0o700, recursive: true });
+  const directoryPath = await mkdtemp(join(parentDirectory, "pi-dap-"));
   await chmod(directoryPath, 0o700);
   return new DapSessionFileStore(directoryPath);
 }

@@ -1,4 +1,9 @@
-import type { DelegationMode, ToolSelection } from "./minimal-subagents-types.js";
+import { Minimatch } from "minimatch";
+import type {
+  DelegationMode,
+  MinimalSubagentsToolsets,
+  ToolSelection,
+} from "./minimal-subagents-types.js";
 
 /** Lists Pi thinking levels in increasing effort order for schema validation and clamping. */
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -14,8 +19,12 @@ export const COORDINATOR_TOOL_NAMES = [
   "subagent_delete",
 ] as const;
 
-const READ_TOOL_BUNDLE = ["read", "grep", "find", "ls"];
-const MODIFY_TOOL_BUNDLE = [...READ_TOOL_BUNDLE, "bash", "edit", "write"];
+/** Preserves the built-in presets when their settings are omitted. */
+export const DEFAULT_TOOLSETS: MinimalSubagentsToolsets = {
+  baseToolset: [],
+  readToolset: ["read", "grep", "find", "ls"],
+  modifyToolset: ["bash", "edit", "write"],
+};
 interface ModelReference {
   provider: string;
   id: string;
@@ -43,23 +52,16 @@ export function buildEligibleModelIds(input: {
 export interface ToolResolutionContext {
   ordinaryTools: readonly string[];
   capabilityCeiling: readonly string[];
+  toolsets?: MinimalSubagentsToolsets;
 }
 
-/** Resolve an exact ordinary-tool contract and reject missing or over-ceiling capabilities. */
+/** Expand configured presets within the ceiling while keeping explicit requests strict. */
 export function resolveOrdinaryToolSelection(
   selection: ToolSelection | undefined,
   context: ToolResolutionContext,
-): string[] {
+) {
   const requested =
-    selection === undefined
-      ? [...context.ordinaryTools]
-      : selection === "none"
-        ? []
-        : selection === "read"
-          ? READ_TOOL_BUNDLE
-          : selection === "modify"
-            ? MODIFY_TOOL_BUNDLE
-            : selection;
+    selection === undefined ? context.ordinaryTools : Array.isArray(selection) ? selection : [];
   const uniqueRequested = [...new Set(requested)];
   const coordinatorTools = new Set<string>(COORDINATOR_TOOL_NAMES);
   const requestedCoordinatorTools = uniqueRequested.filter((name) => coordinatorTools.has(name));
@@ -76,7 +78,29 @@ export function resolveOrdinaryToolSelection(
     throw new Error(`Minimal subagents capability ceiling exceeded: ${exceeded.join(", ")}`);
   }
 
-  return uniqueRequested;
+  const toolsets = context.toolsets ?? DEFAULT_TOOLSETS;
+  const keys: (keyof MinimalSubagentsToolsets)[] = ["baseToolset"];
+  if (selection === "read" || selection === "modify") keys.push("readToolset");
+  if (selection === "modify") keys.push("modifyToolset");
+  const permitted = excludeCoordinatorTools(context.capabilityCeiling);
+  const warnings: string[] = [];
+  const configured = keys.flatMap((key) =>
+    toolsets[key].flatMap((pattern) => {
+      const matcher = new Minimatch(pattern);
+      const matches = permitted.filter((name) => matcher.match(name));
+      if (matches.length === 0) {
+        warnings.push(
+          `minimalSubagents.${key}: ${JSON.stringify(pattern)} matched no permitted ordinary tools (unavailable, outside the caller's capability ceiling, or Coordinator Tools); skipped`,
+        );
+      }
+      return matches;
+    }),
+  );
+  return {
+    ordinaryTools: [...new Set([...configured, ...uniqueRequested])],
+    requiredTools: uniqueRequested,
+    warnings,
+  };
 }
 
 /** Return an agent's hierarchy depth where the interactive root is depth zero. */

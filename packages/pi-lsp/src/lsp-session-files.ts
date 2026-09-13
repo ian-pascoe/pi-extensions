@@ -1,4 +1,5 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /** Owns private Result Spill and bounded stderr files for one Pi session. */
@@ -78,8 +79,9 @@ class LspSessionFileStore implements LspSessionFiles {
 
 /** Create a mode-safe temporary directory for Result Spills and language-server stderr files. */
 export async function createLspSessionFiles(sessionDirectory: string): Promise<LspSessionFiles> {
-  await mkdir(sessionDirectory, { mode: 0o700, recursive: true });
-  const directoryPath = await mkdtemp(join(sessionDirectory, "pi-lsp-"));
+  const parentDirectory = sessionDirectory.length > 0 ? sessionDirectory : tmpdir();
+  await mkdir(parentDirectory, { mode: 0o700, recursive: true });
+  const directoryPath = await mkdtemp(join(parentDirectory, "pi-lsp-"));
   await chmod(directoryPath, 0o700);
   return new LspSessionFileStore(directoryPath);
 }

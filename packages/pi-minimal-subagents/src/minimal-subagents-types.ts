@@ -6,8 +6,14 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 export type SessionContextMode = "inherit" | "compact" | "omit";
 /** Controls whether child resource discovery includes project instructions, skills, and prompts. */
 export type ProjectContextMode = "inherit" | "omit";
-/** Selects inherited, bundled, absent, or explicitly named ordinary child tools. */
+/** Selects inherited, preset, base-only, or explicitly named ordinary child tools. */
 export type ToolSelection = "none" | "read" | "modify" | string[];
+/** Configures additive ordinary-tool patterns for the base and cumulative presets. */
+export interface MinimalSubagentsToolsets {
+  baseToolset: readonly string[];
+  readToolset: readonly string[];
+  modifyToolset: readonly string[];
+}
 /** Controls whether a child must work directly or may explicitly fan out one bounded level. */
 export type DelegationMode = "none" | "fanout";
 /** Reports whether a persistent agent currently owns an active turn. */
@@ -388,7 +394,8 @@ export interface CoordinatorNotification {
     | "interruption"
     | "restoration"
     | "unavailable"
-    | "fork-clone-failure";
+    | "fork-clone-failure"
+    | "tool-warning";
   agentId: string;
   message: string;
 }
@@ -399,6 +406,7 @@ export interface CoordinatorDependencies {
   sessions: AgentSessionFactory;
   root: RootConversationEndpoint;
   maxSubagentDepth?: number;
+  toolsets?: MinimalSubagentsToolsets;
   now?: () => Date;
   automaticDeliveryGraceMs?: number;
   notify?: (notification: CoordinatorNotification) => void;

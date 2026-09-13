@@ -154,6 +154,64 @@ child runtimes. A deliberately non-settling agent can therefore delay reload
 indefinitely. The new limit controls restored tool availability and future
 spawn attempts; the root retains recursive hierarchy management.
 
+## Toolsets
+
+Configure ordinary tools using case-sensitive minimatch patterns, with the same
+syntax as CodeMode Exposure Patterns. These are lists of pattern strings, not
+CodeMode exposure-rule objects. For example:
+
+```json
+{
+  "minimalSubagents": {
+    "baseToolset": ["context_*"],
+    "readToolset": ["read", "grep", "find", "ls"],
+    "modifyToolset": ["bash", "edit", "write", "lsp", "dap"]
+  }
+}
+```
+
+The defaults are `baseToolset: []`,
+`readToolset: ["read", "grep", "find", "ls"]`, and
+`modifyToolset: ["bash", "edit", "write"]`. Each configured array replaces that
+key's inherited value; `[]` clears it. Omitted keys inherit the global value or
+built-in default. Only trusted project settings apply.
+
+Tool Presets are cumulative:
+
+- `tools: "read"`: Base Toolset + `readToolset`.
+- `tools: "modify"`: Base Toolset + `readToolset` + `modifyToolset`.
+- `tools: "none"` or `tools: []`: Base Toolset only.
+- `tools: ["read"]`: Base Toolset + exactly `read`; arrays do not expand patterns
+  or presets.
+- Omitted `tools`: Base Toolset + the caller's inherited ordinary tools.
+
+Patterns select from permitted ordinary tool names, including inactive tools
+registered at the root. Their matches are unioned in pattern order, retaining
+registry order within each pattern and removing duplicates at first occurrence.
+Each pattern is independent: a negated minimatch pattern matches its complement;
+it does not subtract earlier matches or implement CodeMode's last-rule-wins
+exposure policy. Coordinator Tools remain separately controlled by delegation.
+
+Invalid configuration entries and patterns matching no permitted ordinary tools
+warn and are skipped. Configured tools unavailable in child resources are also
+skipped with a warning, rather than blocking launch. Explicit and inherited tool
+requests remain strict. A child never gains capabilities beyond its parent's
+ceiling, including when a restored parent predates a newly configured Base
+Toolset. Use status to inspect the concrete grant if an optional plugin is absent.
+
+Pattern expansion happens when a Child Agent is created. `/reload` applies
+settings to future launches without changing existing Launch Contracts. If a tool
+in an existing contract later disappears, normal restoration dependency checks
+still apply; the saved grant is not silently rewritten. Toolsets configure names,
+not tool operations: granting `lsp`, `dap`, or another multifunction tool grants
+that tool's available operations, regardless of preset name.
+
+CodeMode still controls whether a granted tool is direct, CodeMode-only, or both.
+If a child needs CodeMode-only tools, also grant `codemode_*` in its toolsets so
+it has the tools needed to discover and call them. This does not bypass CodeMode's
+own restrictions on nested calls. Exposure rules also apply to injected
+Coordinator Tools; delegation still determines which Coordinator Tools are granted.
+
 ## Capabilities and persistence
 
 Child sessions are persistent Pi sessions. Their launch contracts bound model,
@@ -172,13 +230,11 @@ text, reasoning, tool calls, and tool results. It includes the current streaming
 assistant message but omits image data. Timeout Wait Events include the same
 detailed status snapshot.
 
-The `subagent` `tools` argument distinguishes capability presets from exact
-lists: `"read"` grants `read`, `grep`, `find`, and `ls`; `"modify"` adds
-`bash`, `edit`, and `write`; an array such as `["read"]` grants exactly the
-named ordinary tool and does not expand a preset. Coordinator tools are
-injected separately according to delegation and must not appear in `tools`;
-misuse returns an actionable error. Use the string preset when a child needs
-the complete discovery bundle. Child sessions load the Root Agent's
+The `subagent` `tools` argument distinguishes configurable Tool Presets from
+exact lists; every selection also receives the permitted Base Toolset described
+above. Coordinator tools are injected separately according to delegation and
+must not appear in explicit `tools` arrays; misuse returns an actionable error.
+Child sessions load the Root Agent's
 configured settings and extensions, excluding the recursive
 `pi-minimal-subagents` entrypoint. Project Context controls only project-scoped
 AGENTS instructions and skills; omitting it retains user instructions and

@@ -15,12 +15,12 @@ const ToolSelectionSchema = Type.Union(
     Type.Array(Type.String({ minLength: 1 }), {
       uniqueItems: true,
       description:
-        "Exact ordinary tool names. Coordinator tools are injected separately and must not appear here. Arrays are not bundle names; use the string preset `read` or `modify` for bundled capabilities.",
+        "Exact ordinary tool names, plus configured base tools. No pattern or preset expansion in arrays; use the string preset `read` or `modify`. Coordinator tools are injected separately and must not appear here.",
     }),
   ],
   {
     description:
-      'Use the string preset "read" for read, grep, find, and ls; use "modify" for the read bundle plus bash, edit, and write. An array grants exactly those named tools (ordinary tools only); coordinator tools are injected separately.',
+      'Configurable presets: "read" adds readToolset; "modify" adds readToolset plus modifyToolset. Defaults: read, grep, find, ls; modify additionally grants bash, edit, write. Configured baseToolset applies to all selections, including "none" and exact arrays. Omit to inherit the caller\'s active ordinary tools plus base. All grants stay within the caller\'s capability ceiling; coordinator tools are injected separately.',
   },
 );
 const FRIENDLY_AGENT_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";

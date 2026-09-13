@@ -570,6 +570,57 @@ async function emitSessionShutdown(
 }
 
 describe("minimal subagents extension lifecycle", () => {
+  it("applies native toolset settings when the registered subagent tool launches a child", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-native-toolsets-");
+    await mkdir(join(cwd, ".pi"));
+    await writeFile(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({
+        minimalSubagents: {
+          baseToolset: ["context_*", "not_installed"],
+          readToolset: [],
+          modifyToolset: [],
+        },
+      }),
+    );
+    const sessionManager = await createPersistedSession(cwd, cwd);
+    const harness = await createExtensionHarness(sessionManager, undefined, undefined, [
+      {
+        name: "context_notes",
+        description: "Native Notes",
+        parameters: Type.Object({}),
+        sourceInfo: {
+          path: "context-management.ts",
+          source: "extension",
+          scope: "user",
+          origin: "top-level",
+        },
+      },
+    ]);
+    try {
+      await harness.runner.emit(sessionStartEvent());
+      const result = await harness.runner
+        .getToolDefinition("subagent")!
+        .execute(
+          "native-settings-spawn",
+          { agent_id: "notes-child", task: "Keep Notes", tools: "none" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        );
+      expect(result.details).toMatchObject({
+        agent: { launch_contract: { ordinary_tools: ["context_notes"] } },
+      });
+      expect(harness.notifications).toContainEqual({
+        message: expect.stringContaining("not_installed"),
+        level: "warning",
+      });
+      expect(harness.extensionErrors).toEqual([]);
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+  });
+
   it("registers both renderers and all six real coordinator tools, then hands off only a confirmed fork", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-lifecycle-cwd-");
     const sessionDirectory = await createTemporaryDirectory(
