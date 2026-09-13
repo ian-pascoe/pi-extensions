@@ -11,6 +11,7 @@ import {
   type ExtensionFactory,
   type ExtensionAPI,
   createAgentSession,
+  convertToLlm,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
@@ -48,18 +49,19 @@ type Payload = Awaited<ReturnType<typeof serializeAnthropicRequest>>;
 beforeEach(async () => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Unexpected network in SDK proof")));
   const original = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  vi.mocked(spawn).mockImplementation((command, args, options) =>
-    ["mise", "mise.exe"].includes(basename(String(command)))
-      ? original.spawn(
-          process.execPath,
-          [
-            fileURLToPath(new URL("fixtures/managed-mise.cjs", import.meta.url)),
-            ...(args ?? []).slice(2),
-          ],
-          options ?? {},
-        )
-      : original.spawn(command, args ?? [], options ?? {}),
-  );
+  vi.mocked(spawn).mockImplementation((command, args, options) => {
+    const name = basename(String(command));
+    if (["mise", "mise.exe"].includes(name))
+      return original.spawn(
+        process.execPath,
+        [
+          fileURLToPath(new URL("fixtures/managed-expansion-mise.cjs", import.meta.url)),
+          ...(args ?? []).slice(2),
+        ],
+        options ?? {},
+      );
+    return original.spawn(command, args ?? [], options ?? {});
+  });
 });
 
 afterEach(async () => {
@@ -84,7 +86,10 @@ afterEach(async () => {
   );
 });
 
-async function createFixture(mode: Mode) {
+async function createFixture(
+  mode: Mode,
+  options: { autoInstall?: boolean; version?: string } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "pi-managed SDK-é-"));
   directories.push(directory);
   const cwd = join(directory, "project");
@@ -95,14 +100,17 @@ async function createFixture(mode: Mode) {
   await mkdir(join(cwd, ".pi"), { recursive: true });
   await mkdir(store, { recursive: true });
   await writeFile(join(cwd, ".pi/settings.json"), "{}");
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify(codeMode ? { codemode: { tools: [{ pattern: "*", exposure: mode }] } } : {}),
-  );
+  const settings: Record<string, CodeModeJsonValue> = {};
+  if (codeMode) settings.codemode = { tools: [{ pattern: "*", exposure: mode }] };
+  if (options.autoInstall !== undefined)
+    for (const name of ["lsp", "formatter", "dap"])
+      settings[name] = { autoInstall: options.autoInstall };
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify(settings));
   await writeFile(join(store, process.platform === "win32" ? "mise.exe" : "mise"), "fixture");
   await writeFile(
     join(store, "fixture.json"),
     JSON.stringify({
+      version: options.version,
       server: new URL("../../pi-lsp/test/fixtures/fake-lsp-server.mjs", import.meta.url).href,
       adapter: new URL("../../pi-dap/test/fixtures/fake-managed-js-adapter.mjs", import.meta.url)
         .href,
@@ -223,11 +231,17 @@ function assistantResponse(calls?: ToolCall[]): AssistantMessage {
   };
 }
 
-async function perform(session: AgentSession, calls: ToolCall[], nextCalls?: ToolCall[]) {
+async function perform(
+  session: AgentSession,
+  calls: ToolCall[],
+  nextCalls?: ToolCall[],
+  allowErrors = false,
+) {
+  const previousMessages = session.messages.length;
   const payloads: Payload[] = [];
   // Fake only model responses. Pi owns the complete tool loop, middleware and durable history.
   session.agent.streamFunction = async (_model, context) => {
-    payloads.push(await serializeAnthropicRequest(session, context.messages));
+    payloads.push(await serializeAnthropicContext(context));
     const batch = payloads.length === 1 ? calls : payloads.length === 2 ? nextCalls : undefined;
     const message = assistantResponse(batch);
     const stream = createAssistantMessageEventStream();
@@ -237,10 +251,14 @@ async function perform(session: AgentSession, calls: ToolCall[], nextCalls?: Too
   };
   await session.prompt("Perform the requested operation.");
   expect(payloads).toHaveLength(nextCalls ? 3 : 2);
-  expectStablePrefix(payloads[0]!, payloads.at(-1)!);
-  const results = session.messages.filter((message) => message.role === "toolResult");
+  for (const payload of payloads.slice(1)) expectStablePrefix(payloads[0]!, payload);
+  const results = session.messages
+    .slice(previousMessages)
+    .filter((message) => message.role === "toolResult");
   expect(results).toHaveLength(calls.length + (nextCalls?.length ?? 0));
-  for (const result of results) expect(result.isError, JSON.stringify(result.content)).toBe(false);
+  if (!allowErrors)
+    for (const result of results)
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
   expect(globalThis.fetch).not.toHaveBeenCalled();
   return results;
 }
@@ -305,134 +323,266 @@ test.each(["combined", "codemode-only", "direct-and-codemode"] as const)(
   30_000,
 );
 
-test("a real Child Agent acquires an LSP within its Launch Contract and shares it with the root", async () => {
-  vi.stubEnv("PATH", "");
-  vi.stubEnv("ANTHROPIC_API_KEY", "offline-child-fixture");
-  vi.stubEnv("FAKE_DIAGNOSTICS", "document");
-  const fixture = await createFixture("combined");
-  await writeFile(join(fixture.cwd, "child.ts"), "export const childAnswer = 42;\n");
-  await writeFile(join(fixture.cwd, "root.ts"), "export const rootAnswer = 7;\n");
-  const childPayloads: Payload[] = [];
-  const childToolNames: string[][] = [];
-  const rootStarted = Promise.withResolvers<void>();
-  let rootLspActive = false;
-  let overlappingCalls = false;
-  fixture.session.subscribe((event) => {
-    if (event.type === "tool_execution_start" && event.toolName === "lsp") {
-      rootLspActive = true;
-      rootStarted.resolve();
-    }
-    if (event.type === "tool_execution_end" && event.toolName === "lsp") rootLspActive = false;
-  });
-  const {
-    createPiLspExtension,
-  }: {
-    createPiLspExtension: (options: { getAgentDirectory: () => string }) => ExtensionFactory;
-  } = await import(new URL("../../pi-lsp/src/pi-lsp-extension.js", import.meta.url).href);
-  // A configured extension is discovered by the real child resource loader. The
-  // closure keeps the existing external-process fixture shared with the parent.
-  vi.stubGlobal("managedChildExtension", async (pi: ExtensionAPI) => {
-    await createPiLspExtension({ getAgentDirectory: () => fixture.agentDir })(pi);
-    pi.on("tool_execution_start", (event) => {
-      if (event.toolName === "lsp") overlappingCalls = rootLspActive;
+test.each(["typescript", "deno"] as const)(
+  "a real Child Agent shares %s acquisition and a stable prefix with the root",
+  async (serverId) => {
+    vi.stubEnv("PATH", "");
+    vi.stubEnv("ANTHROPIC_API_KEY", "offline-child-fixture");
+    vi.stubEnv("FAKE_DIAGNOSTICS", "document");
+    const fixture = await createFixture("combined");
+    if (serverId === "deno") await writeFile(join(fixture.cwd, "deno.json"), "{}");
+    await writeFile(join(fixture.cwd, "child.ts"), "export const childAnswer = 42;\n");
+    await writeFile(join(fixture.cwd, "root.ts"), "export const rootAnswer = 7;\n");
+    const childPayloads: Payload[] = [];
+    const childToolNames: string[][] = [];
+    const rootStarted = Promise.withResolvers<void>();
+    let rootLspActive = false;
+    let overlappingCalls = false;
+    fixture.session.subscribe((event) => {
+      if (event.type === "tool_execution_start" && event.toolName === "lsp") {
+        rootLspActive = true;
+        rootStarted.resolve();
+      }
+      if (event.type === "tool_execution_end" && event.toolName === "lsp") rootLspActive = false;
     });
-    pi.registerProvider("anthropic", {
-      api: "anthropic-messages",
-      apiKey: "offline-child-fixture",
-      streamSimple: (_model, context) => {
-        const stream = createAssistantMessageEventStream();
-        void (async () => {
-          childToolNames.push((context.tools ?? []).map(({ name }) => name));
-          childPayloads.push(await serializeAnthropicContext(context));
-          const first = childPayloads.length === 1;
-          // Hold only the fake LLM response: root and child tool lifetimes overlap.
-          if (first) await rootStarted.promise;
-          const message = assistantResponse(
-            first
-              ? [
-                  call("lsp", {
-                    operation: "diagnostics",
-                    file_path: "child.ts",
-                  }),
-                ]
-              : undefined,
-          );
-          stream.push({ type: "done", reason: first ? "toolUse" : "stop", message });
-          stream.end();
-        })().catch((error) => {
-          stream.push({
-            type: "error",
-            reason: "error",
-            error: {
-              ...assistantResponse(),
-              stopReason: "error",
-              errorMessage: String(error),
-            },
+    const {
+      createPiLspExtension,
+    }: {
+      createPiLspExtension: (options: { getAgentDirectory: () => string }) => ExtensionFactory;
+    } = await import(new URL("../../pi-lsp/src/pi-lsp-extension.js", import.meta.url).href);
+    // A configured extension is discovered by the real child resource loader. The
+    // closure keeps the existing external-process fixture shared with the parent.
+    vi.stubGlobal("managedChildExtension", async (pi: ExtensionAPI) => {
+      await createPiLspExtension({ getAgentDirectory: () => fixture.agentDir })(pi);
+      pi.on("tool_execution_start", (event) => {
+        if (event.toolName === "lsp") overlappingCalls = rootLspActive;
+      });
+      pi.registerProvider("anthropic", {
+        api: "anthropic-messages",
+        apiKey: "offline-child-fixture",
+        streamSimple: (_model, context) => {
+          const stream = createAssistantMessageEventStream();
+          void (async () => {
+            childToolNames.push((context.tools ?? []).map(({ name }) => name));
+            childPayloads.push(await serializeAnthropicContext(context));
+            const first = childPayloads.length === 1;
+            // Hold only the fake LLM response: root and child tool lifetimes overlap.
+            if (first) await rootStarted.promise;
+            const message = assistantResponse(
+              first
+                ? [
+                    call("lsp", {
+                      operation: "diagnostics",
+                      file_path: "child.ts",
+                    }),
+                  ]
+                : undefined,
+            );
+            stream.push({ type: "done", reason: first ? "toolUse" : "stop", message });
+            stream.end();
+          })().catch((error) => {
+            stream.push({
+              type: "error",
+              reason: "error",
+              error: {
+                ...assistantResponse(),
+                stopReason: "error",
+                errorMessage: String(error),
+              },
+            });
+            stream.end();
           });
-          stream.end();
-        });
-        return stream;
-      },
+          return stream;
+        },
+      });
     });
-  });
-  const childExtension = join(fixture.agentDir, "child-extension.mjs");
-  await writeFile(childExtension, "export default (pi) => globalThis.managedChildExtension(pi);\n");
-  await writeFile(
-    join(fixture.agentDir, "settings.json"),
-    JSON.stringify({ extensions: [childExtension] }),
-  );
-  expect(await fixture.installer.installed("lsp-typescript")).toBeUndefined();
-  const results = await perform(
-    fixture.session,
-    [
-      call("subagent", {
-        agent_id: "language-child",
-        task: "Read diagnostics for child.ts with the LSP tool.",
-        tools: ["lsp"],
-        session_context: "omit",
-        project_context: "omit",
-        delegation: "none",
-      }),
-    ],
-    [
-      call("lsp", { operation: "diagnostics", file_path: "root.ts" }),
-      call("subagent_wait", { agent_id: "language-child", timeout_ms: 10_000 }),
-    ],
-  );
-  expect(results[0]?.details).toMatchObject({ status: "running" });
-  expect(results[1]?.details).toMatchObject({ server_outcomes: [{ outcome: "success" }] });
-  expect(results[2]?.details).toMatchObject({ event: "turn", status: "completed" });
-  expect(overlappingCalls).toBe(true);
-  expect(childPayloads).toHaveLength(2);
-  expectStablePrefix(childPayloads[0]!, childPayloads[1]!);
-  expect(childToolNames[0]).toContain("lsp");
-  for (const ungranted of ["write", "dap", "subagent", "codemode_execute"])
-    expect(childToolNames[0]).not.toContain(ungranted);
-  // Both real sessions share one first-use acquisition, not independent stores.
-  const resolutions = vi
-    .mocked(spawn)
-    .mock.calls.filter(
-      ([command, args]) =>
-        ["mise", "mise.exe"].includes(basename(String(command))) && args?.[2] === "latest",
-    )
-    .map(([, args]) => args?.[3]);
-  expect(resolutions).toEqual(["core:node", "npm:typescript"]);
-  const child = (await SessionManager.list(fixture.cwd, join(fixture.agentDir, "sessions"))).find(
-    (session) => session.id !== fixture.session.sessionId,
-  );
-  if (!child) throw new Error("Missing persisted Child Session");
-  const messages = SessionManager.open(child.path).buildSessionContext().messages;
-  const result = messages.find(
-    (message) => message.role === "toolResult" && message.toolName === "lsp",
-  );
-  expect(result).toMatchObject({
-    isError: false,
-    details: { server_outcomes: [{ outcome: "success" }] },
-  });
-  expect(JSON.stringify(result)).toContain("childAnswer");
-  expect(JSON.stringify(results[1])).toContain("rootAnswer");
-  expect(await fixture.installer.installed("lsp-typescript")).toBeDefined();
-}, 30_000);
+    const childExtension = join(fixture.agentDir, "child-extension.mjs");
+    await writeFile(
+      childExtension,
+      "export default (pi) => globalThis.managedChildExtension(pi);\n",
+    );
+    await writeFile(
+      join(fixture.agentDir, "settings.json"),
+      JSON.stringify({ extensions: [childExtension] }),
+    );
+    expect(await fixture.installer.installed(`lsp-${serverId}`)).toBeUndefined();
+    const results = await perform(
+      fixture.session,
+      [
+        call("subagent", {
+          agent_id: "language-child",
+          task: "Read diagnostics for child.ts with the LSP tool.",
+          tools: ["lsp"],
+          session_context: "omit",
+          project_context: "omit",
+          delegation: "none",
+        }),
+      ],
+      [
+        call("lsp", { operation: "diagnostics", file_path: "root.ts" }),
+        call("subagent_wait", { agent_id: "language-child", timeout_ms: 10_000 }),
+      ],
+    );
+    expect(results[0]?.details).toMatchObject({ status: "running" });
+    expect(results[1]?.details).toMatchObject({ server_outcomes: [{ outcome: "success" }] });
+    expect(results[2]?.details).toMatchObject({ event: "turn", status: "completed" });
+    expect(overlappingCalls).toBe(true);
+    expect(childPayloads).toHaveLength(2);
+    expectStablePrefix(childPayloads[0]!, childPayloads[1]!);
+    expect(childToolNames[0]).toContain("lsp");
+    for (const ungranted of ["write", "dap", "subagent", "codemode_execute"])
+      expect(childToolNames[0]).not.toContain(ungranted);
+    // Both real sessions share one first-use acquisition, not independent stores.
+    const resolutions = vi
+      .mocked(spawn)
+      .mock.calls.filter(
+        ([command, args]) =>
+          ["mise", "mise.exe"].includes(basename(String(command))) && args?.[2] === "latest",
+      )
+      .map(([, args]) => args?.[3]);
+    expect(resolutions).toEqual(
+      serverId === "deno" ? ["core:deno"] : ["core:node", "npm:typescript"],
+    );
+    const child = (await SessionManager.list(fixture.cwd, join(fixture.agentDir, "sessions"))).find(
+      (session) => session.id !== fixture.session.sessionId,
+    );
+    if (!child) throw new Error("Missing persisted Child Session");
+    const messages = SessionManager.open(child.path).buildSessionContext().messages;
+    const result = messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "lsp",
+    );
+    expect(result).toMatchObject({
+      isError: false,
+      details: { server_outcomes: [{ outcome: "success" }] },
+    });
+    expect(JSON.stringify(result)).toContain("childAnswer");
+    expect(JSON.stringify(results[1])).toContain("rootAnswer");
+    expect(await fixture.installer.installed(`lsp-${serverId}`)).toBeDefined();
+  },
+  30_000,
+);
+
+test.each(["lsp", "formatter", "dap", "combined"] as const)(
+  "%s preserves serialized prefix across Deno acquisition, explicit update and reuse",
+  async (mode) => {
+    vi.stubEnv("PATH", "");
+    vi.stubEnv("FAKE_DIAGNOSTICS", "document");
+    const fixture = await createFixture(mode, { version: "2.9.6" });
+    await writeFile(join(fixture.cwd, "deno.json"), '{"fmt":{}}');
+    await writeFile(join(fixture.cwd, "app.ts"), "export const answer = 42;\n");
+    const owners = mode === "combined" ? ["formatter", "lsp", "dap"] : [mode];
+    const calls = owners.map((owner) =>
+      owner === "formatter"
+        ? call("write", { path: "formatted.ts", content: "export const formatted = 7;\n" })
+        : owner === "lsp"
+          ? call("lsp", { operation: "diagnostics", file_path: "app.ts" })
+          : call("dap", { operation: "launch", program: "app.ts" }),
+    );
+    const before = await serializeAnthropicRequest(
+      fixture.session,
+      convertToLlm(fixture.session.messages),
+    );
+    for (const owner of owners)
+      expect(await fixture.installer.installed(`${owner}-deno`)).toBeUndefined();
+    if (owners.includes("dap")) {
+      await perform(fixture.session, [
+        call("dap", {
+          operation: "set_breakpoints",
+          file_path: "app.ts",
+          breakpoints: [{ line: 1 }],
+        }),
+      ]);
+      expect(await fixture.installer.installed("dap-deno")).toBeUndefined();
+    }
+    const first = await perform(fixture.session, calls);
+    if (owners.includes("lsp"))
+      expect(first.find((result) => result.toolName === "lsp")?.details).toMatchObject({
+        server_outcomes: [{ server_id: "deno", outcome: "success" }],
+      });
+    if (owners.includes("formatter"))
+      expect(await readFile(join(fixture.cwd, "formatted.ts"), "utf8"), JSON.stringify(first)).toBe(
+        "export const formatted = 7;\n// formatted-by-managed-deno\n",
+      );
+    if (owners.includes("dap")) {
+      expect(first.find((result) => result.toolName === "dap")?.details).toMatchObject({
+        profile_id: "deno",
+        state: "stopped",
+      });
+      await perform(fixture.session, [call("dap", { operation: "stop" })]);
+    }
+    const controlPath = join(fixture.installer.directory, "fixture.json");
+    const control = JSON.parse(await readFile(controlPath, "utf8"));
+    await writeFile(controlPath, JSON.stringify({ ...control, version: "2.9.7" }));
+    for (const owner of owners) {
+      const previous = await fixture.installer.installed(`${owner}-deno`);
+      expect(previous).toBeDefined();
+      await fixture.session.prompt(`/${owner} update deno`);
+      const current = await fixture.installer.installed(`${owner}-deno`);
+      const runtime = Object.values(current?.components ?? {}).find(
+        ({ selector }) => selector === "core:deno",
+      );
+      expect(runtime?.version).toBe("2.9.7");
+      expect(current).not.toEqual(previous);
+    }
+    if (owners.includes("lsp")) await fixture.session.prompt("/lsp stop deno");
+    await perform(fixture.session, calls);
+    expectStablePrefix(
+      before,
+      await serializeAnthropicRequest(fixture.session, convertToLlm(fixture.session.messages)),
+    );
+    expect(await readFile(join(fixture.cwd, "deno.json"), "utf8")).toBe('{"fmt":{}}');
+  },
+  45_000,
+);
+
+test.each(["lsp", "formatter", "dap", "combined"] as const)(
+  "%s reports unavailable Deno without acquisition or serialized prefix changes",
+  async (mode) => {
+    vi.stubEnv("PATH", "");
+    const fixture = await createFixture(mode, { autoInstall: false });
+    await writeFile(join(fixture.cwd, "deno.json"), '{"fmt":{}}');
+    await writeFile(join(fixture.cwd, "app.ts"), "export const answer = 42;\n");
+    const owners = mode === "combined" ? ["formatter", "lsp", "dap"] : [mode];
+    const calls = owners.map((owner) =>
+      owner === "formatter"
+        ? call("write", { path: "formatted.ts", content: "export const untouched = 7;\n" })
+        : owner === "lsp"
+          ? call("lsp", { operation: "diagnostics", file_path: "app.ts" })
+          : call("dap", { operation: "launch", program: "app.ts" }),
+    );
+    const results = await perform(fixture.session, calls, undefined, true);
+    if (owners.includes("formatter")) {
+      expect(await readFile(join(fixture.cwd, "formatted.ts"), "utf8")).toBe(
+        "export const untouched = 7;\n",
+      );
+      expect(
+        JSON.stringify(results.find((result) => result.toolName === "write")?.content),
+      ).toContain("formatter-deno is not installed");
+      expect(results.find((result) => result.toolName === "write")?.isError).toBe(false);
+    }
+    if (owners.includes("lsp")) {
+      const result = results.find((message) => message.toolName === "lsp");
+      expect(result?.isError).toBe(true);
+      expect(JSON.stringify(result?.content)).toContain("lsp-deno is not installed");
+    }
+    if (owners.includes("dap")) {
+      const result = results.find((message) => message.toolName === "dap");
+      expect(result?.isError).toBe(true);
+      expect(JSON.stringify(result?.content)).toContain("dap-deno is not installed");
+    }
+    for (const owner of owners) {
+      await fixture.session.prompt(`/${owner} update deno`);
+      expect(await fixture.installer.installed(`${owner}-deno`)).toBeUndefined();
+    }
+    expect(
+      vi
+        .mocked(spawn)
+        .mock.calls.filter(([command]) => ["mise", "mise.exe"].includes(basename(String(command)))),
+    ).toHaveLength(0);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  },
+  20_000,
+);
 
 test("standalone DAP preserves serialized prefix across successful first acquisition and launch", async () => {
   vi.stubEnv("PATH", "");
@@ -474,3 +624,52 @@ test("standalone Formatter preserves serialized prefix while the first mutation 
   expect(await fixture.installer.installed("formatter-prettier")).toBeDefined();
   expect(fixture.progress.some((message) => message.includes("Installing"))).toBe(true);
 }, 20_000);
+
+test.each(["formatter", "combined"] as const)(
+  "%s keeps expanded HTML formatting and updates out of the serialized prefix",
+  async (mode) => {
+    vi.stubEnv("PATH", "");
+    const fixture = await createFixture(mode, { version: "3.9.6" });
+    await writeFile(join(fixture.cwd, ".prettierrc"), "{}");
+    const before = await serializeAnthropicRequest(
+      fixture.session,
+      convertToLlm(fixture.session.messages),
+    );
+    expect(await fixture.installer.installed("formatter-prettier")).toBeUndefined();
+    await perform(fixture.session, [
+      call("write", { path: "index.html", content: "<main>first</main>\n" }),
+    ]);
+    expect(await readFile(join(fixture.cwd, "index.html"), "utf8")).toBe(
+      "<main>first</main>\n// formatted-by-managed-prettier\n",
+    );
+    const installed = await fixture.installer.installed("formatter-prettier");
+    expect(installed).toBeDefined();
+    const controlPath = join(fixture.installer.directory, "fixture.json");
+    const control = JSON.parse(await readFile(controlPath, "utf8"));
+    await writeFile(controlPath, JSON.stringify({ ...control, version: "3.9.7" }));
+    await fixture.session.prompt("/formatter update prettier");
+    const updated = await fixture.installer.installed("formatter-prettier");
+    expect(updated?.components.formatter?.version).toBe("3.9.7");
+    expect(updated?.components.formatter?.directory).not.toBe(
+      installed?.components.formatter?.directory,
+    );
+    await writeFile(
+      controlPath,
+      JSON.stringify({ ...control, version: "3.9.8", failInstall: true }),
+    );
+    await fixture.session.prompt("/formatter update prettier");
+    expect(await fixture.installer.installed("formatter-prettier")).toEqual(updated);
+    expect(fixture.progress.join("\n")).toContain("Expansion fixture download unavailable");
+    await perform(fixture.session, [
+      call("write", { path: "index.html", content: "<main>updated</main>\n" }),
+    ]);
+    expect(await readFile(join(fixture.cwd, "index.html"), "utf8")).toBe(
+      "<main>updated</main>\n// formatted-by-managed-prettier\n",
+    );
+    expectStablePrefix(
+      before,
+      await serializeAnthropicRequest(fixture.session, convertToLlm(fixture.session.messages)),
+    );
+  },
+  30_000,
+);

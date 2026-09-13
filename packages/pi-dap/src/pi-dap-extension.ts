@@ -37,7 +37,7 @@ export class PiDapLifecycleController {
     this.pi.registerTool(createDapToolDefinition(() => this.activeSession));
     this.pi.registerCommand("dap", {
       description:
-        "Update installed managed Debug Adapters: update [javascript|python], update cancel",
+        "Update installed managed Debug Adapters and compatible runtimes: update [id], update cancel",
       handler: async (args, context) => {
         if (!this.activeSession) throw new Error("Pi DAP: Pi conversation session is not active");
         await this.activeSession.updates.execute(args, context);

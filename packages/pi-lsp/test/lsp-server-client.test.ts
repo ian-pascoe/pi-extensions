@@ -36,13 +36,18 @@ async function startFakeServer(
   directory: string,
   options: {
     readonly environment?: NodeJS.ProcessEnv;
+    readonly serverId?: string;
     readonly onUnavailable?: LspServerClientOptions["onUnavailable"];
     readonly onWorkspaceEdit?: LspServerClientOptions["onWorkspaceEdit"];
     readonly diagnosticsMs?: number;
+    readonly diagnosticMode?: "push";
+    readonly protocol?: "biome" | "eslint";
+    readonly unavailableDiagnostics?: string;
+    readonly unavailableFormatting?: string;
   } = {},
 ): Promise<LspServerClient> {
   const clientOptions: LspServerClientOptions = {
-    serverId: "fake",
+    serverId: options.serverId ?? "fake",
     rootPath: directory,
     command: process.execPath,
     args: [fixturePath],
@@ -58,6 +63,7 @@ async function startFakeServer(
     },
   };
   const client = await LspServerClient.start({
+    ...options,
     ...clientOptions,
     onUnavailable: options.onUnavailable ?? (() => {}),
     onWorkspaceEdit:
@@ -95,6 +101,117 @@ afterEach(async () => {
 });
 
 describe("LspServerClient", () => {
+  test("opts verified push servers into diagnostics without claiming pull support", async () => {
+    const directory = await createTemporaryDirectory();
+    const path = resolve(directory, "push.ts");
+    await writeFile(path, "const value = true;\n");
+    const client = await startFakeServer(directory, {
+      diagnosticMode: "push",
+      environment: { FAKE_NO_PULL: "1" },
+    });
+    expect(client.hasCapability("textDocument/diagnostic")).toBe(true);
+    expect(await client.documentDiagnostics(path, "typescript")).toMatchObject({
+      status: "fresh",
+      source: "push",
+    });
+  });
+
+  test("refuses apparently supported formatting when the preset helper is missing", async () => {
+    const directory = await createTemporaryDirectory();
+    const client = await startFakeServer(directory, {
+      unavailableFormatting: "shfmt is unavailable",
+    });
+    await expect(client.request("textDocument/formatting", {})).rejects.toThrow(
+      "shfmt is unavailable",
+    );
+  });
+
+  test("waits for Biome workspace initialization before accepting diagnostics", async () => {
+    const directory = await createTemporaryDirectory();
+    const client = await startFakeServer(directory, {
+      protocol: "biome",
+      environment: { FAKE_BIOME_READY: "1" },
+    });
+    const state = await client.request<FakeServerState>("fake/state", {});
+    expect(state.configuration).not.toBeNull();
+    expect(state.settingsNotifications).toEqual([]);
+  });
+
+  test("reports native-disabled Biome lint rather than apparently clean diagnostics", async () => {
+    const directory = await createTemporaryDirectory();
+    const file = resolve(directory, "disabled.ts");
+    await writeFile(file, "debugger;\n");
+    const client = await startFakeServer(directory, {
+      protocol: "biome",
+      diagnosticMode: "push",
+      environment: { FAKE_BIOME_READY: "1", FAKE_NO_PULL: "1" },
+    });
+    await expect(client.documentDiagnostics(file, "typescript")).rejects.toThrow(
+      "lint is disabled or ignored by the native project configuration",
+    );
+  });
+
+  test("preserves Explicit Definitions named biome without applying preset eligibility policy", async () => {
+    const directory = await createTemporaryDirectory();
+    const file = resolve(directory, "disabled.ts");
+    await writeFile(file, "debugger;\n");
+    const client = await startFakeServer(directory, { serverId: "biome" });
+    expect(await client.documentDiagnostics(file, "typescript")).toMatchObject({
+      status: "fresh",
+      diagnostics: [],
+    });
+  });
+
+  test("surfaces official ESLint missing-library requests instead of an empty pull", async () => {
+    const directory = await createTemporaryDirectory();
+    const path = resolve(directory, "eslint.js");
+    await writeFile(path, "debugger;\n");
+    const client = await startFakeServer(directory, {
+      protocol: "eslint",
+      environment: { FAKE_ESLINT_MISSING: "1", FAKE_PUSH: "none" },
+    });
+    await expect(client.documentDiagnostics(path, "javascript")).rejects.toThrow(
+      "ESLint project library is unavailable",
+    );
+  });
+
+  test("reuses versioned push diagnostics only while the synchronized text is unchanged", async () => {
+    const directory = await createTemporaryDirectory();
+    const path = resolve(directory, "versioned.ts");
+    await writeFile(path, "first\n");
+    const client = await startFakeServer(directory, {
+      diagnosticMode: "push",
+      diagnosticsMs: 100,
+      environment: { FAKE_NO_PULL: "1", FAKE_DIAGNOSTICS: "document" },
+    });
+    expect(await client.documentDiagnostics(path, "typescript")).toMatchObject({
+      status: "fresh",
+      diagnostics: [{ message: "first\n" }],
+    });
+    expect(await client.documentDiagnostics(path, "typescript")).toMatchObject({
+      status: "fresh",
+      diagnostics: [{ message: "first\n" }],
+    });
+    await writeFile(path, "second\n");
+    expect(await client.documentDiagnostics(path, "typescript")).toMatchObject({
+      status: "fresh",
+      diagnostics: [{ message: "second\n" }],
+    });
+  });
+
+  test("missing diagnostic helpers are unavailable rather than clean push results", async () => {
+    const directory = await createTemporaryDirectory();
+    const path = resolve(directory, "helper.ts");
+    await writeFile(path, "const value = true;\n");
+    const client = await startFakeServer(directory, {
+      unavailableDiagnostics: "ShellCheck is unavailable",
+    });
+    await expect(client.documentDiagnostics(path, "typescript")).rejects.toThrow(
+      "ShellCheck is unavailable",
+    );
+    await expect(client.workspaceDiagnostics()).rejects.toThrow("ShellCheck is unavailable");
+  });
+
   test("handles required server requests, dynamic capabilities, settings, and preview rejection", async () => {
     const directory = await createTemporaryDirectory();
     const previews: unknown[] = [];

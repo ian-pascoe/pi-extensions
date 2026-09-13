@@ -380,7 +380,7 @@ export function createDapToolDefinition(
     ].join("\n"),
     promptSnippet: "Debug a program through one configured Debug Session",
     promptGuidelines: [
-      "Use dap to set source breakpoints, launch a direct JavaScript/Python script or configured Launch Profile, control the Debuggee, and inspect stopped Stack Frames and variables.",
+      "Use dap to set source breakpoints, launch a script or explicit compiled-program Launch Profile, control the Debuggee, and inspect stopped Stack Frames and variables.",
     ],
     parameters: DapToolProviderParametersSchema,
     prepareArguments: parseDapToolParameters,

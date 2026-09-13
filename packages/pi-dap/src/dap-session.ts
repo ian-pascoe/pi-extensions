@@ -456,7 +456,10 @@ export class DapSession {
       );
     }
     let adapterEnvironment = adapter.environment;
-    if (preset?.profile.id === "javascript" && process.platform === "darwin") {
+    if (
+      (preset?.profile.id === "javascript" || preset?.profile.id === "deno") &&
+      process.platform === "darwin"
+    ) {
       const temporaryDirectory = await this.options.sessionFiles.getAdapterTemporaryDirectory();
       adapterEnvironment = {
         ...adapterEnvironment,

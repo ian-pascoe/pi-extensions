@@ -16,6 +16,7 @@ import {
   parseNodeProcessError,
 } from "./node-process-error.mjs";
 import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
+import { assertDapNativePayloads } from "./dap-native-payloads.mjs";
 import {
   piSettingsDocumentSchema,
   readJsonDocument,
@@ -193,6 +194,7 @@ try {
     }
   }
   await runNpmProductionInstall(installDirectory);
+  await assertDapNativePayloads(resolve(installDirectory, "packages/pi-dap"));
   await assertPackageExcludedFromProductionInstall(installDirectory, "vscode-js-debug");
   await assertGitInstalledExtensionsLoad(installDirectory, agentDirectory);
   await assertFilteredProjectPackageLoadsSkills(installDirectory, agentDirectory);

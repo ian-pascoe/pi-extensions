@@ -7,10 +7,14 @@ import {
   type ManagedInstallation,
   type ToolRequest,
 } from "@ian-pascoe/pi-tool-installer";
+import { resolveDenoExecutable } from "@ian-pascoe/pi-utils";
+import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { FormatterDefinition } from "./pi-formatter-settings.js";
+import { withPrettierPlugin } from "./formatter-plugins.js";
+import { runFormatterCommand, formatFormatterFailure } from "./formatter-process.js";
 
 const ObjectSchema = Type.Record(Type.String(), Type.Unknown());
 const DependencySchema = Type.Record(Type.String(), Type.String());
@@ -27,6 +31,9 @@ export const formatterPresetIds = [
   "ruff",
   "gofmt",
   "rustfmt",
+  "deno",
+  "shfmt",
+  "terraform",
 ] as const;
 export type FormatterPresetId = (typeof formatterPresetIds)[number];
 
@@ -55,7 +62,23 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function jsMarkers(root: string): Promise<FormatterPresetId[]> {
+const WebConfigSchema = Type.Object({ fmt: Type.Optional(ObjectSchema) });
+
+async function readJsonConfig(path: string) {
+  const errors: ParseError[] = [];
+  const value: unknown = parseJsonc(await readFile(path, "utf8"), errors, {
+    allowTrailingComma: true,
+  });
+  if (errors.length || !Value.Check(WebConfigSchema, value))
+    throw new Error(`Invalid formatter configuration in ${path}`);
+  return value;
+}
+
+async function jsMarkers(
+  root: string,
+  extension: string,
+  suppressedIds: ReadonlySet<string>,
+): Promise<FormatterPresetId[]> {
   const markers = new Set<FormatterPresetId>();
   for (const name of [
     ".prettierrc",
@@ -68,6 +91,17 @@ async function jsMarkers(root: string): Promise<FormatterPresetId[]> {
   }
   for (const name of ["biome.json", "biome.jsonc"]) {
     if (await fileExists(join(root, name))) markers.add("biome");
+  }
+  for (const name of ["deno.json", "deno.jsonc"]) {
+    if (suppressedIds.has("deno") || !denoExtensions.has(extension)) break;
+    if (!(await fileExists(join(root, name)))) continue;
+    const config = await readJsonConfig(join(root, name));
+    if (config.fmt !== undefined) {
+      if (!Value.Check(ObjectSchema, config.fmt))
+        throw new Error(`Invalid fmt declaration in ${join(root, name)}`);
+      markers.add("deno");
+    }
+    break;
   }
   if (await fileExists(join(root, "package.json"))) {
     const manifest: unknown = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
@@ -157,20 +191,77 @@ async function pythonMarkers(root: string): Promise<FormatterPresetId[]> {
   return [...markers];
 }
 
+const javascriptExtensions = [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"];
+const prettierExtensions = new Set([
+  ...javascriptExtensions,
+  ".html",
+  ".css",
+  ".scss",
+  ".less",
+  ".json",
+  ".jsonc",
+  ".json5",
+  ".yaml",
+  ".yml",
+  ".md",
+  ".markdown",
+  ".mdx",
+  ".graphql",
+  ".gql",
+  ".vue",
+  ".svelte",
+  ".astro",
+]);
+const biomeExtensions = new Set([
+  ...javascriptExtensions,
+  ".json",
+  ".jsonc",
+  ".css",
+  ".graphql",
+  ".gql",
+]);
+
+const denoExtensions = new Set([
+  ...javascriptExtensions,
+  ".md",
+  ".markdown",
+  ".json",
+  ".jsonc",
+  ".html",
+  ".css",
+  ".scss",
+  ".less",
+  ".yaml",
+  ".yml",
+]);
+
 export async function selectFormatterPreset(
   path: string,
+  suppressedIds: ReadonlySet<string>,
+  biomeEligible: (root: string) => Promise<boolean>,
 ): Promise<{ id: FormatterPresetId; root: string } | undefined> {
   const extension = extname(path);
-  if (extension === ".go" || extension === ".rs")
-    return { id: extension === ".go" ? "gofmt" : "rustfmt", root: dirname(path) };
+  if (extension === ".go" || extension === ".rs") {
+    const id = extension === ".go" ? "gofmt" : "rustfmt";
+    return suppressedIds.has(id) ? undefined : { id, root: dirname(path) };
+  }
+  if ([".sh", ".bash", ".bats"].includes(extension))
+    return suppressedIds.has("shfmt") ? undefined : { id: "shfmt", root: dirname(path) };
+  if ([".tf", ".tfvars"].includes(extension))
+    return suppressedIds.has("terraform") ? undefined : { id: "terraform", root: dirname(path) };
   const python = extension === ".py" || extension === ".pyi";
-  if (
-    !python &&
-    ![".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"].includes(extension)
-  )
-    return undefined;
+  if (!python && !prettierExtensions.has(extension)) return undefined;
   for (const root of ancestors(dirname(path))) {
-    const markers = await (python ? pythonMarkers(root) : jsMarkers(root));
+    const markers = (
+      await (python ? pythonMarkers(root) : jsMarkers(root, extension, suppressedIds))
+    ).filter(
+      (id) =>
+        !suppressedIds.has(id) &&
+        (id !== "biome" || biomeExtensions.has(extension)) &&
+        (id !== "deno" || denoExtensions.has(extension)),
+    );
+    if (markers.includes("biome") && !(await biomeEligible(root)))
+      markers.splice(markers.indexOf("biome"), 1);
     if (markers.length > 1)
       throw new Error(
         `Conflicting Formatter Markers at ${root}: ${markers.join(", ")}. Configure an explicit formatter choice.`,
@@ -179,6 +270,76 @@ export async function selectFormatterPreset(
     if (id) return { id, root };
   }
   return undefined;
+}
+
+const BiomeReportSchema = Type.Object({
+  command: Type.Literal("format"),
+  summary: Type.Object({
+    changed: Type.Literal(0),
+    unchanged: Type.Integer({ minimum: 0, maximum: 1 }),
+    errors: Type.Integer({ minimum: 0 }),
+    warnings: Type.Integer({ minimum: 0 }),
+    skipped: Type.Integer({ minimum: 0, maximum: 1 }),
+    diagnosticsNotPrinted: Type.Literal(0),
+  }),
+  diagnostics: Type.Array(Type.Object({ category: Type.String() })),
+});
+
+/** Ask the selected CLI to load effective config, without writing or starting a daemon. */
+export async function biomeFormatterEligible(
+  definition: FormatterDefinition,
+  file: string,
+  root: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  let stdout = "";
+  const failure = await runFormatterCommand(
+    definition,
+    definition.args.flatMap((arg) =>
+      arg === "--write"
+        ? ["--reporter=json", "--no-errors-on-unmatched"]
+        : [arg.replaceAll("$FILE", file)],
+    ),
+    root,
+    timeoutMs,
+    signal,
+    undefined,
+    (output) => {
+      stdout = output;
+    },
+  );
+  if (failure && (failure.kind !== "exit_error" || failure.exitCode !== 1 || failure.signal))
+    throw new Error(formatFormatterFailure(definition, file, failure));
+  let report: unknown;
+  try {
+    report = JSON.parse(stdout);
+  } catch {
+    /* Missing/malformed native output is not disablement. */
+  }
+  if (Value.Check(BiomeReportSchema, report)) {
+    // Native format/parse diagnostics still establish an enabled candidate, including conflicts.
+    if (
+      report.summary.unchanged === 1 &&
+      report.diagnostics.every(
+        ({ category }) =>
+          category === "format" || category === "parse" || category.startsWith("parse/"),
+      )
+    )
+      return true;
+    if (
+      !failure &&
+      report.summary.unchanged === 0 &&
+      report.summary.errors === 0 &&
+      report.summary.warnings === 0 &&
+      report.summary.skipped === 0 &&
+      report.diagnostics.length === 0
+    )
+      return false;
+  }
+  throw new Error(
+    `Cannot determine Biome formatter eligibility: invalid or unsuccessful native JSON report for ${file}. Configure an Explicit Definition.${failure ? ` ${formatFormatterFailure(definition, file, failure)}` : ""}`,
+  );
 }
 
 async function executable(path: string): Promise<boolean> {
@@ -232,6 +393,9 @@ export function formatterRequest(id: FormatterPresetId): ToolRequest {
     ruff: { formatter: "aqua:astral-sh/ruff" },
     gofmt: { go: "core:go" },
     rustfmt: { rust: "core:rust" },
+    deno: { formatter: "core:deno" },
+    shfmt: { formatter: "aqua:mvdan/sh" },
+    terraform: { formatter: "aqua:hashicorp/terraform" },
   } satisfies Record<FormatterPresetId, ToolRequest["requirements"]>;
   return { id: `formatter-${id}`, requirements: requirements[id] };
 }
@@ -273,14 +437,18 @@ async function externalFormatter(
     ]) {
       for (const name of names) {
         const path = join(directory, bin, name);
-        if (await executable(path)) return { command: path, script: false };
+        if (!(await executable(path))) continue;
+        const command = id === "deno" ? await resolveDenoExecutable(path) : path;
+        if (command) return { command, script: false };
       }
     }
   }
   for (const directory of pathDirectories()) {
     for (const name of names) {
       const path = join(directory, name);
-      if (await executable(path)) return { command: path, script: false };
+      if (!(await executable(path))) continue;
+      const command = id === "deno" ? await resolveDenoExecutable(path) : path;
+      if (command) return { command, script: false };
     }
   }
   return undefined;
@@ -345,8 +513,10 @@ export async function resolvePresetDefinition(
   id: FormatterPresetId,
   root: string,
   installer: ToolInstaller,
-  options: InstallationOptions & { allowDownload: boolean },
+  options: InstallationOptions & { allowDownload: boolean; timeoutMs?: number },
   projectRoot = root,
+  path?: string,
+  formatterRoot = root,
 ): Promise<FormatterDefinition> {
   options.signal?.throwIfAborted();
   const external = await externalFormatter(id, root, projectRoot);
@@ -390,9 +560,11 @@ export async function resolvePresetDefinition(
         ? ["format", "--write", "$FILE"]
         : id === "ruff"
           ? ["format", "$FILE"]
-          : id === "gofmt"
-            ? ["-w", "$FILE"]
-            : ["$FILE"];
+          : id === "deno" || id === "terraform"
+            ? ["fmt", "$FILE"]
+            : id === "gofmt" || id === "shfmt"
+              ? ["-w", "$FILE"]
+              : ["$FILE"];
   if (id === "rustfmt") {
     args.unshift("--config", "skip_children=true");
     const edition = await rustEdition(root);
@@ -431,16 +603,16 @@ export async function resolvePresetDefinition(
     else {
       const candidates = await Promise.all(
         installation.binDirectories.map(async (directory) => {
-          const path = join(directory, nativeName("ruff"));
+          const path = join(directory, nativeName(id));
           return (await executable(path)) ? path : undefined;
         }),
       );
       const found = candidates.find((path) => path !== undefined);
-      if (!found) throw new Error("Missing Ruff executable in the managed installation");
+      if (!found) throw new Error(`Missing ${id} executable in the managed installation`);
       command = found;
     }
   }
-  const environment = {
+  const environment: FormatterDefinition["environment"] = {
     ...installation?.environment,
     PATH: [
       ...(node ? [dirname(node)] : []),
@@ -448,7 +620,13 @@ export async function resolvePresetDefinition(
       ...pathDirectories(),
     ].join(delimiter),
   };
-  return {
+  if (id === "deno")
+    Object.assign(environment, {
+      DENO_DIR: join(installer.directory, "caches", "deno"),
+      DENO_NO_UPDATE_CHECK: "1",
+      DENO_NO_PROMPT: "1",
+    });
+  const definition: FormatterDefinition = {
     id,
     command,
     args,
@@ -458,4 +636,19 @@ export async function resolvePresetDefinition(
     requireRootMarker: false,
     rootMarkers: [],
   };
+  const extension = path === undefined ? undefined : extname(path);
+  if (id === "prettier" && node && path) {
+    return withPrettierPlugin(
+      definition,
+      extension === ".svelte" ? "svelte" : extension === ".astro" ? "astro" : undefined,
+      path,
+      root,
+      projectRoot,
+      formatterRoot,
+      node,
+      installer,
+      options,
+    );
+  }
+  return definition;
 }

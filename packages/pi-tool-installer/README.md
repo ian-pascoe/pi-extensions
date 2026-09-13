@@ -33,6 +33,14 @@ const installation = await installer.ensure(request, {
 - `installed(id)` reads an existing selection without running a helper or accessing
   the network. Missing selections or directories return `undefined`; malformed
   metadata and paths escaping the store are rejected.
+- `list()` returns validated existing selections in ID order without acquiring tools
+  or creating the store. Package owners use their selection IDs to update distinct
+  compatibility variants; they do not read the installer's private receipt files.
+- `npmVersions(name, options)` explicitly fetches validated public npm version/peer
+  metadata and the upstream `latest` tag for acquisition or updates, without
+  installing or persisting anything.
+  Compatibility filtering remains with the package owner. Status and Installed-only
+  resolution must not call this network operation.
 - `ensure(request, options)` reuses matching ordered requirement identities. It can
   adopt an existing selection's complete graph or proven ordered prefix under a
   different ID, remapping component names without running the helper. For example,
@@ -52,10 +60,20 @@ Results contain each component's `selector`, concrete `version`, and installatio
 own executable paths, arguments, runtime selection, Pi settings, and progress UI.
 Use reviewed, package-owned acquisition selectors; never accept workspace recipes.
 Native mise ToolArgs with a trailing version/prefix (including scoped npm packages)
-are supported without double-appending versions. Language Tool Presets must still
-use latest selectors; the native update fixture uses explicit versions solely to
-control its old/new runtime comparison. Earlier unreleased prototype records without
-selector identity are rejected rather than guessed.
+are supported without double-appending versions. A full semantic version is exact
+and bypasses `mise latest`; unversioned selectors and prefixes still resolve latest.
+This permits runtime-only .NET acquisition, whose native version discovery lists
+SDKs rather than runtime releases. Package owners determine compatible SDK/plugin
+and application runtime requirements under the [expansion decisions](../../docs/plans/language-tool-preset-expansion.md);
+the installer does not infer compatibility or widen an exact requirement on update.
+Ordinary presets retain latest selection. Earlier unreleased prototype records
+without selector identity are rejected rather than guessed.
+
+The native HTTP backend supports reviewed artifact selectors, including VSIX ZIPs.
+A simple `checksum_url=https://.../{{version}}.sha256` resolves a published bare
+SHA-256 digest at acquisition and passes it as mise's native `checksum` option.
+Missing or malformed digests fail closed; downloads and extraction remain native.
+Existing selections reuse their original requested selector without metadata fetches.
 
 ## Isolation and durability
 
@@ -66,6 +84,9 @@ A heartbeat lock coordinates Pi processes sharing a store. Selection records are
 published by rename only after all components install and their directories validate;
 failed or cancelled updates leave the prior selection intact. Existing concrete
 versions are retained. Missing directories are distinct from corrupt metadata.
+Acquisition omits nonexistent optional private PATH entries (such as Deno's unused
+global-tool directory), but still rejects paths outside the store and validates all
+required component directories and retained executable directories.
 
 Selection records keep an optional private `contexts` array: each entry records the
 native executable directories and environment after the corresponding ordered
@@ -75,8 +96,12 @@ Earlier pre-release records without snapshots remain usable by their original ID
 as complete graphs. Shorter-prefix adoption needs a deliberate `update` to refresh
 that metadata; Installed-only Mode never performs that network action implicitly.
 
-Only pipx installations get a namespace keyed by the concrete tool and preceding
-dependency graph. Its mise data, system-data, and cache directories are scoped.
+pipx and HTTP installations get a namespace keyed by the concrete tool and preceding
+dependency graph. Their mise data, system-data, and cache directories are scoped.
+For HTTP this identity includes the artifact URL/options and resolved checksum, so
+mise cannot skip a changed checksum through an unrelated same-name/version install.
+Working artifacts are never force-reinstalled in place.
+
 Python is reused through a native `@path:` ToolArg; UV is resolved from the already
 prefixed private child PATH. Both remain in the namespace identity. Passing Aqua
 UV as an `@path:` ToolArg can crash mise's Windows executable/version resolution,
@@ -85,6 +110,11 @@ An exact `UV_PYTHON` selects the shared full-patch interpreter outside that name
 so mise does not rewrite its venv links to moving minor-version aliases. No runtime
 copies or hand-edited links are involved. Python downloads, uv configuration, and
 bytecode writes are disabled for this composition.
+
+The private helper enables mise's native `dotnet.isolated` setting and disables
+.NET CLI telemetry. Concrete .NET versions therefore have separate runtime roots,
+rather than aliases into a mutable shared `dotnet-root`. Launch owners still supply
+the appropriate Debuggee environment and enforce application compatibility.
 
 Mise retains ownership of component install locks and incomplete markers. The store
 heartbeat lock coordinates selection publication; a dead owner's lock expires.

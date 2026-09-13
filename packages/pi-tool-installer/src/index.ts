@@ -20,7 +20,7 @@ import { Value } from "typebox/value";
 
 const idPattern = /^[a-z][a-z0-9-]*$/;
 const IdSchema = Type.String({ pattern: idPattern.source });
-const SelectorSchema = Type.String({ pattern: "^(core|npm|aqua|go|pipx|github):[^\\s]+$" });
+const SelectorSchema = Type.String({ pattern: "^(core|npm|aqua|go|pipx|github|http):[^\\s]+$" });
 const VersionSchema = Type.String({ pattern: "^v?\\d[a-zA-Z0-9.+_-]*$" });
 const EnvironmentSchema = Type.Record(Type.String(), Type.String());
 const InstallationSchema = Type.Object({
@@ -66,6 +66,18 @@ const RequestSchema = Type.Object(
 );
 
 export type ToolRequest = Static<typeof RequestSchema>;
+
+const NpmPackageSchema = Type.Object({
+  name: Type.String(),
+  version: Type.String(),
+  peerDependencies: Type.Optional(Type.Record(Type.String(), Type.String())),
+  engines: Type.Optional(Type.Object({ node: Type.Optional(Type.String()) })),
+});
+const NpmVersionsSchema = Type.Object({
+  versions: Type.Record(Type.String(), NpmPackageSchema),
+  "dist-tags": Type.Optional(Type.Object({ latest: Type.Optional(Type.String()) })),
+});
+export type NpmPackage = Static<typeof NpmPackageSchema>;
 
 function toolName(selector: string): string {
   const at = selector.lastIndexOf("@");
@@ -167,6 +179,54 @@ export class ToolInstaller {
       binDirectories: selection.binDirectories,
       environment: selection.environment,
     };
+  }
+
+  /** Network metadata for acquisition/update; compatibility policy remains with callers. */
+  async npmVersions(
+    name: string,
+    options: InstallationOptions,
+  ): Promise<(NpmPackage & { latest: boolean })[]> {
+    options.signal?.throwIfAborted();
+    if (name.length > 214 || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name))
+      throw new Error(`Invalid npm package name: ${name}`);
+    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}`, {
+      headers: { Accept: "application/vnd.npm.install-v1+json" },
+      signal: options.signal ?? null,
+      redirect: "error",
+    });
+    if (!response.ok) throw new Error(`Cannot resolve ${name}: HTTP ${response.status}`);
+    const value: unknown = await response.json();
+    if (
+      !Value.Check(NpmVersionsSchema, value) ||
+      Object.entries(value.versions).some(
+        ([version, manifest]) => manifest.name !== name || manifest.version !== version,
+      )
+    )
+      throw new Error(`Invalid npm package metadata for ${name}`);
+    const latest = value["dist-tags"]?.latest;
+    if (latest !== undefined && !Object.hasOwn(value.versions, latest))
+      throw new Error(`Invalid npm latest tag for ${name}`);
+    return Object.values(value.versions).map((manifest) => ({
+      ...manifest,
+      latest: manifest.version === latest,
+    }));
+  }
+
+  async list(): Promise<ManagedInstallation[]> {
+    let files: string[];
+    try {
+      files = await readdir(join(this.directory, "selections"));
+    } catch (error) {
+      if (Value.Check(FileErrorSchema, error)) return [];
+      throw error;
+    }
+    const installations = await Promise.all(
+      files
+        .filter((file) => file.endsWith(".json") && idPattern.test(file.slice(0, -5)))
+        .sort()
+        .map((file) => this.installed(file.slice(0, -5))),
+    );
+    return installations.filter((installation) => installation !== undefined);
   }
 
   private async selection(id: string): Promise<Selection | undefined> {
@@ -362,6 +422,12 @@ export class ToolInstaller {
         process.platform === "win32"
           ? [
               join(process.env.SystemRoot ?? "C:\\Windows", "System32"),
+              join(
+                process.env.SystemRoot ?? "C:\\Windows",
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+              ),
               process.env.SystemRoot ?? "C:\\Windows",
             ].join(delimiter)
           : "/usr/bin:/bin:/usr/sbin:/sbin",
@@ -369,6 +435,8 @@ export class ToolInstaller {
       MISE_SYSTEM_DATA_DIR: join(this.directory, "data"),
       MISE_CACHE_DIR: join(this.directory, "cache"),
       MISE_CONFIG_DIR: join(this.directory, "config"),
+      MISE_DOTNET_ISOLATED: "1",
+      MISE_DOTNET_CLI_TELEMETRY_OPTOUT: "1",
       MISE_FETCH_REMOTE_VERSIONS_CACHE: "0s",
       MISE_YES: "1",
       MISE_COLOR: "0",
@@ -499,6 +567,28 @@ export class ToolInstaller {
     });
   }
 
+  private async concreteTool(
+    selector: string,
+    version: string,
+    options: InstallationOptions,
+  ): Promise<string> {
+    const concrete = `${toolName(selector)}@${version}`;
+    const source = selector.startsWith("http:")
+      ? /([[,])checksum_url=([^,\]]+)/.exec(selector)
+      : null;
+    if (!source) return concrete;
+    const url = new URL(source[2]!.replaceAll("{{version}}", version));
+    if (url.protocol !== "https:" || url.username || url.password)
+      throw new Error("Published checksums require an HTTPS URL without credentials");
+    options.onProgress?.(`Resolving published checksum for ${selector}`);
+    const response = await fetch(url.href, { signal: options.signal ?? null });
+    if (!response.ok) throw new Error(`Cannot fetch published checksum: HTTP ${response.status}`);
+    const checksum = (await response.text()).trim();
+    if (!/^[a-fA-F0-9]{64}$/.test(checksum)) throw new Error("Invalid published SHA-256 checksum");
+    // mise only resolves checksum_url during locking; installation verifies checksum.
+    return concrete.replace(source[0], `${source[1]}checksum=sha256:${checksum}`);
+  }
+
   private async acquire(
     request: ToolRequest,
     options: InstallationOptions,
@@ -522,28 +612,41 @@ export class ToolInstaller {
     const tools: string[] = [];
     for (const [key, selector] of Object.entries(request.requirements)) {
       const selected = previous?.components[key];
-      let version = selected?.selector === selector ? selected.version : undefined;
+      const requestedVersion = selector.slice(toolName(selector).length + 1);
+      const exactVersion = /^v?\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(requestedVersion)
+        ? requestedVersion
+        : undefined;
+      let version = selected?.selector === selector ? selected.version : exactVersion;
       if (!version) {
         options.onProgress?.(`Resolving latest ${selector}`);
         version = await this.run(helper, ["latest", selector], environment, options);
       }
       if (!Value.Check(VersionSchema, version))
         throw new Error(`Invalid concrete version for ${selector}: ${String(version)}`);
-      const concrete = `${toolName(selector)}@${version}`;
+      const concrete = await this.concreteTool(selector, version, options);
       let installEnvironment = environment;
       let prerequisites = tools;
-      if (selector.startsWith("pipx:")) {
-        // pipx links must target the shared full-patch Python, outside this namespace.
-        // Its cache is scoped too: mise keeps incomplete-install markers there.
+      const scopedBackend = /^(pipx|http):/.exec(selector)?.[1];
+      if (scopedBackend) {
+        // pipx binds dependency paths; HTTP must not conflate artifact options.
+        // Scope the cache too: mise keeps incomplete-install markers there.
         prerequisites = Object.values(components).map(
           (component) => `${toolName(component.selector)}@path:${component.directory}`,
         );
         const graph = JSON.stringify([prerequisites, concrete]);
         const namespace = join(
           this.directory,
-          "pipx",
+          scopedBackend,
           createHash("sha256").update(graph).digest("hex"),
         );
+        installEnvironment = {
+          ...environment,
+          MISE_DATA_DIR: join(namespace, "data"),
+          MISE_SYSTEM_DATA_DIR: join(namespace, "system-data"),
+          MISE_CACHE_DIR: join(namespace, "cache"),
+        };
+      }
+      if (scopedBackend === "pipx") {
         const python = Object.values(components).find(
           (component) => toolName(component.selector) === "core:python",
         );
@@ -552,10 +655,7 @@ export class ToolInstaller {
         // private child PATH instead, while retaining it in the namespace identity.
         prerequisites = [`${toolName(python.selector)}@path:${python.directory}`];
         installEnvironment = {
-          ...environment,
-          MISE_DATA_DIR: join(namespace, "data"),
-          MISE_SYSTEM_DATA_DIR: join(namespace, "system-data"),
-          MISE_CACHE_DIR: join(namespace, "cache"),
+          ...installEnvironment,
           UV_PYTHON: join(
             python.directory,
             process.platform === "win32" ? "python.exe" : "bin/python3",
@@ -579,16 +679,24 @@ export class ToolInstaller {
           options,
         ),
       );
-      tools.push(
-        selector.startsWith("pipx:") ? `${toolName(selector)}@path:${directory}` : concrete,
-      );
+      tools.push(scopedBackend ? `${toolName(selector)}@path:${directory}` : concrete);
       if (!Value.Check(EnvironmentSchema, value))
         throw new Error("Invalid mise environment result");
       const additions = value;
       environment = { ...environment, ...additions };
-      const binDirectories = (environment.PATH ?? "")
-        .split(delimiter)
-        .filter((path) => !basePaths.has(path));
+      const binDirectories: string[] = [];
+      for (const path of (environment.PATH ?? "").split(delimiter)) {
+        if (basePaths.has(path)) continue;
+        if (!contained(this.directory, path))
+          throw new Error(`Invalid managed executable directory: ${path}`);
+        try {
+          await access(path);
+          binDirectories.push(path);
+        } catch (error) {
+          // mise also advertises optional global-tool directories before they exist.
+          if (!Value.Check(FileErrorSchema, error)) throw error;
+        }
+      }
       delete additions.PATH;
       contexts.push({ binDirectories, environment: additions });
     }

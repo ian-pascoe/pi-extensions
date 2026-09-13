@@ -88,7 +88,13 @@ async function exerciseClientRequests() {
   send({
     jsonrpc: "2.0",
     method: "window/logMessage",
-    params: { type: 3, message: "fake server ready" },
+    params: {
+      type: 3,
+      message:
+        process.env.FAKE_BIOME_READY === "1"
+          ? `Server initialized with PID: ${process.pid}`
+          : "fake server ready",
+    },
   });
 }
 
@@ -115,6 +121,20 @@ async function handleRequest(message) {
         capabilities,
       });
       return;
+    case "biome/open_project":
+      respond(message.id, { projectKey: 1 });
+      return;
+    case "biome/file_features":
+      if (message.params.projectKey !== 1 || message.params.features.join() !== "lint") {
+        respondError(message.id, -32602, "Invalid Biome feature request");
+        return;
+      }
+      respond(message.id, {
+        featuresSupported: {
+          lint: message.params.path.endsWith("disabled.ts") ? "featureNotEnabled" : "supported",
+        },
+      });
+      return;
     case "textDocument/documentSymbol":
       respond(message.id, [
         {
@@ -127,6 +147,8 @@ async function handleRequest(message) {
       return;
     case "textDocument/diagnostic":
       if (process.env.FAKE_DELAY_DIAGNOSTICS === "1") return;
+      if (process.env.FAKE_ESLINT_MISSING === "1")
+        await sendRequest("eslint/noLibrary", { source: message.params.textDocument });
       respond(message.id, {
         kind: "full",
         resultId: "fake-document-result",

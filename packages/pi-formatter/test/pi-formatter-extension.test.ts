@@ -11,6 +11,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,6 +53,9 @@ vi.mock("cross-spawn", async (importOriginal) => {
 });
 
 const temporaryDirectories: string[] = [];
+const biomeFixture = fileURLToPath(new URL("./fixtures/biome.cjs", import.meta.url));
+const biomeScript = (enabled = true) =>
+  `require(${JSON.stringify(biomeFixture)})('biome',${enabled})`;
 
 interface FormatterHarness {
   readonly cwd: string;
@@ -228,7 +232,9 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
       await mkdir(resolve(script, ".."), { recursive: true });
       await writeFile(
         script,
-        `require('node:fs').appendFileSync(process.argv.at(-1), ':${label}')`,
+        label === "biome"
+          ? biomeScript()
+          : `require('node:fs').appendFileSync(process.argv.at(-1), ':${label}')`,
       );
     }
     await writeFile(
@@ -248,6 +254,882 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
     expect(await mutate()).toBeUndefined();
     expect(await readFile(path, "utf8")).toBe("original:biome:prettier");
   });
+  test("only eligible web markers compete and nearer unsupported markers do not hide Prettier", async () => {
+    const harness = await createFormatterHarness({ formatter: { autoInstall: false } });
+    const script = resolve(harness.cwd, "node_modules/prettier/bin/prettier.cjs");
+    await mkdir(dirname(script), { recursive: true });
+    await writeFile(script, "require('node:fs').appendFileSync(process.argv.at(-1), ':prettier')");
+    await writeFile(resolve(harness.cwd, ".prettierrc"), "{}");
+    await writeFile(resolve(harness.cwd, "biome.json"), "{}");
+    const nested = resolve(harness.cwd, "nested");
+    await mkdir(nested);
+    await writeFile(resolve(nested, "biome.json"), "invalid but ineligible for Markdown");
+    const path = resolve(nested, "README.md");
+    await writeFile(path, "original");
+    expect(
+      await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path }, details: undefined }),
+      ),
+    ).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe("original:prettier");
+  });
+
+  test.each([
+    [true, '{"formatter":{"indentStyle":"space"}}', "biome"],
+    [false, '{"formatter":{"enabled":false},"linter":{"enabled":true}}', "prettier"],
+  ] as const)(
+    "native inherited Biome eligibility selects %s / %s / %s",
+    async (enabled, base, expected) => {
+      const harness = await createFormatterHarness({ formatter: { autoInstall: false } });
+      await writeFile(resolve(harness.cwd, "biome.json"), '{"extends":["./base.json"]}');
+      await writeFile(resolve(harness.cwd, "base.json"), base);
+      const script = resolve(harness.cwd, "node_modules/@biomejs/biome/bin/biome");
+      await mkdir(dirname(script), { recursive: true });
+      await writeFile(
+        script,
+        `if(process.argv.includes('--reporter=json')){console.log(JSON.stringify({command:'format',summary:{changed:0,unchanged:${enabled ? 1 : 0},errors:${enabled ? 1 : 0},warnings:0,skipped:0,diagnosticsNotPrinted:0},diagnostics:${enabled ? "[{category:'format',severity:'error'}]" : "[]"}}));process.exit(${enabled ? 1 : 0})}require('node:fs').appendFileSync(process.argv.at(-1),':biome')`,
+      );
+      if (!enabled) {
+        await writeFile(resolve(harness.cwd, ".prettierrc"), "{}");
+        const prettier = resolve(harness.cwd, "node_modules/prettier/bin/prettier.cjs");
+        await mkdir(dirname(prettier), { recursive: true });
+        await writeFile(
+          prettier,
+          "require('node:fs').appendFileSync(process.argv.at(-1),':prettier')",
+        );
+      }
+      const path = resolve(harness.cwd, "example.ts");
+      await writeFile(path, "original");
+      expect(
+        await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        ),
+      ).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe(`original:${expected}`);
+      expect(await readFile(resolve(harness.cwd, "base.json"), "utf8")).toBe(base);
+    },
+  );
+
+  test.each([
+    '{"extends":["./base.json"]}',
+    '{"overrides":[{"includes":["*.css"],"formatter":{"enabled":false}}]}',
+    '{"overrides":[{"includes":["*.css"],"css":{"formatter":{"enabled":true}}}]}',
+  ])(
+    "invalid native Biome eligibility preserves the mutation and an explicit definition retains native config (%s)",
+    async (config) => {
+      const harness = await createFormatterHarness({});
+      await writeFile(resolve(harness.cwd, "biome.json"), config);
+      const script = resolve(harness.cwd, "node_modules/@biomejs/biome/bin/biome");
+      await mkdir(dirname(script), { recursive: true });
+      await writeFile(script, "console.log('{}')");
+      const path = resolve(harness.cwd, "example.css");
+      await writeFile(path, "original");
+      const mutate = () =>
+        harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        );
+      const result = await mutate();
+      expect(result?.content?.at(-1)).toMatchObject({
+        text: expect.stringContaining("Cannot determine Biome formatter eligibility"),
+      });
+      expect(result?.content?.at(-1)).toMatchObject({
+        text: expect.stringContaining("Explicit Definition"),
+      });
+      expect(await readFile(path, "utf8")).toBe("original");
+      expect(harness.statuses.filter(Boolean)).toEqual([]);
+      await writeFile(
+        resolve(harness.agentDirectory, "settings.json"),
+        JSON.stringify({
+          formatter: {
+            formatters: {
+              native: {
+                command: process.execPath,
+                args: [
+                  "-e",
+                  "const fs=require('node:fs');fs.appendFileSync(process.argv.at(-1),':explicit:'+fs.readFileSync('biome.json','utf8'))",
+                  "$FILE",
+                ],
+                files: { extensions: [".css"] },
+              },
+            },
+          },
+        }),
+      );
+      await harness.runner.emit({ type: "session_start", reason: "reload" });
+      expect(await mutate()).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe(`original:explicit:${config}`);
+      expect(await readFile(resolve(harness.cwd, "biome.json"), "utf8")).toBe(config);
+    },
+  );
+
+  test.each([null, { command: "invalid" }])(
+    "a shadowed Biome preset cannot interfere with another eligible formatter (%j)",
+    async (biome) => {
+      const harness = await createFormatterHarness({
+        formatter: { autoInstall: false, formatters: { biome } },
+      });
+      await writeFile(resolve(harness.cwd, "biome.json"), '{"extends":["./base.json"]}');
+      await writeFile(resolve(harness.cwd, ".prettierrc"), "{}");
+      const script = resolve(harness.cwd, "node_modules/prettier/bin/prettier.cjs");
+      await mkdir(dirname(script), { recursive: true });
+      await writeFile(
+        script,
+        "require('node:fs').appendFileSync(process.argv.at(-1), ':prettier')",
+      );
+      const path = resolve(harness.cwd, "example.css");
+      await writeFile(path, "original");
+      expect(
+        await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        ),
+      ).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe("original:prettier");
+    },
+  );
+
+  test.each([
+    '{"extends":[]}',
+    '{"overrides":[{"includes":["*.ts"],"linter":{"enabled":false}}]}',
+    '{"overrides":[{"includes":["*.ts"],"formatter":{"indentWidth":4}}]}',
+    '{"overrides":[{"includes":["*.css"],"css":{"formatter":{"enabled":false}}}]}',
+  ])(
+    "unrelated Biome configuration does not make formatter eligibility ambiguous (%s)",
+    async (config) => {
+      const harness = await createFormatterHarness({ formatter: { autoInstall: false } });
+      await writeFile(resolve(harness.cwd, "biome.json"), config);
+      const script = resolve(harness.cwd, "node_modules/@biomejs/biome/bin/biome");
+      await mkdir(dirname(script), { recursive: true });
+      await writeFile(script, biomeScript());
+      const path = resolve(harness.cwd, "example.ts");
+      await writeFile(path, "original");
+      expect(
+        await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        ),
+      ).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe("original:biome");
+    },
+  );
+
+  test("Deno needs an explicit fmt declaration and a disabled Biome formatter does not compete", async () => {
+    const harness = await createFormatterHarness({ formatter: { autoInstall: false } });
+    const bin = resolve(harness.cwd, "bin");
+    await mkdir(bin);
+    const command = resolve(bin, process.platform === "win32" ? "deno.exe" : "deno");
+    await writeFile(command, "fixture");
+    await chmod(command, 0o755);
+    await writeFile(
+      `${command}.cjs`,
+      "require('node:fs').appendFileSync(process.argv.at(-1), ':deno')",
+    );
+    const config = resolve(harness.cwd, "deno.jsonc");
+    await writeFile(config, '{// runtime only\n"imports": {}}');
+    const path = resolve(harness.cwd, "example.yaml");
+    await writeFile(path, "original");
+    const mutate = () =>
+      harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path }, details: undefined }),
+      );
+    expect(await mutate()).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe("original");
+    await writeFile(config, '{// explicit formatter\n"fmt": {},}');
+    expect(await mutate()).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe("original:deno");
+    await writeFile(resolve(harness.cwd, "biome.jsonc"), '{"formatter":{"enabled":false},}');
+    const biome = resolve(harness.cwd, "node_modules/@biomejs/biome/bin/biome");
+    await mkdir(dirname(biome), { recursive: true });
+    await writeFile(biome, biomeScript(false));
+    const ts = resolve(harness.cwd, "example.ts");
+    await writeFile(ts, "original");
+    expect(
+      await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path: ts }, details: undefined }),
+      ),
+    ).toBeUndefined();
+    expect(await readFile(ts, "utf8")).toBe("original:deno");
+    expect(await readFile(config, "utf8")).toBe('{// explicit formatter\n"fmt": {},}');
+  });
+
+  test.each([false, true])(
+    "framework formatting uses compatible project plugins and selected Prettier (direct import: %s)",
+    async (directImport) => {
+      const harness = await createFormatterHarness({ formatter: { autoInstall: false } });
+      const prettier = resolve(harness.cwd, "node_modules/prettier");
+      const plugin = resolve(harness.cwd, "node_modules/prettier-plugin-svelte");
+      const svelte = resolve(harness.cwd, "node_modules/svelte");
+      for (const directory of [resolve(prettier, "bin"), plugin, svelte])
+        await mkdir(directory, { recursive: true });
+      await writeFile(
+        resolve(prettier, "bin/prettier.cjs"),
+        "throw new Error('Framework formatting must use the selected module API')",
+      );
+      await writeFile(
+        resolve(prettier, "package.json"),
+        JSON.stringify({ name: "prettier", version: "3.9.6", main: "index.cjs" }),
+      );
+      await writeFile(
+        resolve(prettier, "index.cjs"),
+        `module.exports={resolveConfig:async()=>{console.log('native config notice');return {plugins:[${directImport ? "require('prettier-plugin-svelte')" : "'prettier-plugin-svelte'"}]}},getFileInfo:async()=>({ignored:false}),format:async(text,options)=>{if(${directImport ? "typeof options.plugins[0]!=='object'||options.plugins.length!==1" : "!options.plugins[0].includes('node_modules/prettier-plugin-svelte')"})throw new Error('wrong plugin');return text+':project-plugin'}}`,
+      );
+      await writeFile(
+        resolve(plugin, "package.json"),
+        JSON.stringify({
+          name: "prettier-plugin-svelte",
+          version: "4.1.1",
+          main: "plugin.js",
+          peerDependencies: { prettier: "^3.0.0", svelte: "^5.0.0" },
+        }),
+      );
+      await writeFile(resolve(plugin, "plugin.js"), "module.exports={}");
+      await writeFile(
+        resolve(svelte, "package.json"),
+        JSON.stringify({ name: "svelte", version: "5.0.0" }),
+      );
+      await writeFile(
+        resolve(harness.cwd, ".prettierrc"),
+        '{"plugins":["prettier-plugin-svelte"]}',
+      );
+      const path = resolve(harness.cwd, "Example.svelte");
+      await writeFile(path, "original");
+      expect(
+        await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        ),
+      ).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe("original:project-plugin");
+      await rm(plugin, { recursive: true });
+      const store = resolve(harness.agentDirectory, "managed-tools");
+      await mkdir(store);
+      await writeFile(
+        resolve(store, process.platform === "win32" ? "mise.exe" : "mise"),
+        "fixture",
+      );
+      vi.stubGlobal(
+        "fetch",
+        async () =>
+          new Response(
+            JSON.stringify({
+              versions: {
+                "4.1.1": {
+                  name: "prettier-plugin-svelte",
+                  version: "4.1.1",
+                  peerDependencies: { prettier: "^3.0.0", svelte: "^5.0.0" },
+                },
+                "5.0.0": {
+                  name: "prettier-plugin-svelte",
+                  version: "5.0.0",
+                  peerDependencies: { prettier: "^4.0.0", svelte: "^5.0.0" },
+                },
+              },
+            }),
+          ),
+      );
+      await writeFile(
+        resolve(harness.agentDirectory, "settings.json"),
+        JSON.stringify({ formatter: { autoInstall: true } }),
+      );
+      await harness.runner.emit({ type: "session_start", reason: "reload" });
+      expect(
+        await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        ),
+      ).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe("original:project-plugin:project-plugin");
+      expect(await new ToolInstaller(store).installed("formatter-prettier")).toBeUndefined();
+      const command = harness.runner
+        .getRegisteredCommands()
+        .find((entry) => entry.name === "formatter")!;
+      vi.stubGlobal(
+        "fetch",
+        async () =>
+          new Response(
+            JSON.stringify({
+              versions: {
+                "4.2.0": {
+                  name: "prettier-plugin-svelte",
+                  version: "4.2.0",
+                  peerDependencies: { prettier: "^3.0.0", svelte: "^5.0.0" },
+                },
+                "5.0.0": {
+                  name: "prettier-plugin-svelte",
+                  version: "5.0.0",
+                  peerDependencies: { prettier: "^4.0.0", svelte: "^5.0.0" },
+                },
+              },
+            }),
+          ),
+      );
+      await command.handler("update prettier", harness.runner.createCommandContext());
+      expect(
+        harness.notifications.some(
+          (message) =>
+            message.startsWith("prettier/svelte:") &&
+            message.includes("4.1.1") &&
+            message.includes("4.2.0"),
+        ),
+      ).toBe(true);
+      expect(harness.notifications.some((message) => message.includes("5.0.0"))).toBe(false);
+      const before = await new ToolInstaller(store).list();
+      const started = Promise.withResolvers<void>();
+      vi.stubGlobal("fetch", (_url: string, options: RequestInit) => {
+        started.resolve();
+        return new Promise((_resolve, reject) =>
+          options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+            once: true,
+          }),
+        );
+      });
+      const pending = command.handler("update prettier", harness.runner.createCommandContext());
+      await started.promise;
+      await command.handler("update cancel", harness.runner.createCommandContext());
+      await pending;
+      expect(await new ToolInstaller(store).list()).toEqual(before);
+      expect(harness.notifications.at(-1)).toContain("cancelled");
+      vi.stubGlobal("fetch", () =>
+        Promise.reject(new Error("No network during installed plugin reuse")),
+      );
+      await writeFile(
+        resolve(harness.agentDirectory, "settings.json"),
+        JSON.stringify({ formatter: { autoInstall: false } }),
+      );
+      await harness.runner.emit({ type: "session_start", reason: "reload" });
+      expect(
+        await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        ),
+      ).toBeUndefined();
+    },
+  );
+
+  test.each(["strings", "mjs", "cjs", "ts", "old-node", "incompatible-pi"])(
+    "mixed curated plugins (%s) also format ordinary files with the selected external Prettier",
+    async (kind) => {
+      const harness = await createFormatterHarness({});
+      const prettier = resolve(harness.cwd, "node_modules/prettier");
+      await mkdir(resolve(prettier, "bin"), { recursive: true });
+      await writeFile(
+        resolve(prettier, "bin/prettier.cjs"),
+        "throw new Error('Cannot resolve private plugins through the ordinary CLI')",
+      );
+      await writeFile(
+        resolve(prettier, "package.json"),
+        JSON.stringify({ name: "prettier", version: "3.9.6", main: "index.cjs" }),
+      );
+      if (kind === "old-node" || kind === "incompatible-pi") {
+        const node = resolve(
+          harness.cwd,
+          "bin",
+          process.platform === "win32" ? "node.exe" : "node",
+        );
+        await mkdir(dirname(node), { recursive: true });
+        await copyFile(process.execPath, node);
+        const preload = resolve(harness.cwd, "legacy-node.cjs");
+        await writeFile(
+          preload,
+          "require('node:module').registerHooks=undefined;require('node:module').syncBuiltinESMExports()",
+        );
+        await writeFile(
+          `${node}.cjs`,
+          `process.exit(require('node:child_process').spawnSync(process.execPath,['--require',${JSON.stringify(preload)},...process.argv.slice(2)],{stdio:'inherit'}).status??1)`,
+        );
+      }
+      if (kind === "incompatible-pi")
+        await writeFile(
+          resolve(prettier, "package.json"),
+          JSON.stringify({
+            name: "prettier",
+            version: "3.9.6",
+            main: "index.cjs",
+            engines: { node: "<22" },
+          }),
+        );
+      const configName =
+        kind === "strings"
+          ? ".prettierrc"
+          : `prettier.config.${kind === "old-node" || kind === "incompatible-pi" ? "mjs" : kind}`;
+      const config =
+        kind === "strings"
+          ? '{"plugins":["prettier-plugin-svelte","prettier-plugin-astro","project-owned-plugin"]}'
+          : kind === "cjs"
+            ? "module.exports={plugins:[require('prettier-plugin-svelte'),require('prettier-plugin-astro'),'project-owned-plugin']}"
+            : `import svelte from 'prettier-plugin-svelte';import astro from 'prettier-plugin-astro';const config${kind === "ts" ? ": {plugins: unknown[]}" : ""}={plugins:[svelte,astro,'project-owned-plugin']};export default config;`;
+      await writeFile(resolve(harness.cwd, configName), config);
+      await writeFile(
+        resolve(prettier, "index.cjs"),
+        `module.exports={getFileInfo:async()=>({ignored:require('node:fs').existsSync('.prettierignore')}),resolveConfig:async()=>${kind === "strings" ? "({plugins:['prettier-plugin-svelte','prettier-plugin-astro','project-owned-plugin']})" : `import(require('node:url').pathToFileURL(${JSON.stringify(resolve(harness.cwd, configName))}).href).then(m=>m.default)`},format:async(text,options)=>{if(options.plugins.length!==3||${kind === "strings" ? "!options.plugins[0].includes('/node_modules/prettier-plugin-svelte/')||!options.plugins[1].includes('/node_modules/prettier-plugin-astro/')" : "typeof options.plugins[0]!=='object'||typeof options.plugins[1]!=='object'"}||options.plugins[2]!=='project-owned-plugin')throw new Error('wrong plugins');return text+':selected-prettier'}}`,
+      );
+      const store = resolve(harness.agentDirectory, "managed-tools");
+      await mkdir(store);
+      await writeFile(
+        resolve(store, process.platform === "win32" ? "mise.exe" : "mise"),
+        "fixture",
+      );
+      vi.stubGlobal("fetch", async (url: string) => {
+        const name = decodeURIComponent(String(url).split("/").at(-1)!);
+        if (name === "node")
+          return new Response(
+            JSON.stringify({
+              versions: { [process.versions.node]: { name, version: process.versions.node } },
+            }),
+          );
+        if (!["prettier-plugin-svelte", "prettier-plugin-astro"].includes(name))
+          throw new Error(`Unexpected acquisition: ${name}`);
+        return new Response(
+          JSON.stringify({
+            versions: {
+              "4.1.1": { name, version: "4.1.1", peerDependencies: { prettier: "^3.0.0" } },
+            },
+          }),
+        );
+      });
+      for (const filename of ["Example.svelte", "Example.astro", "example.ts", "example.html"]) {
+        const path = resolve(harness.cwd, filename);
+        await writeFile(path, "original");
+        if (kind === "incompatible-pi") {
+          const result = await harness.runner.emitToolResult(
+            toolResultEvent("write", { input: { path }, details: undefined }),
+          );
+          expect(result?.content?.at(-1)).toMatchObject({
+            text: expect.stringContaining(
+              "cannot provide a compatible module.registerHooks helper",
+            ),
+          });
+          expect(await readFile(path, "utf8")).toBe("original");
+          expect(await new ToolInstaller(store).list()).toEqual([]);
+          return;
+        }
+        expect(
+          await harness.runner.emitToolResult(
+            toolResultEvent("write", { input: { path }, details: undefined }),
+          ),
+        ).toBeUndefined();
+        expect(await readFile(path, "utf8")).toBe("original:selected-prettier");
+      }
+      expect(await new ToolInstaller(store).installed("formatter-prettier")).toBeUndefined();
+      expect(existsSync(resolve(harness.cwd, "node_modules/prettier-plugin-svelte"))).toBe(false);
+      expect(existsSync(resolve(harness.cwd, "node_modules/prettier-plugin-astro"))).toBe(false);
+      expect(await readFile(resolve(harness.cwd, configName), "utf8")).toBe(config);
+      if (kind === "mjs") {
+        await writeFile(
+          resolve(harness.cwd, configName),
+          "import plugin from 'untrusted-plugin';export default {plugins:[plugin]}",
+        );
+        const path = resolve(harness.cwd, "example.ts");
+        await writeFile(path, "original");
+        const result = await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path }, details: undefined }),
+        );
+        expect(result?.content?.at(-1)).toMatchObject({
+          text: expect.stringContaining("untrusted-plugin"),
+        });
+        expect(await readFile(path, "utf8")).toBe("original");
+        await writeFile(resolve(harness.cwd, ".prettierignore"), "example.ts");
+        expect(
+          await harness.runner.emitToolResult(
+            toolResultEvent("write", { input: { path }, details: undefined }),
+          ),
+        ).toBeUndefined();
+        expect(await readFile(path, "utf8")).toBe("original");
+      }
+    },
+  );
+
+  test.each([
+    "ordinary",
+    "ordinary-object-off",
+    "ordinary-object-on",
+    "ordinary-parser-svelte",
+    "component-object-svelte",
+    "ignored",
+    "private",
+    "donor",
+    "installed-only",
+    "failed",
+    "runtime-change",
+  ])("Node 23 without native hooks preserves formatting ownership (%s)", async (mode) => {
+    vi.stubEnv("PATH", dirname(process.execPath));
+    const frameworkObject = mode === "ordinary-parser-svelte" || mode === "component-object-svelte";
+    const harness = await createFormatterHarness({
+      formatter: {
+        autoInstall: [
+          "private",
+          "failed",
+          "runtime-change",
+          "ordinary-object-on",
+          "ordinary-parser-svelte",
+          "component-object-svelte",
+        ].includes(mode),
+      },
+    });
+    const preload = resolve(harness.agentDirectory, "no-hooks.cjs");
+    await writeFile(
+      preload,
+      mode === "runtime-change"
+        ? "Object.defineProperty(process.versions,'node',{value:'23.5.0'});"
+        : "const m=require('node:module');m.registerHooks=undefined;m.syncBuiltinESMExports();Object.defineProperty(process.versions,'node',{value:'23.0.0'});",
+    );
+    const disabledNodes = new Set([process.execPath]);
+    const native = await vi.importActual<{ default: typeof crossSpawn }>("cross-spawn");
+    vi.mocked(crossSpawn).mockImplementation((command, args, options) =>
+      native.default(
+        command,
+        [...(disabledNodes.has(command) ? ["--require", preload] : []), ...(args ?? [])],
+        options ?? {},
+      ),
+    );
+    const prettier = resolve(harness.cwd, "node_modules/prettier");
+    await mkdir(resolve(prettier, "bin"), { recursive: true });
+    await writeFile(
+      resolve(prettier, "package.json"),
+      JSON.stringify({
+        name: "prettier",
+        version: "3.9.6",
+        main: "index.cjs",
+        engines: {
+          node:
+            mode === "private"
+              ? `>=14 <${Number(process.versions.node.split(".")[0]) + 1}`
+              : ">=14",
+        },
+      }),
+    );
+    await writeFile(
+      resolve(prettier, "bin/prettier.cjs"),
+      "require('node:fs').appendFileSync(process.argv.at(-1),':original-cli')",
+    );
+    await writeFile(
+      resolve(prettier, "index.cjs"),
+      `module.exports={getFileInfo:async()=>({ignored:${mode === "ignored"}}),resolveConfig:async()=>${mode === "ordinary" ? "({})" : "({plugins:[require('prettier-plugin-svelte')]})"},format:async(text,options)=>{if(options.plugins.length!==1)throw new Error('wrong plugin');return text+':selected-module'}}`,
+    );
+    await writeFile(resolve(harness.cwd, ".prettierrc"), "{}");
+    const ordinaryObject = mode.startsWith("ordinary-object-");
+    const ordinaryConfig = "module.exports={plugins:[require('prettier/plugins/typescript')]};";
+    const parserConfig = `module.exports={${mode === "ordinary-parser-svelte" ? "parser:'svelte'," : ""}plugins:[require('prettier-plugin-svelte')]};`;
+    if (frameworkObject) {
+      await rm(resolve(harness.cwd, ".prettierrc"));
+      for (const [name, version, peers] of [
+        ["svelte", "4.2.20", {}],
+        ["prettier-plugin-svelte", "4.1.1", { prettier: "^3.0.0", svelte: "^5.0.0" }],
+      ] as const) {
+        const directory = resolve(harness.cwd, "node_modules", name);
+        await mkdir(directory);
+        await writeFile(
+          resolve(directory, "package.json"),
+          JSON.stringify({ name, version, main: "index.cjs", peerDependencies: peers }),
+        );
+        await writeFile(resolve(directory, "index.cjs"), "module.exports={incompatible:true};");
+      }
+      await writeFile(resolve(harness.cwd, "prettier.config.cjs"), parserConfig);
+      await writeFile(
+        resolve(prettier, "index.cjs"),
+        `module.exports={getFileInfo:async()=>({ignored:false}),resolveConfig:async()=>require(${JSON.stringify(resolve(harness.cwd, "prettier.config.cjs"))}),format:async(text,options)=>{if(${mode === "ordinary-parser-svelte" ? "options.parser!=='svelte'||" : ""}options.plugins.length!==1||options.plugins[0].incompatible)throw new Error('wrong framework plugin');return text+':selected-module'}}`,
+      );
+    }
+    if (ordinaryObject) {
+      await rm(resolve(harness.cwd, ".prettierrc"));
+      await mkdir(resolve(prettier, "plugins"));
+      await writeFile(
+        resolve(prettier, "plugins/typescript.js"),
+        "module.exports={parsers:{typescript:{}}};",
+      );
+      await writeFile(resolve(harness.cwd, "prettier.config.cjs"), ordinaryConfig);
+      await writeFile(
+        resolve(prettier, "index.cjs"),
+        `module.exports={getFileInfo:async()=>({ignored:false}),resolveConfig:async()=>require(${JSON.stringify(resolve(harness.cwd, "prettier.config.cjs"))}),format:async()=>{throw new Error('Ordinary config must retain the selected CLI')}}`,
+      );
+    }
+    const store = resolve(harness.agentDirectory, "managed-tools");
+    const installer = new ToolInstaller(store);
+    if (
+      [
+        "private",
+        "donor",
+        "failed",
+        "runtime-change",
+        "ordinary-parser-svelte",
+        "component-object-svelte",
+      ].includes(mode)
+    ) {
+      await mkdir(store);
+      await writeFile(
+        resolve(store, process.platform === "win32" ? "mise.exe" : "mise"),
+        "fixture",
+      );
+    }
+    let base;
+    if (mode === "donor" || mode === "failed" || mode === "runtime-change") {
+      base = await installer.ensure(
+        {
+          id: "formatter-prettier",
+          requirements: { node: "core:node", formatter: "npm:prettier" },
+        },
+        { allowDownload: true },
+      );
+      if (mode === "failed")
+        disabledNodes.add(
+          resolve(
+            base.components.node!.directory,
+            process.platform === "win32" ? "node.exe" : "bin/node",
+          ),
+        );
+    }
+    if (mode === "donor") {
+      // Prepare a real owned plugin selection with the compatible donor before disabling downloads.
+      await writeFile(
+        resolve(harness.agentDirectory, "settings.json"),
+        '{"formatter":{"autoInstall":true}}',
+      );
+      await harness.runner.emit({ type: "session_start", reason: "reload" });
+    }
+    vi.stubGlobal("fetch", async (input: string) => {
+      const name = decodeURIComponent(input.split("/").at(-1)!);
+      if (name !== "node" && name !== "prettier-plugin-svelte")
+        throw new Error(`Unexpected package ${name}`);
+      return new Response(
+        JSON.stringify({
+          versions:
+            name === "node"
+              ? {
+                  "23.0.0": { name, version: "23.0.0" },
+                  [process.versions.node]: { name, version: process.versions.node },
+                }
+              : {
+                  "4.1.1": {
+                    name,
+                    version: "4.1.1",
+                    peerDependencies: { prettier: "^3.0.0", svelte: "^5.0.0" },
+                  },
+                },
+        }),
+      );
+    });
+    if (frameworkObject) {
+      await writeFile(resolve(store, "fixture.json"), '{"frameworkRange":"^4.0.0"}');
+      vi.stubGlobal("fetch", async (url: string) => {
+        const name = decodeURIComponent(url.split("/").at(-1)!);
+        if (name !== "node" && name !== "prettier-plugin-svelte")
+          throw new Error(`Unexpected package ${name}`);
+        const versions =
+          name === "node"
+            ? [{ name, version: process.versions.node }]
+            : [
+                {
+                  name,
+                  version: "3.5.2",
+                  peerDependencies: { prettier: "^3.0.0", svelte: "^4.0.0" },
+                },
+                {
+                  name,
+                  version: "4.1.1",
+                  peerDependencies: { prettier: "^3.0.0", svelte: "^5.0.0" },
+                },
+              ];
+        return new Response(
+          JSON.stringify({
+            versions: Object.fromEntries(versions.map((pkg) => [pkg.version, pkg])),
+          }),
+        );
+      });
+    }
+    if (ordinaryObject)
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => Promise.reject(new Error("Ordinary native config must not acquire a helper"))),
+      );
+    if (mode === "failed") await writeFile(resolve(store, "fixture.json"), '{"fail":true}');
+    const path = resolve(
+      harness.cwd,
+      mode === "ordinary-parser-svelte"
+        ? "example.html"
+        : mode === "component-object-svelte"
+          ? "Example.svelte"
+          : "example.ts",
+    );
+    await writeFile(path, "original");
+    const mutate = () =>
+      harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path }, details: undefined }),
+      );
+    const result = await mutate();
+    if (mode === "installed-only" || mode === "failed") {
+      expect(result?.content?.at(-1)).toMatchObject({
+        text: expect.stringContaining("formatter"),
+      });
+      expect(await readFile(path, "utf8")).toBe("original");
+    } else {
+      expect(result).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe(
+        mode === "ignored"
+          ? "original"
+          : mode === "ordinary" || ordinaryObject
+            ? "original:original-cli"
+            : "original:selected-module",
+      );
+    }
+    expect(await installer.installed("formatter-prettier")).toEqual(base);
+    if (frameworkObject) {
+      expect(
+        (await installer.list()).find((entry) => entry.id.startsWith("formatter-plugin-svelte-"))
+          ?.components.plugin?.version,
+      ).toBe("3.5.2");
+      expect(await readFile(resolve(harness.cwd, "prettier.config.cjs"), "utf8")).toBe(
+        parserConfig,
+      );
+      expect(
+        JSON.parse(
+          await readFile(
+            resolve(harness.cwd, "node_modules/prettier-plugin-svelte/package.json"),
+            "utf8",
+          ),
+        ).version,
+      ).toBe("4.1.1");
+    }
+    if (mode === "ordinary" || ordinaryObject || mode === "ignored" || mode === "installed-only")
+      expect(await installer.list()).toEqual([]);
+    if (ordinaryObject) {
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await readFile(resolve(harness.cwd, "prettier.config.cjs"), "utf8")).toBe(
+        ordinaryConfig,
+      );
+      expect(
+        vi
+          .mocked(crossSpawn)
+          .mock.calls.some(
+            ([command, args]) =>
+              command === process.execPath && args?.includes(resolve(prettier, "bin/prettier.cjs")),
+          ),
+      ).toBe(true);
+    }
+    if (mode === "private" || mode === "donor" || mode === "runtime-change") {
+      const before = await installer.list();
+      if (mode === "runtime-change")
+        await writeFile(
+          preload,
+          "const m=require('node:module');m.registerHooks=undefined;m.syncBuiltinESMExports();Object.defineProperty(process.versions,'node',{value:'23.0.0'});",
+        );
+      expect(before.some((entry) => entry.id.startsWith("formatter-prettier-helper-"))).toBe(
+        mode === "private",
+      );
+      await writeFile(
+        resolve(harness.agentDirectory, "settings.json"),
+        '{"formatter":{"autoInstall":false}}',
+      );
+      await harness.runner.emit({ type: "session_start", reason: "reload" });
+      vi.stubGlobal("fetch", () =>
+        Promise.reject(new Error("Installed-only must not access registry")),
+      );
+      await writeFile(path, "original");
+      expect(await mutate()).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe("original:selected-module");
+      expect(await installer.list()).toEqual(before);
+      if (mode === "runtime-change") {
+        await harness.runner.emit({ type: "session_start", reason: "reload" });
+        await writeFile(path, "original");
+        expect(await mutate()).toBeUndefined();
+        expect(await readFile(path, "utf8")).toBe("original:selected-module");
+        await writeFile(
+          resolve(prettier, "package.json"),
+          JSON.stringify({ name: "prettier", version: "4.0.0", main: "index.cjs" }),
+        );
+        await writeFile(path, "original");
+        expect((await mutate())?.content?.at(-1)).toMatchObject({
+          text: expect.stringContaining("No installed compatible prettier-plugin-svelte"),
+        });
+        expect(await readFile(path, "utf8")).toBe("original");
+        expect(await installer.list()).toEqual(before);
+        expect(await installer.installed("formatter-prettier")).toEqual(base);
+      }
+      if (mode === "private") {
+        const helper = before.find((entry) => entry.id.startsWith("formatter-prettier-helper-"))!;
+        const [major, minor, patch] = process.versions.node.split(".").map(Number);
+        const next = `${major}.${minor}.${patch! + 1}`;
+        vi.stubGlobal("fetch", async (url: string) => {
+          const name = decodeURIComponent(url.split("/").at(-1)!);
+          if (name !== "node" && name !== "prettier-plugin-svelte")
+            throw new Error(`Unexpected package ${name}`);
+          const versions =
+            name === "node"
+              ? [next, `${major! + 1}.0.0`].map((version) => ({ name, version }))
+              : [{ name, version: "4.1.1", peerDependencies: { prettier: "^3.0.0" } }];
+          return new Response(
+            JSON.stringify({
+              versions: Object.fromEntries(versions.map((pkg) => [pkg.version, pkg])),
+            }),
+          );
+        });
+        // An update uses the receipt's captured engines, not the active project's changed metadata.
+        await writeFile(
+          resolve(prettier, "package.json"),
+          JSON.stringify({ name: "prettier", version: "3.9.6", engines: { node: "<22" } }),
+        );
+        const command = harness.runner.getCommand("formatter")!;
+        await writeFile(resolve(store, "fixture.json"), '{"fail":true}');
+        await command.handler("update prettier", harness.runner.createCommandContext());
+        expect(await installer.list()).toEqual(before);
+        await writeFile(resolve(store, "fixture.json"), "{}");
+        await command.handler("update prettier", harness.runner.createCommandContext());
+        expect((await installer.installed(helper.id))?.components.node?.selector).toBe(
+          `core:node@${next}`,
+        );
+        expect(
+          harness.notifications.some(
+            (message) => message.includes("prettier/helper:") && message.includes(next),
+          ),
+        ).toBe(true);
+        expect(await installer.installed("formatter-prettier")).toBeUndefined();
+      }
+    }
+  });
+
+  test("cancelling framework config inspection stops its entire owned process tree", async () => {
+    const controller = new AbortController();
+    const harness = await createFormatterHarness(
+      { formatter: { autoInstall: false } },
+      controller.signal,
+    );
+    const directory = resolve(harness.cwd, "node_modules/prettier");
+    await mkdir(resolve(directory, "bin"), { recursive: true });
+    await writeFile(resolve(directory, "bin/prettier.cjs"), "");
+    await writeFile(
+      resolve(directory, "package.json"),
+      JSON.stringify({ name: "prettier", version: "3.9.6", main: "index.cjs" }),
+    );
+    const pidFile = resolve(harness.cwd, "inspection-child.pid");
+    await writeFile(
+      resolve(directory, "index.cjs"),
+      `module.exports={getFileInfo:async()=>({ignored:false}),resolveConfig:async()=>{const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(child.pid));await new Promise(()=>{})}}`,
+    );
+    await writeFile(resolve(harness.cwd, ".prettierrc"), "{}");
+    const path = resolve(harness.cwd, "Example.svelte");
+    await writeFile(path, "original");
+    const pending = harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path }, details: undefined }),
+    );
+    await expect.poll(() => existsSync(pidFile)).toBe(true);
+    const pid = Number(await readFile(pidFile, "utf8"));
+    try {
+      controller.abort();
+      await pending;
+      await expect
+        .poll(() => {
+          try {
+            process.kill(pid, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(false);
+      expect(await readFile(path, "utf8")).toBe("original");
+    } finally {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already stopped */
+      }
+    }
+  });
+
   test("the first managed mutation waits for acquisition, formats, and clears progress", async () => {
     vi.stubEnv("PATH", "");
     const harness = await createFormatterHarness({});
@@ -318,6 +1200,9 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
     ["ruff", ".py", "ruff.toml", ""],
     ["gofmt", ".go", "go.mod", "module example.com/fixture"],
     ["rustfmt", ".rs", "Cargo.toml", '[package]\nname="fixture"'],
+    ["shfmt", ".sh", ".editorconfig", "root = true"],
+    ["terraform", ".tf", ".terraform-version", "1.16.2"],
+    ["deno", ".yaml", "deno.json", '{"fmt":{}}'],
   ])(
     "first-use %s launches the proven managed entrypoint with native argv",
     async (id, extension, marker, content) => {
@@ -421,7 +1306,7 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
         "fixture",
       );
       await writeFile(resolve(harness.cwd, "biome.json"), "{}");
-      const script = "require('node:fs').appendFileSync(process.argv.at(-1), ':biome')";
+      const script = biomeScript();
       const bin = resolve(harness.cwd, "bin");
       await mkdir(bin);
       if (kind === "native") {
@@ -550,6 +1435,112 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
       ),
     ).toBeUndefined();
     expect(await readFile(path, "utf8")).toBe("original:package");
+  });
+
+  test.each(["installed-only", "private", "later-path"])(
+    "Deno missing npm payload never executes its repair wrapper (%s)",
+    async (mode) => {
+      vi.stubEnv("PATH", "");
+      const harness = await createFormatterHarness({
+        formatter: { autoInstall: mode === "private" },
+      });
+      await writeFile(resolve(harness.cwd, "deno.json"), '{"fmt":{}}');
+      const npm = resolve(harness.cwd, "node_modules/deno");
+      const bin = resolve(harness.cwd, "node_modules/.bin");
+      await mkdir(npm, { recursive: true });
+      await mkdir(bin, { recursive: true });
+      const manifest = '{"name":"deno","version":"2.9.6","bin":{"deno":"bin.cjs"}}';
+      await writeFile(resolve(npm, "package.json"), manifest);
+      // Shadow globally hoisted optional packages: this project's payload is incomplete.
+      const target = `${process.platform}-${process.arch}${process.platform === "linux" ? "-glibc" : ""}`;
+      const optional = resolve(harness.cwd, "node_modules/@deno", target);
+      await mkdir(optional, { recursive: true });
+      await writeFile(
+        resolve(optional, "package.json"),
+        JSON.stringify({ name: `@deno/${target}`, version: "2.9.6" }),
+      );
+      const sentinel = resolve(npm, "wrapper-ran");
+      await writeFile(
+        resolve(npm, "bin.cjs"),
+        `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(sentinel)},'repaired');`,
+      );
+      await chmod(resolve(npm, "bin.cjs"), 0o755);
+      if (process.platform === "win32")
+        await writeFile(
+          resolve(bin, "deno.cmd"),
+          '@ECHO off\r\nnode "%~dp0\\..\\deno\\bin.cjs" %*\r\n',
+        );
+      else await symlink("../deno/bin.cjs", resolve(bin, "deno"));
+      await copyFile(
+        resolve(npm, "bin.cjs"),
+        resolve(bin, process.platform === "win32" ? "deno.cmd.cjs" : "deno.cjs"),
+      );
+      const store = resolve(harness.agentDirectory, "managed-tools");
+      if (mode === "private") {
+        await mkdir(store);
+        await writeFile(
+          resolve(store, process.platform === "win32" ? "mise.exe" : "mise"),
+          "fixture",
+        );
+      }
+      if (mode === "later-path") {
+        const path = resolve(harness.agentDirectory, "bin");
+        await mkdir(path);
+        const command = resolve(path, process.platform === "win32" ? "deno.exe" : "deno");
+        await copyFile(process.execPath, command);
+        await writeFile(
+          `${command}.cjs`,
+          "require('node:fs').appendFileSync(process.argv.at(-1),':later')",
+        );
+        vi.stubEnv("PATH", path);
+      }
+      const path = resolve(harness.cwd, "example.ts");
+      await writeFile(path, "original");
+      const result = await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path }, details: undefined }),
+      );
+      if (mode === "installed-only")
+        expect(result?.content?.at(-1)).toMatchObject({ text: expect.stringContaining("deno") });
+      else expect(result).toBeUndefined();
+      expect(await readFile(path, "utf8")).toBe(
+        mode === "installed-only"
+          ? "original"
+          : mode === "private"
+            ? "original:managed"
+            : "original:later",
+      );
+      expect(existsSync(sentinel)).toBe(false);
+      expect(await readFile(resolve(npm, "package.json"), "utf8")).toBe(manifest);
+    },
+  );
+
+  test("Deno configuration owns external runtimes above a nested session cwd", async () => {
+    vi.stubEnv("PATH", "");
+    const root = await makeTemporaryDirectory("pi-formatter-deno-root-");
+    const cwd = resolve(root, "src");
+    await mkdir(cwd);
+    await mkdir(resolve(root, "bin"));
+    await writeFile(resolve(root, "deno.json"), '{"fmt":{}}');
+    const command = resolve(root, "bin", process.platform === "win32" ? "deno.exe" : "deno");
+    await writeFile(command, "fixture");
+    await chmod(command, 0o755);
+    await writeFile(
+      `${command}.cjs`,
+      "require('node:fs').appendFileSync(process.argv.at(-1), ':deno-root')",
+    );
+    const harness = await createFormatterHarness(
+      { formatter: { autoInstall: false } },
+      undefined,
+      cwd,
+    );
+    const path = resolve(cwd, "example.ts");
+    await writeFile(path, "original");
+    expect(
+      await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path }, details: undefined }),
+      ),
+    ).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe("original:deno-root");
   });
 
   test("update advances only installed owned presets and reports old/new, no-change, and failures", async () => {
@@ -687,12 +1678,75 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
     [".py", "ruff.toml", "line-length=88", "ruff"],
     [".go", "go.mod", "module example.com/test", "gofmt"],
     [".rs", "Cargo.toml", '[package]\nname="test"', "rustfmt"],
-  ])(
+    ...[
+      ".html",
+      ".css",
+      ".scss",
+      ".less",
+      ".json",
+      ".jsonc",
+      ".json5",
+      ".yaml",
+      ".yml",
+      ".md",
+      ".markdown",
+      ".mdx",
+      ".graphql",
+      ".gql",
+      ".vue",
+      ".svelte",
+      ".astro",
+    ].map((extension) => [extension, ".prettierrc", "{}", "prettier"] as const),
+    ...[".json", ".jsonc", ".css", ".graphql", ".gql"].map(
+      (extension) => [extension, "biome.json", "{}", "biome"] as const,
+    ),
+    ...[
+      ".ts",
+      ".tsx",
+      ".md",
+      ".json",
+      ".jsonc",
+      ".html",
+      ".css",
+      ".scss",
+      ".less",
+      ".yaml",
+      ".yml",
+    ].map((extension) => [extension, "deno.jsonc", '{"fmt":{},}', "deno"] as const),
+    ...[".vue", ".svelte", ".astro", ".json5", ".mdx", ".graphql"].map(
+      (extension) => [extension, "deno.json", '{"fmt":{}}', undefined] as const,
+    ),
+    ...[
+      ".html",
+      ".vue",
+      ".svelte",
+      ".astro",
+      ".scss",
+      ".less",
+      ".json5",
+      ".md",
+      ".mdx",
+      ".yaml",
+    ].map((extension) => [extension, "biome.json", "{}", undefined] as const),
+    [".css", "biome.json", '{"css":{"formatter":{"enabled":false}}}', undefined],
+  ] as const)(
     "recognizes only real declarations for %s with %s",
     async (extension, marker, content, expected) => {
       vi.stubEnv("PATH", "");
       const harness = await createFormatterHarness({ formatter: { autoInstall: false } });
       await writeFile(resolve(harness.cwd, marker), content);
+      if (content === '{"css":{"formatter":{"enabled":false}}}') {
+        const biome = resolve(harness.cwd, "node_modules/@biomejs/biome/bin/biome");
+        await mkdir(dirname(biome), { recursive: true });
+        await writeFile(biome, biomeScript(false));
+        const node = resolve(
+          harness.cwd,
+          "bin",
+          process.platform === "win32" ? "node.exe" : "node",
+        );
+        await mkdir(dirname(node), { recursive: true });
+        await copyFile(process.execPath, node);
+      }
       const path = resolve(harness.cwd, `example${extension}`);
       await writeFile(path, "original");
       const result = await harness.runner.emitToolResult(

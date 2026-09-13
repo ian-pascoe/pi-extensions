@@ -49,6 +49,10 @@ function run() {
       fs.mkdirSync(join(path, "bin"), { recursive: true });
       if (tool.startsWith("core:node@"))
         binary(join(path, process.platform === "win32" ? "node.exe" : "bin/node"));
+      else if (tool.startsWith("core:deno@"))
+        binary(join(path, process.platform === "win32" ? "bin/deno.exe" : "bin/deno"));
+      else if (tool.startsWith("core:dotnet["))
+        binary(join(path, process.platform === "win32" ? "dotnet.exe" : "dotnet"));
       else if (tool.startsWith("core:python@")) {
         binary(join(path, process.platform === "win32" ? "python.exe" : "bin/python"));
         if (process.platform !== "win32") binary(join(path, "bin/python3"));

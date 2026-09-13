@@ -1,6 +1,16 @@
-import { copyFile, mkdir, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, delimiter, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import * as childProcess from "node:child_process";
 import type { Component, TUI } from "@earendil-works/pi-tui";
@@ -357,6 +367,306 @@ describe("managed DAP through the offline SDK", () => {
       state: "stopped",
     });
   }, 30_000);
+
+  test("Deno project selection wins over package.json without permissions or dependency writes, while a named Node preset stays explicit", async () => {
+    const harness = await createExtensionHarness(false, {});
+    const cwd = harness.runner.createContext().cwd;
+    await writeFile(resolve(cwd, "deno.jsonc"), '{ // runtime owner\n "nodeModulesDir": "auto"\n}');
+    await writeFile(resolve(cwd, "package.json"), "{}");
+    await acquisition(harness);
+    await startExtension(harness, "startup");
+    const before = sdkPrefix(harness);
+    await dap(harness, {
+      operation: "set_breakpoints",
+      file_path: "app.ts",
+      breakpoints: [{ line: 2 }],
+    });
+    expect((await dap(harness, { operation: "launch", program: "app.ts" })).details).toMatchObject({
+      state: "stopped",
+      adapter_id: "deno",
+      profile_id: "deno",
+    });
+    const evaluated = await dap(harness, {
+      operation: "evaluate",
+      expression: "__fixture_launch_arguments",
+    });
+    const text = JSON.stringify(evaluated.content);
+    expect(text).toContain("--cached-only");
+    expect(text).toContain("--frozen-lockfile");
+    expect(text).toContain("--node-modules-dir=manual");
+    expect(text).toContain("--no-prompt");
+    expect(text).not.toContain("--allow-");
+    expect(sdkPrefix(harness)).toBe(before);
+    expect(await readdir(cwd)).not.toContain("node_modules");
+    expect(await readdir(cwd)).not.toContain("deno.lock");
+    await dap(harness, { operation: "stop" });
+    expect(
+      (await dap(harness, { operation: "launch", profile: "javascript", program: "app.js" }))
+        .details,
+    ).toMatchObject({ adapter_id: "javascript" });
+  }, 30_000);
+
+  test.each([
+    ["project", "native-shim"],
+    ["project", "npm-shim"],
+    ["PATH", "native-shim"],
+    ["PATH", "npm-shim"],
+  ] as const)(
+    "Windows %s Deno %s selects its native payload before later PATH tools",
+    async (location, shim) => {
+      const harness = await createExtensionHarness(false, { dap: { autoInstall: false } });
+      const cwd = harness.runner.createContext().cwd;
+      const bin =
+        location === "project"
+          ? resolve(cwd, "node_modules/.bin")
+          : resolve(cwd, "external bin 空間");
+      const packageRoot =
+        location === "project" ? resolve(bin, "../deno") : resolve(bin, "node_modules/deno");
+      const relativePackage = location === "project" ? "..\\deno" : "node_modules\\deno";
+      const payload =
+        shim === "native-shim"
+          ? resolve(packageRoot, "deno.exe")
+          : resolve(
+              packageRoot,
+              location === "project" ? ".." : "node_modules",
+              `@deno/win32-${process.arch}/deno.exe`,
+            );
+      const later = resolve(cwd, "later bin");
+      await mkdir(bin, { recursive: true });
+      await mkdir(dirname(payload), { recursive: true });
+      await mkdir(packageRoot, { recursive: true });
+      await mkdir(later);
+      const node = resolve(bin, "node.exe");
+      await writeFile(node, "adapter host fixture", { mode: 0o700 });
+      const native = await vi.importActual<typeof childProcess>("node:child_process");
+      vi.mocked(childProcess.spawn).mockImplementation((command, args, options) =>
+        native.spawn(command === node ? process.execPath : command, args ?? [], options ?? {}),
+      );
+      await writeFile(resolve(later, "deno.exe"), "later runtime fixture", { mode: 0o700 });
+      await writeFile(payload, "selected runtime fixture", { mode: 0o700 });
+      await writeFile(
+        resolve(packageRoot, "bin.cjs"),
+        "throw new Error('Do not execute npm installation wrappers');",
+      );
+      await writeFile(
+        resolve(packageRoot, "package.json"),
+        '{"name":"deno","version":"2.9.6","bin":"bin.cjs"}',
+      );
+      if (shim === "npm-shim")
+        await writeFile(
+          resolve(dirname(payload), "package.json"),
+          JSON.stringify({ name: `@deno/win32-${process.arch}`, version: "2.9.6" }),
+        );
+      await writeFile(
+        resolve(bin, "deno.cmd"),
+        shim === "native-shim"
+          ? `@"%~dp0${relativePackage}\\deno.exe" %*\r\n`
+          : `@ECHO off\r\n"%_prog%"  "%dp0%\\${relativePackage}\\bin.cjs" %*\r\n`,
+      );
+      await copyFile(
+        resolve(import.meta.dirname, "fixtures/fake-managed-js-adapter.mjs"),
+        resolve(bin, "dapDebugServer.js"),
+      );
+      await writeFile(resolve(bin, "package.json"), '{"type":"module"}');
+      vi.stubEnv(
+        "PI_DAP_FIXTURE",
+        resolve(import.meta.dirname, "fixtures/fake-dap-session-adapter.mjs"),
+      );
+      vi.stubEnv("PATH", `${bin}${delimiter}${later}`);
+      // Exercise Windows discovery on every offline host; the adapter remains a real
+      // protocol fixture, not evidence that js-debug can execute a Windows .cmd file.
+      vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }));
+      await startExtension(harness, "startup");
+      const before = sdkPrefix(harness);
+      await dap(harness, {
+        operation: "set_breakpoints",
+        file_path: "app.ts",
+        breakpoints: [{ line: 2 }],
+      });
+      await dap(harness, { operation: "launch", profile: "deno", program: "app.ts" });
+      const result = await dap(harness, {
+        operation: "evaluate",
+        expression: "__fixture_launch_arguments",
+      });
+      expect(result.content[0]).toMatchObject({
+        text: expect.stringContaining(
+          JSON.stringify(payload).slice(1, -1).replaceAll("\\", "\\\\"),
+        ),
+      });
+      expect(helperCalls()).toEqual([]);
+      expect(sdkPrefix(harness)).toBe(before);
+      expect(await managed(harness).list()).toEqual([]);
+      await dap(harness, { operation: "stop" });
+    },
+    30_000,
+  );
+
+  test.each(["optional-payload", "later-PATH", "private-fallback", "installed-only"] as const)(
+    "Deno npm missing local payload uses %s without repairing the project",
+    async (mode) => {
+      const harness = await createExtensionHarness(false, {
+        dap: { autoInstall: mode === "private-fallback" },
+      });
+      const cwd = harness.runner.createContext().cwd;
+      const windows = process.platform === "win32";
+      const bin = resolve(cwd, "node_modules/.bin");
+      const packageRoot = resolve(bin, "../deno");
+      const later = resolve(cwd, "later bin");
+      await mkdir(packageRoot, { recursive: true });
+      await mkdir(bin);
+      await mkdir(later);
+      const node = resolve(bin, windows ? "node.exe" : "node");
+      await writeFile(node, "external adapter host", { mode: 0o700 });
+      const spawn = vi.mocked(childProcess.spawn).getMockImplementation()!;
+      vi.mocked(childProcess.spawn).mockImplementation((command, args, options) =>
+        spawn(command === node ? process.execPath : command, args ?? [], options ?? {}),
+      );
+      const wrapper = windows
+        ? '@ECHO off\r\n"%_prog%" "%dp0%\\..\\deno\\bin.cjs" %*\r\n'
+        : '#!/bin/sh\nexec node "$basedir/../deno/bin.cjs" "$@"\n';
+      const wrapperPath = resolve(bin, windows ? "deno.cmd" : "deno");
+      await writeFile(wrapperPath, wrapper, { mode: 0o700 });
+      const sentinel =
+        "require('node:fs').writeFileSync(__dirname + '/REPAIRED', 'unexpected npm repair');\n";
+      await writeFile(resolve(packageRoot, "bin.cjs"), sentinel, { mode: 0o700 });
+      await writeFile(
+        resolve(packageRoot, "package.json"),
+        '{"name":"deno","version":"2.9.6","bin":"bin.cjs"}',
+      );
+      // Shadow any optional package exposed by the test runner's NODE_PATH.
+      const target = `${process.platform}-${process.arch}${process.platform === "linux" ? "-glibc" : ""}`;
+      const dependency = resolve(cwd, "node_modules/@deno", target);
+      await mkdir(dependency, { recursive: true });
+      await writeFile(
+        resolve(dependency, "package.json"),
+        JSON.stringify({ name: `@deno/${target}`, version: "2.9.6" }),
+      );
+      let expected: string | undefined;
+      if (mode === "optional-payload")
+        expected = resolve(dependency, windows ? "deno.exe" : "deno");
+      else if (mode === "later-PATH") expected = resolve(later, windows ? "deno.exe" : "deno");
+      if (expected) await writeFile(expected, "selected native runtime", { mode: 0o700 });
+      await copyFile(
+        resolve(import.meta.dirname, "fixtures/fake-managed-js-adapter.mjs"),
+        resolve(later, "dapDebugServer.js"),
+      );
+      await writeFile(resolve(later, "package.json"), '{"type":"module"}');
+      vi.stubEnv(
+        "PI_DAP_FIXTURE",
+        resolve(import.meta.dirname, "fixtures/fake-dap-session-adapter.mjs"),
+      );
+      vi.stubEnv("PATH", later);
+      if (mode === "private-fallback") await acquisition(harness);
+      await startExtension(harness, "startup");
+      const before = sdkPrefix(harness);
+      await dap(harness, {
+        operation: "set_breakpoints",
+        file_path: "app.ts",
+        breakpoints: [{ line: 2 }],
+      });
+      if (mode === "installed-only") {
+        await expect(
+          dap(harness, { operation: "launch", profile: "deno", program: "app.ts" }),
+        ).rejects.toThrow(/not installed|auto.install|download/i);
+      } else {
+        await dap(harness, { operation: "launch", profile: "deno", program: "app.ts" });
+        if (mode === "private-fallback") {
+          const installed = await managed(harness).installed("dap-deno");
+          expect(installed).toBeDefined();
+          expected = resolve(
+            installed!.components.deno!.directory,
+            windows ? "bin/deno.exe" : "bin/deno",
+          );
+          expect(helperCalls().length).toBeGreaterThan(0);
+        }
+        const result = await dap(harness, {
+          operation: "evaluate",
+          expression: "__fixture_launch_arguments",
+        });
+        expect(result.content[0]).toMatchObject({
+          text: expect.stringContaining(
+            JSON.stringify(expected).slice(1, -1).replaceAll("\\", "\\\\"),
+          ),
+        });
+        await dap(harness, { operation: "stop" });
+      }
+      if (mode !== "private-fallback") {
+        expect(helperCalls()).toEqual([]);
+        expect(await managed(harness).list()).toEqual([]);
+      }
+      expect((await readdir(packageRoot)).sort()).toEqual(["bin.cjs", "package.json"]);
+      expect(await readFile(wrapperPath, "utf8")).toBe(wrapper);
+      expect(await readFile(resolve(packageRoot, "bin.cjs"), "utf8")).toBe(sentinel);
+      expect(sdkPrefix(harness)).toBe(before);
+    },
+    30_000,
+  );
+
+  test("dotnet updates discover installed compatible runtime selections without activating unused adapters", async () => {
+    const harness = await createExtensionHarness(false, {});
+    await acquisition(harness);
+    const installer = managed(harness);
+    await installer.ensure(
+      {
+        id: "dap-dotnet-runtime-8-0-20-disable",
+        requirements: { runtime: "core:dotnet[runtime=dotnet]@8.0.20" },
+      },
+      { allowDownload: true },
+    );
+    await startExtension(harness, "startup");
+    const before = sdkPrefix(harness);
+    await update(harness, "update dotnet");
+    expect(harness.notifications.join("\n")).toContain("8.0.20");
+    expect(harness.notifications.join("\n")).toContain("no change");
+    expect(await installer.installed("dap-dotnet")).toBeUndefined();
+    expect(sdkPrefix(harness)).toBe(before);
+  }, 30_000);
+
+  test("compatible .NET runtime updates select official runtime patches and retain the working version on metadata failure", async () => {
+    const harness = await createExtensionHarness(false, {});
+    await acquisition(harness);
+    const installer = managed(harness);
+    const id = "dap-dotnet-runtime-8-0-0-minor";
+    await installer.ensure(
+      { id, requirements: { runtime: "core:dotnet[runtime=dotnet]@8.0.20" } },
+      { allowDownload: true },
+    );
+    await startExtension(harness, "startup");
+    const prefix = sdkPrefix(harness);
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          releases: [
+            { runtime: { version: "8.0.31" } },
+            { runtime: { version: "8.0.20" } },
+            { runtime: { version: "9.0.1" } },
+          ],
+        }),
+      ),
+    );
+    await update(harness, "update dotnet");
+    expect((await installer.installed(id))?.components.runtime?.version).toBe("8.0.31");
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
+      "https://builds.dotnet.microsoft.com/dotnet/release-metadata/8.0/releases.json",
+    );
+    await update(harness, "update dotnet");
+    expect((await installer.installed(id))?.components.runtime?.version).toBe("8.0.31");
+    expect(harness.notifications.join("\n")).toContain("update failed");
+    expect(sdkPrefix(harness)).toBe(prefix);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // These two metadata boundary calls are intentional; the remaining harness stays offline.
+    vi.mocked(fetch).mockClear();
+  }, 30_000);
+
+  test("ambiguous .NET metadata requires explicit configuration before runtime or adapter acquisition", async () => {
+    const harness = await createExtensionHarness(false, {});
+    await startExtension(harness, "startup");
+    await expect(
+      dap(harness, { operation: "launch", profile: "dotnet", program: "app.dll" }),
+    ).rejects.toThrow(/runtime requirements.*explicit|unavailable.*explicit/i);
+    expect(helperCalls()).toEqual([]);
+    expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+  });
 
   test("Python acquires a private adapter without changing the project's Debuggee interpreter", async () => {
     const harness = await createExtensionHarness(false, {});

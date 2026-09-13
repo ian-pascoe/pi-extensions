@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import spawn from "cross-spawn";
+import { terminateLspProcessTree } from "./lsp-executables.js";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -74,6 +75,24 @@ const DynamicDiagnosticRegistrationSchema = Type.Object(
   },
   { additionalProperties: true },
 );
+const EslintFailureSchema = Type.Union([
+  Type.Object({ source: Type.Object({ uri: Type.String() }) }),
+  Type.Object({ document: Type.Object({ uri: Type.String() }) }),
+  Type.Object({ textDocument: Type.Object({ uri: Type.String() }) }),
+]);
+const BiomeProjectSchema = Type.Object({ projectKey: Type.Integer({ minimum: 1 }) });
+const BiomeFileFeaturesSchema = Type.Object({
+  featuresSupported: Type.Object({
+    lint: Type.Union([
+      Type.Literal("supported"),
+      Type.Literal("ignored"),
+      Type.Literal("protected"),
+      Type.Literal("featureNotEnabled"),
+      Type.Literal("fileNotSupported"),
+      Type.Literal("notRequested"),
+    ]),
+  }),
+});
 const PrepareRenameProviderSchema = Type.Object(
   { prepareProvider: Type.Literal(true) },
   { additionalProperties: true },
@@ -98,6 +117,14 @@ export interface LspServerClientOptions {
   readonly initializationOptions: unknown;
   /** Opaque value served through workspace configuration. */
   readonly settings: unknown;
+  /** Verified preset push support; LSP has no capability advertisement for push diagnostics. */
+  readonly diagnosticMode?: "push" | undefined;
+  /** Preset-specific protocol behavior, never inferred from a user-supplied server ID. */
+  readonly protocol?: "biome" | "eslint" | "oxlint" | undefined;
+  /** A missing optional helper must not produce an apparently clean diagnostic result. */
+  readonly unavailableDiagnostics?: string | undefined;
+  /** Some servers advertise formatting even when their external formatter is missing. */
+  readonly unavailableFormatting?: string | undefined;
   /** Per-operation time budgets. */
   readonly timeouts: LspServerClientTimeouts;
   /** Mode-safe session file that retains the latest 1 MB of server stderr. */
@@ -265,7 +292,12 @@ export class LspServerClient {
   private readonly pullDiagnostics = new Map<string, PullDiagnosticsState>();
   private readonly dynamicRegistrations = new Map<string, Registration>();
   private readonly diagnosticWaiters = new Map<string, Set<() => void>>();
+  private readonly diagnosticFailures = new Map<string, string>();
   private diagnosticsRevision = 0;
+  private resolveBiomeInitialized: (() => void) | undefined;
+  private readonly biomeInitialized = new Promise<void>((done) => {
+    this.resolveBiomeInitialized = done;
+  });
   private stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   private stderrWrite = Promise.resolve();
   private closing = false;
@@ -294,6 +326,8 @@ export class LspServerClient {
       cwd: options.rootPath,
       env: options.environment,
       shell: false,
+      detached: process.platform !== "win32",
+      windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
     if (!isProcessWithStdio(childProcess)) {
@@ -510,7 +544,11 @@ export class LspServerClient {
           capabilities.codeActionProvider !== undefined && capabilities.codeActionProvider !== false
         );
       case DocumentDiagnosticRequest.method:
-        return this.documentPullRegistration() !== undefined;
+        return (
+          this.options.diagnosticMode === "push" ||
+          this.options.unavailableDiagnostics !== undefined ||
+          this.documentPullRegistration() !== undefined
+        );
       case WorkspaceDiagnosticRequest.method:
         return this.workspacePullRegistration() !== undefined;
       default:
@@ -525,6 +563,21 @@ export class LspServerClient {
     parameters: unknown,
     signal?: AbortSignal,
   ): Promise<TResult> {
+    if (
+      this.options.unavailableFormatting &&
+      [
+        "textDocument/formatting",
+        "textDocument/rangeFormatting",
+        "textDocument/onTypeFormatting",
+      ].includes(method)
+    ) {
+      throw new LspServerClientError(
+        "protocol",
+        this.serverId,
+        this.stderrPath,
+        this.options.unavailableFormatting,
+      );
+    }
     return this.sendRequestWithBudget<TResult>(
       method,
       parameters,
@@ -532,6 +585,37 @@ export class LspServerClient {
       method,
       signal,
     );
+  }
+
+  /** Ask the selected native companion for effective per-file eligibility, not a config approximation. */
+  async isFileEnabled(filePath: string, signal?: AbortSignal): Promise<boolean> {
+    if (this.options.protocol !== "biome") return true;
+    // Reuse the project already loaded by native LSP initialization. Native restart
+    // or Pi /reload refreshes its configuration, without a second daemon or parser.
+    const project = Value.Parse(
+      BiomeProjectSchema,
+      await this.request(
+        "biome/open_project",
+        {
+          path: this.rootPath,
+          openUninitialized: true,
+        },
+        signal,
+      ),
+    );
+    const result = Value.Parse(
+      BiomeFileFeaturesSchema,
+      await this.request(
+        "biome/file_features",
+        {
+          projectKey: project.projectKey,
+          path: resolve(filePath),
+          features: ["lint"],
+        },
+        signal,
+      ),
+    );
+    return result.featuresSupported.lint === "supported";
   }
 
   /** Open or update a valid UTF-8 file and maintain the 100-document LRU. */
@@ -653,6 +737,14 @@ export class LspServerClient {
     signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult> {
     const uri = pathToFileURL(resolve(filePath)).href;
+    this.assertDiagnosticsAvailable(uri);
+    if (!(await this.isFileEnabled(filePath, signal)))
+      throw new LspServerClientError(
+        "protocol",
+        this.serverId,
+        this.stderrPath,
+        "lint is disabled or ignored by the native project configuration",
+      );
     const previousRevision = this.pushDiagnostics.get(uri)?.revision ?? 0;
     const document = await this.synchronizeDocument(filePath, languageId);
     const candidates: Array<Promise<LspDocumentDiagnosticResult>> = [
@@ -664,12 +756,14 @@ export class LspServerClient {
     }
 
     try {
-      return await this.raceBudget(
+      const result = await this.raceBudget(
         Promise.any(candidates),
         this.options.timeouts.diagnosticsMs,
         "diagnostics",
         signal,
       );
+      this.assertDiagnosticsAvailable(uri);
+      return result;
     } catch (cause) {
       if (cause instanceof LspServerClientError) {
         if (cause.kind === "cancelled") throw cause;
@@ -697,6 +791,8 @@ export class LspServerClient {
 
   /** Pull workspace diagnostics when supported, otherwise return cached push diagnostics only. */
   async workspaceDiagnostics(signal?: AbortSignal): Promise<LspWorkspaceDiagnosticResult> {
+    this.assertDiagnosticsAvailable("");
+    for (const uri of this.diagnosticFailures.keys()) this.assertDiagnosticsAvailable(uri);
     const registration = this.workspacePullRegistration();
     if (registration === undefined) {
       return {
@@ -856,8 +952,47 @@ export class LspServerClient {
     this.connection.onRequest(ApplyWorkspaceEditRequest.type, async (parameters) =>
       this.rejectServerWorkspaceEdit(parameters),
     );
+    if (this.options.protocol === "eslint") {
+      for (const [method, message] of [
+        [
+          "eslint/noLibrary",
+          "ESLint project library is unavailable; prepare project dependencies and restart the server.",
+        ],
+        [
+          "eslint/noConfig",
+          "ESLint project configuration is unavailable; configure the project and restart the server.",
+        ],
+        [
+          "eslint/probeFailed",
+          "ESLint cannot validate this document with the project configuration.",
+        ],
+      ]) {
+        // oxlint-disable-next-line anti-slop/no-unknown-parameters -- This callback is the JSON-RPC trust boundary; validate the official request schema before reading its URI.
+        this.connection.onRequest(method!, (parameters: unknown) => {
+          if (!Value.Check(EslintFailureSchema, parameters))
+            throw new Error("Invalid ESLint failure notification");
+          const document =
+            "source" in parameters
+              ? parameters.source
+              : "document" in parameters
+                ? parameters.document
+                : parameters.textDocument;
+          this.diagnosticFailures.set(document.uri, message!);
+          return {};
+        });
+      }
+      // A language server cannot open external applications on the user's behalf.
+      this.connection.onRequest("eslint/openDoc", () => ({}));
+    }
     this.connection.onRequest(ShowMessageRequest.type, () => null);
-    this.connection.onNotification(LogMessageNotification.type, () => undefined);
+    this.connection.onNotification(LogMessageNotification.type, (parameters) => {
+      if (
+        this.options.protocol === "biome" &&
+        /^Server initialized with PID: \d+$/.test(parameters.message)
+      ) {
+        this.resolveBiomeInitialized?.();
+      }
+    });
     this.connection.onNotification(ShowMessageNotification.type, () => undefined);
   }
 
@@ -946,9 +1081,19 @@ export class LspServerClient {
     this.positionEncodingValue = normalizeLspPositionEncoding(result.capabilities.positionEncoding);
     this.textDocumentSyncKind = syncKindFromCapabilities(result.capabilities);
     await this.connection.sendNotification(InitializedNotification.type, {});
-    await this.connection.sendNotification(DidChangeConfigurationNotification.type, {
-      settings: this.options.settings,
-    });
+    if (this.options.protocol === "biome") {
+      // Biome initially disables diagnostics while loading workspace configuration.
+      // Its native ready notification prevents that interim empty push looking clean.
+      await this.biomeInitialized;
+      return;
+    }
+    // Oxlint starts its worker within initialize when given native workspace options;
+    // immediately resending configuration would restart it asynchronously.
+    if (this.options.protocol !== "oxlint") {
+      await this.connection.sendNotification(DidChangeConfigurationNotification.type, {
+        settings: this.options.settings,
+      });
+    }
   }
 
   private async sendRequestWithBudget<TResult>(
@@ -990,6 +1135,12 @@ export class LspServerClient {
     }
   }
 
+  private assertDiagnosticsAvailable(uri: string): void {
+    const failure = this.options.unavailableDiagnostics ?? this.diagnosticFailures.get(uri);
+    if (failure)
+      throw new LspServerClientError("protocol", this.serverId, this.stderrPath, failure);
+  }
+
   private async waitForPushDiagnostics(
     uri: string,
     version: number,
@@ -1001,8 +1152,8 @@ export class LspServerClient {
       const current = this.pushDiagnostics.get(uri);
       if (
         current !== undefined &&
-        current.revision > previousRevision &&
-        (current.version === undefined || current.version === version)
+        (current.version === version ||
+          (current.version === undefined && current.revision > previousRevision))
       ) {
         return { status: "fresh", source: "push", diagnostics: current.diagnostics };
       }
@@ -1229,8 +1380,8 @@ export class LspServerClient {
 
   private async forceStop(): Promise<void> {
     this.closed = true;
+    await terminateLspProcessTree(this.childProcess);
     if (this.childProcess.exitCode === null && this.childProcess.signalCode === null) {
-      this.childProcess.kill();
       await new Promise<void>((resolveExit) => {
         const timeout = setTimeout(
           () => {

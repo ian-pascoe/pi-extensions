@@ -1,6 +1,7 @@
 import { BorderedLoader, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { ManagedInstallation, ToolInstaller } from "@ian-pascoe/pi-tool-installer";
 import { DAP_MANAGED_REQUESTS } from "./dap-managed-tools.js";
+import { updateDotnetRuntimeRequest } from "./dap-dotnet-runtime.js";
 import { sanitizeDapObserverText } from "./dap-tool-rendering.js";
 
 function versions(installation: ManagedInstallation): string {
@@ -33,7 +34,9 @@ export class DapUpdateCommand {
       extra.length > 0 ||
       (id !== undefined && !DAP_MANAGED_REQUESTS.has(id))
     ) {
-      notify("Usage: /dap update [javascript|python] or /dap update cancel");
+      notify(
+        `Usage: /dap update [${[...DAP_MANAGED_REQUESTS.keys()].join("|")}] or /dap update cancel`,
+      );
       return;
     }
     if (this.pending !== undefined) {
@@ -44,7 +47,26 @@ export class DapUpdateCommand {
     this.controller = controller;
     const run = async () => {
       let found = false;
-      for (const [presetId, request] of DAP_MANAGED_REQUESTS) {
+      const requests = [...DAP_MANAGED_REQUESTS];
+      if (id === undefined || id === "dotnet") {
+        for (const installation of await this.installer.list()) {
+          if (!/^dap-dotnet-runtime-\d+-\d+-\d+-(minor|latestpatch|disable)$/.test(installation.id))
+            continue;
+          requests.push([
+            "dotnet",
+            {
+              id: installation.id,
+              requirements: Object.fromEntries(
+                Object.entries(installation.components).map(([key, component]) => [
+                  key,
+                  component.selector,
+                ]),
+              ),
+            },
+          ]);
+        }
+      }
+      for (const [presetId, request] of requests) {
         if (id !== undefined && id !== presetId) continue;
         if (controller.signal.aborted) break;
         let previous: ManagedInstallation | undefined;
@@ -52,7 +74,9 @@ export class DapUpdateCommand {
           previous = await this.installer.installed(request.id);
           if (!previous) continue;
           found = true;
-          const result = await this.installer.update(request, {
+          const selectedRequest =
+            (await updateDotnetRuntimeRequest(request.id, controller.signal)) ?? request;
+          const result = await this.installer.update(selectedRequest, {
             signal: controller.signal,
             onProgress: (message) => {
               if (context.hasUI)

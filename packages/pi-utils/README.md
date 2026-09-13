@@ -2,6 +2,16 @@
 
 Shared runtime utilities for packages in [`ian-pascoe/pi-extensions`](https://github.com/ian-pascoe/pi-extensions).
 
+## External Deno executables
+
+`resolveDenoExecutable(candidate)` reads known npm/pnpm Deno entrypoints, including
+npm aliases identified by their published package name, without executing repair wrappers. It returns the existing package-local native
+payload, or the matching installed optional `@deno` payload. Missing candidates or
+incomplete recognized installations return `undefined`; unrelated opaque commands
+are unchanged. Callers retain ordered discovery and private-acquisition policy,
+and must continue to later candidates when an earlier installation is incomplete.
+No files are installed, copied, or chmodded. Explicit Definitions need not use it.
+
 ## Nerd Font icons
 
 `shouldUseNerdFontIcons()` enables Nerd Font icons for Kitty, Ghostty, WezTerm, and Herdr panes. Unknown terminals and ambiguous tmux or screen paths use portable text instead.

@@ -263,6 +263,189 @@ test("changed selectors replace the selected component and native version prefix
   await expect(installer.installed(request.id)).resolves.toEqual(current);
 });
 
+test("npm version discovery preserves peer constraints without installing or creating state", async () => {
+  const { directory } = await fixture({});
+  const installer = new ToolInstaller(join(directory, "unused-store"));
+  const fetch = vi.fn().mockResolvedValueOnce(
+    Response.json({
+      "dist-tags": { latest: "3.5.2" },
+      versions: {
+        "3.5.2": {
+          name: "prettier-plugin-svelte",
+          version: "3.5.2",
+          peerDependencies: { prettier: "^3.0.0", svelte: "^4.0.0 || ^5.0.0" },
+          engines: { node: ">=16" },
+        },
+        "4.1.1": {
+          name: "prettier-plugin-svelte",
+          version: "4.1.1",
+          peerDependencies: { prettier: "^3.0.0", svelte: "^5.0.0" },
+          engines: { node: ">=20" },
+        },
+      },
+    }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  expect(await installer.npmVersions("prettier-plugin-svelte", {})).toEqual([
+    {
+      name: "prettier-plugin-svelte",
+      version: "3.5.2",
+      latest: true,
+      peerDependencies: { prettier: "^3.0.0", svelte: "^4.0.0 || ^5.0.0" },
+      engines: { node: ">=16" },
+    },
+    {
+      name: "prettier-plugin-svelte",
+      version: "4.1.1",
+      latest: false,
+      peerDependencies: { prettier: "^3.0.0", svelte: "^5.0.0" },
+      engines: { node: ">=20" },
+    },
+  ]);
+  expect(fetch.mock.calls[0]?.[0]).toBe("https://registry.npmjs.org/prettier-plugin-svelte");
+  await expect(access(installer.directory)).rejects.toMatchObject({ code: "ENOENT" });
+  fetch.mockResolvedValueOnce(
+    Response.json({ versions: { "1.0.0": { name: "other-package", version: "1.0.0" } } }),
+  );
+  await expect(installer.npmVersions("prettier-plugin-svelte", {})).rejects.toThrow(
+    "Invalid npm package metadata",
+  );
+  fetch.mockClear();
+  await expect(installer.npmVersions("https://other.test/pkg", {})).rejects.toThrow(
+    "Invalid npm package name",
+  );
+  await expect(
+    installer.npmVersions("prettier-plugin-svelte", {
+      signal: AbortSignal.abort(new Error("Cancelled metadata")),
+    }),
+  ).rejects.toThrow("Cancelled metadata");
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+test("list reads validated compatible selections without acquiring tools or creating a store", async () => {
+  const { installer, directory } = await fixture({ "core:node": "26.8.2" });
+  await expect(installer.list()).resolves.toEqual([]);
+  await expect(access(join(directory, "selections"))).rejects.toMatchObject({ code: "ENOENT" });
+  const last = await installer.ensure(
+    { id: "z-compatible", requirements: { runtime: "core:node" } },
+    { allowDownload: true },
+  );
+  const first = await installer.ensure(
+    { id: "a-compatible", requirements: { runtime: "core:node@22.1.0" } },
+    { allowDownload: true },
+  );
+  await writeFile(join(directory, "selections", "a-compatible.json.tmp"), "incomplete");
+  await rm(join(directory, process.platform === "win32" ? "mise.exe" : "mise"));
+  vi.mocked(spawn).mockClear();
+  await expect(new ToolInstaller(directory).list()).resolves.toEqual([first, last]);
+  await rm(first.components.runtime!.directory, { recursive: true });
+  await expect(installer.list()).resolves.toEqual([last]);
+  expect(spawn).not.toHaveBeenCalled();
+  await writeFile(join(directory, "selections", "corrupt.json"), "{}");
+  await expect(installer.list()).rejects.toThrow("Invalid installation record");
+});
+
+test("HTTP artifacts pass the published version checksum to native acquisition", async () => {
+  const selector =
+    "http:eslint[url=https://example.test/{{version}}.vsix,format=zip,checksum_url=https://example.test/{{version}}.sha256]";
+  const { installer, control } = await fixture({ [selector]: "3.0.34" });
+  const fetch = vi
+    .fn()
+    .mockResolvedValue(
+      new Response("ca5334d46f6a39079e751ef4601bfc9f86bc3a46483e87291ec609239d161308\n"),
+    );
+  vi.stubGlobal("fetch", fetch);
+  const request = { id: "eslint", requirements: { server: selector } };
+  const installation = await installer.ensure(request, { allowDownload: true });
+  expect(fetch.mock.calls[0]?.[0]).toBe("https://example.test/3.0.34.sha256");
+  expect(installation.components.server?.selector).toBe(selector);
+  expect(await readFile(join(installation.components.server!.directory, "complete"), "utf8")).toBe(
+    "http:eslint[url=https://example.test/{{version}}.vsix,format=zip,checksum=sha256:ca5334d46f6a39079e751ef4601bfc9f86bc3a46483e87291ec609239d161308]@3.0.34",
+  );
+  fetch.mockClear();
+  await expect(installer.ensure(request, { allowDownload: false })).resolves.toEqual(installation);
+  expect(fetch).not.toHaveBeenCalled();
+  await control({ [selector]: "3.0.35" });
+  for (const [response, message] of [
+    [new Response("not a SHA-256 digest"), "Invalid published SHA-256 checksum"],
+    [new Response("", { status: 503 }), "Cannot fetch published checksum: HTTP 503"],
+  ] as const) {
+    fetch.mockResolvedValueOnce(response);
+    await expect(installer.update(request, {})).rejects.toThrow(message);
+    await expect(installer.installed(request.id)).resolves.toEqual(installation);
+  }
+});
+
+test("changed HTTP artifact options cannot bypass verification through an installed version", async () => {
+  const original =
+    "http:eslint[url=https://example.test/server.vsix,checksum=sha256:ca5334d46f6a39079e751ef4601bfc9f86bc3a46483e87291ec609239d161308]";
+  const changed =
+    "http:eslint[url=https://example.test/server.vsix,checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000]";
+  const versions = { [original]: "3.0.34", [changed]: "3.0.34" };
+  const { installer, control } = await fixture(versions);
+  const request = { id: "eslint", requirements: { server: original } };
+  const previous = await installer.ensure(request, { allowDownload: true });
+  await control(versions, `${changed}@3.0.34`);
+  await expect(
+    installer.update({ ...request, requirements: { server: changed } }, {}),
+  ).rejects.toThrow("Fixture acquisition failed");
+  await expect(installer.installed(request.id)).resolves.toEqual(previous);
+  expect(await readFile(join(previous.components.server!.directory, "complete"), "utf8")).toBe(
+    `${original}@3.0.34`,
+  );
+});
+
+test("optional private executable directories need not exist before a tool is first used", async () => {
+  const { installer, directory } = await fixture({ "core:deno": "2.9.6" });
+  await writeFile(
+    join(directory, "fixture.json"),
+    JSON.stringify({
+      latest: { "core:deno": "2.9.6" },
+      pathEntries: [join(directory, "data", "deno-global-tools", "bin")],
+    }),
+  );
+  const request = { id: "deno", requirements: { runtime: "core:deno" } };
+  const installation = await installer.ensure(request, { allowDownload: true });
+  expect(installation.binDirectories).toEqual([
+    join(installation.components.runtime!.directory, "bin"),
+  ]);
+  await expect(
+    new ToolInstaller(directory).ensure(request, { allowDownload: false }),
+  ).resolves.toEqual(installation);
+  await writeFile(
+    join(directory, "fixture.json"),
+    JSON.stringify({
+      latest: { "core:deno": "2.9.7" },
+      pathEntries: [join(directory, "..", "missing-unsafe-executable-directory")],
+    }),
+  );
+  await expect(installer.update(request, {})).rejects.toThrow(
+    "Invalid managed executable directory",
+  );
+  await expect(installer.installed(request.id)).resolves.toEqual(installation);
+});
+
+test("exact runtime requirements bypass SDK latest discovery and stay exact across updates", async () => {
+  const { installer, control } = await fixture({ "core:node": "26.8.2" });
+  const request = {
+    id: "compatible-runtime",
+    requirements: {
+      node: "core:node",
+      runtime: "core:dotnet[runtime=dotnet]@8.0.21",
+    },
+  };
+  const previous = await installer.ensure(request, { allowDownload: true });
+  expect(previous.components.runtime?.version).toBe("8.0.21");
+  expect(previous.components.runtime?.selector).toBe("core:dotnet[runtime=dotnet]@8.0.21");
+  await control({ "core:node": "26.8.3" });
+  const updated = await installer.update(request, {});
+  expect(updated?.current.components.runtime).toEqual(previous.components.runtime);
+  expect(updated?.current.components.node?.version).toBe("26.8.3");
+  await expect(installer.ensure(request, { allowDownload: false })).resolves.toEqual(
+    updated?.current,
+  );
+});
+
 test("incomplete helper results never become a usable selection and can be retried", async () => {
   const { installer, directory, control } = await fixture({ "core:node": "22.1.0" });
   const request = { id: "node", requirements: { node: "core:node" } };

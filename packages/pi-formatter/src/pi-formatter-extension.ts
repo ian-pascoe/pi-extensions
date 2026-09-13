@@ -13,16 +13,20 @@ import {
 import {
   getAgentDir,
   SettingsManager,
-  withFileMutationQueue,
   type ExtensionFactory,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
-import spawn from "cross-spawn";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { registerFormatterCommand } from "./formatter-command.js";
-import { resolvePresetDefinition, selectFormatterPreset } from "./formatter-presets.js";
+import { runFormatterCommand, formatFormatterFailure } from "./formatter-process.js";
+import {
+  biomeFormatterEligible,
+  resolvePresetDefinition,
+  selectFormatterPreset,
+  type FormatterPresetId,
+} from "./formatter-presets.js";
 import {
   resolveFormatterSettings,
   type FormatterDefinition,
@@ -81,18 +85,6 @@ const WorkspaceEditApplyDetailsSchema = Type.Object(
   },
   { additionalProperties: true },
 );
-const MAX_FORMATTER_STDERR_CHARACTERS = 50_000;
-
-type FormatterCommandFailure =
-  | { readonly kind: "spawn_error"; readonly message: string }
-  | { readonly kind: "timeout"; readonly timeoutMs: number }
-  | {
-      readonly kind: "exit_error";
-      readonly exitCode: number | null;
-      readonly signal: NodeJS.Signals | null;
-      readonly stderr: string;
-    };
-
 interface ExistingFormatterPaths {
   readonly paths: readonly string[];
   readonly warnings: readonly string[];
@@ -194,123 +186,6 @@ async function findFormatterRoot(
   }
 }
 
-function formatterProcessEnvironment(configured: Readonly<Record<string, string | null>>) {
-  const environment: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) environment[key] = value;
-  }
-  for (const [key, value] of Object.entries(configured)) {
-    if (value === null) delete environment[key];
-    else environment[key] = value;
-  }
-  return environment;
-}
-
-function runFormatterCommand(
-  definition: FormatterDefinition,
-  args: readonly string[],
-  cwd: string,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-  path: string | undefined,
-): Promise<FormatterCommandFailure | undefined> {
-  const run = () =>
-    new Promise<FormatterCommandFailure | undefined>((complete) => {
-      let stderr = "";
-      let failure: FormatterCommandFailure | undefined;
-      try {
-        signal?.throwIfAborted();
-        const child = spawn(definition.command, args, {
-          cwd,
-          env: formatterProcessEnvironment(definition.environment),
-          shell: false,
-          detached: process.platform !== "win32",
-          windowsHide: true,
-          stdio: ["ignore", "ignore", "pipe"],
-        });
-        const kill = () => {
-          if (!child.pid) return;
-          if (process.platform === "win32") {
-            const killer = spawn(
-              join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
-              ["/pid", String(child.pid), "/T", "/F"],
-              { stdio: "ignore", windowsHide: true },
-            );
-            killer.on("error", () => child.kill("SIGKILL"));
-            killer.on("close", (code) => {
-              if (code !== 0) child.kill("SIGKILL");
-            });
-          } else {
-            try {
-              process.kill(-child.pid, "SIGKILL");
-            } catch {
-              child.kill("SIGKILL");
-            }
-          }
-        };
-        const cancel = () => {
-          failure = { kind: "spawn_error", message: "Formatting cancelled" };
-          kill();
-        };
-        signal?.addEventListener("abort", cancel, { once: true });
-        if (signal?.aborted) cancel();
-        const timer = setTimeout(() => {
-          failure = { kind: "timeout", timeoutMs };
-          kill();
-        }, timeoutMs);
-        child.stderr?.setEncoding("utf8");
-        child.stderr?.on("data", (chunk: string) => {
-          stderr = (stderr + chunk).slice(-MAX_FORMATTER_STDERR_CHARACTERS);
-        });
-        child.on("error", (cause: Error) => {
-          failure = { kind: "spawn_error", message: cause.message };
-        });
-        child.on("close", (exitCode, signalName) => {
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", cancel);
-          complete(
-            failure ??
-              (exitCode === 0
-                ? undefined
-                : {
-                    kind: "exit_error",
-                    exitCode,
-                    signal: signalName,
-                    stderr: stderr.trim(),
-                  }),
-          );
-        });
-      } catch (cause) {
-        complete({
-          kind: "spawn_error",
-          message: cause instanceof Error ? cause.message : String(cause),
-        });
-      }
-    });
-  return (path === undefined ? run() : withFileMutationQueue(path, run)).catch((cause) => ({
-    kind: "spawn_error",
-    message: cause instanceof Error ? cause.message : String(cause),
-  }));
-}
-
-function formatFormatterFailure(
-  definition: FormatterDefinition,
-  target: string,
-  failure: FormatterCommandFailure,
-): string {
-  if (failure.kind === "spawn_error") {
-    return `Pi Formatter: ${definition.id} failed for ${target} (spawn error): ${failure.message}`;
-  }
-  if (failure.kind === "timeout") {
-    return `Pi Formatter: ${definition.id} failed for ${target} (timeout after ${failure.timeoutMs}ms)`;
-  }
-  const status =
-    failure.exitCode === null
-      ? `signal ${failure.signal ?? "unknown"}`
-      : `exit code ${failure.exitCode}`;
-  return `Pi Formatter: ${definition.id} failed for ${target} (${status})${failure.stderr === "" ? "" : `: ${failure.stderr}`}`;
-}
-
 async function formatMutationPaths(
   paths: readonly string[],
   cwd: string,
@@ -374,32 +249,49 @@ async function formatMutationPaths(
     )
       continue;
     try {
-      const selected = await selectFormatterPreset(path);
-      if (!selected || settings.explicitIds.has(selected.id)) continue;
-      const fromCwd = relative(cwd, path);
-      let fallbackRoot =
-        isAbsolute(fromCwd) || fromCwd === ".." || fromCwd.startsWith(`..${sep}`)
-          ? dirname(path)
-          : cwd;
-      const fromMarker = relative(selected.root, fallbackRoot);
-      if (
-        fromMarker &&
-        !isAbsolute(fromMarker) &&
-        fromMarker !== ".." &&
-        !fromMarker.startsWith(`..${sep}`) &&
-        (await readdir(selected.root)).some(
-          (name) => name === "package.json" || name === "pyproject.toml",
+      const resolveDefinition = async (id: FormatterPresetId, root: string) => {
+        const fromCwd = relative(cwd, path);
+        let fallbackRoot =
+          isAbsolute(fromCwd) || fromCwd === ".." || fromCwd.startsWith(`..${sep}`)
+            ? dirname(path)
+            : cwd;
+        const fromMarker = relative(root, fallbackRoot);
+        if (
+          fromMarker &&
+          !isAbsolute(fromMarker) &&
+          fromMarker !== ".." &&
+          !fromMarker.startsWith(`..${sep}`) &&
+          (await readdir(root)).some((name) =>
+            ["package.json", "pyproject.toml", "deno.json", "deno.jsonc"].includes(name),
+          )
         )
-      )
-        fallbackRoot = selected.root;
-      const projectRoot = await findFormatterRoot(path, [".git"], fallbackRoot, false);
-      const definition = await resolvePresetDefinition(
-        selected.id,
-        dirname(path),
-        installer,
-        { allowDownload: settings.autoInstall, signal, onProgress },
-        projectRoot,
-      );
+          fallbackRoot = root;
+        const projectRoot = await findFormatterRoot(path, [".git"], fallbackRoot, false);
+        return resolvePresetDefinition(
+          id,
+          dirname(path),
+          installer,
+          {
+            allowDownload: settings.autoInstall,
+            signal,
+            onProgress,
+            timeoutMs: settings.timeoutMs,
+          },
+          projectRoot,
+          path,
+          root,
+        );
+      };
+      let biomeDefinition: FormatterDefinition | undefined;
+      const selected = await selectFormatterPreset(path, settings.explicitIds, async (root) => {
+        biomeDefinition = await resolveDefinition("biome", root);
+        return biomeFormatterEligible(biomeDefinition, path, root, settings.timeoutMs, signal);
+      });
+      if (!selected) continue;
+      const definition =
+        selected.id === "biome" && biomeDefinition
+          ? biomeDefinition
+          : await resolveDefinition(selected.id, selected.root);
       const failure = await runFormatterCommand(
         definition,
         definition.args.map((arg) => arg.replaceAll("$FILE", path)),

@@ -21,10 +21,44 @@ Launch a direct Node JavaScript file (`.js`, `.mjs`, `.cjs`) or Python script (`
 { "operation": "launch", "program": "app.js" }
 ```
 
-The built-in Launch Profile IDs are `javascript` and `python`. They stop on entry
-and use the internal console. TypeScript loaders, frameworks, test runners, and
-build steps require an explicit Launch Profile; Pi DAP does not infer them or
-install project dependencies.
+The direct-script Launch Profiles are `javascript`, `python`, and `deno`.
+`deno.json` or `deno.jsonc` selects Deno for JS/TS files even when `package.json`
+also exists. An unmarked TypeScript file requires `"profile": "deno"` or an
+Explicit Definition. Named `javascript` selection still chooses Node. TypeScript
+loaders, frameworks, test runners, and builds are not inferred.
+
+Deno uses a private dependency cache with cached-only resolution, frozen lockfile
+validation, manual node_modules mode, and local vendor generation disabled. It
+never grants runtime permissions or prompts for them. Prepare dependencies
+explicitly; use a complete Explicit Definition for scoped permissions or another
+cache policy. A missing dependency is an unavailable launch, not permission to
+install project dependencies. Source breakpoints work through js-debug's owned
+primary target channel; worker/child sessions are not included.
+
+### Already compiled programs
+
+Select a compiled-program preset explicitly; filenames never trigger a build:
+
+```json
+{ "operation": "launch", "profile": "go", "program": "./bin/application" }
+{ "operation": "launch", "profile": "codelldb", "program": "./target/debug/application" }
+{ "operation": "launch", "profile": "dotnet", "program": "./bin/Debug/net8.0/application.dll", "args": ["example"] }
+```
+
+`go` uses Delve's `exec` mode. `codelldb` uses its bundled LLDB/Python closure for
+Rust/C++ and expression evaluation rather than treating expressions as debugger
+commands. Projects supply compiled binaries and debug symbols.
+
+`dotnet` uses NetCoreDbg and the compiled runtimeconfig, preferring compatible
+project/PATH hosts before a private runtime-only installation. The builtin supports
+one `Microsoft.NETCore.App` requirement with default/`Minor`, `LatestPatch`, or
+`Disable` roll-forward, native AnyCPU/x64/ARM64 assemblies, and self-contained
+apphosts with their local bundled runtime. Missing metadata, additional/custom
+framework graphs, framework-dependent apphosts, legacy `applyPatches: false`,
+additional probing paths, and other roll-forward policies require explicit
+configuration. Pi preserves application arguments, leaves the native host in
+charge of final compatibility, and does not install a latest SDK, change metadata,
+or build the application. Runtime and CLI cache state stay private.
 
 Explicit selections and an existing sole configured profile retain ownership.
 Otherwise, Pi DAP prefers project-local tools/runtimes, then PATH, then a private
@@ -35,12 +69,27 @@ provide Node and `dapDebugServer.js`. Python discovery checks ancestor `.venv` a
 `venv` interpreters, then `python3`/`python` on PATH, probing those interpreters for
 `debugpy.adapter`. Native Windows interpreter paths use `Scripts/python.exe`.
 Discovery starts at the script's directory, or the supplied launch `cwd`.
+Deno checks ancestor `node_modules/.bin` before PATH. Known npm/pnpm entrypoints
+(POSIX symlinks/shell shims and Windows `deno.cmd`) resolve read-only to an existing
+package-local native payload or matching installed optional `@deno` payload.
+Incomplete wrappers are skipped so later PATH candidates still precede private
+acquisition. Pi does not execute npm's `bin.cjs` repair wrapper or copy/chmod its
+payload into the project.
 
 Adapter Python and Debuggee Python are selected separately: private debugpy can
 launch your project's interpreter without installing debugpy into its environment.
 Executables and script paths are passed as argv, not shell command strings.
+Python/.NET runtime preflight probes have a five-second deadline and a combined
+1 MiB output limit. Cancellation force-terminates their owned POSIX group or
+Windows Job Object and waits for process/pipe closure. On Windows 10+/Server 2016+,
+a bundled native x64/ARM64 helper assigns the runtime to a non-breakaway Job
+atomically at creation. Its noninheritable kill-on-close handle owns descendants
+even after the runtime leader exits or closes stdio. Missing helpers or failed
+containment fail closed; there is no PID scan, taskkill fallback, runtime build,
+or end-user SDK prerequisite. These narrow native assets do not change Pi's
+source-TypeScript entrypoint or a running Debug Session's execution-wait policy.
 
-Missing adapters and supporting Node/Python runtimes are automatically installed
+Missing adapters and supporting runtimes are automatically installed
 on the first actual launch. That launch waits with visible tool progress and can
 be cancelled; startup and discovery do not download anything. Managed binaries,
 metadata, and cross-process coordination live in `<Pi agent directory>/managed-tools`,
@@ -48,8 +97,10 @@ shared with Pi LSP and Pi Formatter. Pi settings remain the configuration author
 The private installer does not modify user PATH, shell configuration, project
 manifests, or external tool installations.
 
-First installation selects latest upstream. Existing versions are reused without
-registry refresh until an explicit update. For Installed-only Mode, set
+First installation selects latest upstream, except .NET runtimes select the latest
+compatible patch in the application's requested channel (`Disable` selects the
+exact requested version). Existing versions are reused without registry refresh
+until an explicit update. For Installed-only Mode, set
 `"dap": { "autoInstall": false }`: existing external and managed tools still work,
 while missing tools fail without acquiring even the Installer Helper. This is not
 a network sandbox; explicit updates remain deliberate network operations.
@@ -118,17 +169,69 @@ trusted-project values override global values. Use Pi `/reload` to reload settin
 
 ### Supported Adapters and platforms
 
-Microsoft `vscode-js-debug` for Node JavaScript and `debugpy` for Python are the
-Supported Adapters. Explicit profiles can configure TypeScript launchers. Other
+The catalog includes Microsoft `vscode-js-debug` for Node/Deno, `debugpy` for
+Python, Delve for Go, CodeLLDB for Rust/C++, and NetCoreDbg for .NET. Other
 standards-based adapters remain Experimental.
 
-Native x64 and ARM64 Linux, macOS, and Windows are equal release targets. The
-initial acquisition/launch probes passed on Ubuntu 24.04.5, macOS 15.7.9, Windows
+Expansion native proof currently covers **Linux x64 (Debian 13, kernel 6.12)**:
+Deno 2.9.6 + js-debug 1.117.0, Delve 1.27.2, CodeLLDB 1.12.3 (both Rust and C++),
+and NetCoreDbg 3.2.0-1092 with a private .NET 8.0.31 runtime. The tests exercise
+real private acquisition with external PATH tools hidden, source breakpoints,
+stack/variables/evaluation, completion and stop. Deno additionally verifies missing
+dependencies, denied permissions, and no project dependency writes. These are
+recorded versions, not release pins. **Other expansion cells still need native
+release verification; upstream artifacts alone are not support evidence.**
+
+Managed Go, CodeLLDB, and NetCoreDbg are unavailable on Windows ARM64; NetCoreDbg
+is also unavailable on macOS x64. Delve on macOS needs a usable external
+`debugserver`; Pi reports its absence rather than installing developer tools or
+changing system security. CodeLLDB retains its platform package's bundled helpers.
+An explicit compatible adapter remains possible on unsupported managed cells.
+
+The shared installer and original Node/Python presets retain native x64 and ARM64
+Linux, macOS, and Windows verification. The initial acquisition/launch probes passed on Ubuntu 24.04.5, macOS 15.7.9, Windows
 Server 2025 x64, and Windows 11 Enterprise ARM64, using host Node 22.19.0 and
 Pi 0.85.1. See the [installer's verified baselines](https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-tool-installer#initial-verified-baselines)
 for exact tool versions and verification limits. Those versions are evidence,
-not release pins. macOS built-in JavaScript launches use a short private IPC
+not release pins. macOS built-in Node/Deno launches use a short private IPC
 directory to respect Unix socket path limits.
+
+### Native verification fixtures
+
+Run `test/expanded-presets.native.test.ts` and `test/dotnet-preset.native.test.ts`
+with `PI_DAP_EXPANSION_NATIVE=1` and `--maxWorkers=1`. They create temporary
+projects and acquire real private tools; no prepopulated store is required.
+`PI_DAP_NATIVE_STORE` optionally retains the private store for repeat runs, and
+`PI_DAP_NATIVE_MISE` can supply an already verified helper. A CI job may share its
+fresh private store between serial package-native steps.
+
+The .NET fixture acquires its own private SDK 8.0.414 for preparation only. Product
+launch separately acquires a compatible runtime-only installation and never invokes
+that SDK. Go fixture preparation uses the runner's native `go` compiler with
+`GOTOOLCHAIN=local` and private caches; Delve's product launch does not require Go.
+Independent shared-installer tests retain private Go acquisition coverage.
+**Test-runner prerequisites**, not product runtime dependencies:
+
+| Native runner   | Go/Rust/C++ fixture compiler baseline                                                                                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux x64/ARM64 | Native-host `go`, `rustc`, `g++`, and the system C linker/development libraries.                                                                                                            |
+| macOS x64/ARM64 | Native-host `go`, `rustc` and Apple's native compiler/SDK (`g++` may be the Apple Clang driver).                                                                                            |
+| Windows x64     | Native-host `go`, `rustc` with its matching linker (MSVC build environment or GNU toolchain), plus x64 MinGW-w64 `g++`. C++ links compiler runtimes statically; Rust requests a static CRT. |
+| Windows ARM64   | Go/CodeLLDB/NetCoreDbg cases assert declared managed unavailability before compiling; the Deno case still performs native acquisition and debugging.                                        |
+
+Compiler version/host triples are printed and checked against the runner's native
+OS/architecture. Missing or cross-target compilers fail the test rather than
+silently skipping it. Compiler PATH entries are hidden before product launch,
+so MinGW DLLs or a developer shell cannot accidentally satisfy adapter/runtime
+closure. Known NetCoreDbg macOS x64 unavailability is tested without downloading
+a runtime/SDK; other unverified cells attempt real operation rather than treating
+transient failures as unsupported.
+
+Fixtures expose their Debuggee PID through public DAP output or evaluation. Exit/paused-stop checks
+wait for `ESRCH`, not merely a `terminated` snapshot. Cancelling Deno's execution
+wait retains a controllable running session; explicit stop then proves process
+cleanup. Prepared dependencies, missing dependencies, failed launches, and permission
+denial remain separate native outcomes.
 
 ## `/dap update [id]`
 
@@ -136,6 +239,10 @@ directory to respect Unix socket path limits.
 /dap update
 /dap update javascript
 /dap update python
+/dap update deno
+/dap update go
+/dap update codelldb
+/dap update dotnet
 /dap update cancel
 ```
 
@@ -143,7 +250,9 @@ Updates cover only installed managed DAP presets, never unused presets or
 project-local/PATH tools. Results show old/new component versions, no-change
 outcomes, and per-tool failures. A failed or cancelled update retains the prior
 working installation. Live Debug Sessions stay on their original executables;
-the next launch resolves the updated selection.
+the next launch resolves the updated selection. `dotnet` updates discover existing
+runtime-policy selections through the shared installer, resolve compatible runtime
+patches from official runtime metadata, and keep `Disable` selections exact.
 
 The interactive loader supports Escape and waits for cancellation cleanup before
 closing. RPC clients receive status/notifications and can issue `/dap update cancel`;
@@ -222,7 +331,7 @@ tool result and Result Spill retain the original bytes.
 
 ## V1 boundary
 
-Pi DAP supports configured stdio and TCP adapters, built-in direct-script profiles,
+Pi DAP supports configured stdio and TCP adapters, built-in direct-script and compiled-program profiles,
 one active Debug
 Session, source breakpoints, core execution control, stack/variables/evaluation,
 and headless `runInTerminal`. The Supported `vscode-js-debug` workflow uses one

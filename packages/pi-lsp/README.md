@@ -15,12 +15,26 @@ For a local checkout, run `pi -e ./packages/pi-lsp/src/index.ts`.
 
 No language manager or separate server installation is required for these built-in presets:
 
-| Preset ID       | Files                                    | Server                                  | Workspace markers                                          |
-| --------------- | ---------------------------------------- | --------------------------------------- | ---------------------------------------------------------- |
-| `typescript`    | TS/JS, including JSX and module variants | TypeScript 7 native `tsc --lsp --stdio` | `tsconfig.json`, `jsconfig.json`, `package.json`, `.git`   |
-| `pyright`       | `.py`, `.pyi`                            | Pyright                                 | `pyrightconfig.json`, `pyproject.toml`, `setup.py`, `.git` |
-| `gopls`         | `.go`, `go.mod`, `go.work`               | gopls                                   | `go.work`, `go.mod`, `.git`                                |
-| `rust-analyzer` | `.rs`                                    | rust-analyzer                           | `Cargo.toml`, `.git`                                       |
+| Preset ID       | Files                                                  | Server                                                            | Workspace markers                                          |
+| --------------- | ------------------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------- |
+| `typescript`    | TS/JS, including JSX and module variants               | TypeScript 7 native `tsc --lsp --stdio`                           | `tsconfig.json`, `jsconfig.json`, `package.json`, `.git`   |
+| `pyright`       | `.py`, `.pyi`                                          | Pyright                                                           | `pyrightconfig.json`, `pyproject.toml`, `setup.py`, `.git` |
+| `gopls`         | `.go`, `go.mod`, `go.work`                             | gopls                                                             | `go.work`, `go.mod`, `.git`                                |
+| `rust-analyzer` | `.rs`                                                  | rust-analyzer                                                     | `Cargo.toml`, `.git`                                       |
+| `vue`           | `.vue`; TS/JS in declared Vue projects                 | Vue language server plus a compatible tsserver host/plugin bridge | Vue config, TypeScript config, package manifest            |
+| `svelte`        | `.svelte`                                              | Svelte language server plus a compatible TypeScript SDK           | Svelte config, package manifest                            |
+| `astro`         | `.astro`                                               | Astro language server plus a compatible TypeScript SDK            | Astro config, package manifest                             |
+| `deno`          | TS/JS in Deno projects                                 | `deno lsp`                                                        | `deno.json`, `deno.jsonc` required                         |
+| `html`          | HTML                                                   | VS Code HTML language server                                      | Package manifest, `.git`                                   |
+| `css`           | CSS, SCSS, LESS                                        | VS Code CSS language server                                       | Package manifest, `.git`                                   |
+| `json`          | JSON, JSONC                                            | VS Code JSON language server                                      | Package manifest, `.git`                                   |
+| `yaml`          | YAML                                                   | Red Hat YAML language server                                      | Package manifest, `.git`                                   |
+| `bash`          | `.sh`, `.bash`, `.bashrc`, `.bash_profile`, `.profile` | Bash language server, ShellCheck and shfmt helpers                | `.git`                                                     |
+| `dockerfile`    | Dockerfile, Containerfile, `.dockerfile`               | Dockerfile language server                                        | Dockerfile, Containerfile, `.git`                          |
+| `terraform`     | `.tf`, `.tfvars`                                       | `terraform-ls serve`                                              | `.terraform.lock.hcl`, `.terraform`, `.git`                |
+| `eslint`        | TS/JS and framework files                              | Official Microsoft ESLint extension server                        | Project ESLint declaration/config required                 |
+| `biome`         | TS/JS, JSON/JSONC, CSS, GraphQL                        | `biome lsp-proxy`                                                 | Project Biome declaration/config required                  |
+| `oxlint`        | TS/JS                                                  | `oxlint --lsp`                                                    | Project Oxlint declaration/config required                 |
 
 The nearest marker selects the workspace root; otherwise Pi's working directory is used.
 Explicit matching Server Definitions suppress **all** built-in fallbacks for those files, even
@@ -31,8 +45,57 @@ also shadow a preset. Explicit failing commands are never silently replaced.
 For presets, project-local executables precede PATH executables, then Managed Installations.
 Server and supporting runtime selection are independent. Project candidates include ancestor
 `node_modules/.bin` and the root's `bin`, `.bin`, `.venv/bin`, `.venv/Scripts`, `.cargo/bin`, and
-`.go/bin`. A TypeScript 6 `tsc` is not a native LSP candidate. Pi LSP does not use
-`typescript-language-server` or the removed `tsserver.js` API.
+`.go/bin`. A TypeScript 6 `tsc` is not a native LSP candidate for the plain TypeScript
+preset. Framework presets have a separate JavaScript TypeScript SDK compatibility path.
+
+### Frameworks, Deno, and Lint Companions
+
+Vue uses its TypeScript plugin and a private `typescript-language-server`/tsserver bridge;
+installing an older SDK alone is not the integration. Svelte and Astro receive their selected
+SDK directly. Compatible project SDKs and servers take precedence. Otherwise the framework
+preset supplies a latest-compatible JavaScript SDK privately, while plain TS/JS keeps native
+TypeScript 7. Updates plan the complete compatible server/SDK graph before publishing it. Distinct external
+compatibility contracts retain separate managed selections across roots and sessions; Installed-only
+Mode can reopen each, and `/lsp update` updates every installed compatible variant without requiring
+its original project to be the current directory.
+Project framework libraries, integrations, generated declarations, and configuration remain
+project-owned: Pi neither installs nor builds them.
+
+A `deno.json` or `deno.jsonc` selects Deno instead of plain TypeScript, even alongside a package
+manifest; Vue integration remains eligible in declared Vue projects. Deno's cache is private and
+cache-on-save is disabled. Prepared local dependencies work; missing dependencies are reported
+without fetching them automatically. Project lockfiles are unchanged. npm-installed Deno is used
+only through an already present native payload, never its repairing JavaScript wrapper. Missing
+payloads are skipped for later project/PATH candidates, then fall back to a private runtime or
+report unavailable in Installed-only Mode.
+Configurations requesting
+`nodeModulesDir: "auto"`/`true`, `vendor: true`, or workspace globs that Pi cannot validate fail
+before acquisition; prepare a non-writing project configuration or use an Explicit Definition.
+Schema downloads remain allowed; Installed-only Mode is not a network sandbox.
+
+ESLint, Biome, and Oxlint are independent Lint Companions. Every declared, enabled companion
+participates; a file extension alone does not activate one. Declarations are configuration files
+or corresponding dependencies in a package manifest (including legacy `eslintConfig`). The
+native Biome server determines effective lint eligibility for each file, including extended configs
+and overrides. Declaration and marker changes are reread on the next route; after changing a running
+server's Biome configuration, use `/lsp restart` or Pi `/reload`. Pi enablement and Explicit
+Definitions retain priority.
+
+ESLint uses the official released VSIX with its published SHA-256, not an unrelated npm fork or
+a build of the repository's default branch. The workspace must supply ESLint and its own plugins,
+parsers, and configs. Missing libraries/configuration report unavailability rather than clean
+lint results. Biome uses native push diagnostics and a daemon that exits after its last LSP
+connection; stopping one root does not stop another root's daemon connection.
+
+Oxlint type-aware linting activates only when its resolved project configuration opts in.
+Compatible external `tsgolint` helpers precede a private `oxlint-tsgolint` selected from Oxlint's
+published peer range. Tool Updates retain a compatible server/helper pair atomically. This does
+not install project dependencies or generate `.d.ts` files.
+
+Bash navigation remains useful without ShellCheck or shfmt. Missing helpers are reported as
+unavailable diagnostics or formatting, never an apparently clean lint result or successful empty
+format. ShellCheck acquisition is currently disabled on Windows pending a verified native recipe;
+a usable external helper still takes precedence. Experimental/emulated toolchains are not installed.
 
 ### Managed installations
 
@@ -48,9 +111,44 @@ user PATH, shell files, project dependencies, and external tool versions are unt
 
 First installation and explicit Tool Updates select latest upstream and record concrete versions.
 Existing versions are reused without registry refresh until updated. Native x64 and ARM64 Linux,
-macOS, and Windows acquisition/launch baselines are documented in the
-[shared installer](../pi-tool-installer/README.md#initial-verified-baselines); that native evidence
-is separate from offline extension lifecycle tests.
+macOS, and Windows baselines for the original four presets are documented in the
+[shared installer](../pi-tool-installer/README.md#initial-verified-baselines). The shared installer
+supports six native targets; individual presets have separately verified support.
+
+**Expansion verification is in progress.** Vue, Svelte, Astro, Deno, HTML/CSS/JSON, YAML, Bash with
+ShellCheck/shfmt, Dockerfile, Terraform, and the three Lint Companions have Linux x64 acquisition
+and useful-operation proofs. The other five expansion cells remain unverified, not declared
+upstream limitations. Svelte uses an explicitly approved publishing-trust exception only for its
+historical `svelte@4.2.20` dependency; integrity verification and lifecycle-script denial remain.
+The exception is not independently digest-bound and does not cover future versions; see the
+[security investigation](../../docs/research/preset-acquisition-security.md). The complete expansion
+is not ready for release until its remaining gates are satisfied.
+
+#### Observed expansion baseline (2026-09-12–13)
+
+These are tested versions, not release pins or minimum supported SDK versions. Native acquisition
+and the listed operations passed on Linux x64, Debian 13, kernel `6.12.107+deb13-amd64`, glibc
+`2.41`, using private Node `26.8.2` where required. No other expansion platform is yet claimed.
+
+| Preset          | Exact observed versions                                                                                                  | Useful operation                                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Vue             | `@vue/language-server` 3.3.11; `typescript-language-server` 6.0.0; managed TypeScript 6.0.3 and project TypeScript 5.8.3 | Template hover, diagnostic 2322 and corrected-file freshness; actual tsserver SDK queried             |
+| Svelte          | `svelte-language-server` 0.18.4; managed TypeScript 6.0.3                                                                | Script hover; no project dependency creation; exact trust exception retained in update plan           |
+| Astro           | `@astrojs/language-server` 2.16.16; managed TypeScript 6.0.3 and project TypeScript 5.8.3                                | Frontmatter hover with both SDKs                                                                      |
+| HTML, CSS, JSON | `vscode-langservers-extracted` 4.10.0                                                                                    | Document symbols                                                                                      |
+| YAML            | `yaml-language-server` 1.24.0                                                                                            | Document symbols                                                                                      |
+| Bash            | `bash-language-server` 5.6.0; ShellCheck 0.11.0; shfmt 3.14.1                                                            | Document symbols, ShellCheck 2086 and shfmt edits                                                     |
+| Dockerfile      | `dockerfile-language-server-nodejs` 0.15.0                                                                               | Document symbols                                                                                      |
+| Terraform       | `terraform-ls` 0.39.0                                                                                                    | Document symbols                                                                                      |
+| Deno            | Deno 2.9.6                                                                                                               | Document symbols; prepared dependency use, missing-remote reporting without fetch or lockfile changes |
+| Oxlint          | Oxlint 1.82.0; opt-in `oxlint-tsgolint` 7.0.2001                                                                         | Ordinary and type-aware diagnostics                                                                   |
+| Biome           | Biome 2.5.13                                                                                                             | Fresh push diagnostics; another root remains usable after shutdown                                    |
+| ESLint          | Official ESLint VSIX 3.0.34; prepared project ESLint 10.10.0                                                             | Missing-library reporting, prepared-library diagnostics and failed-digest update retention            |
+
+Framework SDK eligibility follows each selected server's published peers and the required
+JavaScript SDK APIs (currently below TypeScript 7). The tested pairs do not establish one global
+SDK floor or promise every historical SDK combination. Svelte's baseline uses only the approved
+historical-version trust exception, not a general publishing-trust bypass.
 
 Set `lsp.autoInstall` to `false` for **Installed-only Mode**:
 

@@ -50,6 +50,8 @@ import {
   parseLspCommandArguments,
   selectLspCommand,
 } from "./lsp-command.js";
+import { frameworkPresetForInstallation, frameworkUpdateRequest } from "./lsp-frameworks.js";
+import { companionPresetForInstallation, companionUpdateRequest } from "./lsp-companions.js";
 import { LspServerClient } from "./lsp-server-client.js";
 import { writeLspEnablement } from "./lsp-settings-store.js";
 import { LspServerManager, normalizeLspFilePath } from "./lsp-server-manager.js";
@@ -372,6 +374,10 @@ export class PiLspLifecycleController {
           command: definition.command,
           args: definition.args,
           environment: { ...definition.environment },
+          protocol: definition.protocol,
+          diagnosticMode: definition.diagnosticMode,
+          unavailableDiagnostics: definition.unavailableDiagnostics,
+          unavailableFormatting: definition.unavailableFormatting,
           initializationOptions: definition.initializationOptions ?? null,
           settings: definition.settings ?? null,
           timeouts,
@@ -534,20 +540,41 @@ export class PiLspLifecycleController {
     };
     const work = async (signal: AbortSignal) => {
       let found = false;
-      for (const preset of presets) {
+      for (const installed of await session.installer.list()) {
         if (signal.aborted) break;
+        let label = installed.id;
         try {
-          const installed = await session.installer.installed(`lsp-${preset.id}`);
-          if (!installed) continue;
+          const id =
+            frameworkPresetForInstallation(installed.id) ??
+            companionPresetForInstallation(installed.id);
+          const preset = presets.find(
+            (candidate) => candidate.id === id || installed.id === `lsp-${candidate.id}`,
+          );
+          if (!preset) continue;
+          label = preset.id;
           found = true;
           const versions = (installation: typeof installed) =>
             Object.entries(installation.components)
               .map(([key, value]) => `${key} ${value.version}`)
               .join(", ");
-          const result = await session.installer.update(installedLspRequest(preset.id, installed), {
-            signal,
-            onProgress: progress,
-          });
+          const options = { signal, onProgress: progress };
+          const request =
+            (await frameworkUpdateRequest(
+              preset.id,
+              installed,
+              session.installer,
+              session.cwd,
+              options,
+            )) ??
+            (await companionUpdateRequest(
+              preset.id,
+              installed,
+              session.installer,
+              session.cwd,
+              options,
+            )) ??
+            installedLspRequest(preset.id, installed);
+          const result = await session.installer.update(request, options);
           if (!result || !isCurrent()) continue;
           const previous = versions(result.previous);
           const current = versions(result.current);
@@ -562,7 +589,7 @@ export class PiLspLifecycleController {
           if (isCurrent())
             notifyLspCommand(
               context,
-              `Pi LSP: ${preset.id}: ${signal.aborted ? "cancelled" : "update failed"}: ${error instanceof Error ? error.message : String(error)}; previous installation retained`,
+              `Pi LSP: ${label}: ${signal.aborted ? "cancelled" : "update failed"}: ${error instanceof Error ? error.message : String(error)}; previous installation retained`,
               "error",
             );
         }

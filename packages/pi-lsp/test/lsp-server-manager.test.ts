@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { LspServerClient } from "../src/lsp-server-client.js";
+import { withLspPresets } from "../src/lsp-presets.js";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -234,6 +235,219 @@ async function createRoutedFileFixture(): Promise<{ cwd: string; filePath: strin
 }
 
 describe("session-scoped LSP server manager", () => {
+  test("routes framework files and keeps plain TypeScript outside declared Vue projects", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const manager = new LspServerManager({
+      cwd,
+      settings: withLspPresets(resolvedSettings([])),
+      startClient: createRecordingClientFactory().start,
+    });
+    const servers = async (file: string) =>
+      (
+        await manager.runRead(
+          file,
+          undefined,
+          () => true,
+          async (_client, route) => route.serverId,
+        )
+      ).successes.map(({ value }) => value);
+    expect(await servers(filePath)).toEqual(["typescript"]);
+    expect(await servers(resolve(cwd, "App.vue"))).toEqual(["vue"]);
+    expect(await servers(resolve(cwd, "App.svelte"))).toEqual(["svelte"]);
+    expect(await servers(resolve(cwd, "Page.astro"))).toEqual(["astro"]);
+    await writeFile(resolve(cwd, "package.json"), '{"dependencies":{"vue":"^3.5.0"}}');
+    expect(await servers(filePath)).toEqual(["vue"]);
+    await manager.shutdown();
+  });
+
+  test("runs all declared enabled lint companions, not linters inferred from extension alone", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const settings = withLspPresets(resolvedSettings([]));
+    const manager = new LspServerManager({
+      cwd,
+      settings,
+      startClient: createRecordingClientFactory().start,
+    });
+    const servers = async () =>
+      (
+        await manager.runRead(
+          filePath,
+          undefined,
+          () => true,
+          async (_client, route) => route.serverId,
+        )
+      ).successes.map(({ value }) => value);
+    expect(await servers()).toEqual(["typescript"]);
+    await writeFile(resolve(cwd, "biome.json"), '{"linter":{"enabled":true}}');
+    await writeFile(resolve(cwd, "eslint.config.mjs"), "export default [];\n");
+    await writeFile(resolve(cwd, ".oxlintrc.json"), "{}");
+    expect(await servers()).toEqual(["biome", "eslint", "oxlint", "typescript"]);
+    await manager.setEnablement(
+      new Map([
+        ["biome", { enabled: false, scope: "project" }],
+        ["oxlint", { enabled: false, scope: "project" }],
+      ]),
+      new Map(),
+    );
+    expect(await servers()).toEqual(["eslint", "typescript"]);
+    await manager.shutdown();
+  });
+
+  test("excludes native-disabled companions from reads and mutations without hiding explicit disablement", async () => {
+    const { cwd } = await createRoutedFileFixture();
+    const file = resolve(cwd, "disabled.ts");
+    await writeFile(file, "debugger;\n");
+    await writeFile(resolve(cwd, "biome.json"), "{}\n");
+    const settings = withLspPresets(resolvedSettings([]));
+    const manager = new LspServerManager({
+      cwd,
+      settings,
+      startClient: ({ definition, rootPath, timeouts, onUnavailable, signal }) =>
+        LspServerClient.start({
+          serverId: definition.id,
+          rootPath,
+          timeouts,
+          onUnavailable,
+          signal,
+          command: process.execPath,
+          args: [fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url))],
+          environment: { ...process.env, FAKE_BIOME_READY: "1" },
+          initializationOptions: {},
+          settings: {},
+          protocol: definition.id === "biome" ? "biome" : undefined,
+          stderrPath: resolve(cwd, `${definition.id}.stderr`),
+        }),
+    });
+    try {
+      const result = await manager.runRead(
+        file,
+        undefined,
+        () => true,
+        async () => true,
+      );
+      expect(result.failures).toEqual([]);
+      expect(result.successes.map(({ serverId }) => serverId)).toEqual(["typescript"]);
+      const explicit = await manager.runRead(
+        file,
+        "biome",
+        () => true,
+        async () => true,
+      );
+      expect(explicit).toMatchObject({
+        successes: [],
+        failures: [
+          {
+            code: "server-disabled",
+            serverId: "biome",
+            message: expect.stringContaining("native project configuration"),
+          },
+        ],
+      });
+      expect(await manager.resolveMutationClient(file, undefined, () => true)).toMatchObject({
+        kind: "success",
+        instance: { route: { serverId: "typescript" } },
+      });
+      expect(await manager.resolveMutationClient(file, "biome", () => true)).toMatchObject({
+        kind: "failure",
+        failure: { code: "server-disabled" },
+      });
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
+  test("does not veto a declared Biome before native per-file override eligibility", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    await writeFile(
+      resolve(cwd, "biome.json"),
+      JSON.stringify({
+        linter: { enabled: false },
+        overrides: [{ includes: ["src/**"], linter: { enabled: true } }],
+      }),
+    );
+    const manager = new LspServerManager({
+      cwd,
+      settings: withLspPresets(resolvedSettings([])),
+      startClient: createRecordingClientFactory().start,
+    });
+    try {
+      const result = await manager.runRead(
+        filePath,
+        undefined,
+        () => true,
+        async () => true,
+      );
+      expect(result.successes.map(({ serverId }) => serverId)).toEqual(["biome", "typescript"]);
+    } finally {
+      await manager.shutdown();
+    }
+  });
+
+  test.each([
+    ["page.html", "html"],
+    ["style.scss", "css"],
+    ["data.jsonc", "json"],
+    ["data.yaml", "yaml"],
+    ["script.sh", "bash"],
+    ["Dockerfile", "dockerfile"],
+    ["main.tf", "terraform"],
+  ])(
+    "routes %s to its language preset %s without a formatter or lint marker",
+    async (fileName, expected) => {
+      const { cwd } = await createRoutedFileFixture();
+      const manager = new LspServerManager({
+        cwd,
+        settings: withLspPresets(resolvedSettings([])),
+        startClient: createRecordingClientFactory().start,
+      });
+      expect(
+        (
+          await manager.runRead(
+            resolve(cwd, fileName),
+            undefined,
+            () => true,
+            async (_client, route) => route.serverId,
+          )
+        ).successes.map(({ value }) => value),
+      ).toEqual([expected]);
+      await manager.shutdown();
+    },
+  );
+
+  test("Deno project configuration replaces plain TypeScript without changing explicit ownership", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    await writeFile(resolve(cwd, "packages/example/deno.jsonc"), "{ // Deno project\n}\n");
+    const factory = createRecordingClientFactory();
+    const manager = new LspServerManager({
+      cwd,
+      settings: withLspPresets(resolvedSettings([])),
+      startClient: factory.start,
+    });
+    const result = await manager.runRead(
+      filePath,
+      undefined,
+      () => true,
+      async (_client, route) => route.serverId,
+    );
+    expect(result.successes.map(({ value }) => value)).toEqual(["deno"]);
+    const explicit = new LspServerManager({
+      cwd,
+      settings: withLspPresets(resolvedSettings(["project-ts"])),
+      startClient: factory.start,
+    });
+    expect(
+      (
+        await explicit.runRead(
+          filePath,
+          undefined,
+          () => true,
+          async (_client, route) => route.serverId,
+        )
+      ).successes.map(({ value }) => value),
+    ).toEqual(["project-ts"]);
+    await manager.shutdown();
+    await explicit.shutdown();
+  });
   test("stops only the selected root and starts it lazily on the next request", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const otherRoot = resolve(cwd, "other");

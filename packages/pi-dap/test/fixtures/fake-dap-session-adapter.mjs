@@ -133,6 +133,8 @@ function handleRequest(request) {
         pendingLaunch = undefined;
         event("output", { category: "stdout", output: "launched\n" });
         if (launchArguments.stopOnEntry !== false) setTimeout(() => stopped("entry"), 5);
+        else if ([...desiredBreakpoints.values()].some((points) => points.length > 0))
+          setTimeout(() => stopped("breakpoint"), 5);
       }
       return;
     case "threads":

@@ -16,6 +16,7 @@ import {
   parseNodeProcessError,
 } from "./node-process-error.mjs";
 import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
+import { assertDapNativePayloads, dapNativeTargets } from "./dap-native-payloads.mjs";
 import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -122,6 +123,12 @@ function validatePackedFileList(packageName, files) {
     "src/index.ts",
   ];
   if (packageName === piMcpPackageName) requiredPaths.push("dist/pi-mcp-cli.js");
+  if (packageName === "@ian-pascoe/pi-dap") {
+    requiredPaths.push("src/native/THIRD-PARTY-NOTICES.txt");
+    for (const { arch } of dapNativeTargets) {
+      requiredPaths.push(`src/native/win32-${arch}/dap-runtime-probe.exe`);
+    }
+  }
   for (const requiredPath of requiredPaths) {
     assertPackCondition(paths.includes(requiredPath), `${packageName} omits ${requiredPath}`);
   }
@@ -298,6 +305,9 @@ async function assertTarballLoads(packageName, tarballPath, dependencyTarballs =
         globalThis.fetch = originalFetch;
       }
       return;
+    }
+    if (packageName === "@ian-pascoe/pi-dap") {
+      await assertDapNativePayloads(installedPackageDirectory);
     }
     const entrypoint = resolve(installedPackageDirectory, "src/index.ts");
     const result = await discoverAndLoadExtensions([entrypoint], installDirectory, agentDirectory);

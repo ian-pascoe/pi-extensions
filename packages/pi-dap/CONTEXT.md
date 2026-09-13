@@ -4,6 +4,13 @@ Pi DAP gives an agent one interactive debugging session through a built-in or
 explicitly configured Debug Adapter Protocol adapter. Shared installation vocabulary
 is defined in [Language Tools](../../docs/contexts/language-tools/CONTEXT.md).
 
+Package-owned presets cover Node/Python/Deno direct scripts and explicit compiled
+Go, Rust/C++, and .NET programs. Deno project configuration selects its runtime;
+compiled-language presets never infer builds. .NET runtime selection follows
+supported compiled metadata and native roll-forward, requiring Explicit Definitions
+for ambiguous or unsupported graphs. Acquisition and durable runtime selections
+remain owned by the shared installer. See the README for verified platform cells.
+
 ## Language
 
 **Debug adapter**:
@@ -31,7 +38,7 @@ Named configuration describing how Pi starts or connects to a debug adapter, sup
 _Avoid_: Adapter catalog, debugger configuration
 
 **Launch profile**:
-Named configuration describing how a debug adapter starts a debuggee, supplied explicitly or by a direct-script Language Tool Preset.
+Named configuration describing how a debug adapter starts a debuggee, supplied explicitly or by a direct-script or compiled-program Language Tool Preset.
 _Avoid_: Launch configuration, run profile
 
 **Breakpoint**:

@@ -29,7 +29,9 @@ const DapResponseEnvelopeSchema = Type.Object(
     type: Type.Literal("response"),
     request_seq: Type.Integer({ minimum: 1 }),
     success: Type.Boolean(),
-    command: Type.String({ minLength: 1 }),
+    command: Type.String(),
+    // CodeLLDB error responses correlate by request_seq and leave command empty.
+    show_user: Type.Optional(Type.Boolean()),
     message: Type.Optional(Type.String()),
     body: Type.Optional(DapProtocolObjectSchema),
   },
@@ -260,7 +262,7 @@ export function resolvedAdapterEnvironment(
   return environment;
 }
 
-async function allocateTcpPort(host: string): Promise<number> {
+export async function allocateTcpPort(host: string): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {
@@ -959,7 +961,7 @@ export class DapProtocolClient {
     }
     this.pendingRequests.delete(response.request_seq);
     pending.cleanup();
-    if (response.command !== pending.command) {
+    if (response.command !== pending.command && (response.success || response.command !== "")) {
       const error = new DapProtocolClientError(
         "protocol",
         this.adapterId,

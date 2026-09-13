@@ -70,6 +70,68 @@ test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
 );
 
 test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
+  "acquires an exact private .NET runtime without substituting an SDK",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi dotnet runtime 空間 "));
+    try {
+      const installer = new ToolInstaller(directory);
+      const request = (version: string) => ({
+        id: "dotnet-runtime-probe",
+        requirements: { runtime: `core:dotnet[runtime=dotnet]@${version}` },
+      });
+      const acquisition = {
+        signal: AbortSignal.timeout(170_000),
+        onProgress: (message: string) => console.info(`[dotnet-runtime] ${message}`),
+      };
+      const previous = await installer.ensure(request("8.0.30"), {
+        ...acquisition,
+        allowDownload: true,
+      });
+      const oldRuntime = previous.components.runtime;
+      if (!oldRuntime) throw new Error("Missing previous .NET runtime");
+      const filename = process.platform === "win32" ? "dotnet.exe" : "dotnet";
+      const oldExecutable = join(oldRuntime.directory, filename);
+      const oldHost = await readFile(oldExecutable);
+      const updated = await installer.update(request("8.0.31"), acquisition);
+      if (!updated) throw new Error("Missing .NET update");
+      const installation = updated.current;
+      expect(updated.previous).toEqual(previous);
+      const runtime = installation.components.runtime;
+      if (!runtime) throw new Error("Missing .NET runtime");
+      expect(runtime.version).toBe("8.0.31");
+      const executable = join(runtime.directory, filename);
+      const options = {
+        timeout: 30_000,
+        env: {
+          ...process.env,
+          ...installation.environment,
+          DOTNET_CLI_HOME: join(directory, "home"),
+          DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+          DOTNET_NOLOGO: "1",
+        },
+      };
+      expect((await execute(executable, ["--list-runtimes"], options)).stdout.trim()).toBe(
+        `Microsoft.NETCore.App 8.0.31 [${join(runtime.directory, "shared", "Microsoft.NETCore.App")}]`,
+      );
+      expect((await execute(executable, ["--list-sdks"], options)).stdout.trim()).toBe("");
+      expect((await execute(oldExecutable, ["--list-runtimes"], options)).stdout.trim()).toBe(
+        `Microsoft.NETCore.App 8.0.30 [${join(oldRuntime.directory, "shared", "Microsoft.NETCore.App")}]`,
+      );
+      expect(await readFile(oldExecutable)).toEqual(oldHost);
+      await expect(
+        new ToolInstaller(directory).ensure(request("8.0.31"), { allowDownload: false }),
+      ).resolves.toEqual(installation);
+      console.info(
+        `${process.platform}/${process.arch}: isolated runtime-only .NET 8.0.30 → ${runtime.version}`,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  },
+  180_000,
+);
+
+test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
   "Python updates retain immutable Black environments for the same package version",
   async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "pi python update 空間 ")));

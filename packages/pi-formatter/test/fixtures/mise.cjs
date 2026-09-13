@@ -29,13 +29,32 @@ else if (command === "install") {
       mkdirSync(join(path, "bin"), { recursive: true });
       const node = join(path, process.platform === "win32" ? "node.exe" : "bin/node");
       if (!existsSync(node)) copyFileSync(process.execPath, node);
+    } else if (tool.startsWith("npm:prettier-plugin-")) {
+      const match = tool.match(/^npm:(prettier-plugin-(svelte|astro))@(.+)$/);
+      const plugin = join(path, "node_modules", match[1]);
+      mkdirSync(plugin, { recursive: true });
+      writeFileSync(
+        join(plugin, "package.json"),
+        JSON.stringify({
+          name: match[1],
+          version: match[3],
+          main: "plugin.js",
+          peerDependencies: { prettier: "^3.0.0", [match[2]]: control.frameworkRange ?? "^5.0.0" },
+        }),
+      );
+      writeFileSync(join(plugin, "plugin.js"), "module.exports={}");
     } else if (tool.startsWith("npm:")) {
       const entry = tool.startsWith("npm:prettier@")
         ? "prettier/bin/prettier.cjs"
         : "@biomejs/biome/bin/biome";
       const script = join(path, "node_modules", entry);
       mkdirSync(require("node:path").dirname(script), { recursive: true });
-      writeFileSync(script, "require('node:fs').appendFileSync(process.argv.at(-1), ':managed')");
+      writeFileSync(
+        script,
+        tool.startsWith("npm:prettier@")
+          ? "require('node:fs').appendFileSync(process.argv.at(-1), ':managed')"
+          : `require(${JSON.stringify(join(__dirname, "biome.cjs"))})('managed')`,
+      );
     } else {
       const native = (name) => (process.platform === "win32" ? `${name}.exe` : name);
       const launch = tool.startsWith("pipx:black@")
@@ -49,7 +68,13 @@ else if (command === "install") {
             ? [join("bin", native("gofmt")), ["-w"]]
             : tool.startsWith("core:rust@")
               ? [native("rustfmt"), ["--config", "skip_children=true"]]
-              : undefined;
+              : tool.startsWith("aqua:mvdan/sh@")
+                ? [join("bin", native("shfmt")), ["-w"]]
+                : tool.startsWith("aqua:hashicorp/terraform@")
+                  ? [join("bin", native("terraform")), ["fmt"]]
+                  : tool.startsWith("core:deno@")
+                    ? [join("bin", native("deno")), ["fmt"]]
+                    : undefined;
       if (launch) {
         const command = join(path, launch[0]);
         mkdirSync(require("node:path").dirname(command), { recursive: true });

@@ -1,4 +1,5 @@
 import { readdir } from "node:fs/promises";
+import { declaredLspProjectTools } from "./lsp-presets.js";
 import { basename, dirname, extname, matchesGlob, resolve } from "node:path";
 import type {
   LspServerDefinition,
@@ -51,6 +52,8 @@ export interface LspServerRoute {
 export interface LspManagedServerClient {
   /** Negotiated language-server capabilities, returned unchanged by `capabilities`. */
   readonly capabilities: unknown;
+  /** Native per-file eligibility for project-declared companions, when applicable. */
+  isFileEnabled?(filePath: string, signal?: AbortSignal): Promise<boolean>;
   /** Gracefully stop the language-server process and release protocol resources. */
   shutdown(): Promise<void>;
 }
@@ -350,8 +353,32 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         !definition.preset &&
         definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
     );
+    const projectTools = hasExplicitMatch
+      ? new Set<string>()
+      : await declaredLspProjectTools(dirname(absolutePath));
+    const denoProject = ancestors.some(
+      ({ entryNames }) => entryNames.includes("deno.json") || entryNames.includes("deno.jsonc"),
+    );
     const definitions = configured
-      .filter((definition) => !definition.preset || !hasExplicitMatch)
+      .filter(
+        (definition) =>
+          !definition.preset ||
+          (!hasExplicitMatch &&
+            !(definition.id === "typescript" && (denoProject || projectTools.has("vue")))),
+      )
+      .filter(
+        (definition) =>
+          !definition.preset ||
+          definition.id !== "vue" ||
+          extname(absolutePath) === ".vue" ||
+          projectTools.has("vue"),
+      )
+      .filter(
+        (definition) =>
+          !definition.preset ||
+          !["eslint", "biome", "oxlint"].includes(definition.id) ||
+          projectTools.has(definition.id),
+      )
       .map((definition) => ({
         languages: definition.languages,
         requireRootMarker: definition.requireRootMarker,
@@ -387,8 +414,12 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
 
     const outcomes = await Promise.all(
       routes.map(async (route): Promise<LspServerSuccess<T> | LspServerFailure | undefined> => {
-        const resolution = await this.ensureClient(route, options);
-        if (resolution.kind === "failure") return resolution.failure;
+        const resolution = await this.ensureFileClient(route, filePath, options);
+        if (resolution.kind === "failure") {
+          if (serverId === undefined && resolution.failure.code === "server-disabled")
+            return undefined;
+          return resolution.failure;
+        }
         if (!isCapable(resolution.instance.client)) {
           if (serverId === undefined) return undefined;
           return {
@@ -442,7 +473,9 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
     }
 
-    const resolutions = await Promise.all(routes.map((route) => this.ensureClient(route, options)));
+    const resolutions = await Promise.all(
+      routes.map((route) => this.ensureFileClient(route, filePath, options)),
+    );
     const capable = resolutions.filter(
       (resolution): resolution is Extract<LspServerResolution<TClient>, { kind: "success" }> =>
         resolution.kind === "success" && isCapable(resolution.instance.client),
@@ -585,6 +618,39 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       message: `Pi LSP: ${requestedServer} does not match ${normalizedFilePath}`,
       serverId: serverId ?? "*",
     };
+  }
+
+  private async ensureFileClient(
+    route: LspServerRoute,
+    filePath: string,
+    options: LspServerOperationOptions,
+  ): Promise<LspServerResolution<TClient>> {
+    const resolution = await this.ensureClient(route, options);
+    if (resolution.kind === "failure") return resolution;
+    try {
+      const enabled = await resolution.instance.client.isFileEnabled?.(
+        resolve(this.input.cwd, normalizeLspFilePath(filePath)),
+        options.signal,
+      );
+      if (enabled !== false) return resolution;
+      return {
+        kind: "failure",
+        failure: {
+          code: "server-disabled",
+          serverId: route.serverId,
+          message: `Pi LSP: server ${route.serverId} lint is disabled or ignored by the native project configuration for ${filePath}`,
+        },
+      };
+    } catch (error) {
+      return {
+        kind: "failure",
+        failure: {
+          code: "request-failed",
+          serverId: route.serverId,
+          message: `Pi LSP: server ${route.serverId} file eligibility failed: ${describeLspError(error)}`,
+        },
+      };
+    }
   }
 
   private ensureClient(

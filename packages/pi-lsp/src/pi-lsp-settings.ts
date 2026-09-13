@@ -80,6 +80,11 @@ export interface LspServerDefinition {
   readonly id: string;
   /** Source-owned fallback; never accepted from user settings. */
   readonly preset?: boolean;
+  /** Verified preset protocol behavior; never parsed from user settings. */
+  readonly protocol?: "biome" | "eslint" | "oxlint" | undefined;
+  readonly diagnosticMode?: "push" | undefined;
+  readonly unavailableDiagnostics?: string | undefined;
+  readonly unavailableFormatting?: string | undefined;
   readonly initializationOptions?: JsonValue;
   readonly languages: readonly LspLanguageMapping[];
   /** Require any root marker above a candidate file; false falls back to Pi's working directory. */

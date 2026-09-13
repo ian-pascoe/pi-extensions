@@ -28,3 +28,7 @@ The [accepted design](../plans/managed-language-tools.md) records scope, precede
 updates, failure behavior, and verification gates. The compiled
 [`pi-tool-installer`](../../packages/pi-tool-installer) library owns acquisition;
 package documentation describes the presets and their existing protocol boundaries.
+
+[ADR-0006](0006-separate-installer-and-preset-platform-support.md) clarifies the
+platform contract for expansion: the installer must support all six native targets,
+while individual presets may have a documented, verified subset.

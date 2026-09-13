@@ -4,6 +4,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { ManagedInstallation, ToolInstaller } from "@ian-pascoe/pi-tool-installer";
+import { prettierCompanionUpdateRequest } from "./formatter-plugins.js";
 import {
   formatterPresetIds,
   formatterRequest,
@@ -33,8 +34,7 @@ export function registerFormatterCommand(
   let active: AbortController | undefined;
   let pending: Promise<void> | undefined;
   pi.registerCommand("formatter", {
-    description:
-      "Update installed managed formatters: update [prettier|biome|black|ruff|gofmt|rustfmt], or update cancel",
+    description: `Update installed managed formatters: update [${formatterPresetIds.join("|")}], or update cancel`,
     handler: async (args, context) => {
       const [operation, id, ...extra] = args.trim().split(/\s+/);
       if (
@@ -44,7 +44,7 @@ export function registerFormatterCommand(
       ) {
         report(
           context,
-          "Usage: /formatter update [prettier|biome|black|ruff|gofmt|rustfmt|cancel]",
+          `Usage: /formatter update [${formatterPresetIds.join("|")}|cancel]`,
           "warning",
         );
         return;
@@ -120,33 +120,44 @@ async function updateFormatters(
   signal: AbortSignal,
 ): Promise<void> {
   let found = false;
-  for (const id of ids) {
+  for (const installed of await installer.list()) {
     if (signal.aborted) break;
+    const plugin =
+      installed.id.match(/^formatter-plugin-(svelte|astro)-[a-f0-9]+$/)?.[1] ??
+      (/^formatter-prettier-helper-[a-f0-9]+$/.test(installed.id) ? "helper" : undefined);
+    const id = ids.find(
+      (preset) =>
+        installed.id === `formatter-${preset}` || (preset === "prettier" && plugin !== undefined),
+    );
+    if (!id) continue;
+    const label = plugin ? `${id}/${plugin}` : id;
     try {
-      const request = formatterRequest(id);
-      const installed = await installer.installed(request.id);
-      if (!installed) continue;
       found = true;
+      const request = plugin
+        ? await prettierCompanionUpdateRequest(installed, installer, { signal })
+        : formatterRequest(id);
+      if (!request) continue;
       // A preset may own only a runtime for an externally installed tool.
       request.requirements = Object.fromEntries(
         Object.entries(request.requirements).filter(([name]) => name in installed.components),
       );
       const result = await installer.update(request, {
         signal,
-        onProgress: (message) => context.ui.setStatus("pi-formatter-update", `${id}: ${message}`),
+        onProgress: (message) =>
+          context.ui.setStatus("pi-formatter-update", `${label}: ${message}`),
       });
       if (!result) continue;
       const previous = versions(result.previous);
       const current = versions(result.current);
       report(
         context,
-        `${id}: ${previous === current ? `${current} (no change)` : `${previous} -> ${current}`}`,
+        `${label}: ${previous === current ? `${current} (no change)` : `${previous} -> ${current}`}`,
         "info",
       );
     } catch (error) {
       report(
         context,
-        `${id}: update ${signal.aborted ? "cancelled" : "failed"}: ${error instanceof Error ? error.message : String(error)}. The previous installation is retained.`,
+        `${label}: update ${signal.aborted ? "cancelled" : "failed"}: ${error instanceof Error ? error.message : String(error)}. The previous installation is retained.`,
         "warning",
       );
     }

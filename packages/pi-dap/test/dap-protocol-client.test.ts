@@ -92,6 +92,10 @@ describe("DapProtocolClient", () => {
       kind: "request",
       message: expect.stringContaining("fixture failure"),
     });
+    await expect(client.request("commandless-error")).rejects.toMatchObject({
+      kind: "request",
+      message: expect.stringContaining("invalid expression"),
+    });
     await expect(client.request("echo", { afterFailure: true })).resolves.toEqual({
       afterFailure: true,
     });

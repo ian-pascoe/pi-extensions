@@ -61,6 +61,17 @@ async function handleRequest(request) {
     case "fail":
       respond(request, false, { reason: "fixture" }, "fixture failure");
       return;
+    case "commandless-error":
+      send({
+        seq: nextSequence++,
+        type: "response",
+        request_seq: request.seq,
+        success: false,
+        command: "",
+        message: "invalid expression",
+        show_user: true,
+      });
+      return;
     case "hang":
       return;
     case "fragment": {

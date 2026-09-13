@@ -15,6 +15,7 @@ Installed-only Mode, and Tool Update) are defined in [Language Tools](../../docs
 - **Result Spill** — the complete LSP operation output referenced when the model-visible result reaches Pi's standard output limit.
 - **Server Definition** — an explicit or preset language-server command, language mapping, workspace-root policy, Activation Gate, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID; an invalid project replacement shadows the global definition and is quarantined.
 - **Server Instance** — one running language-server process for a Server Definition and a detected workspace root.
+- **Lint Companion** — a lint-oriented Server Definition that complements another Server Definition for the same files rather than replacing it. _Avoid_: Formatter, replacement server.
 - **Stop** — ending a Server Instance without preventing a later lazy start for its Server Definition.
 - **Disabled Server Definition** — a Server Definition that is ineligible to start Server Instances until it is enabled.
 - **Server Enablement Override** — an explicit enabled or disabled choice for a Server Definition at session, project, or global scope. A session-scoped choice belongs to the selected session history and does not apply when navigating before it.
@@ -30,7 +31,7 @@ Language-server requests to apply edits are also converted into Workspace Edit P
 Language-server documents are valid UTF-8 text. Content edits follow existing symlinks and identify the canonical target in the Mutation Manifest; resource operations act on the named directory entry. Conflicting or non-file workspace edits are rejected before they become applicable previews.
 
 Explicit Definitions come from the `lsp` key in Pi's global and trusted project settings. Package-owned
-Language Tool Presets provide TypeScript 7 native LSP, Pyright, gopls, and rust-analyzer fallbacks.
+Language Tool Presets provide language, framework, and project-declared Lint Companion fallbacks.
 An Explicit Definition matching a file suppresses all presets for that file, regardless of ID,
 Activation Gate, or enablement. A null or quarantined same-ID replacement also shadows the preset. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and retain failure state until explicit recovery. Read operations may query several matching Server Instances; a mutation must identify one when several match.
 

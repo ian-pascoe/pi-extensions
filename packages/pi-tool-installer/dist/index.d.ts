@@ -14,6 +14,15 @@ declare const RequestSchema: Type.TObject<{
     requirements: Type.TRecord<"^.*$", Type.TString>;
 }>;
 export type ToolRequest = Static<typeof RequestSchema>;
+declare const NpmPackageSchema: Type.TObject<{
+    name: Type.TString;
+    version: Type.TString;
+    peerDependencies: Type.TOptional<Type.TRecord<"^.*$", Type.TString>>;
+    engines: Type.TOptional<Type.TObject<{
+        node: Type.TOptional<Type.TString>;
+    }>>;
+}>;
+export type NpmPackage = Static<typeof NpmPackageSchema>;
 export type ManagedInstallation = Static<typeof InstallationSchema>;
 export interface InstallationOptions {
     signal?: AbortSignal;
@@ -24,6 +33,11 @@ export declare class ToolInstaller {
     readonly directory: string;
     constructor(directory: string);
     installed(id: string): Promise<ManagedInstallation | undefined>;
+    /** Network metadata for acquisition/update; compatibility policy remains with callers. */
+    npmVersions(name: string, options: InstallationOptions): Promise<(NpmPackage & {
+        latest: boolean;
+    })[]>;
+    list(): Promise<ManagedInstallation[]>;
     private selection;
     ensure(request: ToolRequest, options: InstallationOptions & {
         allowDownload: boolean;
@@ -37,6 +51,7 @@ export declare class ToolInstaller {
     private environment;
     private helper;
     private run;
+    private concreteTool;
     private acquire;
     private publish;
 }

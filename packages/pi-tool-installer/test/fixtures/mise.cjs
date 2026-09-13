@@ -12,7 +12,7 @@ function directory(tool) {
   return join(
     process.env.MISE_DATA_DIR,
     "installs",
-    Buffer.from(tool.slice(0, at)).toString("hex"),
+    Buffer.from(tool.slice(0, at).split("[")[0]).toString("hex"),
     version,
   );
 }
@@ -57,9 +57,11 @@ if (command === "latest") {
   console.log(
     JSON.stringify({
       ...control.environments?.[tools.at(-1)],
-      PATH: [...tools.map((tool) => join(directory(tool), "bin")), process.env.PATH].join(
-        delimiter,
-      ),
+      PATH: [
+        ...tools.map((tool) => join(directory(tool), "bin")),
+        ...(control.pathEntries ?? []),
+        process.env.PATH,
+      ].join(delimiter),
     }),
   );
 } else {

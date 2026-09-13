@@ -8,11 +8,14 @@ import {
   readdir,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
@@ -34,6 +37,7 @@ import {
 import { ProcessTerminal, TuiMainScreen, type Component } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
+import { LSP_PRESETS } from "../src/lsp-presets.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
@@ -92,10 +96,7 @@ async function createExtensionHarness(
   if (!presets) {
     wire.lsp ??= {};
     wire.lsp.servers = {
-      typescript: null,
-      pyright: null,
-      gopls: null,
-      "rust-analyzer": null,
+      ...Object.fromEntries(LSP_PRESETS.map(({ id }) => [id, null])),
       ...wire.lsp.servers,
     };
   }
@@ -227,7 +228,12 @@ async function managedHarness(settings: LspSettingsDocumentInput = {}) {
   const store = resolve(harness.agentDirectory, "managed-tools");
   await mkdir(store);
   await writeFile(resolve(store, process.platform === "win32" ? "mise.exe" : "mise"), "fixture");
-  const control = async (options: { wait?: boolean; fail?: boolean; version?: string }) =>
+  const control = async (options: {
+    wait?: boolean;
+    fail?: boolean;
+    failTool?: string;
+    version?: string;
+  }) =>
     writeFile(
       resolve(store, "fixture.json"),
       JSON.stringify({
@@ -326,6 +332,567 @@ afterEach(async () => {
 });
 
 describe("Pi LSP extension lifecycle", () => {
+  test.each([
+    ["css", "vscode-css-language-server", "style.css"],
+    ["json", "vscode-json-language-server", "data.json"],
+    ["yaml", "yaml-language-server", "data.yaml"],
+    ["dockerfile", "docker-langserver", "Dockerfile"],
+  ])(
+    "%s builtin appends fresh diagnostics to mutation results using its supported transport",
+    async (id, executable, file) => {
+      const harness = await createExtensionHarness(false, { lsp: { autoInstall: false } }, true);
+      const root = harness.sessionManager.getCwd();
+      const bin = resolve(root, "node_modules/.bin");
+      await mkdir(bin, { recursive: true });
+      await copyFile(
+        process.execPath,
+        resolve(bin, process.platform === "win32" ? "node.exe" : "node"),
+      );
+      const script = resolve(bin, "server.cjs");
+      await writeFile(
+        script,
+        `import(${JSON.stringify(new URL("fixtures/fake-lsp-server.mjs", import.meta.url).href)});\n`,
+      );
+      const command = resolve(bin, `${executable}${process.platform === "win32" ? ".cmd" : ""}`);
+      await writeFile(
+        command,
+        process.platform === "win32"
+          ? `@echo off\r\n"${process.execPath}" "%~dp0server.cjs" %*\r\n`
+          : `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`,
+      );
+      await chmod(command, 0o755);
+      vi.stubEnv("PATH", "");
+      vi.stubEnv("FAKE_NO_PULL", id === "yaml" || id === "dockerfile" ? "1" : "0");
+      vi.stubEnv("FAKE_DIAGNOSTICS", "document");
+      await startExtension(harness);
+      for (const text of ["first invalid document", "changed invalid document"]) {
+        await writeFile(resolve(root, file!), text);
+        const result = await harness.runner.emitToolResult({
+          type: "tool_result",
+          toolCallId: "push",
+          toolName: "write",
+          input: { path: file, content: text },
+          content: [{ type: "text", text: "Written" }],
+          details: {},
+          isError: false,
+        });
+        expect(result).toMatchObject({ isError: false });
+        expect(JSON.stringify(result)).toContain(text);
+      }
+    },
+  );
+  test("cancelling Oxlint configuration inspection stops wrapper descendants without losing the mutation", async () => {
+    const harness = await createExtensionHarness(
+      false,
+      { lsp: { servers: { typescript: null } } },
+      true,
+    );
+    const root = harness.sessionManager.getCwd();
+    const bin = resolve(root, "node_modules/.bin");
+    await mkdir(bin, { recursive: true });
+    await copyFile(
+      process.execPath,
+      resolve(bin, process.platform === "win32" ? "node.exe" : "node"),
+    );
+    const pidPath = resolve(root, "inspection-child.pid");
+    const script = resolve(bin, "inspect.cjs");
+    await writeFile(
+      script,
+      `const { spawn } = require("node:child_process"); const fs = require("node:fs"); const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" }); fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid)); setInterval(() => {}, 1000);\n`,
+    );
+    const executable = resolve(bin, process.platform === "win32" ? "oxlint.cmd" : "oxlint");
+    await writeFile(
+      executable,
+      process.platform === "win32"
+        ? `@echo off\r\n"${process.execPath}" "%~dp0inspect.cjs" %*\r\n`
+        : `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`,
+    );
+    await chmod(executable, 0o755);
+    await writeFile(resolve(root, ".oxlintrc.json"), "{}");
+    await writeFile(resolve(root, "source.js"), "debugger;\n");
+    await startExtension(harness);
+    const abort = new AbortController();
+    harness.setSignal(abort.signal);
+    const pending = harness.runner.emitToolResult({
+      type: "tool_result",
+      toolCallId: "inspection",
+      toolName: "write",
+      input: { path: "source.js", content: "debugger;\n" },
+      content: [{ type: "text", text: "Wrote source.js" }],
+      details: {},
+      isError: false,
+    });
+    let pid: number | undefined;
+    try {
+      await expect
+        .poll(async () => {
+          try {
+            return Number(await readFile(pidPath, "utf8"));
+          } catch {
+            return undefined;
+          }
+        })
+        .toBeGreaterThan(0);
+      pid = Number(await readFile(pidPath, "utf8"));
+      abort.abort(new Error("Cancelled inspection"));
+      expect(await pending).toMatchObject({
+        isError: false,
+        content: expect.arrayContaining([{ type: "text", text: "Wrote source.js" }]),
+      });
+      await expect
+        .poll(() => {
+          try {
+            process.kill(pid!, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .toBe(false);
+    } finally {
+      abort.abort();
+      if (pid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {}
+      }
+      await pending;
+    }
+  });
+
+  test("external Oxlint roots retain distinct compatible helpers across Installed-only reopen and atomic updates from another root", async () => {
+    const { harness, store, control } = await managedHarness({
+      lsp: { servers: { typescript: null } },
+    });
+    const installer = new ToolInstaller(store);
+    for (const [name, version, peer] of [
+      ["a", "1.82.0", "^7.0.0"],
+      ["b", "1.83.0", "^8.0.0"],
+    ]) {
+      const root = resolve(harness.sessionManager.getCwd(), name!);
+      const bin = resolve(root, "node_modules/.bin");
+      const pkg = resolve(root, "node_modules/oxlint");
+      await mkdir(bin, { recursive: true });
+      await mkdir(pkg);
+      await copyFile(
+        process.execPath,
+        resolve(bin, process.platform === "win32" ? "node.exe" : "node"),
+      );
+      await writeFile(
+        resolve(root, "package.json"),
+        JSON.stringify({ dependencies: { oxlint: version } }),
+      );
+      await writeFile(resolve(root, "source.js"), "debugger;\n");
+      await writeFile(
+        resolve(pkg, "package.json"),
+        JSON.stringify({ name: "oxlint", version, peerDependencies: { "oxlint-tsgolint": peer } }),
+      );
+      const script = resolve(pkg, "server.cjs");
+      await writeFile(
+        script,
+        `if (process.argv.includes("--version")) console.log(${JSON.stringify(version)}); else if (process.argv.includes("--print-config")) console.log('{"options":{"typeAware":true}}'); else { process.env.FAKE_SYMBOL_NAME = process.env.OXLINT_TSGOLINT_PATH; import(${JSON.stringify(new URL("fixtures/fake-lsp-server.mjs", import.meta.url).href)}); }\n`,
+      );
+      const command = resolve(bin, process.platform === "win32" ? "oxlint.cmd" : "oxlint");
+      await writeFile(
+        command,
+        process.platform === "win32"
+          ? `@echo off\r\n"${process.execPath}" "%~dp0..\\oxlint\\server.cjs" %*\r\n`
+          : `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`,
+      );
+      await chmod(command, 0o755);
+    }
+    vi.stubGlobal("fetch", async (input: string) => {
+      const name = decodeURIComponent(new URL(input).pathname.slice(1));
+      if (name !== "oxlint-tsgolint") throw new Error(`Unexpected registry request: ${input}`);
+      return Response.json({
+        "dist-tags": { latest: "8.0.2" },
+        versions: Object.fromEntries(
+          ["7.0.2001", "8.0.2"].map((version) => [version, { name, version }]),
+        ),
+      });
+    });
+    const symbols = (root: string) =>
+      harness.runner
+        .getToolDefinition("lsp")!
+        .execute(
+          "helper",
+          { operation: "document_symbols", server_id: "oxlint", file_path: `${root}/source.js` },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        );
+    await startExtension(harness);
+    expect(JSON.stringify(await symbols("a"))).toContain("7.0.2001");
+    expect(JSON.stringify(await symbols("b"))).toContain("8.0.2");
+    await shutdownExtension(harness);
+    await writeFile(
+      resolve(harness.agentDirectory, "settings.json"),
+      JSON.stringify({ lsp: { autoInstall: false, servers: { typescript: null } } }),
+    );
+    vi.stubGlobal("fetch", () => Promise.reject(new Error("Installed-only must not fetch")));
+    await startExtension(harness);
+    expect(JSON.stringify(await symbols("a"))).toContain("7.0.2001");
+    expect(JSON.stringify(await symbols("b"))).toContain("8.0.2");
+    expect(
+      (await installer.list()).flatMap(
+        (installation) => installation.components.helper?.version ?? [],
+      ),
+    ).toEqual(expect.arrayContaining(["7.0.2001", "8.0.2"]));
+    let next = ["7.0.2002", "8.0.3", "9.0.0"];
+    vi.stubGlobal("fetch", async (input: string) => {
+      const name = decodeURIComponent(new URL(input).pathname.slice(1));
+      if (name !== "oxlint-tsgolint") throw new Error(`Unexpected registry request: ${input}`);
+      return Response.json({
+        "dist-tags": { latest: "9.0.0" },
+        versions: Object.fromEntries(next.map((version) => [version, { name, version }])),
+      });
+    });
+    const foreign = await installer.ensure(
+      { id: "formatter-unrelated", requirements: { node: "core:node@22.0.0" } },
+      { allowDownload: true },
+    );
+    const command = harness.runner.getRegisteredCommands().find((value) => value.name === "lsp")!;
+    await command.handler("update", harness.runner.createCommandContext());
+    const updated = await installer.list();
+    expect(
+      updated.flatMap((installation) => installation.components.helper?.version ?? []),
+    ).toEqual(expect.arrayContaining(["7.0.2002", "8.0.3"]));
+    expect(await installer.installed(foreign.id)).toEqual(foreign);
+    // Already running Instances retain the original helpers.
+    expect(JSON.stringify(await symbols("a"))).toContain("7.0.2001");
+    expect(JSON.stringify(await symbols("b"))).toContain("8.0.2");
+    next = ["7.0.2003", "8.0.4", "9.0.0"];
+    await control({ fail: true });
+    await command.handler("update oxlint", harness.runner.createCommandContext());
+    expect(await installer.list()).toEqual(updated);
+    expect(
+      harness.notifications
+        .slice(-2)
+        .every((message) => message.includes("previous installation retained")),
+    ).toBe(true);
+  }, 15_000);
+
+  test("managed Oxlint first use and updates retain a compatible server/helper pair across reopen and helper acquisition failure", async () => {
+    const { harness, store, control } = await managedHarness({
+      lsp: { servers: { typescript: null } },
+    });
+    const installer = new ToolInstaller(store);
+    const root = harness.sessionManager.getCwd();
+    await writeFile(resolve(root, "package.json"), '{"devDependencies":{"oxlint":"1.82.0"}}');
+    await writeFile(resolve(root, ".oxlintrc.json"), '{"options":{"typeAware":true}}');
+    await writeFile(resolve(root, "source.js"), "debugger;\n");
+    await control({ version: "1.82.0" });
+    const symbols = () =>
+      harness.runner
+        .getToolDefinition("lsp")!
+        .execute(
+          "managed-oxlint",
+          { operation: "document_symbols", server_id: "oxlint", file_path: "source.js" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        );
+    let serverVersion = "1.83.0";
+    let helperVersion = "8.0.2";
+    vi.stubGlobal("fetch", async (input: string) => {
+      const name = decodeURIComponent(new URL(input).pathname.slice(1));
+      if (name === "oxlint")
+        return Response.json({
+          "dist-tags": { latest: serverVersion },
+          versions: {
+            [serverVersion]: {
+              name,
+              version: serverVersion,
+              peerDependencies: { "oxlint-tsgolint": "^8.0.0" },
+            },
+          },
+        });
+      if (name === "oxlint-tsgolint")
+        return Response.json({
+          "dist-tags": { latest: "9.0.0" },
+          versions: Object.fromEntries(
+            ["7.0.2001", helperVersion, "9.0.0"].map((version) => [version, { name, version }]),
+          ),
+        });
+      throw new Error(`Unexpected registry request: ${input}`);
+    });
+    await startExtension(harness);
+    expect(JSON.stringify(await symbols())).toContain("7.0.2001");
+    const command = harness.runner.getRegisteredCommands().find((value) => value.name === "lsp")!;
+    await control({ version: serverVersion });
+    await command.handler("update oxlint", harness.runner.createCommandContext());
+    const selected = await installer.installed("lsp-oxlint");
+    expect(selected?.components.server?.version).toBe("1.83.0");
+    expect(selected?.components.helper?.version).toBe("8.0.2");
+    expect((await installer.list()).map((installation) => installation.id)).toEqual(["lsp-oxlint"]);
+    // Updating does not replace the server/helper pair of a running Instance.
+    expect(JSON.stringify(await symbols())).toContain("7.0.2001");
+    await shutdownExtension(harness);
+    await writeFile(
+      resolve(harness.agentDirectory, "settings.json"),
+      JSON.stringify({ lsp: { autoInstall: false, servers: { typescript: null } } }),
+    );
+    const registry = fetch;
+    vi.stubGlobal("fetch", () => Promise.reject(new Error("Installed-only must not fetch")));
+    await startExtension(harness);
+    const updated = JSON.stringify(await symbols());
+    expect(updated).toContain("oxlint@1.83.0");
+    expect(updated).toContain("8.0.2");
+    vi.stubGlobal("fetch", registry);
+    serverVersion = "1.84.0";
+    helperVersion = "8.0.3";
+    await control({ version: serverVersion, failTool: "npm:oxlint-tsgolint@" });
+    await command.handler("update oxlint", harness.runner.createCommandContext());
+    expect(await installer.installed("lsp-oxlint")).toEqual(selected);
+    expect(harness.notifications.at(-1)).toContain("Fixture acquisition failed");
+    expect(harness.notifications.at(-1)).toContain("previous installation retained");
+    await shutdownExtension(harness);
+    vi.stubGlobal("fetch", () => Promise.reject(new Error("Installed-only must not fetch")));
+    await startExtension(harness);
+    expect(JSON.stringify(await symbols())).toBe(updated);
+    expect(await readdir(root)).not.toContain("node_modules");
+  }, 15_000);
+
+  test("framework update command advances both external compatibility variants from another root and retains failed selections", async () => {
+    const { harness, store, control } = await managedHarness();
+    const installer = new ToolInstaller(store);
+    vi.stubEnv(
+      "PI_FRAMEWORK_PROTOCOL",
+      createRequire(import.meta.url).resolve("vscode-languageserver-protocol/node"),
+    );
+    for (const [name, peer] of [
+      ["a", "^5.9.2"],
+      ["b", "^6.0.2"],
+    ] as const) {
+      const root = resolve(harness.sessionManager.getCwd(), name);
+      const bin = resolve(root, "node_modules/.bin");
+      const pkg = resolve(root, "node_modules/@astrojs/language-server");
+      await mkdir(bin, { recursive: true });
+      await mkdir(resolve(pkg, "bin"), { recursive: true });
+      await copyFile(
+        process.execPath,
+        resolve(bin, process.platform === "win32" ? "node.exe" : "node"),
+      );
+      await copyFile(
+        fileURLToPath(new URL("fixtures/framework-sdk-server.cjs", import.meta.url)),
+        resolve(pkg, "bin/nodeServer.js"),
+      );
+      await writeFile(
+        resolve(pkg, "package.json"),
+        JSON.stringify({
+          name: "@astrojs/language-server",
+          version: "2.16.16",
+          peerDependencies: { typescript: peer },
+        }),
+      );
+      await writeFile(resolve(root, "package.json"), "{}");
+      await writeFile(resolve(root, "source.astro"), "---\nconst answer = 42;\n---\n{answer}\n");
+    }
+    let versions = ["5.9.3", "6.0.3", "7.0.2"];
+    vi.stubGlobal("fetch", async (input: string) => {
+      const name = decodeURIComponent(new URL(input).pathname.slice(1));
+      if (name !== "typescript") throw new Error(`Unexpected registry request: ${input}`);
+      return Response.json({
+        "dist-tags": { latest: "7.0.2" },
+        versions: Object.fromEntries(versions.map((version) => [version, { name, version }])),
+      });
+    });
+    const hover = (root: string) =>
+      harness.runner.getToolDefinition("lsp")!.execute(
+        "sdk",
+        {
+          operation: "hover",
+          server_id: "astro",
+          file_path: `${root}/source.astro`,
+          line: 2,
+          character: 7,
+        },
+        undefined,
+        undefined,
+        harness.runner.createContext(),
+      );
+    await startExtension(harness);
+    expect(JSON.stringify(await hover("a"))).toContain("TypeScript SDK 5.9.3");
+    expect(JSON.stringify(await hover("b"))).toContain("TypeScript SDK 6.0.3");
+    versions = ["5.9.4", "6.0.4", "7.0.2"];
+    const command = harness.runner.getRegisteredCommands().find((value) => value.name === "lsp")!;
+    await command.handler("update astro", harness.runner.createCommandContext());
+    const updated = await installer.list();
+    expect(
+      updated
+        .map((installation) => installation.components.sdk?.version)
+        .sort((a, b) => (a ?? "").localeCompare(b ?? "")),
+    ).toEqual(["5.9.4", "6.0.4"]);
+    expect(JSON.stringify(await hover("a"))).toContain("TypeScript SDK 5.9.3");
+    expect(JSON.stringify(await hover("b"))).toContain("TypeScript SDK 6.0.3");
+    versions = ["5.9.5", "6.0.5", "7.0.2"];
+    await control({ fail: true });
+    await command.handler("update astro", harness.runner.createCommandContext());
+    expect(await installer.list()).toEqual(updated);
+    expect(
+      harness.notifications
+        .slice(-2)
+        .every((message) => message.includes("previous installation retained")),
+    ).toBe(true);
+    await shutdownExtension(harness);
+    await writeFile(
+      resolve(harness.agentDirectory, "settings.json"),
+      JSON.stringify({ lsp: { autoInstall: false } }),
+    );
+    vi.stubGlobal("fetch", () => Promise.reject(new Error("Installed-only must not fetch")));
+    await startExtension(harness);
+    expect(JSON.stringify(await hover("a"))).toContain("TypeScript SDK 5.9.4");
+    expect(JSON.stringify(await hover("b"))).toContain("TypeScript SDK 6.0.4");
+  }, 15_000);
+
+  test("framework updates advance the compatible SDK atomically and retain the working pair on incompatibility", async () => {
+    const { harness, store } = await managedHarness();
+    const installer = new ToolInstaller(store);
+    await installer.ensure(
+      {
+        id: "lsp-astro",
+        requirements: {
+          node: "core:node@26.8.2",
+          server: "npm:@astrojs/language-server@2.0.0",
+          sdk: "npm:typescript@5.9.2",
+        },
+      },
+      { allowDownload: true },
+    );
+    let serverVersion = "3.0.0";
+    let peer = "^6.0.0";
+    vi.stubGlobal("fetch", async (input: string) => {
+      const name = decodeURIComponent(new URL(input).pathname.slice(1));
+      if (name === "@astrojs/language-server")
+        return Response.json({
+          "dist-tags": { latest: serverVersion },
+          versions: {
+            [serverVersion]: {
+              name,
+              version: serverVersion,
+              peerDependencies: { typescript: peer },
+            },
+          },
+        });
+      if (name === "typescript")
+        return Response.json({
+          "dist-tags": { latest: "7.0.2" },
+          versions: Object.fromEntries(
+            ["5.9.2", "6.0.3", "7.0.2"].map((version) => [version, { name, version }]),
+          ),
+        });
+      throw new Error(`Unexpected registry request: ${input}`);
+    });
+    await startExtension(harness);
+    const command = harness.runner.getRegisteredCommands().find((value) => value.name === "lsp")!;
+    await command.handler("update astro", harness.runner.createCommandContext());
+    const selected = await installer.installed("lsp-astro");
+    expect(selected?.components.server?.version).toBe("3.0.0");
+    expect(selected?.components.sdk?.version).toBe("6.0.3");
+    expect(harness.notifications.join("\n")).toContain(
+      "running Instances keep their existing executables",
+    );
+    serverVersion = "4.0.0";
+    peer = "^7.0.0";
+    await command.handler("update astro", harness.runner.createCommandContext());
+    expect(await installer.installed("lsp-astro")).toEqual(selected);
+    expect(harness.notifications.at(-1)).toContain("no compatible JavaScript TypeScript SDK");
+    expect(harness.notifications.at(-1)).toContain("previous installation retained");
+  });
+  test.each([false, true])(
+    "Deno never launches a repairing npm wrapper (downloads: %s)",
+    async (allowDownload) => {
+      const { harness, store } = await managedHarness({ lsp: { autoInstall: allowDownload } });
+      const cwd = harness.sessionManager.getCwd();
+      const pkg = resolve(cwd, "node_modules/deno");
+      const bin = resolve(cwd, "node_modules/.bin");
+      await mkdir(pkg, { recursive: true });
+      await mkdir(bin, { recursive: true });
+      const manifest = JSON.stringify({ name: "deno", version: "2.9.6", bin: { deno: "bin.cjs" } });
+      const script = `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(resolve(pkg, "wrapper-executed"))}, "repaired"); import(${JSON.stringify(new URL("fixtures/fake-lsp-server.mjs", import.meta.url).href)});\n`;
+      await writeFile(resolve(pkg, "package.json"), manifest);
+      // Shadow inherited NODE_PATH payloads so this project genuinely lacks the native closure.
+      const target = `${process.platform}-${process.arch}${process.platform === "linux" ? "-glibc" : ""}`;
+      const optional = resolve(cwd, "node_modules/@deno", target);
+      await mkdir(optional, { recursive: true });
+      await writeFile(
+        resolve(optional, "package.json"),
+        JSON.stringify({ name: `@deno/${target}`, version: "2.9.6" }),
+      );
+      await writeFile(resolve(pkg, "bin.cjs"), script);
+      await chmod(resolve(pkg, "bin.cjs"), 0o755);
+      if (process.platform === "win32") {
+        await writeFile(
+          resolve(bin, "deno.cmd"),
+          `@echo off\r\n"${process.execPath}" "%~dp0..\\deno\\bin.cjs" %*\r\n`,
+        );
+      } else {
+        await symlink("../deno/bin.cjs", resolve(bin, "deno"));
+      }
+      await writeFile(resolve(cwd, "deno.json"), "{}");
+      await writeFile(resolve(cwd, "deno.lock"), "unchanged lockfile\n");
+      await writeFile(resolve(cwd, "source.ts"), "export const answer = 42;\n");
+      await startExtension(harness);
+      const result = harness.runner
+        .getToolDefinition("lsp")!
+        .execute(
+          "deno-wrapper",
+          { operation: "document_symbols", server_id: "deno", file_path: "source.ts" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        );
+      if (allowDownload) {
+        expect(JSON.stringify(await result)).toContain("deno-native-fixture");
+        expect(
+          (await new ToolInstaller(store).installed("lsp-deno"))?.components.runtime,
+        ).toBeDefined();
+      } else {
+        await expect(result).rejects.toThrow(/unavailable|not installed/i);
+        expect(await new ToolInstaller(store).installed("lsp-deno")).toBeUndefined();
+      }
+      expect((await readdir(pkg)).sort((a, b) => a.localeCompare(b))).toEqual([
+        "bin.cjs",
+        "package.json",
+      ]);
+      expect(await readFile(resolve(pkg, "package.json"), "utf8")).toBe(manifest);
+      expect(await readFile(resolve(pkg, "bin.cjs"), "utf8")).toBe(script);
+      expect(await readFile(resolve(cwd, "deno.lock"), "utf8")).toBe("unchanged lockfile\n");
+      expect(await readFile(resolve(cwd, "source.ts"), "utf8")).toBe("export const answer = 42;\n");
+    },
+  );
+
+  test.each([{ nodeModulesDir: "auto" }, { vendor: true }])(
+    "Deno refuses automatic dependency writes before acquisition: %j",
+    async (config) => {
+      const harness = await createExtensionHarness(false, { lsp: { autoInstall: false } }, true);
+      const cwd = harness.sessionManager.getCwd();
+      const text = JSON.stringify(config);
+      await writeFile(resolve(cwd, "deno.jsonc"), `// project policy\n${text}\n`);
+      await writeFile(resolve(cwd, "source.ts"), "export const answer = 42;\n");
+      vi.stubEnv("PATH", "");
+      await startExtension(harness);
+      try {
+        const tool = harness.runner.getToolDefinition("lsp");
+        if (!tool) throw new Error("Expected lsp");
+        await expect(
+          tool.execute(
+            "unsafe-deno",
+            { operation: "document_symbols", file_path: "source.ts" },
+            undefined,
+            undefined,
+            harness.runner.createContext(),
+          ),
+        ).rejects.toThrow("automatic dependency writes");
+        expect(await readdir(harness.agentDirectory)).not.toContain("managed-tools");
+        expect(await readFile(resolve(cwd, "deno.jsonc"), "utf8")).toBe(
+          `// project policy\n${text}\n`,
+        );
+      } finally {
+        await shutdownExtension(harness);
+      }
+    },
+  );
   test("cancels a hung external TypeScript version shim and its subprocess before returning", async () => {
     const harness = await createExtensionHarness(false, { lsp: { autoInstall: false } }, true);
     const cwd = harness.sessionManager.getCwd();

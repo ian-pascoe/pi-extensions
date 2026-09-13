@@ -40,7 +40,9 @@ Provider background: [Anthropic prompt caching](https://platform.claude.com/docs
 
 ## Other plans
 
-- [Managed language tools](managed-language-tools.md) — accepted design for shared
-  private installation and package-owned LSP, formatter, and debug presets. Runtime
-  implementation and the six-cell native platform verification are not started.
+- [Managed language tools](managed-language-tools.md) — implemented and verified on
+  all six native platforms; shared private installation and package-owned LSP,
+  formatter, and debug presets.
+- [Language Tool Preset expansion](language-tool-preset-expansion.md) — design
+  interview in progress for a curated expansion across all three packages.
 - [Pi Skills Selector](pi-skills-selector.md) — existing plan, unchanged by this audit.
