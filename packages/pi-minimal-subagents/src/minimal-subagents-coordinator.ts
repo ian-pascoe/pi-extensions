@@ -207,9 +207,14 @@ export class MinimalSubagentsCoordinator {
     const model = parameters.model ?? caller.model;
     const requestedThinking = parameters.thinking_level ?? caller.thinkingLevel;
     const thinkingLevel = this.dependencies.sessions.resolveThinkingLevel(model, requestedThinking);
-    const ordinaryTools = resolveOrdinaryToolSelection(parameters.tools, {
+    const {
+      ordinaryTools,
+      requiredTools,
+      warnings: toolWarnings,
+    } = resolveOrdinaryToolSelection(parameters.tools, {
       ordinaryTools: excludeCoordinatorTools(caller.ordinaryTools),
       capabilityCeiling: excludeCoordinatorTools(caller.capabilityCeiling),
+      toolsets: this.dependencies.toolsets,
     });
     const committedMessages = structuredClone(caller.messages);
     const imported = assembleImportedContext(sessionContext, committedMessages);
@@ -251,9 +256,24 @@ export class MinimalSubagentsCoordinator {
       const missingDependencies =
         await this.dependencies.sessions.resolveLaunchMissingDependencies(agent);
       this.assertAccepting();
-      if (missingDependencies.length > 0) {
+      const optionalMissing = new Set(
+        missingDependencies.filter(
+          (name) => name !== model && ordinaryTools.includes(name) && !requiredTools.includes(name),
+        ),
+      );
+      const requiredMissing = missingDependencies.filter((name) => !optionalMissing.has(name));
+      if (requiredMissing.length > 0) {
         throw new Error(
-          `Minimal subagents launch dependencies unavailable: ${missingDependencies.join(", ")}`,
+          `Minimal subagents launch dependencies unavailable: ${requiredMissing.join(", ")}`,
+        );
+      }
+      if (optionalMissing.size > 0) {
+        agent.launch_contract.ordinary_tools = ordinaryTools.filter(
+          (name) => !optionalMissing.has(name),
+        );
+        agent.capability_ceiling = [...agent.launch_contract.ordinary_tools];
+        toolWarnings.push(
+          `Configured tools unavailable in child resources; skipped: ${[...optionalMissing].join(", ")}`,
         );
       }
       identity = this.dependencies.sessions.createIdentity(agent, imported.messages);
@@ -273,6 +293,13 @@ export class MinimalSubagentsCoordinator {
       createRegistryEvent(this.dependencies.registry.rootSessionId, "agent-created", { agent }),
     );
     const turnId = this.beginTurn(agent);
+    if (toolWarnings.length > 0) {
+      this.dependencies.notify?.({
+        type: "tool-warning",
+        agentId,
+        message: `Minimal subagents tool warnings for ${agentId}:\n- ${[...new Set(toolWarnings)].join("\n- ")}`,
+      });
+    }
     this.dependencies.notify?.({
       type: "spawn",
       agentId,

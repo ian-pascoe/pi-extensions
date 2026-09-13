@@ -29,8 +29,13 @@ describe("minimal subagent capabilities", () => {
       ordinaryTools: ["read", "write"],
       capabilityCeiling: ["read", "grep", "find", "ls"],
     };
-    expect(resolveOrdinaryToolSelection("read", context)).toEqual(["read", "grep", "find", "ls"]);
-    expect(resolveOrdinaryToolSelection(["read"], context)).toEqual(["read"]);
+    expect(resolveOrdinaryToolSelection("read", context).ordinaryTools).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+    ]);
+    expect(resolveOrdinaryToolSelection(["read"], context).ordinaryTools).toEqual(["read"]);
     expect(() => resolveOrdinaryToolSelection(["write"], context)).toThrow(
       "Minimal subagents capability ceiling exceeded: write",
     );
