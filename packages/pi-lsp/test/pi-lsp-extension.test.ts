@@ -57,6 +57,7 @@ async function makeTemporaryDirectory(prefix: string): Promise<string> {
 async function createExtensionHarness(
   projectTrusted: boolean,
   globalSettings: LspSettingsDocumentInput = {},
+  noSession = false,
 ): Promise<ExtensionHarness> {
   const cwd = await makeTemporaryDirectory("pi-lsp-extension-cwd-");
   const agentDirectory = await makeTemporaryDirectory("pi-lsp-extension-agent-");
@@ -68,7 +69,12 @@ async function createExtensionHarness(
     JSON.stringify({ lsp: { unknownField: true } }),
   );
 
-  const sessionManager = SessionManager.create(cwd, sessionDirectory);
+  if (noSession) {
+    for (const name of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(name, sessionDirectory);
+  }
+  const sessionManager = noSession
+    ? SessionManager.inMemory(cwd)
+    : SessionManager.create(cwd, sessionDirectory);
   const settingsManager = SettingsManager.create(cwd, agentDirectory, { projectTrusted });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -191,6 +197,7 @@ async function piLspSessionDirectories(sessionDirectory: string): Promise<string
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const session of agentSessions.splice(0)) {
     try {
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -507,44 +514,74 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("keeps the rendered lsp tool available while reload reconstructs the transcript", async () => {
-    const harness = await createExtensionHarness(false);
-    const model = getModel("anthropic", "claude-sonnet-4-5");
-    if (model === undefined) throw new Error("Pi LSP extension test: missing pinned model");
-    const session = (
-      await createAgentSession({
-        cwd: harness.sessionManager.getCwd(),
-        agentDir: harness.agentDirectory,
-        model,
-        resourceLoader: harness.resourceLoader,
-        sessionManager: harness.sessionManager,
-        settingsManager: harness.settingsManager,
-      })
-    ).session;
-    agentSessions.push(session);
-    await session.bindExtensions({
-      mode: "rpc",
-      uiContext: session.extensionRunner.getUIContext(),
-    });
+  test.each([false, true])(
+    "keeps lsp usable across startup, reload, and shutdown (noSession: %s)",
+    async (noSession) => {
+      const harness = await createExtensionHarness(false, {}, noSession);
+      const model = getModel("anthropic", "claude-sonnet-4-5");
+      if (model === undefined) throw new Error("Pi LSP extension test: missing pinned model");
+      const session = (
+        await createAgentSession({
+          cwd: harness.sessionManager.getCwd(),
+          agentDir: harness.agentDirectory,
+          model,
+          resourceLoader: harness.resourceLoader,
+          sessionManager: harness.sessionManager,
+          settingsManager: harness.settingsManager,
+        })
+      ).session;
+      agentSessions.push(session);
+      const errors: unknown[] = [];
+      await session.bindExtensions({
+        mode: "rpc",
+        uiContext: session.extensionRunner.getUIContext(),
+        onError: (error) => errors.push(error),
+      });
+      expect(errors).toEqual([]);
+      expect(harness.sessionManager.getSessionDir()).toBe(
+        noSession ? "" : harness.sessionDirectory,
+      );
+      const status = async () => {
+        const tool = session.getToolDefinition("lsp");
+        if (tool === undefined) throw new Error("Expected LSP tool");
+        return tool.execute(
+          "status",
+          { operation: "status" },
+          undefined,
+          undefined,
+          session.extensionRunner.createContext(),
+        );
+      };
+      expect(await status()).toMatchObject({ details: { operation: "status" } });
+      const firstDirectories = await piLspSessionDirectories(harness.sessionDirectory);
+      expect(firstDirectories).toHaveLength(1);
 
-    let definitionAvailableBeforeSessionStart = false;
-    let renderCallAvailableBeforeSessionStart = false;
-    let renderResultAvailableBeforeSessionStart = false;
-    await session.reload({
-      beforeSessionStart: () => {
-        const definition = session.getToolDefinition("lsp");
-        definitionAvailableBeforeSessionStart = definition !== undefined;
-        renderCallAvailableBeforeSessionStart = definition?.renderCall !== undefined;
-        renderResultAvailableBeforeSessionStart = definition?.renderResult !== undefined;
-      },
-    });
+      let definitionAvailableBeforeSessionStart = false;
+      let renderCallAvailableBeforeSessionStart = false;
+      let renderResultAvailableBeforeSessionStart = false;
+      await session.reload({
+        beforeSessionStart: () => {
+          const definition = session.getToolDefinition("lsp");
+          definitionAvailableBeforeSessionStart = definition !== undefined;
+          renderCallAvailableBeforeSessionStart = definition?.renderCall !== undefined;
+          renderResultAvailableBeforeSessionStart = definition?.renderResult !== undefined;
+        },
+      });
 
-    expect({
-      definition: definitionAvailableBeforeSessionStart,
-      renderCall: renderCallAvailableBeforeSessionStart,
-      renderResult: renderResultAvailableBeforeSessionStart,
-    }).toEqual({ definition: true, renderCall: true, renderResult: true });
-  });
+      expect({
+        definition: definitionAvailableBeforeSessionStart,
+        renderCall: renderCallAvailableBeforeSessionStart,
+        renderResult: renderResultAvailableBeforeSessionStart,
+      }).toEqual({ definition: true, renderCall: true, renderResult: true });
+      expect(errors).toEqual([]);
+      expect(await status()).toMatchObject({ details: { operation: "status" } });
+      const reloadedDirectories = await piLspSessionDirectories(harness.sessionDirectory);
+      expect(reloadedDirectories).toHaveLength(1);
+      expect(reloadedDirectories).not.toEqual(firstDirectories);
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+      expect(await piLspSessionDirectories(harness.sessionDirectory)).toEqual([]);
+    },
+  );
 
   test("starts runtime lazily, replays only the active branch, augments writes, and shuts down idempotently", async () => {
     const harness = await createExtensionHarness(false);

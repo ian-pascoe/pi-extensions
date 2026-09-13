@@ -12,7 +12,7 @@ import {
   type SessionShutdownEvent,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";
 import type { DapSettingsDocumentInput } from "../src/pi-dap-settings.js";
 
@@ -38,6 +38,7 @@ async function createExtensionHarness(
   projectTrusted: boolean,
   globalSettings: DapSettingsDocumentInput,
   mode: "tui" | "rpc" = "rpc",
+  noSession = false,
 ): Promise<ExtensionHarness> {
   const cwd = await makeTemporaryDirectory("pi-dap-extension-cwd-");
   const agentDirectory = await makeTemporaryDirectory("pi-dap-extension-agent-");
@@ -49,7 +50,12 @@ async function createExtensionHarness(
     JSON.stringify({ dap: { unknownProjectField: true } }),
   );
 
-  const sessionManager = SessionManager.create(cwd, sessionDirectory);
+  if (noSession) {
+    for (const name of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(name, sessionDirectory);
+  }
+  const sessionManager = noSession
+    ? SessionManager.inMemory(cwd)
+    : SessionManager.create(cwd, sessionDirectory);
   const settingsManager = SettingsManager.create(cwd, agentDirectory, { projectTrusted });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -126,6 +132,7 @@ async function piDapSessionDirectories(sessionDirectory: string): Promise<string
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const session of agentSessions.splice(0)) {
     try {
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -141,27 +148,56 @@ afterEach(async () => {
 });
 
 describe("Pi DAP extension lifecycle", () => {
-  test("restores the rendered DAP tool before reload session startup", async () => {
-    const harness = await createExtensionHarness(false, {});
-    await harness.session.bindExtensions({
-      mode: "rpc",
-      uiContext: harness.runner.getUIContext(),
-    });
+  test.each([false, true])(
+    "keeps DAP usable across startup, reload, and shutdown (noSession: %s)",
+    async (noSession) => {
+      const harness = await createExtensionHarness(false, {}, "rpc", noSession);
+      const errors: unknown[] = [];
+      await harness.session.bindExtensions({
+        mode: "rpc",
+        uiContext: harness.runner.getUIContext(),
+        onError: (error) => errors.push(error),
+      });
+      expect(errors).toEqual([]);
+      expect(harness.runner.createContext().sessionManager.getSessionDir()).toBe(
+        noSession ? "" : harness.sessionDirectory,
+      );
+      const status = async () => {
+        const tool = harness.session.getToolDefinition("dap");
+        if (tool === undefined) throw new Error("Expected DAP tool");
+        return tool.execute(
+          "status",
+          { operation: "status" },
+          undefined,
+          undefined,
+          harness.runner.createContext(),
+        );
+      };
+      expect(await status()).toMatchObject({ details: { operation: "status", state: "idle" } });
+      const firstDirectories = await piDapSessionDirectories(harness.sessionDirectory);
+      expect(firstDirectories).toHaveLength(1);
 
-    let definitionDuringTranscriptRebuild: unknown;
-    await harness.session.reload({
-      beforeSessionStart: () => {
-        definitionDuringTranscriptRebuild = harness.session.getToolDefinition("dap");
-      },
-    });
+      let definitionDuringTranscriptRebuild: unknown;
+      await harness.session.reload({
+        beforeSessionStart: () => {
+          definitionDuringTranscriptRebuild = harness.session.getToolDefinition("dap");
+        },
+      });
 
-    expect(definitionDuringTranscriptRebuild).toMatchObject({
-      name: "dap",
-      renderCall: expect.any(Function),
-      renderResult: expect.any(Function),
-    });
-    await shutdownExtension(harness);
-  });
+      expect(definitionDuringTranscriptRebuild).toMatchObject({
+        name: "dap",
+        renderCall: expect.any(Function),
+        renderResult: expect.any(Function),
+      });
+      expect(errors).toEqual([]);
+      expect(await status()).toMatchObject({ details: { operation: "status", state: "idle" } });
+      const reloadedDirectories = await piDapSessionDirectories(harness.sessionDirectory);
+      expect(reloadedDirectories).toHaveLength(1);
+      expect(reloadedDirectories).not.toEqual(firstDirectories);
+      await shutdownExtension(harness);
+      expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
+    },
+  );
 
   test("loads the tool eagerly, reloads trust-aware settings, and shuts down idempotently", async () => {
     const harness = await createExtensionHarness(false, {
