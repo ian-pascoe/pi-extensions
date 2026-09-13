@@ -136,12 +136,7 @@ export function readAdvisorSettings(
     ],
     ["session", readAdvisorOverrides(session.sessionManager)],
   ];
-  const settings: AdvisorConfig = {
-    ...structuredClone(defaults),
-    ...layers[0]?.[1],
-    ...layers[1]?.[1],
-    ...layers[2]?.[1],
-  };
+  const settings: AdvisorConfig = structuredClone(defaults);
   const sources: Record<string, AdvisorSettingSource> = Object.fromEntries(
     Object.keys(optionsSchema.properties).map((key): [string, AdvisorSettingSource] => [
       key,
@@ -149,13 +144,11 @@ export function readAdvisorSettings(
     ]),
   );
   for (const [source, layer] of layers) {
+    Object.assign(settings, layer);
     for (const key of Object.keys(layer)) sources[key] = source;
   }
   return { settings, sources };
 }
-
-/** Effective values and their native authorship sources. */
-export type ResolvedAdvisorSettings = ReturnType<typeof readAdvisorSettings>;
 
 const storedDocumentSchema = Type.Object(
   {

@@ -326,17 +326,14 @@ export class AdvisorObserver {
       () => review.cancellation.abort(new Error("Advisor review deadline exceeded")),
       this.config.reviewTimeoutMs,
     );
-    let rejectCancellation: (() => void) | undefined;
-    const cancelled = new Promise<never>((_resolve, reject) => {
-      rejectCancellation = () => reject(review.cancellation.signal.reason);
-      review.cancellation.signal.addEventListener("abort", rejectCancellation, { once: true });
-    });
+    const cancelled = Promise.withResolvers<never>();
+    const rejectCancellation = () => cancelled.reject(review.cancellation.signal.reason);
+    review.cancellation.signal.addEventListener("abort", rejectCancellation, { once: true });
     try {
-      await Promise.race([this.performReview(review), cancelled]);
+      await Promise.race([this.performReview(review), cancelled.promise]);
     } finally {
       clearTimeout(timer);
-      if (rejectCancellation)
-        review.cancellation.signal.removeEventListener("abort", rejectCancellation);
+      review.cancellation.signal.removeEventListener("abort", rejectCancellation);
       if (review.cancellation.signal.aborted && this.runtime && review.epoch === this.epoch) {
         const runtime = this.runtime;
         this.runtime = undefined;
@@ -575,14 +572,11 @@ export class AdvisorObserver {
     if (this.running) this.reset();
   }
   private async wait(threshold: number, signal?: AbortSignal): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let release: (() => void) | undefined;
-    const expired = new Promise<void>((resolve) => {
-      release = resolve;
-      timer = setTimeout(resolve, 30000);
-    });
-    if (signal?.aborted) release?.();
-    else if (release) signal?.addEventListener("abort", release, { once: true });
+    const { promise: expired, resolve } = Promise.withResolvers<void>();
+    const release = () => resolve();
+    const timer = setTimeout(release, 30000);
+    if (signal?.aborted) release();
+    else signal?.addEventListener("abort", release, { once: true });
     try {
       await Promise.race([
         expired,
@@ -598,7 +592,7 @@ export class AdvisorObserver {
       ]);
     } finally {
       clearTimeout(timer);
-      if (release) signal?.removeEventListener("abort", release);
+      signal?.removeEventListener("abort", release);
     }
   }
   /** Root extension's awaited native agent_settled hook. */
