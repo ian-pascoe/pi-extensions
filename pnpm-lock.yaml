@@ -66,7 +66,7 @@ importers:
         specifier: '*'
         version: 0.85.1
       '@ian-pascoe/pi-utils':
-        specifier: ^0.1.1
+        specifier: ^0.2.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -103,7 +103,7 @@ importers:
         specifier: '*'
         version: 0.85.1
       '@ian-pascoe/pi-utils':
-        specifier: ^0.1.1
+        specifier: ^0.2.0
         version: link:../pi-utils
       deno:
         specifier: 2.9.6
@@ -224,7 +224,7 @@ importers:
         specifier: '*'
         version: 0.85.1
       '@ian-pascoe/pi-utils':
-        specifier: ^0.1.1
+        specifier: ^0.2.0
         version: link:../pi-utils
       '@modelcontextprotocol/client':
         specifier: ^2.0.0
@@ -301,7 +301,7 @@ importers:
         specifier: '*'
         version: 0.85.1(ws@8.21.3)(zod@4.5.4)
       '@ian-pascoe/pi-utils':
-        specifier: ^0.1.1
+        specifier: ^0.2.0
         version: link:../pi-utils
     optionalDependencies:
       tiktoken:

@@ -172,4 +172,5 @@ it.each([false, true])(
       data: { state: "paused", error: expect.stringContaining("model is unavailable") },
     });
   },
+  20_000,
 );

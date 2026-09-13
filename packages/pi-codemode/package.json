@@ -38,7 +38,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.1.1",
+    "@ian-pascoe/pi-utils": "^0.2.0",
     "deno": "2.9.6",
     "minimatch": "^10.2.6",
     "runtime-typescript": "npm:typescript@6.0.3"
