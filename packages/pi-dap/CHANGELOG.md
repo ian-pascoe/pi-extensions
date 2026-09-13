@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-dap
 
+## 0.3.5
+
+### Patch Changes
+
+- 7b5b785: Fix LSP and DAP startup with `pi --no-session` by using a private OS temporary directory when Pi supplies an empty session directory. Result Spills and stderr files retain their existing permissions and normal teardown cleanup.
+
 ## 0.3.4
 
 ### Patch Changes
