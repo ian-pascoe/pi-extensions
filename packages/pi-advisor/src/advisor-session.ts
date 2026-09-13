@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
@@ -8,6 +9,7 @@ import {
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   DefaultResourceLoader,
+  getPackageDir,
   ModelRuntime,
   SessionManager,
   SettingsManager,
@@ -109,7 +111,8 @@ function recreationInputs(
   if (
     Value.Check(fileAuthSchema, store) &&
     store.authPath === store.storage.authPath &&
-    Object.getPrototypeOf(store)?.constructor.name === "AuthStorage" &&
+    // Pi 0.85.1's bundled CLI names the same native class _AuthStorage.
+    ["AuthStorage", "_AuthStorage"].includes(Object.getPrototypeOf(store)?.constructor.name) &&
     Object.getPrototypeOf(store.storage)?.constructor.name === "FileAuthStorageBackend"
   )
     authPath = store.authPath;
@@ -197,11 +200,38 @@ async function buildAdvisorSession(
     )
       throw new Error("Advisor resource owner flags do not match the observed flags");
   }
-  if (inherited.some(({ resolvedPath }) => !resolvedPath || resolvedPath.startsWith("<"))) {
+  const extensionPaths = source.getExtensions().extensions.map((extension) => {
+    if (extension.resolvedPath && !extension.resolvedPath.startsWith("<"))
+      return extension.resolvedPath;
+    // Pi 0.85.1 injects this built-in inline, but ships a fresh file-backed factory.
+    // Match its registration shape, not arbitrary inline closures or hidden extensions.
+    if (
+      extension.path === "<inline:llama.cpp>" &&
+      extension.resolvedPath === extension.path &&
+      extension.hidden === true &&
+      extension.commands.size === 1 &&
+      extension.commands.has("llama") &&
+      [
+        extension.handlers,
+        extension.tools,
+        extension.messageRenderers,
+        extension.entryRenderers,
+        extension.flags,
+        extension.shortcuts,
+      ].every((registrations) => !registrations?.size) &&
+      !extension.markdownTransformer
+    ) {
+      const path = join(getPackageDir(), "dist", "extensions", "llama", "index.js");
+      if (!existsSync(path))
+        throw new Error(
+          `Unsupported Advisor resources: Pi's built-in llama.cpp file is unavailable (${path})`,
+        );
+      return path;
+    }
     throw new Error(
-      "Unsupported Advisor resources: inline factories require fresh owner-supplied recreation inputs",
+      `Unsupported Advisor resources: inline factories require fresh owner-supplied recreation inputs (${extension.path})`,
     );
-  }
+  });
   const flags = new Map(observed.extensionRunner?.getFlagValues());
   const global = JSON.stringify(observed.settingsManager.getGlobalSettings());
   const project = JSON.stringify(observed.settingsManager.getProjectSettings());
@@ -303,7 +333,7 @@ async function buildAdvisorSession(
       resourceLoaderOptions: {
         noExtensions: true,
         noContextFiles: true,
-        additionalExtensionPaths: inherited.map(({ resolvedPath }) => resolvedPath),
+        additionalExtensionPaths: extensionPaths,
         extensionFactories: options.controlExtension
           ? [{ name: "advisor-control", factory: options.controlExtension }]
           : [],
@@ -340,9 +370,7 @@ async function buildAdvisorSession(
       const loaded = services.resourceLoader.getExtensions();
       if (
         loaded.extensions.length !== inherited.length + (options.controlExtension ? 1 : 0) ||
-        inherited.some(
-          (entry, index) => entry.resolvedPath !== loaded.extensions[index]?.resolvedPath,
-        )
+        extensionPaths.some((path, index) => path !== loaded.extensions[index]?.resolvedPath)
       ) {
         throw new Error("Advisor could not reproduce the ordered inherited extension resources");
       }
@@ -350,6 +378,7 @@ async function buildAdvisorSession(
         const fresh = loaded.extensions[index];
         if (!fresh) throw new Error("Advisor inherited extension is unavailable");
         fresh.path = original.path;
+        fresh.resolvedPath = original.resolvedPath;
         if (original.hidden === undefined) delete fresh.hidden;
         else fresh.hidden = original.hidden;
         fresh.sourceInfo = structuredClone(original.sourceInfo);

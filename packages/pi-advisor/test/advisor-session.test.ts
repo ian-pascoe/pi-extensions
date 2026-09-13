@@ -1,8 +1,8 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import {
   InMemoryCredentialStore,
@@ -12,12 +12,14 @@ import {
 import {
   createAgentSessionServices,
   DefaultResourceLoader,
+  getPackageDir,
   createAgentSessionFromServices,
   AgentSessionRuntime,
   ModelRuntime,
   SessionManager,
   SettingsManager,
   defineTool,
+  type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import {
   createAdvisorSession,
@@ -42,6 +44,7 @@ async function observedFixture(
   suppliedSettings?: SettingsManager,
   ownedLoader = false,
   suppliedRuntime?: ModelRuntime,
+  extensionFactories: InlineExtension[] = [],
 ) {
   const dir = await mkdtemp(join(tmpdir(), "advisor-sdk-"));
   const settings =
@@ -70,6 +73,7 @@ async function observedFixture(
       noContextFiles: true,
       noPromptTemplates: true,
       additionalExtensionPaths: paths,
+      extensionFactories,
     },
   });
   if (ownedLoader) {
@@ -116,6 +120,103 @@ function entry(session: AgentSessionRuntime["session"], customType: string) {
 }
 
 describe("private Advisor native sessions", () => {
+  it("recreates the native inline llama extension with fresh handlers through private reload", async () => {
+    const { default: factory } = await import(
+      pathToFileURL(join(getPackageDir(), "dist", "extensions", "llama", "index.js")).href
+    );
+    const { observed, dir } = await observedFixture([fixture], undefined, false, undefined, [
+      { name: "llama.cpp", hidden: true, factory },
+    ]);
+    vi.stubEnv("PI_PACKAGE_DIR", dir);
+    try {
+      await expect(
+        createAdvisorSession(observed, {
+          config: readAdvisorSettings(observed).settings,
+          adviceTool,
+        }),
+      ).rejects.toThrow("Pi's built-in llama.cpp file is unavailable");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    const original = observed.resourceLoader.getExtensions().extensions.at(-1);
+    const runtime = await createAdvisorSession(observed, {
+      config: readAdvisorSettings(observed).settings,
+      adviceTool,
+    });
+    afterEach(() => disposeAdvisorSession(runtime));
+    const fresh = runtime.session.resourceLoader.getExtensions().extensions.at(-1);
+    expect(fresh).toMatchObject({
+      path: original?.path,
+      resolvedPath: original?.resolvedPath,
+      sourceInfo: original?.sourceInfo,
+      hidden: true,
+    });
+    expect(fresh?.commands.get("llama")?.handler).not.toBe(
+      original?.commands.get("llama")?.handler,
+    );
+    expect(runtime.session.modelRuntime.getRegisteredProviderIds()).toContain("llama.cpp");
+    await runtime.session.reload();
+    const reloaded = runtime.session.resourceLoader.getExtensions().extensions.at(-1);
+    expect(reloaded).toMatchObject({
+      path: original?.path,
+      resolvedPath: original?.resolvedPath,
+      sourceInfo: original?.sourceInfo,
+      hidden: true,
+    });
+    expect(reloaded?.commands.get("llama")?.handler).not.toBe(
+      fresh?.commands.get("llama")?.handler,
+    );
+    runtime.session.modelRuntime.unregisterProvider("llama.cpp");
+    expect(observed.modelRuntime.getRegisteredProviderIds()).toContain("llama.cpp");
+  });
+
+  it.each(["custom", "llama.cpp"])(
+    "rejects opaque inline resources named %s without replaying them",
+    async (name) => {
+      let calls = 0;
+      const { observed } = await observedFixture([fixture], undefined, false, undefined, [
+        {
+          name,
+          hidden: true,
+          factory(pi) {
+            calls++;
+            pi.registerCommand("custom-inline", { async handler() {} });
+          },
+        },
+      ]);
+      await expect(
+        createAdvisorSession(observed, {
+          config: readAdvisorSettings(observed).settings,
+          adviceTool,
+        }),
+      ).rejects.toThrow(`recreation inputs (<inline:${name}>)`);
+      expect(calls).toBe(1);
+    },
+  );
+
+  it("still rejects custom OAuth storage rather than copying its credentials", async () => {
+    const credentials = new InMemoryCredentialStore();
+    await credentials.modify("unused-offline-oauth", async () => ({
+      type: "oauth",
+      access: "offline-access",
+      refresh: "offline-refresh",
+      expires: 4102444800000,
+    }));
+    const models = await ModelRuntime.create({
+      credentials,
+      modelsStore: new InMemoryModelsStore(),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const { observed } = await observedFixture([fixture], undefined, false, models);
+    await expect(
+      createAdvisorSession(observed, {
+        config: readAdvisorSettings(observed).settings,
+        adviceTool,
+      }),
+    ).rejects.toThrow("Unsupported Advisor custom OAuth storage");
+  });
+
   it("reopens the actual native auth file rather than guessing or pinning a copied file credential", async () => {
     const authDir = await mkdtemp(join(tmpdir(), "advisor-auth-"));
     const authPath = join(authDir, "custom-auth.json");
@@ -369,7 +470,7 @@ describe("private Advisor native sessions", () => {
     ]);
     expect(runtime.session.getActiveToolNames()).not.toContain("denied_dynamic");
     expect(runtime.session.getActiveToolNames()).not.toContain("bash");
-    await runtime.session.prompt("/reload-fixture");
+    await runtime.session.reload();
     expect(runtime.session.settingsManager.getCompactionEnabled()).toBe(true);
     expect(runtime.session.settingsManager.getCompactionSettings().reserveTokens).toBe(4096);
     expect(runtime.session.getAllTools().filter((tool) => tool.name !== "allowed_dynamic")).toEqual(
