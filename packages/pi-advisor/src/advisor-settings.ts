@@ -35,6 +35,8 @@ const optionsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const advisorOptionKeys = Object.keys(optionsSchema.properties);
+
 /** Authored options; absent values inherit rather than disabling their setting. */
 export type AdvisorOptions = Static<typeof optionsSchema>;
 /** Fully defaulted options; absent model/thinking follows the Observed Agent. */

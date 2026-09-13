@@ -26,6 +26,8 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 /advisor set model "provider/model-id"
 ```
 
+Argument autocomplete suggests command names, settings keys, and valid trailing scope flags.
+
 `prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range).
 
 ## Defaults and access

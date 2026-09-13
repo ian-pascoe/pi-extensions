@@ -6,6 +6,63 @@ import { createSdkHarness, reply } from "../../pi-context-management/test/sdk-ha
 import advisor from "../src/index.js";
 
 describe("Advisor commands through the native SDK", () => {
+  it("registers argument completion for Advisor commands", async () => {
+    const { session } = await createSdkHarness([advisor]);
+    const complete = session.extensionRunner?.getCommand("advisor")?.getArgumentCompletions;
+    expect(await complete?.("")).toEqual(
+      ["on", "off", "status", "prompt", "inherit", "set"].map((value) => ({ value, label: value })),
+    );
+    expect(await complete?.("o")).toEqual([
+      { value: "on", label: "on" },
+      { value: "off", label: "off" },
+    ]);
+  });
+
+  it("completes settings keys and only valid trailing scopes without rewriting JSON", async () => {
+    const { session } = await createSdkHarness([advisor]);
+    const complete = session.extensionRunner?.getCommand("advisor")?.getArgumentCompletions;
+    const values = async (prefix: string) => (await complete?.(prefix))?.map((item) => item.value);
+    expect(await values("set ")).toEqual([
+      "set enabled",
+      "set includeSubagents",
+      "set prompt",
+      "set model",
+      "set thinkingLevel",
+      "set allowedTools",
+      "set catchUpThreshold",
+      "set reviewTimeoutMs",
+      "set maxToolCalls",
+      "set maxCorrectiveTurns",
+    ]);
+    expect(await values("inherit c")).toEqual(["inherit catchUpThreshold"]);
+    expect(await values("set  allowedT")).toEqual(["set  allowedTools"]);
+    for (const prefix of ["on ", "off ", "prompt ", "inherit prompt "]) {
+      expect(await values(prefix)).toEqual([`${prefix}--global`, `${prefix}--project`]);
+    }
+    expect(await values("inherit ")).toContain("inherit --global");
+    expect(await values('set prompt "Keep  spaces and --global text" --p')).toEqual([
+      'set prompt "Keep  spaces and --global text" --project',
+    ]);
+    expect(await values('set allowedTools ["read", "ls"] ')).toEqual([
+      'set allowedTools ["read", "ls"] --global',
+      'set allowedTools ["read", "ls"] --project',
+    ]);
+    for (const prefix of [
+      "status ",
+      "on --global ",
+      "set nonexistent ",
+      "set catchUpThreshold 0 ",
+      'set prompt "unfinished --p',
+      "unknown ",
+    ]) {
+      expect(await values(prefix)).toEqual([]);
+    }
+    await session.reload();
+    expect(
+      await session.extensionRunner?.getCommand("advisor")?.getArgumentCompletions?.("on --p"),
+    ).toEqual([{ value: "on --project", label: "on --project" }]);
+  });
+
   it("does not poll other processes' settings and adopts them on native reload", async () => {
     const documents = {
       global: JSON.stringify({ advisor: { catchUpThreshold: 5 } }),

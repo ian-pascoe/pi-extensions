@@ -1,15 +1,16 @@
-import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /** Native session identity only; callers validate the capabilities they require. */
 export type DiscoverPiAgentSessionResult =
   | { readonly ok: true; readonly session: AgentSession }
   | { readonly ok: false; readonly warning: string };
 
-/** Discovers the synchronous getAllTools receiver and restores its exact prototype descriptor. */
+/** Use the extension's host-resolved class: a compiled dependency's SDK import may be a different instance. */
 export function discoverPiAgentSession(
   pi: Pick<ExtensionAPI, "getAllTools">,
+  sessionClass: typeof AgentSession,
 ): DiscoverPiAgentSessionResult {
-  const prototype = AgentSession.prototype;
+  const prototype = sessionClass.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, "getAllTools");
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: This native SDK descriptor boundary requires only a callable data method; session identity is validated after delegation and callers own capability checks.
   if (descriptor === undefined || typeof descriptor.value !== "function") {
@@ -38,7 +39,7 @@ export function discoverPiAgentSession(
     Object.defineProperty(prototype, "getAllTools", descriptor);
   }
 
-  if (!(capturedSession instanceof AgentSession)) {
+  if (!(capturedSession instanceof sessionClass)) {
     return { ok: false, warning: "getAllTools did not delegate to an AgentSession" };
   }
   return { ok: true, session: capturedSession };

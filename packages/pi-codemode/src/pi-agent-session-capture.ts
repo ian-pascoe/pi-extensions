@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -98,7 +98,7 @@ function captureFailure(message: string): CapturePiAgentSessionResult {
 export function capturePiAgentSession(
   pi: Pick<ExtensionAPI, "getAllTools">,
 ): CapturePiAgentSessionResult {
-  const discovery = discoverPiAgentSession(pi);
+  const discovery = discoverPiAgentSession(pi, AgentSession);
   if (!discovery.ok) return captureFailure(discovery.warning);
   const capturedSession = discovery.session;
   if (!hasCallableSessionCapabilities(capturedSession)) {

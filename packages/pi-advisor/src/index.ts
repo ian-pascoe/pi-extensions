@@ -18,7 +18,7 @@ import {
   type AdvisorChange,
   type AdvisorConfig,
 } from "./advisor-settings.js";
-import { parseAdvisorCommand } from "./advisor-command.js";
+import { completeAdvisorCommandArguments, parseAdvisorCommand } from "./advisor-command.js";
 import { AdvisorObserver } from "./advisor-observer.js";
 import { isAdvisorSession, type AdvisorResourceInputs } from "./advisor-session.js";
 
@@ -90,7 +90,7 @@ export default function advisor(pi: ExtensionAPI): void {
           (entry) => entry.type === "custom" && entry.customType === "minimal-subagents.identity",
         );
     if (privateSession) return;
-    const found = discoverPiAgentSession(pi);
+    const found = discoverPiAgentSession(pi, AgentSession);
     if (found.ok) {
       observed = found.session;
       layers = readAdvisorLayers(observed.settingsManager);
@@ -150,7 +150,7 @@ export default function advisor(pi: ExtensionAPI): void {
     if (!Value.Check(childRequestSchema, payload) || !(payload.session instanceof AgentSession))
       return;
     if (!observed) {
-      const found = discoverPiAgentSession(pi);
+      const found = discoverPiAgentSession(pi, AgentSession);
       if (!found.ok) return;
       observed = found.session;
       layers = readAdvisorLayers(observed.settingsManager);
@@ -254,6 +254,7 @@ export default function advisor(pi: ExtensionAPI): void {
 
   pi.registerCommand("advisor", {
     description: "Advisor on, off, inherit, scoped settings, prompt editor, or status",
+    getArgumentCompletions: completeAdvisorCommandArguments,
     async handler(args, ctx) {
       if (privateSession) {
         pi.appendEntry("pi-advisor-status", {
