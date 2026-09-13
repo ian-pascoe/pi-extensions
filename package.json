@@ -74,7 +74,8 @@
       "./packages/pi-web-tools/src/index.ts",
       "./packages/pi-todo/src/index.ts",
       "./packages/pi-context-management/src/index.ts",
-      "./packages/pi-skills-selector/src/index.ts"
+      "./packages/pi-skills-selector/src/index.ts",
+      "./packages/pi-advisor/src/index.ts"
     ],
     "skills": [
       "./packages/pi-minimal-subagents/skills",
@@ -90,7 +91,8 @@
       "./packages/pi-web-tools/skills",
       "./packages/pi-todo/skills",
       "./packages/pi-context-management/skills",
-      "./packages/pi-skills-selector/skills"
+      "./packages/pi-skills-selector/skills",
+      "./packages/pi-advisor/skills"
     ]
   }
 }

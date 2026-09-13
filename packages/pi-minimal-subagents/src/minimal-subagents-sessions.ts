@@ -17,6 +17,7 @@ import {
   SettingsManager,
   sessionEntryToContextMessages,
   type AgentSessionEvent,
+  type Extension,
   type SessionEntry,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -53,6 +54,7 @@ import { addMinimalSubagentsUsage } from "./minimal-subagents-usage.js";
 import type {
   AgentSessionFactory,
   ChildAgentRuntime,
+  ChildSessionObserver,
   ChildAgentTranscriptSnapshot,
   CoordinatorMessage,
   PersistedAgent,
@@ -180,6 +182,15 @@ export interface PiAgentSessionFactoryOptions {
   sessionFileTrash?: SessionFileTrashCapability;
   getCoordinatorTools: (callerId: string) => ToolDefinition[];
   onChildSessionActivity?: () => void;
+  observeSession?: (
+    session: AgentSession,
+    agentId: string,
+    resourceInputs: {
+      agentDir: string;
+      extensions: readonly Pick<Extension, "path" | "resolvedPath" | "sourceInfo" | "hidden">[];
+      flagValues: ReadonlyMap<string, boolean | string>;
+    },
+  ) => ChildSessionObserver | undefined;
 }
 
 /** Build one child prompt using the active delegation depth rather than persisted launch state. */
@@ -494,7 +505,7 @@ function collectChildTurnOutcome(
       error: "No terminal assistant response",
     };
   }
-  if (finalAssistant.stopReason === "aborted") {
+  if (aborted || finalAssistant.stopReason === "aborted") {
     return {
       status: "cancelled",
       output: assistantText(finalAssistant),
@@ -554,6 +565,7 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     private readonly modelRuntime: ModelRuntime,
     private readonly modelById: ReadonlyMap<string, Model<any>>,
     onSessionActivity?: () => void,
+    private readonly observer?: ChildSessionObserver,
   ) {
     // Keep this child-only; AgentSession.setSteeringMode would overwrite the user's global setting.
     session.agent.steeringMode = "all";
@@ -613,12 +625,16 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
 
   async abort(): Promise<void> {
     this.aborted = true;
-    await this.session.abort();
+    await Promise.all([this.observer?.abort(), this.session.abort()]);
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.unsubscribe();
-    this.session.dispose();
+    try {
+      await this.observer?.dispose();
+    } finally {
+      this.session.dispose();
+    }
   }
 
   getRuntimeProfile(): RuntimeProfile | undefined {
@@ -715,7 +731,20 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
 
   private async captureTurn(operation: () => Promise<void>): Promise<RuntimeTurnOutcome> {
     this.aborted = false;
-    return captureChildTurnOutcome(this.session, operation, () => this.aborted);
+    this.observer?.beginTurn();
+    return captureChildTurnOutcome(
+      this.session,
+      async () => {
+        try {
+          await operation();
+          if (!this.aborted) await this.observer?.finishTurn();
+        } catch (error) {
+          await this.observer?.abort();
+          throw error;
+        }
+      },
+      () => this.aborted,
+    );
   }
 
   private async compactImportedContext(
@@ -1187,6 +1216,18 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       modelRuntime,
       this.modelById,
       this.options.onChildSessionActivity,
+      this.options.observeSession?.(session, agent.agent_id, {
+        agentDir: this.options.agentDir,
+        extensions: resourceLoader
+          .getExtensions()
+          .extensions.map(({ path, resolvedPath, sourceInfo, hidden }) => ({
+            path,
+            resolvedPath,
+            sourceInfo,
+            hidden,
+          })),
+        flagValues: new Map(resourceLoader.getExtensions().runtime.flagValues),
+      }),
     );
   }
 

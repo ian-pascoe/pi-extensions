@@ -1,17 +1,15 @@
 {
-  "name": "@ian-pascoe/pi-codemode",
-  "version": "0.7.2",
+  "name": "@ian-pascoe/pi-advisor",
+  "version": "0.0.0",
   "private": false,
-  "description": "Process-isolated persistent TypeScript tool composition for Pi",
+  "description": "Background review and attributed corrective advice for Pi agent sessions.",
   "keywords": [
-    "codemode",
-    "deno",
+    "advisor",
     "pi",
     "pi-extension",
-    "pi-package",
-    "typescript"
+    "pi-package"
   ],
-  "homepage": "https://github.com/ian-pascoe/pi-extensions#readme",
+  "homepage": "https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-advisor",
   "bugs": {
     "url": "https://github.com/ian-pascoe/pi-extensions/issues"
   },
@@ -20,7 +18,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
-    "directory": "packages/pi-codemode"
+    "directory": "packages/pi-advisor"
   },
   "files": [
     "src",
@@ -38,27 +36,19 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.2.0",
-    "deno": "2.9.6",
-    "minimatch": "^10.2.6",
-    "runtime-typescript": "npm:typescript@6.0.3"
+    "@ian-pascoe/pi-utils": "^0.2.0"
   },
   "devDependencies": {
-    "@howaboua/pi-codex-conversion": "3.0.30",
-    "typescript": "^7.0.2"
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "@howaboua/pi-codex-conversion": ">=3",
     "typebox": "*"
-  },
-  "peerDependenciesMeta": {
-    "@howaboua/pi-codex-conversion": {
-      "optional": true
-    }
   },
   "engines": {
     "node": ">=22.19.0"

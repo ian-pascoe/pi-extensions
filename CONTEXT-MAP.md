@@ -5,6 +5,7 @@ context relevant to the work:
 
 | Package                             | Context                                                                                  | Domain focus                            |
 | ----------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------- |
+| `@ian-pascoe/pi-advisor`            | [`packages/pi-advisor/CONTEXT.md`](packages/pi-advisor/CONTEXT.md)                       | Session review and tool grants          |
 | `@ian-pascoe/pi-minimal-subagents`  | [`packages/pi-minimal-subagents/CONTEXT.md`](packages/pi-minimal-subagents/CONTEXT.md)   | Persistent nested agents                |
 | `@ian-pascoe/pi-bible-verses`       | [`packages/pi-bible-verses/CONTEXT.md`](packages/pi-bible-verses/CONTEXT.md)             | Offline verse rotation and provenance   |
 | `@ian-pascoe/pi-tps-tracker`        | [`packages/pi-tps-tracker/CONTEXT.md`](packages/pi-tps-tracker/CONTEXT.md)               | Output-token throughput measurement     |
@@ -22,6 +23,11 @@ context relevant to the work:
 
 `pi-context-management` implements session-local Notes, selected-branch History retrieval,
 and native Context Checkpoints for capability-compatible Pi runtimes.
+
+`pi-advisor` reviews main Pi sessions and optionally their Minimal Subagents descendants.
+It inherits the observed session's extensions and grants tools separately. When Context
+Management is available and its tools are granted, they address the private Advisor
+Session rather than the observed agent's Notes, History, or Context Checkpoints.
 
 The contexts are package-local vocabulary authorities. Repository-wide decisions
 live in [`docs/adr/`](docs/adr/).

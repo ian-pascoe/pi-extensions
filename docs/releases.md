@@ -54,6 +54,26 @@ Publish only `@ian-pascoe/pi-minimal-subagents`,
 is `0.1.0`, plus each name and tarball, before publishing. This is
 the one-time provenance exception; later releases use OIDC.
 
+## Advisor bootstrap
+
+Advisor starts at `0.0.0` after its approved implementation PR merges. It requires
+`pi-utils@0.2.0` for the native-session discovery export; its dependency range must
+start at `^0.2.0`. The utility release is recorded in its manifest and changelog,
+consuming its Changeset entry rather than scheduling another minor bump.
+
+1. For this explicitly approved bootstrap only, manually publish
+   `@ian-pascoe/pi-utils@0.2.0` from `packages/pi-utils` with
+   `npm publish --access public --provenance=false` after the release gates pass.
+2. Verify that registry version and its discovery export, then publish Advisor
+   from `packages/pi-advisor` with the same command. These publications use an
+   approved one-time provenance exception; subsequent releases use OIDC.
+3. Configure Advisor's trusted publisher with repository
+   `ian-pascoe/pi-extensions`, workflow `release.yml`, environment `npm`, and
+   publish permission. Verify a clean registry installation.
+
+Leave any generated version PR unmerged during bootstrap; later releases use the
+ordinary Changesets/OIDC workflow. No release workflow changes are required.
+
 ## Trusted publishing and guarded automation
 
 Configure npm Trusted Publishing for all thirteen active packages with repository

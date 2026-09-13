@@ -23,7 +23,12 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const piMcpPackageName = "@ian-pascoe/pi-mcp";
 const piTpsTrackerPackageName = "@ian-pascoe/pi-tps-tracker";
 const piUtilsPackageName = "@ian-pascoe/pi-utils";
-const piUtilsConsumerPackageNames = new Set([piMcpPackageName, piTpsTrackerPackageName]);
+const piUtilsConsumerPackageNames = new Set([
+  piMcpPackageName,
+  piTpsTrackerPackageName,
+  "@ian-pascoe/pi-advisor",
+  "@ian-pascoe/pi-codemode",
+]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
 
@@ -67,8 +72,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 15,
-    `expected 15 workspace manifests, found ${manifests.length}`,
+    manifests.length === 16,
+    `expected 16 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -95,6 +100,8 @@ function validatePackedFileList(packageName, files) {
       "README.md",
       "dist/index.d.ts",
       "dist/index.js",
+      "dist/pi-agent-session-discovery.d.ts",
+      "dist/pi-agent-session-discovery.js",
       "package.json",
     ]) {
       assertPackCondition(paths.includes(requiredPath), `${packageName} omits ${requiredPath}`);
@@ -159,7 +166,11 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
       packedManifest.main === "./dist/index.js" &&
         packedManifest.types === "./dist/index.d.ts" &&
         packedManifest.exports?.["."]?.import === "./dist/index.js" &&
-        packedManifest.exports?.["."]?.types === "./dist/index.d.ts",
+        packedManifest.exports?.["."]?.types === "./dist/index.d.ts" &&
+        packedManifest.exports?.["./pi-agent-session-discovery"]?.import ===
+          "./dist/pi-agent-session-discovery.js" &&
+        packedManifest.exports?.["./pi-agent-session-discovery"]?.types ===
+          "./dist/pi-agent-session-discovery.d.ts",
       `${packageName} has an invalid compiled library entrypoint`,
     );
     assertPackCondition(
@@ -376,5 +387,5 @@ try {
 }
 
 console.log(
-  "Validated fifteen package tarballs, fourteen source entrypoints, package skills, the shared utility, and the Pi MCP CLI.",
+  "Validated sixteen package tarballs, fifteen source entrypoints, package skills, the shared utility, and the Pi MCP CLI.",
 );
