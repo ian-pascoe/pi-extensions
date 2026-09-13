@@ -231,7 +231,9 @@ model sees diagnostics only in the original mutation result.
 
 Every operation uses Pi's 2,000-line/50-KB output limit. Complete truncated text is saved as a
 Result Spill and the result names its path. Each server's latest 1 MB of stderr is saved in the
-session temp directory and failure messages name that path.
+session temp directory and failure messages name that path. With `--no-session`, Pi provides no
+session directory, so these files use a private directory under the OS temporary directory instead.
+Normal session teardown removes it; forced termination may leave temporary files behind.
 
 Documents must be valid UTF-8. Each server keeps at most 100 synchronized documents and closes
 least-recently-used documents. Session shutdown requests a graceful LSP shutdown, then terminates
