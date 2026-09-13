@@ -19,11 +19,7 @@ describe("minimal subagents configuration", () => {
       eligibleModelIds: eligibleModels,
     });
 
-    expect(result.toolsets).toEqual({
-      baseToolset: [],
-      readToolset: ["read", "grep", "find", "ls"],
-      modifyToolset: ["bash", "edit", "write"],
-    });
+    expect(result.toolsets).toEqual(defaultToolsets);
   });
 
   it("replaces each authored toolset array while inheriting omitted keys", () => {
