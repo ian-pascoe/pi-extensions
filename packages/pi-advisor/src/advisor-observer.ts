@@ -523,7 +523,17 @@ export class AdvisorObserver {
     const requestedEpoch = this.epoch;
     this.pendingConsultations++;
     const consultation = this.consultationTail.then(async () => {
-      await this.running;
+      if (signal) {
+        signal.throwIfAborted();
+        const cancelled = Promise.withResolvers<never>();
+        const rejectCancellation = () => cancelled.reject(signal.reason);
+        signal.addEventListener("abort", rejectCancellation, { once: true });
+        try {
+          await Promise.race([this.running, cancelled.promise]);
+        } finally {
+          signal.removeEventListener("abort", rejectCancellation);
+        }
+      } else await this.running;
       signal?.throwIfAborted();
       if (requestedEpoch !== this.epoch)
         throw new Error("Advisor consultation was cancelled by a session or configuration change");

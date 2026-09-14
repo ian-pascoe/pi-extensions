@@ -971,7 +971,7 @@ it("disabled observation leaves the ordered native tools, prompt and conversatio
   expect(session.agent.streamFunction).toBe(stream);
 });
 
-it("prioritizes consultation after the active Review without advancing its backlog", async () => {
+it("prioritizes consultation after the active Review and promptly cancels queued asks", async () => {
   const reviewStarted = Promise.withResolvers<void>();
   const releaseReview = Promise.withResolvers<void>();
   const consultationStarted = Promise.withResolvers<void>();
@@ -1047,6 +1047,12 @@ it("prioritizes consultation after the active Review without advancing its backl
   await session.prompt("First completed step");
   await reviewStarted.promise;
   await session.prompt("Second completed step");
+  const cancellation = new AbortController();
+  const cancelled = observer.consult("Cancel this queued ask", cancellation.signal);
+  cancellation.abort(new Error("User stopped the queued ask"));
+  await expect(cancelled).rejects.toThrow("User stopped the queued ask");
+  expect(order).toEqual(["review-1-start"]);
+
   const answer = observer.consult("Which seam should I inspect?");
   releaseReview.resolve();
   await consultationStarted.promise;

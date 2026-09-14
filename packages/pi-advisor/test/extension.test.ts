@@ -20,10 +20,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/observer-extension.js";
 
-it.each(["none", "both", "codemode-only"] as const)(
+it.each(["none", "direct-only", "both", "codemode-only"] as const)(
   "preserves exact main inputs and reports native errors (CodeMode exposure: %s)",
   async (codeModeExposure) => {
     const combined = codeModeExposure !== "none";
+    const advisorInCodeMode = codeModeExposure === "both" || codeModeExposure === "codemode-only";
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
     afterEach(() => vi.useRealTimers());
@@ -101,7 +102,11 @@ it.each(["none", "both", "codemode-only"] as const)(
             {
               pattern: codeModeExposure === "codemode-only" ? "advisor_ask" : "*",
               exposure:
-                codeModeExposure === "codemode-only" ? "codemode-only" : "direct-and-codemode",
+                codeModeExposure === "direct-only"
+                  ? "direct-only"
+                  : codeModeExposure === "codemode-only"
+                    ? "codemode-only"
+                    : "direct-and-codemode",
             },
           ],
         },
@@ -182,16 +187,18 @@ it.each(["none", "both", "codemode-only"] as const)(
         await search.execute("advisor-search", { query }, new AbortController().signal, undefined)
       ).details;
     };
-    const foreignSearch =
-      codeModeExposure === "codemode-only" ? await searchCodeMode("context_notes") : undefined;
-    if (codeModeExposure === "codemode-only")
-      expect(await searchCodeMode("advisor_ask")).toMatchObject({ total: 1 });
-    for (const runtime of runtimes) await runtime.session.prompt("/advisor off");
-    if (codeModeExposure === "codemode-only") {
+    const foreignSearch = advisorInCodeMode ? await searchCodeMode("context_notes") : undefined;
+    if (advisorInCodeMode) expect(await searchCodeMode("advisor_ask")).toMatchObject({ total: 1 });
+    else if (combined)
       expect(JSON.stringify(await searchCodeMode("advisor_ask"))).not.toContain(
         '"name":"advisor_ask"',
       );
-      expect(await searchCodeMode("context_notes")).toEqual(foreignSearch);
+    for (const runtime of runtimes) await runtime.session.prompt("/advisor off");
+    if (combined) {
+      expect(JSON.stringify(await searchCodeMode("advisor_ask"))).not.toContain(
+        '"name":"advisor_ask"',
+      );
+      if (advisorInCodeMode) expect(await searchCodeMode("context_notes")).toEqual(foreignSearch);
     }
     for (const runtime of runtimes)
       await runtime.session.prompt("Continue with on-demand advice disabled.");
