@@ -75,6 +75,7 @@ it.each([
           "--print",
           "/advisor on",
           "Complete the first offline task",
+          "Ask Advisor which path to inspect",
           "/advisor status",
           "/advisor-cli-probe",
           "/advisor-cli-reload",
@@ -99,8 +100,8 @@ it.each([
         expect(probe).toMatchObject({
           status: { state: "armed", error: null, backlog: 0, settings: { enabled: true } },
           activeTools: withCodeMode
-            ? expect.arrayContaining(["codemode_execute"])
-            : expect.arrayContaining(["read"]),
+            ? expect.arrayContaining(["codemode_execute", "advisor_ask"])
+            : expect.arrayContaining(["read", "advisor_ask"]),
         });
         if (withCodeMode)
           expect(probe).toMatchObject({ activeTools: expect.not.arrayContaining(["read"]) });
@@ -121,11 +122,15 @@ it.each([
           expect.objectContaining({ resolvedPath: "<inline:llama.cpp>", hidden: true }),
         );
       }
-      expect(output.match(/^ADVISOR_CLI_INFERENCE=review$/gm)).toHaveLength(2);
-      expect(output.match(/^ADVISOR_CLI_INFERENCE=observed$/gm)).toHaveLength(2);
+      expect(output.match(/^ADVISOR_CLI_CONSULTATION=Inspect the native path\.$/gm)).toHaveLength(
+        1,
+      );
+      expect(output.match(/^ADVISOR_CLI_INFERENCE=review$/gm)).toHaveLength(4);
+      expect(output.match(/^ADVISOR_CLI_INFERENCE=consultation$/gm)).toHaveLength(1);
+      expect(output.match(/^ADVISOR_CLI_INFERENCE=observed$/gm)).toHaveLength(4);
       expect(
         output.match(new RegExp(`^ADVISOR_CLI_AUTH=${withOAuth ? "oauth" : "api-key"}$`, "gm")),
-      ).toHaveLength(4);
+      ).toHaveLength(9);
       expect(output.match(/^ADVISOR_CLI_REFRESH$/gm) ?? []).toHaveLength(withOAuth ? 1 : 0);
       if (withOAuth) {
         const auth = JSON.parse(await readFile(join(agentDir, "auth.json"), "utf8"));

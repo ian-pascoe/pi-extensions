@@ -66,6 +66,16 @@ import {
 const CODEMODE_EXECUTE_DESCRIPTION =
   "Execute a TypeScript Cell in a persistent isolated Deno CodeMode Session. Reuse a Session ID to retain Notebook Bindings; an unknown supplied ID creates that Session. A new Session reclaims the least-recently-used idle Session at capacity. Use the read-only tools object for registered Pi tools. Return final result data with a top-level return statement. Reserve console.log, console.info, console.warn, console.error, and console.debug for diagnostics; captured output arrives only with terminal results. Discover tools with direct codemode_search before a Cell or tools.codemode_search inside one. Search an intent for exact flat names, then search an exact name for its complete declaration. Call tools[name](input).";
 const CODEMODE_SEARCH_BATCH_LIMIT = 20;
+const CODEMODE_TOOL_AVAILABILITY_EVENT = "pi-codemode:request-tool-availability";
+const CodeModeToolAvailabilityRequestSchema = Type.Object(
+  {
+    sessionId: Type.String({ minLength: 1 }),
+    toolName: Type.String({ minLength: 1 }),
+    available: Type.Boolean(),
+    handled: Type.Function([], Type.Void()),
+  },
+  { additionalProperties: false },
+);
 const CodeModeToolSchemaMetadataSchema = Type.Union([
   Type.Boolean(),
   Type.Object({}, { additionalProperties: true }),
@@ -196,6 +206,7 @@ function codeModeNestedBridgeValue(value: PiToolBridgeValue): CodeModeJsonValue 
 /** Owns Pi CodeMode startup, exposure/catalogue synchronization, and resource shutdown. */
 class PiCodeModeLifecycleController {
   private generation: PiCodeModeGeneration | undefined;
+  private unsubscribeToolAvailability: (() => void) | undefined;
   private readonly operations: CodeModeToolOperations = {
     execute: async (input, signal, onUpdate) => {
       const generation = this.generation;
@@ -299,6 +310,7 @@ class PiCodeModeLifecycleController {
         () => this.generation?.requestRender(),
       );
     });
+    this.subscribeToolAvailability();
     this.pi.on("agent_end", () => this.generation?.transcriptRefs.clear());
     this.pi.on("session_tree", () => {
       if (this.generation !== undefined) {
@@ -319,10 +331,36 @@ class PiCodeModeLifecycleController {
     this.pi.registerTool(cancelTool);
     this.pi.registerTool(sessionsTool);
     this.pi.registerTool(searchTool);
-    this.pi.on("session_start", async (_event, context) => this.startSession(context));
+    this.pi.on("session_start", async (_event, context) => {
+      this.subscribeToolAvailability();
+      await this.startSession(context);
+    });
     this.pi.on("before_agent_start", () => this.synchronizeCurrentGeneration());
     this.pi.on("tool_execution_end", () => this.synchronizeCurrentGeneration());
-    this.pi.on("session_shutdown", async () => this.shutdownSession());
+    this.pi.on("session_shutdown", async () => {
+      this.unsubscribeToolAvailability?.();
+      this.unsubscribeToolAvailability = undefined;
+      await this.shutdownSession();
+    });
+  }
+
+  private subscribeToolAvailability(): void {
+    this.unsubscribeToolAvailability ??= this.pi.events.on(
+      CODEMODE_TOOL_AVAILABILITY_EVENT,
+      (payload) => {
+        const generation = this.generation;
+        if (
+          generation === undefined ||
+          !generation.active ||
+          !generation.exposure ||
+          !Value.Check(CodeModeToolAvailabilityRequestSchema, payload) ||
+          payload.sessionId !== generation.context.sessionManager.getSessionId() ||
+          !generation.exposure.setToolAvailable(payload.toolName, payload.available)
+        )
+          return;
+        payload.handled();
+      },
+    );
   }
 
   private async startSession(context: ExtensionContext): Promise<void> {

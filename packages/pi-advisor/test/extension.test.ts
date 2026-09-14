@@ -20,9 +20,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/observer-extension.js";
 
-it.each([false, true])(
-  "preserves exact main inputs and reports native errors (combined siblings: %s)",
-  async (combined) => {
+it.each(["none", "direct-only", "both", "codemode-only"] as const)(
+  "preserves exact main inputs and reports native errors (CodeMode exposure: %s)",
+  async (codeModeExposure) => {
+    const combined = codeModeExposure !== "none";
+    const advisorInCodeMode = codeModeExposure === "both" || codeModeExposure === "codemode-only";
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
     afterEach(() => vi.useRealTimers());
@@ -95,7 +97,19 @@ it.each([false, true])(
             ...(combined ? ["context_notes", "context_history", "context_rollover"] : []),
           ],
         },
-        codemode: { tools: [{ pattern: "*", exposure: "direct-and-codemode" }] },
+        codemode: {
+          tools: [
+            {
+              pattern: codeModeExposure === "codemode-only" ? "advisor_ask" : "*",
+              exposure:
+                codeModeExposure === "direct-only"
+                  ? "direct-only"
+                  : codeModeExposure === "codemode-only"
+                    ? "codemode-only"
+                    : "direct-and-codemode",
+            },
+          ],
+        },
         compaction: { enabled: false },
         retry: { enabled: false },
       };
@@ -143,10 +157,57 @@ it.each([false, true])(
     }
     expect(reviewRequests).toHaveLength(1);
     expect(mainRequests).toHaveLength(2);
-    expect(mainRequests[1]).toEqual(mainRequests[0]);
+    const disabledRequest = mainRequests[0];
+    if (!disabledRequest) throw new Error("Missing disabled request");
+    const askTool = {
+      name: "advisor_ask",
+      description:
+        "Ask the enabled Advisor for analysis or a second opinion. Waits for its answer; does not delegate implementation.",
+      parameters: {
+        additionalProperties: false,
+        properties: { message: { minLength: 1, type: "string" } },
+        required: ["message"],
+        type: "object",
+      },
+    };
+    expect(mainRequests[1]).toEqual(
+      codeModeExposure === "codemode-only"
+        ? disabledRequest
+        : { ...disabledRequest, tools: [...(disabledRequest.tools ?? []), askTool] },
+    );
     expect(runtimes[1]?.session.messages).toEqual(runtimes[0]?.session.messages);
     const enabledSession = runtimes[1]?.session;
     if (!enabledSession) throw new Error("Missing enabled session");
+    const searchCodeMode = async (query: string) => {
+      const search = enabledSession.agent.state.tools.find(
+        (tool) => tool.name === "codemode_search",
+      );
+      if (!search) throw new Error("Missing CodeMode search tool");
+      return (
+        await search.execute("advisor-search", { query }, new AbortController().signal, undefined)
+      ).details;
+    };
+    const foreignSearch = advisorInCodeMode ? await searchCodeMode("context_notes") : undefined;
+    if (advisorInCodeMode) expect(await searchCodeMode("advisor_ask")).toMatchObject({ total: 1 });
+    else if (combined)
+      expect(JSON.stringify(await searchCodeMode("advisor_ask"))).not.toContain(
+        '"name":"advisor_ask"',
+      );
+    for (const runtime of runtimes) await runtime.session.prompt("/advisor off");
+    if (combined) {
+      expect(JSON.stringify(await searchCodeMode("advisor_ask"))).not.toContain(
+        '"name":"advisor_ask"',
+      );
+      if (advisorInCodeMode) expect(await searchCodeMode("context_notes")).toEqual(foreignSearch);
+    }
+    for (const runtime of runtimes)
+      await runtime.session.prompt("Continue with on-demand advice disabled.");
+    expect(mainRequests).toHaveLength(4);
+    expect(mainRequests[3]).toEqual(mainRequests[2]);
+    expect(runtimes[1]?.session.messages).toEqual(runtimes[0]?.session.messages);
+    await enabledSession.prompt("/advisor on");
+    await enabledSession.prompt("Recreate the private Advisor session before restart.");
+    expect(reviewRequests).toHaveLength(2);
     const shutdownStarted = Promise.withResolvers<void>();
     const releaseShutdown = Promise.withResolvers<void>();
     globalThis.advisorObserverTest.privateShutdown = async () => {
@@ -161,7 +222,7 @@ it.each([false, true])(
     await rebinding;
     delete globalThis.advisorObserverTest.privateShutdown;
     await enabledSession.prompt("Continue after settings changed during native restart.");
-    expect(reviewRequests).toHaveLength(2);
+    expect(reviewRequests).toHaveLength(3);
     await enabledSession.prompt('/advisor set model "missing/model"');
     await enabledSession.prompt("Continue even if Advisor cannot resolve its model.");
     expect(
