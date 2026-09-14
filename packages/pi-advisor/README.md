@@ -1,6 +1,6 @@
 # Pi Advisor
 
-`@ian-pascoe/pi-advisor` reviews a Pi agent's completed work and surfaces concise, attributed corrective advice when it finds material instruction violations, scope drift, repeated failures, or unsupported completion claims.
+`@ian-pascoe/pi-advisor` reviews a Pi agent's completed work and surfaces concise, attributed findings for material problems and worthwhile low-risk cleanup.
 
 Requires Pi `0.85.1` and Node `>=22.19.0`. Other Pi versions pause review with an explicit compatibility error.
 
@@ -24,6 +24,7 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 /advisor prompt [--global|--project]
 /advisor set includeSubagents true
 /advisor set model "provider/model-id"
+/advisor set maxFindingsPerReview 4
 ```
 
 Argument autocomplete suggests command names, settings keys, and valid trailing scope flags.
@@ -38,7 +39,7 @@ The tool is absent while Advisor is disabled. A paused Advisor keeps it visible 
 
 Consultation authorizes analysis and investigation, not implementation or other side effects. The configured Advisor Prompt remains authoritative. Tool Grants still expose each granted tool's full native interface, so exclude mutating tools when a prompt-level boundary is insufficient.
 
-`prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range).
+`prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range); `maxFindingsPerReview` accepts an integer from 1 through 32.
 
 ## Defaults and access
 
@@ -50,6 +51,7 @@ Consultation authorizes analysis and investigation, not implementation or other 
 | Catch-up threshold             | `3`                          |
 | Review deadline                | 120 seconds                  |
 | Investigative calls per Review | 8                            |
+| Findings per Review            | 4                            |
 | Automatic Corrective Turns     | 1 per request/task           |
 
 A Tool Grant names tools; it does not sandbox their full native interfaces. Explicitly granting `lsp`, for example, permits its native operations, including mutations. Unavailable names are ignored and reported. CodeMode-only tools require an explicitly compatible transport grant; Advisor never adds aliases, autogrants missing tools, or changes CodeMode exposure.
@@ -64,9 +66,9 @@ Context Management is optional. If loaded and its tools are granted, `context_no
 
 ## Scheduling and safety
 
-Reviews combine completed observed turns (one model response plus its tool batches) and use bounded catch-up waits of at most 30 seconds. Each Review has its own deadline and tool-call budget. Findings are deduplicated without merging distinct code identifiers; ordinary concerns observe a three-turn cooldown, while blockers bypass cooldown but not duplicate or per-Review limits.
+Reviews combine completed observed turns (one model response plus its tool batches) and use bounded catch-up waits of at most 30 seconds. Each Review has its own deadline, investigative-call budget, and configurable finding limit. One terminating report returns findings in severity order. Formatting-equivalent findings retain their highest severity within a Review; later escalation from Nit to Concern to Blocker remains deliverable. Distinct Concerns are delivered together when eligible or retained together for re-evaluation during the three-turn cooldown.
 
-Running work receives native steering. A blocker after normal interactive completion may receive a tracked corrective continuation within the configured budget; aborted, uncertain, deliberately interrupted, and headless-completed work is preserved without a hidden restart. Child corrections stay inside Minimal's owned operation. Headless root shutdown allows only a bounded final drain and never starts hidden corrective work.
+Nits are non-interrupting and enter context at the next natural step boundary without starting a Corrective Turn. Running work receives native steering for eligible Concerns and Blockers. A Blocker after normal interactive completion may receive a tracked corrective continuation within the configured budget; aborted, uncertain, deliberately interrupted, and headless-completed work is preserved without a hidden restart. Child corrections stay inside Minimal's owned operation. Headless root shutdown allows only a bounded final drain and never starts hidden corrective work.
 
 Status reports effective settings, sources, review or consultation state, backlog, usage/cost, and the last error. Unknown cost is shown as unknown, never zero. Review failure pauses Advisor while leaving the observed agent running; changing configuration, branch, or session identity invalidates stale in-flight work.
 

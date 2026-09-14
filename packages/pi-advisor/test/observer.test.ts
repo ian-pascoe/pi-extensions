@@ -144,6 +144,387 @@ it.each(["none", "blocker"] as const)(
   },
 );
 
+it("queues a streaming nit without steering the active agent", async () => {
+  let mainCalls = 0;
+  let reviews = 0;
+  const mainContexts: string[] = [];
+  globalThis.advisorObserverTest = {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      if (privateRole) {
+        reviews++;
+        message.content = [
+          {
+            type: "toolCall",
+            id: `report-${reviews}`,
+            name: "advisor_report",
+            arguments: {
+              findings:
+                reviews === 1 ? [{ severity: "nit", message: "Use the shorter expression." }] : [],
+            },
+          },
+        ];
+        message.stopReason = "toolUse";
+      } else {
+        mainCalls++;
+        mainContexts.push(JSON.stringify(context.messages));
+        if (mainCalls === 1) {
+          message.content = [
+            {
+              type: "toolCall",
+              id: "main-read",
+              name: "read",
+              arguments: { path: "/no-advisor-test-file" },
+            },
+          ];
+          message.stopReason = "toolUse";
+        }
+      }
+      queueMicrotask(() =>
+        stream.push({
+          type: "done",
+          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+          message,
+        }),
+      );
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 },
+    "interactive",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  afterEach(() => observer.dispose());
+  await session.prompt("Use one tool");
+  expect(mainCalls).toBe(2);
+  expect(mainContexts[1]).not.toContain("Use the shorter expression.");
+  expect(session.messages.at(-1)).toMatchObject({
+    role: "custom",
+    customType: "pi-advisor",
+    details: { severity: "nit", message: "Use the shorter expression." },
+  });
+});
+
+it("records an idle multi-finding Review in report order without waking for a nit", async () => {
+  const reviewStarted = Promise.withResolvers<void>();
+  const releaseReview = Promise.withResolvers<void>();
+  let mainCalls = 0;
+  let reportParameters = "";
+  globalThis.advisorObserverTest = {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      if (privateRole) {
+        reportParameters = JSON.stringify(
+          context.tools?.find((tool) => tool.name === "advisor_report")?.parameters,
+        );
+        message.content = [
+          {
+            type: "toolCall",
+            id: "report",
+            name: "advisor_report",
+            arguments: {
+              findings: [
+                { severity: "nit", message: "Prefer the shorter expression." },
+                { severity: "concern", message: "Cover the missing edge case." },
+                { severity: "blocker", message: "Run the required verification." },
+              ],
+            },
+          },
+        ];
+        message.stopReason = "toolUse";
+        reviewStarted.resolve();
+        void releaseReview.promise.then(() =>
+          stream.push({ type: "done", reason: "toolUse", message }),
+        );
+      } else {
+        mainCalls++;
+        queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+      }
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: "off",
+      maxFindingsPerReview: 3,
+    },
+    "headless-root",
+  );
+  afterEach(() => observer.dispose());
+  const prompt = session.prompt("Complete once");
+  await reviewStarted.promise;
+  await prompt;
+  expect(mainCalls).toBe(1);
+  releaseReview.resolve();
+  await vi.waitFor(() => expect(observer.status.backlog).toBe(0));
+  expect(reportParameters).toContain('"maxItems":32');
+  expect(
+    session.messages
+      .filter((message) => message.role === "custom" && message.customType === "pi-advisor")
+      .map((message) => message.role === "custom" && message.details),
+  ).toEqual([
+    { severity: "nit", message: "Prefer the shorter expression." },
+    { severity: "concern", message: "Cover the missing edge case." },
+    { severity: "blocker", message: "Run the required verification." },
+  ]);
+  expect(mainCalls).toBe(1);
+});
+
+it("records every finding before starting one Corrective Turn", async () => {
+  const reviewStarted = Promise.withResolvers<void>();
+  const releaseReview = Promise.withResolvers<void>();
+  let mainCalls = 0;
+  let reviews = 0;
+  let correctiveContext = "";
+  globalThis.advisorObserverTest = {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      if (privateRole) {
+        reviews++;
+        message.content = [
+          {
+            type: "toolCall",
+            id: `report-${reviews}`,
+            name: "advisor_report",
+            arguments:
+              reviews === 1
+                ? {
+                    findings: [
+                      { severity: "nit", message: "Simplify the helper." },
+                      { severity: "blocker", message: "Verify the first invariant." },
+                      { severity: "blocker", message: "Verify the second invariant." },
+                    ],
+                  }
+                : { findings: [] },
+          },
+        ];
+        message.stopReason = "toolUse";
+        if (reviews === 1) {
+          reviewStarted.resolve();
+          void releaseReview.promise.then(() =>
+            stream.push({ type: "done", reason: "toolUse", message }),
+          );
+        } else queueMicrotask(() => stream.push({ type: "done", reason: "toolUse", message }));
+      } else {
+        mainCalls++;
+        if (mainCalls === 2) correctiveContext = JSON.stringify(context.messages);
+        queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+      }
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: "off",
+      maxCorrectiveTurns: 1,
+    },
+    "interactive",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  afterEach(() => observer.dispose());
+  const prompt = session.prompt("Complete once");
+  await reviewStarted.promise;
+  await prompt;
+  releaseReview.resolve();
+  await vi.waitFor(() => expect(mainCalls).toBe(2));
+  await vi.waitFor(() => expect(observer.status.backlog).toBe(0));
+  expect(correctiveContext.indexOf("Simplify the helper.")).toBeLessThan(
+    correctiveContext.indexOf("Verify the first invariant."),
+  );
+  expect(correctiveContext.indexOf("Verify the first invariant.")).toBeLessThan(
+    correctiveContext.indexOf("Verify the second invariant."),
+  );
+});
+
+it("deduplicates a Review at its highest severity and permits later escalation", async () => {
+  let reviews = 0;
+  globalThis.advisorObserverTest = {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      if (privateRole) {
+        reviews++;
+        message.content = [
+          {
+            type: "toolCall",
+            id: `report-${reviews}`,
+            name: "advisor_report",
+            arguments: {
+              findings:
+                reviews === 1
+                  ? [
+                      { severity: "nit", message: "Check `foo_bar`." },
+                      { severity: "concern", message: "**Check foo_bar.**" },
+                      { severity: "nit", message: "Lower priority first Review." },
+                    ]
+                  : [
+                      { severity: "nit", message: "Check foo_bar." },
+                      { severity: "blocker", message: "Check foo_bar." },
+                      { severity: "concern", message: "Lower priority second Review." },
+                    ],
+            },
+          },
+        ];
+        message.stopReason = "toolUse";
+      }
+      queueMicrotask(() =>
+        stream.push({ type: "done", reason: privateRole ? "toolUse" : "stop", message }),
+      );
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: "off",
+      maxFindingsPerReview: 1,
+    },
+    "headless-root",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  afterEach(() => observer.dispose());
+  await session.prompt("First");
+  await session.prompt("Second");
+  expect(
+    session.messages
+      .filter((message) => message.role === "custom" && message.customType === "pi-advisor")
+      .map((message) => message.role === "custom" && JSON.stringify(message.details)),
+  ).toEqual([
+    JSON.stringify({ severity: "concern", message: "**Check foo_bar.**" }),
+    JSON.stringify({ severity: "blocker", message: "Check foo_bar." }),
+  ]);
+});
+
+it("defers every distinct Concern during one cooldown and re-evaluates the set", async () => {
+  let reviews = 0;
+  const reviewPrompts: string[] = [];
+  globalThis.advisorObserverTest = {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      if (privateRole) {
+        reviews++;
+        reviewPrompts.push(JSON.stringify(context.messages.at(-1)));
+        const findings =
+          reviews === 1
+            ? [
+                { severity: "concern", message: "First concern." },
+                { severity: "concern", message: "Second concern." },
+              ]
+            : [
+                { severity: "concern", message: "Third concern." },
+                { severity: "concern", message: "Fourth concern." },
+              ];
+        message.content = [
+          {
+            type: "toolCall",
+            id: `report-${reviews}`,
+            name: "advisor_report",
+            arguments: { findings },
+          },
+        ];
+        message.stopReason = "toolUse";
+      }
+      queueMicrotask(() =>
+        stream.push({ type: "done", reason: privateRole ? "toolUse" : "stop", message }),
+      );
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
+    "headless-root",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  afterEach(() => observer.dispose());
+  for (let turn = 0; turn < 4; turn++) await session.prompt(`Step ${turn}`);
+  expect(reviewPrompts[2]).toContain("Third concern.");
+  expect(reviewPrompts[2]).toContain("Fourth concern.");
+  expect(
+    session.messages.filter(
+      (message) => message.role === "custom" && message.customType === "pi-advisor",
+    ),
+  ).toHaveLength(4);
+});
+
+it("pauses when a Review omits its terminating report", async () => {
+  globalThis.advisorObserverTest = {
+    stream(model) {
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 },
+    "headless-root",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  afterEach(() => observer.dispose());
+  await session.prompt("Complete normally");
+  expect(observer.status).toMatchObject({
+    state: "paused",
+    lastError: "Advisor Review did not call advisor_report",
+  });
+});
+
 it("pauses on the independent review deadline without cancelling the observed agent", async () => {
   globalThis.advisorObserverTest = {
     stream(model, context, options) {

@@ -8,11 +8,11 @@ The [Advisor glossary](../CONTEXT.md) defines the domain terms. This document re
 
 ## Purpose and authority
 
-An Advisor reviews an observed agent's work and offers corrective advice. Default review priorities are instruction violations, scope drift, repeated failures, and unsupported completion claims. It stays silent when there is no material finding.
+An Advisor reviews an observed agent's work and offers actionable advice. Default review priorities are instruction violations, scope drift, repeated failures, unsupported completion claims, and worthwhile low-risk cleanup or simplification. It stays silent when there is no useful finding.
 
 The Advisor Prompt is replaceable. Permissions, attribution, delivery rules, and limits remain enforced outside that prompt. Standing instructions and observed conversation content are review evidence, not permission to expand the Advisor's capabilities.
 
-Interventions are user-visible and attributed to the Advisor. They use Pi's native steering boundary; they do not veto actions, cancel running tools, or override user instructions. There is no nit tier.
+Interventions are user-visible and attributed to the Advisor. Concerns and Blockers use Pi's native steering boundary when permitted; Nits use non-interrupting native context delivery. Interventions do not veto actions, cancel running tools, or override user instructions.
 
 One Advisor watches each participating agent session. Advisors are not ordinary task-performing Child Agents, and must never recursively create Advisors for their own sessions.
 
@@ -44,6 +44,7 @@ Changes affect the current watched hierarchy immediately when its effective conf
 | Catch-up threshold             | `3`; any positive integer or `off`           |
 | Per-review deadline            | 120 seconds; configurable                    |
 | Investigative tool-call limit  | 8 per Review; configurable                   |
+| Findings per Review            | 4; configurable from 1 through 32            |
 | Automatic Corrective Turns     | 1 per observed request/task; configurable    |
 
 Model and thinking overrides are independent. Do not silently select another provider or model when resolution or inference fails.
@@ -115,17 +116,19 @@ Enforce the configurable Review deadline and investigative-call limit independen
 
 ## Interventions and corrective continuation
 
-| Observed state                  | Concern                                | Blocker                                |
-| ------------------------------- | -------------------------------------- | -------------------------------------- |
-| Running                         | Native steer, subject to cooldown      | Native steer                           |
-| Normally completed, interactive | Preserve visibly for next continuation | Tracked Corrective Turn, within budget |
-| Deliberately interrupted        | Preserve; never restart                | Preserve; never restart                |
-| Aborted or uncertain ending     | Preserve; never restart                | Preserve; never restart                |
-| Headless root has completed     | Preserve; no hidden turn               | Preserve; no hidden turn               |
+| Observed state                  | Nit                                      | Concern                                | Blocker                                |
+| ------------------------------- | ---------------------------------------- | -------------------------------------- | -------------------------------------- |
+| Running                         | Record at the next natural step boundary | Native steer, subject to cooldown      | Native steer                           |
+| Normally completed, interactive | Preserve visibly for next continuation   | Preserve visibly for next continuation | Tracked Corrective Turn, within budget |
+| Deliberately interrupted        | Preserve; never restart                  | Preserve; never restart                | Preserve; never restart                |
+| Aborted or uncertain ending     | Preserve; never restart                  | Preserve; never restart                | Preserve; never restart                |
+| Headless root has completed     | Preserve; no hidden turn                 | Preserve; no hidden turn               | Preserve; no hidden turn               |
 
 Pi does not expose every abort cause distinctly. Conservatively preserve advice after any aborted or uncertain ending rather than risk restarting a deliberately stopped run.
 
-At most one Intervention is accepted per Review. Suppress identical and formatting-only duplicates. Require three completed observed-agent turns between Concerns. Blockers bypass that cooldown, not duplicate suppression or the per-Review limit. Reconsider deferred Concerns before delivery rather than blindly flushing stale findings.
+Accept at most the configured number of findings from one terminating report, ordered Blocker, Concern, then Nit. Within a Review, retain only the highest-severity copy of formatting-equivalent advice. Across Reviews, suppress equal or lower-severity repeats while permitting `Nit → Concern → Blocker` escalation.
+
+Evaluate the three-completed-turn Concern cooldown once per Review. Deliver all eligible Concerns together; while the cooldown is active, retain the bounded distinct set for re-evaluation. Nits and Blockers bypass this cooldown. Nits never steer or start Corrective Turns. If an asynchronous Review finishes after Pi has begun a turn boundary, native context-only delivery records its Nits at the following safe boundary rather than delaying or waking the Observed Agent.
 
 Allow one automatic Corrective Turn per observed request/task by default, with a configurable limit. Further Blockers remain visible until externally continued. This limit does not prevent steering an already-running turn.
 
@@ -175,7 +178,7 @@ Before release, offline SDK checks must establish:
 - Configurable tool grants across registration and activation changes, default read-tool access, and explicit compatibility diagnostics.
 - Operation without sibling packages; when Context Management is loaded and granted, private Notes/History/Rollover isolation, durable checkpoints, preparation/overflow behavior, and proper shutdown.
 - Correct backlog units, arbitrary positive-integer thresholds, invalid-value rejection, threshold release, timeout/cancellation, failure pause, and bounded review work.
-- Concern/Blocker routing, duplicate/cooldown behavior, corrective-turn budgets, and no restart after abort.
+- Nit/Concern/Blocker routing, bounded multi-finding reports, severity escalation, duplicate/cooldown behavior, corrective-turn budgets, and no restart after abort.
 - Headless final draining and genuinely tracked child correction/final delivery.
 - No stale advice after disable, reload, model/prompt changes, branch navigation, or session replacement.
 - Unchanged ordered observed-agent tool definitions, system prompt, and unaffected message history when merely enabling or running a silent Advisor. Name-set equality alone is insufficient cache proof.
