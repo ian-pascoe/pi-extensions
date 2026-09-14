@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-codemode
 
+## 0.7.4
+
+### Patch Changes
+
+- 9f19c43: Add blocking `advisor_ask` consultations through the existing private Advisor Session, with serialized passive review, accurate backlog accounting, cancellation safety, and dynamic main-agent visibility.
+
+  Preserve CodeMode-only tool requests when another extension changes one registered tool's availability.
+
 ## 0.7.3
 
 ### Patch Changes
