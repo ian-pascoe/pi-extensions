@@ -1431,6 +1431,39 @@ describe("Pi CodeMode extension", () => {
     });
   });
 
+  test("honors one extension-owned availability change without dropping CodeMode-only tools", async () => {
+    const fixture = await createCodeModeExtensionFixture({
+      tools: [{ pattern: "*", exposure: "codemode-only" }],
+    });
+    fixture.extensionApi.registerTool({
+      name: "advisor_ask",
+      label: "Ask Advisor",
+      description: "Ask for a second opinion.",
+      parameters: Type.Object({ message: Type.String() }),
+      async execute() {
+        return { content: [{ type: "text", text: "Advice" }], details: {} };
+      },
+    });
+    const search = async (query: string) =>
+      codeModeToolSearchPage(await executeTool(fixture.session, "codemode_search", { query }));
+    expect(await search("advisor_ask")).toMatchObject({ total: 1 });
+    expect(await search("closure_echo")).toMatchObject({ total: 1 });
+
+    let handled = false;
+    fixture.extensionApi.events.emit("pi-codemode:request-tool-availability", {
+      sessionId: fixture.session.sessionManager.getSessionId(),
+      toolName: "advisor_ask",
+      available: false,
+      handled: () => {
+        handled = true;
+      },
+    });
+
+    expect(handled).toBe(true);
+    expect(await search("advisor_ask")).toMatchObject({ total: 0 });
+    expect(await search("closure_echo")).toMatchObject({ total: 1 });
+  });
+
   test.each([false, true])(
     "preserves immediate tool definitions across MCP refresh with late foreign tools (CodeMode=%s)",
     async (codeMode) => {

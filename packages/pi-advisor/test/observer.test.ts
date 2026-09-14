@@ -970,3 +970,179 @@ it("disabled observation leaves the ordered native tools, prompt and conversatio
   await disposal;
   expect(session.agent.streamFunction).toBe(stream);
 });
+
+it("prioritizes consultation after the active Review without advancing its backlog", async () => {
+  const reviewStarted = Promise.withResolvers<void>();
+  const releaseReview = Promise.withResolvers<void>();
+  const consultationStarted = Promise.withResolvers<void>();
+  const releaseConsultation = Promise.withResolvers<void>();
+  const privatePrompts: string[] = [];
+  const order: string[] = [];
+  let reviews = 0;
+  globalThis.advisorObserverTest = {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      if (!privateRole) {
+        queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+        return stream;
+      }
+      const prompt = JSON.stringify(context.messages.at(-1));
+      privatePrompts.push(prompt);
+      if (prompt.includes("Consultation request")) {
+        order.push("consultation-start");
+        consultationStarted.resolve();
+        void releaseConsultation.promise.then(() => {
+          order.push("consultation-end");
+          stream.push({
+            type: "done",
+            reason: "stop",
+            message: { ...message, content: [{ type: "text", text: "Inspect the shared seam." }] },
+          });
+        });
+      } else {
+        const review = ++reviews;
+        order.push(`review-${review}-start`);
+        const finish = () => {
+          order.push(`review-${review}-end`);
+          stream.push({
+            type: "done",
+            reason: "toolUse",
+            message: {
+              ...message,
+              content: [
+                {
+                  type: "toolCall",
+                  id: `report-${review}`,
+                  name: "advisor_report",
+                  arguments: { severity: "none" },
+                },
+              ],
+              stopReason: "toolUse",
+            },
+          });
+        };
+        if (review === 1) {
+          reviewStarted.resolve();
+          void releaseReview.promise.then(finish);
+        } else queueMicrotask(finish);
+      }
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
+    "interactive",
+  );
+  afterEach(() => observer.dispose());
+
+  await session.prompt("First completed step");
+  await reviewStarted.promise;
+  await session.prompt("Second completed step");
+  const answer = observer.consult("Which seam should I inspect?");
+  releaseReview.resolve();
+  await consultationStarted.promise;
+  expect(observer.status).toMatchObject({ state: "consulting", backlog: 1 });
+  releaseConsultation.resolve();
+  await expect(answer).resolves.toBe("Inspect the shared seam.");
+  await expect.poll(() => observer.status.backlog).toBe(0);
+
+  expect(order).toEqual([
+    "review-1-start",
+    "review-1-end",
+    "consultation-start",
+    "consultation-end",
+    "review-2-start",
+    "review-2-end",
+  ]);
+  expect(privatePrompts[1]).toContain("Second completed step");
+  expect(privatePrompts[1]).toContain("Which seam should I inspect?");
+  expect(privatePrompts[1]).not.toContain("First completed step");
+  expect(privatePrompts[2]).toContain('\\"messages\\":[]');
+});
+
+it("cancels an on-demand consultation without pausing later advice", async () => {
+  const consultationStarted = Promise.withResolvers<void>();
+  let consultations = 0;
+  globalThis.advisorObserverTest = {
+    stream(model, context, options) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
+      const prompt = JSON.stringify(context.messages.at(-1));
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      const stream = createAssistantMessageEventStream();
+      if (!privateRole) {
+        queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
+      } else if (prompt.includes("Consultation request")) {
+        if (++consultations === 1) {
+          consultationStarted.resolve();
+          options?.signal?.addEventListener(
+            "abort",
+            () =>
+              stream.push({
+                type: "error",
+                reason: "aborted",
+                error: { ...message, stopReason: "aborted" },
+              }),
+            { once: true },
+          );
+        } else
+          queueMicrotask(() =>
+            stream.push({
+              type: "done",
+              reason: "stop",
+              message: { ...message, content: [{ type: "text", text: "Recovered advice" }] },
+            }),
+          );
+      } else
+        queueMicrotask(() =>
+          stream.push({
+            type: "done",
+            reason: "toolUse",
+            message: {
+              ...message,
+              content: [
+                {
+                  type: "toolCall",
+                  id: "report",
+                  name: "advisor_report",
+                  arguments: { severity: "none" },
+                },
+              ],
+              stopReason: "toolUse",
+            },
+          }),
+        );
+      return stream;
+    },
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
+    "interactive",
+  );
+  afterEach(() => observer.dispose());
+  await session.prompt("Seed context");
+  await expect.poll(() => observer.status.backlog).toBe(0);
+
+  const cancellation = new AbortController();
+  const cancelled = observer.consult("Help before cancellation", cancellation.signal);
+  await consultationStarted.promise;
+  cancellation.abort(new Error("User stopped the main turn"));
+  await expect(cancelled).rejects.toThrow("User stopped the main turn");
+  expect(observer.status).toMatchObject({ state: "armed", lastError: null, backlog: 0 });
+  await expect(observer.consult("Try again")).resolves.toBe("Recovered advice");
+});

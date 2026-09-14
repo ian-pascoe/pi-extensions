@@ -13,6 +13,8 @@ export interface CodeModeActiveToolOwner {
 export interface InstalledCodeModeToolExposure {
   /** Returns the latest coherent direct, CodeMode, and unavailable classification. */
   getDecision(): CodeModeToolExposureDecision;
+  /** Changes one registered tool's availability without replacing unrelated requested names. */
+  setToolAvailable(name: string, available: boolean): boolean;
   /** Reconciles registry or active-tool changes that bypassed the installed method wrapper. */
   refreshToolExposure(): void;
   /** Restores pre-policy requested names and the owner's exact original method descriptor. */
@@ -102,6 +104,14 @@ export function installCodeModeToolExposure(
     }
   };
 
+  const applyRequestedNames = (registryNames: Set<string>): void => {
+    decision = decideCodeModeToolExposure(registryNames, requestedNames, rules);
+    lastObservedRegistryNames = registryNames;
+    lastAppliedDirectNames = new Set(decision.directNames);
+    inheritedCallable([...decision.directNames]);
+    notifyDecision();
+  };
+
   const applyPolicy = (inputNames: string[]): void => {
     if (restored) {
       inheritedCallable(inputNames);
@@ -122,11 +132,7 @@ export function installCodeModeToolExposure(
       requestedNames = new Set(inputNames);
     }
 
-    decision = decideCodeModeToolExposure(registryNames, requestedNames, rules);
-    lastObservedRegistryNames = registryNames;
-    lastAppliedDirectNames = new Set(decision.directNames);
-    inheritedCallable([...decision.directNames]);
-    notifyDecision();
+    applyRequestedNames(registryNames);
   };
 
   Object.defineProperty(owner, "setActiveToolsByName", {
@@ -140,6 +146,18 @@ export function installCodeModeToolExposure(
 
   return {
     getDecision: () => decision,
+    setToolAvailable: (name, available) => {
+      if (restored) return false;
+      const registryNames = new Set(getRegistryNames());
+      if (!registryNames.has(name)) return false;
+      requestedNames = new Set(
+        [...requestedNames].filter((requested) => registryNames.has(requested)),
+      );
+      if (available) requestedNames.add(name);
+      else requestedNames.delete(name);
+      applyRequestedNames(registryNames);
+      return true;
+    },
     refreshToolExposure: () => {
       if (restored) return;
       const registryNames = new Set(getRegistryNames());

@@ -28,6 +28,16 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 
 Argument autocomplete suggests command names, settings keys, and valid trailing scope flags.
 
+## On-demand consultations
+
+When Advisor is enabled, the main agent can call `advisor_ask({ message })` for analysis or a second opinion. The call waits for the current Review, then returns plain Markdown before any further Review Backlog is processed. Follow-up calls continue the same private Advisor Session.
+
+A Consultation receives only observed context that has not already been supplied to that Advisor. It does not reduce the Review Backlog, create an Intervention, or trigger a Corrective Turn. Its ordinary tool call and result remain in the observed transcript for later Reviews.
+
+The tool is absent while Advisor is disabled. A paused Advisor keeps it visible so the call can report the pause reason and recovery commands. User cancellation stops only that Consultation; an inference, authentication, deadline, or investigative-tool failure pauses Advisor. CodeMode exposure settings continue to decide whether the tool is direct, CodeMode-only, or both.
+
+Consultation authorizes analysis and investigation, not implementation or other side effects. The configured Advisor Prompt remains authoritative. Tool Grants still expose each granted tool's full native interface, so exclude mutating tools when a prompt-level boundary is insufficient.
+
 `prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range).
 
 ## Defaults and access
@@ -58,6 +68,6 @@ Reviews combine completed observed turns (one model response plus its tool batch
 
 Running work receives native steering. A blocker after normal interactive completion may receive a tracked corrective continuation within the configured budget; aborted, uncertain, deliberately interrupted, and headless-completed work is preserved without a hidden restart. Child corrections stay inside Minimal's owned operation. Headless root shutdown allows only a bounded final drain and never starts hidden corrective work.
 
-Status reports effective settings, sources, review state, backlog, usage/cost, and the last error. Unknown cost is shown as unknown, never zero. Review failure pauses Advisor while leaving the observed agent running; changing configuration, branch, or session identity invalidates stale in-flight work.
+Status reports effective settings, sources, review or consultation state, backlog, usage/cost, and the last error. Unknown cost is shown as unknown, never zero. Review failure pauses Advisor while leaving the observed agent running; changing configuration, branch, or session identity invalidates stale in-flight work.
 
 Advisor is privileged extension code. Review inherited extensions and granted tools before installing it in a session with access to local files, credentials, or mutating APIs.

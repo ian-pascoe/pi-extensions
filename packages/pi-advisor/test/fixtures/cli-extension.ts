@@ -1,6 +1,20 @@
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
-import { createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  fauxAssistantMessage,
+  type Context,
+} from "@earendil-works/pi-ai";
+
+function messageText(message: Context["messages"][number] | undefined): string {
+  if (!message || !("content" in message)) return "";
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Pi's public message union uses string-or-content blocks.
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n");
+}
 
 /** Offline CLI boundary: real loading, commands, and reviews without network requests. */
 export default function cliFixture(pi: ExtensionAPI): void {
@@ -58,7 +72,11 @@ export default function cliFixture(pi: ExtensionAPI): void {
         throw new Error("Unexpected CLI fixture authentication");
       console.log(`ADVISOR_CLI_AUTH=${options.apiKey === "offline" ? "api-key" : "oauth"}`);
       const reviewing = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
-      console.log(`ADVISOR_CLI_INFERENCE=${reviewing ? "review" : "observed"}`);
+      const lastUser = messageText(context.messages.findLast((message) => message.role === "user"));
+      const consultation = reviewing && lastUser.includes("Consultation request");
+      console.log(
+        `ADVISOR_CLI_INFERENCE=${consultation ? "consultation" : reviewing ? "review" : "observed"}`,
+      );
       const stream = createAssistantMessageEventStream();
       const message = {
         ...fauxAssistantMessage("Offline task complete"),
@@ -66,7 +84,10 @@ export default function cliFixture(pi: ExtensionAPI): void {
         model: model.id,
         api: model.api,
       };
-      if (reviewing) {
+      if (consultation) {
+        message.content = [{ type: "text", text: "Inspect the native path." }];
+        console.log("ADVISOR_CLI_CONSULTATION=Inspect the native path.");
+      } else if (reviewing) {
         message.content = [
           {
             type: "toolCall",
@@ -76,9 +97,28 @@ export default function cliFixture(pi: ExtensionAPI): void {
           },
         ];
         message.stopReason = "toolUse";
+      } else if (
+        lastUser.includes("Ask Advisor which path to inspect") &&
+        !context.messages.some(
+          (item) => item.role === "toolResult" && item.toolName === "advisor_ask",
+        )
+      ) {
+        message.content = [
+          {
+            type: "toolCall",
+            id: "ask",
+            name: "advisor_ask",
+            arguments: { message: "Which path should I inspect?" },
+          },
+        ];
+        message.stopReason = "toolUse";
       }
       queueMicrotask(() =>
-        stream.push({ type: "done", reason: reviewing ? "toolUse" : "stop", message }),
+        stream.push({
+          type: "done",
+          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+          message,
+        }),
       );
       return stream;
     },

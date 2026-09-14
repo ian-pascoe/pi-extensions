@@ -48,6 +48,10 @@ _Avoid_: User turn, execution veto
 One assessment by an Advisor of new observed-agent context, optionally supported by independent investigation using its Tool Grant. A Review may cover several observed-agent turns.
 _Avoid_: Observed-agent turn
 
+**Consultation**:
+An on-demand exchange in which the main Observed Agent asks its existing Advisor for analysis or a second opinion. A Consultation returns advice directly, does not complete a Review, and does not create an Intervention or Corrective Turn.
+_Avoid_: Delegation, manual Review
+
 **Review Backlog**:
 Completed turns of the observed agent that have not yet received a completed Advisor review, including turns currently under review. A turn is one model response and its associated tool calls, not an entire user request.
 _Avoid_: Message count, pending advice

@@ -27,6 +27,12 @@ interface WatchedChild {
   resourceInputs: AdvisorResourceInputs;
   observer: AdvisorObserver | undefined;
 }
+const askToolName = "advisor_ask";
+const codeModeToolAvailabilityEvent = "pi-codemode:request-tool-availability";
+const askToolParameters = Type.Object(
+  { message: Type.String({ minLength: 1 }) },
+  { additionalProperties: false },
+);
 const childRequestSchema = Type.Object({
   rootSessionId: Type.String(),
   agentId: Type.String(),
@@ -47,6 +53,7 @@ export default function advisor(pi: ExtensionAPI): void {
   let generation = 0;
   let privateSession = false;
   let observer: AdvisorObserver | undefined;
+  let askToolRegistered = false;
   let rootSessionId: string | undefined;
   const children = new Map<AgentSession, WatchedChild>();
   let unsubscribe: (() => void) | undefined = pi.events.on(
@@ -58,6 +65,47 @@ export default function advisor(pi: ExtensionAPI): void {
     "pi-advisor-child",
     (entry) => new Text(`Advisor for Child Agent\n${JSON.stringify(entry.data, null, 2)}`, 0, 0),
   );
+
+  function setAskToolAvailable(available: boolean): void {
+    if (available && !askToolRegistered) {
+      pi.registerTool({
+        name: askToolName,
+        label: "Ask Advisor",
+        description:
+          "Ask the enabled Advisor for analysis or a second opinion. Waits for its answer; does not delegate implementation.",
+        parameters: askToolParameters,
+        executionMode: "sequential",
+        execute: async (_id, { message }, signal) => {
+          const current = observer;
+          if (!current)
+            throw new Error(
+              `${error ?? "Advisor consultation is unavailable"}. Inspect /advisor status, then run /advisor on or correct its configuration.`,
+            );
+          const answer = await current.consult(message, signal);
+          return { content: [{ type: "text", text: answer }], details: {} };
+        },
+      });
+      askToolRegistered = true;
+      return;
+    }
+    if (!askToolRegistered) return;
+    let handled = false;
+    if (rootSessionId)
+      pi.events.emit(codeModeToolAvailabilityEvent, {
+        sessionId: rootSessionId,
+        toolName: askToolName,
+        available,
+        handled: () => {
+          handled = true;
+        },
+      });
+    if (handled) return;
+    const active = pi.getActiveTools();
+    if (available === active.includes(askToolName)) return;
+    pi.setActiveTools(
+      available ? [...active, askToolName] : active.filter((name) => name !== askToolName),
+    );
+  }
 
   pi.registerEntryRenderer(
     "pi-advisor-status",
@@ -89,13 +137,19 @@ export default function advisor(pi: ExtensionAPI): void {
         .some(
           (entry) => entry.type === "custom" && entry.customType === "minimal-subagents.identity",
         );
-    if (privateSession) return;
+    if (privateSession) {
+      setAskToolAvailable(false);
+      return;
+    }
     const found = discoverPiAgentSession(pi, AgentSession);
     if (found.ok) {
       observed = found.session;
       layers = readAdvisorLayers(observed.settingsManager);
       await refresh(ctx);
-    } else error = found.warning;
+    } else {
+      error = found.warning;
+      setAskToolAvailable(true);
+    }
   });
   pi.on("session_tree", async (_event, ctx) => {
     generation++;
@@ -217,8 +271,10 @@ export default function advisor(pi: ExtensionAPI): void {
           },
         );
       for (const [session, child] of children) configureChild(session, child, settings);
+      setAskToolAvailable(settings.enabled);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
+      setAskToolAvailable(true);
       await Promise.all([
         observer?.dispose(),
         ...[...children.values()].map((child) => child.observer?.dispose()),

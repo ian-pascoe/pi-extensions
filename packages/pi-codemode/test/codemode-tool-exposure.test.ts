@@ -193,6 +193,39 @@ describe("installCodeModeToolExposure", () => {
     });
   });
 
+  test("toggles one registered tool without dropping foreign CodeMode-only requests", () => {
+    const owner = new RecordingActiveToolOwner(["direct", "hidden", "advisor_ask"]);
+    const registryNames = ["direct", "hidden", "advisor_ask"];
+    const settings = resolveCodeModeSettings({
+      getGlobalSettings: () => ({
+        codemode: {
+          tools: [
+            { pattern: "hidden", exposure: "codemode-only" },
+            { pattern: "advisor_ask", exposure: "codemode-only" },
+          ],
+        },
+      }),
+      getProjectSettings: () => ({}),
+    });
+    expect(settings.enabled).toBe(true);
+    if (!settings.enabled) return;
+    const installed = installCodeModeToolExposure(owner, () => registryNames, settings.rules);
+
+    expect(installed.setToolAvailable("advisor_ask", false)).toBe(true);
+    expect(installed.getDecision()).toEqual({
+      codeModeNames: ["direct", "hidden"],
+      directNames: ["direct"],
+      unavailableNames: ["advisor_ask"],
+    });
+    expect(installed.setToolAvailable("advisor_ask", true)).toBe(true);
+    expect(installed.getDecision()).toEqual({
+      codeModeNames: ["direct", "hidden", "advisor_ask"],
+      directNames: ["direct"],
+      unavailableNames: [],
+    });
+    expect(installed.setToolAvailable("missing", false)).toBe(false);
+  });
+
   test("coalesces a reentrant registry refresh into the latest decision notification", () => {
     const owner = new RecordingActiveToolOwner(["first"]);
     let registryNames = ["first"];
