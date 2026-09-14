@@ -29,8 +29,12 @@ The configured set of tools an Advisor is permitted to call, distinct from the e
 _Avoid_: Extension allowlist
 
 **Intervention**:
-Corrective advice from an Advisor to the observed agent, visible to the user and intended to redirect ongoing work. It neither overrides the user's instructions nor grants the Advisor veto power.
+Actionable advice from an Advisor to the observed agent, visible to the user and intended to improve or redirect ongoing work. It neither overrides the user's instructions nor grants the Advisor veto power.
 _Avoid_: Veto, approval gate
+
+**Nit**:
+A non-interrupting Intervention identifying worthwhile low-risk cleanup, simplification, style, or a missed opportunity. It enters the observed context at a natural step boundary and never starts a Corrective Turn.
+_Avoid_: Concern
 
 **Concern**:
 An Intervention identifying material risk or a likely wrong direction. A Concern raised after normal completion remains visible for the next continuation rather than restarting the observed agent.
@@ -45,7 +49,7 @@ A continuation of the observed agent prompted by a Blocker after normal completi
 _Avoid_: User turn, execution veto
 
 **Review**:
-One assessment by an Advisor of new observed-agent context, optionally supported by independent investigation using its Tool Grant. A Review may cover several observed-agent turns.
+One assessment by an Advisor of new observed-agent context, optionally supported by independent investigation using its Tool Grant. A Review may cover several observed-agent turns and produce a bounded set of findings.
 _Avoid_: Observed-agent turn
 
 **Consultation**:

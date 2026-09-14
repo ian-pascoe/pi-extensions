@@ -33,6 +33,7 @@ describe("Advisor commands through the native SDK", () => {
       "set reviewTimeoutMs",
       "set maxToolCalls",
       "set maxCorrectiveTurns",
+      "set maxFindingsPerReview",
     ]);
     expect(await values("inherit c")).toEqual(["inherit catchUpThreshold"]);
     expect(await values("set  allowedT")).toEqual(["set  allowedTools"]);
@@ -429,6 +430,19 @@ describe("Advisor commands through the native SDK", () => {
     }
     await session.prompt("/advisor set reviewTimeoutMs 2147483648");
     expect(status()).toMatchObject({ data: { error: expect.stringContaining("reviewTimeoutMs") } });
+    await session.prompt("/advisor set maxFindingsPerReview 4");
+    expect(status()).toMatchObject({
+      data: {
+        settings: { maxFindingsPerReview: 4 },
+        sources: { maxFindingsPerReview: "session" },
+      },
+    });
+    for (const value of ["0", "33", "1.5"]) {
+      await session.prompt(`/advisor set maxFindingsPerReview ${value}`);
+      expect(status()).toMatchObject({
+        data: { error: expect.stringContaining("maxFindingsPerReview") },
+      });
+    }
     await session.prompt("/advisor set catchUpThreshold 0 --global");
     expect(status()).toMatchObject({
       data: { error: expect.stringContaining("Invalid global Advisor settings") },
@@ -508,6 +522,7 @@ describe("Advisor commands through the native SDK", () => {
           reviewTimeoutMs: 120_000,
           maxToolCalls: 8,
           maxCorrectiveTurns: 1,
+          maxFindingsPerReview: 4,
         },
         sources: { enabled: "default", allowedTools: "default" },
         backlog: 0,
