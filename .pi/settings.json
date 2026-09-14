@@ -227,6 +227,20 @@
       ]
     }
   ],
+  "advisor": {
+    "enabled": false,
+    "model": "openai-codex/gpt-6-astra",
+    "thinkingLevel": "high",
+    "allowedTools": [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "context_notes",
+      "context_history",
+      "context_rollover"
+    ]
+  },
   "mcp": {
     "servers": {}
   },
@@ -368,19 +382,5 @@
         "requireRootMarker": true
       }
     }
-  },
-  "advisor": {
-    "enabled": false,
-    "model": "openai-codex/gpt-6-astra",
-    "thinkingLevel": "xhigh",
-    "allowedTools": [
-      "read",
-      "grep",
-      "find",
-      "ls",
-      "context_notes",
-      "context_history",
-      "context_rollover"
-    ]
   }
 }
