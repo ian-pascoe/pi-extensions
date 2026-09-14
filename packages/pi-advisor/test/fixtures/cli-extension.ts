@@ -1,20 +1,10 @@
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
 import {
+  contentText,
   createAssistantMessageEventStream,
   fauxAssistantMessage,
-  type Context,
 } from "@earendil-works/pi-ai";
-
-function messageText(message: Context["messages"][number] | undefined): string {
-  if (!message || !("content" in message)) return "";
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Pi's public message union uses string-or-content blocks.
-  if (typeof message.content === "string") return message.content;
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n");
-}
 
 /** Offline CLI boundary: real loading, commands, and reviews without network requests. */
 export default function cliFixture(pi: ExtensionAPI): void {
@@ -72,7 +62,9 @@ export default function cliFixture(pi: ExtensionAPI): void {
         throw new Error("Unexpected CLI fixture authentication");
       console.log(`ADVISOR_CLI_AUTH=${options.apiKey === "offline" ? "api-key" : "oauth"}`);
       const reviewing = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
-      const lastUser = messageText(context.messages.findLast((message) => message.role === "user"));
+      const lastUser = contentText(
+        context.messages.findLast((message) => message.role === "user")?.content ?? "",
+      );
       const consultation = reviewing && lastUser.includes("Consultation request");
       console.log(
         `ADVISOR_CLI_INFERENCE=${consultation ? "consultation" : reviewing ? "review" : "observed"}`,

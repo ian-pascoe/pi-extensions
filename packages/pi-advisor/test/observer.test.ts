@@ -1057,6 +1057,14 @@ it("prioritizes consultation after the active Review and promptly cancels queued
   releaseReview.resolve();
   await consultationStarted.promise;
   expect(observer.status).toMatchObject({ state: "consulting", backlog: 1 });
+  const queuedCancellation = new AbortController();
+  const cancelledBehindConsultation = observer.consult(
+    "Cancel this ask behind another Consultation",
+    queuedCancellation.signal,
+  );
+  queuedCancellation.abort(new Error("User stopped the second queued ask"));
+  await expect(cancelledBehindConsultation).rejects.toThrow("User stopped the second queued ask");
+  expect(order).toEqual(["review-1-start", "review-1-end", "consultation-start"]);
   releaseConsultation.resolve();
   await expect(answer).resolves.toBe("Inspect the shared seam.");
   await expect.poll(() => observer.status.backlog).toBe(0);

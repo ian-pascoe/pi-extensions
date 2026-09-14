@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import type { Context, ImageContent } from "@earendil-works/pi-ai";
+import { contentText, type Context, type ImageContent } from "@earendil-works/pi-ai";
 import {
   defineTool,
   convertToLlm,
@@ -96,6 +96,35 @@ function normalized(message: string): string {
     .replace(/^\s*(?:#{1,6}|[-*+])\s+/gm, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+async function awaitWithSignal(
+  promise: Promise<unknown> | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  if (!signal) {
+    await promise;
+    return;
+  }
+  const cancelled = Promise.withResolvers<never>();
+  const rejectCancellation = () => cancelled.reject(signal.reason);
+  signal.addEventListener("abort", rejectCancellation, { once: true });
+  try {
+    await Promise.race([promise, cancelled.promise]);
+  } finally {
+    signal.removeEventListener("abort", rejectCancellation);
+  }
+}
+
+function operationFailure(runtime: AgentSessionRuntime, since: number): string | undefined {
+  const diagnostic = runtime.diagnostics.find((item) => item.type === "error");
+  if (diagnostic) return diagnostic.message;
+  const failedTool = runtime.session.messages
+    .slice(since)
+    .find((message) => message.role === "toolResult" && message.isError);
+  if (!failedTool || failedTool.role !== "toolResult") return;
+  return contentText(failedTool.content).trim() || `Advisor tool ${failedTool.toolName} failed`;
 }
 
 /** Coalesced native review work; it never owns the observed tools, prompt, or agent loop. */
@@ -480,6 +509,7 @@ export class AdvisorObserver {
     const prepared = await this.prepareOperation(review, snapshot);
     if (!prepared) return;
     const { runtime, stable } = prepared;
+    const before = runtime.session.messages.length;
     const abort = () => {
       void runtime.session.abort().catch(() => undefined);
     };
@@ -491,8 +521,8 @@ export class AdvisorObserver {
         { images },
       );
       if (!this.current(review)) return;
-      const failure = runtime.diagnostics.find((item) => item.type === "error");
-      if (failure) throw new Error(failure.message);
+      const failure = operationFailure(runtime, before);
+      if (failure) throw new Error(failure);
       const last = runtime.session.messages.findLast((message) => message.role === "assistant");
       if (
         last?.role === "assistant" &&
@@ -522,18 +552,9 @@ export class AdvisorObserver {
     if (unavailable) return Promise.reject(new Error(unavailable));
     const requestedEpoch = this.epoch;
     this.pendingConsultations++;
-    const consultation = this.consultationTail.then(async () => {
-      if (signal) {
-        signal.throwIfAborted();
-        const cancelled = Promise.withResolvers<never>();
-        const rejectCancellation = () => cancelled.reject(signal.reason);
-        signal.addEventListener("abort", rejectCancellation, { once: true });
-        try {
-          await Promise.race([this.running, cancelled.promise]);
-        } finally {
-          signal.removeEventListener("abort", rejectCancellation);
-        }
-      } else await this.running;
+    const previous = this.consultationTail;
+    const consultation = awaitWithSignal(previous, signal).then(async () => {
+      await awaitWithSignal(this.running, signal);
       signal?.throwIfAborted();
       if (requestedEpoch !== this.epoch)
         throw new Error("Advisor consultation was cancelled by a session or configuration change");
@@ -541,10 +562,7 @@ export class AdvisorObserver {
       if (unavailable) throw new Error(unavailable);
       return this.runConsultation(message, signal);
     });
-    this.consultationTail = consultation.then(
-      () => undefined,
-      () => undefined,
-    );
+    this.consultationTail = Promise.allSettled([previous, consultation]).then(() => undefined);
     return consultation.finally(() => {
       this.pendingConsultations--;
       if (this.pendingConsultations === 0) this.start();
@@ -629,8 +647,8 @@ export class AdvisorObserver {
         { images },
       );
       if (!this.current(consultation)) throw new Error("Advisor consultation was invalidated");
-      const failure = runtime.diagnostics.find((item) => item.type === "error");
-      if (failure) throw new Error(failure.message);
+      const failure = operationFailure(runtime, before);
+      if (failure) throw new Error(failure);
       const last = runtime.session.messages
         .slice(before)
         .findLast((entry) => entry.role === "assistant");
@@ -638,11 +656,7 @@ export class AdvisorObserver {
         throw new Error("Advisor consultation did not return an answer");
       if (last.stopReason === "error" || last.stopReason === "aborted")
         throw new Error(last.errorMessage ?? "Advisor consultation did not complete");
-      const answer = last.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
+      const answer = contentText(last.content).trim();
       if (!answer) throw new Error("Advisor consultation did not return a text answer");
       this.supplied = snapshot;
       this.suppliedBoundary = consultation.boundary;

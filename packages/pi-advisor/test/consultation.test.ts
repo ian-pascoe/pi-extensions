@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import {
   InMemoryCredentialStore,
   InMemoryModelsStore,
+  contentText,
   createAssistantMessageEventStream,
   fauxAssistantMessage,
-  type Context,
 } from "@earendil-works/pi-ai";
 import {
   AgentSessionRuntime,
@@ -20,27 +20,20 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/observer-extension.js";
 
-function messageText(message: Context["messages"][number] | undefined): string {
-  if (!message || !("content" in message)) return "";
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Pi's public message union uses string-or-content blocks.
-  if (typeof message.content === "string") return message.content;
-  return message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n");
-}
-
 it("returns enabled main-agent consultation as an ordinary tool result", async () => {
   const directory = await mkdtemp(join(tmpdir(), "advisor-consultation-"));
   const privatePrompts: string[] = [];
   const privateToolNames: string[][] = [];
   const questions = ["What risk should I check first?"];
   let failConsultation = false;
+  let failConsultationTool = false;
   let consultationRequests = 0;
   globalThis.advisorObserverTest = {
     stream(model, context) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
-      const prompt = messageText(context.messages.findLast((message) => message.role === "user"));
+      const prompt = contentText(
+        context.messages.findLast((message) => message.role === "user")?.content ?? "",
+      );
       const message = {
         ...fauxAssistantMessage("Main task complete"),
         api: model.api,
@@ -52,7 +45,20 @@ it("returns enabled main-agent consultation as an ordinary tool result", async (
         privateToolNames.push((context.tools ?? []).map((tool) => tool.name));
         if (prompt.includes("Consultation request")) {
           consultationRequests++;
-          if (failConsultation) {
+          const failedRead = context.messages.some(
+            (entry) => entry.role === "toolResult" && entry.toolName === "read" && entry.isError,
+          );
+          if (failConsultationTool && !failedRead) {
+            message.content = [
+              {
+                type: "toolCall",
+                id: "failed-read",
+                name: "read",
+                arguments: { path: join(directory, "missing-advisor-file") },
+              },
+            ];
+            message.stopReason = "toolUse";
+          } else if (failConsultation) {
             message.stopReason = "error";
             message.errorMessage = "Offline consultation failure";
           } else message.content = [{ type: "text", text: "Check the cancellation path first." }];
@@ -168,6 +174,25 @@ it("returns enabled main-agent consultation as an ordinary tool result", async (
     ),
   ).toBe(true);
 
+  failConsultationTool = true;
+  questions.push("Can you recover from a failed investigation?");
+  await runtime.session.prompt("Ask after an investigative tool fails.");
+  const failedToolConsultation = runtime.session.messages.findLast(
+    (message) => message.role === "toolResult" && message.toolName === "advisor_ask",
+  );
+  expect(failedToolConsultation).toMatchObject({ isError: true });
+  expect(JSON.stringify(failedToolConsultation)).toContain("missing-advisor-file");
+  await runtime.session.prompt("/advisor status");
+  expect(
+    runtime.session.sessionManager
+      .getBranch()
+      .findLast((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status"),
+  ).toMatchObject({
+    data: { state: "paused", error: expect.stringContaining("missing-advisor-file") },
+  });
+
+  failConsultationTool = false;
+  await runtime.session.prompt("/advisor on");
   failConsultation = true;
   questions.push("Can you verify another risk?");
   await runtime.session.prompt("Ask again after the first consultation.");
