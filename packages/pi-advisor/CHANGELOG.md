@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-advisor
 
+## 0.3.0
+
+### Minor Changes
+
+- e7a6648: Add non-interrupting Nit findings and configurable multi-finding Reviews with severity-aware deduplication.
+
 ## 0.2.0
 
 ### Minor Changes
