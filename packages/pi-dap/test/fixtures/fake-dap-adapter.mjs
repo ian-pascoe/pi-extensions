@@ -61,6 +61,9 @@ async function handleRequest(request) {
     case "fail":
       respond(request, false, { reason: "fixture" }, "fixture failure");
       return;
+    case "detailed-error":
+      respond(request, false, request.arguments, "Failed to launch");
+      return;
     case "commandless-error":
       send({
         seq: nextSequence++,

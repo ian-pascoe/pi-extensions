@@ -14,6 +14,12 @@ const MAX_ADAPTER_STDERR_BYTES = 1024 * 1024;
 const TCP_RETRY_DELAY_MS = 20;
 
 const DapProtocolObjectSchema = Type.Object({}, { additionalProperties: true });
+const DapErrorBodySchema = Type.Object(
+  {
+    error: Type.Object({ format: Type.String({ minLength: 1 }) }, { additionalProperties: true }),
+  },
+  { additionalProperties: true },
+);
 const DapRequestEnvelopeSchema = Type.Object(
   {
     seq: Type.Integer({ minimum: 1 }),
@@ -973,12 +979,15 @@ export class DapProtocolClient {
       return;
     }
     if (!response.success) {
+      const message = Value.Check(DapErrorBodySchema, response.body)
+        ? response.body.error.format
+        : response.message;
       pending.reject(
         new DapProtocolClientError(
           "request",
           this.adapterId,
           this.stderrPath,
-          `${pending.command} request failed${response.message === undefined ? "" : `: ${response.message}`}`,
+          `${pending.command} request failed${message === undefined ? "" : `: ${message}`}`,
         ),
       );
       return;

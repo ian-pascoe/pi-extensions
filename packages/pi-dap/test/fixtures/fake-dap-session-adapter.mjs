@@ -22,14 +22,16 @@ function respond(request, body) {
   send(response);
 }
 
-function fail(request, message) {
-  send({
+function fail(request, message, body) {
+  const response = {
     type: "response",
     request_seq: request.seq,
     success: false,
     command: request.command,
     message,
-  });
+  };
+  if (body !== undefined) response.body = body;
+  send(response);
 }
 
 function event(event, body) {
@@ -51,6 +53,16 @@ function executeAndStop(request, reason) {
 function handleReverseResponse(message) {
   if (message.request_seq !== reverseRequestSequence) return;
   reverseRequestSequence = undefined;
+  if (launchArguments.primaryTarget === true) {
+    if (message.success) {
+      respond(pendingLaunch);
+      stopped("entry");
+    } else {
+      fail(pendingLaunch, message.message);
+    }
+    pendingLaunch = undefined;
+    return;
+  }
   if (launchArguments.requestStartDebugging === true) {
     if (message.success) {
       fail(pendingLaunch, "startDebugging unexpectedly succeeded");
@@ -77,6 +89,23 @@ function handleRequest(request) {
     case "launch":
       pendingLaunch = request;
       launchArguments = request.arguments ?? {};
+      if (launchArguments.primaryTarget !== true) {
+        if (launchArguments.failBeforeInitialized === true) {
+          fail(request, "Failed to launch", {
+            error: {
+              id: 3000,
+              format: "Go version go1.24.13 is too old (minimum supported version 1.25)",
+            },
+          });
+          pendingLaunch = undefined;
+          return;
+        }
+        if (launchArguments.succeedWithoutInitialized === true) {
+          respond(request);
+          pendingLaunch = undefined;
+          return;
+        }
+      }
       if (launchArguments.requestStartDebugging === true) {
         reverseRequestSequence = nextSequence;
         send({
@@ -128,6 +157,22 @@ function handleRequest(request) {
         return;
       }
       respond(request);
+      if (launchArguments.primaryTarget === true) {
+        reverseRequestSequence = nextSequence;
+        send({
+          type: "request",
+          command: "startDebugging",
+          arguments: {
+            request: "launch",
+            configuration: {
+              ...launchArguments,
+              primaryTarget: false,
+              __pendingTargetId: "fixture-primary",
+            },
+          },
+        });
+        return;
+      }
       if (pendingLaunch !== undefined) {
         respond(pendingLaunch);
         pendingLaunch = undefined;

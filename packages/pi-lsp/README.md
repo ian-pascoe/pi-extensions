@@ -78,14 +78,26 @@ participates; a file extension alone does not activate one. Declarations are con
 or corresponding dependencies in a package manifest (including legacy `eslintConfig`). The
 native Biome server determines effective lint eligibility for each file, including extended configs
 and overrides. Declaration and marker changes are reread on the next route; after changing a running
-server's Biome configuration, use `/lsp restart` or Pi `/reload`. Pi enablement and Explicit
-Definitions retain priority.
+server's Biome configuration, use the `lsp` tool's `restart` operation or Pi `/reload`.
+Pi enablement and Explicit Definitions retain priority.
 
 ESLint uses the official released VSIX with its published SHA-256, not an unrelated npm fork or
 a build of the repository's default branch. The workspace must supply ESLint and its own plugins,
 parsers, and configs. Missing libraries/configuration report unavailability rather than clean
-lint results. Biome uses native push diagnostics and a daemon that exits after its last LSP
-connection; stopping one root does not stop another root's daemon connection.
+lint results. Biome uses native push diagnostics. After LSP initialization, its native daemon
+exits after its last connection; stopping one root does not stop another root's connection.
+Cancellation before initialization can leave a native daemon running until a later connection
+initializes and disconnects. Pi preserves the shared per-store cache so that daemon remains
+reconnectable; it does not run `biome stop` against other roots or sessions.
+
+On macOS, Biome's Unix socket path can exceed the OS limit beneath a long Pi agent directory.
+Pi therefore supplies `/tmp/pi-b-<hash>/h` as Biome's HOME: a stable symlink to the existing
+`<Pi agent directory>/managed-tools/lsp/biome` directory, inside a private mode-0700 parent.
+The hash includes the user ID and canonical managed HOME. Only this alias metadata lives outside
+Pi's store; all cache and log data remain inside it. The alias persists across sessions to retain
+native daemon identity. Unsafe existing parents or mismatched links fail closed rather than
+being repaired or used. This filesystem alias is necessary because Pi's configurable agent path
+cannot guarantee macOS's short socket-path limit.
 
 Oxlint type-aware linting activates only when its resolved project configuration opts in.
 Compatible external `tsgolint` helpers precede a private `oxlint-tsgolint` selected from Oxlint's

@@ -90,6 +90,13 @@ async function main() {
         join(pkg, "package.json"),
         JSON.stringify({ name, version: tool.slice(at + 1) }),
       );
+      if (name === "@biomejs/biome") {
+        fs.mkdirSync(join(pkg, "bin"), { recursive: true });
+        fs.writeFileSync(
+          join(pkg, "bin", "biome"),
+          `import(${JSON.stringify(new URL("fake-biome-server.mjs", control.server).href)});\n`,
+        );
+      }
       if (name === "oxlint") {
         const version = tool.slice(at + 1);
         fs.writeFileSync(

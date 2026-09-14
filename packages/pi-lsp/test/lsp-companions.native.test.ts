@@ -1,4 +1,13 @@
-import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
@@ -22,7 +31,6 @@ afterAll(async () => {
     for (const id of [
       "oxlint-probe",
       "lsp-oxlint",
-      "biome-probe",
       "lsp-biome",
       "eslint-probe",
       "eslint-library-probe",
@@ -166,7 +174,7 @@ test.skipIf(!enabled)(
         true,
         { signal: AbortSignal.timeout(120_000) },
       );
-      expect(definition.environment.OXLINT_TSGOLINT_PATH).toContain(store);
+      expect(definition.environment.OXLINT_TSGOLINT_PATH).toContain(await realpath(store));
       client = await LspServerClient.start({
         ...definition,
         serverId: "oxlint",
@@ -198,22 +206,21 @@ test.skipIf(!enabled)(
 test.skipIf(!enabled)(
   "private Biome publishes fresh diagnostics and keeps another root alive",
   async () => {
-    const installer = new ToolInstaller(store!);
-    const installation = await installer.ensure(
-      { id: "biome-probe", requirements: { node: "core:node", server: "npm:@biomejs/biome" } },
-      { allowDownload: true, signal: AbortSignal.timeout(120_000) },
-    );
+    const installer = new ToolInstaller(store);
+    const settings = withLspPresets({
+      servers: new Map(),
+      enablement: new Map(),
+      warnings: [],
+      timeouts: {
+        initializeMs: 10_000,
+        requestMs: 5_000,
+        diagnosticsMs: 10_000,
+        shutdownMs: 2_000,
+      },
+    });
     const directory = await mkdtemp(join(tmpdir(), "pi-biome-"));
     const clients: LspServerClient[] = [];
     try {
-      const command = join(
-        installation.components.node!.directory,
-        process.platform === "win32" ? "node.exe" : "bin/node",
-      );
-      const script = join(
-        installation.components.server!.directory,
-        "node_modules/@biomejs/biome/bin/biome",
-      );
       for (const rootName of ["one", "two"]) {
         const root = join(directory, rootName);
         await mkdir(root);
@@ -225,30 +232,21 @@ test.skipIf(!enabled)(
           }),
         );
         await writeFile(join(root, "main.js"), "debugger;\n");
+        const definition = await resolveLspPreset(
+          { ...settings.servers.get("biome")!, environment: { PATH: "" } },
+          root,
+          installer,
+          true,
+          { signal: AbortSignal.timeout(120_000) },
+        );
         const client = await LspServerClient.start({
+          ...definition,
           serverId: "biome",
           rootPath: root,
-          command,
-          args: [script, "lsp-proxy"],
-          environment: {
-            ...process.env,
-            ...installation.environment,
-            PATH: [...installation.binDirectories, process.env.PATH ?? ""].join(delimiter),
-            HOME: directory,
-            XDG_CACHE_HOME: join(directory, "cache"),
-            BIOME_LOG_PATH: join(directory, "logs"),
-          },
-          settings: {},
-          initializationOptions: {},
-          diagnosticMode: "push",
-          protocol: "biome",
+          settings: definition.settings,
+          initializationOptions: definition.initializationOptions,
           stderrPath: join(directory, `${rootName}.stderr`),
-          timeouts: {
-            initializeMs: 10_000,
-            requestMs: 5_000,
-            diagnosticsMs: 10_000,
-            shutdownMs: 2_000,
-          },
+          timeouts: settings.timeouts,
         });
         clients.push(client);
         const result = await client.documentDiagnostics(join(root, "main.js"), "javascript");

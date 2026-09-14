@@ -381,7 +381,8 @@ export class ToolInstaller {
     try {
       return await operation(signal);
     } finally {
-      await release();
+      // proper-lockfile releases ownership before invoking onCompromised.
+      if (!controller.signal.aborted) await release();
     }
   }
 
@@ -392,6 +393,8 @@ export class ToolInstaller {
       "WINDIR",
       "COMSPEC",
       "PATHEXT",
+      "PROCESSOR_ARCHITECTURE",
+      "PROCESSOR_ARCHITEW6432",
       "LANG",
       "LC_ALL",
       "HTTP_PROXY",

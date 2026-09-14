@@ -469,7 +469,7 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
       );
       await writeFile(
         resolve(prettier, "index.cjs"),
-        `module.exports={resolveConfig:async()=>{console.log('native config notice');return {plugins:[${directImport ? "require('prettier-plugin-svelte')" : "'prettier-plugin-svelte'"}]}},getFileInfo:async()=>({ignored:false}),format:async(text,options)=>{if(${directImport ? "typeof options.plugins[0]!=='object'||options.plugins.length!==1" : "!options.plugins[0].includes('node_modules/prettier-plugin-svelte')"})throw new Error('wrong plugin');return text+':project-plugin'}}`,
+        `module.exports={resolveConfig:async()=>{console.log('native config notice');return {plugins:[${directImport ? "require('prettier-plugin-svelte')" : "'prettier-plugin-svelte'"}]}},getFileInfo:async()=>({ignored:false}),format:async(text,options)=>{if(${directImport ? "typeof options.plugins[0]!=='object'||options.plugins.length!==1" : "options.plugins[0]!==require.resolve('prettier-plugin-svelte')||!options.plugins[0].endsWith(require('node:path').join('node_modules','prettier-plugin-svelte','plugin.js'))"})throw new Error('wrong plugin');return text+':project-plugin'}}`,
       );
       await writeFile(
         resolve(plugin, "package.json"),
@@ -656,7 +656,7 @@ describe("Pi Formatter extension lifecycle", { timeout: 20_000 }, () => {
       await writeFile(resolve(harness.cwd, configName), config);
       await writeFile(
         resolve(prettier, "index.cjs"),
-        `module.exports={getFileInfo:async()=>({ignored:require('node:fs').existsSync('.prettierignore')}),resolveConfig:async()=>${kind === "strings" ? "({plugins:['prettier-plugin-svelte','prettier-plugin-astro','project-owned-plugin']})" : `import(require('node:url').pathToFileURL(${JSON.stringify(resolve(harness.cwd, configName))}).href).then(m=>m.default)`},format:async(text,options)=>{if(options.plugins.length!==3||${kind === "strings" ? "!options.plugins[0].includes('/node_modules/prettier-plugin-svelte/')||!options.plugins[1].includes('/node_modules/prettier-plugin-astro/')" : "typeof options.plugins[0]!=='object'||typeof options.plugins[1]!=='object'"}||options.plugins[2]!=='project-owned-plugin')throw new Error('wrong plugins');return text+':selected-prettier'}}`,
+        `module.exports={getFileInfo:async()=>({ignored:require('node:fs').existsSync('.prettierignore')}),resolveConfig:async()=>${kind === "strings" ? "({plugins:['prettier-plugin-svelte','prettier-plugin-astro','project-owned-plugin']})" : `import(require('node:url').pathToFileURL(${JSON.stringify(resolve(harness.cwd, configName))}).href).then(m=>m.default)`},format:async(text,options)=>{if(options.plugins.length!==3||${kind === "strings" ? "options.plugins[0]!==require.resolve('prettier-plugin-svelte')||options.plugins[1]!==require.resolve('prettier-plugin-astro')||!options.plugins[0].endsWith(require('node:path').join('node_modules','prettier-plugin-svelte','plugin.js'))||!options.plugins[1].endsWith(require('node:path').join('node_modules','prettier-plugin-astro','plugin.js'))" : "typeof options.plugins[0]!=='object'||typeof options.plugins[1]!=='object'"}||options.plugins[2]!=='project-owned-plugin')throw new Error('wrong plugins');return text+':selected-prettier'}}`,
       );
       const store = resolve(harness.agentDirectory, "managed-tools");
       await mkdir(store);

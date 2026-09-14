@@ -45,6 +45,7 @@ async function createSession(
     readonly onUnexpectedFailure?: (error: Error) => void;
   } = {},
   adapterCommand = process.execPath,
+  primaryTarget = false,
 ): Promise<SessionFixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-dap-session-project-"));
   temporaryDirectories.push(cwd);
@@ -57,9 +58,17 @@ async function createSession(
         {
           id: "node",
           command: adapterCommand,
-          args: [fakeAdapterPath],
-          environment: {},
-          transport: { type: "stdio" },
+          args: primaryTarget
+            ? [
+                resolve(import.meta.dirname, "fixtures/fake-managed-js-adapter.mjs"),
+                "$PORT",
+                "127.0.0.1",
+              ]
+            : [fakeAdapterPath],
+          environment: primaryTarget ? { PI_DAP_FIXTURE: fakeAdapterPath } : {},
+          transport: primaryTarget
+            ? { type: "tcp", host: "127.0.0.1", port: 0 }
+            : { type: "stdio" },
         },
       ],
     ]),
@@ -69,13 +78,15 @@ async function createSession(
         {
           id: "node",
           adapterId: "node",
-          arguments: profileArguments,
+          arguments: primaryTarget
+            ? { ...profileArguments, type: "pwa-node", primaryTarget: true }
+            : profileArguments,
         },
       ],
     ]),
     timeouts: {
       executionMs,
-      requestMs: 1_000,
+      requestMs: primaryTarget ? 2_000 : 1_000,
       shutdownMs: 500,
       startupMs: 1_000,
     },
@@ -98,6 +109,45 @@ afterEach(async () => {
 });
 
 describe("DapSession", () => {
+  test.each([false, true])(
+    "preserves launch failure before initialized (primary target: %s)",
+    async (primaryTarget) => {
+      const { session } = await createSession(
+        { failBeforeInitialized: true },
+        200,
+        {},
+        process.execPath,
+        primaryTarget,
+      );
+      try {
+        await expect(session.launch()).rejects.toThrow(
+          "Go version go1.24.13 is too old (minimum supported version 1.25)",
+        );
+        expect(session.status().snapshot.state).toBe("terminated");
+      } finally {
+        await session.shutdown();
+      }
+    },
+  );
+
+  test.each([false, true])(
+    "still waits for initialized after an early successful launch (primary target: %s)",
+    async (primaryTarget) => {
+      const { session } = await createSession(
+        { succeedWithoutInitialized: true },
+        20,
+        {},
+        process.execPath,
+        primaryTarget,
+      );
+      try {
+        await expect(session.launch()).rejects.toThrow("waiting for initialized timed out");
+      } finally {
+        await session.shutdown();
+      }
+    },
+  );
+
   test("applies Desired Breakpoints before configuration and supports the stopped inspection workflow", async () => {
     const { cwd, session } = await createSession({ requireBreakpoint: true, stopOnEntry: true });
     const programPath = resolve(cwd, "program.ts");

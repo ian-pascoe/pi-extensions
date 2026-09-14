@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
@@ -51,7 +52,7 @@ interface ExtensionHarness {
 }
 
 async function makeTemporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(resolve(tmpdir(), prefix));
+  const directory = await realpath(await mkdtemp(resolve(tmpdir(), prefix)));
   temporaryDirectories.push(directory);
   return directory;
 }

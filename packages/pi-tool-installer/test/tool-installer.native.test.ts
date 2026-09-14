@@ -72,7 +72,7 @@ test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
 test.runIf(process.env.PI_TOOL_INSTALLER_NATIVE === "1")(
   "acquires an exact private .NET runtime without substituting an SDK",
   async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi dotnet runtime 空間 "));
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "pi dotnet runtime 空間 ")));
     try {
       const installer = new ToolInstaller(directory);
       const request = (version: string) => ({

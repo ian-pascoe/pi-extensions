@@ -1,9 +1,13 @@
 // Offline stand-in for the external mise executable, never the installer itself.
 const { mkdirSync, readFileSync, writeFileSync, existsSync } = require("node:fs");
 const { join, delimiter } = require("node:path");
+const { strictEqual } = require("node:assert");
 const [command, ...args] = process.argv.slice(2);
 const control = JSON.parse(readFileSync(join(process.cwd(), "..", "fixture.json"), "utf8"));
 if (process.env.GITHUB_TOKEN) throw new Error("Credential forwarded to mise");
+for (const [name, value] of Object.entries(control.expectedEnvironment ?? {})) {
+  strictEqual(process.env[name], value, `Missing acquisition environment: ${name}`);
+}
 const tools = args.filter((arg) => arg !== "--json");
 function directory(tool) {
   const at = tool.lastIndexOf("@");

@@ -565,7 +565,10 @@ export class DapSession {
             error: cause instanceof Error ? cause : new Error(String(cause)),
           }),
         );
-      const initializedOutcome = await initialized;
+      const initializedOutcome = await Promise.race([
+        initialized,
+        launchResponse.then((outcome) => (outcome.kind === "failure" ? outcome : initialized)),
+      ]);
       if (initializedOutcome.kind === "failure") throw initializedOutcome.error;
       await this.applyDesiredBreakpoints(active, signal);
       if (active.capabilities.supportsConfigurationDoneRequest === true) {
@@ -1014,7 +1017,7 @@ export class DapSession {
       { ...argumentsValue.configuration },
       dapRequestOptions(signal),
     );
-    await initialized;
+    await Promise.race([initialized, launchResponse.then(() => initialized)]);
     active.capabilities = capabilities;
     await this.applyDesiredBreakpoints(active, signal);
     if (capabilities.supportsConfigurationDoneRequest === true) {

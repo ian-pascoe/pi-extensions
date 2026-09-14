@@ -1,5 +1,14 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +24,23 @@ import { createDapSessionFiles } from "../src/dap-session-files.js";
 
 const execute = promisify(execFile);
 const native = process.env.PI_DAP_EXPANSION_NATIVE === "1" ? test : test.skip;
+
+async function printNativeFailure(directory: string, installer: ToolInstaller): Promise<void> {
+  for (const name of await readdir(directory)) {
+    if (name.startsWith("adapter-stderr-"))
+      console.error(name, (await readFile(join(directory, name), "utf8")).slice(-16_000));
+  }
+  for (const installation of await installer.list()) {
+    if (installation.id.startsWith("dap-"))
+      console.info(
+        "DAP native versions",
+        installation.id,
+        Object.fromEntries(
+          Object.entries(installation.components).map(([name, value]) => [name, value.version]),
+        ),
+      );
+  }
+}
 
 async function expectDebuggeeExit(output: string): Promise<void> {
   const pid = Number(/PI_DAP_PID=(\d+)/.exec(output)?.[1]);
@@ -32,7 +58,7 @@ async function expectDebuggeeExit(output: string): Promise<void> {
 native(
   "Deno selects its project runtime, debugs TypeScript, and leaves dependencies untouched",
   async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-dap-deno-native-"));
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-dap-deno-native-")));
     const project = join(directory, "project");
     await mkdir(project);
     const program = join(project, "main.ts");
@@ -93,7 +119,9 @@ native(
       expect(evaluation.evaluation?.result).toBe("42");
       const stack = await session.stack();
       firstOutput += stack.output;
-      expect(stack.stackFrames?.[0]?.source?.path).toBe(program);
+      const stoppedSource = stack.stackFrames?.[0]?.source?.path;
+      if (!stoppedSource) throw new Error("The stopped frame has no source path");
+      expect(await realpath(stoppedSource)).toBe(await realpath(program));
       const variables = await session.variables({ frameId: stack.stackFrames![0]!.id });
       firstOutput += variables.output;
       expect(variables.variableGroups?.flatMap((group) => group.variables)).toContainEqual(
@@ -256,6 +284,12 @@ native(
         "main.ts",
         "package.json",
       ]);
+    } catch (error) {
+      console.error("DAP native failure", session.status().snapshot);
+      await printNativeFailure(files.directoryPath, installer).catch((cause) =>
+        console.error(cause),
+      );
+      throw error;
     } finally {
       await session.shutdown();
       if (remote.listening) {
@@ -285,7 +319,7 @@ native.each([
     source: "main.cpp",
     compiler: "g++",
     text: '#include <iostream>\n#ifdef _WIN32\n#include <process.h>\n#define native_pid _getpid\n#else\n#include <unistd.h>\n#define native_pid getpid\n#endif\nint main() {\n std::cout << "PI_DAP_PID=" << native_pid() << std::endl;\n int answer = 42;\n std::cout << answer << std::endl;\n return 0;\n}\n',
-    line: 12,
+    line: 13,
   },
   {
     profile: "codelldb",
@@ -297,7 +331,7 @@ native.each([
 ])(
   "$profile/$source verifies native launch or declared managed unavailability",
   async ({ profile, source, compiler, text, line }) => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-dap-compiled-native-"));
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "pi-dap-compiled-native-")));
     const program = join(directory, process.platform === "win32" ? "program.exe" : "program");
     const sourcePath = join(directory, source);
     await writeFile(sourcePath, text);
@@ -382,7 +416,8 @@ native.each([
       vi.stubEnv("PATH", "");
       await session.setBreakpoints({ filePath: sourcePath, breakpoints: [{ line }] });
       const launched = await session.launch({ profile, program });
-      expect(launched.snapshot.state).toBe("stopped");
+      expect(launched.snapshot.state, JSON.stringify(launched)).toBe("stopped");
+      console.info("DAP native initial stop", launched.snapshot);
       for (const installation of await installer.list()) {
         if (installation.id.startsWith("dap-"))
           console.info(
@@ -393,17 +428,36 @@ native.each([
             ),
           );
       }
-      const atBreakpoint = await session.continue();
+      // Delve's entry stop precedes goroutine creation; only CodeLLDB needs the initial-frame check.
+      let stack = profile === "codelldb" ? await session.stack() : undefined;
+      let stopOutput = stack?.output ?? "";
+      const initialFrame = stack?.stackFrames?.[0];
+      console.info("DAP native initial frame", initialFrame);
+      if (
+        stack === undefined ||
+        initialFrame?.line !== line ||
+        !initialFrame.source?.path ||
+        (await realpath(initialFrame.source.path)) !== (await realpath(sourcePath))
+      ) {
+        const continued = await session.continue();
+        stopOutput += continued.output;
+        console.info("DAP native continued stop", continued.snapshot);
+        expect(continued.snapshot.state, JSON.stringify(continued)).toBe("stopped");
+        stack = await session.stack();
+        stopOutput += stack.output;
+      }
+      const stoppedFrame = stack.stackFrames?.[0];
+      console.info("DAP native breakpoint frame", stoppedFrame);
+      if (!stoppedFrame?.source?.path) throw new Error("The stopped frame has no source path");
+      expect(await realpath(stoppedFrame.source.path)).toBe(await realpath(sourcePath));
+      expect(stoppedFrame.line).toBe(line);
       const evaluation = await session.evaluate({ expression: "answer" });
       expect(evaluation.evaluation?.result).toBe("42");
-      const stack = await session.stack();
-      expect(stack.stackFrames?.[0]?.source?.path).toBe(sourcePath);
       const variables = await session.variables({ frameId: stack.stackFrames![0]!.id });
       expect(variables.variableGroups?.flatMap((group) => group.variables)).toContainEqual(
         expect.objectContaining({ name: "answer", value: "42" }),
       );
-      let output =
-        launched.output + atBreakpoint.output + evaluation.output + stack.output + variables.output;
+      let output = launched.output + stopOutput + evaluation.output + variables.output;
       if (profile === "codelldb") {
         await expect(session.evaluate({ expression: "missing_native_symbol" })).rejects.toThrow();
         const status = session.status();
@@ -412,6 +466,12 @@ native.each([
       }
       output += (await session.stop()).output;
       await expectDebuggeeExit(output);
+    } catch (error) {
+      console.error("DAP native failure", session.status().snapshot);
+      await printNativeFailure(files.directoryPath, installer).catch((cause) =>
+        console.error(cause),
+      );
+      throw error;
     } finally {
       await session.shutdown();
       await files.close();

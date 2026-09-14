@@ -89,6 +89,12 @@ containment fail closed; there is no PID scan, taskkill fallback, runtime build,
 or end-user SDK prerequisite. These narrow native assets do not change Pi's
 source-TypeScript entrypoint or a running Debug Session's execution-wait policy.
 
+At source `b67073d`, [CI 34756238205](https://github.com/ian-pascoe/pi-extensions/actions/runs/34756238205)
+passed all 17 preflight checks on each native Windows x64 and ARM64 runner,
+including descendant cleanup, argv/PATH handling, and fail-closed containment.
+The Windows payload byte-reproduction job also passed. Other expansion checks in
+that run failed; this is preflight evidence, not full catalog release verification.
+
 Missing adapters and supporting runtimes are automatically installed
 on the first actual launch. That launch waits with visible tool progress and can
 be cancelled; startup and discovery do not download anything. Managed binaries,
@@ -209,7 +215,9 @@ The .NET fixture acquires its own private SDK 8.0.414 for preparation only. Prod
 launch separately acquires a compatible runtime-only installation and never invokes
 that SDK. Go fixture preparation uses the runner's native `go` compiler with
 `GOTOOLCHAIN=local` and private caches; Delve's product launch does not require Go.
-Independent shared-installer tests retain private Go acquisition coverage.
+CI provisions native Go 1.27.1 for these fixtures instead of relying on the runner
+image's compiler version. Independent shared-installer tests retain private Go
+acquisition coverage.
 **Test-runner prerequisites**, not product runtime dependencies:
 
 | Native runner   | Go/Rust/C++ fixture compiler baseline                                                                                                                                                       |

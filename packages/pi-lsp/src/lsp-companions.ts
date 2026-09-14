@@ -1,4 +1,5 @@
-import { mkdir, readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, readFile, readlink, realpath, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { rcompare, satisfies, validRange } from "semver";
 import { dirname, isAbsolute, join, sep } from "node:path";
@@ -52,6 +53,33 @@ export async function isOfficialEslintServer(path: string): Promise<boolean> {
   }
 }
 
+/** Keep the native cache in its managed home while fitting macOS's Unix socket path limit. */
+async function biomeSocketHome(home: string): Promise<string> {
+  const target = await realpath(home);
+  const uid = process.getuid!();
+  const identity = createHash("sha256").update(`${uid}\0${target}`).digest("hex").slice(0, 24);
+  const directory = `/tmp/pi-b-${identity}`;
+  try {
+    await mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  }
+  const parent = await lstat(directory);
+  if (!parent.isDirectory() || parent.uid !== uid || (parent.mode & 0o777) !== 0o700)
+    throw new Error(`Pi LSP: unsafe Biome socket alias directory ${directory}`);
+  const alias = join(directory, "h");
+  try {
+    await symlink(target, alias);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  }
+  const link = await lstat(alias);
+  if (!link.isSymbolicLink() || link.uid !== uid || (await readlink(alias)) !== target)
+    throw new Error(`Pi LSP: unsafe Biome socket alias ${alias}`);
+  // Persist the alias: detached native daemons and versioned sockets are shared across sessions.
+  return alias;
+}
+
 /** Apply protocol policy only after the preset's executable/runtime precedence is resolved. */
 export async function prepareCompanionPreset(
   definition: LspServerDefinition,
@@ -98,7 +126,7 @@ export async function prepareCompanionPreset(
       protocol: "biome",
       environment: {
         ...definition.environment,
-        HOME: home,
+        HOME: process.platform === "darwin" ? await biomeSocketHome(home) : home,
         USERPROFILE: home,
         XDG_CACHE_HOME: join(home, "cache"),
         LOCALAPPDATA: join(home, "AppData", "Local"),

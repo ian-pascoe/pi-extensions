@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
+import { subset } from "semver";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
@@ -30,6 +32,33 @@ async function selectNativeFormatter(path: string) {
     );
     return biomeFormatterEligible(definition, path, root, 30_000);
   });
+}
+
+async function expectSvelteCompatibility(args: readonly string[], range: string) {
+  const paths: unknown = JSON.parse(args[3]!);
+  if (!Value.Check(Type.Record(Type.String(), Type.String()), paths))
+    throw new Error("Invalid plugin arguments");
+  expect(paths["prettier-plugin-svelte"]).toBeDefined();
+  const metadata: unknown = JSON.parse(
+    await readFile(
+      createRequire(paths["prettier-plugin-svelte"]!).resolve(
+        "prettier-plugin-svelte/package.json",
+      ),
+      "utf8",
+    ),
+  );
+  if (
+    !Value.Check(
+      Type.Object({
+        name: Type.Literal("prettier-plugin-svelte"),
+        peerDependencies: Type.Object({ svelte: Type.String() }),
+      }),
+      metadata,
+    )
+  )
+    throw new Error("Invalid selected Svelte plugin metadata");
+  expect(subset(range, metadata.peerDependencies.svelte)).toBe(true);
+  return paths;
 }
 
 describe.skipIf(process.env.PI_FORMATTER_NATIVE !== "1")(
@@ -375,16 +404,12 @@ describe.skipIf(process.env.PI_FORMATTER_NATIVE !== "1")(
           path,
           root,
         );
-        const paths: unknown = JSON.parse(previous.args[3]!);
-        if (!Value.Check(Type.Record(Type.String(), Type.String()), paths))
-          throw new Error("Invalid plugin arguments");
+        const paths = await expectSvelteCompatibility(previous.args, "^4.0.0");
         const before = await Promise.all(
           Object.values(paths).map((file) => readFile(file, "utf8")),
         );
-        await writeFile(
-          join(root, "package.json"),
-          '{"devDependencies":{"svelte":"^5.0.0","astro":"^5.0.0"}}',
-        );
+        const updatedManifest = '{"devDependencies":{"svelte":"^5.0.0","astro":"^5.0.0"}}';
+        await writeFile(join(root, "package.json"), updatedManifest);
         const current = await resolvePresetDefinition(
           "prettier",
           root,
@@ -394,7 +419,26 @@ describe.skipIf(process.env.PI_FORMATTER_NATIVE !== "1")(
           path,
           root,
         );
-        expect(current.args).not.toEqual(previous.args);
+        // A compatible installed plugin may serve both framework declarations.
+        await expectSvelteCompatibility(current.args, "^5.0.0");
+        expect(current.args[2]).toBe(previous.args[2]);
+        await writeFile(path, "<script>let answer=42;</script><p>{answer}</p>");
+        const env = { ...process.env };
+        for (const [name, value] of Object.entries(current.environment)) {
+          if (value === null) delete env[name];
+          else env[name] = value;
+        }
+        await execute(
+          current.command,
+          current.args.map((arg) => arg.replaceAll("$FILE", path)),
+          { cwd: root, env, timeout: 30_000 },
+        );
+        expect(await readFile(path, "utf8")).toBe(
+          "<script>\n  let answer = 42;\n</script>\n\n<p>{answer}</p>\n",
+        );
+        expect(await readFile(join(root, "package.json"), "utf8")).toBe(updatedManifest);
+        expect(await readFile(join(root, configName), "utf8")).toBe(config);
+        expect(await readFile(join(root, ".prettierignore"), "utf8")).toBe("example.html");
         expect(
           await Promise.all(Object.values(paths).map((file) => readFile(file, "utf8"))),
         ).toEqual(before);

@@ -85,7 +85,7 @@ describe.runIf(process.env.PI_LSP_PRESETS_NATIVE === "1")(
         }
       }
       await rm(directory, { recursive: true, force: true });
-    });
+    }, 60_000);
 
     test("Bash privately resolves helpers or reports unsupported ShellCheck while retaining navigation and formatting", async () => {
       const root = join(directory, "bash-helpers");

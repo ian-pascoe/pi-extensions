@@ -49,6 +49,32 @@ afterEach(async () => {
   );
 });
 
+test("private acquisitions preserve Windows architecture hints without forwarding credentials", async () => {
+  vi.stubEnv("PROCESSOR_ARCHITECTURE", "AMD64");
+  vi.stubEnv("PROCESSOR_ARCHITEW6432", "ARM64");
+  vi.stubEnv("GITHUB_TOKEN", "fixture-github-token");
+  const { installer, directory } = await fixture({ "core:dotnet": "8.0.414" });
+  await writeFile(
+    join(directory, "fixture.json"),
+    JSON.stringify({
+      latest: { "core:dotnet": "8.0.414" },
+      expectedEnvironment: {
+        PROCESSOR_ARCHITECTURE: "AMD64",
+        PROCESSOR_ARCHITEW6432: "ARM64",
+      },
+    }),
+  );
+  const installation = await installer.ensure(
+    { id: "dotnet", requirements: { runtime: "core:dotnet" } },
+    { allowDownload: true },
+  );
+  expect(installation.components.runtime?.version).toBe("8.0.414");
+  expect(installation.environment).toEqual({});
+  expect(await readFile(join(directory, "selections", "dotnet.json"), "utf8")).not.toContain(
+    "fixture-github-token",
+  );
+});
+
 // 27 real Node helper launches share CPU with downloads/builds in the native matrix.
 test("ensure reconciles requirements without upgrading unchanged prerequisites", async () => {
   const { installer, control } = await fixture({ "core:node": "22.1.0", "npm:prettier": "3.1.0" });
@@ -472,37 +498,48 @@ test("incomplete helper results never become a usable selection and can be retri
   await expect(installer.installed("node")).rejects.toThrow("Invalid managed component directory");
 });
 
-test("failed and cancelled actual installs keep the old selection visible until a successful retry", async () => {
-  const { installer, directory, control } = await fixture({ "core:node": "22.1.0" });
-  const request = { id: "node", requirements: { runtime: "core:node" } };
-  const previous = await installer.ensure(request, { allowDownload: true });
-  await control({ "core:node": "24.1.0" }, "core:node@24.1.0");
-  await expect(installer.update(request, {})).rejects.toThrow("Fixture acquisition failed");
-  await expect(installer.installed("node")).resolves.toEqual(previous);
-  await writeFile(
-    join(directory, "fixture.json"),
-    JSON.stringify({ latest: { "core:node": "24.1.0" }, pause: "core:node@24.1.0" }),
-  );
-  const started = Promise.withResolvers<void>();
-  const controller = new AbortController();
-  const update = installer.update(request, {
-    signal: controller.signal,
-    onProgress: (message) => {
-      if (message === "Downloading fixture") started.resolve();
-    },
-  });
-  await started.promise;
-  await expect(installer.installed("node")).resolves.toEqual(previous);
-  controller.abort(new Error("Cancelled actual install"));
-  await expect(update).rejects.toThrow("Cancelled actual install");
-  await expect(installer.installed("node")).resolves.toEqual(previous);
-  await control({ "core:node": "24.1.0" });
-  const retried = await installer.update(request, {});
-  expect(retried?.current.components.runtime?.version).toBe("24.1.0");
-  await expect(
-    new ToolInstaller(directory).ensure(request, { allowDownload: false }),
-  ).resolves.toEqual(retried?.current);
-});
+test.each(["cancelled", "compromised"])(
+  "failed and %s actual installs keep the old selection visible until a successful retry",
+  async (ending) => {
+    const { installer, directory, control } = await fixture({ "core:node": "22.1.0" });
+    const request = { id: "node", requirements: { runtime: "core:node" } };
+    const previous = await installer.ensure(request, { allowDownload: true });
+    await control({ "core:node": "24.1.0" }, "core:node@24.1.0");
+    await expect(installer.update(request, {})).rejects.toThrow("Fixture acquisition failed");
+    await expect(installer.installed("node")).resolves.toEqual(previous);
+    await writeFile(
+      join(directory, "fixture.json"),
+      JSON.stringify({ latest: { "core:node": "24.1.0" }, pause: "core:node@24.1.0" }),
+    );
+    const started = Promise.withResolvers<void>();
+    const controller = new AbortController();
+    const update = installer.update(request, {
+      signal: controller.signal,
+      onProgress: (message) => {
+        if (message === "Downloading fixture") started.resolve();
+      },
+    });
+    await started.promise;
+    await expect(installer.installed("node")).resolves.toEqual(previous);
+    if (ending === "cancelled") {
+      controller.abort(new Error("Cancelled actual install"));
+      await expect(update).rejects.toThrow("Cancelled actual install");
+    } else {
+      const rejected = expect(update).rejects.toMatchObject({ code: "ECOMPROMISED" });
+      await rm(join(directory, "installation.lock"), { recursive: true });
+      await rejected;
+    }
+    await expect(installer.installed("node")).resolves.toEqual(previous);
+    await control({ "core:node": "24.1.0" });
+    const retried = await installer.update(request, {});
+    expect(retried?.current.components.runtime?.version).toBe("24.1.0");
+    await expect(
+      new ToolInstaller(directory).ensure(request, { allowDownload: false }),
+    ).resolves.toEqual(retried?.current);
+  },
+  // The real lock heartbeat takes five seconds, before the recovery install.
+  15_000,
+);
 
 test("installed rejects malformed selection metadata rather than treating it as executable knowledge", async () => {
   const { installer, directory } = await fixture({ "core:node": "22.1.0" });

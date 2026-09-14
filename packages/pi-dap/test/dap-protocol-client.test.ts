@@ -101,6 +101,23 @@ describe("DapProtocolClient", () => {
     });
   });
 
+  test.each([
+    [
+      { error: { id: 3000, format: "Go version go1.24.13 is too old" } },
+      "Go version go1.24.13 is too old",
+    ],
+    [{ error: { format: 42 } }, "Failed to launch"],
+    [{ error: "invalid error body" }, "Failed to launch"],
+  ])("preserves validated structured adapter error details: %j", async (body, message) => {
+    const client = await createClient();
+    await expect(client.request("detailed-error", body)).rejects.toMatchObject({
+      kind: "request",
+      message: expect.stringContaining(message),
+      stderrPath: client.stderrPath,
+    });
+    await expect(client.request("echo", { recovered: true })).resolves.toEqual({ recovered: true });
+  });
+
   test("parses coalesced event and response frames", async () => {
     const client = await createClient();
     const event = client.waitForEvent("fixture");
@@ -348,8 +365,10 @@ describe("DapProtocolClient", () => {
   test("retains only the latest 1 MiB of Debug Adapter stderr", async () => {
     const client = await createClient();
 
-    await client.request("stderr-crash", { bytes: 1024 * 1024 + 128 }).catch(() => undefined);
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    await expect(
+      client.request("stderr-crash", { bytes: 1024 * 1024 + 128 }),
+    ).rejects.toMatchObject({ kind: expect.stringMatching(/exit|transport/) });
+    await client.shutdown();
     const stderr = await readFile(client.stderrPath);
 
     expect(stderr.length).toBe(1024 * 1024);

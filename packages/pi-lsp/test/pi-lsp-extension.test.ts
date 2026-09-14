@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   chmod,
   copyFile,
@@ -7,13 +8,16 @@ import {
   readFile,
   readdir,
   realpath,
+  readlink,
+  lstat,
+  rename,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ToolInstaller } from "@ian-pascoe/pi-tool-installer";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -48,6 +52,23 @@ import { serializeAnthropicRequest } from "./fixtures/serialize-anthropic-reques
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
   return { ...original, spawn: vi.fn(original.spawn) };
+});
+
+const foreignOwnedPaths = vi.hoisted(() => new Set<string>());
+// Exercise foreign filesystem ownership without requiring privileged chown in offline tests.
+// oxlint-disable-next-line anti-slop/no-module-mocking
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...original,
+    lstat: async (...args: Parameters<typeof original.lstat>) => {
+      const result = await original.lstat(...args);
+      if (foreignOwnedPaths.has(String(args[0]))) {
+        result.uid++;
+      }
+      return result;
+    },
+  };
 });
 
 const temporaryDirectories: string[] = [];
@@ -223,6 +244,17 @@ async function externalTypeScript(directory: string, name: string, version: stri
   await chmod(command, 0o755);
 }
 
+async function externalBiome(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  await symlink(process.execPath, resolve(directory, "node"));
+  const server = resolve(directory, "biome");
+  await writeFile(
+    server,
+    `#!${process.execPath}\nimport(${JSON.stringify(new URL("fixtures/fake-biome-server.mjs", import.meta.url).href)});\n`,
+  );
+  await chmod(server, 0o755);
+}
+
 async function managedHarness(settings: LspSettingsDocumentInput = {}) {
   const harness = await createExtensionHarness(false, settings, true);
   const store = resolve(harness.agentDirectory, "managed-tools");
@@ -311,6 +343,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const runner of harnessRunners.splice(0))
     await runner.emit({ type: "session_shutdown", reason: "quit" });
+  foreignOwnedPaths.clear();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   const original = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -332,6 +365,223 @@ afterEach(async () => {
 });
 
 describe("Pi LSP extension lifecycle", () => {
+  test.skipIf(process.platform === "win32").each(["managed", "external"])(
+    "macOS %s Biome keeps a safe short alias to its persistent per-store socket home",
+    async (installation) => {
+      const { harness, store } = await managedHarness({
+        lsp: { autoInstall: installation === "managed", servers: { typescript: null } },
+      });
+      const cwd = harness.sessionManager.getCwd();
+      const ordinaryCache = resolve(store, "lsp/biome/cache/keep");
+      await mkdir(resolve(ordinaryCache, ".."), { recursive: true });
+      await writeFile(ordinaryCache, "preserve ordinary cache");
+      for (const name of ["one", "two"]) {
+        const root = resolve(cwd, name);
+        await mkdir(root);
+        await writeFile(resolve(root, "biome.json"), "{}");
+        await writeFile(resolve(root, "main.js"), "debugger;\n");
+      }
+      if (installation === "external") await externalBiome(resolve(cwd, "node_modules/.bin"));
+      vi.stubGlobal("process", Object.create(process, { platform: { value: "darwin" } }));
+      const originalTmpdir = process.env.TMPDIR;
+      const launch = async (root: string): Promise<{ home: string; tmpdir?: string }> =>
+        JSON.parse(await readFile(resolve(cwd, root, "biome-launch.json"), "utf8"));
+      const diagnose = (root: string) =>
+        harness.runner
+          .getToolDefinition("lsp")!
+          .execute(
+            "biome-socket",
+            { operation: "diagnostics", server_id: "biome", file_path: `${root}/main.js` },
+            undefined,
+            undefined,
+            harness.runner.createContext(),
+          );
+      await startExtension(harness);
+      try {
+        expect(await diagnose("one")).toMatchObject({
+          content: [{ text: expect.stringContaining("debugger;") }],
+        });
+        const { home } = await launch("one");
+        expect((await launch("one")).tmpdir).toBe(originalTmpdir);
+        // Biome's native macOS cache layout, not XDG_CACHE_HOME or TMPDIR.
+        expect(
+          Buffer.byteLength(`${home}/Library/Caches/dev.biomejs.biome/biome-socket-2.5.13`),
+        ).toBeLessThan(104);
+        temporaryDirectories.push(dirname(home));
+        expect((await lstat(dirname(home))).mode & 0o777).toBe(0o700);
+        expect((await lstat(home)).isSymbolicLink()).toBe(true);
+        expect(await readlink(home)).toBe(await realpath(resolve(store, "lsp/biome")));
+        expect(await diagnose("two")).toMatchObject({
+          content: [{ text: expect.stringContaining("debugger;") }],
+        });
+        expect((await launch("two")).home).toBe(home);
+        const command = harness.runner
+          .getRegisteredCommands()
+          .find((value) => value.name === "lsp")!;
+        await command.handler(
+          `stop biome ${JSON.stringify(resolve(cwd, "one"))}`,
+          harness.runner.createCommandContext(),
+        );
+        expect(existsSync(home)).toBe(true);
+        await writeFile(resolve(cwd, "two/main.js"), "changed diagnostic\n");
+        expect(await diagnose("two")).toMatchObject({
+          content: [{ text: expect.stringContaining("changed diagnostic") }],
+        });
+        await shutdownExtension(harness);
+        for (const root of ["one", "two"]) {
+          expect(JSON.parse(await readFile(resolve(cwd, root, "biome-exit.json"), "utf8"))).toEqual(
+            { homeExists: true },
+          );
+        }
+        expect(await realpath(home)).toBe(await realpath(resolve(store, "lsp/biome")));
+        expect(await readFile(ordinaryCache, "utf8")).toBe("preserve ordinary cache");
+        await startExtension(harness);
+        expect(await diagnose("one")).toMatchObject({
+          content: [{ text: expect.stringContaining("debugger;") }],
+        });
+        expect((await launch("one")).home).toBe(home);
+        expect(process.env.TMPDIR).toBe(originalTmpdir);
+        await shutdownExtension(harness);
+        const other = await createExtensionHarness(
+          false,
+          { lsp: { autoInstall: false, servers: { typescript: null } } },
+          true,
+        );
+        const otherRoot = other.sessionManager.getCwd();
+        await externalBiome(resolve(otherRoot, "node_modules/.bin"));
+        await writeFile(resolve(otherRoot, "biome.json"), "{}");
+        await writeFile(resolve(otherRoot, "main.js"), "other store diagnostic\n");
+        await startExtension(other);
+        const otherDiagnostics = () =>
+          other.runner
+            .getToolDefinition("lsp")!
+            .execute(
+              "other-biome",
+              { operation: "diagnostics", server_id: "biome", file_path: "main.js" },
+              undefined,
+              undefined,
+              other.runner.createContext(),
+            );
+        expect(await otherDiagnostics()).toMatchObject({
+          content: [{ text: expect.stringContaining("other store diagnostic") }],
+        });
+        const otherHome = JSON.parse(
+          await readFile(resolve(otherRoot, "biome-launch.json"), "utf8"),
+        ).home;
+        expect(otherHome).not.toBe(home);
+        temporaryDirectories.push(dirname(otherHome));
+        expect(await realpath(otherHome)).toBe(
+          await realpath(resolve(other.agentDirectory, "managed-tools/lsp/biome")),
+        );
+        // A stale or tampered predictable alias must not redirect native cache writes.
+        await rm(home);
+        await symlink(cwd, home);
+        await startExtension(harness);
+        await expect(diagnose("one")).rejects.toThrow(/unsafe.*Biome.*alias/i);
+        expect(await readlink(home)).toBe(cwd);
+        expect(await readFile(ordinaryCache, "utf8")).toBe("preserve ordinary cache");
+        await shutdownExtension(harness);
+        await rm(home);
+        await writeFile(home, "do not replace an existing file");
+        await startExtension(harness);
+        await expect(diagnose("one")).rejects.toThrow(/unsafe.*Biome.*alias/i);
+        expect(await readFile(home, "utf8")).toBe("do not replace an existing file");
+        await shutdownExtension(harness);
+        await rm(home);
+        await symlink(await realpath(resolve(store, "lsp/biome")), home);
+        await chmod(dirname(home), 0o755);
+        await startExtension(harness);
+        await expect(diagnose("one")).rejects.toThrow(/unsafe.*Biome.*alias/i);
+        expect((await lstat(dirname(home))).mode & 0o777).toBe(0o755);
+        await shutdownExtension(harness);
+        await chmod(dirname(home), 0o700);
+        for (const entry of [dirname(home), home]) {
+          foreignOwnedPaths.add(entry);
+          await startExtension(harness);
+          await expect(diagnose("one")).rejects.toThrow(/unsafe.*Biome.*alias/i);
+          await shutdownExtension(harness);
+          foreignOwnedPaths.delete(entry);
+        }
+        const savedParent = `${dirname(home)}-saved`;
+        temporaryDirectories.push(savedParent);
+        await rename(dirname(home), savedParent);
+        await symlink(savedParent, dirname(home));
+        await startExtension(harness);
+        await expect(diagnose("one")).rejects.toThrow(/unsafe.*Biome.*alias/i);
+        expect(await readlink(dirname(home))).toBe(savedParent);
+        await shutdownExtension(harness);
+        await rm(dirname(home));
+        await writeFile(dirname(home), "do not replace an existing parent file");
+        await startExtension(harness);
+        await expect(diagnose("one")).rejects.toThrow(/unsafe.*Biome.*alias/i);
+        expect(await readFile(dirname(home), "utf8")).toBe(
+          "do not replace an existing parent file",
+        );
+        expect(await otherDiagnostics()).toMatchObject({
+          content: [{ text: expect.stringContaining("other store diagnostic") }],
+        });
+        await shutdownExtension(other);
+      } finally {
+        await shutdownExtension(harness);
+      }
+    },
+    20_000,
+  );
+  test.skipIf(process.platform === "win32").each(["explicit", "linux-preset"])(
+    "%s Biome preserves its existing HOME policy without a macOS alias",
+    async (kind) => {
+      const home = await makeTemporaryDirectory("pi-biome-explicit-home-");
+      const harness = await createExtensionHarness(
+        false,
+        {
+          lsp: {
+            autoInstall: false,
+            servers:
+              kind === "explicit"
+                ? {
+                    typescript: null,
+                    biome: {
+                      command: process.execPath,
+                      args: [
+                        fileURLToPath(new URL("fixtures/fake-biome-server.mjs", import.meta.url)),
+                      ],
+                      environment: { HOME: home },
+                      languages: [{ extensions: [".js"], languageId: "javascript" }],
+                    },
+                  }
+                : { typescript: null },
+          },
+        },
+        true,
+      );
+      const cwd = harness.sessionManager.getCwd();
+      await externalBiome(resolve(cwd, "node_modules/.bin"));
+      await writeFile(resolve(cwd, "biome.json"), "{}");
+      await writeFile(resolve(cwd, "main.js"), "debugger;\n");
+      vi.stubGlobal(
+        "process",
+        Object.create(process, { platform: { value: kind === "explicit" ? "darwin" : "linux" } }),
+      );
+      await startExtension(harness);
+      expect(
+        await harness.runner
+          .getToolDefinition("lsp")!
+          .execute(
+            "unchanged-biome",
+            { operation: "document_symbols", server_id: "biome", file_path: "main.js" },
+            undefined,
+            undefined,
+            harness.runner.createContext(),
+          ),
+      ).toMatchObject({ content: [{ text: expect.stringContaining("answer") }] });
+      const launched = JSON.parse(await readFile(resolve(cwd, "biome-launch.json"), "utf8"));
+      expect(launched.home).toBe(
+        kind === "explicit" ? home : resolve(harness.agentDirectory, "managed-tools/lsp/biome"),
+      );
+      expect((await lstat(launched.home)).isDirectory()).toBe(true);
+      await shutdownExtension(harness);
+    },
+  );
   test.each([
     ["css", "vscode-css-language-server", "style.css"],
     ["json", "vscode-json-language-server", "data.json"],
