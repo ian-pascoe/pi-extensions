@@ -50,19 +50,26 @@ const reportableOutcomes = [
 ] satisfies readonly PostEditDiagnosticOutcome[];
 
 describe("Post-edit Diagnostics Entry rendering", () => {
-  test("collapses to severity and file counts without exposing messages", () => {
+  test("collapses to at most eight visual lines with a prefix of the expanded details", () => {
     const data = createPostEditDiagnosticsEntryData("/workspace", reportableOutcomes);
     expect(data).toBeDefined();
     if (data === undefined) throw new Error("Expected reportable diagnostics entry");
 
-    const collapsed = renderLines(renderPostEditDiagnosticsEntry(data, false, plainTheme));
+    const component = renderPostEditDiagnosticsEntry(data, false, plainTheme);
+    const collapsedLines = component.render(120).map((line) => line.trimEnd());
+    const collapsed = collapsedLines.join("\n");
+    expect(collapsedLines).toHaveLength(8);
     expect(collapsed).toContain("Post-edit diagnostics");
     expect(collapsed).toContain("1 error");
     expect(collapsed).toContain("2 warnings");
     expect(collapsed).toContain("1 timeout");
     expect(collapsed).toContain("1 server issue");
     expect(collapsed).toContain("3 files");
-    expect(collapsed).not.toContain("Type mismatch");
+    expect(collapsed).toContain("4:2  Type mismatch  typescript");
+    expect(collapsed).toContain("8:1  Unused value  oxlint");
+    expect(collapsed).toContain("src/b.ts");
+    expect(collapsed).not.toContain("src/c.ts");
+    expect(component.render(40)).toHaveLength(8);
   });
 
   test("expands diagnostics by workspace-relative file with source locations and servers", () => {

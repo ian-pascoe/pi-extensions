@@ -11,6 +11,8 @@ import {
 /** Custom session entry type used for model-invisible Post-edit Diagnostics presentation. */
 export const POST_EDIT_DIAGNOSTICS_ENTRY_TYPE = "pi-lsp-post-edit-diagnostics";
 
+const COLLAPSED_ENTRY_MAX_LINES = 8;
+
 /** Persisted data for one model-invisible Post-edit Diagnostics Entry. */
 export const PostEditDiagnosticsEntryDataSchema = Type.Object(
   {
@@ -242,9 +244,15 @@ export function renderPostEditDiagnosticsEntry(
     ? ""
     : `${theme.fg("dim", `  ·  ${keyText("app.tools.expand")}`)}${theme.fg("muted", " to expand")}`;
   container.addChild(new Text(`${entrySummary(data, theme)}${hint}`, 0, 0));
-  if (expanded) appendExpandedOutcomes(container, data, theme);
+  appendExpandedOutcomes(container, data, theme);
 
+  const content: Component = expanded
+    ? container
+    : {
+        invalidate: () => container.invalidate(),
+        render: (width) => container.render(width).slice(0, COLLAPSED_ENTRY_MAX_LINES),
+      };
   const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
-  box.addChild(container);
+  box.addChild(content);
   return box;
 }
