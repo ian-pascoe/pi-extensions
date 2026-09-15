@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-lsp
 
+## 0.4.4
+
+### Patch Changes
+
+- 8af327e: Show up to eight rendered rows of Post-edit Diagnostics in the collapsed transcript entry while keeping the expanded entry complete.
+
 ## 0.4.3
 
 ### Patch Changes
