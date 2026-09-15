@@ -223,9 +223,10 @@ available for explicit LSP formatting operations without appearing in Post-edit 
 Files excluded by every matching server's Activation Gate or disable state are skipped silently.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
-Post-edit Diagnostics Entry after the current tool batch. Clean results and files without a
-configured server stay silent in the transcript. This entry is excluded from model context; the
-model sees diagnostics only in the original mutation result.
+Post-edit Diagnostics Entry after the current tool batch. Its collapsed rendering shows the summary
+and a prefix of the same details, capped at eight rendered rows; expanding it shows every detail.
+Clean results and files without a configured server stay silent in the transcript. This entry is
+excluded from model context; the model sees diagnostics only in the original mutation result.
 
 ## Limits and lifecycle
 
