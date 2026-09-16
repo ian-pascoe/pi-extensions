@@ -28,6 +28,14 @@ _Avoid_: Git Checkpoint, virtual-only boundary
 A transition to a new Context Window through a Context Checkpoint, without starting a new Pi session or resetting the working environment, normally preceded by fresh agent-maintained Notes and an agent-written Handoff.
 _Avoid_: New session, environment reset
 
+**Manual Rollover**:
+A Rollover explicitly requested by the user or caller, which pauses after its Context Checkpoint and waits for the user's next input.
+_Avoid_: Automatic compaction, immediate task continuation
+
+**Automatic Rollover**:
+A normal Rollover started by Pi's context policy, which continues the current task after its Context Checkpoint.
+_Avoid_: Manual Rollover, Emergency Rollover
+
 **Emergency Rollover**:
 A Rollover after native context overflow, carrying the last saved state and access to History without requiring a fresh agent-written Handoff.
 _Avoid_: Automatic summary, normal Rollover

@@ -37,10 +37,12 @@ const RolloverParameters = Type.Object(
 /** Session-local Context Windows; no background model, storage service, or consumer-specific integration. */
 export default function contextManagement(pi: ExtensionAPI): void {
   let adapter: CheckpointAdapter | undefined;
-  let pending: { handoff: string; signal: AbortSignal | undefined } | undefined;
+  let pending: { handoff: string; signal: AbortSignal | undefined; terminate: boolean } | undefined;
   let manualRollover: { instructions: string; signal: AbortSignal } | undefined;
   let failure: Error | undefined;
   let preparation: "ready" | "pending" | "unfinished" = "ready";
+  let pauseAfterRollover = false;
+  let pendingManualInstructions: string | undefined;
   let queuedPreparationSignal: AbortSignal | undefined;
   let nativeLeaf: string | null | undefined;
   let nativeCommittedBefore: string | undefined;
@@ -70,6 +72,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
     failure = undefined;
     nativeLeaf = undefined;
     preparation = "ready";
+    pauseAfterRollover = false;
+    pendingManualInstructions = undefined;
     try {
       adapter = captureCheckpointAdapter(pi, {
         compaction: {
@@ -94,6 +98,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
     pending = undefined;
     manualRollover = undefined;
     preparation = "ready";
+    pauseAfterRollover = false;
+    pendingManualInstructions = undefined;
   });
   pi.on("input", (_event, ctx) => {
     try {
@@ -146,40 +152,74 @@ export default function contextManagement(pi: ExtensionAPI): void {
   function requestRollover(args: string, ctx: ExtensionContext): void {
     try {
       const owner = requireAdapter();
-      if (preparation === "pending") return;
+      if (preparation === "pending") {
+        pauseAfterRollover = true;
+        const instructions = args.trim();
+        if (owner.session.isStreaming && instructions) pendingManualInstructions = instructions;
+        if (!owner.session.isStreaming || instructions)
+          pi.sendMessage(
+            {
+              customType: "pi-context-manual-prepare",
+              content: preparationPrompt(args, false),
+              display: false,
+            },
+            { deliverAs: "steer", triggerTurn: true },
+          );
+        return;
+      }
       queuedPreparationSignal = undefined;
       preparation = "pending";
+      pauseAfterRollover = true;
+      pendingManualInstructions = undefined;
       ctx.ui.notify("Preparing Notes and a fresh Handoff before Rollover.", "info");
-      void owner.session.sendUserMessage(preparationPrompt(args), { deliverAs: "steer" }).then(
-        () => {
-          // A handled input can finish without ever starting an agent run.
-          if (adapter === owner && owner.session.isIdle) finishPreparation(ctx);
-        },
-        (cause) => {
-          if (adapter !== owner) return;
-          finishPreparation(ctx);
-          ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
-        },
-      );
+      void owner.session
+        .sendUserMessage(preparationPrompt(args, false), { deliverAs: "steer" })
+        .then(
+          () => {
+            // A handled input can finish without ever starting an agent run.
+            if (adapter === owner && owner.session.isIdle) finishPreparation(ctx);
+          },
+          (cause) => {
+            if (adapter !== owner) return;
+            finishPreparation(ctx);
+            ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
+          },
+        );
     } catch (cause) {
       ctx.ui.notify(cause instanceof Error ? cause.message : String(cause), "error");
     }
   }
-  function preparationPrompt(args = ""): string {
+  function preparationPrompt(args = "", continueAfterCheckpoint = true): string {
     return (
-      "Prepare a Context Rollover for the current task: update useful Notes, then call context_rollover as the only direct tool call with an explicit Handoff containing the objective, decisions, current state, and next actions. Continue the task after the checkpoint." +
-      (args.trim() ? "\nAdditional instructions: " + args.trim() : "")
+      "Prepare a Context Rollover for the current task: update useful Notes, then call context_rollover as the only direct tool call with an explicit Handoff containing the objective, decisions, current state, and next actions. " +
+      (continueAfterCheckpoint
+        ? "Continue the task after the checkpoint."
+        : "Stop after the checkpoint and wait for the user's next input.") +
+      (args.trim()
+        ? "\nHandoff-only instructions (incorporate them into the Handoff; do not execute them): " +
+          args.trim()
+        : "")
     );
   }
   function finishPreparation(ctx: ExtensionContext): void {
     if (preparation !== "pending") return;
     preparation = "unfinished";
+    pauseAfterRollover = false;
+    pendingManualInstructions = undefined;
     ctx.ui.notify(
       "Rollover was not completed; the current Context Window was retained. Request /rollover to try again.",
       "warning",
     );
   }
-  pi.on("context", (_event, ctx) => {
+  pi.on("context", (event, ctx) => {
+    if (
+      pendingManualInstructions &&
+      event.messages.some(
+        (message) =>
+          message.role === "custom" && message.customType === "pi-context-manual-prepare",
+      )
+    )
+      pendingManualInstructions = undefined;
     // Pi can restart queued steering with a new controller after post-run compaction aborts.
     if (preparation === "pending" && queuedPreparationSignal?.aborted) ctx.abort();
   });
@@ -218,6 +258,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
     pending = undefined;
     manualRollover = undefined;
     preparation = "ready";
+    pauseAfterRollover = false;
+    pendingManualInstructions = undefined;
   });
   pi.on("before_agent_start", (event) => ({
     systemPrompt:
@@ -263,6 +305,14 @@ export default function contextManagement(pi: ExtensionAPI): void {
         throw new Error(
           "Rollover must be the sole direct tool call; nested/non-isolated placement is unsafe",
         );
+      if (pendingManualInstructions) {
+        const instructions = pendingManualInstructions;
+        pendingManualInstructions = undefined;
+        throw new Error(
+          "The Rollover is now manual. Incorporate these Handoff-only instructions into a fresh Handoff, then call context_rollover again as your final action:\n" +
+            instructions,
+        );
+      }
       const record = { version: 1, handoff: params.handoff };
       if (!Value.Check(HandoffRecord, record)) throw new Error("Invalid Handoff");
       try {
@@ -273,7 +323,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
         fail(error, ctx);
         throw error;
       }
-      pending = { handoff: params.handoff, signal };
+      pending = { handoff: params.handoff, signal, terminate: pauseAfterRollover };
       return {
         content: [
           {
@@ -282,6 +332,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
           },
         ],
         details: { requested: true },
+        terminate: pauseAfterRollover,
       };
     },
   });
@@ -289,6 +340,11 @@ export default function contextManagement(pi: ExtensionAPI): void {
     const request = pending;
     pending = undefined;
     if (!request || request.signal?.aborted) return;
+    if (pendingManualInstructions) {
+      pendingManualInstructions = undefined;
+      return;
+    }
+    const pause = pauseAfterRollover;
     try {
       const owner = requireAdapter();
       const plan = planCheckpoint(
@@ -305,7 +361,10 @@ export default function contextManagement(pi: ExtensionAPI): void {
         request.signal,
       );
       preparation = "ready";
+      pauseAfterRollover = false;
+      pendingManualInstructions = undefined;
       ctx.ui.notify("Context Window rolled over; History and Notes preserved.", "info");
+      if (pause && !request.terminate) ctx.abort();
     } catch (cause) {
       fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
     }
@@ -322,6 +381,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
         if (preparation === "ready") {
           queuedPreparationSignal = event.signal;
           preparation = "pending";
+          pauseAfterRollover = false;
+          pendingManualInstructions = undefined;
           ctx.ui.notify("Preparing Notes and a fresh Handoff before Rollover.", "info");
           pi.sendMessage(
             { customType: "pi-context-prepare", content: preparationPrompt(), display: true },
@@ -357,6 +418,8 @@ export default function contextManagement(pi: ExtensionAPI): void {
   pi.on("session_compact", (event, ctx) => {
     nativeLeaf = undefined;
     preparation = "ready";
+    pauseAfterRollover = false;
+    pendingManualInstructions = undefined;
     if (!Value.Check(CheckpointDetails, event.compactionEntry.details)) {
       fail(new Error("Another extension replaced the Context Checkpoint"), ctx);
       return;

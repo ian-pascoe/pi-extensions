@@ -69,22 +69,23 @@ describe("Context Windows through the Pi SDK", () => {
       expect(JSON.stringify(f.manager.getEntries())).toBe(before);
     },
   );
-  it("requests agent checkpointing through /rollover rather than committing in the command", async () => {
+  it("pauses after /rollover commits the requested Context Checkpoint", async () => {
     const f = await createSdkHarness([contextManagement]);
-    f.responses.push(
-      toolCall("context_rollover", { handoff: "Continue the current task." }),
-      reply("Continued."),
-    );
+    f.responses.push(toolCall("context_rollover", { handoff: "Continue the current task." }));
     await f.session.prompt("/rollover preserve the pending decision");
-    await expect.poll(() => f.requests.length).toBe(2);
+    await expect
+      .poll(() => f.manager.getBranch().filter((entry) => entry.type === "compaction").length)
+      .toBe(1);
     await f.session.waitForIdle();
-    expect(f.requests).toHaveLength(2);
-    expect(JSON.stringify(f.requests[0]).includes("Prepare a Context Rollover")).toBe(true);
-    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+    expect(f.requests).toHaveLength(1);
+    expect(JSON.stringify(f.requests[0])).toContain("Prepare a Context Rollover");
+    expect(JSON.stringify(f.requests[0])).toContain(
+      "Stop after the checkpoint and wait for the user's next input.",
+    );
   });
 
   it.each(["tui", "sdk", "rpc"] as const)(
-    "prepares fresh Notes and a Handoff before manual compaction in %s",
+    "prepares fresh Notes and a Handoff, then pauses manual compaction in %s",
     async (mode) => {
       const f = await createSdkHarness([contextManagement]);
       await f.session.bindExtensions({ mode: mode === "sdk" ? "print" : mode });
@@ -97,16 +98,18 @@ describe("Context Windows through the Pi SDK", () => {
           content: "Pending decision preserved.",
         }),
         toolCall("context_rollover", { handoff: "Fresh Handoff: resolve the pending decision." }),
-        reply("Continued with the pending decision."),
       );
       await expect(f.session.compact("preserve the pending decision")).rejects.toThrow(
         "Compaction cancelled",
       );
-      await expect.poll(() => f.requests.length).toBe(4);
+      await expect.poll(() => f.requests.length).toBe(3);
       await f.session.waitForIdle();
       expect(JSON.stringify(f.requests[1])).toContain("Prepare a Context Rollover");
       expect(JSON.stringify(f.requests[1])).toContain(
-        "Additional instructions: preserve the pending decision",
+        "Stop after the checkpoint and wait for the user's next input.",
+      );
+      expect(JSON.stringify(f.requests[1])).toContain(
+        "Handoff-only instructions (incorporate them into the Handoff; do not execute them): preserve the pending decision",
       );
       const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
       expect(checkpoints).toHaveLength(1);
@@ -114,6 +117,88 @@ describe("Context Windows through the Pi SDK", () => {
       expect(checkpoints[0]?.summary).not.toContain("saved Handoff may be stale");
       expect(f.providerRequests).toEqual([]);
       expect(f.session.messages).toEqual(f.manager.buildSessionContext().messages);
+    },
+  );
+
+  it("upgrades in-flight automatic preparation to pause for /rollover", async () => {
+    let enterPreparation: (() => void) | undefined;
+    let releasePreparation: (() => void) | undefined;
+    const preparationStarted = new Promise<void>((resolve) => {
+      enterPreparation = resolve;
+    });
+    const preparationGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    const f = await createSdkHarness([
+      (pi) => {
+        pi.on("context", async (event) => {
+          if (!JSON.stringify(event.messages).includes("Prepare a Context Rollover")) return;
+          enterPreparation?.();
+          await preparationGate;
+        });
+      },
+      contextManagement,
+    ]);
+    f.responses.push(
+      reply("Ready.", 199_700),
+      toolCall("context_rollover", { handoff: "Fresh automatic Handoff." }),
+      toolCall("context_rollover", { handoff: "Fresh Handoff with the late decision." }),
+    );
+    const running = f.session.prompt("Original task");
+    await preparationStarted;
+    await f.session.prompt("/rollover preserve the late decision");
+    releasePreparation?.();
+    await running;
+    await f.session.waitForIdle();
+    expect(f.requests).toHaveLength(3);
+    const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0]?.summary).toContain("Fresh Handoff with the late decision.");
+    expect(JSON.stringify(f.requests[2])).toContain("preserve the late decision");
+  });
+
+  it.each([undefined, "preserve the late decision"])(
+    "pauses when /rollover arrives after automatic Handoff execution (%s)",
+    async (instructions) => {
+      let enterResult: (() => void) | undefined;
+      let releaseResult: (() => void) | undefined;
+      const resultStarted = new Promise<void>((resolve) => {
+        enterResult = resolve;
+      });
+      const resultGate = new Promise<void>((resolve) => {
+        releaseResult = resolve;
+      });
+      const f = await createSdkHarness([
+        contextManagement,
+        (pi) => {
+          pi.on("tool_result", async (event) => {
+            if (event.toolName !== "context_rollover") return;
+            enterResult?.();
+            await resultGate;
+          });
+        },
+      ]);
+      f.responses.push(
+        reply("Ready.", 199_700),
+        toolCall("context_rollover", { handoff: "Fresh automatic Handoff." }),
+      );
+      if (instructions)
+        f.responses.push(
+          toolCall("context_rollover", { handoff: "Fresh Handoff with the late decision." }),
+        );
+      const running = f.session.prompt("Original task");
+      await resultStarted;
+      await f.session.prompt("/rollover" + (instructions ? " " + instructions : ""));
+      releaseResult?.();
+      await running;
+      await f.session.waitForIdle();
+      expect(f.requests).toHaveLength(instructions ? 3 : 2);
+      const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
+      expect(checkpoints).toHaveLength(1);
+      expect(checkpoints[0]?.summary).toContain(
+        instructions ? "Fresh Handoff with the late decision." : "Fresh automatic Handoff.",
+      );
+      if (instructions) expect(JSON.stringify(f.requests[2])).toContain(instructions);
     },
   );
 
