@@ -15,16 +15,21 @@ describe("native Context Checkpoint lifecycle", () => {
       f.responses.push(
         reply("Ready.", reason === "threshold" ? 200_000 : 100),
         toolCall("context_rollover", { handoff: "Fresh native continuation." }),
-        reply("Continued."),
       );
+      if (reason === "threshold") f.responses.push(reply("Continued."));
       await f.session.prompt("OLD-NATIVE " + "history ".repeat(12_000));
       if (reason === "manual") {
         await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-        await expect.poll(() => f.requests.length).toBe(3);
+        await expect.poll(() => f.requests.length).toBe(2);
         await f.session.waitForIdle();
       }
-      expect(f.requests).toHaveLength(3);
+      expect(f.requests).toHaveLength(reason === "manual" ? 2 : 3);
       expect(JSON.stringify(f.requests[1])).toContain("Prepare a Context Rollover");
+      expect(JSON.stringify(f.requests[1])).toContain(
+        reason === "manual"
+          ? "Stop after the checkpoint and wait for the user's next input."
+          : "Continue the task after the checkpoint.",
+      );
       expect(checkpoints(f.manager)).toHaveLength(1);
       expect(checkpoints(f.manager)[0]?.details).toMatchObject({ reason: "normal" });
       expect(checkpoints(f.manager)[0]?.summary).toContain("Fresh native continuation.");

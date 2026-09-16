@@ -11,12 +11,9 @@ test("disabling native automatic compaction still permits explicit Rollover", as
   await f.session.prompt("Original task");
   expect(f.requests).toHaveLength(1);
   expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
-  f.responses.push(
-    toolCall("context_rollover", { handoff: "Explicit continuation" }),
-    reply("Continued"),
-  );
+  f.responses.push(toolCall("context_rollover", { handoff: "Explicit continuation" }));
   await f.session.prompt("/rollover");
-  await expect.poll(() => f.requests.length).toBe(3);
+  await expect.poll(() => f.requests.length).toBe(2);
   await f.session.waitForIdle();
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   expect(f.providerRequests).toEqual([]);
@@ -116,12 +113,9 @@ test("a preparation blocked by another input handler does not suppress later pre
     .toBe(true);
   expect(f.requests).toHaveLength(0);
   block = false;
-  f.responses.push(
-    toolCall("context_rollover", { handoff: "Fresh continuation" }),
-    reply("Continued"),
-  );
+  f.responses.push(toolCall("context_rollover", { handoff: "Fresh continuation" }));
   await f.session.prompt("/rollover");
-  await expect.poll(() => f.requests.length).toBe(2);
+  await expect.poll(() => f.requests.length).toBe(1);
   await f.session.waitForIdle();
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
 });
@@ -217,19 +211,16 @@ test("native manual instructions are not restricted by the /rollover command lim
   const f = await createSdkHarness([contextManagement]);
   f.responses.push(reply("Ready"));
   await f.session.prompt("Original task " + "history ".repeat(3000));
-  f.responses.push(
-    toolCall("context_rollover", { handoff: "Fresh continuation" }),
-    reply("Continued"),
-  );
+  f.responses.push(toolCall("context_rollover", { handoff: "Fresh continuation" }));
   const instructions = "X".repeat(2001);
   await expect(f.session.compact(instructions)).rejects.toThrow("Compaction cancelled");
   await f.session.waitForIdle();
-  expect(f.requests).toHaveLength(3);
+  expect(f.requests).toHaveLength(2);
   expect(JSON.stringify(f.requests[1]?.messages)).toContain(instructions);
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   await f.session.prompt("/rollover " + instructions);
   await f.session.waitForIdle();
-  expect(f.requests).toHaveLength(3);
+  expect(f.requests).toHaveLength(2);
   expect(f.providerRequests).toEqual([]);
 });
 

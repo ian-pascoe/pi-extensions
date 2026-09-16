@@ -27,17 +27,17 @@
     "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.2",
-    "@oxlint/plugins": "^1.82.0",
-    "@types/node": "^26.5.0",
-    "fast-check": "^4.9.0",
+    "@changesets/cli": "^3.0.3",
+    "@oxlint/plugins": "^1.83.0",
+    "@types/node": "^26.5.1",
+    "fast-check": "^4.10.0",
     "husky": "^9.1.7",
-    "lint-staged": "^17.5.0",
-    "oxfmt": "^0.67.0",
-    "oxlint": "^1.82.0",
+    "lint-staged": "^17.5.1",
+    "oxfmt": "^0.68.0",
+    "oxlint": "^1.83.0",
     "oxlint-tsgolint": "^7.0.2001",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
