@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-context-management
 
+## 0.2.3
+
+### Patch Changes
+
+- 98e967c: Pause after manually requested Context Rollovers while preserving automatic continuation for threshold and overflow paths.
+
 ## 0.2.2
 
 ### Patch Changes
