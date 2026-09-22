@@ -29,7 +29,7 @@
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
     "@oxlint/plugins": "^1.83.0",
-    "@types/node": "^26.5.1",
+    "@types/node": "^26.6.2",
     "fast-check": "^4.10.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.5.1",
