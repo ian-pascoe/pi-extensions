@@ -12,7 +12,6 @@
     ".pi/**",
     ".roo/**",
     ".windsurf/**",
-    "packages/pi-utils/dist/**",
     "tools/oxlint/anti-slop/**"
   ]
 }

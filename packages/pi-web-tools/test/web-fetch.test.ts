@@ -258,6 +258,19 @@ describe("Web Fetch", () => {
     ).rejects.toThrow("Unable to fetch https://example.com/deep");
   }, 15000);
 
+  test("extracts text from deeply nested HTML", async () => {
+    const deeplyNestedHtml = `${"<div>".repeat(4_000)}content<script>omitted()</script>${"</div>".repeat(4_000)}`;
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(deeplyNestedHtml, { headers: { "content-type": "text/html" } });
+
+    const result = await executeFetch(
+      { fetch },
+      { url: "https://example.com/deep", format: "text" },
+    );
+
+    expect(result.content[0]).toMatchObject({ type: "text", text: "content" });
+  }, 15000);
+
   test("truncates complete converted output to a private spill", async () => {
     const paragraphs = Array.from(
       { length: 2_100 },

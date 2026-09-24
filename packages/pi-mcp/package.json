@@ -37,7 +37,7 @@
     "provenance": true
   },
   "scripts": {
-    "build:cli": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/pi-mcp-cli.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/pi-mcp-cli.js --external:@modelcontextprotocol/client --external:@modelcontextprotocol/client/*",
+    "build:cli": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/pi-mcp-cli.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/pi-mcp-cli.js --external:@modelcontextprotocol/client --external:@modelcontextprotocol/client/* --external:@ian-pascoe/pi-utils --external:@ian-pascoe/pi-utils/*",
     "prepack": "pnpm build:cli",
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"

@@ -4,11 +4,14 @@ import { join } from "node:path";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
+  err,
   forceReplaceLockedMcpJsonDocument,
+  isNodeErrorCode,
   McpStoreError,
   type McpStoreJsonObject,
   type McpStoreResult,
   mutateLockedMcpJsonDocument,
+  ok,
 } from "./mcp-settings-store.js";
 
 const AUTH_DOCUMENT_VERSION = 1;
@@ -137,18 +140,6 @@ type McpAuthDocument = Readonly<Static<typeof McpAuthDocumentSchema>>;
 type MutableMcpAuthStoredEntry = {
   -readonly [Field in keyof McpAuthStoredEntry]?: McpAuthStoredEntry[Field];
 } & Pick<McpAuthStoredEntry, "clientIdentityHash" | "serverUrlHash">;
-
-function ok<Value>(value: Value): McpStoreResult<Value> {
-  return { ok: true, value };
-}
-
-function err<Value>(error: McpStoreError): McpStoreResult<Value> {
-  return { error, ok: false };
-}
-
-function isNodeErrorCode(cause: unknown, code: string): boolean {
-  return cause instanceof Error && "code" in cause && cause.code === code;
-}
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -332,7 +323,7 @@ export class McpAuthStore {
           version: AUTH_DOCUMENT_VERSION,
         });
       },
-      { forceMode: AUTH_FILE_MODE },
+      { mode: AUTH_FILE_MODE },
     );
     if (!mutation.ok) {
       if (mutation.error.code === "invalid_mutation") {
@@ -372,7 +363,7 @@ export class McpAuthStore {
         delete entries[normalized.key];
         return authDocumentJson({ entries, version: AUTH_DOCUMENT_VERSION });
       },
-      { forceMode: AUTH_FILE_MODE },
+      { mode: AUTH_FILE_MODE },
     );
     if (!mutation.ok && mutation.error.code === "invalid_mutation") {
       return err(
@@ -387,7 +378,7 @@ export class McpAuthStore {
     return forceReplaceLockedMcpJsonDocument(
       this.path,
       authDocumentJson({ entries: {}, version: AUTH_DOCUMENT_VERSION }),
-      { forceMode: AUTH_FILE_MODE },
+      { mode: AUTH_FILE_MODE },
     );
   }
 }

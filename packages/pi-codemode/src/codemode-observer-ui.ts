@@ -17,6 +17,7 @@ import {
   formatCodeModeDuration,
   shortestUniqueCodeModeSessionPrefix,
 } from "./codemode-session-coordinator.js";
+import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 
 const CODEMODE_OBSERVER_UI_KEY = "codemode-observer";
 const CODEMODE_OBSERVER_ROW_LIMIT = 8;
@@ -110,17 +111,7 @@ const CODEMODE_OBSERVER_STATE_PRESENTATION = {
 } satisfies Record<CodeModeObserverState, CodeModeObserverStatePresentation>;
 
 function sanitizeCodeModeObserverText(value: string): string {
-  return (
-    stripTerminalSequences(value)
-      .replaceAll("\r\n", " ")
-      .replaceAll("\r", " ")
-      .replaceAll("\n", " ")
-      .replaceAll("\t", " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      // oxlint-disable-next-line eslint/no-control-regex -- SAFETY: Observer text must remove terminal C0/C1 controls after preserving ordinary spacing above.
-      .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-  );
+  return stripControlCharacters(stripTerminalSequences(value)).replace(/\s+/g, " ").trim();
 }
 
 function boundedCodeModeObserverText(value: string, width: number): string {

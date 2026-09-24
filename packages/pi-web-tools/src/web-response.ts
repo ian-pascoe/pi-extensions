@@ -3,6 +3,20 @@ async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void
   await body.cancel().catch(() => undefined);
 }
 
+/** Combine a caller Abort Signal with a timeout deadline for one Web Tool request. */
+export function requestSignal(
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): AbortSignal {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  return callerSignal === undefined ? deadline : AbortSignal.any([callerSignal, deadline]);
+}
+
+/** Drain and discard a response body without retaining bytes. */
+export async function cancelResponse(response: Response): Promise<void> {
+  await cancelBody(response.body);
+}
+
 /** Read a native response incrementally without retaining bytes above the supplied limit. */
 export async function readBoundedResponseBody(
   response: Response,

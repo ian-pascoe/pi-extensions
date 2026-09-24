@@ -24,6 +24,7 @@ import {
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import type { McpModelContent } from "./mcp-content.js";
+import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 
 const MCP_DETAILS_OWNER = "pi-mcp";
 const MCP_PRESENTATION_ELLIPSIS = "…";
@@ -125,13 +126,7 @@ class McpSingleLine implements Component {
 
 /** Remove terminal sequences and unsafe C0/C1 controls while preserving line breaks and tabs. */
 export function sanitizeMcpPresentationText(text: string): string {
-  return (
-    stripTerminalSequences(text)
-      .replaceAll("\r\n", "\n")
-      .replaceAll("\r", "\n")
-      // oxlint-disable-next-line eslint/no-control-regex -- SAFETY: Transcript text permits tabs/newlines but no other C0/C1 terminal controls.
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-  );
+  return stripControlCharacters(stripTerminalSequences(text));
 }
 
 function presentationText(text: string, redact: McpPresentationRedactor): string {

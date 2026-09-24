@@ -153,18 +153,18 @@ describe("McpSettingsStore", () => {
     });
   });
 
-  test("waits for a contended lock and reclaims an abandoned lock", async () => {
+  test("waits for Pi's contended settings lock and reclaims an abandoned lock", async () => {
     const { store } = await createStore();
-    const lockPath = `${store.globalSettingsPath}.pi-mcp.lock`;
-    await writeFile(lockPath, "held");
-    const release = setTimeout(() => void rm(lockPath, { force: true }), 50);
+    const lockPath = `${store.globalSettingsPath}.lock`;
+    await mkdir(lockPath, { recursive: true });
+    const release = setTimeout(() => void rm(lockPath, { force: true, recursive: true }), 50);
     try {
       expectOk(await store.setServerDefinition("global", "after-wait", { command: "node" }));
     } finally {
       clearTimeout(release);
     }
 
-    await writeFile(lockPath, "stale");
+    await mkdir(lockPath);
     await utimes(lockPath, 0, 0);
     expectOk(await store.setServerDefinition("global", "after-stale", { command: "node" }));
     expect(await readJson(store.globalSettingsPath)).toEqual({
