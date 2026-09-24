@@ -809,9 +809,6 @@ class PiCodeModeLifecycleController {
       result.presentation = bridged.presentation;
     }
     if (bridged?.usage !== undefined) result.usage = bridged.usage;
-    if (bridged !== undefined && bridged.addedToolNames.length > 0) {
-      result.addedToolNames = bridged.addedToolNames;
-    }
     if (bridged?.terminate === true) result.terminate = true;
     return result;
   }

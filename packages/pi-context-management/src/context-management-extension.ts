@@ -46,6 +46,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
   let queuedPreparationSignal: AbortSignal | undefined;
   let nativeLeaf: string | null | undefined;
   let nativeCommittedBefore: string | undefined;
+  let announcedCheckpointId: string | undefined;
 
   const fail = (error: Error, ctx: ExtensionContext) => {
     failure = error;
@@ -78,6 +79,15 @@ export default function contextManagement(pi: ExtensionAPI): void {
       adapter = captureCheckpointAdapter(pi, {
         compaction: {
           handler: beforeCompact,
+          // Normal compaction becomes Rollover preparation; foreign summarizers would only delay it.
+          claims: (event) => event.reason !== "overflow",
+          onSuperseded: (path) =>
+            ctx.ui.notify(
+              "Ignored compaction content from " +
+                path +
+                "; Context Management owns Context Checkpoints.",
+              "warning",
+            ),
           onConflict: (error) => fail(error, ctx),
         },
       });
@@ -229,8 +239,10 @@ export default function contextManagement(pi: ExtensionAPI): void {
     finishPreparation(ctx);
     if (!cancelled) return;
     try {
+      const owner = requireAdapter();
+      dropQueuedPreparation(owner.session.agent);
       // Keep queued input in History, then supersede the cancelled preparation durably.
-      await requireAdapter().session.sendCustomMessage(
+      await owner.session.sendCustomMessage(
         {
           customType: "pi-context-prepare-cancelled",
           content:
@@ -244,6 +256,22 @@ export default function contextManagement(pi: ExtensionAPI): void {
       fail(cause instanceof Error ? cause : new Error(String(cause)), ctx);
     }
   });
+  /** Pi 0.87 keeps steering queued when post-run compaction is cancelled; drop only the preparation. */
+  function dropQueuedPreparation(agent: CheckpointAdapter["session"]["agent"]): void {
+    const isPreparation = (message: Parameters<typeof agent.steer>[0]) =>
+      message.role === "custom" && message.customType === "pi-context-prepare";
+    const mode = agent.steeringMode;
+    agent.steeringMode = "all";
+    try {
+      // Follow-ups are returned only when steering is empty, and preparation is always steered.
+      const queued = agent.peekQueuedMessages();
+      if (!queued.some(isPreparation)) return;
+      agent.clearSteeringQueue();
+      for (const message of queued) if (!isPreparation(message)) agent.steer(message);
+    } finally {
+      agent.steeringMode = mode;
+    }
+  }
   pi.registerCommand("rollover", {
     description: "Ask the agent to update Notes, write its Handoff, and request Rollover",
     async handler(args, ctx) {
@@ -336,7 +364,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
       };
     },
   });
-  pi.on("turn_end", (_event, ctx) => {
+  pi.on("turn_end", async (_event, ctx) => {
     const request = pending;
     pending = undefined;
     if (!request || request.signal?.aborted) return;
@@ -353,7 +381,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
         "normal",
         owner.session.settingsManager.getCompactionSettings().keepRecentTokens,
       );
-      owner.commit(
+      const checkpoint = owner.commit(
         plan.summary,
         plan.firstKeptEntryId,
         owner.session.getContextUsage()?.tokens ?? 0,
@@ -363,6 +391,15 @@ export default function contextManagement(pi: ExtensionAPI): void {
       preparation = "ready";
       pauseAfterRollover = false;
       pendingManualInstructions = undefined;
+      // Let native compaction listeners (e.g. provider session caches) observe the new Context Window.
+      announcedCheckpointId = checkpoint.id;
+      await owner.session.extensionRunner.emit({
+        type: "session_compact",
+        compactionEntry: checkpoint,
+        fromExtension: true,
+        reason: pause ? "manual" : "threshold",
+        willRetry: false,
+      });
       ctx.ui.notify("Context Window rolled over; History and Notes preserved.", "info");
       if (pause && !request.terminate) ctx.abort();
     } catch (cause) {
@@ -414,8 +451,12 @@ export default function contextManagement(pi: ExtensionAPI): void {
       return { cancel: true };
     }
   }
-  pi.on("session_before_compact", beforeCompact);
+  // The adapter runs beforeCompact itself; this registration only fails closed outside its dispatch.
+  pi.on("session_before_compact", (event, ctx) =>
+    adapter?.dispatches(event) ? undefined : beforeCompact(event, ctx),
+  );
   pi.on("session_compact", (event, ctx) => {
+    if (event.compactionEntry.id === announcedCheckpointId) return;
     nativeLeaf = undefined;
     preparation = "ready";
     pauseAfterRollover = false;

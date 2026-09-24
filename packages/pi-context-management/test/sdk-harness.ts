@@ -5,11 +5,14 @@ import { afterEach } from "vitest";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   InMemoryCredentialStore,
   InMemoryModelsStore,
   type AssistantMessage,
   type Context,
   type ToolCall,
+  withoutInitialSystemMessage,
 } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
@@ -117,11 +120,13 @@ export async function createSdkHarness(
   const responses: AssistantMessage[] = [];
   session.agent.streamFunction = (currentModel, context, requestOptions) => {
     requestOptions?.signal?.throwIfAborted();
+    // Pi 0.86+ carries the prompt and tool declarations as transcript system messages.
+    const tools = getCurrentTools(context.messages);
     requests.push({
-      systemPrompt: context.systemPrompt ?? "",
-      messages: structuredClone(context.messages),
-      tools: (context.tools ?? []).map((tool) => tool.name),
-      toolDefinitions: context.tools?.map(({ name, description, parameters }) => ({
+      systemPrompt: getCurrentSystemPrompt(context.messages),
+      messages: structuredClone(withoutInitialSystemMessage(context.messages)),
+      tools: tools.map((tool) => tool.name),
+      toolDefinitions: tools.map(({ name, description, parameters }) => ({
         name,
         description,
         parameters: structuredClone(parameters),

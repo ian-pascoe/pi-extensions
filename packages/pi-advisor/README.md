@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-advisor` reviews a Pi agent's completed work and surfaces concise, attributed findings for material problems and worthwhile low-risk cleanup.
 
-Requires Pi `0.85.1` and Node `>=22.19.0`. Other Pi versions pause review with an explicit compatibility error.
+Requires Pi `0.87.1` and Node `>=22.19.0`. Other Pi versions pause review with an explicit compatibility error.
 
 ## Install
 
@@ -60,7 +60,7 @@ The Advisor inherits each observed agent's model and thinking level independentl
 
 ## Sessions and Context Management
 
-Each watched agent has a private, persisted native Advisor Session with fresh, session-bound extension resources. Reviews reuse that session until context or configuration changes require rebuilding. Pi 0.85.1's hidden inline `llama.cpp` built-in is recreated from the installed Pi package's shipped extension file, retaining its ordered metadata and fresh provider state. This is a fixed-version compatibility recipe, not general inline-factory support; it requires the shipped file and the built-in's expected registration shape. Other opaque inline or custom extension resources that cannot be safely recreated are reported as unsupported and pause the Advisor; they are not silently reused or omitted. The Advisor's session state remains separate from the observed agent's state.
+Each watched agent has a private, persisted native Advisor Session with fresh, session-bound extension resources. Reviews reuse that session until context or configuration changes require rebuilding. Pi 0.87.1's hidden inline `llama.cpp` built-in is recreated from the installed Pi package's shipped extension file, retaining its ordered metadata and fresh provider state. This is a fixed-version compatibility recipe, not general inline-factory support; it requires the shipped file and the built-in's expected registration shape. Other opaque inline or custom extension resources that cannot be safely recreated are reported as unsupported and pause the Advisor; they are not silently reused or omitted. The Advisor's session state remains separate from the observed agent's state.
 
 Context Management is optional. If loaded and its tools are granted, `context_notes`, `context_history`, and `context_rollover` operate on the Advisor's private context. If any of those three tools is excluded, the Advisor pauses before reviewing. There is no autogrant or hook bypass.
 

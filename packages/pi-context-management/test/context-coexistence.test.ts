@@ -8,7 +8,7 @@ import contextManagement from "../src/context-management-extension.js";
 import { readNotes } from "../src/context-store.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
-it("records non-triggering Todo snapshots but omits them from automatic continuation", async () => {
+it("publishes non-triggering Todo snapshots to automatic continuation without an extra request", async () => {
   const snapshotText = "TODO PUBLICATION PROBE: immutable snapshot";
   const publicationProbe: ExtensionFactory = (pi) => {
     pi.on("tool_result", (event) => {
@@ -42,9 +42,9 @@ it("records non-triggering Todo snapshots but omits them from automatic continua
   );
   expect(f.requests).toHaveLength(2);
   expect(f.providerRequests).toEqual([]);
-  // Plan 001 STOP gate: turn_end persists the message, but the running loop retains
-  // its older context snapshot. A new user prompt is required to observe the append.
-  expect(JSON.stringify(f.requests[1]?.messages)).not.toContain(snapshotText);
+  // Pi 0.87 rebuilds provider context from the canonical SessionManager, so a
+  // mid-run append reaches the same run's continuation without triggering a turn.
+  expect(JSON.stringify(f.requests[1]?.messages)).toContain(snapshotText);
   f.responses.push(reply("Continued."));
   await f.session.prompt("Continue on the next user turn");
   expect(f.requests).toHaveLength(3);
@@ -553,7 +553,7 @@ for (const position of ["before", "after"]) {
       "Encoded prompt " + "recent ".repeat(400),
       false,
     );
-    f.session.agent.state.messages = f.manager.buildSessionContext().messages;
+    f.session.refreshContext();
     f.responses.push(
       toolCall("context_rollover", { handoff: "Continue with the MCP prompt." }),
       reply("Done."),

@@ -176,9 +176,15 @@ describe("Pi MCP extension lifecycle", () => {
       skills: [],
     };
     const chainedPrompt = "base\n\nEarlier extension instructions";
-    await expect(
-      runner.emitBeforeAgentStart("first", undefined, chainedPrompt, promptContext),
-    ).resolves.toBeUndefined();
+    // Seeding forceSystemPrompt stands in for an earlier extension's full prompt override.
+    const startPrompt = async (prompt: string) =>
+      (
+        await runner.emitBeforeAgentStart(prompt, undefined, {
+          ...promptContext,
+          forceSystemPrompt: chainedPrompt,
+        })
+      ).systemPromptOptions.forceSystemPrompt;
+    await expect(startPrompt("first")).resolves.toBe(chainedPrompt);
     expect(instructionSnapshot).toHaveBeenCalledTimes(1);
 
     instructions = "Server Instructions\n- fixture: keep exact bytes";
@@ -189,36 +195,21 @@ describe("Pi MCP extension lifecycle", () => {
     expect(await runner.emitContext(history)).toEqual(history);
     expect(instructionSnapshot).toHaveBeenCalledTimes(1);
 
-    const nextStart = await runner.emitBeforeAgentStart(
-      "second",
-      undefined,
-      chainedPrompt,
-      promptContext,
-    );
-    expect(nextStart).toEqual({
-      systemPrompt: `${chainedPrompt}\n\nServer Instructions\n- fixture: keep exact bytes`,
-    });
-    expect(
-      await runner.emitBeforeAgentStart("unchanged", undefined, chainedPrompt, promptContext),
-    ).toEqual(nextStart);
+    const nextStart = await startPrompt("second");
+    expect(nextStart).toBe(`${chainedPrompt}\n\nServer Instructions\n- fixture: keep exact bytes`);
+    expect(await startPrompt("unchanged")).toBe(nextStart);
     expect(instructionSnapshot).toHaveBeenCalledTimes(3);
 
     instructions = "Changed Server Instructions";
     expect(await runner.emitContext(history)).toEqual(history);
     expect(instructionSnapshot).toHaveBeenCalledTimes(3);
-    expect(nextStart?.systemPrompt).toBe(
-      `${chainedPrompt}\n\nServer Instructions\n- fixture: keep exact bytes`,
-    );
-    expect(
-      await runner.emitBeforeAgentStart("changed", undefined, chainedPrompt, promptContext),
-    ).toEqual({ systemPrompt: `${chainedPrompt}\n\nChanged Server Instructions` });
+    expect(nextStart).toBe(`${chainedPrompt}\n\nServer Instructions\n- fixture: keep exact bytes`);
+    expect(await startPrompt("changed")).toBe(`${chainedPrompt}\n\nChanged Server Instructions`);
 
     instructions = undefined;
     expect(await runner.emitContext(history)).toEqual(history);
     expect(instructionSnapshot).toHaveBeenCalledTimes(4);
-    expect(
-      await runner.emitBeforeAgentStart("removed", undefined, chainedPrompt, promptContext),
-    ).toBeUndefined();
+    expect(await startPrompt("removed")).toBe(chainedPrompt);
     expect(instructionSnapshot).toHaveBeenCalledTimes(5);
 
     releaseStart?.();
@@ -331,7 +322,7 @@ describe("Pi MCP extension lifecycle", () => {
     const runner = await createRunner(session);
     await runner.emit({ type: "session_start", reason: "startup" } satisfies SessionStartEvent);
 
-    const beforeStart = await runner.emitBeforeAgentStart("hello", undefined, "base", {
+    const beforeStart = await runner.emitBeforeAgentStart("hello", undefined, {
       selectedTools: [],
       toolSnippets: {},
       promptGuidelines: [],
@@ -339,10 +330,13 @@ describe("Pi MCP extension lifecycle", () => {
       cwd: runner.createContext().cwd,
       contextFiles: [],
       skills: [],
+      forceSystemPrompt: "base",
     });
 
     expect(starts).toBe(1);
-    expect(beforeStart?.systemPrompt).toBe("base\n\nImmediate instructions");
+    expect(beforeStart.systemPromptOptions.forceSystemPrompt).toBe(
+      "base\n\nImmediate instructions",
+    );
   });
 
   test("registers inert Prompt and Resource Update renderers with the active session redactor", async () => {

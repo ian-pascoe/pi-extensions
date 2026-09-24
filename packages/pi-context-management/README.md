@@ -4,7 +4,7 @@
 
 Requires Node `>=22.19.0` and a Pi runtime exposing the required checkpoint capabilities. The adapter checks runtime methods, writable hooks, and native append ownership rather than requiring an exact Pi version. Missing or lost capabilities fail closed before checkpoint mutation.
 
-Development dependencies and the native compaction scheduling regression baseline are pinned to Pi `0.85.1`. Runtime checks validate interface shape, not persistence ordering or compatibility with every future Pi release. Pi still lacks arbitrary-time checkpoint mutation through its public extension API.
+Development dependencies and the native compaction scheduling regression baseline are pinned to Pi `0.87.1`. Runtime checks validate interface shape, not persistence ordering or compatibility with every future Pi release. Pi still lacks arbitrary-time checkpoint mutation through its public extension API.
 
 ## Install
 
@@ -45,7 +45,7 @@ When Pi requests normal automatic or manual compaction, Context Management asks 
 
 Actual native overflow is the exception: an Emergency Rollover immediately uses the last saved Handoff, marked stale or absent, rather than attempting another oversized preparation request. Native overflow includes Pi's recoverable truncated-response case. Recover recent work through History. All paths use the same native checkpoint representation. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents and CodeMode processes are not replaced or patched.
 
-Other extensions may observe or cancel native compaction; registering a listener is not a conflict. Inactive Autoresearch is supported. If another hook supplies compaction content, Context Management stops before checkpoint persistence and names that extension, regardless of load order. Disable the competing override before resuming. Empty observer results cannot trigger Pi's native summarizer fallback.
+Manual and threshold compaction are claimed before other `session_before_compact` hooks run, as if Context Management cancelled first. Other hooks therefore cannot veto or delay Rollover preparation, and summarizer overrides such as `pi-claude-bridge` never spend a request on a discarded summary. During native overflow, other hooks may still observe or cancel recovery. If one supplies compaction content, the Emergency Rollover replaces it regardless of load order, and a warning names that extension. Empty observer results cannot trigger Pi's native summarizer fallback. Every Context Checkpoint, including one committed directly by `context_rollover`, emits Pi's `session_compact` event so provider session caches and other listeners observe the new Context Window.
 
 Pi alone owns context accounting, automatic compaction timing, and recent-history retention. There are no extension-owned 80%/90% thresholds or fit checks. Pi owns overflow retry and permits at most one rebuilt request. User cancellation does not trigger recovery, and completed tools are not replayed.
 

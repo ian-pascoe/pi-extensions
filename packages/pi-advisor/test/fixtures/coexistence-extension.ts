@@ -6,6 +6,7 @@ import type {
   SimpleStreamOptions,
   AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
+import { endpointContext } from "./endpoint-context.js";
 
 declare global {
   var advisorCoexistenceStream: (
@@ -33,7 +34,7 @@ export default function coexistenceFixture(pi: ExtensionAPI): void {
       },
     ],
     streamSimple: (model, context, options) =>
-      globalThis.advisorCoexistenceStream(model, context, options),
+      globalThis.advisorCoexistenceStream(model, endpointContext(context), options),
   });
   pi.on("session_shutdown", () => {
     pi.appendEntry("advisor-coexistence-shutdown", { stopped: true });

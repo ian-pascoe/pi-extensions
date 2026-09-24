@@ -23,6 +23,10 @@ import { createSdkHarness } from "../../pi-context-management/test/sdk-harness.j
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 
+/** Pi 0.86+ stores the system prompt as the leading session message. */
+const conversation = <T extends { role: string }>(messages: T[]) =>
+  messages.filter((message) => message.role !== "system");
+
 async function activeFixture() {
   const dir = await mkdtemp(join(tmpdir(), "advisor-observer-"));
   const modelRuntime = await ModelRuntime.create({
@@ -134,7 +138,7 @@ it.each(["none", "blocker"] as const)(
     expect(main).toHaveLength(1);
     expect(main[0]?.messages).toHaveLength(1);
     expect(main[0]?.tools).not.toContainEqual(expect.objectContaining({ name: "advisor_report" }));
-    expect(session.messages).toHaveLength(severity === "none" ? 2 : 3);
+    expect(conversation(session.messages)).toHaveLength(severity === "none" ? 2 : 3);
     if (severity === "blocker")
       expect(session.messages.at(-1)).toMatchObject({
         role: "custom",
@@ -616,7 +620,7 @@ it("enforces investigative calls independently of the catch-up setting", async (
   await session.prompt("Finish normally");
   expect(observer.status.lastError).toMatch(/tool-call limit/);
   expect(calls).toBe(2);
-  expect(session.messages).toHaveLength(2);
+  expect(conversation(session.messages)).toHaveLength(2);
 });
 
 it("keeps configurable child correction and final reviews inside the owner await", async () => {
@@ -789,7 +793,7 @@ it("disabling an in-flight review discards its late finding", async () => {
   release();
   await observer.finishOwnedTurn();
   await observer.dispose();
-  expect(session.messages).toHaveLength(2);
+  expect(conversation(session.messages)).toHaveLength(2);
   expect(observer.status.state).toBe("disabled");
 });
 
@@ -890,7 +894,7 @@ it("stops unfinished headless review work at the separate 30-second drain ceilin
   await vi.advanceTimersByTimeAsync(30000);
   await prompt;
   expect(observer.status.backlog).toBe(0);
-  expect(session.messages).toHaveLength(2);
+  expect(conversation(session.messages)).toHaveLength(2);
 });
 
 it("coalesces backlog and releases threshold seven below seven, not only at zero", async () => {
@@ -1038,7 +1042,7 @@ it("preserves exact ordered model tools, system prompt and unaffected history fo
 
 it("keeps observed reasoning and native image attachments without base64 text expansion", async () => {
   const image =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=";
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
   let evidence: Context | undefined;
   globalThis.advisorObserverTest = {
     stream(model, context) {
@@ -1248,7 +1252,7 @@ it("does not finish a review on its report before native extension settlement", 
   await session.prompt("Finish task");
   await atSettlement.promise;
   expect(observer.status.backlog).toBe(1);
-  expect(session.messages).toHaveLength(2);
+  expect(conversation(session.messages)).toHaveLength(2);
   continueSettlement.resolve();
   await observer.finishOwnedTurn();
   expect(observer.status.backlog).toBe(0);

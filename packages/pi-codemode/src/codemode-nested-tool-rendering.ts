@@ -203,7 +203,7 @@ export function renderCodeModeNestedToolsTranscript(
       0,
     ),
   );
-  // SAFETY: Pi 0.85.1 ToolExecutionComponent only uses ui.requestRender; this adapter cannot control a terminal.
+  // SAFETY: Pi 0.87.1 ToolExecutionComponent only uses ui.requestRender; this adapter cannot control a terminal.
   const ui = { requestRender } as TUI;
   for (const [callIndex, call] of data.calls.entries()) {
     const builtin = definitions.get(call.name);

@@ -36,11 +36,6 @@
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
-  "devDependencies": {
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1"
-  },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",

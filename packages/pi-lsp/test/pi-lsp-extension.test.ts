@@ -850,12 +850,26 @@ describe("Pi LSP extension lifecycle", () => {
         ),
     ).toEqual([]);
 
-    await harness.runner.emit({
-      type: "turn_end",
-      turnIndex: 0,
-      message: completedAssistantMessage(),
-      toolResults: [],
-    } satisfies TurnEndEvent);
+    const message = completedAssistantMessage();
+    const boundary = await harness.runner.emitBoundary(
+      {
+        type: "turn_end",
+        turnIndex: 0,
+        message,
+        toolResults: [],
+        messageEntryId: harness.sessionManager.appendMessage(message),
+        toolResultEntryIds: [],
+        outcome: "completed",
+      } satisfies Omit<TurnEndEvent, "entries" | "continue" | "context">,
+      () => ({
+        contextEntries: [],
+        contextMessages: [],
+        llmMessages: [],
+        pendingMessages: [],
+        canContinue: false,
+      }),
+    );
+    expect(boundary).toMatchObject({ entries: [], continue: false, valid: true });
 
     const entries = harness.sessionManager
       .getBranch()

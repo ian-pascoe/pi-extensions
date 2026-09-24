@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonSchemaType } from "@modelcontextprotocol/client";
-import type { StreamFunction, StreamOptions } from "@earendil-works/pi-ai";
+import { normalizeContext, type StreamFunction, type StreamOptions } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   type AgentSession,
@@ -182,16 +182,14 @@ async function serialize(session: AgentSession) {
   const entry = import.meta.resolve("@earendil-works/pi-ai");
   const api: { stream: StreamFunction<"anthropic-messages", StreamOptions & { client: object }> } =
     await import(new URL("./api/anthropic-messages.js", entry).href);
-  const prepared = await session.extensionRunner.emitBeforeAgentStart(
-    "Continue",
-    undefined,
-    session.systemPrompt,
-    { cwd: session.sessionManager.getCwd() },
-  );
-  expect(prepared?.systemPrompt).toBe(
-    `${session.systemPrompt}\nEarlier extension suffix.\n\n${guidance}`,
-  );
-  expect(prepared?.messages).toBeUndefined();
+  // Seed the exact live prompt so handlers chain onto what the session would send.
+  const prepared = await session.extensionRunner.emitBeforeAgentStart("Continue", undefined, {
+    cwd: session.sessionManager.getCwd(),
+    forceSystemPrompt: session.systemPrompt,
+  });
+  const systemPrompt = prepared.systemPromptOptions.forceSystemPrompt ?? "";
+  expect(systemPrompt).toBe(`${session.systemPrompt}\nEarlier extension suffix.\n\n${guidance}`);
+  expect(prepared.messages).toEqual([]);
   const sentinel = "STOP BEFORE ANTHROPIC TRANSPORT";
   let captured: unknown;
   const transport = vi.fn(() => {
@@ -200,11 +198,11 @@ async function serialize(session: AgentSession) {
   const response = await api
     .stream(
       getModel("anthropic", "claude-sonnet-4-5"),
-      {
-        systemPrompt: prepared?.systemPrompt ?? session.systemPrompt,
+      normalizeContext({
+        systemPrompt,
         tools: session.agent.state.tools,
         messages: [{ role: "user", content: "Fixed synthetic history.", timestamp: 0 }],
-      },
+      }),
       {
         client: { beta: { messages: { create: transport } } },
         sessionId: "plan-005-fixed-routing-key",

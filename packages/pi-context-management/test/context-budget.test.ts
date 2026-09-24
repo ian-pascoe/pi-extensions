@@ -32,7 +32,9 @@ describe("Native Tail retention through the Pi SDK", () => {
     });
     const plan = planCheckpoint(f.manager, "Continue", "normal", 1, call);
     f.manager.appendCompaction(plan.summary, plan.firstKeptEntryId!, 100, plan.details, true);
+    // Pi keeps the transcript system message that declares the prompt and tools ahead of a checkpoint.
     expect(f.manager.buildSessionContext().messages.map((message) => message.role)).toEqual([
+      "system",
       "compactionSummary",
       "assistant",
       "toolResult",
@@ -87,6 +89,7 @@ describe("Native Tail retention through the Pi SDK", () => {
     f.manager.appendCompaction(plan.summary, plan.firstKeptEntryId!, 100, plan.details, true);
     const reopened = SessionManager.open(f.manager.getSessionFile()!);
     expect(reopened.buildSessionContext().messages).toMatchObject([
+      { role: "system" },
       { role: "compactionSummary", summary: expect.stringContaining("Continue the task.") },
       {
         role: "assistant",

@@ -506,7 +506,6 @@ export function parseCodeModeJsonValue(
 /** Pi-only metadata accumulated by nested calls and attached to one outer terminal result. */
 export type CodeModeToolOperationMetadata = {
   readonly usage?: Usage;
-  readonly addedToolNames?: readonly string[];
   readonly terminate?: boolean;
 };
 
@@ -544,9 +543,6 @@ function structuredCodeModeResult(
     details,
   };
   if (metadata?.usage !== undefined) output.usage = metadata.usage;
-  if (metadata?.addedToolNames !== undefined) {
-    output.addedToolNames = [...metadata.addedToolNames];
-  }
   if (metadata?.terminate !== undefined) output.terminate = metadata.terminate;
   return output;
 }

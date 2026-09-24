@@ -7,10 +7,13 @@ import {
   InMemoryCredentialStore,
   InMemoryModelsStore,
   type AssistantMessage,
-  type Context,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type StreamFunction,
   type StreamOptions,
   type Tool,
+  type Message,
+  normalizeContext,
 } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
@@ -36,7 +39,8 @@ const sessions: AgentSession[] = [];
  */
 interface TurnContext {
   readonly systemPrompt: string;
-  readonly messages: Context["messages"];
+  /** The exact transcript, including Pi's system messages that declare prompt and tools. */
+  readonly messages: Message[];
   readonly tools: Tool[];
 }
 
@@ -50,7 +54,7 @@ interface ToolCacheFixture {
 function deepSeekModel() {
   // The model from the reported defect: `openai-completions` against a provider that validates
   // tool schemas strictly, so the OpenAI-compatible serializer is the code path under test.
-  const model = getModel("deepseek", "deepseek-v4-flash");
+  const model = getModel("deepseek", "deepseek-flash");
   if (model === undefined) throw new Error("Tool cache test: missing pinned DeepSeek model");
   return model;
 }
@@ -128,11 +132,10 @@ async function createToolCacheFixture(
   session.agent.streamFunction = (currentModel, context, requestOptions) => {
     requestOptions?.signal?.throwIfAborted();
     turns.push({
-      systemPrompt: context.systemPrompt ?? "",
+      systemPrompt: getCurrentSystemPrompt(context.messages),
       messages: structuredClone(context.messages),
-      // Tool definitions carry live render/execute closures, so capture the serialized definition
-      // exactly as the provider serializer reads it.
-      tools: (context.tools ?? []).map(({ name, description, parameters }) => ({
+      // Capture the ordered tool declarations exactly as the provider serializer reads them.
+      tools: getCurrentTools(context.messages).map(({ name, description, parameters }) => ({
         name,
         description,
         parameters: structuredClone(parameters),
@@ -205,27 +208,19 @@ async function serializeTurn(turn: TurnContext) {
   let captured: unknown;
   let fetches = 0;
   const response = await api
-    .stream(
-      deepSeekModel(),
-      {
-        systemPrompt: turn.systemPrompt,
-        messages: turn.messages,
-        tools: turn.tools,
+    .stream(deepSeekModel(), normalizeContext({ messages: turn.messages }), {
+      apiKey: "TEST-NOT-A-REAL-KEY",
+      fetch: async () => {
+        fetches++;
+        throw new Error("Unexpected network attempt");
       },
-      {
-        apiKey: "TEST-NOT-A-REAL-KEY",
-        fetch: async () => {
-          fetches++;
-          throw new Error("Unexpected network attempt");
-        },
-        sessionId: "lsp-dap-tool-cache-prefix",
-        cacheRetention: "short",
-        onPayload(payload) {
-          captured = structuredClone(payload);
-          throw new Error(sentinel);
-        },
+      sessionId: "lsp-dap-tool-cache-prefix",
+      cacheRetention: "short",
+      onPayload(payload) {
+        captured = structuredClone(payload);
+        throw new Error(sentinel);
       },
-    )
+    })
     .result();
   expect(response.stopReason).toBe("error");
   expect(response.errorMessage).toContain(sentinel);

@@ -23,6 +23,13 @@ const ProjectionDetails = Type.Object(
   { additionalProperties: false },
 );
 
+/** Context handlers never receive system messages, so anchors must skip Pi's system state. */
+function conversationMessage(entry: SessionEntry): Message | undefined {
+  return buildSessionContext([entry], entry.id).messages.find(
+    (message) => message.role !== "system",
+  );
+}
+
 /** Validates both the serialized shape and Todo List invariants at the journal boundary. */
 export function todoStateFromEntry(entry: SessionEntry): TodoStateSnapshot | undefined {
   if (
@@ -93,7 +100,7 @@ export function projectTodoContext(
     const checkpointIndex = branch.indexOf(checkpoint);
     if (start < 0 || start > checkpointIndex)
       throw new Error("Todo checkpoint cutoff is unavailable");
-    anchor = buildSessionContext([checkpoint], checkpoint.id).messages[0];
+    anchor = conversationMessage(checkpoint);
     for (const entry of branch.slice(0, start).toReversed()) {
       const state = todoStateFromEntry(entry);
       if (!state) continue;
@@ -120,7 +127,7 @@ export function projectTodoContext(
       previousContent = content;
       continue;
     }
-    const message = buildSessionContext([entry], entry.id).messages[0];
+    const message = conversationMessage(entry);
     if (!message) continue;
     if (message.role === "assistant") {
       if (outstanding.size > 0 && pending.length > 0)

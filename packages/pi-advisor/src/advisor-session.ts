@@ -72,7 +72,7 @@ export async function disposeAdvisorSession(runtime: AgentSessionRuntime): Promi
   }
 }
 
-// Pi 0.85.1 keeps these plain constructor inputs private; public scoped getters omit applyOverrides.
+// Pi 0.87.1 keeps these plain constructor inputs private; public scoped getters omit applyOverrides.
 /* oxlint-disable anti-slop/no-unknown-parameters -- SAFETY: Capability-check native SDK data before copying; offline SDK creation tests cover these inputs. */
 function recreationInputs(
   loader: unknown,
@@ -111,7 +111,7 @@ function recreationInputs(
   if (
     Value.Check(fileAuthSchema, store) &&
     store.authPath === store.storage.authPath &&
-    // Pi 0.85.1's bundled CLI names the same native class _AuthStorage.
+    // Pi 0.87.1's bundled CLI names the same native class _AuthStorage.
     ["AuthStorage", "_AuthStorage"].includes(Object.getPrototypeOf(store)?.constructor.name) &&
     Object.getPrototypeOf(store.storage)?.constructor.name === "FileAuthStorageBackend"
   )
@@ -136,9 +136,9 @@ export async function createAdvisorSession(
   observed: AgentSession,
   options: AdvisorSessionOptions,
 ): Promise<AgentSessionRuntime> {
-  if (VERSION !== "0.85.1")
+  if (VERSION !== "0.87.1")
     throw new Error(
-      `Unsupported Pi ${VERSION}: Advisor's native tool ceiling and session lifecycle are verified on Pi 0.85.1`,
+      `Unsupported Pi ${VERSION}: Advisor's native tool ceiling and session lifecycle are verified on Pi 0.87.1`,
     );
   options.signal?.throwIfAborted();
   const cancelled = Promise.withResolvers<never>();
@@ -203,7 +203,7 @@ async function buildAdvisorSession(
   const extensionPaths = source.getExtensions().extensions.map((extension) => {
     if (extension.resolvedPath && !extension.resolvedPath.startsWith("<"))
       return extension.resolvedPath;
-    // Pi 0.85.1 injects this built-in inline, but ships a fresh file-backed factory.
+    // Pi 0.87.1 injects this built-in inline, but ships a fresh file-backed factory.
     // Match its registration shape, not arbitrary inline closures or hidden extensions.
     if (
       extension.path === "<inline:llama.cpp>" &&

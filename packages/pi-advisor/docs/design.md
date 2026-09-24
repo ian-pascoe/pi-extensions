@@ -163,7 +163,7 @@ Explicit re-enablement or corrected configuration retries the Advisor. Pausing d
 
 ## Verification and compatibility
 
-Target the installed Pi 0.85.1 development baseline and check actual exports/capabilities against the package's declared compatibility range. Source checkouts newer than the installed runtime are not API authority.
+Target the installed Pi 0.87.1 development baseline and check actual exports/capabilities against the package's declared compatibility range. Source checkouts newer than the installed runtime are not API authority.
 
 Use the native SDK `tools` option as the ongoing tool-name ceiling. It filters executable and descriptive registries on refresh, including dynamic registrations; extensions cannot expand the model-callable set merely by calling `setActiveTools`. There is no public ceiling-update setter, so changing the grant requires recreating the private SDK session, not modifying private fields or adding another authorization framework.
 

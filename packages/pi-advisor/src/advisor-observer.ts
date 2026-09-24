@@ -1,5 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import { contentText, type Context, type ImageContent } from "@earendil-works/pi-ai";
+import {
+  contentText,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+  toToolDeclaration,
+  type Context,
+  type ImageContent,
+} from "@earendil-works/pi-ai";
 import {
   defineTool,
   convertToLlm,
@@ -58,7 +65,7 @@ const pendingQueuesSchema = Type.Object({
   _pendingCustomMessages: Type.Array(Type.Unknown()),
 });
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi 0.85.1 has no selective queue-removal API. Validate its native queue data and remove only exact owned finding identities, never unrelated messages or journal entries.
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi 0.87.1 has no selective queue-removal API. Validate its native queue data and remove only exact owned finding identities, never unrelated messages or journal entries.
 function retractFindings(session: unknown, findings: ReadonlySet<Finding>): void {
   if (!findings.size) return;
   if (!Value.Check(pendingQueuesSchema, session))
@@ -208,14 +215,15 @@ export class AdvisorObserver {
       if (!this.closed && this.config.enabled) {
         try {
           if (this.active && !this.sameObservation(this.active)) this.reset();
-          // Native Context tools also carry execute callbacks. Copy definitions, never callbacks.
+          // Pi carries the prompt and tool deltas as system messages. Replay them into the
+          // current state and copy tool declarations, never execute callbacks.
           this.snapshot = structuredClone({
-            ...context,
-            tools: (context.tools ?? []).map(({ name, description, parameters }) => ({
-              name,
-              description,
-              parameters,
-            })),
+            systemPrompt: getCurrentSystemPrompt(context.messages),
+            tools: getCurrentTools(context.messages).map((tool) => {
+              const { name, description, parameters } = toToolDeclaration(tool);
+              return { name, description, parameters };
+            }),
+            messages: context.messages.filter((message) => message.role !== "system"),
           });
         } catch {
           this.fail("Advisor cannot capture this model context safely");
