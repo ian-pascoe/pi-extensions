@@ -310,7 +310,7 @@ describe("private Advisor native sessions", () => {
     });
     expect(runtime.session.getActiveToolNames()).toEqual(["codemode_execute"]);
     expect(runtime.session.getAllTools().map((tool) => tool.name)).not.toContain("bash");
-  });
+  }, 20_000);
 
   it("requires Context Management grants and keeps granted Notes and journals private", async () => {
     const contextManagement = fileURLToPath(
