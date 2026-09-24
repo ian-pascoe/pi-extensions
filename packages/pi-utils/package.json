@@ -25,30 +25,37 @@
     "LICENSE"
   ],
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    },
-    "./pi-agent-session-discovery": {
-      "types": "./dist/pi-agent-session-discovery.d.ts",
-      "import": "./dist/pi-agent-session-discovery.js"
-    },
-    "./locked-file-update": {
-      "types": "./dist/locked-file-update.d.ts",
-      "import": "./dist/locked-file-update.js"
-    }
+    ".": "./src/index.ts",
+    "./pi-agent-session-discovery": "./src/pi-agent-session-discovery.ts",
+    "./locked-file-update": "./src/locked-file-update.ts"
   },
   "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./pi-agent-session-discovery": {
+        "types": "./dist/pi-agent-session-discovery.d.ts",
+        "import": "./dist/pi-agent-session-discovery.js"
+      },
+      "./locked-file-update": {
+        "types": "./dist/locked-file-update.d.ts",
+        "import": "./dist/locked-file-update.js"
+      }
+    },
     "access": "public",
     "provenance": true
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "pnpm build",
-    "test": "pnpm build && vitest run --config ../../vitest.config.ts --root .",
+    "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

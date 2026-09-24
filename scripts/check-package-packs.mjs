@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import {
   DefaultPackageManager,
   discoverAndLoadExtensions,
@@ -71,19 +73,10 @@ async function discoverWorkspaceManifests() {
   return manifests;
 }
 
-function parsePackJson(stdout, packageName) {
-  const result = JSON.parse(stdout);
-  if (Array.isArray(result)) {
-    assertPackCondition(result.length === 1, `${packageName} returned invalid npm pack JSON`);
-    return result[0];
-  }
-  const workspaceResults = Object.values(result);
-  assertPackCondition(
-    workspaceResults.length === 1,
-    `${packageName} returned invalid workspace npm pack JSON`,
-  );
-  return workspaceResults[0];
-}
+const pnpmPackResultSchema = Type.Object({
+  filename: Type.String(),
+  files: Type.Array(Type.Object({ path: Type.String() })),
+});
 
 function validatePackedFileList(packageName, files) {
   const paths = files.map((file) => file.path).sort();
@@ -146,13 +139,23 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
     "homepage",
     "bugs",
     "repository",
-    "publishConfig",
   ]) {
     assertPackCondition(
       JSON.stringify(packedManifest[field]) === JSON.stringify(sourceManifest[field]),
       `${packageName} changes manifest field ${field}`,
     );
   }
+  // pnpm hoists publishConfig entrypoint overrides into the packed manifest.
+  const {
+    main: _main,
+    types: _types,
+    exports: _exports,
+    ...publishConfig
+  } = sourceManifest.publishConfig ?? {};
+  assertPackCondition(
+    JSON.stringify(packedManifest.publishConfig) === JSON.stringify(publishConfig),
+    `${packageName} changes manifest field publishConfig`,
+  );
   assertPackCondition(packedManifest.private === false, `${packageName} is not publishable`);
   if (packageName === piUtilsPackageName) {
     assertPackCondition(
@@ -167,7 +170,7 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
       `${packageName} has an invalid compiled library entrypoint`,
     );
     assertPackCondition(
-      packedManifest.scripts?.build && packedManifest.scripts?.prepack,
+      packedManifest.scripts?.build && sourceManifest.scripts?.prepack,
       `${packageName} omits its compiled library scripts`,
     );
     assertPackCondition(!packedManifest.pi, `${packageName} must not register a Pi extension`);
@@ -196,7 +199,7 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
       packedManifest.scripts?.["build:cli"],
       `${packageName} omits its build:cli script`,
     );
-    assertPackCondition(packedManifest.scripts?.prepack, `${packageName} omits its prepack script`);
+    assertPackCondition(sourceManifest.scripts?.prepack, `${packageName} omits its prepack script`);
   } else {
     assertPackCondition(!("bin" in packedManifest), `${packageName} contains a bin`);
     assertPackCondition(!packedManifest.scripts?.build, `${packageName} contains a build script`);
@@ -205,7 +208,7 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
       `${packageName} contains a build:cli script`,
     );
     assertPackCondition(
-      !packedManifest.scripts?.prepack,
+      !sourceManifest.scripts?.prepack,
       `${packageName} contains a prepack script`,
     );
   }
@@ -339,22 +342,16 @@ try {
   assertPackCondition(piUtilsVersion !== undefined, `workspace omits ${piUtilsPackageName}`);
   let piUtilsTarballPath;
   for (const { manifest, packageDirectory } of workspaces) {
-    const packed = parsePackJson(
-      (
-        await runCommand(
-          "npm",
-          [
-            "pack",
-            packageDirectory,
-            "--json",
-            "--package-lock=false",
-            "--pack-destination",
-            packDirectory,
-          ],
-          { cwd: packDirectory, env: npmChildProcessEnvironment },
-        )
-      ).stdout,
-      manifest.name,
+    // Release publishes through pnpm, which applies publishConfig overrides that npm pack ignores.
+    const packed = Value.Parse(
+      pnpmPackResultSchema,
+      JSON.parse(
+        (
+          await runCommand("pnpm", ["pack", "--json", "--pack-destination", packDirectory], {
+            cwd: packageDirectory,
+          })
+        ).stdout,
+      ),
     );
     validatePackedFileList(manifest.name, packed.files);
     const tarballPath = resolve(packDirectory, basename(packed.filename));

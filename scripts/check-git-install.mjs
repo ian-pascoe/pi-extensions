@@ -24,7 +24,6 @@ import {
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const piUtilsDistDirectory = resolve(repositoryRoot, "packages/pi-utils/dist");
 const excludedDirectoryNames = new Set([".git", ".repos", "coverage", "dist", "node_modules"]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
@@ -35,7 +34,6 @@ function assertGitInstallCondition(condition, message) {
 
 function includeWorkingTreePath(source) {
   const name = basename(source);
-  if (source === piUtilsDistDirectory) return true;
   if (excludedDirectoryNames.has(name)) return false;
   if (name.endsWith(".tgz")) return false;
   return true;
