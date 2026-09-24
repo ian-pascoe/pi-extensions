@@ -4,6 +4,7 @@ import {
   contentText,
   createAssistantMessageEventStream,
   fauxAssistantMessage,
+  getCurrentTools,
 } from "@earendil-works/pi-ai";
 
 /** Offline CLI boundary: real loading, commands, and reviews without network requests. */
@@ -61,7 +62,9 @@ export default function cliFixture(pi: ExtensionAPI): void {
       if (options?.apiKey !== "offline" && options?.apiKey !== "refreshed-offline-access")
         throw new Error("Unexpected CLI fixture authentication");
       console.log(`ADVISOR_CLI_AUTH=${options.apiKey === "offline" ? "api-key" : "oauth"}`);
-      const reviewing = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
+      const reviewing = getCurrentTools(context.messages).some(
+        (tool) => tool.name === "advisor_report",
+      );
       const lastUser = contentText(
         context.messages.findLast((message) => message.role === "user")?.content ?? "",
       );

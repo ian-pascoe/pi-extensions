@@ -2,8 +2,15 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Message, StreamFunction, StreamOptions, Usage } from "@earendil-works/pi-ai";
-import { splitDeferredTools } from "@earendil-works/pi-ai/utils/deferred-tools";
+import {
+  getToolStateChanges,
+  type Message,
+  normalizeContext,
+  type StreamFunction,
+  type StreamOptions,
+  toToolDeclaration,
+  type Usage,
+} from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   AgentSession,
@@ -129,7 +136,6 @@ async function createCodeModeExtensionFixture(
           content: [{ type: "text", text: `registered-closure:${input.value}` }],
           details: { closure: "registered-closure", value: input.value },
           usage: nestedUsage(1),
-          addedToolNames: ["closure_echo"],
         };
       },
     };
@@ -325,6 +331,13 @@ function nestedTranscripts(session: AgentSession) {
   });
 }
 
+/** Runs before_agent_start handlers; CodeMode reconciles tools there without prompt edits. */
+async function synchronizeBeforeAgentStart(session: AgentSession): Promise<void> {
+  await session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, {
+    cwd: session.sessionManager.getCwd(),
+  });
+}
+
 function codeModeToolNames(session: AgentSession): string[] {
   return session
     .getAllTools()
@@ -336,23 +349,18 @@ async function serializeAnthropicRequest(session: AgentSession, messages: Messag
   const entry = import.meta.resolve("@earendil-works/pi-ai");
   const api: { stream: StreamFunction<"anthropic-messages", StreamOptions & { client: object }> } =
     await import(new URL("./api/anthropic-messages.js", entry).href);
-  const prepared = await session.extensionRunner.emitBeforeAgentStart(
-    "synchronize",
-    undefined,
-    session.systemPrompt,
-    { cwd: session.sessionManager.getCwd() },
-  );
+  await synchronizeBeforeAgentStart(session);
   const sentinel = "STOP BEFORE ANTHROPIC TRANSPORT";
   let captured: unknown;
   let transports = 0;
   const response = await api
     .stream(
       getModel("anthropic", "claude-sonnet-4-5"),
-      {
-        systemPrompt: prepared?.systemPrompt ?? session.systemPrompt,
+      normalizeContext({
+        systemPrompt: session.systemPrompt,
         tools: session.agent.state.tools,
         messages,
-      },
+      }),
       {
         client: {
           beta: {
@@ -1119,7 +1127,6 @@ describe("Pi CodeMode extension", () => {
       presentation: { nested_tool_count: 0, nested_tools: [] },
     });
     expect(Object.hasOwn(first, "usage")).toBe(false);
-    expect(Object.hasOwn(first, "addedToolNames")).toBe(false);
     expect(Object.hasOwn(first, "terminate")).toBe(false);
 
     const updates: AgentToolResult<unknown>[] = [];
@@ -1146,7 +1153,6 @@ describe("Pi CodeMode extension", () => {
       },
     });
     expect(reused.usage).toEqual(nestedUsage(1));
-    expect(reused.addedToolNames).toEqual(["closure_echo"]);
     expect(Object.hasOwn(reused, "terminate")).toBe(false);
     expect(reused.details).toMatchObject({
       presentation: {
@@ -1254,9 +1260,7 @@ describe("Pi CodeMode extension", () => {
     }
 
     const targetName = "large_catalog_tool_11";
-    await fixture.session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, "test", {
-      cwd: ".",
-    });
+    await synchronizeBeforeAgentStart(fixture.session);
     const description = executeDescription(fixture.session);
     expect(description).not.toMatch(/Current CodeMode tool declarations|COMPLETE|PARTIAL/);
     expect(description).not.toContain(`readonly [${JSON.stringify(targetName)}]`);
@@ -1520,14 +1524,9 @@ describe("Pi CodeMode extension", () => {
         },
       });
       const snapshot = async () => {
-        const prepared = await session.extensionRunner.emitBeforeAgentStart(
-          "synchronize",
-          undefined,
-          session.systemPrompt,
-          { cwd: session.sessionManager.getCwd() },
-        );
+        await synchronizeBeforeAgentStart(session);
         return {
-          systemPrompt: prepared?.systemPrompt ?? session.systemPrompt,
+          systemPrompt: session.systemPrompt,
           tools: session.agent.state.tools.map(({ name, description, parameters }) => ({
             name,
             description,
@@ -1545,27 +1544,16 @@ describe("Pi CodeMode extension", () => {
         expect(await snapshot()).toEqual(before);
       }
 
-      const result = await executeTool(session, "load_mcp", {});
-      expect(result.addedToolNames).toContain("mcp__example__a_earlier");
-      const messages: Message[] = [
-        {
-          role: "toolResult",
-          toolCallId: "load",
-          toolName: "load_mcp",
-          content: result.content,
-          addedToolNames: result.addedToolNames ?? [],
-          isError: false,
-          timestamp: 0,
-        },
-      ];
+      await executeTool(session, "load_mcp", {});
       const after = await snapshot();
-      const placement = splitDeferredTools({ tools: after.tools, messages }, true);
-      expect(placement.immediate.map(({ name }) => name)).toEqual(names);
-      expect([...placement.deferred.keys()]).toEqual(["mcp__example__a_earlier"]);
-      const fallback = splitDeferredTools({ tools: after.tools, messages }, false);
-      const fallbackNames = fallback.immediate.map(({ name }) => name);
-      expect(fallbackNames).toContain("mcp__example__a_earlier");
-      expect(fallbackNames.filter((name) => name !== "mcp__example__a_earlier")).toEqual(names);
+      expect(after.systemPrompt).toBe(before.systemPrompt);
+      // Pi 0.87 declares newly active tools in an appended system delta; the prefix stays intact.
+      const changes = getToolStateChanges(
+        before.tools.map(toToolDeclaration),
+        after.tools.map(toToolDeclaration),
+      );
+      expect(changes.toolsRemoved).toEqual([]);
+      expect(changes.toolsAdded.map(({ name }) => name)).toEqual(["mcp__example__a_earlier"]);
       expect(fixture.notifications).toEqual([]);
     },
   );
@@ -1653,10 +1641,7 @@ describe("Pi CodeMode extension", () => {
     const requestedNames = session.getAllTools().map(({ name }) => name);
     const directNames = session.getActiveToolNames();
     const before = executeContract(session);
-    const synchronize = () =>
-      session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, session.systemPrompt, {
-        cwd: session.sessionManager.getCwd(),
-      });
+    const synchronize = () => synchronizeBeforeAgentStart(session);
 
     fixture.registerDynamicTool();
     expect(session.getActiveToolNames()).toEqual(directNames);
@@ -1771,9 +1756,7 @@ describe("Pi CodeMode extension", () => {
 
     expect(fixture.session.getActiveToolNames()).toContain("dynamic_later");
     expect(executeContract(fixture.session)).toEqual(before);
-    await fixture.session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, "test", {
-      cwd: ".",
-    });
+    await synchronizeBeforeAgentStart(fixture.session);
     expect(executeContract(fixture.session)).toEqual(before);
     expect(
       codeModeToolSearchPage(
@@ -1847,9 +1830,7 @@ describe("Pi CodeMode extension", () => {
         after: "Replacement dynamic catalogue description.",
       },
     });
-    await fixture.session.extensionRunner.emitBeforeAgentStart("synchronize", undefined, "test", {
-      cwd: ".",
-    });
+    await synchronizeBeforeAgentStart(fixture.session);
 
     expect(fixture.session.getActiveToolNames()).not.toContain("dynamic_later");
     expect(executeDescription(fixture.session)).not.toContain('readonly ["dynamic_later"]');

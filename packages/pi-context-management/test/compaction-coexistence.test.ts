@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { AgentSession, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
-import { createSdkHarness, overflow, reply } from "./sdk-harness.js";
+import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
 
 const compactionHandlers = (session: AgentSession) =>
   session.resourceLoader
@@ -39,66 +39,99 @@ for (const position of ["before", "after"] as const) {
     },
   );
 
+  it(`lets a hook ${position} Context Management cancel native overflow recovery`, async () => {
+    let calls = 0;
+    const f = await createSdkHarness(
+      ordered((pi) => {
+        pi.on("session_before_compact", () => {
+          calls++;
+          return { cancel: true };
+        });
+      }),
+    );
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+    const handlers = compactionHandlers(f.session);
+    f.responses.push(overflow());
+    await f.session.prompt("Trigger native overflow");
+    expect(compactionHandlers(f.session)).toEqual(handlers);
+    expect(calls).toBe(1);
+    expect(f.providerRequests).toHaveLength(0);
+    expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+    f.responses.push(reply("Still working."));
+    await f.session.prompt("Continue without compacting");
+    expect(f.requests).toHaveLength(3);
+  });
+
   it.each(["rpc", "tui"] as const)(
-    `respects cancellation ${position} Context Management without faulting the session in %s`,
+    `claims manual compaction before a hook ${position} Context Management in %s`,
     async (mode) => {
+      let calls = 0;
       const f = await createSdkHarness(
         ordered((pi) => {
-          pi.on("session_before_compact", () => ({ cancel: true }));
+          pi.on("session_before_compact", (event) => {
+            calls++;
+            return {
+              compaction: {
+                summary: "FOREIGN SUMMARY",
+                firstKeptEntryId: event.preparation.firstKeptEntryId,
+                tokensBefore: event.preparation.tokensBefore,
+              },
+            };
+          });
         }),
       );
       f.responses.push(reply("Ready."));
       await f.session.prompt("Ordinary task " + "history ".repeat(3000));
-      expect(f.requests).toHaveLength(1);
       await f.session.bindExtensions({ mode });
-      const leaf = f.manager.getLeafId();
       const handlers = compactionHandlers(f.session);
+      f.responses.push(toolCall("context_rollover", { handoff: "Fresh Handoff." }));
       await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+      await expect
+        .poll(() => f.manager.getBranch().filter((entry) => entry.type === "compaction").length)
+        .toBe(1);
+      await f.session.waitForIdle();
       expect(compactionHandlers(f.session)).toEqual(handlers);
+      expect(calls).toBe(0);
       expect(f.providerRequests).toHaveLength(0);
-      expect(f.manager.getLeafId()).toBe(leaf);
-      f.responses.push(reply("Still working."));
-      await f.session.prompt("Continue without compacting");
-      expect(f.requests).toHaveLength(2);
-      expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
+      const checkpoint = f.manager.getBranch().findLast((entry) => entry.type === "compaction");
+      expect(checkpoint?.summary).toContain("Fresh Handoff.");
+      expect(checkpoint?.summary).not.toContain("FOREIGN SUMMARY");
     },
   );
 
-  it.each(["rpc", "tui"] as const)(
-    `blocks an actual compaction override ${position} Context Management before persistence in %s`,
-    async (mode) => {
-      let active = false;
-      const f = await createSdkHarness(
-        ordered((pi) => {
-          pi.on("session_before_compact", (event) =>
-            active
-              ? {
-                  compaction: {
-                    summary: "FOREIGN SUMMARY",
-                    firstKeptEntryId: event.preparation.firstKeptEntryId,
-                    tokensBefore: event.preparation.tokensBefore,
-                  },
-                }
-              : undefined,
-          );
-        }),
-      );
-      f.responses.push(reply("Ready."));
-      await f.session.prompt("Ordinary task " + "history ".repeat(3000));
-      expect(f.requests).toHaveLength(1);
-      await f.session.bindExtensions({ mode });
-      const leaf = f.manager.getLeafId();
-      active = true;
-      const handlers = compactionHandlers(f.session);
-      await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-      expect(compactionHandlers(f.session)).toEqual(handlers);
-      expect(f.manager.getLeafId()).toBe(leaf);
-      expect(f.manager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
-      await f.session.prompt("Must not continue after the conflict");
-      expect(f.requests).toHaveLength(1);
-      expect(f.providerRequests).toHaveLength(0);
-    },
-  );
+  it(`supersedes a compaction summary ${position} Context Management during native overflow`, async () => {
+    let calls = 0;
+    const f = await createSdkHarness(
+      ordered((pi) => {
+        pi.on("session_before_compact", (event) => {
+          calls++;
+          return {
+            compaction: {
+              summary: "FOREIGN SUMMARY",
+              firstKeptEntryId: event.preparation.firstKeptEntryId,
+              tokensBefore: event.preparation.tokensBefore,
+            },
+          };
+        });
+      }),
+    );
+    f.responses.push(reply("Ready."));
+    await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+    const handlers = compactionHandlers(f.session);
+    f.responses.push(overflow(), reply("Recovered."));
+    await f.session.prompt("Trigger native overflow");
+    expect(compactionHandlers(f.session)).toEqual(handlers);
+    expect(calls).toBe(1);
+    expect(f.providerRequests).toHaveLength(0);
+    expect(f.requests).toHaveLength(3);
+    const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0]?.summary).not.toContain("FOREIGN SUMMARY");
+    f.responses.push(reply("Still working."));
+    await f.session.prompt("Continue after the Emergency Rollover");
+    expect(f.requests).toHaveLength(4);
+  });
 }
 
 it.each(["missing", "throwing"])(
@@ -133,6 +166,50 @@ it.each(["missing", "throwing"])(
   },
 );
 
+// Pi 0.87 stores `(...args) => handler(...args)` rather than the registered function itself.
+const wrapRegisteredHandlers = (session: AgentSession) => {
+  for (const extension of session.resourceLoader.getExtensions().extensions) {
+    for (const [event, handlers] of extension.handlers) {
+      extension.handlers.set(
+        event,
+        handlers.map(
+          (handler) =>
+            (...args: Parameters<typeof handler>) =>
+              handler(...args),
+        ),
+      );
+    }
+  }
+};
+
+it("recovers native overflow when Pi wraps registered handlers", async () => {
+  const f = await createSdkHarness([contextManagement]);
+  wrapRegisteredHandlers(f.session);
+  f.responses.push(reply("Ready."));
+  await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+  f.responses.push(overflow(), reply("Recovered."));
+  await f.session.prompt("Trigger native overflow");
+  expect(f.providerRequests).toHaveLength(0);
+  expect(f.requests).toHaveLength(3);
+  expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+});
+
+it("claims manual compaction when Pi wraps registered handlers", async () => {
+  const f = await createSdkHarness([contextManagement]);
+  wrapRegisteredHandlers(f.session);
+  f.responses.push(reply("Ready."));
+  await f.session.prompt("Ordinary task " + "history ".repeat(3000));
+  f.responses.push(toolCall("context_rollover", { handoff: "Fresh Handoff." }));
+  await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+  await expect
+    .poll(() => f.manager.getBranch().filter((entry) => entry.type === "compaction").length)
+    .toBe(1);
+  await f.session.waitForIdle();
+  expect(f.providerRequests).toHaveLength(0);
+  const checkpoint = f.manager.getBranch().findLast((entry) => entry.type === "compaction");
+  expect(checkpoint?.summary).toContain("Fresh Handoff.");
+});
+
 it("guards listeners registered after startup", async () => {
   let register: (() => void) | undefined;
   const f = await createSdkHarness([
@@ -152,7 +229,42 @@ it("guards listeners registered after startup", async () => {
   await f.session.prompt("Ordinary task " + "history ".repeat(3000));
   if (!register) throw new Error("Missing late extension registration");
   register();
-  await expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
+  f.responses.push(overflow(), reply("Recovered."));
+  await f.session.prompt("Trigger native overflow");
   expect(f.providerRequests).toHaveLength(0);
-  expect(f.manager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+  const checkpoints = f.manager.getBranch().filter((entry) => entry.type === "compaction");
+  expect(checkpoints).toHaveLength(1);
+  expect(checkpoints[0]?.summary).not.toContain("LATE FOREIGN SUMMARY");
+});
+
+it("announces a direct Rollover to native compaction listeners before the next request", async () => {
+  // Mirrors provider bridges that rebuild their session cache on session_compact.
+  const observed: Array<{ reason: string; summary: string; requests: number | undefined }> = [];
+  let requests: (() => number) | undefined;
+  const f = await createSdkHarness(
+    [
+      contextManagement,
+      (pi) => {
+        pi.on("session_compact", (event) => {
+          observed.push({
+            reason: event.reason,
+            summary: event.compactionEntry.summary,
+            requests: requests?.(),
+          });
+        });
+      },
+    ],
+    { keepRecentTokens: 500 },
+  );
+  requests = () => f.requests.length;
+  f.responses.push(reply("Ready."));
+  await f.session.prompt("Original task " + "history ".repeat(3000));
+  f.responses.push(
+    toolCall("context_rollover", { handoff: "Continue the blue widget." }),
+    reply("Finished."),
+  );
+  await f.session.prompt("Continue");
+  const checkpoint = f.manager.getBranch().findLast((entry) => entry.type === "compaction");
+  expect(observed).toEqual([{ reason: "threshold", summary: checkpoint?.summary, requests: 2 }]);
+  expect(f.requests).toHaveLength(3);
 });

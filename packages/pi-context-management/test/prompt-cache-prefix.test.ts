@@ -3,7 +3,12 @@ import { createRequire } from "node:module";
 import { expect, it } from "vitest";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { Context, StreamFunction, StreamOptions } from "@earendil-works/pi-ai";
+import {
+  normalizeContext,
+  type Context,
+  type StreamFunction,
+  type StreamOptions,
+} from "@earendil-works/pi-ai";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import contextManagement from "../src/context-management-extension.js";
@@ -38,11 +43,11 @@ async function serialize(request: {
   const response = await api
     .stream(
       getModel("anthropic", "claude-sonnet-4-5"),
-      {
+      normalizeContext({
         systemPrompt: request.systemPrompt,
         messages: request.messages,
         tools: request.toolDefinitions ?? [],
-      },
+      }),
       {
         client: {
           beta: {

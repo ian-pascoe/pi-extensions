@@ -171,7 +171,7 @@ const storageSchema = Type.Object({
   ),
 });
 
-/** Use Pi's actual backend: its generic storage API is not exported in 0.85.1. */
+/** Use Pi's actual backend: its generic storage API is not exported in 0.87.1. */
 export async function writeAdvisorSettings(
   manager: SettingsManager,
   scope: "global" | "project",

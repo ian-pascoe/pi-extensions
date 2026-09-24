@@ -92,6 +92,7 @@ const UnifiedExecOutputSchema = Type.Object(
     exit_code: OptionalUndefinedNumber,
     session_id: OptionalUndefinedNumber,
     original_token_count: OptionalUndefinedNumber,
+    truncated: Type.Optional(Type.Union([Type.Literal(true), Type.Undefined()])),
   },
   ClosedObject,
 );

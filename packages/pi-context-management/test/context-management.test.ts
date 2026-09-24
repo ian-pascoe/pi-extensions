@@ -203,27 +203,17 @@ describe("Context Windows through the Pi SDK", () => {
   );
 
   it("keeps user-cancelled manual compaction stopped without disabling later prompts", async () => {
-    let resumeHook: (() => void) | undefined;
-    const f = await createSdkHarness([
-      (pi) => {
-        pi.on(
-          "session_before_compact",
-          () =>
-            new Promise<void>((resolve) => {
-              resumeHook = resolve;
-            }),
-        );
-      },
-      contextManagement,
-    ]);
+    const f = await createSdkHarness([contextManagement]);
     await f.session.bindExtensions({ mode: "tui" });
     f.responses.push(reply("Ready."));
     await f.session.prompt("Original task " + "history ".repeat(3000));
-    const compacting = expect(f.session.compact()).rejects.toThrow("Compaction cancelled");
-    await expect.poll(() => resumeHook).toBeDefined();
-    f.session.abortCompaction();
-    resumeHook?.();
-    await compacting;
+    // Pi's compaction signal exists once compaction starts; abort before any hook decides.
+    // Pi 0.87 observes it while resolving summarizer auth, before hooks, with a generic abort.
+    const unsubscribe = f.session.subscribe((event) => {
+      if (event.type === "compaction_start") f.session.abortCompaction();
+    });
+    await expect(f.session.compact()).rejects.toThrow(/Compaction cancelled|aborted/);
+    unsubscribe();
     await f.session.waitForIdle();
     expect(f.requests).toHaveLength(1);
     expect(f.manager.getBranch().some((entry) => entry.type === "compaction")).toBe(false);
@@ -471,7 +461,11 @@ describe("Context Windows through the Pi SDK", () => {
         .some((entry) => entry.type === "custom" && entry.customType === "pi-context-handoff"),
     ).toBe(false);
     expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
-    expect(f.requests[1]?.messages.at(-1)).toMatchObject({ role: "toolResult", isError: true });
+    // Pi 0.87 may queue threshold preparation after the oversized call; the schema error still answers it.
+    expect(f.requests[1]?.messages.find((message) => message.role === "toolResult")).toMatchObject({
+      toolName: "context_rollover",
+      isError: true,
+    });
   });
   it("commits an agent Handoff mid-loop and resumes the same native Context Window", async () => {
     const f = await createSdkHarness([contextManagement], { keepRecentTokens: 500 });

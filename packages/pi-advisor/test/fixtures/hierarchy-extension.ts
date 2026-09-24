@@ -6,6 +6,7 @@ import type {
   SimpleStreamOptions,
   AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
+import { endpointContext } from "./endpoint-context.js";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
@@ -41,7 +42,7 @@ export default function hierarchyFixture(pi: ExtensionAPI): void {
       },
     ],
     streamSimple: (model, context, options) =>
-      globalThis.advisorHierarchyTest.stream(role, model, context, options),
+      globalThis.advisorHierarchyTest.stream(role, model, endpointContext(context), options),
   });
   pi.on("session_start", (_event, ctx) => {
     const branch = ctx.sessionManager.getBranch();

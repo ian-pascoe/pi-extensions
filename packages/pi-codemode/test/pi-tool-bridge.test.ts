@@ -826,7 +826,8 @@ describe("executePiToolBridgeBatch", () => {
       signal: replacementController.signal,
       onTerminate: () => replacementController.abort(),
     });
-    expect(added.addedToolNames).toEqual(["added-dynamic"]);
+    expect(textContent(successfulCall(added, 0))).toEqual(["added"]);
+    expect(fixture.session.getActiveToolNames()).toContain("added-dynamic");
     const dynamic = await executePiToolBridgeBatch(fixture.captured, {
       now: deterministicNow(),
       calls: [{ callId: "dynamic-1", name: "added-dynamic", input: {} }],

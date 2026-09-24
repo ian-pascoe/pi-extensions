@@ -3,14 +3,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type {
   AssistantMessage,
-  Context,
+  Message,
   Model,
   ToolResultMessage,
   Usage,
   UserMessage,
 } from "@earendil-works/pi-ai";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+} from "@earendil-works/pi-ai";
 import {
   AgentSession,
   SessionManager,
@@ -88,8 +92,8 @@ function customMessageEntry<TDetails>(customType: string, details: TDetails): Se
   };
 }
 
-function toolResultEntry<TDetails>(toolName: string, details: TDetails): SessionEntry {
-  const message: ToolResultMessage<TDetails> = {
+function toolResultEntry(toolName: string, details: ToolResultMessage["details"]): SessionEntry {
+  const message: ToolResultMessage = {
     role: "toolResult",
     toolCallId: "call-1",
     toolName,
@@ -1179,18 +1183,19 @@ export default function (pi) {
           status: "completed",
           output: "completed with native Notes",
         });
-        const requests: Context[] = readFileSync(requestsPath, "utf8")
+        const requests: { messages: Message[] }[] = readFileSync(requestsPath, "utf8")
           .trim()
           .split("\n")
           .map((line) => JSON.parse(line));
         expect(requests).toHaveLength(6);
-        expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual([
+        const tools = getCurrentTools(requests[0]!.messages);
+        expect(tools.map((tool) => tool.name)).toEqual([
           ...(hiddenContextTools ? toolNames.slice(3) : toolNames),
           ...(hiddenCoordinatorTools ? [] : coordinatorToolNames),
         ]);
-        expect(requests[0]?.systemPrompt).toContain("Context Management:");
+        expect(getCurrentSystemPrompt(requests[0]!.messages)).toContain("Context Management:");
         for (const request of requests.slice(1)) {
-          expect(request.tools).toEqual(requests[0]!.tools);
+          expect(getCurrentTools(request.messages)).toEqual(tools);
         }
         for (const index of [1, 3, 5]) {
           expect(requests[index]?.messages.at(-1)).toMatchObject({

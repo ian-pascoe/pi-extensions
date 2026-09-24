@@ -1478,7 +1478,7 @@ describe("CodeModeSessionCoordinator", () => {
     toolReleased.resolve();
   }, 30_000);
 
-  test("returns aggregate usage, added names, and termination metadata exactly once", async () => {
+  test("returns aggregate usage and termination metadata exactly once", async () => {
     let batchNumber = 0;
     const coordinator = createCoordinator({
       toolNames: ["step"],
@@ -1491,7 +1491,6 @@ describe("CodeModeSessionCoordinator", () => {
             result: null,
           })),
           usage: createUsage(batchNumber),
-          addedToolNames: ["dynamic", "dynamic"],
         };
       },
     });
@@ -1504,7 +1503,6 @@ describe("CodeModeSessionCoordinator", () => {
     expectSuccessData(terminal, 42);
     expect(terminal.metadata).toEqual({
       usage: createUsage(3),
-      addedToolNames: ["dynamic"],
     });
     expect(coordinator.result("session-1").metadata).toBeUndefined();
 

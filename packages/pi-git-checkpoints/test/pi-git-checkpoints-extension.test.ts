@@ -181,12 +181,24 @@ async function completeModelStep(
   await writeFile(resolve(harness.cwd, "code.txt"), content);
   const message = assistantMessage(`step ${turnIndex}`);
   const assistantId = harness.sessionManager.appendMessage(message);
-  await harness.runner.emit({
-    type: "turn_end",
-    turnIndex,
-    message,
-    toolResults: [],
-  } satisfies TurnEndEvent);
+  await harness.runner.emitBoundary(
+    {
+      type: "turn_end",
+      turnIndex,
+      message,
+      toolResults: [],
+      messageEntryId: assistantId,
+      toolResultEntryIds: [],
+      outcome: "completed",
+    } satisfies Omit<TurnEndEvent, "entries" | "continue" | "context">,
+    () => ({
+      contextEntries: [],
+      contextMessages: [],
+      llmMessages: [],
+      pendingMessages: [],
+      canContinue: false,
+    }),
+  );
   const endEntryId = harness.sessionManager.getLeafId();
   if (endEntryId === null) throw new Error("Expected a Model Step end entry");
   return { assistantId, endEntryId };

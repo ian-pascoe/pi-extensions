@@ -6,6 +6,7 @@ import type {
   SimpleStreamOptions,
   AssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
+import { endpointContext } from "./endpoint-context.js";
 
 declare global {
   var advisorObserverTest: {
@@ -38,7 +39,7 @@ export default function observerFixture(pi: ExtensionAPI): void {
       maxTokens: 2048,
     })),
     streamSimple: (model, context, options) =>
-      globalThis.advisorObserverTest.stream(model, context, options),
+      globalThis.advisorObserverTest.stream(model, endpointContext(context), options),
   });
   let privateRole = false;
   pi.on("session_start", (_event, ctx) => {

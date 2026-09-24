@@ -107,7 +107,6 @@ export interface PiToolBridgeCallPresentation {
 
 /** Complete nested batch output plus metadata forwarded by the outer CodeMode tool. */
 export interface PiToolBridgeBatchResult {
-  readonly addedToolNames: readonly string[];
   readonly calls: readonly PiToolBridgeCallOutcome[];
   readonly presentation: readonly PiToolBridgeCallPresentation[];
   readonly terminate: boolean;
@@ -135,7 +134,6 @@ type PreparedPiToolCall = {
 };
 
 type FinalizedPiToolCall = {
-  readonly addedToolNames: readonly string[];
   readonly outcome: PiToolBridgeCallOutcome;
   readonly terminate: boolean;
   readonly usage?: Usage;
@@ -146,7 +144,6 @@ type PreparedOrFinalizedPiToolCall =
   | { readonly kind: "finalized"; readonly value: FinalizedPiToolCall };
 
 type FinalizedPiToolMetadata = {
-  readonly addedToolNames: readonly string[];
   readonly usage?: Usage;
 };
 
@@ -167,7 +164,6 @@ function createBridgeFailure(
 ): FinalizedPiToolCall {
   const terminate = options.terminate ?? false;
   return {
-    addedToolNames: [],
     outcome: {
       callId,
       error: new CodeModeToolError(code, message, options),
@@ -231,7 +227,6 @@ function createSyntheticAssistantMessage(
 function currentAgentContext(captured: CapturedPiAgentSession): AgentContext {
   const state = captured.agent.state;
   return {
-    systemPrompt: state.systemPrompt,
     messages: state.messages,
     tools: state.tools,
   };
@@ -374,9 +369,6 @@ async function finalizeExecutedPiToolCall(
       };
       const usage = afterResult.usage ?? result.usage;
       if (usage !== undefined) mergedResult.usage = usage;
-      if (result.addedToolNames !== undefined) {
-        mergedResult.addedToolNames = result.addedToolNames;
-      }
       const terminate = afterResult.terminate ?? result.terminate;
       if (terminate !== undefined) mergedResult.terminate = terminate;
       result = mergedResult;
@@ -395,12 +387,7 @@ async function finalizeExecutedPiToolCall(
 
   const terminate = result.terminate === true;
   const metadata: FinalizedPiToolMetadata =
-    result.usage === undefined
-      ? { addedToolNames: result.addedToolNames ?? [] }
-      : {
-          addedToolNames: result.addedToolNames ?? [],
-          usage: result.usage,
-        };
+    result.usage === undefined ? {} : { usage: result.usage };
   if (terminate) {
     return {
       ...metadata,
@@ -561,20 +548,12 @@ function collectPiToolBridgeBatch(
   timedCalls: readonly TimedFinalizedPiToolCall[],
 ): PiToolBridgeBatchResult {
   let usage: Usage | undefined;
-  const addedToolNames: string[] = [];
-  const seenToolNames = new Set<string>();
   for (const { finalized } of timedCalls) {
     if (finalized.usage !== undefined) {
       usage = addCodeModeUsage(usage, finalized.usage);
     }
-    for (const toolName of finalized.addedToolNames) {
-      if (seenToolNames.has(toolName)) continue;
-      seenToolNames.add(toolName);
-      addedToolNames.push(toolName);
-    }
   }
   const batch = {
-    addedToolNames,
     calls: timedCalls.map(({ finalized }) => finalized.outcome),
     presentation: timedCalls.map(({ presentation }) => presentation),
     terminate: timedCalls.some(({ finalized }) => finalized.terminate),

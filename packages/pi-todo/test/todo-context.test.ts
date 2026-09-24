@@ -97,6 +97,28 @@ describe("immutable Todo journal projection", () => {
     expect(project(manager, project(manager))).toEqual(project(manager));
   });
 
+  it("anchors past Pi system state that context handlers never receive", () => {
+    const manager = SessionManager.inMemory();
+    manager.appendMessage({ role: "system", content: "Instructions", timestamp: 0 });
+    user(manager, "Old history");
+    state(manager, "Before cutoff");
+    const cutoff = user(manager, "Retained request");
+    manager.appendMessage({ role: "system", content: "", toolsAdded: [], timestamp: 1 });
+    state(manager, "Retained change");
+    manager.appendCompaction("Summary", cutoff, 1000);
+    const context = manager.buildSessionContext().messages;
+    expect(context[0]?.role).toBe("system");
+    const projected = project(
+      manager,
+      context.filter((message) => message.role !== "system"),
+    );
+    expect(projected.map((m) => m.role)).toEqual(["compactionSummary", "custom", "user", "custom"]);
+    expect(snapshots(projected)).toEqual([
+      "Todo List:\n[ ] #1 Before cutoff",
+      "Todo List:\n[ ] #1 Retained change",
+    ]);
+  });
+
   it("supports an empty Tail and a cutoff on a state entry without inventing an earlier baseline", () => {
     const manager = SessionManager.inMemory();
     user(manager, "Request");

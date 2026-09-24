@@ -145,7 +145,6 @@ export type CodeModeNestedToolBatchResult = {
     readonly elapsedMs: number;
   }[];
   readonly usage?: Usage;
-  readonly addedToolNames?: readonly string[];
   readonly terminate?: boolean;
 };
 
@@ -185,13 +184,11 @@ export type CodeModeSessionCoordinatorOptions = {
 
 type CodeModeMetadataAccumulator = {
   usage?: Usage;
-  readonly addedToolNames: Set<string>;
   terminate: boolean;
 };
 
 type MutableCodeModeOuterToolMetadata = {
   usage?: Usage;
-  addedToolNames?: readonly string[];
   terminate?: boolean;
 };
 
@@ -311,7 +308,7 @@ function invalidCodeModeSessionResult(): CodeModeSessionOperationResult {
 }
 
 function emptyMetadataAccumulator(): CodeModeMetadataAccumulator {
-  return { addedToolNames: new Set(), terminate: false };
+  return { terminate: false };
 }
 
 /** Sums two Usage values; optional fields appear only when either side carries them. */
@@ -350,19 +347,15 @@ function mergeCodeModeOuterMetadata(
   if (metadata.usage !== undefined) {
     accumulator.usage = addCodeModeUsage(accumulator.usage, metadata.usage);
   }
-  for (const name of metadata.addedToolNames ?? []) accumulator.addedToolNames.add(name);
   if (metadata.terminate === true) accumulator.terminate = true;
 }
 
 function finalizeCodeModeMetadata(
   accumulator: CodeModeMetadataAccumulator,
 ): CodeModeOuterToolMetadata | undefined {
-  const addedToolNames = [...accumulator.addedToolNames];
-  if (accumulator.usage === undefined && addedToolNames.length === 0 && !accumulator.terminate)
-    return undefined;
+  if (accumulator.usage === undefined && !accumulator.terminate) return undefined;
   const metadata: MutableCodeModeOuterToolMetadata = {};
   if (accumulator.usage !== undefined) metadata.usage = accumulator.usage;
-  if (addedToolNames.length > 0) metadata.addedToolNames = addedToolNames;
   if (accumulator.terminate) metadata.terminate = true;
   return metadata;
 }

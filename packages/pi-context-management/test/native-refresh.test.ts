@@ -152,7 +152,10 @@ test("cancelling queued preparation prevents its request and records cancellatio
   await f.session.prompt("Original task");
   expect(cancelled).toBe(true);
   expect(f.requests).toHaveLength(1);
-  expect(f.session.agent.hasQueuedMessages()).toBe(false);
+  // Pi 0.87 keeps cancelled post-run steering queued; only the companion input may remain.
+  expect(f.session.agent.peekQueuedMessages()).toEqual([
+    expect.objectContaining({ customType: "companion" }),
+  ]);
   expect(notices.filter((message) => message.includes("Rollover was not completed"))).toHaveLength(
     1,
   );
@@ -161,6 +164,7 @@ test("cancelling queued preparation prevents its request and records cancellatio
   expect(f.requests).toHaveLength(2);
   expect(JSON.stringify(f.requests[1]?.messages)).toContain("Rollover preparation was cancelled");
   expect(JSON.stringify(f.requests[1]?.messages)).toContain("Queued input survives");
+  expect(JSON.stringify(f.requests[1]?.messages)).not.toContain("Prepare a Context Rollover");
   expect(notices.filter((message) => message.includes("Preparing Notes"))).toHaveLength(1);
   const reopened = SessionManager.open(f.manager.getSessionFile()!);
   expect(JSON.stringify(reopened.buildSessionContext())).toContain(

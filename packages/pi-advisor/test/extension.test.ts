@@ -8,7 +8,11 @@ import {
   InMemoryModelsStore,
   createAssistantMessageEventStream,
   fauxAssistantMessage,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+  toToolDeclaration,
   type Context,
+  type SystemMessage,
 } from "@earendil-works/pi-ai";
 import {
   AgentSessionRuntime,
@@ -19,6 +23,36 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/observer-extension.js";
+
+/** Pi 0.86+ records tool declarations on system messages; compare declarations, not callbacks. */
+function sessionTranscript(runtime: AgentSessionRuntime | undefined) {
+  return runtime?.session.messages.map((message) =>
+    message.role === "system" && message.toolsAdded
+      ? {
+          ...message,
+          toolsAdded: message.toolsAdded.map((tool) => {
+            const { name, description, parameters } = toToolDeclaration(tool);
+            return { name, description, parameters };
+          }),
+        }
+      : message,
+  );
+}
+
+const isSystem = (message: { role: string }): message is SystemMessage => message.role === "system";
+const conversation = <T extends { role: string }>(messages: T[] = []) =>
+  messages.filter((message) => !isSystem(message));
+
+/** Current prompt, ordered tools, and conversation after replaying Pi's system deltas. */
+function sessionState(runtime: AgentSessionRuntime | undefined) {
+  const transcript = sessionTranscript(runtime) ?? [];
+  const system = transcript.filter(isSystem);
+  return {
+    systemPrompt: getCurrentSystemPrompt(system),
+    tools: getCurrentTools(system),
+    messages: conversation(transcript),
+  };
+}
 
 it.each(["none", "direct-only", "both", "codemode-only"] as const)(
   "preserves exact main inputs and reports native errors (CodeMode exposure: %s)",
@@ -175,7 +209,17 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
         ? disabledRequest
         : { ...disabledRequest, tools: [...(disabledRequest.tools ?? []), askTool] },
     );
-    expect(runtimes[1]?.session.messages).toEqual(runtimes[0]?.session.messages);
+    const disabledTranscript = sessionTranscript(runtimes[0]);
+    const [disabledSystem] = disabledTranscript ?? [];
+    if (disabledSystem?.role !== "system") throw new Error("Missing initial system message");
+    const expectedTranscript =
+      codeModeExposure === "codemode-only"
+        ? disabledTranscript
+        : [
+            { ...disabledSystem, toolsAdded: [...(disabledSystem.toolsAdded ?? []), askTool] },
+            ...(disabledTranscript?.slice(1) ?? []),
+          ];
+    expect(sessionTranscript(runtimes[1])).toEqual(expectedTranscript);
     const enabledSession = runtimes[1]?.session;
     if (!enabledSession) throw new Error("Missing enabled session");
     const searchCodeMode = async (query: string) => {
@@ -203,8 +247,26 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
     for (const runtime of runtimes)
       await runtime.session.prompt("Continue with on-demand advice disabled.");
     expect(mainRequests).toHaveLength(4);
-    expect(mainRequests[3]).toEqual(mainRequests[2]);
-    expect(runtimes[1]?.session.messages).toEqual(runtimes[0]?.session.messages);
+    // Pi 0.87 declares the removed tool with an appended delta instead of rewriting the prefix.
+    const [disabledFollowUp, enabledFollowUp] = mainRequests.slice(2);
+    expect({ ...enabledFollowUp, messages: conversation(enabledFollowUp?.messages) }).toEqual({
+      ...disabledFollowUp,
+      messages: conversation(disabledFollowUp?.messages),
+    });
+    expect(sessionState(runtimes[1])).toEqual(sessionState(runtimes[0]));
+    expect(sessionTranscript(runtimes[0])?.filter(isSystem)).toHaveLength(1);
+    expect(sessionTranscript(runtimes[1])?.filter(isSystem).slice(1)).toEqual(
+      codeModeExposure === "codemode-only"
+        ? []
+        : [
+            {
+              role: "system",
+              content: "",
+              timestamp: expect.any(Number),
+              toolsRemoved: [{ name: "advisor_ask" }],
+            },
+          ],
+    );
     await enabledSession.prompt("/advisor on");
     await enabledSession.prompt("Recreate the private Advisor session before restart.");
     expect(reviewRequests).toHaveLength(2);

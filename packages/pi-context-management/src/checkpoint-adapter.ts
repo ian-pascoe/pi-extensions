@@ -6,7 +6,7 @@ import {
   type ExtensionHandler,
   type SessionBeforeCompactEvent,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { assertContextJournalReadable, quarantineContextJournal } from "./context-store.js";
 
@@ -15,10 +15,11 @@ const Callable = Type.Function([], Type.Unknown());
 const Capabilities = Type.Object({
   abortCompaction: Callable,
   getContextUsage: Callable,
+  refreshContext: Callable,
   sendUserMessage: Callable,
   sendCustomMessage: Callable,
   resourceLoader: Type.Object({ getExtensions: Callable }),
-  extensionRunner: Type.Object({ emit: Callable, hasHandlers: Callable }),
+  extensionRunner: Type.Object({ createContext: Callable, emit: Callable, hasHandlers: Callable }),
   settingsManager: Type.Object({
     getCompactionSettings: Callable,
     getGlobalSettings: Callable,
@@ -27,13 +28,11 @@ const Capabilities = Type.Object({
   }),
   agent: Type.Object({
     abort: Callable,
+    clearSteeringQueue: Callable,
+    peekQueuedMessages: Callable,
+    steer: Callable,
     prepareNextTurnWithContext: Callable,
     transformContext: Callable,
-    state: Type.Object({
-      messages: Type.Array(Type.Unknown()),
-      tools: Type.Array(Type.Unknown()),
-      systemPrompt: Type.String(),
-    }),
   }),
   sessionManager: Type.Object({
     getHeader: Callable,
@@ -45,7 +44,6 @@ const Capabilities = Type.Object({
     getSessionFile: Callable,
     appendCompaction: Callable,
     appendCustomEntry: Callable,
-    buildSessionContext: Callable,
     resetLeaf: Callable,
     branch: Callable,
   }),
@@ -64,12 +62,15 @@ const ProvidedCompaction = Type.Object({
   }),
 });
 
-type OwnedCompactionResult = Static<typeof CancelledCompaction> | Static<typeof ProvidedCompaction>;
-
 export interface CheckpointAdapterOptions {
   /** Guard actual native hook results without rejecting passive listeners or cancellation. */
   readonly compaction?: {
+    /** Runs after every other hook; its own registration must defer via `dispatches`. */
     readonly handler: ExtensionHandler<SessionBeforeCompactEvent, unknown>;
+    /** True when the owned result preempts other hooks, as a first-registered cancellation would. */
+    readonly claims: (event: SessionBeforeCompactEvent) => boolean;
+    /** Another hook supplied compaction content that the owned result replaces. */
+    readonly onSuperseded: (extensionPath: string) => void;
     readonly onConflict: (error: Error) => void;
   };
 }
@@ -86,6 +87,8 @@ export interface CheckpointAdapter {
     details: T,
     signal?: AbortSignal,
   ): CompactionEntry<T>;
+  /** True while the guarded dispatch of this event will run the owned compaction handler itself. */
+  dispatches(event: SessionBeforeCompactEvent): boolean;
   /** Returns a real cutoff for a native compaction hook; an absent Tail creates a neutral entry. */
   cutoff(firstKeptEntryId: string | undefined): string;
   /** Stops requests until disposal/reload. Does not roll back a possibly durable native checkpoint. */
@@ -93,10 +96,7 @@ export interface CheckpointAdapter {
   dispose(): void;
 }
 
-function writable(
-  owner: AgentSession["agent"] | AgentSession["agent"]["state"],
-  key: PropertyKey,
-): boolean {
+function writable(owner: AgentSession["agent"], key: PropertyKey): boolean {
   const descriptor = Object.getOwnPropertyDescriptor(owner, key);
   // oxlint-disable-next-line typescript/unbound-method -- Capability parsing inspects the setter without calling it.
   return descriptor?.writable === true || Value.Check(Callable, descriptor?.set);
@@ -138,13 +138,10 @@ function capture(pi: Pick<ExtensionAPI, "getAllTools">): AgentSession {
     );
   }
   if (
-    !writable(session.agent.state, "messages") ||
     !writable(session.agent, "prepareNextTurnWithContext") ||
     !writable(session.agent, "transformContext")
   ) {
-    throw new Error(
-      "Context Management capability unavailable: writable native messages/next-turn hook",
-    );
+    throw new Error("Context Management capability unavailable: writable native next-turn hook");
   }
   return session;
 }
@@ -169,9 +166,9 @@ export function captureCheckpointAdapter(
   if (!previous || !previousTransform)
     throw new Error("Context Management request hook disappeared during capture");
   let active = true;
-  let refresh = false;
   let failure: Error | undefined;
   let committedCheckpointId: string | undefined;
+  let dispatching: SessionBeforeCompactEvent | undefined;
   const appendDescriptor = Object.getOwnPropertyDescriptor(manager, "appendCompaction");
   if (
     manager.appendCompaction !== SessionManager.prototype.appendCompaction ||
@@ -196,34 +193,24 @@ export function captureCheckpointAdapter(
     const policy = options.compaction;
     if (!active || !policy || event.type !== "session_before_compact") return emit(event);
     const restoreHandlers: Array<() => void> = [];
-    let runOwnedHandler: (() => Promise<OwnedCompactionResult | undefined>) | undefined;
     try {
       ready();
+      // Pi may store a wrapper rather than the registered function, so the owned handler is never
+      // matched by identity; its registration stays passive while this dispatch runs it last.
+      dispatching = event;
+      const claimed = policy.claims(event);
       for (const extension of session.resourceLoader.getExtensions().extensions) {
         const handlers = extension.handlers.get("session_before_compact");
         if (!handlers) continue;
         for (const [index, handler] of handlers.entries()) {
           const guarded: typeof handler = async (...args) => {
-            if (handler === policy.handler) {
-              // Defer owned compaction until every other hook has had a chance to cancel or conflict.
-              runOwnedHandler = async () => {
-                const result = await handler(...args);
-                return Value.Check(CancelledCompaction, result) ||
-                  Value.Check(ProvidedCompaction, result)
-                  ? result
-                  : undefined;
-              };
-              return;
-            }
+            if (claimed) return;
             const result = await handler(...args);
             if (!result || Value.Check(PassiveCompaction, result)) return;
             if (Value.Check(CancelledCompaction, result)) return { cancel: true };
-            policy.onConflict(
-              new Error(
-                `Competing compaction result from ${extension.path}; disable its compaction override`,
-              ),
-            );
-            return { cancel: true };
+            // Owned checkpoint content wins regardless of load order; a foreign summary is discarded.
+            policy.onSuperseded(extension.path);
+            return;
           };
           handlers[index] = guarded;
           restoreHandlers.push(() => {
@@ -233,8 +220,11 @@ export function captureCheckpointAdapter(
       }
       const result = await emit(event);
       if (Value.Check(CancelledCompaction, result)) return result;
-      const ownResult = await runOwnedHandler?.();
-      if (!ownResult) {
+      const ownResult: unknown = await policy.handler(event, runner.createContext());
+      if (
+        !Value.Check(CancelledCompaction, ownResult) &&
+        !Value.Check(ProvidedCompaction, ownResult)
+      ) {
         throw new Error(
           "Context Management compaction result missing or replaced; refusing native summarizer fallback",
         );
@@ -246,6 +236,7 @@ export function captureCheckpointAdapter(
       policy.onConflict(error);
       throw new Error("Compaction cancelled", { cause: error });
     } finally {
+      dispatching = undefined;
       for (const restore of restoreHandlers.reverse()) restore();
     }
   };
@@ -262,7 +253,6 @@ export function captureCheckpointAdapter(
     assertContextJournalReadable(manager);
     if (
       !Value.Check(Capabilities, session) ||
-      !writable(agent.state, "messages") ||
       manager.appendCompaction !== appendWrapper ||
       runner.emit !== emitWrapper ||
       runner.hasHandlers !== hasHandlersWrapper
@@ -296,19 +286,8 @@ export function captureCheckpointAdapter(
     if (!active) return previous.call(agent, turn, signal);
     ready();
     signal?.throwIfAborted();
-    turn = {
-      ...turn,
-      context: {
-        ...turn.context,
-        systemPrompt: agent.state.systemPrompt,
-        tools: agent.state.tools,
-        messages: refresh ? agent.state.messages.slice() : turn.context.messages,
-      },
-    };
-    const snapshot = await previous.call(agent, turn, signal);
-    // A thrown preceding hook must not consume the refresh needed by a later retry.
-    refresh = false;
-    return snapshot;
+    // Pi rebuilds each request from the canonical session projection, including new checkpoints.
+    return previous.call(agent, turn, signal);
   };
 
   const transformWrapper: NonNullable<typeof previousTransform> = async (messages, signal) => {
@@ -325,6 +304,9 @@ export function captureCheckpointAdapter(
     session,
     get lastCommittedCheckpointId() {
       return committedCheckpointId;
+    },
+    dispatches(event) {
+      return active && dispatching === event;
     },
     cutoff(firstKeptEntryId) {
       durable();
@@ -368,8 +350,7 @@ export function captureCheckpointAdapter(
         const entry = manager.getEntry(id);
         if (entry?.type !== "compaction")
           throw new Error("Pi did not return a native Context Checkpoint");
-        agent.state.messages = manager.buildSessionContext().messages;
-        refresh = true;
+        session.refreshContext();
         // SAFETY: This entry was just created by appendCompaction with this exact generic details value.
         return entry as CompactionEntry<typeof details>;
       } catch (cause) {
