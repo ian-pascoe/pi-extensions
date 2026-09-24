@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-codemode",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "private": false,
   "description": "Process-isolated persistent TypeScript tool composition for Pi",
   "keywords": [
