@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-todo",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
   "description": "Minimal session-native Todo List for Pi agents.",
   "keywords": [
