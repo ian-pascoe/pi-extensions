@@ -35,11 +35,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "minimatch": "^10.2.6",
-    "proper-lockfile": "^4.1.2"
-  },
-  "devDependencies": {
-    "@types/proper-lockfile": "^4.1.4"
+    "@ian-pascoe/pi-utils": "^0.2.0",
+    "minimatch": "^10.2.6"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

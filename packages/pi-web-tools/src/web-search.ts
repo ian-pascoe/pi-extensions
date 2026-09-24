@@ -2,7 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { readBoundedResponseBody } from "./web-response.js";
+import { cancelResponse, readBoundedResponseBody, requestSignal } from "./web-response.js";
 import { renderWebSearchToolCall, renderWebSearchToolResult } from "./web-tool-rendering.js";
 import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
 
@@ -195,15 +195,6 @@ function exaEndpoint(baseUrl: string, apiKey: RedactedWebSearchApiKey | undefine
   return url.toString();
 }
 
-function requestSignal(callerSignal: AbortSignal | undefined): AbortSignal {
-  const deadline = AbortSignal.timeout(WEB_SEARCH_TIMEOUT_MS);
-  return callerSignal === undefined ? deadline : AbortSignal.any([callerSignal, deadline]);
-}
-
-async function cancelResponse(response: Response): Promise<void> {
-  await response.body?.cancel().catch(() => undefined);
-}
-
 async function callSearchProvider(
   provider: SearchProvider,
   sessionId: string,
@@ -313,7 +304,7 @@ export function createWebSearchTool(
           context.sessionManager.getSessionId(),
           input,
           options,
-          requestSignal(callerSignal),
+          requestSignal(callerSignal, WEB_SEARCH_TIMEOUT_MS),
         );
         const output = await createWebToolOutput(search);
         return {
