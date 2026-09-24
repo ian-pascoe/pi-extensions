@@ -18,6 +18,7 @@ import {
   truncateToWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 
 /** Existing tool result payloads; presentation does not change their serialized form. */
 export type ContextToolDetails =
@@ -65,12 +66,7 @@ interface ContextToolArguments {
 }
 
 function safeText(text: string): string {
-  return (
-    stripTerminalSequences(text)
-      .replace(/\r\n?/g, "\n")
-      // oxlint-disable-next-line eslint/no-control-regex -- Keep tabs/newlines, but never execute terminal controls from tool content.
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-  );
+  return stripControlCharacters(stripTerminalSequences(text));
 }
 
 function field(

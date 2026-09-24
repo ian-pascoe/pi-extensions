@@ -46,6 +46,7 @@ import {
   type CodeModeToolSearchPage,
   type CodeModeToolSearchParameters,
 } from "./codemode-tool-contract.js";
+import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 
 /** Names of the four CodeMode tools with semantic Transcript rendering. */
 export type CodeModeRenderedToolName =
@@ -83,13 +84,7 @@ const CODEMODE_SEARCH_DECLARATION_MAX_LINES = 2_000;
 const CodeModeJsonStringSchema = Type.String();
 
 function sanitizeCodeModeText(text: string): string {
-  return (
-    stripTerminalSequences(text)
-      .replaceAll("\r\n", "\n")
-      .replaceAll("\r", "\n")
-      // oxlint-disable-next-line eslint/no-control-regex -- SAFETY: Transcript text permits tabs/newlines but must remove every remaining C0/C1 terminal control.
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-  );
+  return stripControlCharacters(stripTerminalSequences(text));
 }
 
 function boundedCodeModePreview(text: string, width = 72): string {

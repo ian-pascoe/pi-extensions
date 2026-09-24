@@ -63,7 +63,7 @@ import {
   unavailableAgent,
 } from "./minimal-subagents-sessions.js";
 import { shutdownMinimalSubagentsSession } from "./minimal-subagents-shutdown.js";
-import { MinimalSubagentsSettingsWriter } from "./minimal-subagents-settings-writer.js";
+import { writeMinimalSubagentsEnabled } from "./minimal-subagents-settings-writer.js";
 import {
   MinimalSubagentsStatusPanelController,
   type MinimalSubagentsStatusAccess,
@@ -816,15 +816,15 @@ export class MinimalSubagentsLifecycleController {
 
     let persistedScope: "global" | "project" | undefined;
     if (command.scope !== "session") {
-      const writeResult = await new MinimalSubagentsSettingsWriter(
-        context,
-        () => accessSession.agentDir,
-      ).writeMinimalSubagentsEnabled(
-        command.scope,
-        command.action === "reset" ? undefined : command.action === "enable",
-      );
-      if (!writeResult.ok) {
-        context.ui.notify(writeResult.error.message, "error");
+      try {
+        await writeMinimalSubagentsEnabled(
+          context,
+          accessSession.agentDir,
+          command.scope,
+          command.action === "reset" ? undefined : command.action === "enable",
+        );
+      } catch (error) {
+        context.ui.notify(error instanceof Error ? error.message : String(error), "error");
         return;
       }
       persistedScope = command.scope;

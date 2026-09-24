@@ -36,13 +36,12 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@ian-pascoe/pi-utils": "^0.2.0",
     "cross-spawn": "^7.0.6",
-    "proper-lockfile": "^4.1.2",
     "vscode-languageserver-protocol": "^3.18.3"
   },
   "devDependencies": {
-    "@types/cross-spawn": "^6.0.6",
-    "@types/proper-lockfile": "^4.1.4"
+    "@types/cross-spawn": "^6.0.6"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

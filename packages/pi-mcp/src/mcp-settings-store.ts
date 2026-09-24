@@ -1,11 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-
-const LOCK_RETRY_DELAY_MS = 20;
-const LOCK_RETRIES = 99;
-const LOCK_STALE_MS = 10_000;
-const DEFAULT_NEW_FILE_MODE = 0o600;
+import {
+  updateFileLocked,
+  type UpdateFileLockedOptions,
+} from "@ian-pascoe/pi-utils/locked-file-update";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 /** A JSON value accepted by the MCP settings and authentication stores. */
 export type McpStoreJsonValue =
@@ -75,20 +73,18 @@ export interface McpSettingsStoreOptions {
   readonly projectTrusted: boolean;
 }
 
-interface AtomicJsonMutationOptions {
-  readonly fallbackMode?: number;
-  readonly forceMode?: number;
-}
-
-function ok<Value>(value: Value): McpStoreResult<Value> {
+/** Wrap a successful MCP persistence value. */
+export function ok<Value>(value: Value): McpStoreResult<Value> {
   return { ok: true, value };
 }
 
-function err<Value>(error: McpStoreError): McpStoreResult<Value> {
+/** Wrap an expected MCP persistence failure. */
+export function err<Value>(error: McpStoreError): McpStoreResult<Value> {
   return { error, ok: false };
 }
 
-function isNodeErrorCode(cause: unknown, code: string): boolean {
+/** Match a Node.js system error code without trusting the error's shape. */
+export function isNodeErrorCode(cause: unknown, code: string): boolean {
   return cause instanceof Error && "code" in cause && cause.code === code;
 }
 
@@ -145,56 +141,18 @@ function isMcpStoreJsonObject(value: unknown): value is McpStoreJsonObject {
   );
 }
 
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
-}
-
-async function acquireMcpStoreLock(lockPath: string): Promise<McpStoreResult<string>> {
-  for (let attempt = 0; attempt <= LOCK_RETRIES; attempt += 1) {
-    const owner = randomUUID();
-    let created = false;
-    try {
-      const handle = await open(lockPath, "wx", 0o600);
-      created = true;
-      try {
-        await handle.writeFile(owner, "utf8");
-      } catch (cause) {
-        await rm(lockPath, { force: true }).catch(() => undefined);
-        throw cause;
-      } finally {
-        await handle.close();
-      }
-      return ok(owner);
-    } catch (cause) {
-      if (!isNodeErrorCode(cause, "EEXIST")) {
-        if (created) await rm(lockPath, { force: true }).catch(() => undefined);
-        return err(new McpStoreError("io_failure", "acquire lock", lockPath, cause));
-      }
-      try {
-        const lock = await stat(lockPath);
-        if (lock.mtimeMs < Date.now() - LOCK_STALE_MS) {
-          await rm(lockPath, { force: true });
-          continue;
-        }
-      } catch (statCause) {
-        if (isNodeErrorCode(statCause, "ENOENT")) continue;
-        return err(new McpStoreError("io_failure", "inspect lock", lockPath, statCause));
-      }
-      if (attempt === LOCK_RETRIES) {
-        return err(new McpStoreError("lock_timeout", "acquire lock", lockPath, cause));
-      }
-      await sleep(LOCK_RETRY_DELAY_MS);
-    }
-  }
-  return err(new McpStoreError("lock_timeout", "acquire lock", lockPath));
-}
-
-async function releaseMcpStoreLock(lockPath: string, owner: string): Promise<void> {
+function parseJsonObject(
+  text: string,
+  operation: string,
+  path: string,
+): McpStoreResult<McpStoreJsonObject> {
   try {
-    if ((await readFile(lockPath, "utf8")) === owner) await rm(lockPath);
+    const parsed: unknown = JSON.parse(text);
+    if (isMcpStoreJsonObject(parsed)) return ok(parsed);
   } catch {
-    return;
+    // Report malformed JSON without its possibly secret contents.
   }
+  return err(new McpStoreError("invalid_document", operation, path));
 }
 
 async function readJsonObject(
@@ -208,48 +166,28 @@ async function readJsonObject(
     if (isNodeErrorCode(cause, "ENOENT")) return ok(undefined);
     return err(new McpStoreError("io_failure", operation, path, cause));
   }
-
-  try {
-    const parsed: unknown = JSON.parse(text);
-    if (!isMcpStoreJsonObject(parsed)) {
-      return err(new McpStoreError("invalid_document", operation, path));
-    }
-    return ok(parsed);
-  } catch {
-    return err(new McpStoreError("invalid_document", operation, path));
-  }
+  return parseJsonObject(text, operation, path);
 }
 
-async function writeAtomicJsonObject(
+async function updateLockedJson(
   path: string,
-  document: McpStoreJsonObject,
-  options: AtomicJsonMutationOptions,
-): Promise<McpStoreResult<void>> {
-  const temporaryPath = join(dirname(path), `.${randomUUID()}.pi-mcp.tmp`);
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  update: (text: string | undefined) => McpStoreJsonObject | undefined,
+  options: UpdateFileLockedOptions,
+): Promise<McpStoreResult<{ readonly changed: boolean }>> {
   try {
-    let mode = options.forceMode;
-    if (mode === undefined) {
-      try {
-        mode = (await stat(path)).mode & 0o777;
-      } catch (cause) {
-        if (!isNodeErrorCode(cause, "ENOENT")) throw cause;
-        mode = options.fallbackMode ?? DEFAULT_NEW_FILE_MODE;
-      }
-    }
-    handle = await open(temporaryPath, "wx", mode);
-    await handle.writeFile(`${JSON.stringify(document, undefined, 2)}\n`, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await chmod(temporaryPath, mode);
-    await rename(temporaryPath, path);
-    return ok(undefined);
+    const changed = await updateFileLocked(
+      path,
+      (text) => {
+        const next = update(text);
+        return next === undefined ? undefined : `${JSON.stringify(next, undefined, 2)}\n`;
+      },
+      options,
+    );
+    return ok({ changed });
   } catch (cause) {
-    return err(new McpStoreError("io_failure", "write atomic document", path, cause));
-  } finally {
-    await handle?.close().catch(() => undefined);
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (cause instanceof McpStoreError) return err(cause);
+    const code = isNodeErrorCode(cause, "ELOCKED") ? "lock_timeout" : "io_failure";
+    return err(new McpStoreError(code, "update locked document", path, cause));
   }
 }
 
@@ -257,63 +195,46 @@ async function writeAtomicJsonObject(
  * Lock, parse, mutate, and atomically replace one JSON document.
  * Returning undefined from `mutate` leaves the original bytes untouched.
  */
-export async function mutateLockedMcpJsonDocument(
+export function mutateLockedMcpJsonDocument(
   path: string,
   mutate: (current: McpStoreJsonObject | undefined) => McpStoreJsonObject | undefined,
-  options: AtomicJsonMutationOptions = {},
+  options: UpdateFileLockedOptions = {},
 ): Promise<McpStoreResult<{ readonly changed: boolean }>> {
-  try {
-    await mkdir(dirname(path), { mode: 0o700, recursive: true });
-  } catch (cause) {
-    return err(new McpStoreError("io_failure", "create parent directory", path, cause));
-  }
-
-  const lockPath = `${path}.pi-mcp.lock`;
-  const acquired = await acquireMcpStoreLock(lockPath);
-  if (!acquired.ok) return acquired;
-
-  try {
-    const current = await readJsonObject(path, "read document for mutation");
-    if (!current.ok) return current;
-    let next: McpStoreJsonObject | undefined;
-    try {
-      next = mutate(current.value);
-    } catch {
-      return err(new McpStoreError("invalid_mutation", "apply document mutation", path));
-    }
-    if (next === undefined) return ok({ changed: false });
-    if (!isMcpStoreJsonObject(next)) {
-      return err(new McpStoreError("invalid_mutation", "apply document mutation", path));
-    }
-    const written = await writeAtomicJsonObject(path, next, options);
-    return written.ok ? ok({ changed: true }) : written;
-  } finally {
-    await releaseMcpStoreLock(lockPath, acquired.value);
-  }
+  return updateLockedJson(
+    path,
+    (text) => {
+      let current: McpStoreJsonObject | undefined;
+      if (text !== undefined) {
+        const parsed = parseJsonObject(text, "read document for mutation", path);
+        if (!parsed.ok) throw parsed.error;
+        current = parsed.value;
+      }
+      let next: McpStoreJsonObject | undefined;
+      try {
+        next = mutate(current);
+      } catch {
+        throw new McpStoreError("invalid_mutation", "apply document mutation", path);
+      }
+      if (next !== undefined && !isMcpStoreJsonObject(next)) {
+        throw new McpStoreError("invalid_mutation", "apply document mutation", path);
+      }
+      return next;
+    },
+    options,
+  );
 }
 
 /** Replace a malformed or valid JSON document under the same atomic lock. */
 export async function forceReplaceLockedMcpJsonDocument(
   path: string,
   replacement: McpStoreJsonObject,
-  options: AtomicJsonMutationOptions = {},
+  options: UpdateFileLockedOptions = {},
 ): Promise<McpStoreResult<void>> {
   if (!isMcpStoreJsonObject(replacement)) {
     return err(new McpStoreError("invalid_mutation", "replace document", path));
   }
-  try {
-    await mkdir(dirname(path), { mode: 0o700, recursive: true });
-  } catch (cause) {
-    return err(new McpStoreError("io_failure", "create parent directory", path, cause));
-  }
-  const lockPath = `${path}.pi-mcp.lock`;
-  const acquired = await acquireMcpStoreLock(lockPath);
-  if (!acquired.ok) return acquired;
-  try {
-    return await writeAtomicJsonObject(path, replacement, options);
-  } finally {
-    await releaseMcpStoreLock(lockPath, acquired.value);
-  }
+  const replaced = await updateLockedJson(path, () => replacement, options);
+  return replaced.ok ? ok(undefined) : replaced;
 }
 
 function cloneJsonObject(document: McpStoreJsonObject): McpStoreJsonObject {

@@ -64,9 +64,7 @@ export function decideCodeModeToolExposure(
 }
 
 function haveSameNames(leftNames: Iterable<string>, rightNames: Iterable<string>): boolean {
-  const left = new Set(leftNames);
-  const right = new Set(rightNames);
-  return left.size === right.size && [...left].every((name) => right.has(name));
+  return new Set(leftNames).symmetricDifference(new Set(rightNames)).size === 0;
 }
 
 /** Installs policy on one captured Pi session and synchronously reports coherent decisions. */

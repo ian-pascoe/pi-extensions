@@ -21,14 +21,7 @@ import { readJsonDocument, workspacePackageManifestSchema } from "./root-project
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const piMcpPackageName = "@ian-pascoe/pi-mcp";
-const piTpsTrackerPackageName = "@ian-pascoe/pi-tps-tracker";
 const piUtilsPackageName = "@ian-pascoe/pi-utils";
-const piUtilsConsumerPackageNames = new Set([
-  piMcpPackageName,
-  piTpsTrackerPackageName,
-  "@ian-pascoe/pi-advisor",
-  "@ian-pascoe/pi-codemode",
-]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
 
@@ -180,7 +173,7 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
     assertPackCondition(!packedManifest.pi, `${packageName} must not register a Pi extension`);
     return;
   }
-  if (piUtilsConsumerPackageNames.has(packageName)) {
+  if (sourceManifest.dependencies?.[piUtilsPackageName] !== undefined) {
     assertPackCondition(
       packedManifest.dependencies?.[piUtilsPackageName] === `^${piUtilsVersion}`,
       `${packageName} has an invalid ${piUtilsPackageName} dependency`,
@@ -370,7 +363,7 @@ try {
       await runCommand("tar", ["-xOf", tarballPath, "package/package.json"])
     ).stdout;
     validatePackedManifest(manifest, JSON.parse(packedManifestText), piUtilsVersion);
-    const dependsOnPiUtils = piUtilsConsumerPackageNames.has(manifest.name);
+    const dependsOnPiUtils = manifest.dependencies?.[piUtilsPackageName] !== undefined;
     assertPackCondition(
       !dependsOnPiUtils || piUtilsTarballPath !== undefined,
       `${manifest.name} was packed before ${piUtilsPackageName}`,
