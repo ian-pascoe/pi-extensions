@@ -1213,8 +1213,6 @@ export default function (pi) {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));
     temporaryDirectories.push(directory);
     const adapterEntrypoint = join(directory, "tool-adapter.ts");
-    // Retained until @ian-pascoe/pi-codemode retires: its wrapper sits between the policy layers.
-    const codeModeEntrypoint = resolve(import.meta.dirname, "../../pi-codemode/src/index.ts");
     const globalObserverEntrypoint = join(directory, "global-observer.ts");
     const shutdownMarker = join(directory, "shutdown-ran");
     const globalObserverMarker = join(directory, "global-observer-ran");
@@ -1290,7 +1288,7 @@ export default function projectAdapter(pi) {
     writeFileSync(
       join(directory, "settings.json"),
       JSON.stringify({
-        extensions: [adapterEntrypoint, globalObserverEntrypoint, codeModeEntrypoint],
+        extensions: [adapterEntrypoint, globalObserverEntrypoint],
       }),
     );
     const agent = persistedAgent();

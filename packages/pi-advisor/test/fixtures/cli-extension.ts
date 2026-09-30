@@ -5,6 +5,8 @@ import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
   getCurrentTools,
+  type JsonObject,
+  type ToolCall,
 } from "@earendil-works/pi-ai";
 
 /** Offline CLI boundary: real loading, commands, and reviews without network requests. */
@@ -62,9 +64,21 @@ export default function cliFixture(pi: ExtensionAPI): void {
       if (options?.apiKey !== "offline" && options?.apiKey !== "refreshed-offline-access")
         throw new Error("Unexpected CLI fixture authentication");
       console.log(`ADVISOR_CLI_AUTH=${options.apiKey === "offline" ? "api-key" : "oauth"}`);
-      const reviewing = getCurrentTools(context.messages).some(
-        (tool) => tool.name === "advisor_report",
-      );
+      const tools = getCurrentTools(context.messages);
+      const declared = (name: string) => tools.some((tool) => tool.name === name);
+      // Built-in `codemode.mode: "only"` leaves callable direct tools undeclared but listed by codemode.
+      const scripted = (name: string) =>
+        tools.some((tool) => tool.name === "codemode" && tool.description.includes(name));
+      const call = (name: string, args: JsonObject): ToolCall =>
+        declared(name)
+          ? { type: "toolCall", id: name, name, arguments: args }
+          : {
+              type: "toolCall",
+              id: name,
+              name: "codemode",
+              arguments: { code: `return await tools.${name}(${JSON.stringify(args)});` },
+            };
+      const reviewing = declared("advisor_report") || scripted("advisor_report");
       const lastUser = contentText(
         context.messages.findLast((message) => message.role === "user")?.content ?? "",
       );
@@ -83,29 +97,20 @@ export default function cliFixture(pi: ExtensionAPI): void {
         message.content = [{ type: "text", text: "Inspect the native path." }];
         console.log("ADVISOR_CLI_CONSULTATION=Inspect the native path.");
       } else if (reviewing) {
-        message.content = [
-          {
-            type: "toolCall",
-            id: "report",
-            name: "advisor_report",
-            arguments: { severity: "none" },
-          },
-        ];
-        message.stopReason = "toolUse";
+        // A scripted report does not terminate the turn; answer its script result with text.
+        if (context.messages.at(-1)?.role !== "toolResult") {
+          message.content = [call("advisor_report", { severity: "none" })];
+          message.stopReason = "toolUse";
+        }
       } else if (
         lastUser.includes("Ask Advisor which path to inspect") &&
         !context.messages.some(
-          (item) => item.role === "toolResult" && item.toolName === "advisor_ask",
+          (item) =>
+            item.role === "toolResult" &&
+            (item.toolCallId === "advisor_ask" || item.toolName === "advisor_ask"),
         )
       ) {
-        message.content = [
-          {
-            type: "toolCall",
-            id: "ask",
-            name: "advisor_ask",
-            arguments: { message: "Which path should I inspect?" },
-          },
-        ];
+        message.content = [call("advisor_ask", { message: "Which path should I inspect?" })];
         message.stopReason = "toolUse";
       }
       queueMicrotask(() =>

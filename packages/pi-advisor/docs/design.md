@@ -167,7 +167,7 @@ Target the installed Pi 0.99.1 development baseline and check actual exports/cap
 
 Use the native SDK `tools` option as the ongoing tool-name ceiling. It filters executable and descriptive registries on refresh, including dynamic registrations; extensions cannot expand the model-callable set merely by calling `setActiveTools`. There is no public ceiling-update setter, so changing the grant requires recreating the private SDK session, not modifying private fields or adding another authorization framework.
 
-Permission does not guarantee exposure. Inherited CodeMode-only exposure with no permitted CodeMode execution tools can leave the default read grant inactive. Diagnose such incompatible grants/exposure settings clearly rather than silently granting execution tools or changing the inherited exposure mode.
+Pi's built-in `codemode` does not deactivate granted tools: `codemode.mode: "only"` hides direct declarations while they stay active and callable from scripts. Do not grant `codemode` implicitly or change the inherited mode. Diagnose only an advice tool left inactive after extension binding.
 
 Recreate file-backed extension resources with their original ordering and provenance, including resolved CLI resources. Loaded metadata alone cannot recreate arbitrary inline factories or opaque custom loaders. If fresh instances cannot be reconstructed from available owner-supplied resources, report an unsupported-resource error and pause rather than omit extensions, reuse bound handlers, or guess at closed-over state.
 
@@ -182,7 +182,7 @@ Before release, offline SDK checks must establish:
 - Headless final draining and genuinely tracked child correction/final delivery.
 - No stale advice after disable, reload, model/prompt changes, branch navigation, or session replacement.
 - Unchanged ordered observed-agent tool definitions, system prompt, and unaffected message history when merely enabling or running a silent Advisor. Name-set equality alone is insufficient cache proof.
-- Standalone and combined operation with Context Management, Minimal Subagents, and CodeMode, using existing fixtures where applicable.
+- Standalone and combined operation with Context Management, Minimal Subagents, and Pi's built-in `codemode`, using existing fixtures where applicable.
 
 Include a Changeset for every package with releasable implementation changes before opening a PR; follow the repository release gates.
 

@@ -11,7 +11,7 @@ export function discoverPiAgentSession(pi, sessionClass) {
     Object.defineProperty(prototype, "getAllTools", {
         ...descriptor,
         value() {
-            // oxlint-disable-next-line typescript/no-this-alias -- SAFETY: Capturing the exact synchronous receiver is the approved transient AgentSession discovery mechanism; pi-codemode/test/pi-tool-bridge.test.ts verifies descriptor restoration.
+            // oxlint-disable-next-line typescript/no-this-alias -- SAFETY: Capturing the exact synchronous receiver is the approved transient AgentSession discovery mechanism; the finally block restores the original descriptor, and pi-advisor's SDK and CLI tests exercise discovery.
             capturedSession = this;
             return originalGetAllTools.call(this);
         },

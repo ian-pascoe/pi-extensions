@@ -144,7 +144,6 @@ function installChildToolCapabilityPolicy(
   session: AgentSession,
   allowedToolNames: readonly string[],
   runtimeToolAdapters: readonly RuntimeToolAdapter[],
-  preserveGrantedTools = true,
 ): void {
   const isScriptOnly = (name: string) => {
     const exposure = session.getAllTools().find((tool) => tool.name === name)?.exposure;
@@ -157,15 +156,12 @@ function installChildToolCapabilityPolicy(
     // callable without being declared unless an extension activates them.
     applyActiveTools(
       resolveChildActiveToolNames(allowedToolNames, requestedToolNames, runtimeToolAdapters).filter(
-        (name) => requested.has(name) || (preserveGrantedTools && !isScriptOnly(name)),
+        (name) => requested.has(name) || !isScriptOnly(name),
       ),
     );
   };
-  const active = session.getActiveToolNames();
   // Pi's `tools` option also activates script-only grants; drop them before extensions bind.
-  session.setActiveToolsByName(
-    preserveGrantedTools ? active : active.filter((name) => !isScriptOnly(name)),
-  );
+  session.setActiveToolsByName(session.getActiveToolNames().filter((name) => !isScriptOnly(name)));
 }
 
 /** Moves one verified child session file to trash and reports command unavailability. */
@@ -1220,13 +1216,8 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       session.dispose();
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
     }
-    // ponytail: two layers exist only for @ian-pascoe/pi-codemode, whose exposure wrapper
-    // installs between them during bind; collapse to the outer layer when it is retired.
-    // The inner policy bounds extension-selected exposure without restoring hidden grants.
-    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters, false);
-    await session.bindExtensions({ mode: "print" });
-    // The outer policy filters names before extension wrappers build their own tool catalogues.
     installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
+    await session.bindExtensions({ mode: "print" });
     const registeredNames = new Set(session.getAllTools().map((tool) => tool.name));
     const missingCoordinatorTools = coordinatorTools
       .map((tool) => tool.name)

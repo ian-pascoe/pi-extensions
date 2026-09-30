@@ -19,13 +19,14 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                   | Configured automatic post-edit formatting.                   | `pi install npm:@ian-pascoe/pi-formatter`          |
 | [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                               | Configured language-server tools and post-edit diagnostics.  | `pi install npm:@ian-pascoe/pi-lsp`                |
 | [`@ian-pascoe/pi-dap`](packages/pi-dap)                               | Configured Debug Adapter Protocol sessions.                  | `pi install npm:@ian-pascoe/pi-dap`                |
-| [`@ian-pascoe/pi-codemode`](packages/pi-codemode)                     | Persistent TypeScript composition of registered Pi tools.    | `pi install npm:@ian-pascoe/pi-codemode`           |
-| [`@ian-pascoe/pi-mcp`](packages/pi-mcp)                               | Model Context Protocol hosting for configured MCP servers.   | `pi install npm:@ian-pascoe/pi-mcp`                |
 | [`@ian-pascoe/pi-web-tools`](packages/pi-web-tools)                   | Public web search and textual URL retrieval.                 | `pi install npm:@ian-pascoe/pi-web-tools`          |
 | [`@ian-pascoe/pi-todo`](packages/pi-todo)                             | Minimal session-native Todo List for agents.                 | `pi install npm:@ian-pascoe/pi-todo`               |
 | [`@ian-pascoe/pi-context-management`](packages/pi-context-management) | Session Notes, History retrieval, and native Rollover.       | `pi install npm:@ian-pascoe/pi-context-management` |
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
+
+`@ian-pascoe/pi-codemode` and `@ian-pascoe/pi-mcp` are retired in favor of Pi's
+built-in `codemode` and MCP support ([ADR-0004](docs/adr/0004-retire-pi-codemode-and-pi-mcp.md)).
 
 The extensions share terminal capability and native session discovery utilities through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
@@ -69,8 +70,6 @@ packages/pi-git-checkpoints/src/index.ts
 packages/pi-formatter/src/index.ts
 packages/pi-lsp/src/index.ts
 packages/pi-dap/src/index.ts
-packages/pi-codemode/src/index.ts
-packages/pi-mcp/src/index.ts
 packages/pi-web-tools/src/index.ts
 packages/pi-todo/src/index.ts
 packages/pi-context-management/src/index.ts
@@ -89,8 +88,6 @@ packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md
 packages/pi-formatter/skills/pi-formatter/SKILL.md
 packages/pi-lsp/skills/pi-lsp/SKILL.md
 packages/pi-dap/skills/pi-dap/SKILL.md
-packages/pi-codemode/skills/pi-codemode/SKILL.md
-packages/pi-mcp/skills/pi-mcp/SKILL.md
 packages/pi-web-tools/skills/pi-web-tools/SKILL.md
 packages/pi-todo/skills/pi-todo/SKILL.md
 packages/pi-context-management/skills/pi-context-management/SKILL.md
@@ -117,9 +114,6 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi DAP requires a separately managed Debug Adapter executable. The repository's
   `vscode-js-debug` development dependency supports its local Node smoke profile; its files are
   not packed or installed with `@ian-pascoe/pi-dap`.
-- Pi CodeMode installs Deno 2.9.5 and runs TypeScript Cells directly in a
-  permission-denied Deno subprocess; registered Pi tools still execute with
-  their normal host permissions.
 - Pi Web Tools needs outbound network access. `EXA_API_KEY` and
   `PARALLEL_API_KEY` are optional provider credentials.
 - Pi Context Management requires exactly Pi `0.85.1` because its native-checkpoint adapter is version-guarded.
@@ -151,10 +145,6 @@ pnpm --filter @ian-pascoe/pi-git-checkpoints test
 pnpm --filter @ian-pascoe/pi-formatter test
 pnpm --filter @ian-pascoe/pi-lsp test
 pnpm --filter @ian-pascoe/pi-dap test
-pnpm --filter @ian-pascoe/pi-codemode test
-pnpm --filter @ian-pascoe/pi-mcp typecheck
-pnpm --filter @ian-pascoe/pi-mcp test
-pnpm --filter @ian-pascoe/pi-mcp build:cli
 pnpm --filter @ian-pascoe/pi-web-tools typecheck
 pnpm --filter @ian-pascoe/pi-web-tools test
 pnpm --filter @ian-pascoe/pi-todo typecheck

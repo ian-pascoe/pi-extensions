@@ -477,23 +477,10 @@ async function buildAdvisorSession(
     options.signal?.throwIfAborted();
     bindingStarted = true;
     await bind(runtime.session);
-    const active = runtime.session.getActiveToolNames();
-    const bridgeAvailable =
-      config.allowedTools.includes("codemode_execute") && active.includes("codemode_execute");
-    const codeModeLoaded = source
-      .getExtensions()
-      .extensions.some((extension) => extension.tools.has("codemode_execute"));
-    const hiddenGrants = runtime.session
-      .getAllTools()
-      .filter((tool) => config.allowedTools.includes(tool.name) && !active.includes(tool.name));
-    if (
-      (!active.includes(options.adviceTool.name) || (codeModeLoaded && hiddenGrants.length > 0)) &&
-      !bridgeAvailable
-    ) {
+    if (!runtime.session.getActiveToolNames().includes(options.adviceTool.name))
       throw new Error(
-        "Advisor tools are hidden by inherited exposure policy; grant the CodeMode execution tool explicitly or configure direct exposure",
+        `Advisor advice tool is inactive after extension binding: ${options.adviceTool.name}`,
       );
-    }
     options.signal?.throwIfAborted();
     const failure = runtime.diagnostics.find((item) => item.type === "error");
     if (failure) throw new Error(failure.message);

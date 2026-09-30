@@ -12,13 +12,11 @@
         "+packages/pi-git-checkpoints/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
         "+packages/pi-lsp/src/index.ts",
-        "-packages/pi-mcp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-skills-selector/src/index.ts",
         "+packages/pi-todo/src/index.ts",
         "+packages/pi-tps-tracker/src/index.ts",
-        "+packages/pi-web-tools/src/index.ts",
-        "-packages/pi-codemode/src/index.ts"
+        "+packages/pi-web-tools/src/index.ts"
       ],
       "skills": [
         "+packages/pi-advisor/skills/pi-advisor/SKILL.md",
@@ -29,13 +27,11 @@
         "+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
         "-packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md",
         "+packages/pi-lsp/skills/pi-lsp/SKILL.md",
-        "-packages/pi-mcp/skills/pi-mcp/SKILL.md",
         "+packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "+packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
         "+packages/pi-todo/skills/pi-todo/SKILL.md",
         "+packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
-        "+packages/pi-web-tools/skills/pi-web-tools/SKILL.md",
-        "-packages/pi-codemode/skills/pi-codemode/SKILL.md"
+        "+packages/pi-web-tools/skills/pi-web-tools/SKILL.md"
       ]
     },
     {
@@ -50,13 +46,11 @@
         "-packages/pi-git-checkpoints/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
         "-packages/pi-lsp/src/index.ts",
-        "-packages/pi-mcp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-skills-selector/src/index.ts",
         "-packages/pi-todo/src/index.ts",
         "-packages/pi-tps-tracker/src/index.ts",
-        "-packages/pi-web-tools/src/index.ts",
-        "-packages/pi-codemode/src/index.ts"
+        "-packages/pi-web-tools/src/index.ts"
       ],
       "skills": [
         "-packages/pi-advisor/skills/pi-advisor/SKILL.md",
@@ -67,13 +61,11 @@
         "-packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
         "-packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md",
         "-packages/pi-lsp/skills/pi-lsp/SKILL.md",
-        "-packages/pi-mcp/skills/pi-mcp/SKILL.md",
         "-packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "-packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
         "-packages/pi-todo/skills/pi-todo/SKILL.md",
         "-packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
-        "-packages/pi-web-tools/skills/pi-web-tools/SKILL.md",
-        "-packages/pi-codemode/skills/pi-codemode/SKILL.md"
+        "-packages/pi-web-tools/skills/pi-web-tools/SKILL.md"
       ]
     }
   ],
@@ -90,9 +82,6 @@
       "context_history",
       "context_rollover"
     ]
-  },
-  "mcp": {
-    "servers": {}
   },
   "formatter": {
     "formatters": {

@@ -61,9 +61,6 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "allowScripts": {
-    "deno@2.9.6": true
-  },
   "pi": {
     "extensions": [
       "./packages/pi-minimal-subagents/src/index.ts",
@@ -74,8 +71,6 @@
       "./packages/pi-formatter/src/index.ts",
       "./packages/pi-lsp/src/index.ts",
       "./packages/pi-dap/src/index.ts",
-      "./packages/pi-codemode/src/index.ts",
-      "./packages/pi-mcp/src/index.ts",
       "./packages/pi-web-tools/src/index.ts",
       "./packages/pi-todo/src/index.ts",
       "./packages/pi-context-management/src/index.ts",
@@ -91,8 +86,6 @@
       "./packages/pi-formatter/skills",
       "./packages/pi-lsp/skills",
       "./packages/pi-dap/skills",
-      "./packages/pi-codemode/skills",
-      "./packages/pi-mcp/skills",
       "./packages/pi-web-tools/skills",
       "./packages/pi-todo/skills",
       "./packages/pi-context-management/skills",

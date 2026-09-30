@@ -17,6 +17,7 @@ import {
 import {
   AgentSessionRuntime,
   createAgentSessionServices,
+  createCodemodeExtension,
   createAgentSessionFromServices,
   ModelRuntime,
   SessionManager,
@@ -54,11 +55,10 @@ function sessionState(runtime: AgentSessionRuntime | undefined) {
   };
 }
 
-it.each(["none", "direct-only", "both", "codemode-only"] as const)(
-  "preserves exact main inputs and reports native errors (CodeMode exposure: %s)",
-  async (codeModeExposure) => {
-    const combined = codeModeExposure !== "none";
-    const advisorInCodeMode = codeModeExposure === "both" || codeModeExposure === "codemode-only";
+it.each(["none", "on", "only"] as const)(
+  "preserves exact main inputs and reports native errors (built-in codemode: %s)",
+  async (codemodeMode) => {
+    const combined = codemodeMode !== "none";
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
     afterEach(() => vi.useRealTimers());
@@ -119,20 +119,6 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
         modelsPath: null,
         refreshOnCreate: false,
       });
-      // oxlint-disable-next-line anti-slop/no-known-value-widening, anti-slop/no-unsafe-dictionary-type -- SAFETY: Pi 0.99 types `codemode` as its built-in settings, whose fields pi-codemode rejects; pi-codemode validates this document at runtime.
-      const codemode: Record<string, unknown> = {
-        tools: [
-          {
-            pattern: codeModeExposure === "codemode-only" ? "advisor_ask" : "*",
-            exposure:
-              codeModeExposure === "direct-only"
-                ? "direct-only"
-                : codeModeExposure === "codemode-only"
-                  ? "codemode-only"
-                  : "direct-and-codemode",
-          },
-        ],
-      };
       const document = {
         advisor: {
           enabled,
@@ -145,7 +131,8 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
             ...(combined ? ["context_notes", "context_history", "context_rollover"] : []),
           ],
         },
-        codemode,
+        defaultTools: [combined ? "+codemode" : "-codemode"],
+        codemode: { mode: codemodeMode === "only" ? ("only" as const) : ("on" as const) },
         compaction: { enabled: false },
         retry: { enabled: false },
       };
@@ -163,12 +150,18 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
           additionalExtensionPaths: [
             fileURLToPath(new URL("./fixtures/observer-extension.ts", import.meta.url)),
             ...(combined
-              ? ["pi-context-management", "pi-codemode", "pi-minimal-subagents"].map((name) =>
-                  fileURLToPath(new URL(`../../${name}/src/index.ts`, import.meta.url)),
-                )
+              ? [
+                  ...["pi-context-management", "pi-minimal-subagents"].map((name) =>
+                    fileURLToPath(new URL(`../../${name}/src/index.ts`, import.meta.url)),
+                  ),
+                  "builtin:codemode",
+                ]
               : []),
             fileURLToPath(new URL("../src/index.ts", import.meta.url)),
           ],
+          extensionFactories: combined
+            ? [{ name: "codemode", factory: createCodemodeExtension(), builtin: true }]
+            : [],
         },
       });
       const model = modelRuntime.getModel("observer-fixture", "model");
@@ -206,46 +199,41 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
         type: "object",
       },
     };
-    expect(mainRequests[1]).toEqual(
-      codeModeExposure === "codemode-only"
-        ? disabledRequest
-        : { ...disabledRequest, tools: [...(disabledRequest.tools ?? []), askTool] },
-    );
+    // Built-in codemode appends its script declaration to tools that scripts can call.
+    const askSample = `${askTool.description}\n\ncodemode tool declaration:\n\`\`\`ts\ndeclare const tools: { advisor_ask(args: { message: string; }): Promise<string>; };\n\`\`\``;
+    const declaredAsk = codemodeMode === "on" ? { ...askTool, description: askSample } : askTool;
+    // `only` hides direct declarations and lists them in the codemode description instead.
+    const withScriptedAsk = (tools: NonNullable<Context["tools"]> = []) =>
+      tools.map((tool) =>
+        codemodeMode === "only" && tool.name === "codemode"
+          ? { ...tool, description: expect.stringContaining(`### \`advisor_ask\`\n${askSample}`) }
+          : tool,
+      );
+    expect(mainRequests[1]).toEqual({
+      ...disabledRequest,
+      tools:
+        codemodeMode === "only"
+          ? withScriptedAsk(disabledRequest.tools)
+          : [...(disabledRequest.tools ?? []), declaredAsk],
+    });
     const disabledTranscript = sessionTranscript(runtimes[0]);
     const [disabledSystem] = disabledTranscript ?? [];
     if (disabledSystem?.role !== "system") throw new Error("Missing initial system message");
-    const expectedTranscript =
-      codeModeExposure === "codemode-only"
-        ? disabledTranscript
-        : [
-            { ...disabledSystem, toolsAdded: [...(disabledSystem.toolsAdded ?? []), askTool] },
-            ...(disabledTranscript?.slice(1) ?? []),
-          ];
-    expect(sessionTranscript(runtimes[1])).toEqual(expectedTranscript);
+    expect(sessionTranscript(runtimes[1])).toEqual([
+      {
+        ...disabledSystem,
+        toolsAdded: [...withScriptedAsk(disabledSystem.toolsAdded), declaredAsk],
+      },
+      ...(disabledTranscript?.slice(1) ?? []),
+    ]);
     const enabledSession = runtimes[1]?.session;
     if (!enabledSession) throw new Error("Missing enabled session");
-    const searchCodeMode = async (query: string) => {
-      const search = enabledSession.agent.state.tools.find(
-        (tool) => tool.name === "codemode_search",
-      );
-      if (!search) throw new Error("Missing CodeMode search tool");
-      return (
-        await search.execute("advisor-search", { query }, new AbortController().signal, undefined)
-      ).details;
-    };
-    const foreignSearch = advisorInCodeMode ? await searchCodeMode("context_notes") : undefined;
-    if (advisorInCodeMode) expect(await searchCodeMode("advisor_ask")).toMatchObject({ total: 1 });
-    else if (combined)
-      expect(JSON.stringify(await searchCodeMode("advisor_ask"))).not.toContain(
-        '"name":"advisor_ask"',
-      );
+    const codemodeDescription = (runtime: AgentSessionRuntime | undefined) =>
+      runtime?.session.agent.state.tools.find((tool) => tool.name === "codemode")?.description;
+    expect(codemodeDescription(runtimes[1]) === undefined).toBe(!combined);
     for (const runtime of runtimes) await runtime.session.prompt("/advisor off");
-    if (combined) {
-      expect(JSON.stringify(await searchCodeMode("advisor_ask"))).not.toContain(
-        '"name":"advisor_ask"',
-      );
-      if (advisorInCodeMode) expect(await searchCodeMode("context_notes")).toEqual(foreignSearch);
-    }
+    // Disabling withdraws advisor_ask from scripts too, leaving other listings unchanged.
+    expect(codemodeDescription(runtimes[1])).toEqual(codemodeDescription(runtimes[0]));
     for (const runtime of runtimes)
       await runtime.session.prompt("Continue with on-demand advice disabled.");
     expect(mainRequests).toHaveLength(4);
@@ -255,20 +243,34 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
       ...disabledFollowUp,
       messages: conversation(disabledFollowUp?.messages),
     });
-    expect(sessionState(runtimes[1])).toEqual(sessionState(runtimes[0]));
-    expect(sessionTranscript(runtimes[0])?.filter(isSystem)).toHaveLength(1);
-    expect(sessionTranscript(runtimes[1])?.filter(isSystem).slice(1)).toEqual(
-      codeModeExposure === "codemode-only"
-        ? []
-        : [
-            {
-              role: "system",
-              content: "",
-              timestamp: expect.any(Number),
-              toolsRemoved: [{ name: "advisor_ask" }],
-            },
-          ],
+    const disabledState = sessionState(runtimes[0]);
+    const disabledCodemode = disabledState.tools.find((tool) => tool.name === "codemode");
+    // Under `only`, withdrawing advisor_ask changes the codemode listing, so Pi redeclares codemode last.
+    expect(sessionState(runtimes[1])).toEqual(
+      codemodeMode === "only"
+        ? {
+            ...disabledState,
+            tools: [
+              ...disabledState.tools.filter((tool) => tool !== disabledCodemode),
+              disabledCodemode,
+            ],
+          }
+        : disabledState,
     );
+    expect(sessionTranscript(runtimes[0])?.filter(isSystem)).toHaveLength(1);
+    expect(sessionTranscript(runtimes[1])?.filter(isSystem).slice(1)).toEqual([
+      {
+        role: "system",
+        content: "",
+        timestamp: expect.any(Number),
+        ...(codemodeMode === "only"
+          ? {
+              toolsAdded: [disabledCodemode],
+              toolsRemoved: [{ name: "codemode" }, { name: "advisor_ask" }],
+            }
+          : { toolsRemoved: [{ name: "advisor_ask" }] }),
+      },
+    ]);
     await enabledSession.prompt("/advisor on");
     await enabledSession.prompt("Recreate the private Advisor session before restart.");
     expect(reviewRequests).toHaveLength(2);
