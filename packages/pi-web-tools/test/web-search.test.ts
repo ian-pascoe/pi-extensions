@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -98,7 +99,7 @@ async function executeSearch(
     parameters,
     signal,
     undefined,
-    runner.createContext(),
+    toToolContext(runner.createContext()),
   );
 }
 

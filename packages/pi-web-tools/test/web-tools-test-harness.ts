@@ -94,6 +94,7 @@ export async function createWebToolsTestRunner(
       setLabel: (entryId, label) => sessionManager.appendLabelChange(entryId, label),
       getActiveTools: () => [],
       getAllTools: () => [],
+      getSettings: () => ({}),
       setActiveTools: () => undefined,
       refreshTools: () => undefined,
       getCommands: () => [],

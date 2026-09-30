@@ -112,6 +112,7 @@ async function createHarness(hasUI = true): Promise<GitCheckpointsHarness> {
       setLabel: () => undefined,
       getActiveTools: () => [],
       getAllTools: () => [],
+      getSettings: () => ({}),
       setActiveTools: () => undefined,
       refreshTools: () => undefined,
       getCommands: () => [],

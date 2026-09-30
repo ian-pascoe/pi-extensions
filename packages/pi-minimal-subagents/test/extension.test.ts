@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -413,6 +414,7 @@ async function createExtensionHarness(
             name: "read",
             description: "Read a file",
             parameters: Type.Object({}),
+            exposure: "direct",
             sourceInfo: {
               path: "<builtin:read>",
               source: "builtin",
@@ -421,6 +423,7 @@ async function createExtensionHarness(
             },
           },
         ],
+      getSettings: () => ({}),
       setActiveTools: (toolNames) => {
         activeTools = [...toolNames];
       },
@@ -589,6 +592,7 @@ describe("minimal subagents extension lifecycle", () => {
         name: "context_notes",
         description: "Native Notes",
         parameters: Type.Object({}),
+        exposure: "direct",
         sourceInfo: {
           path: "context-management.ts",
           source: "extension",
@@ -606,7 +610,7 @@ describe("minimal subagents extension lifecycle", () => {
           { agent_id: "notes-child", task: "Keep Notes", tools: "none" },
           undefined,
           undefined,
-          harness.runner.createContext(),
+          toToolContext(harness.runner.createContext()),
         );
       expect(result.details).toMatchObject({
         agent: { launch_contract: { ordinary_tools: ["context_notes"] } },
@@ -764,6 +768,7 @@ describe("minimal subagents extension lifecycle", () => {
           name: "exec_command",
           description: "Run a command",
           parameters: Type.Object({}),
+          exposure: "direct",
           sourceInfo: {
             path: adapterEntrypoint,
             source: "npm:@howaboua/pi-codex-conversion@3.0.23",
@@ -775,6 +780,7 @@ describe("minimal subagents extension lifecycle", () => {
           name: "write_stdin",
           description: "Write to a running command",
           parameters: Type.Object({}),
+          exposure: "direct",
           sourceInfo: {
             path: adapterEntrypoint,
             source: "npm:@howaboua/pi-codex-conversion@3.0.23",
@@ -786,6 +792,7 @@ describe("minimal subagents extension lifecycle", () => {
           name: "apply_patch",
           description: "Patch files",
           parameters: Type.Object({}),
+          exposure: "direct",
           sourceInfo: {
             path: adapterEntrypoint,
             source: "npm:@howaboua/pi-codex-conversion@3.0.23",
@@ -797,6 +804,7 @@ describe("minimal subagents extension lifecycle", () => {
           name: "prefix_collision",
           description: "Unrelated package tool",
           parameters: Type.Object({}),
+          exposure: "direct",
           sourceInfo: {
             path: prefixCollisionEntrypoint,
             source: "npm:@howaboua/pi-codex-conversion-other",
@@ -1150,7 +1158,7 @@ describe("minimal subagents extension lifecycle", () => {
       { task: "Continue after disable", agent_id: "running-child", delegation: "fanout" },
       undefined,
       undefined,
-      harness.runner.createContext(),
+      toToolContext(harness.runner.createContext()),
     );
     await vi.waitFor(() => {
       expect(sessionFactory.runtimes.get("running-child")?.isRunning).toBe(true);
@@ -1226,7 +1234,13 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.sessionFactory.openedAgentIds).toEqual([]);
     const statusTool = harness.runner.getToolDefinition("subagent_status")!;
     await expect(
-      statusTool.execute("status-a", {}, undefined, undefined, harness.runner.createContext()),
+      statusTool.execute(
+        "status-a",
+        {},
+        undefined,
+        undefined,
+        toToolContext(harness.runner.createContext()),
+      ),
     ).resolves.toMatchObject({
       details: { agents: [{ agent_id: "branch-a" }] },
     });
@@ -1240,7 +1254,13 @@ describe("minimal subagents extension lifecycle", () => {
     await harness.runner.emit(sessionTreeEvent);
     expect(harness.sessionFactory.openedAgentIds).toEqual([]);
     await expect(
-      statusTool.execute("status-b", {}, undefined, undefined, harness.runner.createContext()),
+      statusTool.execute(
+        "status-b",
+        {},
+        undefined,
+        undefined,
+        toToolContext(harness.runner.createContext()),
+      ),
     ).resolves.toMatchObject({
       details: { agents: [{ agent_id: "branch-b" }] },
     });
@@ -1263,7 +1283,7 @@ describe("minimal subagents extension lifecycle", () => {
       { task: "Complete a lifecycle delivery", agent_id: "delivery-child" },
       undefined,
       undefined,
-      harness.runner.createContext(),
+      toToolContext(harness.runner.createContext()),
     );
     await vi.waitFor(() => {
       expect(harness.sessionFactory.createdAgentIds).toEqual(["delivery-child"]);
@@ -1429,7 +1449,7 @@ describe("minimal subagents extension lifecycle", () => {
       { task: "Remain active through shutdown", agent_id: "active-child" },
       undefined,
       undefined,
-      harness.runner.createContext(),
+      toToolContext(harness.runner.createContext()),
     );
     await vi.waitFor(() => {
       expect(sessionFactory.runtimes.get("active-child")?.isRunning).toBe(true);

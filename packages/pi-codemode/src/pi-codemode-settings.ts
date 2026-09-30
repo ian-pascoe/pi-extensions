@@ -22,6 +22,8 @@ type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 type PiSettingsDocument = ReturnType<SettingsManager["getGlobalSettings"]>;
+/** Pi 0.99 types its own built-in `codemode` settings under the same key. */
+type PiCodemodeSettings = NonNullable<PiSettingsDocument["codemode"]>;
 type SettingsScope = "global" | "project";
 type ParsedRuleResult =
   | { readonly ok: true; readonly rule: CodeModeExposureRule }
@@ -60,7 +62,9 @@ export type ResolvedCodeModeSettings =
     }
   | { readonly enabled: false; readonly warning: string };
 
-function isJsonObject(value: JsonValue): value is Readonly<Record<string, JsonValue>> {
+function isJsonObject(
+  value: JsonValue | PiCodemodeSettings,
+): value is Readonly<Record<string, JsonValue>> {
   return Value.Check(JsonObjectSchema, value);
 }
 

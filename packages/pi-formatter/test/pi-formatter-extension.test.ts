@@ -84,6 +84,7 @@ async function createFormatterHarness(
       setLabel: () => undefined,
       getActiveTools: () => [],
       getAllTools: () => [],
+      getSettings: () => ({}),
       setActiveTools: () => undefined,
       refreshTools: () => undefined,
       getCommands: () => [],

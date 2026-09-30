@@ -44,7 +44,7 @@
     "runtime-typescript": "npm:typescript@6.0.3"
   },
   "devDependencies": {
-    "@howaboua/pi-codex-conversion": "3.0.37",
+    "@howaboua/pi-codex-conversion": "3.0.39",
     "typescript": "^7.0.2"
   },
   "peerDependencies": {

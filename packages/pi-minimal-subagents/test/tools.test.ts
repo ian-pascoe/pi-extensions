@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -78,13 +79,15 @@ async function createToolExecutionContext() {
     authPath: join(tmpdir(), "minimal-subagents-tools-auth.json"),
     modelsPath: null,
   });
-  return new ExtensionRunner(
-    extensions.extensions,
-    extensions.runtime,
-    cwd,
-    SessionManager.inMemory(cwd),
-    new ModelRegistry(modelRuntime),
-  ).createContext();
+  return toToolContext(
+    new ExtensionRunner(
+      extensions.extensions,
+      extensions.runtime,
+      cwd,
+      SessionManager.inMemory(cwd),
+      new ModelRegistry(modelRuntime),
+    ).createContext(),
+  );
 }
 
 describe("minimal subagents coordinator tools", () => {

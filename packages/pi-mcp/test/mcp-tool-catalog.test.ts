@@ -1,7 +1,7 @@
 import { fromJsonSchema, type JSONValue, type JsonSchemaType } from "@modelcontextprotocol/client";
 import type {
   AgentToolResult,
-  ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -21,7 +21,7 @@ import { createMcpSchemaValidator } from "../src/mcp-json-schema.js";
 import { parseMcpResultDetails } from "../src/mcp-presentation.js";
 
 // SAFETY: Catalog execution only forwards this context to the recording runtime, which never reads it.
-const TEST_CONTEXT = {} as ExtensionContext;
+const TEST_CONTEXT = {} as ExtensionToolContext;
 
 class RecordingPi implements McpToolCatalogPi {
   readonly tools = new Map<string, ToolDefinition & { readonly outputSchema?: JsonSchemaType }>();

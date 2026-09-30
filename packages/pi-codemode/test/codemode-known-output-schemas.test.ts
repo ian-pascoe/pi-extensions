@@ -105,7 +105,7 @@ describe("known CodeMode output schemas", () => {
       expect(
         resolveKnownToolOutputSchema({
           name,
-          sourceInfo: sourceInfo("builtin", "top-level", `<builtin:${name}>`),
+          sourceInfo: sourceInfo("builtin", "top-level", `builtin:${name}`),
         }),
       ).toBe(schema);
     }

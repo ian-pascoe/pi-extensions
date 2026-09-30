@@ -5,7 +5,7 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   truncateHead,
-  type ExtensionContext,
+  type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -115,7 +115,7 @@ class RecordingDapSession {
 }
 
 async function createToolFixture(): Promise<{
-  readonly context: ExtensionContext;
+  readonly context: ExtensionToolContext;
   readonly cwd: string;
   readonly runtime: DapToolRuntime;
   readonly session: RecordingDapSession;
@@ -125,7 +125,7 @@ async function createToolFixture(): Promise<{
   const session = new RecordingDapSession();
   const sessionFiles = await createDapSessionFiles(cwd);
   // SAFETY: Tool execution only observes cwd; this fixture supplies that complete public surface.
-  const context = { cwd } as ExtensionContext;
+  const context = { cwd } as ExtensionToolContext;
   return { context, cwd, runtime: { session, sessionFiles }, session };
 }
 

@@ -119,6 +119,20 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
         modelsPath: null,
         refreshOnCreate: false,
       });
+      // oxlint-disable-next-line anti-slop/no-known-value-widening, anti-slop/no-unsafe-dictionary-type -- SAFETY: Pi 0.99 types `codemode` as its built-in settings, whose fields pi-codemode rejects; pi-codemode validates this document at runtime.
+      const codemode: Record<string, unknown> = {
+        tools: [
+          {
+            pattern: codeModeExposure === "codemode-only" ? "advisor_ask" : "*",
+            exposure:
+              codeModeExposure === "direct-only"
+                ? "direct-only"
+                : codeModeExposure === "codemode-only"
+                  ? "codemode-only"
+                  : "direct-and-codemode",
+          },
+        ],
+      };
       const document = {
         advisor: {
           enabled,
@@ -131,19 +145,7 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
             ...(combined ? ["context_notes", "context_history", "context_rollover"] : []),
           ],
         },
-        codemode: {
-          tools: [
-            {
-              pattern: codeModeExposure === "codemode-only" ? "advisor_ask" : "*",
-              exposure:
-                codeModeExposure === "direct-only"
-                  ? "direct-only"
-                  : codeModeExposure === "codemode-only"
-                    ? "codemode-only"
-                    : "direct-and-codemode",
-            },
-          ],
-        },
+        codemode,
         compaction: { enabled: false },
         retry: { enabled: false },
       };
@@ -247,7 +249,7 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
     for (const runtime of runtimes)
       await runtime.session.prompt("Continue with on-demand advice disabled.");
     expect(mainRequests).toHaveLength(4);
-    // Pi 0.87 declares the removed tool with an appended delta instead of rewriting the prefix.
+    // Pi 0.99 declares the removed tool with an appended delta instead of rewriting the prefix.
     const [disabledFollowUp, enabledFollowUp] = mainRequests.slice(2);
     expect({ ...enabledFollowUp, messages: conversation(enabledFollowUp?.messages) }).toEqual({
       ...disabledFollowUp,
