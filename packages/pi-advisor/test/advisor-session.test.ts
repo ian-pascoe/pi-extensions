@@ -120,12 +120,12 @@ function entry(session: AgentSessionRuntime["session"], customType: string) {
 }
 
 describe("private Advisor native sessions", () => {
-  it("recreates the native inline llama extension with fresh handlers through private reload", async () => {
+  it("recreates the native built-in llama extension with fresh handlers through private reload", async () => {
     const { default: factory } = await import(
       pathToFileURL(join(getPackageDir(), "dist", "extensions", "llama", "index.js")).href
     );
     const { observed, dir } = await observedFixture([fixture], undefined, false, undefined, [
-      { name: "llama.cpp", hidden: true, factory },
+      { name: "llama.cpp", factory, builtin: true },
     ]);
     vi.stubEnv("PI_PACKAGE_DIR", dir);
     try {
@@ -193,6 +193,27 @@ describe("private Advisor native sessions", () => {
       expect(calls).toBe(1);
     },
   );
+
+  it("rejects a host factory under a built-in name without replaying it", async () => {
+    let calls = 0;
+    const { observed } = await observedFixture([fixture], undefined, false, undefined, [
+      {
+        name: "codemode",
+        builtin: true,
+        factory(pi) {
+          calls++;
+          pi.registerCommand("custom-builtin", { async handler() {} });
+        },
+      },
+    ]);
+    await expect(
+      createAdvisorSession(observed, {
+        config: readAdvisorSettings(observed).settings,
+        adviceTool,
+      }),
+    ).rejects.toThrow("builtin:codemode does not match Pi's built-in extension");
+    expect(calls).toBe(1);
+  });
 
   it("still rejects custom OAuth storage rather than copying its credentials", async () => {
     const credentials = new InMemoryCredentialStore();
@@ -289,10 +310,11 @@ describe("private Advisor native sessions", () => {
 
   it("diagnoses CodeMode-only exposure without widening the grant or changing its mode", async () => {
     const codeMode = fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url));
-    const document = {
-      codemode: { mode: "on" as const, tools: [{ pattern: "*", exposure: "codemode-only" }] },
-      compaction: { enabled: false },
+    // oxlint-disable-next-line anti-slop/no-known-value-widening, anti-slop/no-unsafe-dictionary-type -- SAFETY: Pi 0.99 types `codemode` as its built-in settings, whose fields pi-codemode rejects; pi-codemode validates this document at runtime.
+    const codemode: Record<string, unknown> = {
+      tools: [{ pattern: "*", exposure: "codemode-only" }],
     };
+    const document = { codemode, compaction: { enabled: false } };
     const { observed } = await observedFixture(
       [fixture, codeMode],
       SettingsManager.inMemory(document),

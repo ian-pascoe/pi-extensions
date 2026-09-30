@@ -168,7 +168,7 @@ export function resolveKnownToolOutputSchema(
 ): CodeModeToolSchema | undefined {
   if (
     tool.sourceInfo.source === "builtin" &&
-    tool.sourceInfo.path === `<builtin:${tool.name}>` &&
+    tool.sourceInfo.path === `builtin:${tool.name}` &&
     tool.sourceInfo.scope === "temporary" &&
     tool.sourceInfo.origin === "top-level"
   ) {

@@ -50,6 +50,7 @@ it.each([
             ],
           },
           codemode: { tools: [{ pattern: "read", exposure: "codemode-only" }] },
+          extensions: ["-builtin:tool-search"],
         }),
       );
       const completed = execute(
@@ -57,7 +58,6 @@ it.each([
         [
           cli,
           "--offline",
-          "--no-extensions",
           "--no-skills",
           "--no-prompt-templates",
           "--no-themes",
@@ -118,8 +118,12 @@ it.each([
         expect(review.extensions.at(-1)).toMatchObject({
           resolvedPath: "<inline:advisor-control>",
         });
-        expect(review.extensions).toContainEqual(
-          expect.objectContaining({ resolvedPath: "<inline:llama.cpp>", hidden: true }),
+        for (const name of ["llama.cpp", "codemode", "mcp"])
+          expect(review.extensions).toContainEqual(
+            expect.objectContaining({ resolvedPath: `builtin:${name}`, hidden: true }),
+          );
+        expect(review.extensions).not.toContainEqual(
+          expect.objectContaining({ resolvedPath: "builtin:tool-search" }),
         );
       }
       expect(output.match(/^ADVISOR_CLI_CONSULTATION=Inspect the native path\.$/gm)).toHaveLength(
