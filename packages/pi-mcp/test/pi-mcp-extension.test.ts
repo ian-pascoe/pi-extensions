@@ -73,6 +73,7 @@ async function createRunner(session?: PiMcpExtensionSession): Promise<ExtensionR
       appendEntry: (customType, data) => sessionManager.appendCustomEntry(customType, data),
       getActiveTools: () => [],
       getAllTools: () => [],
+      getSettings: () => ({}),
       getCommands: () => [],
       getSessionName: () => undefined,
       getThinkingLevel: () => "medium",

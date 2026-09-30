@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -118,6 +119,7 @@ async function createExtensionHarness(
       setLabel: (entryId, label) => sessionManager.appendLabelChange(entryId, label),
       getActiveTools: () => [],
       getAllTools: () => [],
+      getSettings: () => ({}),
       setActiveTools: () => undefined,
       refreshTools: () => undefined,
       getCommands: () => [],
@@ -234,7 +236,7 @@ describe("Pi LSP extension lifecycle", () => {
         { operation: "status" },
         undefined,
         undefined,
-        harness.runner.createContext(),
+        toToolContext(harness.runner.createContext()),
       );
     };
     expect(await status()).toMatchObject({
@@ -370,7 +372,7 @@ describe("Pi LSP extension lifecycle", () => {
         { operation: "capabilities", server_id: "fake", file_path: resolve(root, "source.ts") },
         undefined,
         undefined,
-        harness.runner.createContext(),
+        toToolContext(harness.runner.createContext()),
       );
     }
     expect(await command.getArgumentCompletions?.("sto")).toEqual([
@@ -394,7 +396,7 @@ describe("Pi LSP extension lifecycle", () => {
       { operation: "status" },
       undefined,
       undefined,
-      harness.runner.createContext(),
+      toToolContext(harness.runner.createContext()),
     );
     const text = result.content.find((item) => item.type === "text");
     if (text?.type !== "text") throw new Error("Expected status text");
@@ -410,7 +412,7 @@ describe("Pi LSP extension lifecycle", () => {
       { operation: "capabilities", server_id: "fake", file_path: resolve(firstRoot, "source.ts") },
       undefined,
       undefined,
-      harness.runner.createContext(),
+      toToolContext(harness.runner.createContext()),
     );
     await shutdownExtension(harness);
   });
@@ -549,7 +551,7 @@ describe("Pi LSP extension lifecycle", () => {
           { operation: "status" },
           undefined,
           undefined,
-          session.extensionRunner.createContext(),
+          toToolContext(session.extensionRunner.createContext()),
         );
       };
       expect(await status()).toMatchObject({ details: { operation: "status" } });

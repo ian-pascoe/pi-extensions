@@ -132,6 +132,7 @@ it.each(["none", "direct-only", "both", "codemode-only"] as const)(
           ],
         },
         codemode: {
+          mode: "on" as const,
           tools: [
             {
               pattern: codeModeExposure === "codemode-only" ? "advisor_ask" : "*",

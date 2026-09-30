@@ -38,7 +38,7 @@
   "dependencies": {
     "cross-spawn": "^7.0.6",
     "proper-lockfile": "^4.1.2",
-    "vscode-languageserver-protocol": "^3.18.3"
+    "vscode-languageserver-protocol": "^3.18.4"
   },
   "devDependencies": {
     "@types/cross-spawn": "^6.0.6",

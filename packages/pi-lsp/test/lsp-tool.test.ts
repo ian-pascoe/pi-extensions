@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentToolResult,
-  ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
@@ -117,7 +117,7 @@ class RecordingLspToolRegistrar implements LspToolRegistrar {
 
 interface LspToolFixture {
   readonly client: RecordingLspClient;
-  readonly context: ExtensionContext;
+  readonly context: ExtensionToolContext;
   readonly dependencies: LspToolDependencies;
   readonly filePath: string;
   readonly sessionFiles: LspSessionFiles;
@@ -177,7 +177,7 @@ async function createToolFixture(
   const tool = registrar.tools[0];
   if (tool === undefined) throw new Error("Expected registered LSP tool");
   // SAFETY: Tool execution only reads cwd from ExtensionContext; the recording fixture supplies that complete observed surface.
-  const context = { cwd } as ExtensionContext;
+  const context = { cwd } as ExtensionToolContext;
   return {
     client,
     context,

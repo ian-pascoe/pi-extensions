@@ -290,7 +290,7 @@ describe("private Advisor native sessions", () => {
   it("diagnoses CodeMode-only exposure without widening the grant or changing its mode", async () => {
     const codeMode = fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url));
     const document = {
-      codemode: { tools: [{ pattern: "*", exposure: "codemode-only" }] },
+      codemode: { mode: "on" as const, tools: [{ pattern: "*", exposure: "codemode-only" }] },
       compaction: { enabled: false },
     };
     const { observed } = await observedFixture(

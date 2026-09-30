@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import {
   initTheme,
   type AgentToolResult,
@@ -23,7 +24,7 @@ async function registeredTool(name: string) {
   return {
     tool,
     session: harness.session,
-    context: harness.session.extensionRunner.createContext(),
+    context: toToolContext(harness.session.extensionRunner.createContext()),
   };
 }
 
