@@ -270,6 +270,7 @@ describe("DAP tool contract", () => {
     expect(result.details).toMatchObject({
       presentation: { kind: "execution_wait", operation: "continue", cancelled: true },
     });
+    expect(result.structuredContent).toEqual(result.details);
   });
 
   test("bounds presentation rows and values without bounding the raw result", async () => {

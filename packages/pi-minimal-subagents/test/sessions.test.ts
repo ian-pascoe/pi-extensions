@@ -958,7 +958,7 @@ describe("minimal subagent sessions", () => {
     });
   });
 
-  it("loads all configured extensions except the coordinator entrypoint", async () => {
+  it("loads configured and enabled built-in extensions except the coordinator entrypoint", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-resources-"));
     temporaryDirectories.push(directory);
     const coordinatorEntrypoint = join(directory, "index.ts");
@@ -970,7 +970,7 @@ describe("minimal subagent sessions", () => {
     writeFileSync(
       join(directory, "settings.json"),
       JSON.stringify({
-        extensions: [coordinatorEntrypoint, selectedEntrypoint, otherEntrypoint],
+        extensions: [coordinatorEntrypoint, selectedEntrypoint, otherEntrypoint, "-builtin:mcp"],
       }),
     );
     const loader = createChildResourceLoader({
@@ -987,29 +987,21 @@ describe("minimal subagent sessions", () => {
     expect(loader.getExtensions().extensions.map((extension) => extension.resolvedPath)).toEqual([
       selectedEntrypoint,
       otherEntrypoint,
+      "builtin:codemode",
+      "builtin:tool-search",
     ]);
   });
 
-  it.each([
-    "standalone",
-    "direct-only",
-    "direct-and-codemode",
-    "codemode-only",
-    "codemode-only-all",
-  ])(
+  it.each(["standalone", "codemode", "codemode-only"] as const)(
     "keeps configured context tools and ordered definitions across child turns and restoration (%s)",
-    async (exposure) => {
-      const withCodeMode = exposure !== "standalone";
-      const hiddenContextTools = exposure.startsWith("codemode-only");
-      const hiddenCoordinatorTools = exposure === "codemode-only-all";
+    async (mode) => {
+      const withCodeMode = mode !== "standalone";
       const coordinatorToolNames = ["agent_message", "subagent_wait", "subagent_status"];
-      const notesCall = hiddenContextTools
+      const notesCall = withCodeMode
         ? {
-            name: "codemode_execute",
+            name: "codemode",
             arguments: {
-              script:
-                'return { notes: await tools.context_notes({ action: "list" }), coordination: await tools.subagent_status({}), names: Object.keys(tools).sort() };',
-              wait: true,
+              code: 'return { notes: await tools.context_notes({ action: "list" }), coordination: await tools.subagent_status({}), script: await tools.script_tool({}), names: ALL_TOOLS.map((tool) => tool.name).sort() };',
             },
           }
         : { name: "context_notes", arguments: { action: "list" } };
@@ -1022,7 +1014,16 @@ describe("minimal subagent sessions", () => {
         providerPath,
         `import { appendFileSync } from "node:fs";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 export default function (pi) {
+  pi.registerTool({
+    name: "script_tool",
+    label: "script_tool",
+    description: "script-only test tool",
+    exposure: "codemode",
+    parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text", text: "script ok" }], details: {} }; },
+  });
   pi.registerProvider("provider", {
     api: "openai-completions",
     baseUrl: "http://127.0.0.1:1/v1",
@@ -1052,25 +1053,13 @@ export default function (pi) {
         extensions: [
           providerPath,
           resolve(import.meta.dirname, "../../pi-context-management/src/index.ts"),
-          ...(withCodeMode ? [resolve(import.meta.dirname, "../../pi-codemode/src/index.ts")] : []),
         ],
         minimalSubagents: {
-          baseToolset: ["context_*", ...(withCodeMode ? ["codemode_*"] : [])],
+          baseToolset: ["context_*", "script_tool", ...(withCodeMode ? ["codemode"] : [])],
           readToolset: [],
           modifyToolset: [],
         },
-        codemode: {
-          tools: [
-            {
-              pattern: hiddenCoordinatorTools ? "*" : "context_*",
-              exposure: hiddenContextTools
-                ? "codemode-only"
-                : withCodeMode
-                  ? exposure
-                  : "direct-and-codemode",
-            },
-          ],
-        },
+        codemode: { mode: mode === "codemode-only" ? "only" : "on" },
         compaction: { enabled: false },
         retry: { enabled: false },
       };
@@ -1079,15 +1068,8 @@ export default function (pi) {
         "context_notes",
         "context_history",
         "context_rollover",
-        ...(withCodeMode
-          ? [
-              "codemode_execute",
-              "codemode_result",
-              "codemode_cancel",
-              "codemode_sessions",
-              "codemode_search",
-            ]
-          : []),
+        "script_tool",
+        ...(withCodeMode ? ["codemode"] : []),
       ];
       const createCoordinator = () => {
         const config = resolveMinimalSubagentsSettings(
@@ -1189,37 +1171,35 @@ export default function (pi) {
           .map((line) => JSON.parse(line));
         expect(requests).toHaveLength(6);
         const tools = getCurrentTools(requests[0]!.messages);
-        expect(tools.map((tool) => tool.name)).toEqual([
-          ...(hiddenContextTools ? toolNames.slice(3) : toolNames),
-          ...(hiddenCoordinatorTools ? [] : coordinatorToolNames),
-        ]);
+        expect(tools.map((tool) => tool.name)).toEqual(
+          // Granted script-only tools stay undeclared.
+          mode === "codemode-only"
+            ? ["codemode"]
+            : [...toolNames.filter((name) => name !== "script_tool"), ...coordinatorToolNames],
+        );
         expect(getCurrentSystemPrompt(requests[0]!.messages)).toContain("Context Management:");
         for (const request of requests.slice(1)) {
           expect(getCurrentTools(request.messages)).toEqual(tools);
         }
         for (const index of [1, 3, 5]) {
-          expect(requests[index]?.messages.at(-1)).toMatchObject({
+          const result = requests[index]?.messages.at(-1);
+          expect(result).toMatchObject({
             role: "toolResult",
             toolName: notesCall.name,
             isError: false,
-            details: hiddenContextTools
-              ? {
-                  result: "success",
-                  data: {
-                    notes: { details: { notes: [], total: 0, nextOffset: null } },
-                    coordination: { details: { agents: [] } },
-                    names: [
-                      "agent_message",
-                      "codemode_search",
-                      "context_history",
-                      "context_notes",
-                      "context_rollover",
-                      "subagent_status",
-                      "subagent_wait",
-                    ],
-                  },
-                }
-              : { notes: [], total: 0, nextOffset: null },
+          });
+          if (!withCodeMode) {
+            expect(result).toMatchObject({ details: { notes: [], total: 0, nextOffset: null } });
+            continue;
+          }
+          const content = result?.role === "toolResult" ? result.content : [];
+          const output = content.at(-1);
+          // Coordinator tools resolve to structured objects; context_notes has no outputSchema.
+          expect(JSON.parse(output?.type === "text" ? output.text : "")).toEqual({
+            notes: JSON.stringify({ notes: [], total: 0, nextOffset: null }),
+            coordination: { parent_id: "notes-child", agents: [] },
+            script: "script ok",
+            names: [...coordinatorToolNames, ...toolNames.slice(0, 4)].sort(),
           });
         }
       } finally {
@@ -1233,7 +1213,6 @@ export default function (pi) {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));
     temporaryDirectories.push(directory);
     const adapterEntrypoint = join(directory, "tool-adapter.ts");
-    const codeModeEntrypoint = resolve(import.meta.dirname, "../../pi-codemode/src/index.ts");
     const globalObserverEntrypoint = join(directory, "global-observer.ts");
     const globalObserverMarker = join(directory, "global-observer-ran");
     const lateToolMarker = join(directory, "late-tool-activated");
@@ -1307,7 +1286,7 @@ export default function projectAdapter(pi) {
     writeFileSync(
       join(directory, "settings.json"),
       JSON.stringify({
-        extensions: [adapterEntrypoint, globalObserverEntrypoint, codeModeEntrypoint],
+        extensions: [adapterEntrypoint, globalObserverEntrypoint],
       }),
     );
     const agent = persistedAgent();
@@ -1597,6 +1576,49 @@ export default function projectAdapter(pi) {
     await expect(factory.resolveLaunchMissingDependencies(agent)).resolves.toEqual([
       "provider/model",
       "write",
+    ]);
+  });
+
+  it("accepts MCP tools only while the built-in MCP extension is enabled", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-mcp-tools-"));
+    temporaryDirectories.push(directory);
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: [],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    const agent = persistedAgent();
+    agent.launch_contract.ordinary_tools = ["codemode", "mcp__docs__search", "read_mcp_resource"];
+    await expect(factory.resolveLaunchMissingDependencies(agent)).resolves.toEqual([]);
+
+    writeFileSync(
+      join(directory, "settings.json"),
+      JSON.stringify({ extensions: ["-builtin:mcp"] }),
+    );
+    const withoutMcp = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL],
+      eligibleModelIds: ["provider/model"],
+      modelScopeRestricted: false,
+      availableToolNames: [],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    await expect(withoutMcp.resolveLaunchMissingDependencies(agent)).resolves.toEqual([
+      "mcp__docs__search",
+      "read_mcp_resource",
     ]);
   });
 });

@@ -454,6 +454,7 @@ describe("registered LSP tool", () => {
       const result = await executeTool(fixture, operationCase.input);
       expect(result.content).toHaveLength(1);
       expect(fixture.client.requests).toEqual(operationCase.requests);
+      expect(result.structuredContent).toEqual(result.details);
       if (operationCase.input.operation === "code_actions") {
         expect(result.details).toMatchObject({
           kind: "operation",

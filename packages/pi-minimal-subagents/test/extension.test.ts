@@ -36,7 +36,9 @@ import { Type } from "typebox";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { COORDINATOR_TOOL_NAMES } from "../src/minimal-subagents-capabilities.js";
 import {
+  availableToolNames,
   createMinimalSubagentsExtension,
+  reachableToolNames,
   type MinimalSubagentsLifecycleEffects,
 } from "../src/minimal-subagents-extension.js";
 import {
@@ -571,6 +573,44 @@ async function emitSessionShutdown(
 ): Promise<void> {
   await harness.runner.emit({ type: "session_shutdown", reason } satisfies SessionShutdownEvent);
 }
+
+describe("root tool capabilities", () => {
+  it("inherits Reachable Tools and excludes hidden tools from the ceiling", () => {
+    const tool = (name: string, exposure: ToolInfo["exposure"]): ToolInfo => ({
+      name,
+      description: name,
+      parameters: Type.Object({}),
+      exposure,
+      sourceInfo: { path: "test.ts", source: "extension", scope: "user", origin: "top-level" },
+    });
+    const pi = {
+      getActiveTools: () => ["read", "codemode", "subagent"],
+      getAllTools: () => [
+        tool("read", "direct"),
+        tool("bash", "direct"),
+        tool("codemode", "model-only"),
+        tool("mcp__docs__search", "codemode"),
+        tool("found_later", "deferred"),
+        tool("withdrawn", "hidden"),
+        tool("subagent", "direct"),
+      ],
+    };
+
+    expect(reachableToolNames(pi)).toEqual([
+      "read",
+      "codemode",
+      "mcp__docs__search",
+      "found_later",
+    ]);
+    expect(availableToolNames(pi)).toEqual([
+      "read",
+      "bash",
+      "codemode",
+      "mcp__docs__search",
+      "found_later",
+    ]);
+  });
+});
 
 describe("minimal subagents extension lifecycle", () => {
   it("applies native toolset settings when the registered subagent tool launches a child", async () => {

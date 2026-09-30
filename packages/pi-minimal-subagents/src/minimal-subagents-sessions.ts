@@ -98,6 +98,18 @@ export interface RuntimeToolAdapter {
   readonly replacements: readonly RuntimeToolReplacement[];
 }
 
+const MCP_RESOURCE_TOOL_NAMES = new Set([
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+  "read_mcp_resource",
+]);
+
+// ponytail: Pi's built-in MCP registers tools only after connecting, so launch checks accept its
+// tool names unverified; a vanished server's tools fail when called instead of at launch.
+function isMcpToolName(toolName: string): boolean {
+  return toolName.startsWith("mcp__") || MCP_RESOURCE_TOOL_NAMES.has(toolName);
+}
+
 /** Resolve the exact active tools permitted by one Child Agent Launch Contract. */
 export function resolveChildActiveToolNames(
   allowedToolNames: readonly string[],
@@ -132,24 +144,23 @@ function installChildToolCapabilityPolicy(
   session: AgentSession,
   allowedToolNames: readonly string[],
   runtimeToolAdapters: readonly RuntimeToolAdapter[],
-  preserveGrantedTools = true,
 ): void {
   const applyActiveTools = session.setActiveToolsByName.bind(session);
   session.setActiveToolsByName = (requestedToolNames) => {
-    const permitted = resolveChildActiveToolNames(
-      allowedToolNames,
-      requestedToolNames,
-      runtimeToolAdapters,
-    );
-    // Inside an exposure wrapper, ordinary tools may intentionally be hidden. The
-    // outer policy restores grants before that wrapper applies its own selection.
+    const requested = new Set(requestedToolNames);
+    const exposures = new Map(session.getAllTools().map((tool) => [tool.name, tool.exposure]));
+    // Granted declared tools stay active; `codemode` and `deferred` grants stay
+    // callable without being declared unless an extension activates them.
     applyActiveTools(
-      preserveGrantedTools
-        ? permitted
-        : permitted.filter((name) => requestedToolNames.includes(name)),
+      resolveChildActiveToolNames(allowedToolNames, requestedToolNames, runtimeToolAdapters).filter(
+        (name) =>
+          requested.has(name) ||
+          (exposures.get(name) !== "codemode" && exposures.get(name) !== "deferred"),
+      ),
     );
   };
-  session.setActiveToolsByName(session.getActiveToolNames());
+  // Start from granted declared tools only; Pi's `tools` option also activates script-only grants.
+  session.setActiveToolsByName([]);
 }
 
 /** Moves one verified child session file to trash and reports command unavailability. */
@@ -1127,6 +1138,11 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       await resourceLoader.reload();
       for (const extension of resourceLoader.getExtensions().extensions) {
         for (const toolName of extension.tools.keys()) names.add(toolName);
+        if (extension.path === "builtin:mcp") {
+          for (const toolName of agent.launch_contract.ordinary_tools) {
+            if (isMcpToolName(toolName)) names.add(toolName);
+          }
+        }
       }
       return names;
     })();
@@ -1174,7 +1190,6 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     ];
     const runtimeToolAdapters = this.options.getRuntimeToolAdapters?.() ?? [];
     const adapterToolNames = new Set(runtimeToolAdapters.flatMap((adapter) => adapter.toolNames));
-    const adaptRuntimeTools = adapterToolNames.size > 0;
     const { session } = await createAgentSession({
       cwd: this.options.cwd,
       agentDir: this.options.agentDir,
@@ -1187,20 +1202,16 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       settingsManager,
       modelRuntime,
     });
-    if (adaptRuntimeTools) session.setActiveToolsByName(allowedToolNames);
-    const initialActiveNames = new Set(session.getActiveToolNames());
-    const missingTools = allowedToolNames.filter((toolName) => !initialActiveNames.has(toolName));
+    const loadedNames = new Set(session.getAllTools().map((tool) => tool.name));
+    const missingTools = allowedToolNames.filter(
+      (toolName) => !loadedNames.has(toolName) && !isMcpToolName(toolName),
+    );
     if (missingTools.length > 0) {
       session.dispose();
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
     }
-    // The inner policy bounds extension-selected exposure without restoring hidden ordinary tools.
-    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters, false);
-    await session.bindExtensions({ mode: "print" });
-    // The outer policy filters names before extension wrappers build their own tool catalogues.
     installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
-    // Exposure policy may route granted Coordinator Tools through another tool;
-    // require their definitions to remain registered, not necessarily direct.
+    await session.bindExtensions({ mode: "print" });
     const registeredNames = new Set(session.getAllTools().map((tool) => tool.name));
     const missingCoordinatorTools = coordinatorTools
       .map((tool) => tool.name)

@@ -271,7 +271,9 @@ async function createDapToolOutput(
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  if (!truncation.truncated) return { content: [{ type: "text", text }], details };
+  if (!truncation.truncated) {
+    return { content: [{ type: "text", text }], details, structuredContent: details };
+  }
 
   const spillPath = await sessionFiles.writeResultSpill(text);
   const normalizedDetails = Value.Parse(DapToolResultDetailsSchema, {
@@ -287,6 +289,7 @@ async function createDapToolOutput(
       },
     ],
     details: normalizedDetails,
+    structuredContent: normalizedDetails,
   };
 }
 

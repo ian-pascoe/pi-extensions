@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { canonicalPath } from "./minimal-subagents-paths.js";
 import type { ProjectContextMode } from "./minimal-subagents-types.js";
@@ -10,6 +11,25 @@ export interface ChildResourceLoaderOptions {
   extensionEntrypoint: string;
   systemPromptBlock: string;
   settingsManager?: SettingsManager;
+}
+
+type InlineExtension = NonNullable<
+  ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"]
+>[number];
+
+/** Pi's exported built-in extensions (Pi 0.99+); older hosts have none, so neither do children. */
+export function childBuiltinExtensions(): InlineExtension[] {
+  // SAFETY: Older Pi hosts lack these exports; the namespace yields undefined rather than failing.
+  const sdk = piCodingAgent as Partial<typeof piCodingAgent>;
+  return (
+    [
+      ["codemode", sdk.createCodemodeExtension],
+      ["tool-search", sdk.createToolSearchExtension],
+      ["mcp", sdk.createMcpExtension],
+    ] as const
+  ).flatMap(([name, create]) =>
+    create ? [{ name, factory: create(), builtin: true, replaceable: true }] : [],
+  );
 }
 
 function createDefaultChildResourceLoaderOptions(
@@ -24,6 +44,7 @@ function createDefaultChildResourceLoaderOptions(
     noContextFiles: false,
     noSkills: false,
     noPromptTemplates: false,
+    extensionFactories: childBuiltinExtensions(),
     extensionsOverride: (base) => ({
       ...base,
       extensions: base.extensions.filter(
