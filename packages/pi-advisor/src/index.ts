@@ -28,7 +28,6 @@ interface WatchedChild {
   observer: AdvisorObserver | undefined;
 }
 const askToolName = "advisor_ask";
-const codeModeToolAvailabilityEvent = "pi-codemode:request-tool-availability";
 const askToolParameters = Type.Object(
   { message: Type.String({ minLength: 1 }) },
   { additionalProperties: false },
@@ -89,17 +88,6 @@ export default function advisor(pi: ExtensionAPI): void {
       return;
     }
     if (!askToolRegistered) return;
-    let handled = false;
-    if (rootSessionId)
-      pi.events.emit(codeModeToolAvailabilityEvent, {
-        sessionId: rootSessionId,
-        toolName: askToolName,
-        available,
-        handled: () => {
-          handled = true;
-        },
-      });
-    if (handled) return;
     const active = pi.getActiveTools();
     if (available === active.includes(askToolName)) return;
     pi.setActiveTools(

@@ -15,20 +15,13 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
-import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
 import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const piMcpPackageName = "@ian-pascoe/pi-mcp";
 const piTpsTrackerPackageName = "@ian-pascoe/pi-tps-tracker";
 const piUtilsPackageName = "@ian-pascoe/pi-utils";
-const piUtilsConsumerPackageNames = new Set([
-  piMcpPackageName,
-  piTpsTrackerPackageName,
-  "@ian-pascoe/pi-advisor",
-  "@ian-pascoe/pi-codemode",
-]);
+const piUtilsConsumerPackageNames = new Set([piTpsTrackerPackageName, "@ian-pascoe/pi-advisor"]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
 
@@ -72,8 +65,8 @@ async function discoverWorkspaceManifests() {
   }
   manifests.sort((left, right) => left.manifest.name.localeCompare(right.manifest.name));
   assertPackCondition(
-    manifests.length === 16,
-    `expected 16 workspace manifests, found ${manifests.length}`,
+    manifests.length === 14,
+    `expected 14 workspace manifests, found ${manifests.length}`,
   );
   return manifests;
 }
@@ -126,7 +119,6 @@ function validatePackedFileList(packageName, files) {
     `skills/${packageSlug}/SKILL.md`,
     "src/index.ts",
   ];
-  if (packageName === piMcpPackageName) requiredPaths.push("dist/pi-mcp-cli.js");
   for (const requiredPath of requiredPaths) {
     assertPackCondition(paths.includes(requiredPath), `${packageName} omits ${requiredPath}`);
   }
@@ -136,8 +128,7 @@ function validatePackedFileList(packageName, files) {
       path === "README.md" ||
       path === "package.json" ||
       path.startsWith("skills/") ||
-      path.startsWith("src/") ||
-      (packageName === piMcpPackageName && path === "dist/pi-mcp-cli.js");
+      path.startsWith("src/");
     assertPackCondition(allowed, `${packageName} unexpectedly packs ${path}`);
   }
 }
@@ -194,55 +185,19 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
     JSON.stringify(packedManifest.pi?.skills) === JSON.stringify(["./skills"]),
     `${packageName} has an invalid pi.skills contract`,
   );
-  if (packageName === piMcpPackageName) {
-    assertPackCondition(
-      packedManifest.bin?.["pi-mcp"] === "dist/pi-mcp-cli.js",
-      `${packageName} has an invalid pi-mcp bin`,
-    );
-    assertPackCondition(
-      packedManifest.scripts?.["build:cli"],
-      `${packageName} omits its build:cli script`,
-    );
-    assertPackCondition(packedManifest.scripts?.prepack, `${packageName} omits its prepack script`);
-  } else {
-    assertPackCondition(!("bin" in packedManifest), `${packageName} contains a bin`);
-    assertPackCondition(!packedManifest.scripts?.build, `${packageName} contains a build script`);
-    assertPackCondition(
-      !packedManifest.scripts?.["build:cli"],
-      `${packageName} contains a build:cli script`,
-    );
-    assertPackCondition(
-      !packedManifest.scripts?.prepack,
-      `${packageName} contains a prepack script`,
-    );
-  }
+  assertPackCondition(!("bin" in packedManifest), `${packageName} contains a bin`);
+  assertPackCondition(!packedManifest.scripts?.build, `${packageName} contains a build script`);
+  assertPackCondition(
+    !packedManifest.scripts?.["build:cli"],
+    `${packageName} contains a build:cli script`,
+  );
+  assertPackCondition(!packedManifest.scripts?.prepack, `${packageName} contains a prepack script`);
   for (const forbiddenField of ["main", "types", "exports"]) {
     assertPackCondition(
       !(forbiddenField in packedManifest),
       `${packageName} contains ${forbiddenField}`,
     );
   }
-  if (packageName === "@ian-pascoe/pi-codemode") {
-    assertPackCondition(
-      packedManifest.dependencies?.deno === "2.9.6" &&
-        packedManifest.dependencies?.["runtime-typescript"] === "npm:typescript@6.0.3",
-      `${packageName} does not pin its Deno-native TypeScript runtime`,
-    );
-    assertPackCondition(
-      !Object.keys(packedManifest.dependencies ?? {}).some((name) => name.includes("quickjs")),
-      `${packageName} still depends on QuickJS`,
-    );
-  }
-}
-
-async function assertTarballRunsPiMcpCli(packageName, installDirectory) {
-  if (packageName !== piMcpPackageName) return;
-  const { stdout } = await runCommand(
-    resolve(installDirectory, "node_modules", ".bin", "pi-mcp"),
-    ["--help"],
-    { cwd: installDirectory },
-  );
-  assertPackCondition(stdout.startsWith("Usage: pi-mcp "), `${packageName} CLI omits help output`);
 }
 
 async function assertTarballLoads(packageName, tarballPath, dependencyTarballs = []) {
@@ -319,13 +274,6 @@ async function assertTarballLoads(packageName, tarballPath, dependencyTarballs =
         loadedSkills.skills[0]?.name === packageName.split("/").at(-1),
       `${packageName} installed configuration skill did not load cleanly`,
     );
-    if (packageName === "@ian-pascoe/pi-codemode") {
-      await assertCodeModeDenoProcessSmoke(
-        resolve(installedPackageDirectory, "src/codemode-worker.ts"),
-        "installed package tarball",
-      );
-    }
-    await assertTarballRunsPiMcpCli(packageName, installDirectory);
   } finally {
     await Promise.all([
       rm(installDirectory, { recursive: true, force: true }),
@@ -387,5 +335,5 @@ try {
 }
 
 console.log(
-  "Validated sixteen package tarballs, fifteen source entrypoints, package skills, the shared utility, and the Pi MCP CLI.",
+  "Validated fourteen package tarballs, thirteen source entrypoints, package skills, and the shared utility.",
 );

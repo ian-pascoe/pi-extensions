@@ -3,7 +3,11 @@ import { chmodSync } from "node:fs";
 import { expect, it } from "vitest";
 import { Type } from "typebox";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { SessionManager, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import {
+  createCodemodeExtension,
+  SessionManager,
+  type ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
 import { readNotes } from "../src/context-store.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
@@ -390,9 +394,21 @@ it("preserves the real Todo extension's live projection across a native Rollover
   ).toBe(false);
 });
 
+/** Pi's built-in codemode registers inactive; SDK sessions add and activate it explicitly. */
+function activateCodemode(session: {
+  getActiveToolNames(): string[];
+  setActiveToolsByName(names: string[]): void;
+}) {
+  session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
+}
+
+const scriptOutput = (message: AgentMessage | undefined) =>
+  message?.role === "toolResult" && message.toolName === "codemode"
+    ? message.content.map((part) => (part.type === "text" ? part.text : "")).join("")
+    : "";
+
 for (const outcome of ["success", "throw", "cancel"] as const) {
-  it(`retains nested Todo mutations after a CodeMode Cell ${outcome}`, async () => {
-    const codeModePath = fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url));
+  it(`retains nested Todo mutations after a codemode script ${outcome}`, async () => {
     const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
     let enteredGate: (() => void) | undefined;
     const atGate = new Promise<void>((resolve) => {
@@ -417,10 +433,11 @@ for (const outcome of ["success", "throw", "cancel"] as const) {
         },
       });
     };
-    const f = await createSdkHarness([gate], {
-      additionalExtensionPaths: [todoPath, codeModePath],
+    const f = await createSdkHarness([createCodemodeExtension(), gate], {
+      additionalExtensionPaths: [todoPath],
     });
     expect(f.session.resourceLoader.getExtensions().errors).toEqual([]);
+    activateCodemode(f.session);
     const ending =
       outcome === "throw"
         ? 'throw new Error("Failure after mutation");'
@@ -428,14 +445,12 @@ for (const outcome of ["success", "throw", "cancel"] as const) {
           ? "await tools.cancel_gate({});"
           : "return 42;";
     f.responses.push(
-      toolCall("codemode_execute", {
-        script: 'await tools.todo({ action: "add", title: "Nested acknowledged Task" }); ' + ending,
-        sessionId: "todo-cell",
-        wait: true,
+      toolCall("codemode", {
+        code: 'await tools.todo({ action: "add", title: "Nested acknowledged Task" }); ' + ending,
       }),
     );
-    if (outcome !== "cancel") f.responses.push(reply("Cell finished."));
-    const running = f.session.prompt("Mutate Todo within a Cell");
+    if (outcome !== "cancel") f.responses.push(reply("Script finished."));
+    const running = f.session.prompt("Mutate Todo within a script");
     if (outcome === "cancel") {
       await atGate;
       await f.session.abort();
@@ -454,11 +469,11 @@ for (const outcome of ["success", "throw", "cancel"] as const) {
     expect(snapshotIndex).toBeGreaterThan(-1);
     expect(messages[snapshotIndex - 1]).toMatchObject({
       role: "toolResult",
-      toolName: "codemode_execute",
+      toolName: "codemode",
     });
     expect(JSON.stringify(messages[snapshotIndex])).toContain("Nested acknowledged Task");
     if (outcome === "throw")
-      expect(JSON.stringify(messages[snapshotIndex - 1])).toContain("Failure after mutation");
+      expect(scriptOutput(messages[snapshotIndex - 1])).toContain("Failure after mutation");
     const prefix = messages.slice(0, snapshotIndex + 1);
     f.responses.push(reply("Still remembered."));
     await f.session.prompt("Continue without changing Todo");
@@ -467,58 +482,43 @@ for (const outcome of ["success", "throw", "cancel"] as const) {
   }, 30_000);
 }
 
-// Includes Deno startup and three Cell/tool round trips on shared CI runners.
-it("keeps a real CodeMode Deno binding alive through native compaction", async () => {
-  const codeModePath = fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url));
-  const f = await createSdkHarness([contextManagement], {
-    additionalExtensionPaths: [codeModePath],
-  });
+it("keeps codemode store() values through native compaction and rejects nested rollover", async () => {
+  const f = await createSdkHarness([contextManagement, createCodemodeExtension()]);
   expect(f.session.resourceLoader.getExtensions().errors).toEqual([]);
-  expect(f.session.getAllTools().map((tool) => tool.name)).toContain("codemode_execute");
+  activateCodemode(f.session);
   f.responses.push(
-    toolCall("codemode_execute", {
-      script: "let retainedBinding = 41; return retainedBinding;",
-      sessionId: "retained",
-      wait: true,
-    }),
-    reply("Binding saved."),
+    toolCall("codemode", { code: 'store("retained", 41); return load("retained");' }),
+    reply("Value saved."),
   );
   await f.session.prompt("OLD-ONLY " + "discard ".repeat(12_000));
-  expect(JSON.stringify(f.requests[1]).includes('"data":41')).toBe(true);
+  expect(scriptOutput(f.requests[1]?.messages.at(-1))).toMatch(/^Script completed[\s\S]*\b41\b/);
   f.responses.push(
     overflow(),
-    toolCall("codemode_execute", {
-      script: "retainedBinding += 1; return retainedBinding;",
-      sessionId: "retained",
-      wait: true,
+    toolCall("codemode", {
+      code: 'const value = load("retained") + 1; store("retained", value); return value;',
     }),
-    reply("Binding survived."),
+    reply("Value survived."),
   );
-  await f.session.prompt("Continue the existing Cell session");
+  await f.session.prompt("Continue with the stored value");
   expect(f.requests).toHaveLength(5);
   expect(JSON.stringify(f.requests[3])).not.toContain("OLD-ONLY");
-  expect(JSON.stringify(f.requests[4]).includes('"data":42')).toBe(true);
+  expect(scriptOutput(f.requests[4]?.messages.at(-1))).toMatch(/^Script completed[\s\S]*\b42\b/);
   f.responses.push(
-    toolCall("codemode_execute", {
-      script:
-        'await tools.context_notes({ action: "write", name: "cell-note", content: "Saved before Cell failure" }); await tools.context_rollover({ handoff: "Unsafe nested Handoff" });',
-      sessionId: "retained",
-      wait: true,
+    toolCall("codemode", {
+      code: 'await tools.context_notes({ action: "write", name: "script-note", content: "Saved before script failure" }); await tools.context_rollover({ handoff: "Unsafe nested Handoff" });',
     }),
     reply("Nested rollover refused."),
   );
   await f.session.prompt("Attempt the unsafe nested operation");
-  expect(readNotes(f.manager).map((note) => note.content)).toContain("Saved before Cell failure");
+  expect(readNotes(f.manager).map((note) => note.content)).toContain("Saved before script failure");
   expect(
     f.manager
       .getBranch()
       .some((entry) => entry.type === "custom" && entry.customType === "pi-context-handoff"),
   ).toBe(false);
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
-  expect(
-    JSON.stringify(f.requests[6]).includes('"result":"failed"'),
-    JSON.stringify(f.requests[6]).slice(-1800),
-  ).toBe(true);
+  const failed = scriptOutput(f.requests[6]?.messages.at(-1));
+  expect(failed, failed).toMatch(/^Script failed[\s\S]*Rollover must be the sole direct tool call/);
 }, 30_000);
 
 for (const position of ["before", "after"]) {

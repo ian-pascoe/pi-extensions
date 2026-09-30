@@ -298,7 +298,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
     name: "context_rollover",
     label: "Context Rollover",
     description:
-      "Save an agent-written Handoff and request an immediate native Context Checkpoint after this tool batch. Must be a standalone direct tool call; never nest in CodeMode.",
+      "Save an agent-written Handoff and request an immediate native Context Checkpoint after this tool batch. Must be a standalone direct tool call; never call it from a codemode script.",
     parameters: RolloverParameters,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>

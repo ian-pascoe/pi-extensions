@@ -12,6 +12,7 @@ import {
 import {
   AgentSessionRuntime,
   createAgentSessionServices,
+  createCodemodeExtension,
   createAgentSessionFromServices,
   ModelRuntime,
   SessionManager,
@@ -20,7 +21,7 @@ import {
 import "./fixtures/hierarchy-extension.js";
 
 it.each([false, true])(
-  "holds CLI-only Advisor child delivery and live hierarchy policy (CM + CodeMode: %s)",
+  "holds CLI-only Advisor child delivery and live hierarchy policy (CM + built-in codemode: %s)",
   async (combined) => {
     const directory = await mkdtemp(join(tmpdir(), "advisor-hierarchy-"));
     vi.stubEnv("PI_CODING_AGENT_DIR", directory);
@@ -34,7 +35,7 @@ it.each([false, true])(
       ...(combined
         ? [
             fileURLToPath(new URL("../../pi-context-management/src/index.ts", import.meta.url)),
-            fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url)),
+            "builtin:codemode",
           ]
         : []),
     ];
@@ -42,7 +43,7 @@ it.each([false, true])(
       join(directory, "settings.json"),
       JSON.stringify({
         extensions: inheritedExtensions,
-        codemode: { tools: [{ pattern: "*", exposure: "direct-and-codemode" }] },
+        defaultTools: [combined ? "+codemode" : "-codemode"],
         minimalSubagents: { enabled: true },
         advisor: {
           enabled: true,
@@ -165,6 +166,9 @@ it.each([false, true])(
           fileURLToPath(new URL("../../pi-minimal-subagents/src/index.ts", import.meta.url)),
           fileURLToPath(new URL("../src/index.ts", import.meta.url)),
         ],
+        extensionFactories: [
+          { name: "codemode", factory: createCodemodeExtension(), builtin: true },
+        ],
       },
     });
     const model = modelRuntime.getModel("hierarchy-fixture", "model");
@@ -182,6 +186,7 @@ it.each([false, true])(
       await runtime.dispose();
     });
     await runtime.session.bindExtensions({ mode: "print" });
+    expect(runtime.session.getActiveToolNames().includes("codemode")).toBe(combined);
     await runtime.session.prompt("Delegate and wait for the verified result.");
     const result = runtime.session.messages.find(
       (message) => message.role === "toolResult" && message.toolName === "subagent_wait",

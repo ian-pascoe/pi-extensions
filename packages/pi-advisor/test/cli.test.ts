@@ -12,7 +12,6 @@ const cli = fileURLToPath(
 );
 const advisor = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const fixture = fileURLToPath(new URL("./fixtures/cli-extension.ts", import.meta.url));
-const codemode = fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url));
 
 it.each([
   [false, false],
@@ -41,15 +40,10 @@ it.each([
         join(agentDir, "settings.json"),
         JSON.stringify({
           advisor: {
-            allowedTools: [
-              "read",
-              "grep",
-              "find",
-              "ls",
-              ...(withCodeMode ? ["codemode_execute"] : []),
-            ],
+            allowedTools: ["read", "grep", "find", "ls", ...(withCodeMode ? ["codemode"] : [])],
           },
-          codemode: { tools: [{ pattern: "read", exposure: "codemode-only" }] },
+          defaultTools: [withCodeMode ? "+codemode" : "-codemode"],
+          codemode: { mode: withCodeMode ? "only" : "on" },
           extensions: ["-builtin:tool-search"],
         }),
       );
@@ -64,7 +58,6 @@ it.each([
           "--no-context-files",
           "-e",
           fixture,
-          ...(withCodeMode ? ["-e", codemode] : []),
           "-e",
           advisor,
           "--provider",
@@ -100,11 +93,11 @@ it.each([
         expect(probe).toMatchObject({
           status: { state: "armed", error: null, backlog: 0, settings: { enabled: true } },
           activeTools: withCodeMode
-            ? expect.arrayContaining(["codemode_execute", "advisor_ask"])
+            ? expect.arrayContaining(["read", "codemode", "advisor_ask"])
             : expect.arrayContaining(["read", "advisor_ask"]),
         });
-        if (withCodeMode)
-          expect(probe).toMatchObject({ activeTools: expect.not.arrayContaining(["read"]) });
+        if (!withCodeMode)
+          expect(probe).toMatchObject({ activeTools: expect.not.arrayContaining(["codemode"]) });
       }
       const resources = [...output.matchAll(/^ADVISOR_CLI_RESOURCES=(.+)$/gm)].map((match) =>
         JSON.parse(match[1] ?? "null"),
@@ -129,12 +122,14 @@ it.each([
       expect(output.match(/^ADVISOR_CLI_CONSULTATION=Inspect the native path\.$/gm)).toHaveLength(
         1,
       );
-      expect(output.match(/^ADVISOR_CLI_INFERENCE=review$/gm)).toHaveLength(4);
+      // Under `codemode.mode: "only"`, each Review reports through a script and then answers its result.
+      const reviewInferences = withCodeMode ? 8 : 4;
+      expect(output.match(/^ADVISOR_CLI_INFERENCE=review$/gm)).toHaveLength(reviewInferences);
       expect(output.match(/^ADVISOR_CLI_INFERENCE=consultation$/gm)).toHaveLength(1);
       expect(output.match(/^ADVISOR_CLI_INFERENCE=observed$/gm)).toHaveLength(4);
       expect(
         output.match(new RegExp(`^ADVISOR_CLI_AUTH=${withOAuth ? "oauth" : "api-key"}$`, "gm")),
-      ).toHaveLength(9);
+      ).toHaveLength(5 + reviewInferences);
       expect(output.match(/^ADVISOR_CLI_REFRESH$/gm) ?? []).toHaveLength(withOAuth ? 1 : 0);
       if (withOAuth) {
         const auth = JSON.parse(await readFile(join(agentDir, "auth.json"), "utf8"));
@@ -145,7 +140,6 @@ it.each([
           expires: 4102444800000,
         });
       }
-      expect(output).not.toContain("Pi CodeMode disabled");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

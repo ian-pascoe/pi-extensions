@@ -8,6 +8,7 @@ import {
 
 declare global {
   var advisorSessionResponses: AssistantMessage[] | undefined;
+  var advisorSessionDeactivatedTool: string | undefined;
 }
 
 /** File-backed provider: the model boundary is entirely offline. */
@@ -51,6 +52,8 @@ export default function sessionFixture(pi: ExtensionAPI): void {
     },
   });
   pi.on("session_start", (_event, ctx) => {
+    const deactivated = globalThis.advisorSessionDeactivatedTool;
+    if (deactivated) pi.setActiveTools(pi.getActiveTools().filter((name) => name !== deactivated));
     pi.appendEntry("fixture-start", {
       privateRole: ctx.sessionManager
         .getBranch()

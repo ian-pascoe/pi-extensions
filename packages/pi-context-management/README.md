@@ -25,7 +25,7 @@ pi -e ./packages/pi-context-management/src/index.ts
 | `/compact`         | Ask the agent to update Notes, write a fresh Handoff, roll over, and then wait for the next user input.                  |
 | `/rollover`        | Request the same pausing preparation directly, including when native compaction has no history to compact.               |
 
-`context_rollover` must be the only direct call in its tool batch. Nested rollover, including through CodeMode, is rejected before checkpoint mutation. The extension does not change CodeMode exposure rules.
+`context_rollover` must be the only direct call in its tool batch. Nested rollover, including from a `codemode` script, is rejected before checkpoint mutation. The extension does not change tool exposure.
 
 Notes use labels rather than filesystem paths. A session branch may hold up to 128 Notes; a Note name is 1–64 characters and content is at most 64,000 UTF-16 units. Lists and search return at most 20 results per page. Exact reads use zero-based UTF-16 offsets and return at most 2,000 units per call. Stable references have the form `context:<source-session>:<entry>`.
 
@@ -43,7 +43,7 @@ When Pi requests normal automatic or manual compaction, Context Management asks 
 
 `/rollover [instructions]` requests pausing preparation directly, even when Pi's native compaction preparation has no history to compact. Its instructions are limited to 2,000 characters. Pi owns `/compact`, including its model/auth and history checks. A redirected SDK `compact()` call rejects with `Compaction cancelled` while asynchronous fresh preparation proceeds; it does not return an immediate checkpoint result. The TUI may likewise display cancellation before the preparation notice. That cancellation is not a completed checkpoint. If preparation is cancelled, fails, or ends without Rollover, the extension reports noncompletion, leaves the existing conversation intact, and does not silently use a stale Handoff or repeatedly nudge the agent. Already acknowledged Notes remain saved; request `/rollover` explicitly to try again.
 
-Actual native overflow is the exception: an Emergency Rollover immediately uses the last saved Handoff, marked stale or absent, rather than attempting another oversized preparation request. Native overflow includes Pi's recoverable truncated-response case. Recover recent work through History. All paths use the same native checkpoint representation. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents and CodeMode processes are not replaced or patched.
+Actual native overflow is the exception: an Emergency Rollover immediately uses the last saved Handoff, marked stale or absent, rather than attempting another oversized preparation request. Native overflow includes Pi's recoverable truncated-response case. Recover recent work through History. All paths use the same native checkpoint representation. Resume, fork, tree navigation, and Pi's existing native inheritance consume that checkpoint directly. Running Child Agents are not replaced or patched.
 
 Manual and threshold compaction are claimed before other `session_before_compact` hooks run, as if Context Management cancelled first. Other hooks therefore cannot veto or delay Rollover preparation, and summarizer overrides such as `pi-claude-bridge` never spend a request on a discarded summary. During native overflow, other hooks may still observe or cancel recovery. If one supplies compaction content, the Emergency Rollover replaces it regardless of load order, and a warning names that extension. Empty observer results cannot trigger Pi's native summarizer fallback. Every Context Checkpoint, including one committed directly by `context_rollover`, emits Pi's `session_compact` event so provider session caches and other listeners observe the new Context Window.
 
@@ -75,6 +75,6 @@ Notes are persisted independently, so an acknowledged Note survives a later fail
 
 Pi defers initial journal flush until an assistant response exists. If the first request is already too large, shorten it before retrying—the extension cannot safely create a durable checkpoint before the first assistant turn.
 
-The extension uses Pi session entries only. It does not edit session files directly, add repository memory files, run a database or daemon, call a background model, use embeddings, replace the subagent framework, or manage CodeMode exposure.
+The extension uses Pi session entries only. It does not edit session files directly, add repository memory files, run a database or daemon, call a background model, use embeddings, replace the subagent framework, or manage tool exposure.
 
 This is privileged extension code: review it before installing it into an agent that can access local files, tools, or credentials.

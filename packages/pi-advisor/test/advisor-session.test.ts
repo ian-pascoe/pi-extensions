@@ -18,6 +18,7 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  createCodemodeExtension,
   defineTool,
   type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
@@ -308,30 +309,41 @@ describe("private Advisor native sessions", () => {
     ).rejects.toThrow(/match.*observed|ordered/i);
   });
 
-  it("diagnoses CodeMode-only exposure without widening the grant or changing its mode", async () => {
-    const codeMode = fileURLToPath(new URL("../../pi-codemode/src/index.ts", import.meta.url));
-    // oxlint-disable-next-line anti-slop/no-known-value-widening, anti-slop/no-unsafe-dictionary-type -- SAFETY: Pi 0.99 types `codemode` as its built-in settings, whose fields pi-codemode rejects; pi-codemode validates this document at runtime.
-    const codemode: Record<string, unknown> = {
-      tools: [{ pattern: "*", exposure: "codemode-only" }],
-    };
-    const document = { codemode, compaction: { enabled: false } };
+  it("keeps the advice tool active under built-in codemode only mode without widening the grant", async () => {
     const { observed } = await observedFixture(
-      [fixture, codeMode],
-      SettingsManager.inMemory(document),
+      [fixture],
+      SettingsManager.inMemory({ codemode: { mode: "only" }, compaction: { enabled: false } }),
+      false,
+      undefined,
+      [{ name: "codemode", factory: createCodemodeExtension(), builtin: true }],
     );
     const config = readAdvisorSettings(observed).settings;
-    await expect(createAdvisorSession(observed, { config, adviceTool })).rejects.toThrow(
-      /exposure|CodeMode/i,
-    );
-    const runtime = await createAdvisorSession(observed, {
-      config: { ...config, allowedTools: [...config.allowedTools, "codemode_execute"] },
+    const direct = await createAdvisorSession(observed, { config, adviceTool });
+    afterEach(async () => {
+      await disposeAdvisorSession(direct);
+    });
+    expect(direct.session.getActiveToolNames()).toEqual([...config.allowedTools, "advisor_report"]);
+    const scripted = await createAdvisorSession(observed, {
+      config: { ...config, allowedTools: [...config.allowedTools, "codemode"] },
       adviceTool,
     });
     afterEach(async () => {
-      await disposeAdvisorSession(runtime);
+      await disposeAdvisorSession(scripted);
     });
-    expect(runtime.session.getActiveToolNames()).toEqual(["codemode_execute"]);
-    expect(runtime.session.getAllTools().map((tool) => tool.name)).not.toContain("bash");
+    expect(scripted.session.getActiveToolNames()).toEqual([
+      ...config.allowedTools,
+      "codemode",
+      "advisor_report",
+    ]);
+    expect(scripted.session.getAllTools().map((tool) => tool.name)).not.toContain("bash");
+    globalThis.advisorSessionDeactivatedTool = "advisor_report";
+    try {
+      await expect(createAdvisorSession(observed, { config, adviceTool })).rejects.toThrow(
+        "Advisor advice tool is inactive after extension binding: advisor_report",
+      );
+    } finally {
+      globalThis.advisorSessionDeactivatedTool = undefined;
+    }
   });
 
   it("requires Context Management grants and keeps granted Notes and journals private", async () => {

@@ -6,8 +6,9 @@ This is the release procedure. Migration implementation publishes nothing.
 
 - Packages version independently through Changesets; no fixed or linked group
   exists.
-- `pi-adaptive-thinking` and `pi-byterover` are retired. They remain on npm only
-  as deprecated historical artifacts and must not return to release automation.
+- `pi-adaptive-thinking`, `pi-byterover`, `@ian-pascoe/pi-codemode`, and
+  `@ian-pascoe/pi-mcp` are retired. They remain on npm only as deprecated
+  historical artifacts and must not return to release automation.
 - Package retirement uses no Changeset because removed workspaces cannot be
   versioned; npm deprecation is the release action.
 - `@ian-pascoe/pi-minimal-subagents`,
@@ -76,7 +77,7 @@ ordinary Changesets/OIDC workflow. No release workflow changes are required.
 
 ## Trusted publishing and guarded automation
 
-Configure npm Trusted Publishing for all thirteen active packages with repository
+Configure npm Trusted Publishing for all eleven active packages with repository
 `ian-pascoe/pi-extensions`, workflow `.github/workflows/release.yml`, and
 protected GitHub environment `npm`. Then set repository variable
 `NPM_PUBLISH_ENABLED=true`.

@@ -9,7 +9,6 @@ packageExtensions:
       "@earendil-works/pi-server": "0.85.0"
 allowBuilds:
   "@google/genai": true
-  deno: false
   esbuild: true
   protobufjs: true
   tesseract.js: true

@@ -15,7 +15,6 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
-import { assertCodeModeDenoProcessSmoke } from "./codemode-worker-smoke.mjs";
 import {
   piSettingsDocumentSchema,
   readJsonDocument,
@@ -92,17 +91,17 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
   const configuredPaths = manifest.pi.extensions;
   const configuredSkillPaths = manifest.pi.skills;
   assertGitInstallCondition(
-    configuredPaths.length === 15,
-    "temporary root manifest does not contain fifteen extension paths",
+    configuredPaths.length === 13,
+    "temporary root manifest does not contain thirteen extension paths",
   );
   assertGitInstallCondition(
     configuredPaths.every((configuredPath) => configuredPath.endsWith("/src/index.ts")),
     "temporary root manifest contains a non-source extension path",
   );
   assertGitInstallCondition(
-    configuredSkillPaths.length === 15 &&
+    configuredSkillPaths.length === 13 &&
       configuredSkillPaths.every((configuredPath) => configuredPath.endsWith("/skills")),
-    "temporary root manifest does not contain fifteen skill paths",
+    "temporary root manifest does not contain thirteen skill paths",
   );
   const resources = await new DefaultPackageManager({
     agentDir: agentDirectory,
@@ -110,8 +109,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     settingsManager: SettingsManager.inMemory(),
   }).resolveExtensionSources([installDirectory], { temporary: true });
   assertGitInstallCondition(
-    resources.skills.length === 15,
-    "temporary install did not expose fifteen package skills",
+    resources.skills.length === 13,
+    "temporary install did not expose thirteen package skills",
   );
   const loadedSkills = loadSkills({
     agentDir: agentDirectory,
@@ -120,8 +119,8 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     skillPaths: resources.skills.map(({ path }) => path),
   });
   assertGitInstallCondition(
-    loadedSkills.diagnostics.length === 0 && loadedSkills.skills.length === 15,
-    "temporary install did not load fifteen valid package skills",
+    loadedSkills.diagnostics.length === 0 && loadedSkills.skills.length === 13,
+    "temporary install did not load thirteen valid package skills",
   );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
@@ -132,17 +131,13 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     `temporary source entrypoints failed to load: ${JSON.stringify(result.errors)}`,
   );
   assertGitInstallCondition(
-    result.extensions.length === 15,
-    "temporary install did not load fifteen extensions",
+    result.extensions.length === 13,
+    "temporary install did not load thirteen extensions",
   );
   assertGitInstallCondition(
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===
       JSON.stringify(entrypoints),
     "temporary install loaded an unexpected extension path order",
-  );
-  await assertCodeModeDenoProcessSmoke(
-    resolve(installDirectory, "packages/pi-codemode/src/codemode-worker.ts"),
-    "production Git copy",
   );
 }
 
@@ -195,5 +190,5 @@ try {
 }
 
 console.log(
-  "Validated the clean npm production Git-install path with the shared utility and fifteen package skills.",
+  "Validated the clean npm production Git-install path with the shared utility and thirteen package skills.",
 );
