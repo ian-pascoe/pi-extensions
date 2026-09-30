@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-context-management
 
+## 0.2.5
+
+### Patch Changes
+
+- feea7eb: Describe nested Rollover rejection in terms of Pi's built-in `codemode` scripts now that `@ian-pascoe/pi-codemode` is retired.
+
 ## 0.2.4
 
 ### Patch Changes

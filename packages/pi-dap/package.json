@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-dap",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "private": false,
   "description": "Configured Debug Adapter Protocol sessions for Pi",
   "keywords": [

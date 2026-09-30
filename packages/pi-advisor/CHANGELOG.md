@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-advisor
 
+## 0.3.3
+
+### Patch Changes
+
+- feea7eb: Drop the `@ian-pascoe/pi-codemode` integration in favor of Pi's built-in `codemode`. `advisor_ask` availability now changes only the active tool set, and Advisor Sessions pause only when the advice tool is inactive after extension binding; built-in `codemode.mode: "only"` keeps granted tools active and callable from scripts.
+
 ## 0.3.2
 
 ### Patch Changes
