@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -170,7 +171,7 @@ describe("Pi DAP extension lifecycle", () => {
           { operation: "status" },
           undefined,
           undefined,
-          harness.runner.createContext(),
+          toToolContext(harness.runner.createContext()),
         );
       };
       expect(await status()).toMatchObject({ details: { operation: "status", state: "idle" } });
@@ -231,7 +232,7 @@ describe("Pi DAP extension lifecycle", () => {
       { operation: "status" },
       undefined,
       undefined,
-      harness.runner.createContext(),
+      toToolContext(harness.runner.createContext()),
     );
     expect(status.details).toMatchObject({ operation: "status", state: "idle" });
 
@@ -277,7 +278,7 @@ describe("Pi DAP extension lifecycle", () => {
       { operation: "launch" },
       undefined,
       undefined,
-      harness.runner.createContext(),
+      toToolContext(harness.runner.createContext()),
     );
     expect(harness.widgetCalls).toContainEqual({ key: "pi-dap", content: expect.any(Function) });
 
@@ -295,7 +296,7 @@ describe("Pi DAP extension lifecycle", () => {
         { operation: "launch" },
         undefined,
         undefined,
-        rpc.runner.createContext(),
+        toToolContext(rpc.runner.createContext()),
       ),
     ).rejects.toThrow("launch requires profile");
     expect(rpc.widgetCalls).toEqual([]);

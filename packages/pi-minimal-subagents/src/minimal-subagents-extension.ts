@@ -138,16 +138,39 @@ function currentConversationMessages(context: ExtensionContext): AgentMessage[] 
   return snapshotCommittedContext(messages, !context.isIdle());
 }
 
+export function availableToolNames(pi: Pick<ExtensionAPI, "getAllTools">): string[] {
+  return excludeCoordinatorTools(
+    pi
+      .getAllTools()
+      .filter((tool) => tool.exposure !== "hidden")
+      .map((tool) => tool.name),
+  );
+}
+
+/** Reachable Tools: active tools plus tools scripts can call without declaring them. */
+export function reachableToolNames(
+  pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools">,
+): string[] {
+  const active = new Set(pi.getActiveTools());
+  return excludeCoordinatorTools(
+    pi
+      .getAllTools()
+      .filter(
+        (tool) =>
+          active.has(tool.name) || tool.exposure === "codemode" || tool.exposure === "deferred",
+      )
+      .map((tool) => tool.name),
+  );
+}
+
 function rootCallerSnapshot(pi: ExtensionAPI, context: ExtensionContext): CallerSnapshot {
   if (!context.model) throw new Error("Minimal subagents spawn: root has no effective model");
-  const activeTools = excludeCoordinatorTools(pi.getActiveTools());
-  const availableTools = excludeCoordinatorTools(pi.getAllTools().map((tool) => tool.name));
   return {
     messages: currentConversationMessages(context),
     model: `${context.model.provider}/${context.model.id}`,
     thinkingLevel: context.thinkingLevel ?? pi.getThinkingLevel(),
-    ordinaryTools: activeTools,
-    capabilityCeiling: availableTools,
+    ordinaryTools: reachableToolNames(pi),
+    capabilityCeiling: availableToolNames(pi),
     spawnEntryId: context.sessionManager.getLeafId() ?? "root",
   };
 }
@@ -561,9 +584,6 @@ export class MinimalSubagentsLifecycleController {
     ) {
       models.push(context.model);
     }
-    const availableToolNames = excludeCoordinatorTools(
-      this.pi.getAllTools().map((tool) => tool.name),
-    );
     const schemas = createCoordinatorToolSchemas(eligibleModelIds);
     let activeCoordinator: MinimalSubagentsCoordinator | undefined;
     const requireActiveCoordinator = (): MinimalSubagentsCoordinator => {
@@ -581,7 +601,7 @@ export class MinimalSubagentsLifecycleController {
       models,
       eligibleModelIds,
       modelScopeRestricted: enabledModelPatterns !== undefined,
-      availableToolNames,
+      availableToolNames: availableToolNames(this.pi),
       getRuntimeToolAdapters: () => codexConversionRuntimeToolAdapters(this.pi),
       projectTrusted: context.isProjectTrusted(),
       maxSubagentDepth: minimalSubagentsConfig.maxSubagentDepth,

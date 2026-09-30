@@ -65,7 +65,7 @@ const pendingQueuesSchema = Type.Object({
   _pendingCustomMessages: Type.Array(Type.Unknown()),
 });
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi 0.87.1 has no selective queue-removal API. Validate its native queue data and remove only exact owned finding identities, never unrelated messages or journal entries.
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi 0.99.1 has no selective queue-removal API. Validate its native queue data and remove only exact owned finding identities, never unrelated messages or journal entries.
 function retractFindings(session: unknown, findings: ReadonlySet<Finding>): void {
   if (!findings.size) return;
   if (!Value.Check(pendingQueuesSchema, session))

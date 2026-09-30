@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -78,13 +79,15 @@ async function createToolExecutionContext() {
     authPath: join(tmpdir(), "minimal-subagents-tools-auth.json"),
     modelsPath: null,
   });
-  return new ExtensionRunner(
-    extensions.extensions,
-    extensions.runtime,
-    cwd,
-    SessionManager.inMemory(cwd),
-    new ModelRegistry(modelRuntime),
-  ).createContext();
+  return toToolContext(
+    new ExtensionRunner(
+      extensions.extensions,
+      extensions.runtime,
+      cwd,
+      SessionManager.inMemory(cwd),
+      new ModelRegistry(modelRuntime),
+    ).createContext(),
+  );
 }
 
 describe("minimal subagents coordinator tools", () => {
@@ -117,7 +120,7 @@ describe("minimal subagents coordinator tools", () => {
     const signal = new AbortController().signal;
 
     const waitTool = requireTool(options, "subagent_wait");
-    await waitTool.execute(
+    const result = await waitTool.execute(
       "wait-call",
       { agent_id: "child", turn_id: "child:older", timeout_ms: 50 },
       signal,
@@ -132,5 +135,8 @@ describe("minimal subagents coordinator tools", () => {
       signal,
       "child:older",
     );
+    // Script callers receive the declared object shape.
+    expect(result.structuredContent).toEqual(result.details);
+    expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
   });
 });

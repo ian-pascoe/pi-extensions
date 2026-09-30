@@ -1,0 +1,3 @@
+# Retire pi-codemode and pi-mcp in favor of Pi built-ins
+
+Pi 0.99 ships `codemode`, `tool_search`, and MCP hosting as built-in extensions, so `pi-codemode` and `pi-mcp` are removed from the repository and every published version is deprecated, following ADR-0003. Their package ADRs remain in git history and are superseded by this decision. No migration code is provided: pi-mcp's Pi-settings server definitions move to Pi's `mcp.json`, and pi-codemode users enable the built-in with `defaultTools: ["+codemode"]`; the npm deprecation message points to this mapping. Packages that integrated with the old extensions target the built-in APIs (`exposure`, `outputSchema` with `structuredContent`, `ctx.executeTool()`) instead.

@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
@@ -160,14 +161,14 @@ describe("Pi Web Tools extension", () => {
       { query: "current facts" },
       undefined,
       (update) => searchUpdates.push(update),
-      runner.createContext(),
+      toToolContext(runner.createContext()),
     );
     const fetchResult = await webFetch.execute(
       "fetch-call",
       { url: "https://example.com/page", format: "text" },
       undefined,
       (update) => fetchUpdates.push(update),
-      runner.createContext(),
+      toToolContext(runner.createContext()),
     );
 
     expect(searchUpdates).toEqual([{ content: [], details: { provider: "exa" } }]);

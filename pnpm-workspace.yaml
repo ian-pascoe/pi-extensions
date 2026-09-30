@@ -9,9 +9,17 @@ packageExtensions:
       "@earendil-works/pi-server": "0.85.0"
 allowBuilds:
   "@google/genai": true
-  deno: false
   esbuild: true
   protobufjs: true
   tesseract.js: true
   tree-sitter-bash: false
   zeromq: false
+minimumReleaseAgeExclude:
+  - "@earendil-works/chord@0.99.1"
+  - "@earendil-works/pi-agent-core@0.99.1"
+  - "@earendil-works/pi-ai@0.99.1"
+  - "@earendil-works/pi-codemode@0.99.1"
+  - "@earendil-works/pi-coding-agent@0.99.1"
+  - "@earendil-works/pi-mcp@0.99.1"
+  - "@earendil-works/pi-telemetry@0.99.1"
+  - "@earendil-works/pi-tui@0.99.1"

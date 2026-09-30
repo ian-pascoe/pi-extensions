@@ -14,8 +14,6 @@ context relevant to the work:
 | `@ian-pascoe/pi-formatter`          | [`packages/pi-formatter/CONTEXT.md`](packages/pi-formatter/CONTEXT.md)                   | Automatic post-edit formatting          |
 | `@ian-pascoe/pi-lsp`                | [`packages/pi-lsp/CONTEXT.md`](packages/pi-lsp/CONTEXT.md)                               | Language-server tools and edit feedback |
 | `@ian-pascoe/pi-dap`                | [`packages/pi-dap/CONTEXT.md`](packages/pi-dap/CONTEXT.md)                               | Interactive debug sessions              |
-| `@ian-pascoe/pi-codemode`           | [`packages/pi-codemode/CONTEXT.md`](packages/pi-codemode/CONTEXT.md)                     | Persistent TypeScript tool composition  |
-| `@ian-pascoe/pi-mcp`                | [`packages/pi-mcp/CONTEXT.md`](packages/pi-mcp/CONTEXT.md)                               | Model Context Protocol hosting          |
 | `@ian-pascoe/pi-web-tools`          | [`packages/pi-web-tools/CONTEXT.md`](packages/pi-web-tools/CONTEXT.md)                   | Public web search and retrieval         |
 | `@ian-pascoe/pi-todo`               | [`packages/pi-todo/CONTEXT.md`](packages/pi-todo/CONTEXT.md)                             | Minimal session work tracking           |
 | `@ian-pascoe/pi-context-management` | [`packages/pi-context-management/CONTEXT.md`](packages/pi-context-management/CONTEXT.md) | Session Notes, History, and Rollover    |

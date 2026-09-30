@@ -8,6 +8,9 @@ import {
   createAgentSessionServices,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
+  createCodemodeExtension,
+  createMcpExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   getPackageDir,
   ModelRuntime,
@@ -20,7 +23,9 @@ import {
   type AgentSessionRuntime,
   type CreateAgentSessionRuntimeFactory,
   type CreateAgentSessionFromServicesOptions,
+  type Extension,
   type ExtensionFactory,
+  type InlineExtension,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { AdvisorConfig } from "./advisor-settings.js";
@@ -51,6 +56,18 @@ const roleSchema = Type.Object({
   observedSessionId: Type.String({ minLength: 1 }),
 });
 
+// Pi 0.99.1 exports fresh factories for these `builtin:<name>` extensions, but not llama.cpp.
+const builtinFactories = new Map<string, () => ExtensionFactory>([
+  ["codemode", createCodemodeExtension],
+  ["tool-search", createToolSearchExtension],
+  ["mcp", createMcpExtension],
+]);
+const registrationNames = ({ tools, commands, flags }: Extension) => [
+  ...[...tools.keys()].map((name) => `tool:${name}`),
+  ...[...commands.keys()].map((name) => `command:${name}`),
+  ...[...flags.keys()].map((name) => `flag:${name}`),
+];
+
 /** Private role is native journal state and is installed before session_start. */
 export function isAdvisorSession(manager: Pick<SessionManager, "getBranch">): boolean {
   return manager
@@ -72,7 +89,7 @@ export async function disposeAdvisorSession(runtime: AgentSessionRuntime): Promi
   }
 }
 
-// Pi 0.87.1 keeps these plain constructor inputs private; public scoped getters omit applyOverrides.
+// Pi 0.99.1 keeps these plain constructor inputs private; public scoped getters omit applyOverrides.
 /* oxlint-disable anti-slop/no-unknown-parameters -- SAFETY: Capability-check native SDK data before copying; offline SDK creation tests cover these inputs. */
 function recreationInputs(
   loader: unknown,
@@ -111,7 +128,7 @@ function recreationInputs(
   if (
     Value.Check(fileAuthSchema, store) &&
     store.authPath === store.storage.authPath &&
-    // Pi 0.87.1's bundled CLI names the same native class _AuthStorage.
+    // Pi 0.99.1's bundled CLI names the same native class _AuthStorage.
     ["AuthStorage", "_AuthStorage"].includes(Object.getPrototypeOf(store)?.constructor.name) &&
     Object.getPrototypeOf(store.storage)?.constructor.name === "FileAuthStorageBackend"
   )
@@ -136,9 +153,9 @@ export async function createAdvisorSession(
   observed: AgentSession,
   options: AdvisorSessionOptions,
 ): Promise<AgentSessionRuntime> {
-  if (VERSION !== "0.87.1")
+  if (VERSION !== "0.99.1")
     throw new Error(
-      `Unsupported Pi ${VERSION}: Advisor's native tool ceiling and session lifecycle are verified on Pi 0.87.1`,
+      `Unsupported Pi ${VERSION}: Advisor's native tool ceiling and session lifecycle are verified on Pi 0.99.1`,
     );
   options.signal?.throwIfAborted();
   const cancelled = Promise.withResolvers<never>();
@@ -200,38 +217,45 @@ async function buildAdvisorSession(
     )
       throw new Error("Advisor resource owner flags do not match the observed flags");
   }
-  const extensionPaths = source.getExtensions().extensions.map((extension) => {
-    if (extension.resolvedPath && !extension.resolvedPath.startsWith("<"))
-      return extension.resolvedPath;
-    // Pi 0.87.1 injects this built-in inline, but ships a fresh file-backed factory.
-    // Match its registration shape, not arbitrary inline closures or hidden extensions.
-    if (
-      extension.path === "<inline:llama.cpp>" &&
+  // Pi 0.99.1 names its built-in extensions `builtin:<name>`; fresh factories must reproduce them.
+  const builtins: InlineExtension[] = [];
+  const recreated = new Set<number>();
+  const extensionPaths = source.getExtensions().extensions.map((extension, index) => {
+    const name = extension.path.slice("builtin:".length);
+    const builtin =
+      extension.path.startsWith("builtin:") &&
       extension.resolvedPath === extension.path &&
-      extension.hidden === true &&
-      extension.commands.size === 1 &&
-      extension.commands.has("llama") &&
-      [
-        extension.handlers,
-        extension.tools,
-        extension.messageRenderers,
-        extension.entryRenderers,
-        extension.flags,
-        extension.shortcuts,
-      ].every((registrations) => !registrations?.size) &&
-      !extension.markdownTransformer
-    ) {
+      extension.sourceInfo.source === "builtin";
+    if (!builtin && extension.resolvedPath && !extension.resolvedPath.startsWith("<"))
+      return extension.resolvedPath;
+    const create = builtinFactories.get(name);
+    if (builtin && create) {
+      recreated.add(index);
+      builtins.push({
+        name,
+        factory: create(),
+        builtin: true,
+        replaceable: extension.replaceable === true,
+      });
+      return extension.path;
+    }
+    // Pi ships a fresh file-backed llama.cpp factory but does not export it.
+    if (builtin && name === "llama.cpp") {
       const path = join(getPackageDir(), "dist", "extensions", "llama", "index.js");
       if (!existsSync(path))
         throw new Error(
           `Unsupported Advisor resources: Pi's built-in llama.cpp file is unavailable (${path})`,
         );
+      recreated.add(index);
       return path;
     }
     throw new Error(
       `Unsupported Advisor resources: inline factories require fresh owner-supplied recreation inputs (${extension.path})`,
     );
   });
+  const registrations = source
+    .getExtensions()
+    .extensions.map((extension) => new Set(registrationNames(extension)));
   const flags = new Map(observed.extensionRunner?.getFlagValues());
   const global = JSON.stringify(observed.settingsManager.getGlobalSettings());
   const project = JSON.stringify(observed.settingsManager.getProjectSettings());
@@ -334,9 +358,25 @@ async function buildAdvisorSession(
         noExtensions: true,
         noContextFiles: true,
         additionalExtensionPaths: extensionPaths,
-        extensionFactories: options.controlExtension
-          ? [{ name: "advisor-control", factory: options.controlExtension }]
-          : [],
+        extensionFactories: [
+          ...builtins,
+          ...(options.controlExtension
+            ? [{ name: "advisor-control", factory: options.controlExtension }]
+            : []),
+        ],
+        // CLI paths load built-ins first; restore the observed order before binding.
+        extensionsOverride: (base) => {
+          const rank = (path: string) => {
+            const index = extensionPaths.indexOf(path);
+            return index < 0 ? extensionPaths.length : index;
+          };
+          return {
+            ...base,
+            extensions: base.extensions.toSorted(
+              (left, right) => rank(left.resolvedPath) - rank(right.resolvedPath),
+            ),
+          };
+        },
         systemPromptOverride: () => config.prompt,
         appendSystemPromptOverride: () => [],
       },
@@ -377,6 +417,14 @@ async function buildAdvisorSession(
       inherited.forEach((original, index) => {
         const fresh = loaded.extensions[index];
         if (!fresh) throw new Error("Advisor inherited extension is unavailable");
+        // A host-supplied factory under a built-in name registers what Pi's own does not.
+        if (
+          recreated.has(index) &&
+          registrationNames(fresh).some((name) => !registrations[index]?.has(name))
+        )
+          throw new Error(
+            `Unsupported Advisor resources: ${original.path} does not match Pi's built-in extension`,
+          );
         fresh.path = original.path;
         fresh.resolvedPath = original.resolvedPath;
         if (original.hidden === undefined) delete fresh.hidden;
@@ -429,23 +477,10 @@ async function buildAdvisorSession(
     options.signal?.throwIfAborted();
     bindingStarted = true;
     await bind(runtime.session);
-    const active = runtime.session.getActiveToolNames();
-    const bridgeAvailable =
-      config.allowedTools.includes("codemode_execute") && active.includes("codemode_execute");
-    const codeModeLoaded = source
-      .getExtensions()
-      .extensions.some((extension) => extension.tools.has("codemode_execute"));
-    const hiddenGrants = runtime.session
-      .getAllTools()
-      .filter((tool) => config.allowedTools.includes(tool.name) && !active.includes(tool.name));
-    if (
-      (!active.includes(options.adviceTool.name) || (codeModeLoaded && hiddenGrants.length > 0)) &&
-      !bridgeAvailable
-    ) {
+    if (!runtime.session.getActiveToolNames().includes(options.adviceTool.name))
       throw new Error(
-        "Advisor tools are hidden by inherited exposure policy; grant the CodeMode execution tool explicitly or configure direct exposure",
+        `Advisor advice tool is inactive after extension binding: ${options.adviceTool.name}`,
       );
-    }
     options.signal?.throwIfAborted();
     const failure = runtime.diagnostics.find((item) => item.type === "error");
     if (failure) throw new Error(failure.message);

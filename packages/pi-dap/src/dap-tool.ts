@@ -32,9 +32,7 @@ type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 type DapToolDefinition = ToolDefinition<
   typeof DapToolProviderParametersSchema,
   DapToolRenderDetails
-> & {
-  readonly outputSchema: typeof DapToolResultDetailsSchema;
-};
+>;
 
 type DapToolSession = Pick<
   DapSession,
@@ -382,7 +380,6 @@ export function createDapToolDefinition(
     ],
     parameters: DapToolProviderParametersSchema,
     prepareArguments: parseDapToolParameters,
-    outputSchema: DapToolResultDetailsSchema,
     renderCall: (argumentsValue, theme, context) =>
       renderDapToolCall(argumentsValue, theme, context.expanded, context.cwd),
     renderResult: (result, options, theme, context) =>

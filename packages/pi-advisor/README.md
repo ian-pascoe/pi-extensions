@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-advisor` reviews a Pi agent's completed work and surfaces concise, attributed findings for material problems and worthwhile low-risk cleanup.
 
-Requires Pi `0.87.1` and Node `>=22.19.0`. Other Pi versions pause review with an explicit compatibility error.
+Requires Pi `0.99.1` and Node `>=22.19.0`. Other Pi versions pause review with an explicit compatibility error.
 
 ## Install
 
@@ -35,7 +35,7 @@ When Advisor is enabled, the main agent can call `advisor_ask({ message })` for 
 
 A Consultation receives only observed context that has not already been supplied to that Advisor. It does not reduce the Review Backlog, create an Intervention, or trigger a Corrective Turn. Its ordinary tool call and result remain in the observed transcript for later Reviews.
 
-The tool is absent while Advisor is disabled. A paused Advisor keeps it visible so the call can report the pause reason and recovery commands. User cancellation stops only that Consultation; an inference, authentication, deadline, or investigative-tool failure pauses Advisor. CodeMode exposure settings continue to decide whether the tool is direct, CodeMode-only, or both.
+The tool is absent while Advisor is disabled. A paused Advisor keeps it visible so the call can report the pause reason and recovery commands. User cancellation stops only that Consultation; an inference, authentication, deadline, or investigative-tool failure pauses Advisor. With Pi's built-in `codemode` active, scripts can call it too; under `codemode.mode: "only"` its declaration is hidden and it is reachable only through `codemode` scripts.
 
 Consultation authorizes analysis and investigation, not implementation or other side effects. The configured Advisor Prompt remains authoritative. Tool Grants still expose each granted tool's full native interface, so exclude mutating tools when a prompt-level boundary is insufficient.
 
@@ -54,13 +54,13 @@ Consultation authorizes analysis and investigation, not implementation or other 
 | Findings per Review            | 4                            |
 | Automatic Corrective Turns     | 1 per request/task           |
 
-A Tool Grant names tools; it does not sandbox their full native interfaces. Explicitly granting `lsp`, for example, permits its native operations, including mutations. Unavailable names are ignored and reported. CodeMode-only tools require an explicitly compatible transport grant; Advisor never adds aliases, autogrants missing tools, or changes CodeMode exposure.
+A Tool Grant names tools; it does not sandbox their full native interfaces. Explicitly granting `lsp`, for example, permits its native operations, including mutations. Unavailable names are ignored and reported. Advisor never autogrants missing tools. Granting `codemode` lets the Advisor script its other granted tools; it inherits the observed `codemode.mode`, so under `"only"` the Advisor calls `advisor_report` from a script.
 
 The Advisor inherits each observed agent's model and thinking level independently unless configured otherwise. One root policy can cover current and future Minimal Subagents descendants when enabled.
 
 ## Sessions and Context Management
 
-Each watched agent has a private, persisted native Advisor Session with fresh, session-bound extension resources. Reviews reuse that session until context or configuration changes require rebuilding. Pi 0.87.1's hidden inline `llama.cpp` built-in is recreated from the installed Pi package's shipped extension file, retaining its ordered metadata and fresh provider state. This is a fixed-version compatibility recipe, not general inline-factory support; it requires the shipped file and the built-in's expected registration shape. Other opaque inline or custom extension resources that cannot be safely recreated are reported as unsupported and pause the Advisor; they are not silently reused or omitted. The Advisor's session state remains separate from the observed agent's state.
+Each watched agent has a private, persisted native Advisor Session with fresh, session-bound extension resources. Reviews reuse that session until context or configuration changes require rebuilding. Pi 0.99.1's enabled `builtin:<name>` extensions are recreated in their observed order: `codemode`, `tool-search`, and `mcp` from Pi's exported factories, and `llama.cpp` from the installed Pi package's shipped extension file, retaining their metadata and fresh provider state. Built-ins disabled with `-builtin:<name>` stay absent. This is a fixed-version compatibility recipe, not general inline-factory support; a host factory registered under a built-in name is rejected. Other opaque inline or custom extension resources that cannot be safely recreated are reported as unsupported and pause the Advisor; they are not silently reused or omitted. The Advisor's session state remains separate from the observed agent's state.
 
 Context Management is optional. If loaded and its tools are granted, `context_notes`, `context_history`, and `context_rollover` operate on the Advisor's private context. If any of those three tools is excluded, the Advisor pauses before reviewing. There is no autogrant or hook bypass.
 

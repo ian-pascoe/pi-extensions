@@ -1,3 +1,4 @@
+import { toToolContext } from "./tool-context.js";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname } from "node:path";
@@ -66,7 +67,13 @@ async function executeFetch(
   const definition = createWebFetchTool(options);
   const runner = await createWebToolsTestRunner((pi) => pi.registerTool(definition));
   expect(runner.getToolDefinition("web_fetch")).toBe(definition);
-  return definition.execute("fetch-call", parameters, signal, undefined, runner.createContext());
+  return definition.execute(
+    "fetch-call",
+    parameters,
+    signal,
+    undefined,
+    toToolContext(runner.createContext()),
+  );
 }
 
 describe("Web Fetch", () => {
