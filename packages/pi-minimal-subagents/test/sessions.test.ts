@@ -1213,7 +1213,10 @@ export default function (pi) {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));
     temporaryDirectories.push(directory);
     const adapterEntrypoint = join(directory, "tool-adapter.ts");
+    // Retained until @ian-pascoe/pi-codemode retires: its wrapper sits between the policy layers.
+    const codeModeEntrypoint = resolve(import.meta.dirname, "../../pi-codemode/src/index.ts");
     const globalObserverEntrypoint = join(directory, "global-observer.ts");
+    const shutdownMarker = join(directory, "shutdown-ran");
     const globalObserverMarker = join(directory, "global-observer-ran");
     const lateToolMarker = join(directory, "late-tool-activated");
     const projectAdapterEntrypoint = join(directory, ".pi", "project-adapter.ts");
@@ -1245,6 +1248,7 @@ export default function adapter(pi) {
       `import { writeFileSync } from "node:fs";
 import { Type } from "typebox";
 export default function globalObserver(pi) {
+  pi.on("session_shutdown", () => writeFileSync(${JSON.stringify(shutdownMarker)}, "ran"));
   pi.on("session_start", () => {
     writeFileSync(${JSON.stringify(globalObserverMarker)}, "ran");
     setTimeout(() => {
@@ -1286,7 +1290,7 @@ export default function projectAdapter(pi) {
     writeFileSync(
       join(directory, "settings.json"),
       JSON.stringify({
-        extensions: [adapterEntrypoint, globalObserverEntrypoint],
+        extensions: [adapterEntrypoint, globalObserverEntrypoint, codeModeEntrypoint],
       }),
     );
     const agent = persistedAgent();
@@ -1346,6 +1350,8 @@ export default function projectAdapter(pi) {
     } finally {
       await runtime.dispose();
     }
+    // Disposal shuts child extensions down so they release services like MCP servers.
+    expect(existsSync(shutdownMarker)).toBe(true);
 
     const shellAgent = persistedAgent();
     shellAgent.agent_id = "shell-child";

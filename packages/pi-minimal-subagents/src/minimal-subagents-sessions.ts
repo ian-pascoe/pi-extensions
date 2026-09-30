@@ -144,23 +144,28 @@ function installChildToolCapabilityPolicy(
   session: AgentSession,
   allowedToolNames: readonly string[],
   runtimeToolAdapters: readonly RuntimeToolAdapter[],
+  preserveGrantedTools = true,
 ): void {
+  const isScriptOnly = (name: string) => {
+    const exposure = session.getAllTools().find((tool) => tool.name === name)?.exposure;
+    return exposure === "codemode" || exposure === "deferred";
+  };
   const applyActiveTools = session.setActiveToolsByName.bind(session);
   session.setActiveToolsByName = (requestedToolNames) => {
     const requested = new Set(requestedToolNames);
-    const exposures = new Map(session.getAllTools().map((tool) => [tool.name, tool.exposure]));
     // Granted declared tools stay active; `codemode` and `deferred` grants stay
     // callable without being declared unless an extension activates them.
     applyActiveTools(
       resolveChildActiveToolNames(allowedToolNames, requestedToolNames, runtimeToolAdapters).filter(
-        (name) =>
-          requested.has(name) ||
-          (exposures.get(name) !== "codemode" && exposures.get(name) !== "deferred"),
+        (name) => requested.has(name) || (preserveGrantedTools && !isScriptOnly(name)),
       ),
     );
   };
-  // Start from granted declared tools only; Pi's `tools` option also activates script-only grants.
-  session.setActiveToolsByName([]);
+  const active = session.getActiveToolNames();
+  // Pi's `tools` option also activates script-only grants; drop them before extensions bind.
+  session.setActiveToolsByName(
+    preserveGrantedTools ? active : active.filter((name) => !isScriptOnly(name)),
+  );
 }
 
 /** Moves one verified child session file to trash and reports command unavailability. */
@@ -643,6 +648,11 @@ class PiChildAgentRuntime implements ChildAgentRuntime {
     this.unsubscribe();
     try {
       await this.observer?.dispose();
+      // Let child extensions release services such as MCP server connections.
+      const runner = this.session.extensionRunner;
+      if (runner.hasHandlers("session_shutdown")) {
+        await runner.emit({ type: "session_shutdown", reason: "quit" });
+      }
     } finally {
       this.session.dispose();
     }
@@ -1210,8 +1220,13 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       session.dispose();
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
     }
-    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
+    // ponytail: two layers exist only for @ian-pascoe/pi-codemode, whose exposure wrapper
+    // installs between them during bind; collapse to the outer layer when it is retired.
+    // The inner policy bounds extension-selected exposure without restoring hidden grants.
+    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters, false);
     await session.bindExtensions({ mode: "print" });
+    // The outer policy filters names before extension wrappers build their own tool catalogues.
+    installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
     const registeredNames = new Set(session.getAllTools().map((tool) => tool.name));
     const missingCoordinatorTools = coordinatorTools
       .map((tool) => tool.name)

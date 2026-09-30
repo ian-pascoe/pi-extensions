@@ -22,7 +22,6 @@ import { LspServerManager } from "../src/lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "../src/lsp-session-files.js";
 import {
   LspToolProviderParametersSchema,
-  LspToolResultDetailsSchema,
   type LspToolParameters,
   type LspToolProviderParameters,
   type LspToolResultDetails,
@@ -215,12 +214,12 @@ afterEach(async () => {
 });
 
 describe("registered LSP tool", () => {
-  test("publishes the final result-details output schema", async () => {
+  test("declares text output so codemode scripts receive complete results", async () => {
     const fixture = await createToolFixture();
     const tool = createLspToolDefinition(() => fixture.dependencies);
 
-    expect(Object.hasOwn(tool, "outputSchema")).toBe(true);
-    expect(tool.outputSchema).toBe(LspToolResultDetailsSchema);
+    // Details omit raw protocol payloads; an outputSchema would hand scripts only them.
+    expect(Object.hasOwn(tool, "outputSchema")).toBe(false);
     await fixture.close();
   });
 
@@ -454,7 +453,6 @@ describe("registered LSP tool", () => {
       const result = await executeTool(fixture, operationCase.input);
       expect(result.content).toHaveLength(1);
       expect(fixture.client.requests).toEqual(operationCase.requests);
-      expect(result.structuredContent).toEqual(result.details);
       if (operationCase.input.operation === "code_actions") {
         expect(result.details).toMatchObject({
           kind: "operation",

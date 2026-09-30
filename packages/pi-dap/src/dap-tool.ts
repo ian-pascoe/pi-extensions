@@ -32,9 +32,7 @@ type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 type DapToolDefinition = ToolDefinition<
   typeof DapToolProviderParametersSchema,
   DapToolRenderDetails
-> & {
-  readonly outputSchema: typeof DapToolResultDetailsSchema;
-};
+>;
 
 type DapToolSession = Pick<
   DapSession,
@@ -271,9 +269,7 @@ async function createDapToolOutput(
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  if (!truncation.truncated) {
-    return { content: [{ type: "text", text }], details, structuredContent: details };
-  }
+  if (!truncation.truncated) return { content: [{ type: "text", text }], details };
 
   const spillPath = await sessionFiles.writeResultSpill(text);
   const normalizedDetails = Value.Parse(DapToolResultDetailsSchema, {
@@ -289,7 +285,6 @@ async function createDapToolOutput(
       },
     ],
     details: normalizedDetails,
-    structuredContent: normalizedDetails,
   };
 }
 
@@ -385,7 +380,6 @@ export function createDapToolDefinition(
     ],
     parameters: DapToolProviderParametersSchema,
     prepareArguments: parseDapToolParameters,
-    outputSchema: DapToolResultDetailsSchema,
     renderCall: (argumentsValue, theme, context) =>
       renderDapToolCall(argumentsValue, theme, context.expanded, context.cwd),
     renderResult: (result, options, theme, context) =>

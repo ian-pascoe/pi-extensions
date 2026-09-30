@@ -182,9 +182,9 @@ Tool Presets are cumulative:
 - `tools: "none"` or `tools: []`: Base Toolset only.
 - `tools: ["read"]`: Base Toolset + exactly `read`; arrays do not expand patterns
   or presets.
-- Omitted `tools`: Base Toolset + the caller's Reachable Tools: its active tools
-  plus tools scripts can call without declaring them (`codemode` or `deferred`
-  exposure, such as MCP tools).
+- Omitted `tools`: Base Toolset + the caller's Reachable Tools: the Root Agent's
+  active tools plus tools scripts can call without declaring them (`codemode` or
+  `deferred` exposure, such as MCP tools), or a Child Agent caller's own grant.
 
 Patterns select from permitted ordinary tool names, including inactive tools
 registered at the root. Their matches are unioned in pattern order, retaining
@@ -211,9 +211,10 @@ unless settings disable them (`-builtin:<name>`); each child connects its own MC
 servers. A tool's exposure still decides whether it is declared or reachable only
 through `codemode` or `tool_search`. Granted `codemode`- or `deferred`-exposed
 tools are callable but not declared, so a child that needs them also needs
-`codemode` or `tool_search` in its grant. Ungranted tools are never registered in
-the child. MCP tools are checked at launch only by name, because children register
-them after connecting; a tool whose server disappeared fails when called.
+`codemode` or `tool_search` in its grant. Ungranted tools are unreachable in the
+child. MCP tools are checked at launch only by name, because children register
+them after connecting; a tool whose server disappeared fails when called. Closing
+a child runtime shuts its extensions down, closing its MCP connections.
 
 ## Capabilities and persistence
 

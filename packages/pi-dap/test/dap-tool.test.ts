@@ -139,11 +139,11 @@ afterEach(async () => {
 });
 
 describe("DAP tool contract", () => {
-  test("publishes the final result-details output schema", () => {
+  test("declares text output so codemode scripts receive complete results", () => {
     const tool = createDapToolDefinition(() => undefined);
 
-    expect(Object.hasOwn(tool, "outputSchema")).toBe(true);
-    expect(tool.outputSchema).toBe(DapToolResultDetailsSchema);
+    // Details are bounded presentation rows; an outputSchema would hand scripts only them.
+    expect(Object.hasOwn(tool, "outputSchema")).toBe(false);
   });
 
   test("preserves exact ordinary, Debuggee output, and Result Spill text", async () => {
@@ -270,7 +270,6 @@ describe("DAP tool contract", () => {
     expect(result.details).toMatchObject({
       presentation: { kind: "execution_wait", operation: "continue", cancelled: true },
     });
-    expect(result.structuredContent).toEqual(result.details);
   });
 
   test("bounds presentation rows and values without bounding the raw result", async () => {

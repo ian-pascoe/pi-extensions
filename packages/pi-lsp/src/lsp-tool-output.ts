@@ -61,11 +61,7 @@ export async function createLspToolOutput(
   const normalizedDetails = Value.Parse(LspToolResultDetailsSchema, details);
   const truncated = await truncateLspOutputText(text, sessionFiles, "output");
   if (truncated.spillPath === undefined) {
-    return {
-      content: [{ type: "text", text }],
-      details: normalizedDetails,
-      structuredContent: normalizedDetails,
-    };
+    return { content: [{ type: "text", text }], details: normalizedDetails };
   }
 
   const detailsWithSpill =
@@ -78,6 +74,5 @@ export async function createLspToolOutput(
   return {
     content: [{ type: "text", text: truncated.text }],
     details: detailsWithSpill,
-    structuredContent: detailsWithSpill,
   };
 }
