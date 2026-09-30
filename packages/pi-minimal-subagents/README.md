@@ -156,9 +156,8 @@ spawn attempts; the root retains recursive hierarchy management.
 
 ## Toolsets
 
-Configure ordinary tools using case-sensitive minimatch patterns, with the same
-syntax as CodeMode Exposure Patterns. These are lists of pattern strings, not
-CodeMode exposure-rule objects. For example:
+Configure ordinary tools using case-sensitive minimatch pattern strings. For
+example:
 
 ```json
 {
@@ -183,14 +182,15 @@ Tool Presets are cumulative:
 - `tools: "none"` or `tools: []`: Base Toolset only.
 - `tools: ["read"]`: Base Toolset + exactly `read`; arrays do not expand patterns
   or presets.
-- Omitted `tools`: Base Toolset + the caller's inherited ordinary tools.
+- Omitted `tools`: Base Toolset + the caller's Reachable Tools: the Root Agent's
+  active tools plus tools scripts can call without declaring them (`codemode` or
+  `deferred` exposure, such as MCP tools), or a Child Agent caller's own grant.
 
 Patterns select from permitted ordinary tool names, including inactive tools
 registered at the root. Their matches are unioned in pattern order, retaining
 registry order within each pattern and removing duplicates at first occurrence.
 Each pattern is independent: a negated minimatch pattern matches its complement;
-it does not subtract earlier matches or implement CodeMode's last-rule-wins
-exposure policy. Coordinator Tools remain separately controlled by delegation.
+it does not subtract earlier matches. Coordinator Tools remain separately controlled by delegation.
 
 Invalid configuration entries and patterns matching no permitted ordinary tools
 warn and are skipped. Configured tools unavailable in child resources are also
@@ -206,11 +206,15 @@ still apply; the saved grant is not silently rewritten. Toolsets configure names
 not tool operations: granting `lsp`, `dap`, or another multifunction tool grants
 that tool's available operations, regardless of preset name.
 
-CodeMode still controls whether a granted tool is direct, CodeMode-only, or both.
-If a child needs CodeMode-only tools, also grant `codemode_*` in its toolsets so
-it has the tools needed to discover and call them. This does not bypass CodeMode's
-own restrictions on nested calls. Exposure rules also apply to injected
-Coordinator Tools; delegation still determines which Coordinator Tools are granted.
+Child Agents load Pi's built-in `codemode`, `tool-search`, and `mcp` extensions
+unless settings disable them (`-builtin:<name>`); each child connects its own MCP
+servers. A tool's exposure still decides whether it is declared or reachable only
+through `codemode` or `tool_search`. Granted `codemode`- or `deferred`-exposed
+tools are callable but not declared, so a child that needs them also needs
+`codemode` or `tool_search` in its grant. Ungranted tools are unreachable in the
+child. MCP tools are checked at launch only by name, because children register
+them after connecting; a tool whose server disappeared fails when called. Closing
+a child runtime shuts its extensions down, closing its MCP connections.
 
 ## Capabilities and persistence
 

@@ -12,6 +12,7 @@ Provide persistent, capability-bounded nested agents whose hierarchy, conversati
 - **Subagent Access** — the Root Agent's branch-scoped enabled or disabled availability of Coordinator Tools; disabling it does not interrupt existing Child Agents or their result delivery.
 - **Base Toolset** — the configured ordinary-tool capabilities included in every new Child Agent, regardless of its tool selection, within its parent's capability ceiling.
 - **Tool Preset** — a named selection of configured ordinary-tool capabilities: Read adds discovery capabilities to the Base Toolset; Modify adds further capabilities to Read. Preset names are not operation-level permission boundaries.
+- **Reachable Tools** — the ordinary tools an agent can invoke: its active tools plus registered tools callable from `codemode` (`codemode` or `deferred` exposure). An omitted tool selection inherits the caller's Reachable Tools, not only its declared tools.
 - **Launch Contract** — the immutable model, tool, context, delegation, and depth capabilities captured when a Child Agent is created.
 - **Runtime Profile** — the model and thinking level currently used by a Child Agent, initially derived from its Launch Contract but able to diverge during the session.
 - **Registry** — append-only, active-branch Registry V2 JSONL records that reconstruct agents, turns, deletions, clock-stamped activity, and the Delivery Ledger; valid V1 records migrate on replay.

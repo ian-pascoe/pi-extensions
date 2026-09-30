@@ -74,7 +74,6 @@ import {
   LspToolOperationRequirements,
   LspToolParametersSchema,
   LspToolProviderParametersSchema,
-  LspToolResultDetailsSchema,
   LspWorkspaceEditPreviewRecordSchema,
   MutationManifestSchema,
   type LspToolParameters,
@@ -200,9 +199,7 @@ export interface LspToolDependencies {
 type LspToolDefinition = ToolDefinition<
   typeof LspToolProviderParametersSchema,
   LspToolResultDetails
-> & {
-  readonly outputSchema: typeof LspToolResultDetailsSchema;
-};
+>;
 
 interface LspReadValue {
   readonly root_path: string;
@@ -1089,7 +1086,6 @@ export function createLspToolDefinition(
       "Use lsp read operations for semantic source navigation and diagnostics; use preview-producing lsp operations followed by lsp apply for language-server mutations.",
     ],
     parameters: LspToolProviderParametersSchema,
-    outputSchema: LspToolResultDetailsSchema,
     renderCall: (argumentsValue, theme, context) =>
       renderLspToolCall(argumentsValue, theme, context.expanded, context.cwd),
     renderResult: (result, options, theme, context) =>

@@ -125,6 +125,7 @@ function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
   return {
     content: [{ type: "text" as const, text: truncated.content }],
     details: result,
+    structuredContent: JSON.parse(json),
   };
 }
 
@@ -235,13 +236,15 @@ export function createCoordinatorToolDefinitions(
             signal,
             parameters.turn_id,
           );
+          const details = {
+            ...result,
+            source_agent_id: result.agent_id,
+            source_turn_id: result.turn_id,
+          };
           return {
             ...structuredToolResult(result),
-            details: {
-              ...result,
-              source_agent_id: result.agent_id,
-              source_turn_id: result.turn_id,
-            },
+            details,
+            structuredContent: JSON.parse(JSON.stringify(details)),
           };
         });
       } finally {

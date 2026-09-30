@@ -120,7 +120,7 @@ describe("minimal subagents coordinator tools", () => {
     const signal = new AbortController().signal;
 
     const waitTool = requireTool(options, "subagent_wait");
-    await waitTool.execute(
+    const result = await waitTool.execute(
       "wait-call",
       { agent_id: "child", turn_id: "child:older", timeout_ms: 50 },
       signal,
@@ -135,5 +135,8 @@ describe("minimal subagents coordinator tools", () => {
       signal,
       "child:older",
     );
+    // Script callers receive the declared object shape.
+    expect(result.structuredContent).toEqual(result.details);
+    expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
   });
 });
