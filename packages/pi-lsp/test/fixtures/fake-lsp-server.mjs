@@ -202,6 +202,12 @@ function handleNotification(message) {
         setInterval(() => {}, 1000);
         return;
       }
+      if (process.env.FAKE_CLOSE_STDOUT === "1") {
+        // Close the protocol stream while the process stays alive.
+        process.stdout.end();
+        setInterval(() => {}, 1000);
+        return;
+      }
       clientRequestsReady = exerciseClientRequests();
       return;
     case "workspace/didChangeConfiguration":

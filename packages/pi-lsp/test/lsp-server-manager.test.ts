@@ -3,6 +3,7 @@ import { LspServerClient } from "../src/lsp-server-client.js";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readdir } from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   routeLspServersForFile,
@@ -257,6 +258,36 @@ describe("session-scoped LSP server manager", () => {
     ]);
     expect((await manager.getCapabilities("typescript", filePath)).kind).toBe("success");
     expect(factory.clients).toHaveLength(3);
+    await manager.shutdown();
+  });
+
+  test("reads no ancestor directories for a file no server language handles", async () => {
+    const { cwd } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory();
+    const directoriesRead: string[] = [];
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: factory.start,
+      readDirectory: async (directoryPath) => {
+        directoriesRead.push(directoryPath);
+        return readdir(directoryPath);
+      },
+    });
+
+    const result = await manager.runRead(
+      resolve(cwd, "notes.md"),
+      undefined,
+      () => true,
+      async () => "ok",
+    );
+    expect(result.failures.map(({ code }) => code)).toEqual(["no-matching-server"]);
+    expect(directoriesRead).toEqual([]);
+    expect(factory.clients).toEqual([]);
+
+    // A handled language still routes through its ancestor directories.
+    await manager.getCapabilities("typescript", resolve(cwd, "root.ts"));
+    expect(directoriesRead[0]).toBe(cwd);
     await manager.shutdown();
   });
 

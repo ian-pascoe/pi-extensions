@@ -732,7 +732,10 @@ export class LspServerClient {
           this.options.timeouts.shutdownMs,
           ShutdownRequest.method,
         ).catch(() => null);
-        await this.connection.sendNotification(ExitNotification.type).catch(() => undefined);
+        // A closed connection throws synchronously, before `.catch` could observe a rejection.
+        await Promise.resolve()
+          .then(() => this.connection.sendNotification(ExitNotification.type))
+          .catch(() => undefined);
         await this.waitForProcessExit(this.options.timeouts.shutdownMs).catch(() => undefined);
       }
     } finally {
