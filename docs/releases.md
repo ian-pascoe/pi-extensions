@@ -18,8 +18,10 @@ This is the release procedure. Migration implementation publishes nothing.
   `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`,
   and `@ian-pascoe/pi-utils` bootstrap manually at `0.1.0`;
   `@ian-pascoe/pi-todo`, `@ian-pascoe/pi-web-tools`, `@ian-pascoe/pi-termctrl`, and
-  `@ian-pascoe/pi-command-deck` bootstrap manually at `0.0.0`. Do not add
-  bootstrap Changesets.
+  `@ian-pascoe/pi-command-deck` bootstrap manually at `0.0.0`. The manual
+  bootstrap publish needs no Changeset, but the implementation PR still adds a
+  `minor` Changeset for the new package; its version PR releases `0.1.0`
+  through the trusted-publishing workflow.
 - Use `pnpm changeset` for releasable changes and inspect them with
   `pnpm changeset:status`. The workflow creates version PRs with
   `pnpm version-packages`.
@@ -82,7 +84,8 @@ ordinary Changesets/OIDC workflow. No release workflow changes are required.
 
 After the implementation PR merges, publish `@ian-pascoe/pi-command-deck@0.0.0`
 from `packages/pi-command-deck` with `npm publish --access public --provenance=false`,
-then configure its trusted publisher as for Advisor. Deprecate every published
+then configure its trusted publisher as for Advisor. Its `minor` Changeset then
+releases `0.1.0` through the ordinary version PR. Deprecate every published
 `@ian-pascoe/pi-git-status-widget` version:
 
 ```bash
