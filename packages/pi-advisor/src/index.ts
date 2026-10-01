@@ -40,6 +40,7 @@ const childRequestSchema = Type.Object({
     agentDir: Type.String({ minLength: 1 }),
     extensions: Type.Array(Type.Unknown()),
     flagValues: Type.Unknown(),
+    codemodeModels: Type.Optional(Type.Boolean()),
   }),
 });
 
@@ -246,6 +247,7 @@ export default function advisor(pi: ExtensionAPI): void {
         agentDir: payload.resourceInputs.agentDir,
         extensions,
         flagValues: new Map(resources.runtime.flagValues),
+        codemodeModels: payload.resourceInputs.codemodeModels,
       },
       observer: undefined,
     };

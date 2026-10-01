@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model, Usage } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, type Model, type Usage } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import {
   AgentSession,
@@ -34,7 +34,11 @@ import {
   DEFAULT_MAX_SUBAGENT_DEPTH,
   getSubagentDepth,
 } from "./minimal-subagents-capabilities.js";
-import { createChildResourceLoader } from "./minimal-subagents-child-resources.js";
+import {
+  CHILD_CODEMODE_MODELS,
+  childProviderAvailable,
+  createChildResourceLoader,
+} from "./minimal-subagents-child-resources.js";
 import {
   CHILD_IDENTITY_ENTRY_TYPE,
   FORK_CLONE_ENTRY_TYPE,
@@ -164,6 +168,20 @@ function installChildToolCapabilityPolicy(
   session.setActiveToolsByName(session.getActiveToolNames().filter((name) => !isScriptOnly(name)));
 }
 
+/**
+ * Passing `tools` skips Pi's transcript restore, so re-declare the tools a reopened child last
+ * declared itself (such as through `tool_search`); the capability policy still clamps them.
+ * Declarations inherited from the parent predate the child and are not restored.
+ */
+function restoreChildDeclaredTools(session: AgentSession, agent: PersistedAgent): void {
+  const { messages } = session.sessionManager.buildSessionContext();
+  const createdAt = Date.parse(agent.created_at);
+  if (!messages.some((message) => message.role === "system" && message.timestamp >= createdAt))
+    return;
+  const declared = getCurrentSystemMessage(messages);
+  if (declared) session.setActiveToolsByName((declared.toolsAdded ?? []).map(({ name }) => name));
+}
+
 /** Moves one verified child session file to trash and reports command unavailability. */
 export interface SessionFileTrashCapability {
   moveSessionFile(sessionFile: string): Promise<Error | undefined>;
@@ -201,6 +219,8 @@ export interface PiAgentSessionFactoryOptions {
       agentDir: string;
       extensions: readonly Pick<Extension, "path" | "resolvedPath" | "sourceInfo" | "hidden">[];
       flagValues: ReadonlyMap<string, boolean | string>;
+      /** Whether child codemode scripts get the `models` API, so observers can reproduce it. */
+      codemodeModels: boolean;
     },
   ) => ChildSessionObserver | undefined;
 }
@@ -1109,8 +1129,11 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     requireEligibleModel: boolean,
   ): Promise<string[]> {
     const missing: string[] = [];
-    if (!this.modelById.has(agent.launch_contract.model)) missing.push(agent.launch_contract.model);
+    const model = this.modelById.get(agent.launch_contract.model);
+    if (!model) missing.push(agent.launch_contract.model);
     else if (requireEligibleModel && !this.eligibleModelIds.has(agent.launch_contract.model)) {
+      missing.push(agent.launch_contract.model);
+    } else if (!childProviderAvailable(model.provider)) {
       missing.push(agent.launch_contract.model);
     }
     const discoveredTools = await this.discoverChildToolNames(agent);
@@ -1217,6 +1240,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
     }
     installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
+    restoreChildDeclaredTools(session, agent);
     await session.bindExtensions({ mode: "print" });
     const registeredNames = new Set(session.getAllTools().map((tool) => tool.name));
     const missingCoordinatorTools = coordinatorTools
@@ -1244,6 +1268,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
             hidden,
           })),
         flagValues: new Map(resourceLoader.getExtensions().runtime.flagValues),
+        codemodeModels: CHILD_CODEMODE_MODELS,
       }),
     );
   }

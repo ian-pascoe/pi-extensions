@@ -54,7 +54,7 @@ Consultation authorizes analysis and investigation, not implementation or other 
 | Findings per Review            | 4                            |
 | Automatic Corrective Turns     | 1 per request/task           |
 
-A Tool Grant names tools; it does not sandbox their full native interfaces. Explicitly granting `lsp`, for example, permits its native operations, including mutations. Unavailable names are ignored and reported. Advisor never autogrants missing tools. Granting `codemode` lets the Advisor script its other granted tools; it inherits the observed `codemode.mode`, so under `"only"` the Advisor calls `advisor_report` from a script.
+A Tool Grant names tools; it does not sandbox their full native interfaces. Explicitly granting `lsp`, for example, permits its native operations, including mutations. Unavailable names are ignored and reported. Advisor never autogrants missing tools. Granting `codemode` lets the Advisor script its other granted tools; it inherits the observed `codemode.mode`, so under `"only"` the Advisor calls `advisor_report` from a script. It also inherits whether scripts get the `models` API: Minimal Subagents Child Agents have none, so neither do their Advisors.
 
 The Advisor inherits each observed agent's model and thinking level independently unless configured otherwise. One root policy can cover current and future Minimal Subagents descendants when enabled.
 

@@ -325,4 +325,29 @@ describe("LspServerClient", () => {
     expect(["exit", "protocol"]).toContain(failures[0]?.kind);
     await expect(client.request("fake/state", {})).rejects.toBe(failures[0]);
   });
+
+  test("shuts down after the connection closes before the process exits", async () => {
+    const directory = await createTemporaryDirectory();
+    const failures: LspServerClientError[] = [];
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_CLOSE_STDOUT: "1" },
+      onUnavailable: (error) => failures.push(error),
+    });
+    await expect.poll(() => failures.length, { timeout: 2_000 }).toBe(1);
+    const processId = client.processId;
+    if (processId === undefined) throw new Error("Fake LSP test: missing process ID");
+    expect(() => process.kill(processId, 0)).not.toThrow();
+
+    await expect(client.shutdown()).resolves.toBeUndefined();
+    await expect.poll(() => isProcessAlive(processId), { timeout: 2_000 }).toBe(false);
+  });
 });
+
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

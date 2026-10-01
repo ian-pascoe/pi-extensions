@@ -155,6 +155,8 @@ export interface LspServerManagerInput<TClient extends LspManagedServerClient> {
   readonly settings: ResolvedLspSettings;
   /** Concrete process/client constructor owned by the LSP client module. */
   readonly startClient: StartLspServerClient<TClient>;
+  /** Lists one directory's entry names for root-marker routing; defaults to the filesystem. */
+  readonly readDirectory?: (directoryPath: string) => Promise<readonly string[]>;
 }
 
 /** Removes Pi's optional leading path sigil before file routing. */
@@ -231,13 +233,16 @@ function lspInstanceKey(serverId: string, rootPath: string): string {
   return JSON.stringify([serverId, rootPath]);
 }
 
-async function readLspAncestorDirectories(filePath: string): Promise<LspAncestorDirectory[]> {
+async function readLspAncestorDirectories(
+  filePath: string,
+  readDirectory: (directoryPath: string) => Promise<readonly string[]>,
+): Promise<LspAncestorDirectory[]> {
   const directories: LspAncestorDirectory[] = [];
   let currentDirectory = dirname(filePath);
   for (;;) {
-    let entryNames: string[] = [];
+    let entryNames: readonly string[] = [];
     try {
-      entryNames = await readdir(currentDirectory);
+      entryNames = await readDirectory(currentDirectory);
     } catch {
       // A target can be newly created; continue upward until an existing ancestor is found.
     }
@@ -335,7 +340,12 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
 
   private async routeFile(filePath: string): Promise<readonly LspServerRoute[]> {
     const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
-    const ancestors = await readLspAncestorDirectories(absolutePath);
+    // Ancestor listings are costly in large directories; skip them when no language matches.
+    if (!this.hasConfiguredLanguageServerForFile(absolutePath)) return [];
+    const ancestors = await readLspAncestorDirectories(
+      absolutePath,
+      this.input.readDirectory ?? readdir,
+    );
     const definitions = [...this.input.settings.servers.values()].map((definition) => ({
       languages: definition.languages,
       requireRootMarker: definition.requireRootMarker,

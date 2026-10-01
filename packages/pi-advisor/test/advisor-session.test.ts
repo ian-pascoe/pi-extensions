@@ -23,6 +23,7 @@ import {
   type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import {
+  type AdvisorResourceInputs,
   createAdvisorSession,
   disposeAdvisorSession,
   isAdvisorSession,
@@ -307,6 +308,45 @@ describe("private Advisor native sessions", () => {
         resourceInputs: { ...resourceInputs, extensions: [] },
       }),
     ).rejects.toThrow(/match.*observed|ordered/i);
+  });
+
+  it("reproduces the resource owner's codemode model API", async () => {
+    const { observed, dir } = await observedFixture([fixture], undefined, false, undefined, [
+      { name: "codemode", factory: createCodemodeExtension({ models: false }), builtin: true },
+    ]);
+    const settings = readAdvisorSettings(observed).settings;
+    const config = { ...settings, allowedTools: [...settings.allowedTools, "codemode"] };
+    const resourceInputs: AdvisorResourceInputs = {
+      agentDir: dir,
+      extensions: observed.resourceLoader
+        .getExtensions()
+        .extensions.map(({ path, resolvedPath, sourceInfo, hidden }) => ({
+          path,
+          resolvedPath,
+          sourceInfo,
+          hidden,
+        })),
+      flagValues: new Map(observed.extensionRunner?.getFlagValues()),
+    };
+    const codemodeDescription = async (inputs: AdvisorResourceInputs) => {
+      const runtime = await createAdvisorSession(observed, {
+        config,
+        adviceTool,
+        resourceInputs: inputs,
+      });
+      afterEach(async () => {
+        await disposeAdvisorSession(runtime);
+      });
+      return runtime.session.getToolDefinition("codemode")?.description;
+    };
+
+    expect(await codemodeDescription(resourceInputs)).toContain("Model API");
+    const ownerDescription = await codemodeDescription({
+      ...resourceInputs,
+      codemodeModels: false,
+    });
+    expect(ownerDescription).toContain("tools");
+    expect(ownerDescription).not.toContain("Model API");
   });
 
   it("keeps the advice tool active under built-in codemode only mode without widening the grant", async () => {
