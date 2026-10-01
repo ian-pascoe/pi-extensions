@@ -59,6 +59,9 @@ export function childProviderAvailable(provider: string): boolean {
   return provider !== LLAMA || piLlamaExtensionPath() !== undefined;
 }
 
+/** Child scripts must not call models outside their Launch Contract. */
+export const CHILD_CODEMODE_MODELS = false;
+
 /** Pi's built-in extensions (Pi 0.99+) in Pi's order; older hosts have none, so neither do children. */
 export function childBuiltinExtensions(): InlineExtension[] {
   const createCodemode = sdk.createCodemodeExtension;
@@ -66,8 +69,7 @@ export function childBuiltinExtensions(): InlineExtension[] {
     ...llamaExtension(),
     ...(
       [
-        // Child scripts must not call models outside their Launch Contract.
-        ["codemode", createCodemode && (() => createCodemode({ models: false }))],
+        ["codemode", createCodemode && (() => createCodemode({ models: CHILD_CODEMODE_MODELS }))],
         ["tool-search", sdk.createToolSearchExtension],
         ["mcp", sdk.createMcpExtension],
       ] as const

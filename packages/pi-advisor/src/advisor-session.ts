@@ -31,6 +31,8 @@ export interface AdvisorResourceInputs {
     readonly hidden?: boolean | undefined;
   }[];
   flagValues: ReadonlyMap<string, boolean | string>;
+  /** Whether the owner's built-in codemode gives scripts the `models` API; Pi's default is true. */
+  codemodeModels?: boolean | undefined;
 }
 
 /** Fresh factories and native services; the observed session supplies data, never bound handlers. */
@@ -228,9 +230,13 @@ async function buildAdvisorSession(
           `Unsupported Advisor resources: this Pi runtime does not export ${factoryExport} to recreate ${extension.path}`,
         );
       recreated.add(index);
+      const codemodeModels = options.resourceInputs?.codemodeModels;
       builtins.push({
         name,
-        factory: create(),
+        factory:
+          name === "codemode" && codemodeModels !== undefined
+            ? piSdk.createCodemodeExtension({ models: codemodeModels })
+            : create(),
         builtin: true,
         replaceable: extension.replaceable === true,
       });

@@ -54,7 +54,9 @@ it.each([false, true])(
             "grep",
             "find",
             "ls",
-            ...(combined ? ["context_notes", "context_history", "context_rollover"] : []),
+            ...(combined
+              ? ["context_notes", "context_history", "context_rollover", "codemode"]
+              : []),
           ],
         },
         compaction: { enabled: false },
@@ -67,10 +69,16 @@ it.each([false, true])(
     let requestedAgent = "worker";
     let delivery: "subagent" | "agent_message" = "subagent";
     const childThinking: string[] = [];
+    const reviewCodemode = new Map<string, string | undefined>();
     globalThis.advisorHierarchyTest = {
       roles: new Map(),
       stream(role, model, context, options) {
         if (role === "review-child") childThinking.push(options?.reasoning ?? "off");
+        if (role.startsWith("review-") && !reviewCodemode.has(role))
+          reviewCodemode.set(
+            role,
+            context.tools?.find((tool) => tool.name === "codemode")?.description,
+          );
         const message = {
           ...fauxAssistantMessage(
             role === "child" ? (++childCalls === 1 ? "original" : "corrected") : "Done",
@@ -196,6 +204,12 @@ it.each([false, true])(
     expect(childCalls).toBe(2);
     expect(childReviews).toBe(2);
     expect(childThinking).toEqual(["low", "low"]);
+    // Each Advisor Session reproduces its observed agent's codemode: children have no model API.
+    if (combined) {
+      expect(reviewCodemode.get("review-main")).toContain("Model API");
+      expect(reviewCodemode.get("review-child")).toContain("tools");
+      expect(reviewCodemode.get("review-child")).not.toContain("Model API");
+    }
     await runtime.session.prompt("/advisor status");
     expect(
       runtime.session.sessionManager

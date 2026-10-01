@@ -35,6 +35,7 @@ import {
   getSubagentDepth,
 } from "./minimal-subagents-capabilities.js";
 import {
+  CHILD_CODEMODE_MODELS,
   childProviderAvailable,
   createChildResourceLoader,
 } from "./minimal-subagents-child-resources.js";
@@ -218,6 +219,8 @@ export interface PiAgentSessionFactoryOptions {
       agentDir: string;
       extensions: readonly Pick<Extension, "path" | "resolvedPath" | "sourceInfo" | "hidden">[];
       flagValues: ReadonlyMap<string, boolean | string>;
+      /** Whether child codemode scripts get the `models` API, so observers can reproduce it. */
+      codemodeModels: boolean;
     },
   ) => ChildSessionObserver | undefined;
 }
@@ -1265,6 +1268,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
             hidden,
           })),
         flagValues: new Map(resourceLoader.getExtensions().runtime.flagValues),
+        codemodeModels: CHILD_CODEMODE_MODELS,
       }),
     );
   }
