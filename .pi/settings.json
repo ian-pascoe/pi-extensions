@@ -6,8 +6,8 @@
       "extensions": [
         "+packages/pi-advisor/src/index.ts",
         "+packages/pi-bible-verses/src/index.ts",
-        "+packages/pi-context-management/src/index.ts",
-        "+packages/pi-dap/src/index.ts",
+        "-packages/pi-context-management/src/index.ts",
+        "-packages/pi-dap/src/index.ts",
         "+packages/pi-formatter/src/index.ts",
         "+packages/pi-git-checkpoints/src/index.ts",
         "-packages/pi-git-status-widget/src/index.ts",
@@ -19,19 +19,19 @@
         "+packages/pi-web-tools/src/index.ts"
       ],
       "skills": [
-        "+packages/pi-advisor/skills/pi-advisor/SKILL.md",
-        "+packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
-        "+packages/pi-context-management/skills/pi-context-management/SKILL.md",
-        "+packages/pi-dap/skills/pi-dap/SKILL.md",
-        "+packages/pi-formatter/skills/pi-formatter/SKILL.md",
-        "+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
+        "-packages/pi-advisor/skills/pi-advisor/SKILL.md",
+        "-packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
+        "-packages/pi-context-management/skills/pi-context-management/SKILL.md",
+        "-packages/pi-dap/skills/pi-dap/SKILL.md",
+        "-packages/pi-formatter/skills/pi-formatter/SKILL.md",
+        "-packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
         "-packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md",
-        "+packages/pi-lsp/skills/pi-lsp/SKILL.md",
-        "+packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
-        "+packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
-        "+packages/pi-todo/skills/pi-todo/SKILL.md",
-        "+packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
-        "+packages/pi-web-tools/skills/pi-web-tools/SKILL.md"
+        "-packages/pi-lsp/skills/pi-lsp/SKILL.md",
+        "-packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
+        "-packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
+        "-packages/pi-todo/skills/pi-todo/SKILL.md",
+        "-packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md",
+        "-packages/pi-web-tools/skills/pi-web-tools/SKILL.md"
       ]
     },
     {
