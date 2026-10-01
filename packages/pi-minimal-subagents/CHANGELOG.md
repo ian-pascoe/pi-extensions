@@ -1,5 +1,19 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.10.0
+
+### Minor Changes
+
+- 1a7c706: Support Pi's built-in `codemode`, `tool_search`, and MCP in Child Agents. Children load the built-in extensions the root has enabled, an omitted tool selection inherits the caller's Reachable Tools (including `codemode`- and `deferred`-exposed tools such as MCP tools), granted script-only tools stay undeclared, and coordinator tools return `structuredContent` so scripts receive objects. Closing a child runtime now emits `session_shutdown` so child extensions release services such as MCP server connections.
+
+### Patch Changes
+
+- be50c8c: Add `updateFileLocked` (`@ian-pascoe/pi-utils/locked-file-update`), which atomically updates a file under Pi's native settings lock. LSP and Minimal Subagents settings commands now share it.
+- feea7eb: Collapse the child tool policy to one layer now that `@ian-pascoe/pi-codemode` is retired in favor of Pi's built-in `codemode`.
+- Updated dependencies [be50c8c]
+- Updated dependencies [be50c8c]
+  - @ian-pascoe/pi-utils@0.3.0
+
 ## 0.9.0
 
 ### Minor Changes

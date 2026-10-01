@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-context-management
 
+## 0.2.5
+
+### Patch Changes
+
+- feea7eb: Describe nested Rollover rejection in terms of Pi's built-in `codemode` scripts now that `@ian-pascoe/pi-codemode` is retired.
+- be50c8c: Add `stripControlCharacters` to `@ian-pascoe/pi-utils` and use it for transcript text sanitization in Context Management and Web Tools.
+- Updated dependencies [be50c8c]
+- Updated dependencies [be50c8c]
+  - @ian-pascoe/pi-utils@0.3.0
+
 ## 0.2.4
 
 ### Patch Changes

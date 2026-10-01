@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-dap
 
+## 0.3.6
+
+### Patch Changes
+
+- 1a7c706: Stop declaring an output schema that describes only display details. Pi's built-in `codemode` returns structured results for tools with an output schema, which would hide raw results from scripts; scripts now receive the complete text result as declared.
+
 ## 0.3.5
 
 ### Patch Changes

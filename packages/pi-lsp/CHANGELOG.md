@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-lsp
 
+## 0.4.5
+
+### Patch Changes
+
+- 1a7c706: Stop declaring an output schema that describes only display details. Pi's built-in `codemode` returns structured results for tools with an output schema, which would hide raw results from scripts; scripts now receive the complete text result as declared.
+- be50c8c: Add `updateFileLocked` (`@ian-pascoe/pi-utils/locked-file-update`), which atomically updates a file under Pi's native settings lock. LSP and Minimal Subagents settings commands now share it.
+- Updated dependencies [be50c8c]
+- Updated dependencies [be50c8c]
+  - @ian-pascoe/pi-utils@0.3.0
+
 ## 0.4.4
 
 ### Patch Changes
