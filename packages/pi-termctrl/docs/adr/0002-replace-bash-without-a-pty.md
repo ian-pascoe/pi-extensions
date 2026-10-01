@@ -1,0 +1,7 @@
+# Replace bash without a PTY
+
+Pi Termctrl replaces Pi's built-in `bash` tool so a command can become a Background job in two ways: the model starts it in the background, or the user moves a running command there. The replacement wraps Pi's own definition and local `exec`. Pi still owns spawning, process-tree kills, Windows support, truncation and rendering. The replacement does not run commands inside a termctrl Terminal. Running every command in a PTY would make each one see a TTY, which brings colours, progress bars, pagers such as `git log` launching `less`, and wrapping at the viewport width. That would change the output the model reads for every command. As a result, a Background job accepts no input.
+
+Wrapping Pi's `exec` instead of re-implementing it keeps foreground behaviour identical to the built-in, but Pi's `exec` never exposes the child's PID. Background jobs are therefore identified by an id and stopped through `terminal_stop` rather than `kill`. Stopping uses Pi's immediate `SIGKILL` of the process tree.
+
+The replacement adds one optional `background` parameter to the built-in `bash` input schema. It changes the output schema only by making `exit_code` optional and adding an optional `background` field, so backgrounded results stay typed for `codemode` scripts. Both schemas stay the same across turns. The replacement is on by default and can be turned off, because it conflicts with other extensions that also register `bash`.

@@ -24,6 +24,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-context-management`](packages/pi-context-management) | Session Notes, History retrieval, and native Rollover.       | `pi install npm:@ian-pascoe/pi-context-management` |
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
+| [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |
 
 `@ian-pascoe/pi-codemode` and `@ian-pascoe/pi-mcp` are retired in favor of Pi's
 built-in `codemode` and MCP support ([ADR-0004](docs/adr/0004-retire-pi-codemode-and-pi-mcp.md)).
@@ -75,6 +76,7 @@ packages/pi-todo/src/index.ts
 packages/pi-context-management/src/index.ts
 packages/pi-skills-selector/src/index.ts
 packages/pi-advisor/src/index.ts
+packages/pi-termctrl/src/index.ts
 ```
 
 Every selectable configuration skill path is:
@@ -93,6 +95,7 @@ packages/pi-todo/skills/pi-todo/SKILL.md
 packages/pi-context-management/skills/pi-context-management/SKILL.md
 packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md
 packages/pi-advisor/skills/pi-advisor/SKILL.md
+packages/pi-termctrl/skills/pi-termctrl/SKILL.md
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -117,6 +120,9 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi Web Tools needs outbound network access. `EXA_API_KEY` and
   `PARALLEL_API_KEY` are optional provider credentials.
 - Pi Context Management requires exactly Pi `0.85.1` because its native-checkpoint adapter is version-guarded.
+- Pi Termctrl Terminals need the `termctrl` binary that `@kitlangton/terminal-control`
+  installs for macOS and GNU/Linux on arm64 or x64. Elsewhere only the `bash`
+  replacement and Background jobs work.
 - Pi Advisor is disabled by default and targets Pi `0.85.1`. Loaded Context Management requires all three private context-tool grants; incompatible tool exposure pauses review rather than expanding permissions.
 
 See package READMEs for configuration. The repository MIT license covers
@@ -156,6 +162,8 @@ pnpm --filter @ian-pascoe/pi-skills-selector test
 pnpm --filter @ian-pascoe/pi-utils test
 pnpm --filter @ian-pascoe/pi-advisor typecheck
 pnpm --filter @ian-pascoe/pi-advisor test
+pnpm --filter @ian-pascoe/pi-termctrl typecheck
+pnpm --filter @ian-pascoe/pi-termctrl test
 ```
 
 Read [`CONTEXT-MAP.md`](CONTEXT-MAP.md), ADRs, and
