@@ -1,5 +1,14 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.1.4
+
+### Patch Changes
+
+- be50c8c: Add `stripControlCharacters` to `@ian-pascoe/pi-utils` and use it for transcript text sanitization in Context Management and Web Tools.
+- Updated dependencies [be50c8c]
+- Updated dependencies [be50c8c]
+  - @ian-pascoe/pi-utils@0.3.0
+
 ## 0.1.3
 
 ### Patch Changes

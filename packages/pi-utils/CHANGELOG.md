@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-utils
 
+## 0.3.0
+
+### Minor Changes
+
+- be50c8c: Add `stripControlCharacters` to `@ian-pascoe/pi-utils` and use it for transcript text sanitization in Context Management and Web Tools.
+- be50c8c: Add `updateFileLocked` (`@ian-pascoe/pi-utils/locked-file-update`), which atomically updates a file under Pi's native settings lock. LSP and Minimal Subagents settings commands now share it.
+
 ## 0.2.0
 
 ### Minor Changes
