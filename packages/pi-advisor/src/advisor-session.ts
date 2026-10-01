@@ -3,32 +3,23 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import {
-  createAgentSessionServices,
-  createAgentSessionFromServices,
-  createAgentSessionRuntime,
-  createCodemodeExtension,
-  createMcpExtension,
-  createToolSearchExtension,
-  DefaultResourceLoader,
-  getPackageDir,
-  ModelRuntime,
+import * as piAi from "@earendil-works/pi-ai";
+import * as piSdk from "@earendil-works/pi-coding-agent";
+import type {
+  SourceInfo,
+  CreateModelRuntimeOptions,
+  AgentSession,
+  AgentSessionRuntime,
+  CreateAgentSessionRuntimeFactory,
+  CreateAgentSessionFromServicesOptions,
+  Extension,
+  ExtensionFactory,
+  InlineExtension,
   SessionManager,
-  SettingsManager,
-  VERSION,
-  type SourceInfo,
-  type CreateModelRuntimeOptions,
-  type AgentSession,
-  type AgentSessionRuntime,
-  type CreateAgentSessionRuntimeFactory,
-  type CreateAgentSessionFromServicesOptions,
-  type Extension,
-  type ExtensionFactory,
-  type InlineExtension,
-  type ToolDefinition,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { AdvisorConfig } from "./advisor-settings.js";
+import { advisorRuntimeWarning, isCallable } from "./advisor-runtime.js";
 
 /** Explicit file-selection recipe supplied by the resource owner, never inferred from opaque loaders. */
 export interface AdvisorResourceInputs {
@@ -56,11 +47,14 @@ const roleSchema = Type.Object({
   observedSessionId: Type.String({ minLength: 1 }),
 });
 
-// Pi 0.99.1 exports fresh factories for these `builtin:<name>` extensions, but not llama.cpp.
-const builtinFactories = new Map<string, () => ExtensionFactory>([
-  ["codemode", createCodemodeExtension],
-  ["tool-search", createToolSearchExtension],
-  ["mcp", createMcpExtension],
+// Pi exports fresh factories for these `builtin:<name>` extensions, but not llama.cpp.
+const builtinFactories = new Map<
+  string,
+  "createCodemodeExtension" | "createToolSearchExtension" | "createMcpExtension"
+>([
+  ["codemode", "createCodemodeExtension"],
+  ["tool-search", "createToolSearchExtension"],
+  ["mcp", "createMcpExtension"],
 ]);
 const registrationNames = ({ tools, commands, flags }: Extension) => [
   ...[...tools.keys()].map((name) => `tool:${name}`),
@@ -89,7 +83,7 @@ export async function disposeAdvisorSession(runtime: AgentSessionRuntime): Promi
   }
 }
 
-// Pi 0.99.1 keeps these plain constructor inputs private; public scoped getters omit applyOverrides.
+// Pi keeps these plain constructor inputs private; public scoped getters omit applyOverrides.
 /* oxlint-disable anti-slop/no-unknown-parameters -- SAFETY: Capability-check native SDK data before copying; offline SDK creation tests cover these inputs. */
 function recreationInputs(
   loader: unknown,
@@ -128,7 +122,7 @@ function recreationInputs(
   if (
     Value.Check(fileAuthSchema, store) &&
     store.authPath === store.storage.authPath &&
-    // Pi 0.99.1's bundled CLI names the same native class _AuthStorage.
+    // Pi's bundled CLI names the same native class _AuthStorage.
     ["AuthStorage", "_AuthStorage"].includes(Object.getPrototypeOf(store)?.constructor.name) &&
     Object.getPrototypeOf(store.storage)?.constructor.name === "FileAuthStorageBackend"
   )
@@ -153,10 +147,8 @@ export async function createAdvisorSession(
   observed: AgentSession,
   options: AdvisorSessionOptions,
 ): Promise<AgentSessionRuntime> {
-  if (VERSION !== "0.99.1")
-    throw new Error(
-      `Unsupported Pi ${VERSION}: Advisor's native tool ceiling and session lifecycle are verified on Pi 0.99.1`,
-    );
+  const unsupported = advisorRuntimeWarning();
+  if (unsupported) throw new Error(unsupported);
   options.signal?.throwIfAborted();
   const cancelled = Promise.withResolvers<never>();
   const abort = () =>
@@ -178,7 +170,7 @@ async function buildAdvisorSession(
   const source = observed.resourceLoader;
   if (
     !options.resourceInputs &&
-    Object.getPrototypeOf(source) !== DefaultResourceLoader.prototype
+    Object.getPrototypeOf(source) !== piSdk.DefaultResourceLoader.prototype
   ) {
     throw new Error(
       "Unsupported Advisor resources: custom loaders/transformations require fresh owner-supplied recreation inputs",
@@ -217,7 +209,7 @@ async function buildAdvisorSession(
     )
       throw new Error("Advisor resource owner flags do not match the observed flags");
   }
-  // Pi 0.99.1 names its built-in extensions `builtin:<name>`; fresh factories must reproduce them.
+  // Pi names its built-in extensions `builtin:<name>`; fresh factories must reproduce them.
   const builtins: InlineExtension[] = [];
   const recreated = new Set<number>();
   const extensionPaths = source.getExtensions().extensions.map((extension, index) => {
@@ -228,8 +220,13 @@ async function buildAdvisorSession(
       extension.sourceInfo.source === "builtin";
     if (!builtin && extension.resolvedPath && !extension.resolvedPath.startsWith("<"))
       return extension.resolvedPath;
-    const create = builtinFactories.get(name);
-    if (builtin && create) {
+    const factoryExport = builtinFactories.get(name);
+    if (builtin && factoryExport) {
+      const create = piSdk[factoryExport];
+      if (!isCallable(create))
+        throw new Error(
+          `Unsupported Advisor resources: this Pi runtime does not export ${factoryExport} to recreate ${extension.path}`,
+        );
       recreated.add(index);
       builtins.push({
         name,
@@ -241,7 +238,11 @@ async function buildAdvisorSession(
     }
     // Pi ships a fresh file-backed llama.cpp factory but does not export it.
     if (builtin && name === "llama.cpp") {
-      const path = join(getPackageDir(), "dist", "extensions", "llama", "index.js");
+      if (!isCallable(piSdk.getPackageDir))
+        throw new Error(
+          "Unsupported Advisor resources: this Pi runtime does not export getPackageDir to locate llama.cpp",
+        );
+      const path = join(piSdk.getPackageDir(), "dist", "extensions", "llama", "index.js");
       if (!existsSync(path))
         throw new Error(
           `Unsupported Advisor resources: Pi's built-in llama.cpp file is unavailable (${path})`,
@@ -323,7 +324,7 @@ async function buildAdvisorSession(
       ["global", global],
       ["project", project],
     ]);
-    const settingsManager = SettingsManager.fromStorage(
+    const settingsManager = piSdk.SettingsManager.fromStorage(
       {
         withLock(scope, update) {
           const next = update(scopes.get(scope));
@@ -344,12 +345,12 @@ async function buildAdvisorSession(
     };
     if (constructionSignal) modelInputs.signal = constructionSignal;
     if (authPath) modelInputs.authPath = authPath;
-    else modelInputs.credentials = new InMemoryCredentialStore();
-    const modelRuntime = await ModelRuntime.create(modelInputs);
+    else modelInputs.credentials = new piAi.InMemoryCredentialStore();
+    const modelRuntime = await piSdk.ModelRuntime.create(modelInputs);
     const operation = constructionSignal ? { signal: constructionSignal } : undefined;
     for (const [provider, apiKey] of runtimeApiKeys)
       await modelRuntime.setRuntimeApiKey(provider, apiKey, operation);
-    const services = await createAgentSessionServices({
+    const services = await piSdk.createAgentSessionServices({
       cwd,
       agentDir,
       settingsManager,
@@ -450,13 +451,13 @@ async function buildAdvisorSession(
       customTools: [options.adviceTool],
     };
     if (sessionStartEvent) sessionOptions.sessionStartEvent = sessionStartEvent;
-    const created = await createAgentSessionFromServices(sessionOptions);
+    const created = await piSdk.createAgentSessionFromServices(sessionOptions);
     return { ...created, services, diagnostics: services.diagnostics };
   };
-  const runtime = await createAgentSessionRuntime(factory, {
+  const runtime = await piSdk.createAgentSessionRuntime(factory, {
     cwd: observed.sessionManager.getCwd(),
     agentDir,
-    sessionManager: SessionManager.create(
+    sessionManager: piSdk.SessionManager.create(
       observed.sessionManager.getCwd(),
       join(observed.sessionManager.getSessionDir(), "advisors", observed.sessionId),
     ),
@@ -480,6 +481,16 @@ async function buildAdvisorSession(
     if (!runtime.session.getActiveToolNames().includes(options.adviceTool.name))
       throw new Error(
         `Advisor advice tool is inactive after extension binding: ${options.adviceTool.name}`,
+      );
+    // The native `tools` option is the Advisor's tool ceiling; verify this runtime enforces it.
+    const ceiling = new Set([...config.allowedTools, options.adviceTool.name]);
+    const escaped = runtime.session
+      .getAllTools()
+      .map(({ name }) => name)
+      .filter((name) => !ceiling.has(name));
+    if (escaped.length)
+      throw new Error(
+        `Unsupported Pi runtime: the Advisor tool ceiling admitted ungranted tools (${escaped.join(", ")})`,
       );
     options.signal?.throwIfAborted();
     const failure = runtime.diagnostics.find((item) => item.type === "error");

@@ -2,11 +2,6 @@ packages:
   - packages/*
   - tools/*
 linkWorkspacePackages: true
-# Pi 0.85.0's unbundled SDK imports pi-server without declaring it.
-packageExtensions:
-  "@earendil-works/pi-coding-agent@0.85.0":
-    dependencies:
-      "@earendil-works/pi-server": "0.85.0"
 allowBuilds:
   "@google/genai": true
   esbuild: true
@@ -15,11 +10,11 @@ allowBuilds:
   tree-sitter-bash: false
   zeromq: false
 minimumReleaseAgeExclude:
-  - "@earendil-works/chord@0.99.1"
-  - "@earendil-works/pi-agent-core@0.99.1"
-  - "@earendil-works/pi-ai@0.99.1"
-  - "@earendil-works/pi-codemode@0.99.1"
-  - "@earendil-works/pi-coding-agent@0.99.1"
-  - "@earendil-works/pi-mcp@0.99.1"
-  - "@earendil-works/pi-telemetry@0.99.1"
-  - "@earendil-works/pi-tui@0.99.1"
+  - "@earendil-works/chord@0.99.1 || 0.99.2"
+  - "@earendil-works/pi-agent-core@0.99.1 || 0.99.2"
+  - "@earendil-works/pi-ai@0.99.1 || 0.99.2"
+  - "@earendil-works/pi-codemode@0.99.1 || 0.99.2"
+  - "@earendil-works/pi-coding-agent@0.99.1 || 0.99.2"
+  - "@earendil-works/pi-mcp@0.99.1 || 0.99.2"
+  - "@earendil-works/pi-telemetry@0.99.1 || 0.99.2"
+  - "@earendil-works/pi-tui@0.99.1 || 0.99.2"

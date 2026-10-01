@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-advisor` reviews a Pi agent's completed work and surfaces concise, attributed findings for material problems and worthwhile low-risk cleanup.
 
-Requires Pi `0.99.1` and Node `>=22.19.0`. Other Pi versions pause review with an explicit compatibility error.
+Requires Node `>=22.19.0`. Advisor does not pin a Pi version: at load it checks the Pi SDK exports and methods it uses. If any are missing, it warns, hides `advisor_ask`, and stays unavailable; `/advisor status` names the missing requirements. The observed session keeps working.
 
 ## Install
 
@@ -60,7 +60,7 @@ The Advisor inherits each observed agent's model and thinking level independentl
 
 ## Sessions and Context Management
 
-Each watched agent has a private, persisted native Advisor Session with fresh, session-bound extension resources. Reviews reuse that session until context or configuration changes require rebuilding. Pi 0.99.1's enabled `builtin:<name>` extensions are recreated in their observed order: `codemode`, `tool-search`, and `mcp` from Pi's exported factories, and `llama.cpp` from the installed Pi package's shipped extension file, retaining their metadata and fresh provider state. Built-ins disabled with `-builtin:<name>` stay absent. This is a fixed-version compatibility recipe, not general inline-factory support; a host factory registered under a built-in name is rejected. Other opaque inline or custom extension resources that cannot be safely recreated are reported as unsupported and pause the Advisor; they are not silently reused or omitted. The Advisor's session state remains separate from the observed agent's state.
+Each watched agent has a private, persisted native Advisor Session with fresh, session-bound extension resources. Reviews reuse that session until context or configuration changes require rebuilding. Pi's enabled `builtin:<name>` extensions are recreated in their observed order: `codemode`, `tool-search`, and `mcp` from Pi's exported factories, and `llama.cpp` from the installed Pi package's shipped extension file, retaining their metadata and fresh provider state. Built-ins disabled with `-builtin:<name>` stay absent. If Pi no longer exports a needed factory, the Advisor pauses with that diagnostic. This is a built-in recreation recipe, not general inline-factory support; a host factory registered under a built-in name is rejected. Other opaque inline or custom extension resources that cannot be safely recreated are reported as unsupported and pause the Advisor; they are not silently reused or omitted. The Advisor's session state remains separate from the observed agent's state.
 
 Context Management is optional. If loaded and its tools are granted, `context_notes`, `context_history`, and `context_rollover` operate on the Advisor's private context. If any of those three tools is excluded, the Advisor pauses before reviewing. There is no autogrant or hook bypass.
 

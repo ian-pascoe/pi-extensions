@@ -4,7 +4,7 @@ import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { readBoundedResponseBody } from "./web-response.js";
+import { cancelResponse, readBoundedResponseBody, requestSignal } from "./web-response.js";
 import { renderWebFetchToolCall, renderWebFetchToolResult } from "./web-tool-rendering.js";
 import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
 import { redactWebUrlUserinfo } from "./web-url.js";
@@ -105,15 +105,6 @@ function requestHeaders(format: WebFetchFormat, userAgent: string): WebFetchRequ
     "Accept-Language": "en-US,en;q=0.9",
     "User-Agent": userAgent,
   };
-}
-
-function requestSignal(callerSignal: AbortSignal | undefined, timeoutSeconds: number): AbortSignal {
-  const deadline = AbortSignal.timeout(Math.ceil(timeoutSeconds * 1000));
-  return callerSignal === undefined ? deadline : AbortSignal.any([callerSignal, deadline]);
-}
-
-async function cancelResponse(response: Response): Promise<void> {
-  await response.body?.cancel().catch(() => undefined);
 }
 
 async function fetchOnce(
@@ -261,7 +252,7 @@ export function createWebFetchTool(
       const format = input.format ?? "markdown";
       const signal = requestSignal(
         callerSignal,
-        input.timeout ?? WEB_FETCH_DEFAULT_TIMEOUT_SECONDS,
+        Math.ceil((input.timeout ?? WEB_FETCH_DEFAULT_TIMEOUT_SECONDS) * 1000),
       );
       onUpdate?.({ content: [], details: { url: safeUrl, contentType: "", format } });
       try {

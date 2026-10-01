@@ -15,15 +15,20 @@ import {
   hasNodeProcessErrorCode,
   parseNodeProcessError,
 } from "./node-process-error.mjs";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { readJsonDocument, workspacePackageManifestSchema } from "./root-project-contract.mjs";
 
 const execFile = promisify(execFileCallback);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const piTpsTrackerPackageName = "@ian-pascoe/pi-tps-tracker";
 const piUtilsPackageName = "@ian-pascoe/pi-utils";
-const piUtilsConsumerPackageNames = new Set([piTpsTrackerPackageName, "@ian-pascoe/pi-advisor"]);
 const npmChildProcessEnvironment = { ...process.env };
 delete npmChildProcessEnvironment.npm_config_manage_package_manager_versions;
+
+/** Consumers install the packed pi-utils, so they exercise its unreleased exports. */
+function dependsOnPiUtils(manifest) {
+  return manifest.dependencies?.[piUtilsPackageName] !== undefined;
+}
 
 function assertPackCondition(condition, message) {
   if (!condition) throw new Error(`Package pack check failed: ${message}`);
@@ -71,18 +76,19 @@ async function discoverWorkspaceManifests() {
   return manifests;
 }
 
+const packResultSchema = Type.Object({
+  name: Type.String(),
+  filename: Type.String(),
+  files: Type.Array(Type.Object({ path: Type.String() })),
+});
+
 function parsePackJson(stdout, packageName) {
   const result = JSON.parse(stdout);
-  if (Array.isArray(result)) {
-    assertPackCondition(result.length === 1, `${packageName} returned invalid npm pack JSON`);
-    return result[0];
-  }
-  const workspaceResults = Object.values(result);
   assertPackCondition(
-    workspaceResults.length === 1,
-    `${packageName} returned invalid workspace npm pack JSON`,
+    Value.Check(packResultSchema, result) && result.name === packageName,
+    `${packageName} returned invalid pnpm pack JSON`,
   );
-  return workspaceResults[0];
+  return result;
 }
 
 function validatePackedFileList(packageName, files) {
@@ -144,13 +150,24 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
     "homepage",
     "bugs",
     "repository",
-    "publishConfig",
   ]) {
     assertPackCondition(
       JSON.stringify(packedManifest[field]) === JSON.stringify(sourceManifest[field]),
       `${packageName} changes manifest field ${field}`,
     );
   }
+  // pnpm applies publishConfig overrides to the top-level manifest and keeps only registry options.
+  const publishConfig = sourceManifest.publishConfig ?? {};
+  const appliedOverrides = Object.keys(publishConfig).filter(
+    (key) => JSON.stringify(packedManifest[key]) === JSON.stringify(publishConfig[key]),
+  );
+  const registryOptions = Object.fromEntries(
+    Object.entries(publishConfig).filter(([key]) => !appliedOverrides.includes(key)),
+  );
+  assertPackCondition(
+    JSON.stringify(packedManifest.publishConfig ?? {}) === JSON.stringify(registryOptions),
+    `${packageName} changes manifest field publishConfig`,
+  );
   assertPackCondition(packedManifest.private === false, `${packageName} is not publishable`);
   if (packageName === piUtilsPackageName) {
     assertPackCondition(
@@ -165,13 +182,14 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
       `${packageName} has an invalid compiled library entrypoint`,
     );
     assertPackCondition(
-      packedManifest.scripts?.build && packedManifest.scripts?.prepack,
+      // pnpm runs prepack while packing and omits that lifecycle script from the tarball.
+      packedManifest.scripts?.build && sourceManifest.scripts?.prepack,
       `${packageName} omits its compiled library scripts`,
     );
     assertPackCondition(!packedManifest.pi, `${packageName} must not register a Pi extension`);
     return;
   }
-  if (piUtilsConsumerPackageNames.has(packageName)) {
+  if (dependsOnPiUtils(sourceManifest)) {
     assertPackCondition(
       packedManifest.dependencies?.[piUtilsPackageName] === `^${piUtilsVersion}`,
       `${packageName} has an invalid ${piUtilsPackageName} dependency`,
@@ -295,19 +313,12 @@ try {
   let piUtilsTarballPath;
   for (const { manifest, packageDirectory } of workspaces) {
     const packed = parsePackJson(
+      // pnpm applies publishConfig overrides and workspace protocols as release publishes them.
       (
-        await runCommand(
-          "npm",
-          [
-            "pack",
-            packageDirectory,
-            "--json",
-            "--package-lock=false",
-            "--pack-destination",
-            packDirectory,
-          ],
-          { cwd: packDirectory, env: npmChildProcessEnvironment },
-        )
+        await runCommand("pnpm", ["pack", "--json", "--pack-destination", packDirectory], {
+          cwd: packageDirectory,
+          env: npmChildProcessEnvironment,
+        })
       ).stdout,
       manifest.name,
     );
@@ -318,15 +329,15 @@ try {
       await runCommand("tar", ["-xOf", tarballPath, "package/package.json"])
     ).stdout;
     validatePackedManifest(manifest, JSON.parse(packedManifestText), piUtilsVersion);
-    const dependsOnPiUtils = piUtilsConsumerPackageNames.has(manifest.name);
+    const consumesPiUtils = dependsOnPiUtils(manifest);
     assertPackCondition(
-      !dependsOnPiUtils || piUtilsTarballPath !== undefined,
+      !consumesPiUtils || piUtilsTarballPath !== undefined,
       `${manifest.name} was packed before ${piUtilsPackageName}`,
     );
     await assertTarballLoads(
       manifest.name,
       tarballPath,
-      dependsOnPiUtils && piUtilsTarballPath !== undefined ? [piUtilsTarballPath] : [],
+      consumesPiUtils && piUtilsTarballPath !== undefined ? [piUtilsTarballPath] : [],
     );
     if (manifest.name !== piUtilsPackageName) await rm(tarballPath, { force: true });
   }

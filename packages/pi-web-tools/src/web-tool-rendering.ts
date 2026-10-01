@@ -22,18 +22,13 @@ import type { WebFetchDetails, WebFetchParameters } from "./web-fetch.js";
 import type { WebSearchDetails, WebSearchParameters } from "./web-search.js";
 import type { WebToolTruncationDetails } from "./web-tool-output.js";
 import { redactWebUrlUserinfo, webFetchUrlTarget } from "./web-url.js";
+import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 
 /** Theme operations used by Web Search and Web Fetch Transcript Presentation. */
 export type WebToolRenderTheme = Pick<Theme, "bold" | "fg">;
 
 function sanitizeWebToolPresentationText(text: string): string {
-  return (
-    stripTerminalSequences(text)
-      .replaceAll("\r\n", "\n")
-      .replaceAll("\r", "\n")
-      // oxlint-disable-next-line eslint/no-control-regex -- Transcript text permits tabs/newlines but must remove every remaining C0/C1 terminal control.
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-  );
+  return stripControlCharacters(stripTerminalSequences(text));
 }
 
 function boundedWebToolPreview(text: string, width = 72): string {
