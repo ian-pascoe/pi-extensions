@@ -1,18 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
-import {
-  contentText,
-  getCurrentSystemPrompt,
-  getCurrentTools,
-  toToolDeclaration,
-  type Context,
-  type ImageContent,
-} from "@earendil-works/pi-ai";
-import {
-  defineTool,
-  convertToLlm,
-  type AgentSession,
-  type AgentSessionRuntime,
-} from "@earendil-works/pi-coding-agent";
+import * as piAi from "@earendil-works/pi-ai";
+import type { Context, ImageContent } from "@earendil-works/pi-ai";
+import * as piSdk from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import type { AdvisorConfig } from "./advisor-settings.js";
@@ -65,7 +55,7 @@ const pendingQueuesSchema = Type.Object({
   _pendingCustomMessages: Type.Array(Type.Unknown()),
 });
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi 0.99.1 has no selective queue-removal API. Validate its native queue data and remove only exact owned finding identities, never unrelated messages or journal entries.
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi has no selective queue-removal API. Validate its native queue data and remove only exact owned finding identities, never unrelated messages or journal entries.
 function retractFindings(session: unknown, findings: ReadonlySet<Finding>): void {
   if (!findings.size) return;
   if (!Value.Check(pendingQueuesSchema, session))
@@ -168,7 +158,9 @@ function operationFailure(runtime: AgentSessionRuntime, since: number): string |
     .slice(since)
     .find((message) => message.role === "toolResult" && message.isError);
   if (!failedTool || failedTool.role !== "toolResult") return;
-  return contentText(failedTool.content).trim() || `Advisor tool ${failedTool.toolName} failed`;
+  return (
+    piAi.contentText(failedTool.content).trim() || `Advisor tool ${failedTool.toolName} failed`
+  );
 }
 
 /** Coalesced native review work; it never owns the observed tools, prompt, or agent loop. */
@@ -218,9 +210,9 @@ export class AdvisorObserver {
           // Pi carries the prompt and tool deltas as system messages. Replay them into the
           // current state and copy tool declarations, never execute callbacks.
           this.snapshot = structuredClone({
-            systemPrompt: getCurrentSystemPrompt(context.messages),
-            tools: getCurrentTools(context.messages).map((tool) => {
-              const { name, description, parameters } = toToolDeclaration(tool);
+            systemPrompt: piAi.getCurrentSystemPrompt(context.messages),
+            tools: piAi.getCurrentTools(context.messages).map((tool) => {
+              const { name, description, parameters } = piAi.toToolDeclaration(tool);
               return { name, description, parameters };
             }),
             messages: context.messages.filter((message) => message.role !== "system"),
@@ -250,7 +242,7 @@ export class AdvisorObserver {
         ...this.snapshot,
         messages: [
           ...this.snapshot.messages,
-          ...convertToLlm([event.message, ...event.toolResults]),
+          ...piSdk.convertToLlm([event.message, ...event.toolResults]),
         ],
       };
       if (
@@ -469,7 +461,7 @@ export class AdvisorObserver {
         },
         { additionalProperties: false },
       );
-      const adviceTool = defineTool({
+      const adviceTool = piSdk.defineTool({
         name: "advisor_report",
         label: "Advisor report",
         description: `Finish the Review with up to ${this.config.maxFindingsPerReview} concise, actionable findings. Prioritize blockers, then concerns, then worthwhile nits.`,
@@ -729,7 +721,7 @@ export class AdvisorObserver {
         throw new Error("Advisor consultation did not return an answer");
       if (last.stopReason === "error" || last.stopReason === "aborted")
         throw new Error(last.errorMessage ?? "Advisor consultation did not complete");
-      const answer = contentText(last.content).trim();
+      const answer = piAi.contentText(last.content).trim();
       if (!answer) throw new Error("Advisor consultation did not return a text answer");
       this.supplied = snapshot;
       this.suppliedBoundary = consultation.boundary;

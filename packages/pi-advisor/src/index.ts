@@ -1,8 +1,5 @@
-import {
-  AgentSession,
-  type ExtensionAPI,
-  type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import * as piSdk from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isDeepStrictEqual } from "node:util";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -21,6 +18,7 @@ import {
 import { completeAdvisorCommandArguments, parseAdvisorCommand } from "./advisor-command.js";
 import { AdvisorObserver } from "./advisor-observer.js";
 import { isAdvisorSession, type AdvisorResourceInputs } from "./advisor-session.js";
+import { advisorRuntimeWarning } from "./advisor-runtime.js";
 
 interface WatchedChild {
   agentId: string;
@@ -46,6 +44,9 @@ const childRequestSchema = Type.Object({
 
 /** Review an observed session without changing its tools or standing instructions. */
 export default function advisor(pi: ExtensionAPI): void {
+  // Capability checks, not version pins: an unmet requirement warns and leaves the Advisor unavailable.
+  const unsupported = advisorRuntimeWarning();
+  let warn: (message: string) => void = () => {};
   let observed: AgentSession | undefined;
   let error: string | undefined;
   let layers: AdvisorLayers = { global: {}, project: {} };
@@ -129,7 +130,21 @@ export default function advisor(pi: ExtensionAPI): void {
       setAskToolAvailable(false);
       return;
     }
-    const found = discoverPiAgentSession(pi, AgentSession);
+    const { ui } = ctx;
+    warn = (message) => {
+      try {
+        ui.notify(message, "warning");
+      } catch {
+        // A replaced session's UI is stale; the native status entry remains the durable record.
+      }
+    };
+    if (unsupported) {
+      error = unsupported;
+      setAskToolAvailable(false);
+      warn(unsupported);
+      return;
+    }
+    const found = discoverPiAgentSession(pi, piSdk.AgentSession);
     if (found.ok) {
       observed = found.session;
       layers = readAdvisorLayers(observed.settingsManager);
@@ -173,12 +188,13 @@ export default function advisor(pi: ExtensionAPI): void {
       child.observer = new AdvisorObserver(session, config, "owned-child", {
         resourceInputs: child.resourceInputs,
         onError: (message) => {
-          if (children.get(session) === child)
-            pi.appendEntry("pi-advisor-child", {
-              agentId: child.agentId,
-              state: "paused",
-              error: message,
-            });
+          if (children.get(session) !== child) return;
+          pi.appendEntry("pi-advisor-child", {
+            agentId: child.agentId,
+            state: "paused",
+            error: message,
+          });
+          warn(`Advisor for ${child.agentId} paused: ${message}`);
         },
         onIntervention: (finding) => {
           if (children.get(session) === child)
@@ -189,10 +205,14 @@ export default function advisor(pi: ExtensionAPI): void {
 
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: The native owner bus is a boundary; validate identity, SDK instance, and exact resource metadata before attachment.
   function attachChild(payload: unknown): void {
-    if (!Value.Check(childRequestSchema, payload) || !(payload.session instanceof AgentSession))
+    if (
+      unsupported ||
+      !Value.Check(childRequestSchema, payload) ||
+      !(payload.session instanceof piSdk.AgentSession)
+    )
       return;
     if (!observed) {
-      const found = discoverPiAgentSession(pi, AgentSession);
+      const found = discoverPiAgentSession(pi, piSdk.AgentSession);
       if (!found.ok) return;
       observed = found.session;
       layers = readAdvisorLayers(observed.settingsManager);
@@ -254,8 +274,10 @@ export default function advisor(pi: ExtensionAPI): void {
           settings,
           ctx.hasUI ? "interactive" : "headless-root",
           {
-            onError: (message) =>
-              pi.appendEntry("pi-advisor-status", { state: "paused", error: message }),
+            onError: (message) => {
+              pi.appendEntry("pi-advisor-status", { state: "paused", error: message });
+              warn(`Advisor paused: ${message}`);
+            },
           },
         );
       for (const [session, child] of children) configureChild(session, child, settings);

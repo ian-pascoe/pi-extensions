@@ -163,9 +163,9 @@ Explicit re-enablement or corrected configuration retries the Advisor. Pausing d
 
 ## Verification and compatibility
 
-Target the installed Pi 0.99.1 development baseline and check actual exports/capabilities against the package's declared compatibility range. Source checkouts newer than the installed runtime are not API authority.
+Do not gate on a Pi version. Check the SDK exports, class statics, and methods the Advisor uses at runtime, and verify native behavior where it is observable, such as the tool ceiling after binding. An unmet requirement fails softly: warn the user, leave the Advisor unavailable or paused with the exact diagnostic, and keep the observed session running. Develop against the installed Pi; source checkouts newer than the installed runtime are not API authority.
 
-Use the native SDK `tools` option as the ongoing tool-name ceiling. It filters executable and descriptive registries on refresh, including dynamic registrations; extensions cannot expand the model-callable set merely by calling `setActiveTools`. There is no public ceiling-update setter, so changing the grant requires recreating the private SDK session, not modifying private fields or adding another authorization framework.
+Use the native SDK `tools` option as the ongoing tool-name ceiling. It filters executable and descriptive registries on refresh, including dynamic registrations; extensions cannot expand the model-callable set merely by calling `setActiveTools`. Verify after binding that no ungranted tool is registered; otherwise pause as unsupported. There is no public ceiling-update setter, so changing the grant requires recreating the private SDK session, not modifying private fields or adding another authorization framework.
 
 Pi's built-in `codemode` does not deactivate granted tools: `codemode.mode: "only"` hides direct declarations while they stay active and callable from scripts. Do not grant `codemode` implicitly or change the inherited mode. Diagnose only an advice tool left inactive after extension binding.
 
