@@ -18,6 +18,7 @@ import {
   ensureReferenceOrigin,
   noteIndex,
   quarantineContextJournal,
+  withTroubleshootingHint,
 } from "./context-store.js";
 import {
   CheckpointDetails,
@@ -314,7 +315,11 @@ export default function contextManagement(pi: ExtensionAPI): void {
       renderContextToolResult(result, options, theme, "Rollover", context.args, context.isError),
     async execute(id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
-      requireAdapter();
+      try {
+        requireAdapter();
+      } catch (cause) {
+        throw withTroubleshootingHint(cause);
+      }
       if (!Value.Check(RolloverParameters, params) || !params.handoff.trim())
         throw new Error("Supply a non-empty Handoff of at most 64000 characters");
       const assistant = ctx.sessionManager
@@ -349,7 +354,7 @@ export default function contextManagement(pi: ExtensionAPI): void {
         quarantineContextJournal(ctx.sessionManager);
         const error = cause instanceof Error ? cause : new Error(String(cause));
         fail(error, ctx);
-        throw error;
+        throw withTroubleshootingHint(error);
       }
       pending = { handoff: params.handoff, signal, terminate: pauseAfterRollover };
       return {

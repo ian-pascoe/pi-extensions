@@ -2,6 +2,7 @@
 name: pi-todo
 description: Diagnose Pi Todo when its tool, restored Todo List, model context, clear command, transcript rendering, or widget is missing or incorrect.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Todo

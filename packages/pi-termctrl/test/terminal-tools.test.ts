@@ -4,6 +4,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
   createTerminalListTool,
   createTerminalSendTool,
@@ -424,6 +425,14 @@ describe("terminal_send", () => {
     expect(elapsed).toBeGreaterThanOrEqual(300);
     expect(elapsed).toBeLessThan(400);
     expect(value.structuredContent).toMatchObject({ screen: ">>> 6*7\n42\n>>> 1+1\n2\n>>> " });
+  });
+
+  test("points to the troubleshooting Skill when the driver is lost", async () => {
+    await startTerminal();
+    harness.drivers.latest.die();
+    await expect(
+      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
+    ).rejects.toThrow(`t1 was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`);
   });
 
   test("rejects unknown keys before sending anything", async () => {

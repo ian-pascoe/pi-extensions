@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { ensureReferenceOrigin } from "../src/context-store.js";
 import { registerContextTools } from "../src/context-tools.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 
 interface ToolInput {
   action: string;
@@ -288,17 +289,21 @@ describe("Context Notes tools", () => {
     try {
       await expect(
         f.run("context_notes", { action: "write", name: "task", content: "UNCOMMITTED" }),
-      ).rejects.toThrow(/EACCES/);
+      ).rejects.toThrow(/EACCES[\s\S]*troubleshooting Skill/);
     } finally {
       chmodSync(file, 0o600);
     }
     expect(failures).toHaveLength(1);
+    expect(failures[0]?.message).not.toContain(TROUBLESHOOTING_HINT);
     await expect(f.run("context_notes", { action: "read", name: "task" })).rejects.toThrow(
-      /reload/,
+      TROUBLESHOOTING_HINT,
     );
     const reloadedTools = harness(manager);
     await expect(reloadedTools.run("context_notes", { action: "list" })).rejects.toThrow(
-      /not just \/reload/,
+      /not just \/reload[\s\S]*troubleshooting Skill/,
+    );
+    await expect(reloadedTools.run("context_history", { action: "windows" })).rejects.toThrow(
+      TROUBLESHOOTING_HINT,
     );
     manager.setSessionFile(file);
     const resumedManager = harness(manager);

@@ -2,6 +2,7 @@
 name: pi-tps-tracker
 description: Diagnose pi-tps-tracker when live throughput or the final token-speed notice is missing or inaccurate.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi TPS Tracker

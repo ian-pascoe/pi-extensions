@@ -10,6 +10,7 @@ import {
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
+import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
 import {
   renderCoordinatorToolCall,
@@ -135,7 +136,7 @@ function failedStructuredOperation(prefix: string, result: DeleteResult): never 
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  throw new Error(`${prefix}: ${truncated.content}`);
+  throw new Error(withTroubleshootingHint(`${prefix}: ${truncated.content}`));
 }
 
 function callerSourceTurnId(

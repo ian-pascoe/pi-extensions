@@ -2,6 +2,7 @@
 name: pi-formatter
 description: Configure or diagnose Pi Formatter when post-edit formatting is skipped, targets the wrong file or root, or returns a command failure.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Formatter

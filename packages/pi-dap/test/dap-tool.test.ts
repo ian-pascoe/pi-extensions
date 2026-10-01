@@ -17,6 +17,8 @@ import type {
   DapStackInput,
   DapVariablesInput,
 } from "../src/dap-session.js";
+import { DapProtocolClientError } from "../src/dap-protocol-client.js";
+import { DapSessionError } from "../src/dap-session.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
 import {
   DapToolParametersSchema,
@@ -25,6 +27,7 @@ import {
   type DapToolProviderParameters,
 } from "../src/dap-tool-contract.js";
 import { createDapToolDefinition, type DapToolRuntime } from "../src/dap-tool.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -479,6 +482,49 @@ describe("DAP tool contract", () => {
       if (input === undefined) throw new Error("Expected recorded dispatch input");
       expect(input).toStrictEqual(expected);
       for (const field of absentFields) expect(Object.hasOwn(input, field)).toBe(false);
+    }
+  });
+
+  test("points the model at the troubleshooting Skill only for failures it diagnoses", async () => {
+    const fixture = await createToolFixture();
+    const tool = createDapToolDefinition(() => fixture.runtime);
+    const adapterFailure = new DapSessionError("adapter", "launch failed: spawn ENOENT");
+    const protocolCancelled = new DapProtocolClientError(
+      "cancelled",
+      "node",
+      "/tmp/stderr.log",
+      "launch request was cancelled",
+    );
+    const failures: readonly [Error, boolean][] = [
+      [adapterFailure, true],
+      [new DapSessionError("configuration", "launch requires a valid Launch Profile"), true],
+      [new DapProtocolClientError("exit", "node", "/tmp/stderr.log", "adapter exited"), true],
+      [new DapProtocolClientError("timeout", "node", "/tmp/stderr.log", "timed out"), true],
+      [new DapSessionError("state", "continue requires a stopped Debuggee"), false],
+      [
+        new DapProtocolClientError("request", "node", "/tmp/stderr.log", "evaluate request failed"),
+        false,
+      ],
+      [protocolCancelled, false],
+      [
+        new DapSessionError("adapter", "launch was cancelled and cleaned up", {
+          cause: protocolCancelled,
+        }),
+        false,
+      ],
+    ];
+    for (const [failure, hinted] of failures) {
+      vi.spyOn(fixture.session, "launch").mockRejectedValueOnce(failure);
+      const error = await tool
+        .execute("failure", { operation: "launch" }, undefined, undefined, fixture.context)
+        .then(
+          () => undefined,
+          (cause: unknown) => cause,
+        );
+      if (!(error instanceof Error)) throw new Error("Expected launch to fail");
+      expect(error.message.startsWith("Pi DAP: ")).toBe(true);
+      expect(error.message.includes(TROUBLESHOOTING_HINT)).toBe(hinted);
+      if (hinted) expect(error.message).toContain(`\n\n${TROUBLESHOOTING_HINT}`);
     }
   });
 

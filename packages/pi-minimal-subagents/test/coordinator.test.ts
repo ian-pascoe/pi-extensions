@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
   REGISTRY_ENTRY_TYPE,
   replayRegistryEntries,
@@ -315,7 +316,7 @@ describe("minimal subagents coordinator", () => {
         { task: "Required tool", agent_id: "required", tools: ["context_local"] },
         rootCaller,
       ),
-    ).rejects.toThrow("launch dependencies unavailable: context_local");
+    ).rejects.toThrow(`launch dependencies unavailable: context_local\n\n${TROUBLESHOOTING_HINT}`);
     sessions.resolveLaunchMissingDependencies.mockResolvedValue(["provider/model"]);
     await expect(
       coordinator.spawn(
@@ -1511,7 +1512,7 @@ describe("minimal subagents coordinator", () => {
     await expect(coordinator.wait("root", "worker")).resolves.toMatchObject({
       event: "turn",
       status: "failed",
-      error: "extension startup failed",
+      error: `extension startup failed\n\n${TROUBLESHOOTING_HINT}`,
     });
     await coordinator.shutdown();
   });
@@ -1662,7 +1663,10 @@ describe("minimal subagents coordinator", () => {
         { agent_id: "runtime-failed", message: "resume" },
         "root:resume",
       ),
-    ).resolves.toMatchObject({ disposition: "failed", error: "session corrupt" });
+    ).resolves.toMatchObject({
+      disposition: "failed",
+      error: `session corrupt\n\n${TROUBLESHOOTING_HINT}`,
+    });
     expect(coordinator.inspectStatus("runtime-failed")).toMatchObject({
       agent: { availability: "unavailable", unavailable_reason: "session corrupt" },
     });

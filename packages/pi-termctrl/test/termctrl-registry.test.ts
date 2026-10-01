@@ -6,6 +6,7 @@ import {
   type BackgroundJobChild,
   type ExitNotice,
 } from "../src/termctrl-registry.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import { FakeDriverFactory } from "./fake-driver.js";
 
 const viewport = { cols: 80, rows: 24 };
@@ -323,6 +324,22 @@ describe("TermctrlRegistry", () => {
     });
     expect(replacement.id).toBe("t3");
     expect(drivers.drivers).toHaveLength(2);
+  });
+
+  test("points to the troubleshooting Skill when no driver can start", async () => {
+    const registry = TermctrlRegistry.acquire({
+      createDriver: () => Promise.reject(new Error("termctrl is unavailable: no binary")),
+      pollIntervalMs: 5,
+    });
+    await expect(
+      registry.startTerminal("root", {
+        command: ["/bin/sh", "-c", "a"],
+        displayCommand: "a",
+        cwd: "/tmp",
+        viewport,
+        notify: true,
+      }),
+    ).rejects.toThrow(`termctrl is unavailable: no binary\n\n${TROUBLESHOOTING_HINT}`);
   });
 
   test("escalates to SIGKILL when termctrl does not stop a Terminal within 3 s", async () => {

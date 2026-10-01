@@ -60,7 +60,7 @@ describe("tool registration", () => {
       "terminal_list",
     ]);
     expect(fixture.notifications).toEqual([
-      "Pi Termctrl: Terminal tools are unavailable: test has no binary",
+      "Pi Termctrl: Terminal tools are unavailable: test has no binary\nRun /skill:pi-termctrl to diagnose.",
     ]);
   });
 

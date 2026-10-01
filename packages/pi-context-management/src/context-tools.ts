@@ -9,13 +9,14 @@ import {
 } from "./context-tool-rendering.js";
 import {
   appendNote,
-  assertContextJournalReadable,
+  assertContextJournalReadableForModel,
   contextReference,
   MAX_NOTE_CHARACTERS,
   MAX_NOTES,
   NoteName,
   readNotes,
   resolveContextReference,
+  withTroubleshootingHint,
 } from "./context-store.js";
 
 const NotesParameters = Type.Object(
@@ -130,7 +131,7 @@ export function registerContextTools(
       renderContextToolResult(result, options, theme, "History", context.args, context.isError),
     async execute(_id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
-      assertContextJournalReadable(ctx.sessionManager);
+      assertContextJournalReadableForModel(ctx.sessionManager);
       if (!Value.Check(HistoryParameters, params))
         throw new Error("Invalid context_history arguments");
       const manager = ctx.sessionManager;
@@ -228,7 +229,7 @@ export function registerContextTools(
       renderContextToolResult(result, options, theme, "Notes", context.args, context.isError),
     async execute(_id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
-      assertContextJournalReadable(ctx.sessionManager);
+      assertContextJournalReadableForModel(ctx.sessionManager);
       if (!Value.Check(NotesParameters, params)) throw new Error("Invalid context_notes arguments");
       const notes = readNotes(ctx.sessionManager);
       const offset = params.offset ?? 0;
@@ -294,7 +295,7 @@ export function registerContextTools(
       } catch (cause) {
         const error = cause instanceof Error ? cause : new Error(String(cause));
         onMutationFailure?.(error, ctx);
-        throw error;
+        throw withTroubleshootingHint(error);
       }
       return result({ action: params.action, name: params.name, saved: true });
     },

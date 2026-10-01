@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 export type ReadonlySessionManager = ExtensionContext["sessionManager"];
 
@@ -46,6 +47,22 @@ export interface ContextNote {
   content: string;
   updatedAt: string;
   ref: string;
+}
+
+/** Returns a model-facing copy of an environment or extension failure that points to the troubleshooting Skill. */
+export function withTroubleshootingHint(cause: unknown): Error {
+  const error = cause instanceof Error ? cause : new Error(String(cause));
+  if (error.message.includes(TROUBLESHOOTING_HINT)) return error;
+  return new Error(`${error.message}\n\n${TROUBLESHOOTING_HINT}`, { cause: error });
+}
+
+/** Model-facing journal guard; user-facing callers use assertContextJournalReadable directly. */
+export function assertContextJournalReadableForModel(manager: ReadonlySessionManager): void {
+  try {
+    assertContextJournalReadable(manager);
+  } catch (cause) {
+    throw withTroubleshootingHint(cause);
+  }
 }
 
 /** Quarantines this exact loaded journal until SessionManager replaces its native header. */

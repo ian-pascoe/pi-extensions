@@ -5,9 +5,12 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
+  createAgentSession,
   DefaultPackageManager,
+  DefaultResourceLoader,
   discoverAndLoadExtensions,
   loadSkills,
+  SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -120,6 +123,15 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     loadedSkills.diagnostics.length === 0 && loadedSkills.skills.length === 14,
     "temporary install did not load fourteen valid package skills",
   );
+  assertGitInstallCondition(
+    loadedSkills.skills.every((skill) => skill.disableModelInvocation),
+    "a package skill is visible to the model; set disable-model-invocation: true",
+  );
+  await assertPackageSkillsLeaveSystemPromptUnchanged(
+    installDirectory,
+    agentDirectory,
+    loadedSkills.skills.map(({ filePath }) => filePath),
+  );
   const entrypoints = configuredPaths.map((configuredPath) =>
     resolve(installDirectory, configuredPath),
   );
@@ -136,6 +148,64 @@ async function assertGitInstalledExtensionsLoad(installDirectory, agentDirectory
     JSON.stringify(result.extensions.map((extension) => extension.resolvedPath)) ===
       JSON.stringify(entrypoints),
     "temporary install loaded an unexpected extension path order",
+  );
+}
+
+/** Builds a real session system prompt with only the given package skills loaded. */
+async function buildSystemPromptWithSkills(installDirectory, agentDirectory, skillPaths) {
+  const settingsManager = SettingsManager.inMemory();
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: installDirectory,
+    agentDir: agentDirectory,
+    settingsManager,
+    noExtensions: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    additionalSkillPaths: skillPaths,
+    // Default discovery also reads the developer's user skills; compare package skills alone.
+    skillsOverride: ({ skills, diagnostics }) => ({
+      skills: skills.filter(({ filePath }) => skillPaths.includes(filePath)),
+      diagnostics,
+    }),
+  });
+  await resourceLoader.reload();
+  const { session } = await createAgentSession({
+    cwd: installDirectory,
+    agentDir: agentDirectory,
+    resourceLoader,
+    settingsManager,
+    sessionManager: SessionManager.inMemory(installDirectory),
+  });
+  try {
+    return {
+      loadedSkillCount: resourceLoader.getSkills().skills.length,
+      systemPrompt: session.systemPrompt,
+    };
+  } finally {
+    session.dispose();
+  }
+}
+
+/** Proves package skills are user-invoked: loading them leaves the system prompt byte-identical. */
+async function assertPackageSkillsLeaveSystemPromptUnchanged(
+  installDirectory,
+  agentDirectory,
+  skillPaths,
+) {
+  const baseline = await buildSystemPromptWithSkills(installDirectory, agentDirectory, []);
+  const withPackageSkills = await buildSystemPromptWithSkills(
+    installDirectory,
+    agentDirectory,
+    skillPaths,
+  );
+  assertGitInstallCondition(
+    baseline.loadedSkillCount === 0 && withPackageSkills.loadedSkillCount === skillPaths.length,
+    "system prompt comparison did not load the expected package skills",
+  );
+  assertGitInstallCondition(
+    withPackageSkills.systemPrompt === baseline.systemPrompt,
+    "package skills changed the system prompt",
   );
 }
 

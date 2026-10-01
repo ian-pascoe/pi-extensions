@@ -2,6 +2,7 @@
 name: pi-dap
 description: Configure or diagnose Pi DAP when an Adapter Definition or Launch Profile fails, a Debug Session is stuck, or breakpoints do not bind.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi DAP

@@ -292,6 +292,10 @@ async function assertTarballLoads(packageName, tarballPath, dependencyTarballs =
         loadedSkills.skills[0]?.name === packageName.split("/").at(-1),
       `${packageName} installed configuration skill did not load cleanly`,
     );
+    assertPackCondition(
+      loadedSkills.skills[0]?.disableModelInvocation === true,
+      `${packageName} configuration skill must set disable-model-invocation: true`,
+    );
   } finally {
     await Promise.all([
       rm(installDirectory, { recursive: true, force: true }),

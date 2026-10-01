@@ -2,6 +2,7 @@
 name: pi-minimal-subagents
 description: Configure or diagnose Pi Minimal Subagents for Subagent Access, missing Coordinator Tools, spawn, capability, delivery, wait, restore, reload, or fork failures.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Minimal Subagents

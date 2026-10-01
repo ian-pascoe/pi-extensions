@@ -129,7 +129,7 @@ class PiTermctrlController {
     const commandPrefix = settingsManager.getShellCommandPrefix();
     if (this.binary.kind === "missing") {
       context.ui.notify(
-        `Pi Termctrl: Terminal tools are unavailable: ${this.binary.reason}`,
+        `Pi Termctrl: Terminal tools are unavailable: ${this.binary.reason}\nRun /skill:pi-termctrl to diagnose.`,
         "warning",
       );
       if (settings.replaceBash) this.registerManagementTools();

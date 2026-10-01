@@ -18,6 +18,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import "./fixtures/observer-extension.js";
 
 it("returns enabled main-agent consultation as an ordinary tool result", async () => {
@@ -203,7 +204,7 @@ it("returns enabled main-agent consultation as an ordinary tool result", async (
     ),
   ).toMatchObject({
     isError: true,
-    content: [{ type: "text", text: "Offline consultation failure" }],
+    content: [{ type: "text", text: `Offline consultation failure\n\n${TROUBLESHOOTING_HINT}` }],
   });
 
   const requestsBeforePausedCall = consultationRequests;
@@ -216,5 +217,6 @@ it("returns enabled main-agent consultation as an ordinary tool result", async (
   expect(JSON.stringify(pausedResult)).toContain("Advisor is paused: Offline consultation failure");
   expect(JSON.stringify(pausedResult)).toContain("/advisor status");
   expect(JSON.stringify(pausedResult)).toContain("/advisor on");
+  expect(JSON.stringify(pausedResult)).toContain(TROUBLESHOOTING_HINT);
   expect(consultationRequests).toBe(requestsBeforePausedCall);
 });

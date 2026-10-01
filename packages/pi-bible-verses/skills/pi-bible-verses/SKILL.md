@@ -2,6 +2,7 @@
 name: pi-bible-verses
 description: Diagnose pi-bible-verses when its Working Message is missing, repeats unexpectedly, or the user asks whether it is configurable.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Bible Verses

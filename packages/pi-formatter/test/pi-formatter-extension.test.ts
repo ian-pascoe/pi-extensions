@@ -13,6 +13,7 @@ import {
 import { afterEach, describe, expect, test } from "vitest";
 import { createPiFormatterExtension } from "../src/pi-formatter-extension.js";
 import type { FormatterSettingsDocumentInput } from "../src/pi-formatter-settings.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -326,6 +327,9 @@ describe("Pi Formatter extension lifecycle", () => {
         /Pi Formatter: broken failed .*failure\.txt \(exit code 7\): expected stderr/,
       ),
     });
+    expect(result?.content?.at(-1)).toMatchObject({
+      text: expect.stringContaining(TROUBLESHOOTING_HINT),
+    });
     expect(await readFile(filePath, "utf8")).toBe("original:continued");
   });
 
@@ -370,5 +374,6 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(harness.notifications).toEqual([
       expect.stringContaining("global formatter.unknownField"),
     ]);
+    expect(harness.notifications[0]).toContain("Run /skill:pi-formatter to diagnose.");
   });
 });

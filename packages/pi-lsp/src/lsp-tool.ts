@@ -92,6 +92,7 @@ import {
   type LspMutationManifest,
   type LspWorkspaceEditStore,
 } from "./lsp-workspace-edit.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 const ProtocolRecordSchema = Type.Record(Type.String(), Type.Unknown());
 const ProtocolStringSchema = Type.String();
@@ -218,6 +219,16 @@ function piLspError(message: string): Error {
   return new Error(message.startsWith("Pi LSP:") ? message : `Pi LSP: ${message}`);
 }
 
+/**
+ * Raise server failures, pointing to the troubleshooting Skill unless the model can fix every
+ * failure itself (an ambiguous mutation is resolved by supplying `server_id`).
+ */
+function piLspFailureError(failures: readonly LspServerFailure[]): Error {
+  const message = failures.map((failure) => failure.message).join("; ");
+  if (failures.every(({ code }) => code === "ambiguous-server")) return piLspError(message);
+  return piLspError(`${message}\n\n${TROUBLESHOOTING_HINT}`);
+}
+
 async function createLspToolOutput(
   text: string,
   details: LspToolResultDetails,
@@ -320,7 +331,7 @@ function operationDetails(
 
 function requireReadSuccess<T>(result: LspServerReadResult<T>): void {
   if (result.successes.length > 0) return;
-  throw piLspError(result.failures.map(({ message }) => message).join("; "));
+  throw piLspFailureError(result.failures);
 }
 
 function readOperationValue<T>(result: LspServerReadResult<T>): LspReadValue[] {
@@ -868,7 +879,7 @@ async function executeFormattingPreview(
     parameters.server_id,
     (client) => client.hasCapability(method),
   );
-  if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
+  if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
   const { client, route } = resolution.instance;
   const prepared = await prepareLspDocument(client, route, filePath);
   const requestBase = {
@@ -913,7 +924,7 @@ async function executeRenamePreview(
     parameters.server_id,
     (client) => client.hasCapability(RenameRequest.method),
   );
-  if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
+  if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
   const { client, route } = resolution.instance;
   const prepared = await prepareLspDocument(client, route, filePath);
   const edit = await client.request(
@@ -947,7 +958,7 @@ async function executeCodeActions(
     parameters.server_id,
     (client) => client.hasCapability(CodeActionRequest.method),
   );
-  if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
+  if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
   const { client, route } = resolution.instance;
   const prepared = await prepareLspDocument(client, route, filePath);
   let actions = await client.request(
@@ -1130,7 +1141,7 @@ export function createLspToolDefinition(
             parameters.operation === "capabilities"
               ? await dependencies.manager.getCapabilities(parameters.server_id, filePath)
               : await dependencies.manager.restartServer(parameters.server_id, filePath);
-          if (resolution.kind === "failure") throw piLspError(resolution.failure.message);
+          if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
           return createLspToolOutput(
             formatLspToolValue({
               capabilities: resolution.instance.client.capabilities,
