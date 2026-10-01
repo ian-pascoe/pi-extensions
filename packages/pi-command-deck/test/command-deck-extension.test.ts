@@ -155,7 +155,10 @@ async function createHarness(extensionPaths: string[], mode: ExtensionMode = "tu
   };
 }
 
-describe("Command Deck extension", () => {
+// Each test loads real extension source through Pi's loader. The first load of an extension in a
+// process transpiles its whole module graph through jiti, whose disk cache starts empty on CI;
+// there one such load has taken over 6 s.
+describe("Command Deck extension", { timeout: 30_000 }, () => {
   it("installs nothing outside the TUI", async () => {
     const harness = await createHarness([COMMAND_DECK], "rpc");
     await harness.start();
