@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 import type {
   TerminalDriver,
   TerminalExit,
@@ -9,7 +11,8 @@ import type { TerminalViewport } from "./pi-termctrl-settings.js";
 
 /** The `globalThis` key every registry version shares. Its value always satisfies {@link RegistrySlot}. */
 export const REGISTRY_KEY = Symbol.for("@ian-pascoe/pi-termctrl/registry");
-const REGISTRY_VERSION = 1;
+/** Bump on any change to the state's shape: a reloaded module must not adopt an older shape. */
+export const REGISTRY_VERSION = 3;
 
 /** Live Terminals plus Background jobs allowed across the whole process. */
 export const LIVE_ENTRY_CAP = 16;
@@ -69,8 +72,13 @@ export interface TerminalEntry extends EntryBase {
   activeCalls: number;
   /** The screen the agent last received, for `changed: false`. */
   lastScreen: string | undefined;
-  /** Count of log lines already accounted for in an agent result. */
+  /** Count of log lines that scrolled off before the agent's last result. */
   logCursor: number;
+  /**
+   * Lines that locate `logCursor` again after termctrl trims its scrollback from the top: the
+   * last lines before the cursor, or, while the cursor is 0, the log's first line.
+   */
+  logAnchor: readonly string[];
 }
 
 /** A `bash` command moved to the background. */
@@ -119,11 +127,14 @@ interface DriverSlot {
   readonly generation: number;
 }
 
-/** Version 1 of the process-wide state. Only plain data and SDK handles; never `pi` or `ctx`. */
-interface RegistryStateV1 extends RegistrySlot {
+/** Version 2 of the process-wide state. Only plain data and SDK handles; never `pi` or `ctx`. */
+interface RegistryStateV2 extends RegistrySlot {
   readonly version: typeof REGISTRY_VERSION;
   nextTerminal: number;
   nextJob: number;
+  nextOutputFile: number;
+  /** Full output files of truncated Terminal results, by owner; deleted when the owner shuts down. */
+  readonly outputFiles: Map<string, string[]>;
   reserved: number;
   generation: number;
   readonly entries: Map<string, TermctrlEntry>;
@@ -147,11 +158,11 @@ function readSlot(): RegistrySlot | undefined {
   return slot;
 }
 
-function isCurrentVersion(slot: RegistrySlot): slot is RegistryStateV1 {
+function isCurrentVersion(slot: RegistrySlot): slot is RegistryStateV2 {
   return slot.version === REGISTRY_VERSION;
 }
 
-function writeSlot(state: RegistryStateV1): void {
+function writeSlot(state: RegistryStateV2): void {
   Object.defineProperty(globalThis, REGISTRY_KEY, {
     value: state,
     configurable: true,
@@ -178,7 +189,7 @@ function delay(milliseconds: number): Promise<"timeout"> {
  */
 export class TermctrlRegistry {
   private constructor(
-    private readonly state: RegistryStateV1,
+    private readonly state: RegistryStateV2,
     private readonly dependencies: RegistryDependencies,
   ) {}
 
@@ -199,10 +210,12 @@ export class TermctrlRegistry {
       clearSlot(slot);
       void slot.teardown().catch(() => {});
     }
-    const state: Omit<RegistryStateV1, "current" | "teardown"> & Partial<RegistryStateV1> = {
+    const state: Omit<RegistryStateV2, "current" | "teardown"> & Partial<RegistryStateV2> = {
       version: REGISTRY_VERSION,
       nextTerminal: 1,
       nextJob: 1,
+      nextOutputFile: 1,
+      outputFiles: new Map(),
       reserved: 0,
       generation: 0,
       entries: new Map(),
@@ -215,7 +228,7 @@ export class TermctrlRegistry {
       polling: false,
       changeListeners: new Set(),
     };
-    const complete: RegistryStateV1 = Object.assign(state, {
+    const complete: RegistryStateV2 = Object.assign(state, {
       teardown: () => complete.current.teardownAll(),
       current: undefined!,
     });
@@ -396,6 +409,7 @@ export class TermctrlRegistry {
         activeCalls: 0,
         lastScreen: undefined,
         logCursor: 0,
+        logAnchor: [],
       };
       this.state.entries.set(id, entry);
       this.syncWatcher();
@@ -605,6 +619,25 @@ export class TermctrlRegistry {
     this.unbindOwner(owner);
     this.state.pending.delete(owner);
     await Promise.all(this.ownedEntries(owner).map((entry) => this.retire(entry)));
+    await this.removeOutputFiles(owner);
+  }
+
+  /**
+   * Reserve a path in `directory` for the full output of a truncated Terminal result. The file
+   * outlives the Terminal, so `terminal_stop` can point to it, until its owner's session shuts down.
+   */
+  reserveOutputFile(owner: string, id: string, directory: string): string {
+    const path = join(directory, `${process.pid}-${id}-output-${this.state.nextOutputFile++}.log`);
+    const paths = this.state.outputFiles.get(owner) ?? [];
+    paths.push(path);
+    this.state.outputFiles.set(owner, paths);
+    return path;
+  }
+
+  private async removeOutputFiles(owner: string): Promise<void> {
+    const paths = this.state.outputFiles.get(owner) ?? [];
+    this.state.outputFiles.delete(owner);
+    await Promise.all(paths.map((path) => rm(path, { force: true }).catch(() => {})));
   }
 
   /** Stop everything in the process and release the global slot. */
@@ -615,6 +648,9 @@ export class TermctrlRegistry {
     this.state.pending.clear();
     this.state.owners.clear();
     await Promise.all(this.entries().map((entry) => this.retire(entry)));
+    await Promise.all(
+      [...this.state.outputFiles.keys()].map((owner) => this.removeOutputFiles(owner)),
+    );
     const slot = this.state.driver;
     this.state.driver = undefined;
     await slot?.driver.close().catch(() => {});

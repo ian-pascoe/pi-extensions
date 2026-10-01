@@ -44,11 +44,29 @@ with input, and 30 s for a `terminal_send` with neither `text` nor `keys` (a
 poll, which settles on quiet only after new output). Every `wait_ms` clamps to
 5 minutes.
 
-Results contain the visible screen, only the log lines that scrolled off since
-the agent's previous call (capped at 200 lines or 16 KB, with a notice),
-`state`, `exit_code` or `signal` once exited, and `changed: false` when the
-screen matches the previous result. Tools that declare structured output give
-`codemode` scripts typed values.
+Results contain the visible screen, the log lines that scrolled off since the
+agent's previous result, `state`, `exit_code` or `signal` once exited, and
+`changed: false` when the screen matches the previous result. Scrolled-off lines
+include lines the agent saw on an earlier screen, so a line rewritten in place,
+such as a progress line, arrives in its final form. Tools that declare
+structured output give `codemode` scripts typed values.
+
+Scrolled-off lines are best effort: they come from termctrl's scrollback, which
+is limited (several hundred lines; fewer when lines are long) and drops its
+oldest lines first. Reading a Terminal before its scrollback fills loses
+nothing. When lines the agent never received were dropped, or the screen was
+cleared, the result reports every line termctrl still holds, sets
+`output_missing: true`, and says that earlier output is missing. A Terminal's
+first result cannot detect dropped lines: when a program prints more than the
+scrollback holds before that result, its oldest lines are lost without
+`output_missing`, because termctrl does not report the trimming. Run commands
+whose complete output matters with `bash`, or redirect their output to a file.
+
+A result is limited to Pi's 2000 lines or 50 KB. The screen is kept first, from
+its bottom, and the newest scrolled-off lines fill the rest. When anything is
+cut, every line of the result goes to
+`$TMPDIR/pi-termctrl/<pid>-<id>-output-<n>.log`, named in the result's notice
+and `full_output_path`.
 
 `keys` are termctrl key names: `Enter`, `Escape`, `ArrowUp`, `ArrowDown`,
 `ArrowLeft`, `ArrowRight`, `Tab`, `Shift+Tab`, `Backspace`, `Delete`, `Home`,
@@ -128,8 +146,11 @@ Terminals and Background jobs live in the Pi process
 ([ADR-0001](docs/adr/0001-terminals-live-in-the-pi-process.md)). They survive
 `/reload`; every other session shutdown (quit, new, resume, fork) stops the
 session's own entries. Nothing persists across Pi restarts. Besides Background
-job logs, the only file written is a short-lived pid handoff file per Terminal
-launch in `$TMPDIR/pi-termctrl`, deleted as soon as it is read.
+job logs and full output files, the only file written is a short-lived pid
+handoff file per Terminal launch in `$TMPDIR/pi-termctrl`, deleted as soon as
+it is read. Full output files outlive their Terminal, so a `terminal_stop`
+result can name one, and are deleted when their session shuts down for any
+reason except reload.
 
 ## Settings
 

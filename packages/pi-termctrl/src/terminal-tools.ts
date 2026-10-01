@@ -1,9 +1,13 @@
+import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   defineTool,
   formatSize,
   truncateTail,
   type ExtensionToolContext,
+  type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import type { Key } from "@kitlangton/terminal-control";
 import { Type, type Static } from "typebox";
@@ -14,6 +18,7 @@ import type {
   TerminalEntry,
 } from "./termctrl-registry.js";
 import { describeExitStatus } from "./exit-notification.js";
+import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { TerminalViewport } from "./pi-termctrl-settings.js";
 import type { TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
 
@@ -24,8 +29,6 @@ export const START_WAIT_MS = 2_000;
 export const INPUT_WAIT_MS = 500;
 export const POLL_WAIT_MS = 30_000;
 export const MAX_WAIT_MS = 5 * 60_000;
-const SCROLLED_MAX_LINES = 200;
-const SCROLLED_MAX_BYTES = 16 * 1024;
 
 const CONTROL_KEYS = Array.from(
   { length: 26 },
@@ -81,6 +84,17 @@ const TerminalResultSchema = Type.Object({
   scrolled_off: Type.String({
     description: "Log lines that scrolled off the screen since the previous result",
   }),
+  output_missing: Type.Optional(
+    Type.Boolean({
+      description:
+        "Present when output before scrolled_off is missing: termctrl dropped it or the screen was cleared",
+    }),
+  ),
+  full_output_path: Type.Optional(
+    Type.String({
+      description: "Present when the result was truncated: the file with all its lines",
+    }),
+  ),
 });
 type TerminalResult = Static<typeof TerminalResultSchema>;
 
@@ -115,6 +129,18 @@ const StopResultSchema = Type.Object({
   scrolled_off: Type.Optional(
     Type.String({
       description: "Terminal only: lines that scrolled off since the previous result",
+    }),
+  ),
+  output_missing: Type.Optional(
+    Type.Boolean({
+      description:
+        "Terminal only: present when output before scrolled_off is missing: termctrl dropped it or the screen was cleared",
+    }),
+  ),
+  full_output_path: Type.Optional(
+    Type.String({
+      description:
+        "Terminal only: present when the result was truncated: the file with all its lines",
     }),
   ),
   output: Type.Optional(Type.String({ description: "Background job only: its recent output" })),
@@ -241,31 +267,158 @@ function describeExit(exit: TerminalExit | null): string {
   return exit === null ? "exited" : describeExitStatus(exit);
 }
 
-/** Lines that left the screen since the previous result, advancing the Terminal's log cursor. */
-async function takeScrolledOff(entry: TerminalEntry, screen: string): Promise<string> {
+/** Lines kept before the log cursor to find it again after termctrl trims its scrollback. */
+const ANCHOR_LINES = 5;
+
+/** Scrolled-off lines, and whether output before them is missing from termctrl's log. */
+interface ScrolledOff {
+  readonly lines: readonly string[];
+  readonly gap: boolean;
+}
+
+const NOTHING_SCROLLED: ScrolledOff = { lines: [], gap: false };
+
+/**
+ * Find the log cursor in a fresh copy of termctrl's log, or `undefined` when its anchor is gone.
+ * termctrl keeps limited scrollback and drops lines from the top, so the cursor can only move up.
+ * Lines above the screen never change; matching only the anchor's newest lines still finds a
+ * cursor whose older anchor lines were dropped. While the cursor is 0 the anchor is the log's first
+ * line, which was on the screen and may have been extended since, as by typing at a prompt.
+ */
+function locateCursor(
+  lines: readonly string[],
+  cursor: number,
+  anchor: readonly string[],
+): number | undefined {
+  if (anchor.length === 0) return 0;
+  if (cursor === 0) return lines[0]?.startsWith(anchor[0] ?? "") === true ? 0 : undefined;
+  for (let end = Math.min(cursor, lines.length); end >= 1; end--) {
+    const count = Math.min(anchor.length, end);
+    let matches = true;
+    for (let offset = 1; offset <= count && matches; offset++) {
+      matches = lines[end - offset] === anchor[anchor.length - offset];
+    }
+    if (matches) return end;
+  }
+  return undefined;
+}
+
+/**
+ * Lines that left the screen since the previous result, advancing the Terminal's log cursor.
+ * Lines still on the screen stay unread, so a line rewritten after the agent saw it, such as a
+ * progress line, is reported in its final form once it scrolls off. When the cursor cannot be found
+ * again, because termctrl dropped lines the agent never received or the screen was cleared, every
+ * line termctrl still holds is reported and the result says that earlier output is missing.
+ */
+async function takeScrolledOff(entry: TerminalEntry, screen: string): Promise<ScrolledOff> {
   let logs: string;
   try {
     logs = await entry.handle.logs();
   } catch {
-    return "";
+    return NOTHING_SCROLLED;
   }
   const lines = logs === "" ? [] : logs.split("\n");
-  if (lines.length < entry.logCursor) entry.logCursor = 0;
+  const located = locateCursor(lines, entry.logCursor, entry.logAnchor);
   const screenLines = screen === "" ? 0 : screen.split("\n").length;
   const boundary = Math.max(0, lines.length - screenLines);
-  const scrolled = lines.slice(Math.min(entry.logCursor, boundary), boundary);
-  entry.logCursor = lines.length;
-  if (scrolled.length === 0) return "";
-  const truncation = truncateTail(scrolled.join("\n"), {
-    maxLines: SCROLLED_MAX_LINES,
-    maxBytes: SCROLLED_MAX_BYTES,
-  });
-  if (!truncation.truncated) return truncation.content;
-  const omitted = truncation.totalLines - truncation.outputLines;
-  return `[${omitted} earlier scrolled-off lines omitted (limit ${SCROLLED_MAX_LINES} lines or ${formatSize(SCROLLED_MAX_BYTES)})]\n${truncation.content}`;
+  const scrolled = lines.slice(Math.min(located ?? 0, boundary), boundary);
+  entry.logCursor = boundary;
+  entry.logAnchor =
+    boundary > 0 ? lines.slice(Math.max(0, boundary - ANCHOR_LINES), boundary) : lines.slice(0, 1);
+  return { lines: scrolled, gap: located === undefined };
 }
 
-function formatTerminalText(result: TerminalResult, note: string | undefined): string {
+const GAP_NOTICE =
+  "[Earlier output is missing: termctrl keeps limited scrollback and dropped lines, or the screen was cleared. For complete output, run the command with bash or redirect it to a file.]";
+
+/** A Terminal result's screen and scrolled-off lines, fitted to Pi's tool output limits. */
+interface FittedOutput {
+  readonly screen: string;
+  readonly scrolledOff: string;
+  readonly fullOutputPath?: string;
+  /** Output before the scrolled-off lines is missing from termctrl's log. */
+  readonly gap: boolean;
+  /** Explains missing or truncated output; appended to the result text. */
+  readonly notice?: string;
+}
+
+function emptyTruncation(content: string): TruncationResult {
+  const totalLines = content === "" ? 0 : content.split("\n").length;
+  return {
+    content: "",
+    truncated: content !== "",
+    truncatedBy: content === "" ? null : "bytes",
+    totalLines,
+    totalBytes: Buffer.byteLength(content, "utf8"),
+    outputLines: 0,
+    outputBytes: 0,
+    lastLinePartial: false,
+    firstLineExceedsLimit: false,
+    maxLines: 0,
+    maxBytes: 0,
+  };
+}
+
+/**
+ * Fit a result into Pi's 2000-line and 50 KB limits. The screen is kept first, from its bottom;
+ * the newest scrolled-off lines fill what is left. When anything is cut, every line of the result
+ * goes to a full output file that lasts until the owner's session shuts down.
+ */
+async function fitOutput(
+  registry: TermctrlRegistry,
+  entry: TerminalEntry,
+  screen: string,
+  scrolled: ScrolledOff,
+): Promise<FittedOutput> {
+  const fitted = await truncateOutput(registry, entry, screen, scrolled.lines);
+  if (!scrolled.gap) return { ...fitted, gap: false };
+  const notice = fitted.notice === undefined ? GAP_NOTICE : `${GAP_NOTICE}\n${fitted.notice}`;
+  return { ...fitted, gap: true, notice };
+}
+
+async function truncateOutput(
+  registry: TermctrlRegistry,
+  entry: TerminalEntry,
+  screen: string,
+  scrolled: readonly string[],
+): Promise<Omit<FittedOutput, "gap">> {
+  const limits = { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES };
+  const scrolledText = scrolled.join("\n");
+  const shownScreen = truncateTail(screen, limits);
+  const lineBudget = limits.maxLines - shownScreen.outputLines;
+  // One byte for the newline that joins the scrolled-off lines to the screen.
+  const byteBudget = limits.maxBytes - shownScreen.outputBytes - 1;
+  const shownScrolled =
+    lineBudget > 0 && byteBudget > 0
+      ? truncateTail(scrolledText, { maxLines: lineBudget, maxBytes: byteBudget })
+      : emptyTruncation(scrolledText);
+  if (!shownScreen.truncated && !shownScrolled.truncated)
+    return { screen, scrolledOff: scrolledText };
+
+  const total = shownScrolled.totalLines + shownScreen.totalLines;
+  const shown = shownScrolled.outputLines + shownScreen.outputLines;
+  const fitted = { screen: shownScreen.content, scrolledOff: shownScrolled.content };
+  const range = `[Showing lines ${total - shown + 1}-${total} of ${total} (${formatSize(DEFAULT_MAX_BYTES)} or ${DEFAULT_MAX_LINES} line limit).`;
+  const directory = termctrlTemporaryDirectory();
+  let path: string;
+  try {
+    path = registry.reserveOutputFile(entry.owner, entry.id, directory);
+    await mkdir(directory, { recursive: true });
+    const full =
+      scrolledText === "" ? screen : screen === "" ? scrolledText : `${scrolledText}\n${screen}`;
+    await writeFile(path, full, { encoding: "utf8", mode: 0o600 });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    return { ...fitted, notice: `${range} The full output could not be saved: ${reason}]` };
+  }
+  return { ...fitted, fullOutputPath: path, notice: `${range} Full output: ${path}]` };
+}
+
+function formatTerminalText(
+  result: TerminalResult,
+  note: string | undefined,
+  notice: string | undefined,
+): string {
   const exit =
     result.state === "running"
       ? "running"
@@ -276,7 +429,8 @@ function formatTerminalText(result: TerminalResult, note: string | undefined): s
     parts.push(`--- scrolled off ---\n${result.scrolled_off}`);
   }
   parts.push(`--- screen ---\n${result.screen === "" ? "(blank)" : result.screen}`);
-  return parts.join("\n");
+  const text = parts.join("\n");
+  return notice === undefined ? text : `${text}\n\n${notice}`;
 }
 
 /** Build the agent's view of a Terminal after a wait, recording the exit as seen. */
@@ -288,7 +442,10 @@ async function terminalResult(
 ) {
   const screen = snapshot?.screen ?? entry.finalScreen ?? entry.lastScreen ?? "";
   const scrolled =
-    entry.state === "running" || snapshot !== undefined ? await takeScrolledOff(entry, screen) : "";
+    entry.state === "running" || snapshot !== undefined
+      ? await takeScrolledOff(entry, screen)
+      : NOTHING_SCROLLED;
+  const output = await fitOutput(registry, entry, screen, scrolled);
   if (snapshot?.state === "exited") {
     registry.terminalExited(entry.id, snapshot.exit ?? { code: null, signal: null }, screen, true);
   }
@@ -299,12 +456,14 @@ async function terminalResult(
     state: exited ? "exited" : "running",
     ...exitFields(exited ? entry.exit : null),
     changed: entry.lastScreen !== screen,
-    screen,
-    scrolled_off: scrolled,
+    screen: output.screen,
+    scrolled_off: output.scrolledOff,
   };
+  if (output.gap) result.output_missing = true;
+  if (output.fullOutputPath !== undefined) result.full_output_path = output.fullOutputPath;
   entry.lastScreen = screen;
   return {
-    content: [{ type: "text" as const, text: formatTerminalText(result, note) }],
+    content: [{ type: "text" as const, text: formatTerminalText(result, note, output.notice) }],
     details: result,
     structuredContent: result,
   };
@@ -354,6 +513,7 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
     promptSnippet: "Start an interactive program (REPL, TUI, prompt) in a Terminal",
     promptGuidelines: [
       "Use terminal_start, terminal_send and terminal_stop for programs that need input or a screen; use bash for everything else.",
+      "Terminals keep limited scrollback, so long output can be lost; run commands whose full output you need with bash, or redirect their output to a file.",
     ],
     parameters: StartParameters,
     outputSchema: TerminalResultSchema,
@@ -388,7 +548,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
     name: "terminal_send",
     label: "terminal_send",
     description:
-      "Type text and press keys in a Terminal, then return its screen once it settles: 250 ms of quiet, a wait_for_text match, exit, or wait_ms (default 500). With neither text nor keys it polls: it waits up to wait_ms (default 30000) for new output. Results include only lines that scrolled off since your previous call.",
+      "Type text and press keys in a Terminal, then return its screen once it settles: 250 ms of quiet, a wait_for_text match, exit, or wait_ms (default 500). With neither text nor keys it polls: it waits up to wait_ms (default 30000) for new output. Results include the lines that scrolled off since your previous result; a truncated result names a file with its full output.",
     promptSnippet: "Send input to a Terminal, or poll it, and read its screen",
     parameters: SendParameters,
     outputSchema: TerminalResultSchema,
@@ -439,14 +599,17 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
 }
 
 /** Capture the lines a Terminal scrolled off since the agent's last result, before it is stopped. */
-async function finalScrolledOff(registry: TermctrlRegistry, entry: TerminalEntry): Promise<string> {
+async function finalScrolledOff(
+  registry: TermctrlRegistry,
+  entry: TerminalEntry,
+): Promise<ScrolledOff> {
   try {
     if (entry.state === "exited") return await takeScrolledOff(entry, entry.finalScreen ?? "");
     return await driveTerminal(registry, entry, async () =>
       takeScrolledOff(entry, (await entry.handle.snapshot()).screen),
     );
   } catch {
-    return "";
+    return NOTHING_SCROLLED;
   }
 }
 
@@ -466,7 +629,8 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       if (known === undefined) throw unknownId(params.id);
       const wasRunning = known.state === "running";
       const previousScreen = known.kind === "terminal" ? known.lastScreen : undefined;
-      const scrolled = known.kind === "terminal" ? await finalScrolledOff(registry, known) : "";
+      const scrolled =
+        known.kind === "terminal" ? await finalScrolledOff(registry, known) : NOTHING_SCROLLED;
       const entry = (await registry.stop(owner, params.id)) ?? known;
       const label = entry.kind === "terminal" ? "Terminal" : "Background job";
       const header = wasRunning
@@ -481,11 +645,15 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       const parts = [header];
       if (entry.kind === "terminal") {
         const screen = entry.finalScreen ?? "";
+        const output = await fitOutput(registry, entry, screen, scrolled);
         result.changed = previousScreen !== screen;
-        result.screen = screen;
-        result.scrolled_off = scrolled;
-        if (scrolled !== "") parts.push(`--- scrolled off ---\n${scrolled}`);
-        parts.push(`--- final screen ---\n${screen === "" ? "(blank)" : screen}`);
+        result.screen = output.screen;
+        result.scrolled_off = output.scrolledOff;
+        if (output.gap) result.output_missing = true;
+        if (output.fullOutputPath !== undefined) result.full_output_path = output.fullOutputPath;
+        if (output.scrolledOff !== "") parts.push(`--- scrolled off ---\n${output.scrolledOff}`);
+        parts.push(`--- final screen ---\n${output.screen === "" ? "(blank)" : output.screen}`);
+        if (output.notice !== undefined) parts.push(`\n${output.notice}`);
       } else {
         result.output = entry.child.tail();
         if (result.output !== "") parts.push(`--- recent output ---\n${result.output}`);

@@ -129,7 +129,7 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
   });
 
   test(
-    "polls a long-running process and returns scrolled-off lines once",
+    "polls a long-running process and returns every scrolled-off line",
     { timeout: 20_000 },
     async () => {
       const tools = createTools();
@@ -147,7 +147,7 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
         context,
       );
       expect(started.details.state).toBe("running");
-      const firstScreen = ticks(started.details.screen);
+      const firstTop = ticks(started.details.screen)[0] ?? 1;
       const polled = await tools.send.execute(
         "send",
         { id: "t1", wait_for_text: "finished", wait_ms: 10_000 },
@@ -156,9 +156,8 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
         context,
       );
       expect(polled.details.screen).toContain("finished");
-      const scrolled = ticks(polled.details.scrolled_off);
-      expect(scrolled.length).toBeGreaterThan(0);
-      expect(Math.min(...scrolled)).toBeGreaterThan(Math.max(...firstScreen));
+      const shown = ticks(`${polled.details.scrolled_off}\n${polled.details.screen}`);
+      expect(shown).toEqual(Array.from({ length: 81 - firstTop }, (_, index) => firstTop + index));
       const quiet = await tools.send.execute(
         "send",
         { id: "t1", wait_ms: 500 },
@@ -167,6 +166,78 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
         context,
       );
       expect(quiet.details).toMatchObject({ changed: false, scrolled_off: "" });
+    },
+  );
+
+  test(
+    "reports a rewritten line and the output after clear once they scroll off",
+    { timeout: 20_000 },
+    async () => {
+      const tools = createTools();
+      const context = toolContext();
+      const started = await tools.start.execute(
+        "start",
+        {
+          command:
+            "printf 'Building... '; sleep 1; printf 'FAILED\\n'; seq 1 20; sleep 1; clear; seq 101 130; echo finished; sleep 30",
+        },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(started.details.screen).toBe("Building...");
+      const built = await tools.send.execute(
+        "send",
+        { id: "t1", wait_for_text: "/^20$/m", wait_ms: 10_000 },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(built.details.scrolled_off.split("\n")[0]).toBe("Building... FAILED");
+      const cleared = await tools.send.execute(
+        "send",
+        { id: "t1", wait_for_text: "finished", wait_ms: 10_000 },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(cleared.details.scrolled_off.split("\n")[0]).toBe("101");
+      expect(cleared.details.output_missing).toBe(true);
+    },
+  );
+
+  test(
+    "keeps its place past termctrl's scrollback limit and reports lines it dropped",
+    { timeout: 30_000 },
+    async () => {
+      const tools = createTools();
+      const context = toolContext();
+      await tools.start.execute(
+        "start",
+        { command: "bash --norc --noprofile -i", wait_ms: 10_000 },
+        undefined,
+        undefined,
+        context,
+      );
+      const run = (text: string, waitFor: string) =>
+        tools.send.execute(
+          "send",
+          { id: "t1", text, wait_for_text: waitFor, wait_ms: 10_000 },
+          undefined,
+          undefined,
+          context,
+        );
+      // Fill termctrl's scrollback, reading as it goes so nothing is dropped unreported.
+      for (let batch = 0; batch < 6; batch++) {
+        const filled = await run(`seq ${batch}001 ${batch}200; echo b${batch}\n`, `/^b${batch}$/m`);
+        expect(filled.details.output_missing).toBeUndefined();
+      }
+      const small = await run("echo one; echo two; echo three\n", "/^three$/m");
+      expect(small.details.output_missing).toBeUndefined();
+      expect(small.details.scrolled_off.split("\n").length).toBeLessThan(15);
+      const burst = await run("seq 1 5000; echo burst-done\n", "/^burst-done$/m");
+      expect(burst.details.output_missing).toBe(true);
+      expect(burst.details.scrolled_off.split("\n")[0]).not.toBe("1");
     },
   );
 

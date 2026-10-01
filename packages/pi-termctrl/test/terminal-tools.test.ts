@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -234,11 +236,12 @@ describe("terminal_send", () => {
     expect(activePoll.value.structuredContent).toMatchObject({ changed: true, screen: ">>> tick" });
   });
 
-  test("returns only lines that scrolled off since the previous call, capped with a notice", async () => {
-    const { terminal } = await startTerminal((self) => {
+  test("returns every line that scrolled off since the previous result, including seen ones", async () => {
+    const { result, terminal } = await startTerminal((self) => {
       self.logLines = ["one", "two", "three"];
       self.screen = "two\nthree";
     });
+    expect(result.structuredContent).toMatchObject({ scrolled_off: "one" });
     terminal.onInput = (self) => {
       self.logLines.push("four", "five", "six");
       self.screen = "five\nsix";
@@ -246,21 +249,157 @@ describe("terminal_send", () => {
     const second = await timed(
       harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
     );
-    expect(second.value.structuredContent).toMatchObject({ scrolled_off: "four" });
+    expect(second.value.structuredContent).toMatchObject({ scrolled_off: "two\nthree\nfour" });
+    expect(second.value.details.full_output_path).toBeUndefined();
+  });
 
+  test("reports a line rewritten after the agent saw it in its final form", async () => {
+    const { result, terminal } = await startTerminal((self) => {
+      self.logLines = ["Building..."];
+      self.screen = "Building...";
+    });
+    expect(result.structuredContent).toMatchObject({ scrolled_off: "" });
     terminal.onInput = (self) => {
-      for (let line = 0; line < 500; line++) self.logLines.push(`row ${line}`);
-      self.screen = "row 498\nrow 499";
+      self.logLines = ["Building... FAILED", "1", "2", "3"];
+      self.screen = "2\n3";
     };
-    const third = await timed(
-      harness.send.execute("call", { id: "t1", text: "y" }, undefined, undefined, root),
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
     );
-    const scrolled = third.value.details.scrolled_off;
-    expect(scrolled.split("\n")[0]).toBe(
-      "[298 earlier scrolled-off lines omitted (limit 200 lines or 16.0KB)]",
+    expect(value.structuredContent).toMatchObject({ scrolled_off: "Building... FAILED\n1" });
+  });
+
+  test("starts over when the log is reset, as by clear", async () => {
+    const numbers = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
+    const { result, terminal } = await startTerminal((self) => {
+      self.logLines = numbers(1, 8);
+      self.screen = numbers(4, 8).join("\n");
+    });
+    expect(result.structuredContent).toMatchObject({ scrolled_off: "1\n2\n3" });
+    terminal.onInput = (self) => {
+      self.logLines = numbers(101, 112);
+      self.screen = numbers(108, 112).join("\n");
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
     );
-    expect(scrolled.split("\n").at(-1)).toBe("row 497");
-    expect(textOf(third.value)).toContain("--- scrolled off ---\n[298 earlier");
+    expect(value.structuredContent).toMatchObject({
+      scrolled_off: numbers(101, 107).join("\n"),
+      output_missing: true,
+    });
+    expect(textOf(value)).toMatch(
+      /\n\n\[Earlier output is missing: termctrl keeps limited scrollback/u,
+    );
+  });
+
+  test("keeps its place when termctrl trims scrollback it already reported", async () => {
+    const numbers = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = numbers(1, 10);
+      self.screen = numbers(6, 10).join("\n");
+    });
+    // termctrl drops 1-4, cutting into the anchor (1-5) but not into unreported lines.
+    terminal.onInput = (self) => {
+      self.logLines = numbers(5, 13);
+      self.screen = numbers(9, 13).join("\n");
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ scrolled_off: "6\n7\n8" });
+    expect(value.structuredContent).not.toHaveProperty("output_missing");
+  });
+
+  test("says output is missing when termctrl dropped lines the agent never received", async () => {
+    const numbers = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = numbers(1, 10);
+      self.screen = numbers(6, 10).join("\n");
+    });
+    terminal.onInput = (self) => {
+      self.logLines = numbers(50, 60);
+      self.screen = numbers(56, 60).join("\n");
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      scrolled_off: numbers(50, 55).join("\n"),
+      output_missing: true,
+    });
+  });
+
+  test("says output is missing when a burst overflows before anything scrolled off", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["$ "];
+      self.screen = "$ ";
+    });
+    terminal.onInput = (self) => {
+      self.logLines = ["4998", "4999", "5000", "$ "];
+      self.screen = "5000\n$ ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      scrolled_off: "4998\n4999",
+      output_missing: true,
+    });
+  });
+
+  test("a prompt line extended by typing is not missing output", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["$ "];
+      self.screen = "$ ";
+    });
+    terminal.onInput = (self) => {
+      self.logLines = ["$ seq 1 3", "1", "2", "3", "$ "];
+      self.screen = "3\n$ ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ scrolled_off: "$ seq 1 3\n1\n2" });
+    expect(value.structuredContent).not.toHaveProperty("output_missing");
+  });
+
+  test("fits large output into Pi's limits and saves every line to a full output file", async () => {
+    const rows = Array.from({ length: 3_000 }, (_, index) => `row ${index}`);
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = [">>> "];
+    });
+    terminal.onInput = (self) => {
+      self.logLines = [">>> ", ...rows, ">>> "];
+      self.screen = "row 2999\n>>> ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    const { scrolled_off: scrolled, screen, full_output_path: path } = value.details;
+    expect(screen).toBe("row 2999\n>>> ");
+    expect(scrolled.split("\n")).toEqual(rows.slice(1_001, 2_999));
+    expect(path).toMatch(/pi-termctrl\/\d+-t1-output-\d+\.log$/u);
+    expect(textOf(value)).toMatch(
+      /--- screen ---\nrow 2999\n>>> \n\n\[Showing lines 1003-3002 of 3002 \(50\.0KB or 2000 line limit\)\. Full output: .+-t1-output-\d+\.log\]$/u,
+    );
+    expect(await readFile(path ?? "", "utf8")).toBe(`>>> \n${rows.join("\n")}\n>>> `);
+  });
+
+  test("keeps the bottom of a screen larger than Pi's limits", async () => {
+    const rows = Array.from({ length: 2_500 }, (_, index) => `row ${index}`);
+    const { result } = await startTerminal((self) => {
+      self.logLines = ["earlier", ...rows];
+      self.screen = rows.join("\n");
+    });
+    expect(result.details.scrolled_off).toBe("");
+    expect(result.details.screen.split("\n")).toEqual(rows.slice(500));
+    expect(textOf(result)).toContain("[Showing lines 502-2501 of 2501");
+    expect(await readFile(result.details.full_output_path ?? "", "utf8")).toBe(
+      ["earlier", ...rows].join("\n"),
+    );
   });
 
   test("a wait_for_text match already on the screen counts only after the screen changes", async () => {
@@ -336,12 +475,29 @@ describe("terminal_stop and terminal_list", () => {
       signal: "SIGKILL",
       changed: true,
       screen: ">>> exit()",
-      scrolled_off: "older",
+      scrolled_off: ">>> \nolder",
     });
     expect(textOf(value)).toBe(
-      "Terminal t1 stopped.\n--- scrolled off ---\nolder\n--- final screen ---\n>>> exit()",
+      "Terminal t1 stopped.\n--- scrolled off ---\n>>> \nolder\n--- final screen ---\n>>> exit()",
     );
     expect(harness.runtime.registry.entries()).toEqual([]);
+  });
+
+  test("a stopped Terminal's full output file lasts until its session shuts down", async () => {
+    const rows = Array.from({ length: 2_100 }, (_, index) => `row ${index}`);
+    const { terminal } = await startTerminal();
+    terminal.logLines = [...rows, ">>> "];
+    terminal.screen = ">>> ";
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    const path = value.details.full_output_path ?? "";
+    expect(textOf(value)).toContain(`Full output: ${path}]`);
+    expect(existsSync(path)).toBe(true);
+    await harness.runtime.registry.shutdownOwner("child");
+    expect(existsSync(path)).toBe(true);
+    await harness.runtime.registry.shutdownOwner("root");
+    expect(existsSync(path)).toBe(false);
   });
 
   test("list shows Terminals and a separate background_jobs section", async () => {

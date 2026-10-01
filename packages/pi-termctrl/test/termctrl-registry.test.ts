@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   REGISTRY_KEY,
+  REGISTRY_VERSION,
   TermctrlRegistry,
   type BackgroundJobChild,
   type ExitNotice,
@@ -180,19 +181,22 @@ describe("TermctrlRegistry", () => {
     expect(batches).toEqual([]);
   });
 
-  test("tears down a registry with an unknown version and starts fresh", async () => {
-    const teardown = vi.fn(async () => {});
-    Object.defineProperty(globalThis, REGISTRY_KEY, {
-      value: { version: 999, teardown },
-      configurable: true,
-      writable: true,
-    });
-    const { registry } = createHarness();
-    expect(teardown).toHaveBeenCalledOnce();
-    expect(registry.entries()).toEqual([]);
-    const { entry } = startJob(registry, "root");
-    expect(entry.id).toBe("b1");
-  });
+  test.each([1, REGISTRY_VERSION - 1, 999])(
+    "tears down a registry with another version (%i) and starts fresh",
+    async (version) => {
+      const teardown = vi.fn(async () => {});
+      Object.defineProperty(globalThis, REGISTRY_KEY, {
+        value: { version, teardown },
+        configurable: true,
+        writable: true,
+      });
+      const { registry } = createHarness();
+      expect(teardown).toHaveBeenCalledOnce();
+      expect(registry.entries()).toEqual([]);
+      const { entry } = startJob(registry, "root");
+      expect(entry.id).toBe("b1");
+    },
+  );
 
   test("rejects starts beyond the cap and lists the caller's live entries", async () => {
     const { registry } = createHarness();

@@ -57,7 +57,7 @@ All `wait_ms` values clamp to 5 min. These numbers are fixed and are not setting
 **What `terminal_start`, `terminal_send` and `terminal_stop` return:**
 
 - the visible screen;
-- only the log lines that scrolled off since the agent's previous call, capped with a truncation notice;
+- the log lines that scrolled off since the agent's previous result, within Pi's tool output limits;
 - `state`;
 - `exit_code` or the signal once the Terminal has exited;
 - `changed: false` when the screen matches the previous result.
@@ -376,7 +376,8 @@ Decisions made while implementing, where the plan left room or the SDK forced a 
 
 - **Driver requests are serial.** The termctrl driver answers one request at a time across all of its Terminals, so a long `waitForText` or `waitForExit` would block every other Terminal and the `/ps` preview. Settling therefore polls short `status` and `capture` requests every 50 ms instead of awaiting long SDK waits. Exits that no tool call is waiting on are found by a 500 ms watcher over idle running Terminals; driver death is detected from the SDK's "driver exited/closed" errors on those polls.
 - **Settle details.** With `wait_for_text`, quiet alone does not settle the wait, otherwise any pause would end it early. A poll (no `text` or `keys`) settles on quiet only after new output appears, so an idle Terminal is polled for the full `wait_ms`. `wait_for_text` written as `/source/flags` is a regex; anything else is a literal substring.
-- **Scrolled-off lines** come from `session.logs.text()`. Each Terminal keeps a cursor at the log length of its previous result; lines between that cursor and the start of the visible screen are returned. A shrinking log (alternate screen, truncation) resets the cursor.
+- **Scrolled-off lines** come from `session.logs.text()`. Each Terminal keeps a cursor at the start of the screen in its previous result, so lines the agent saw on screen are returned again once they scroll off, in their final form. termctrl keeps limited scrollback and drops its oldest lines, so the cursor is found again by searching for the last lines before it. When they are gone (dropped unreported, or `clear`), every retained line is returned with `output_missing: true` and a notice; the first result of a Terminal cannot detect drops ([anomalyco/terminal-control#36](https://github.com/anomalyco/terminal-control/issues/36)). Full output of the program is a non-goal for Terminals; `bash` covers it.
+- **Output limits.** A Terminal result is limited to Pi's 2000 lines or 50 KB: the screen is kept first, from its bottom, and the newest scrolled-off lines fill the rest. A truncated result writes every line to a full output file, as Pi's `bash` does.
 - **Terminal shell.** Terminals use Pi's own `getShellConfig(shellPath)`, the exact shell Pi's `bash` uses, rather than `$SHELL`, so `shellCommandPrefix` keeps working.
 - **SIGKILL escalation.** termctrl never reports a Terminal's pid. Each Terminal is launched through a `/bin/sh` wrapper that writes `$$` to a temporary pid file and `exec`s the command, so the pid is known and a stuck stop can `SIGKILL` its process group.
 - **Log paths** are `$TMPDIR/pi-termctrl/<pid>-<id>.log`; the Pi process id keeps concurrent Pi processes from sharing `b1.log`.
@@ -385,4 +386,5 @@ Decisions made while implementing, where the plan left room or the SDK forced a 
 - **`wait_for_text` baseline.** Text already on the screen before a `terminal_send` counts only after the screen changes, so a stale match cannot settle the call before the input takes effect. The quiet period of `terminal_start` begins after the Terminal launches, so a cold driver start cannot settle it on a blank screen.
 - **`terminal_stop` result.** For a Terminal it carries the final screen, the scrolled-off lines, `state`, the exit and `changed`, like the other Terminal tools; for a Background job it carries the job's recent output instead of a screen. Both share one flat output schema with optional fields.
 - **User stops keep logs.** A job stopped with `k` in `/ps` keeps its log until the user removes it with `x` or its session shuts down, so it stays readable like any exited entry.
-- **Temporary files.** ADR-0001 records the job logs and pid handoff files as the package's only writes outside the session transcript.
+- **Temporary files.** ADR-0001 records the job logs, pid handoff files and full output files as the package's only writes outside the session transcript.
+- **Registry version.** Any change to the shape of the process-wide registry state bumps `REGISTRY_VERSION`, so a reloaded module tears down older state instead of adopting it.
