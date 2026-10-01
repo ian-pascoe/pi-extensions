@@ -206,15 +206,21 @@ still apply; the saved grant is not silently rewritten. Toolsets configure names
 not tool operations: granting `lsp`, `dap`, or another multifunction tool grants
 that tool's available operations, regardless of preset name.
 
-Child Agents load Pi's built-in `codemode`, `tool-search`, and `mcp` extensions
-unless settings disable them (`-builtin:<name>`); each child connects its own MCP
-servers. A tool's exposure still decides whether it is declared or reachable only
+Child Agents load Pi's built-in `llama.cpp`, `codemode`, `tool-search`, and `mcp`
+extensions unless settings disable them (`-builtin:<name>`); each child connects
+its own MCP servers. Pi does not export the llama.cpp factory, so children load it
+from Pi's installed `dist/extensions/llama/index.js`; when that file is absent, a
+llama.cpp launch model is reported as a missing dependency. Child `codemode`
+scripts get no `models` API, so they cannot call models outside the Launch
+Contract. A tool's exposure still decides whether it is declared or reachable only
 through `codemode` or `tool_search`. Granted `codemode`- or `deferred`-exposed
 tools are callable but not declared, so a child that needs them also needs
 `codemode` or `tool_search` in its grant. Ungranted tools are unreachable in the
 child. MCP tools are checked at launch only by name, because children register
 them after connecting; a tool whose server disappeared fails when called. Closing
-a child runtime shuts its extensions down, closing its MCP connections.
+a child runtime shuts its extensions down, closing its MCP connections. A reopened
+child re-declares the tools its transcript last declared, including tools loaded
+through `tool_search`.
 
 ## Capabilities and persistence
 

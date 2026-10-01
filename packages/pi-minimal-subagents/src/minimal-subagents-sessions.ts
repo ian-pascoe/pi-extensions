@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model, Usage } from "@earendil-works/pi-ai";
+import { getCurrentSystemMessage, type Model, type Usage } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import {
   AgentSession,
@@ -34,7 +34,11 @@ import {
   DEFAULT_MAX_SUBAGENT_DEPTH,
   getSubagentDepth,
 } from "./minimal-subagents-capabilities.js";
-import { createChildResourceLoader } from "./minimal-subagents-child-resources.js";
+import {
+  createChildResourceLoader,
+  LLAMA_PROVIDER_ID,
+  piLlamaExtensionPath,
+} from "./minimal-subagents-child-resources.js";
 import {
   CHILD_IDENTITY_ENTRY_TYPE,
   FORK_CLONE_ENTRY_TYPE,
@@ -162,6 +166,10 @@ function installChildToolCapabilityPolicy(
   };
   // Pi's `tools` option also activates script-only grants; drop them before extensions bind.
   session.setActiveToolsByName(session.getActiveToolNames().filter((name) => !isScriptOnly(name)));
+  // Passing `tools` skips Pi's transcript restore, so re-declare tools a reopened child had
+  // loaded (such as through `tool_search`) within the Launch Contract.
+  const declared = getCurrentSystemMessage(session.sessionManager.buildSessionContext().messages);
+  if (declared) session.setActiveToolsByName((declared.toolsAdded ?? []).map(({ name }) => name));
 }
 
 /** Moves one verified child session file to trash and reports command unavailability. */
@@ -1109,8 +1117,12 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     requireEligibleModel: boolean,
   ): Promise<string[]> {
     const missing: string[] = [];
-    if (!this.modelById.has(agent.launch_contract.model)) missing.push(agent.launch_contract.model);
+    const model = this.modelById.get(agent.launch_contract.model);
+    if (!model) missing.push(agent.launch_contract.model);
     else if (requireEligibleModel && !this.eligibleModelIds.has(agent.launch_contract.model)) {
+      missing.push(agent.launch_contract.model);
+    } else if (model.provider === LLAMA_PROVIDER_ID && !piLlamaExtensionPath()) {
+      // Children register llama.cpp only through Pi's unexported built-in factory.
       missing.push(agent.launch_contract.model);
     }
     const discoveredTools = await this.discoverChildToolNames(agent);

@@ -1,6 +1,12 @@
-import { dirname } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import * as piCodingAgent from "@earendil-works/pi-coding-agent";
-import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultResourceLoader,
+  type ExtensionFactory,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { canonicalPath } from "./minimal-subagents-paths.js";
 import type { ProjectContextMode } from "./minimal-subagents-types.js";
 
@@ -17,19 +23,44 @@ type InlineExtension = NonNullable<
   ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"]
 >[number];
 
-/** Pi's exported built-in extensions (Pi 0.99+); older hosts have none, so neither do children. */
+// SAFETY: Older Pi hosts lack these exports; the namespace yields undefined rather than failing.
+const sdk = piCodingAgent as Partial<typeof piCodingAgent>;
+
+/** Provider ID registered by Pi's built-in llama.cpp extension. */
+export const LLAMA_PROVIDER_ID = "llama.cpp";
+
+/** Pi ships a file-backed llama.cpp factory but does not export it; undefined when it is absent. */
+export function piLlamaExtensionPath(): string | undefined {
+  if (!sdk.getPackageDir) return undefined;
+  const path = join(sdk.getPackageDir(), "dist", "extensions", "llama", "index.js");
+  return existsSync(path) ? path : undefined;
+}
+
+function llamaExtension(): InlineExtension[] {
+  const path = piLlamaExtensionPath();
+  if (!path) return [];
+  const factory: ExtensionFactory = async (pi) => {
+    const module: { default: ExtensionFactory } = await import(pathToFileURL(path).href);
+    await module.default(pi);
+  };
+  return [{ name: "llama.cpp", factory, builtin: true }];
+}
+
+/** Pi's built-in extensions (Pi 0.99+) in Pi's order; older hosts have none, so neither do children. */
 export function childBuiltinExtensions(): InlineExtension[] {
-  // SAFETY: Older Pi hosts lack these exports; the namespace yields undefined rather than failing.
-  const sdk = piCodingAgent as Partial<typeof piCodingAgent>;
-  return (
-    [
-      ["codemode", sdk.createCodemodeExtension],
-      ["tool-search", sdk.createToolSearchExtension],
-      ["mcp", sdk.createMcpExtension],
-    ] as const
-  ).flatMap(([name, create]) =>
-    create ? [{ name, factory: create(), builtin: true, replaceable: true }] : [],
-  );
+  return [
+    ...llamaExtension(),
+    ...(
+      [
+        // Child scripts must not call models outside their Launch Contract.
+        ["codemode", sdk.createCodemodeExtension?.bind(undefined, { models: false })],
+        ["tool-search", sdk.createToolSearchExtension],
+        ["mcp", sdk.createMcpExtension],
+      ] as const
+    ).flatMap(([name, create]) =>
+      create ? [{ name, factory: create(), builtin: true, replaceable: true }] : [],
+    ),
+  ];
 }
 
 function createDefaultChildResourceLoaderOptions(

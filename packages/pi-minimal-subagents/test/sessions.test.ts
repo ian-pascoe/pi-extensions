@@ -118,6 +118,7 @@ const unavailableSessionFileTrash: SessionFileTrashCapability = {
 };
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true });
 });
 
@@ -987,9 +988,61 @@ describe("minimal subagent sessions", () => {
     expect(loader.getExtensions().extensions.map((extension) => extension.resolvedPath)).toEqual([
       selectedEntrypoint,
       otherEntrypoint,
+      "builtin:llama.cpp",
       "builtin:codemode",
       "builtin:tool-search",
     ]);
+  });
+
+  it("gives child codemode scripts no model API outside the Launch Contract", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-codemode-models-"));
+    temporaryDirectories.push(directory);
+    const loader = createChildResourceLoader({
+      cwd: directory,
+      agentDir: directory,
+      projectContext: "inherit",
+      extensionEntrypoint: join(directory, "index.ts"),
+      systemPromptBlock: "child prompt",
+      settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
+    });
+    await loader.reload();
+
+    const codemode = loader
+      .getExtensions()
+      .extensions.find(({ path }) => path === "builtin:codemode")
+      ?.tools.get("codemode");
+    expect(codemode?.definition.description).toContain("tools");
+    expect(codemode?.definition.description).not.toContain("Model API");
+  });
+
+  it("loads Pi's built-in llama.cpp provider unless settings disable it", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-llama-"));
+    temporaryDirectories.push(directory);
+    const load = async (extensions: string[]) => {
+      writeFileSync(join(directory, "settings.json"), JSON.stringify({ extensions }));
+      const loader = createChildResourceLoader({
+        cwd: directory,
+        agentDir: directory,
+        projectContext: "inherit",
+        extensionEntrypoint: join(directory, "index.ts"),
+        systemPromptBlock: "child prompt",
+        settingsManager: SettingsManager.create(directory, directory, { projectTrusted: true }),
+      });
+      await loader.reload();
+      return loader.getExtensions();
+    };
+
+    const enabled = await load([]);
+    expect(enabled.errors).toEqual([]);
+    const llama = enabled.extensions.find(({ path }) => path === "builtin:llama.cpp");
+    expect(llama?.sourceInfo.source).toBe("builtin");
+    expect([...(llama?.commands.keys() ?? [])]).toEqual(["llama"]);
+    expect(
+      enabled.runtime.pendingNativeProviderRegistrations.map(({ provider }) => provider.id),
+    ).toEqual(["llama.cpp"]);
+
+    const disabled = await load(["-builtin:llama.cpp"]);
+    expect(disabled.extensions.map(({ path }) => path)).not.toContain("builtin:llama.cpp");
   });
 
   it.each(["standalone", "codemode", "codemode-only"] as const)(
@@ -1208,6 +1261,138 @@ export default function (pi) {
     },
     30_000,
   );
+
+  it("keeps tools loaded by tool_search declared after a child runtime reopens", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-search-"));
+    temporaryDirectories.push(directory);
+    const requestsPath = join(directory, "requests.jsonl");
+    const providerPath = join(directory, "offline-provider.ts");
+    writeFileSync(requestsPath, "");
+    writeFileSync(
+      providerPath,
+      `import { appendFileSync } from "node:fs";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+export default function (pi) {
+  pi.registerTool({
+    name: "deferred_tool",
+    label: "deferred_tool",
+    description: "deferred test tool",
+    exposure: "deferred",
+    parameters: Type.Object({}),
+    async execute() { return { content: [{ type: "text", text: "deferred ok" }], details: {} }; },
+  });
+  pi.registerProvider("provider", {
+    api: "openai-completions",
+    baseUrl: "http://127.0.0.1:1/v1",
+    apiKey: "offline-test-key",
+    models: [${JSON.stringify(TEST_MODEL)}],
+    streamSimple(model, context) {
+      appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify(context) + "\\n");
+      const search = context.messages.at(-1)?.role === "user" && context.messages.filter((message) => message.role === "user").length === 1;
+      const message = {
+        role: "assistant", api: model.api, provider: model.provider, model: model.id,
+        timestamp: Date.now(), usage: ${JSON.stringify(ZERO_USAGE)},
+        content: search
+          ? [{ type: "toolCall", id: "search", name: "tool_search", arguments: { query: "deferred test tool" } }]
+          : [{ type: "text", text: "done" }],
+        stopReason: search ? "toolUse" : "stop",
+      };
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason, message }));
+      return stream;
+    },
+  });
+}
+`,
+    );
+    writeFileSync(
+      join(directory, "settings.json"),
+      JSON.stringify({
+        extensions: [providerPath],
+        minimalSubagents: {
+          baseToolset: ["tool_search", "deferred_tool"],
+          readToolset: [],
+          modifyToolset: [],
+        },
+        compaction: { enabled: false },
+        retry: { enabled: false },
+      }),
+    );
+    const toolNames = ["tool_search", "deferred_tool"];
+    const createCoordinator = () => {
+      const config = resolveMinimalSubagentsSettings(
+        SettingsManager.create(directory, directory, { projectTrusted: true }),
+        ["provider/model"],
+      );
+      const coordinator: MinimalSubagentsCoordinator = new MinimalSubagentsCoordinator({
+        toolsets: config.toolsets,
+        sessions: new PiAgentSessionFactory({
+          cwd: directory,
+          agentDir: directory,
+          sessionDir: directory,
+          rootSessionId: "root",
+          extensionEntrypoint: join(directory, "minimal-subagents.ts"),
+          models: [TEST_MODEL],
+          eligibleModelIds: ["provider/model"],
+          modelScopeRestricted: false,
+          availableToolNames: toolNames,
+          projectTrusted: true,
+          getCoordinatorTools: () => [],
+        }),
+        registry: { rootSessionId: "root", append: () => undefined },
+        root: {
+          queueCoordinatorMessage: async () => undefined,
+          isIdle: () => true,
+          hasDeliveryEvidence: () => false,
+        },
+        automaticDeliveryGraceMs: 0,
+      });
+      return coordinator;
+    };
+    let coordinator = createCoordinator();
+    try {
+      await coordinator.spawn(
+        "root",
+        { agent_id: "search-child", task: "Find the deferred tool", tools: "none" },
+        {
+          messages: [],
+          model: "provider/model",
+          thinkingLevel: "medium",
+          ordinaryTools: [],
+          capabilityCeiling: toolNames,
+          spawnEntryId: "entry",
+        },
+      );
+      await expect(coordinator.wait("root", "search-child", 10_000)).resolves.toMatchObject({
+        status: "completed",
+      });
+      await coordinator.waitForSettledOperations();
+      const snapshot = coordinator.snapshot();
+      await coordinator.shutdown();
+      coordinator = createCoordinator();
+      await coordinator.restore(snapshot);
+      await coordinator.sendAgentMessage(
+        "root",
+        { agent_id: "search-child", message: "Continue" },
+        "root:restored",
+      );
+      await coordinator.waitForSettledOperations();
+      await expect(coordinator.wait("root", "search-child", 10_000)).resolves.toMatchObject({
+        status: "completed",
+      });
+      const requests: { messages: Message[] }[] = readFileSync(requestsPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(requests).toHaveLength(3);
+      const loaded = getCurrentTools(requests[1]!.messages);
+      expect(loaded.map(({ name }) => name)).toContain("deferred_tool");
+      expect(getCurrentTools(requests[2]!.messages)).toEqual(loaded);
+    } finally {
+      await coordinator.shutdown();
+    }
+  }, 30_000);
 
   it("lets retained tool adapters replace a complete read bundle", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-adapter-runtime-"));
@@ -1581,6 +1766,33 @@ export default function projectAdapter(pi) {
       "provider/model",
       "write",
     ]);
+  });
+
+  it("reports llama.cpp launch models as missing when Pi's llama.cpp factory is absent", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-no-llama-"));
+    temporaryDirectories.push(directory);
+    vi.stubEnv("PI_PACKAGE_DIR", directory);
+    const llamaModel = { ...TEST_MODEL, provider: "llama.cpp", id: "qwen" };
+    const factory = new PiAgentSessionFactory({
+      cwd: directory,
+      agentDir: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+      extensionEntrypoint: join(directory, "index.ts"),
+      models: [TEST_MODEL, llamaModel],
+      eligibleModelIds: ["provider/model", "llama.cpp/qwen"],
+      modelScopeRestricted: false,
+      availableToolNames: ["read"],
+      projectTrusted: true,
+      getCoordinatorTools: () => [],
+    });
+    const llamaAgent = persistedAgent();
+    llamaAgent.launch_contract.model = "llama.cpp/qwen";
+
+    await expect(factory.resolveLaunchMissingDependencies(llamaAgent)).resolves.toEqual([
+      "llama.cpp/qwen",
+    ]);
+    await expect(factory.resolveLaunchMissingDependencies(persistedAgent())).resolves.toEqual([]);
   });
 
   it("accepts MCP tools only while the built-in MCP extension is enabled", async () => {
