@@ -21,6 +21,7 @@ export const rootPiManifestSchema = Type.Object({
 export const workspacePackageManifestSchema = Type.Object({
   name: Type.String(),
   private: Type.Boolean(),
+  dependencies: Type.Optional(Type.Record(Type.String(), Type.String())),
   pi: Type.Optional(
     Type.Object({
       extensions: Type.Array(Type.String()),
