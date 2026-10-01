@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.11.0
+
+### Minor Changes
+
+- b15f4fd: Load Pi's built-in llama.cpp extension in Child Agents, honoring `-builtin:llama.cpp`, so children can use llama.cpp models; when Pi's llama.cpp file is unavailable, a llama.cpp launch model is reported as a missing dependency. A reopened child now re-declares the tools it last declared, including tools loaded through `tool_search`, keeping its prompt cache stable. Child `codemode` scripts no longer get a `models` API that could call models outside the Launch Contract, and observers such as the Advisor receive that setting in the child's recreation inputs.
+
 ## 0.10.1
 
 ### Patch Changes

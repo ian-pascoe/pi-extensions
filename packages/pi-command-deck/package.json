@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-command-deck",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": false,
   "description": "Pi extension that replaces the prompt editor and footer with a compact Vim command deck.",
   "keywords": [
