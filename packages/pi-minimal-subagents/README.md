@@ -219,8 +219,10 @@ tools are callable but not declared, so a child that needs them also needs
 child. MCP tools are checked at launch only by name, because children register
 them after connecting; a tool whose server disappeared fails when called. Closing
 a child runtime shuts its extensions down, closing its MCP connections. A reopened
-child re-declares the tools its transcript last declared, including tools loaded
-through `tool_search`.
+child re-declares the tools it last declared itself, including tools loaded
+through `tool_search`; as in Pi, a tool that registers only after the child opens,
+such as an MCP tool, is not re-declared. Declarations inherited from the parent's
+context are not restored.
 
 ## Capabilities and persistence
 

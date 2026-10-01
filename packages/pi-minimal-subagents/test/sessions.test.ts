@@ -1311,7 +1311,8 @@ export default function (pi) {
       JSON.stringify({
         extensions: [providerPath],
         minimalSubagents: {
-          baseToolset: ["tool_search", "deferred_tool"],
+          // Grant order differs from load order so the proof covers definition order.
+          baseToolset: ["deferred_tool", "tool_search"],
           readToolset: [],
           modifyToolset: [],
         },
@@ -1319,7 +1320,7 @@ export default function (pi) {
         retry: { enabled: false },
       }),
     );
-    const toolNames = ["tool_search", "deferred_tool"];
+    const toolNames = ["deferred_tool", "tool_search"];
     const createCoordinator = () => {
       const config = resolveMinimalSubagentsSettings(
         SettingsManager.create(directory, directory, { projectTrusted: true }),
@@ -1387,8 +1388,43 @@ export default function (pi) {
         .map((line) => JSON.parse(line));
       expect(requests).toHaveLength(3);
       const loaded = getCurrentTools(requests[1]!.messages);
-      expect(loaded.map(({ name }) => name)).toContain("deferred_tool");
-      expect(getCurrentTools(requests[2]!.messages)).toEqual(loaded);
+      expect(loaded.map(({ name }) => name)).toEqual(["tool_search", "deferred_tool"]);
+      const beforeReopen = requests[1]!.messages;
+      const afterReopen = requests[2]!.messages;
+      expect(afterReopen.slice(0, beforeReopen.length)).toEqual(beforeReopen);
+      // Reopening re-declares nothing, so no new system message breaks the cached prefix.
+      expect(
+        afterReopen.slice(beforeReopen.length).filter(({ role }) => role === "system"),
+      ).toEqual([]);
+      expect(getCurrentTools(afterReopen)).toEqual(loaded);
+
+      // A new child that inherits the reopened child's declarations keeps script-only grants undeclared.
+      await coordinator.spawn(
+        "root",
+        {
+          agent_id: "inheriting-child",
+          task: "Continue the search",
+          tools: "none",
+          session_context: "inherit",
+        },
+        {
+          messages: afterReopen,
+          model: "provider/model",
+          thinkingLevel: "medium",
+          ordinaryTools: [],
+          capabilityCeiling: toolNames,
+          spawnEntryId: "entry",
+        },
+      );
+      await expect(coordinator.wait("root", "inheriting-child", 10_000)).resolves.toMatchObject({
+        status: "completed",
+      });
+      const inheritedRequest: { messages: Message[] } = JSON.parse(
+        readFileSync(requestsPath, "utf8").trim().split("\n").at(-1)!,
+      );
+      expect(getCurrentTools(inheritedRequest.messages).map(({ name }) => name)).toEqual([
+        "tool_search",
+      ]);
     } finally {
       await coordinator.shutdown();
     }

@@ -35,9 +35,8 @@ import {
   getSubagentDepth,
 } from "./minimal-subagents-capabilities.js";
 import {
+  childProviderAvailable,
   createChildResourceLoader,
-  LLAMA_PROVIDER_ID,
-  piLlamaExtensionPath,
 } from "./minimal-subagents-child-resources.js";
 import {
   CHILD_IDENTITY_ENTRY_TYPE,
@@ -166,9 +165,19 @@ function installChildToolCapabilityPolicy(
   };
   // Pi's `tools` option also activates script-only grants; drop them before extensions bind.
   session.setActiveToolsByName(session.getActiveToolNames().filter((name) => !isScriptOnly(name)));
-  // Passing `tools` skips Pi's transcript restore, so re-declare tools a reopened child had
-  // loaded (such as through `tool_search`) within the Launch Contract.
-  const declared = getCurrentSystemMessage(session.sessionManager.buildSessionContext().messages);
+}
+
+/**
+ * Passing `tools` skips Pi's transcript restore, so re-declare the tools a reopened child last
+ * declared itself (such as through `tool_search`); the capability policy still clamps them.
+ * Declarations inherited from the parent predate the child and are not restored.
+ */
+function restoreChildDeclaredTools(session: AgentSession, agent: PersistedAgent): void {
+  const { messages } = session.sessionManager.buildSessionContext();
+  const createdAt = Date.parse(agent.created_at);
+  if (!messages.some((message) => message.role === "system" && message.timestamp >= createdAt))
+    return;
+  const declared = getCurrentSystemMessage(messages);
   if (declared) session.setActiveToolsByName((declared.toolsAdded ?? []).map(({ name }) => name));
 }
 
@@ -1121,8 +1130,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     if (!model) missing.push(agent.launch_contract.model);
     else if (requireEligibleModel && !this.eligibleModelIds.has(agent.launch_contract.model)) {
       missing.push(agent.launch_contract.model);
-    } else if (model.provider === LLAMA_PROVIDER_ID && !piLlamaExtensionPath()) {
-      // Children register llama.cpp only through Pi's unexported built-in factory.
+    } else if (!childProviderAvailable(model.provider)) {
       missing.push(agent.launch_contract.model);
     }
     const discoveredTools = await this.discoverChildToolNames(agent);
@@ -1229,6 +1237,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       throw new Error(`Minimal subagents child tool loading failed: ${missingTools.join(", ")}`);
     }
     installChildToolCapabilityPolicy(session, allowedToolNames, runtimeToolAdapters);
+    restoreChildDeclaredTools(session, agent);
     await session.bindExtensions({ mode: "print" });
     const registeredNames = new Set(session.getAllTools().map((tool) => tool.name));
     const missingCoordinatorTools = coordinatorTools
