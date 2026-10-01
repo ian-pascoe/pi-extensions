@@ -12,7 +12,7 @@ const ExitNotificationDetailsSchema = Type.Object({
   exits: Type.Array(
     Type.Object({
       id: Type.String(),
-      kind: Type.Union([Type.Literal("terminal"), Type.Literal("job")]),
+      kind: Type.Union([Type.Literal("terminal"), Type.Literal("background_job")]),
       command: Type.String(),
       exit_code: Type.Union([Type.Number(), Type.Null()]),
       signal: Type.Union([Type.String(), Type.Null()]),
@@ -77,7 +77,7 @@ export function formatExitNotification(
     details: {
       exits: notices.map((notice) => ({
         id: notice.id,
-        kind: notice.kind,
+        kind: notice.kind === "job" ? ("background_job" as const) : ("terminal" as const),
         command: notice.command,
         exit_code: notice.exit.code,
         signal: notice.exit.signal,

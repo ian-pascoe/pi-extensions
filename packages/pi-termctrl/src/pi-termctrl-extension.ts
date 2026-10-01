@@ -17,7 +17,7 @@ import { TermctrlPsController } from "./ps-panel.js";
 import { resolveTermctrlBinary, type TermctrlBinaryResolution } from "./termctrl-binary.js";
 import { createTermctrlDriver } from "./termctrl-driver.js";
 import { TermctrlRegistry } from "./termctrl-registry.js";
-import { resolveTermctrlSettings, type TerminalViewport } from "./termctrl-settings.js";
+import { resolveTermctrlSettings, type TerminalViewport } from "./pi-termctrl-settings.js";
 import type { TerminalDriver } from "./terminal-driver.js";
 import {
   createTerminalListTool,
@@ -134,14 +134,15 @@ class PiTermctrlController {
       );
       if (settings.replaceBash) this.registerManagementTools();
     }
-    const calls = new RunningBashCalls(() => TermctrlRegistry.current() ?? registry);
+    const currentRegistry = () => TermctrlRegistry.current() ?? registry;
+    const calls = new RunningBashCalls(currentRegistry);
     if (settings.replaceBash) {
       this.pi.registerTool(
         createBashReplacement({
           cwd: context.cwd,
           commandPrefix,
           shellPath,
-          registry: () => TermctrlRegistry.current() ?? registry,
+          registry: currentRegistry,
           calls,
         }),
       );

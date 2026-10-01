@@ -320,7 +320,10 @@ describe("terminal_send", () => {
 
 describe("terminal_stop and terminal_list", () => {
   test("stop returns the final screen and forgets the Terminal", async () => {
-    const { terminal } = await startTerminal();
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = [">>> "];
+    });
+    terminal.logLines = [">>> ", "older", ">>> exit()"];
     terminal.screen = ">>> exit()";
     const { value } = await timed(
       harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
@@ -331,9 +334,13 @@ describe("terminal_stop and terminal_list", () => {
       kind: "terminal",
       state: "exited",
       signal: "SIGKILL",
-      output: ">>> exit()",
+      changed: true,
+      screen: ">>> exit()",
+      scrolled_off: "older",
     });
-    expect(textOf(value)).toBe("Terminal t1 stopped.\n--- final screen ---\n>>> exit()");
+    expect(textOf(value)).toBe(
+      "Terminal t1 stopped.\n--- scrolled off ---\nolder\n--- final screen ---\n>>> exit()",
+    );
     expect(harness.runtime.registry.entries()).toEqual([]);
   });
 

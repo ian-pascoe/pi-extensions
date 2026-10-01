@@ -156,6 +156,30 @@ describe("TermctrlRegistry", () => {
     expect(fresh[0]?.[0]?.output).toBe("compiled\n");
   });
 
+  test("delivers a queued notice for an entry the user removed before the owner rebound", async () => {
+    const { registry } = createHarness();
+    collect(registry, "root");
+    const { entry } = startJob(registry, "root", "make");
+    registry.unbindOwner("root");
+    registry.jobExited(entry.id, { code: 2, signal: null });
+    await registry.remove(entry.id);
+
+    const fresh = collect(registry, "root");
+    await nextTick();
+    expect(fresh.flat().map(({ id, exit }) => [id, exit.code])).toEqual([["b1", 2]]);
+  });
+
+  test("drops a queued notice when the agent stops the entry before delivery", async () => {
+    const { registry } = createHarness();
+    const { entry } = startJob(registry, "root");
+    registry.jobExited(entry.id, { code: 0, signal: null });
+    await registry.stop("root", entry.id);
+
+    const batches = collect(registry, "root");
+    await nextTick();
+    expect(batches).toEqual([]);
+  });
+
   test("tears down a registry with an unknown version and starts fresh", async () => {
     const teardown = vi.fn(async () => {});
     Object.defineProperty(globalThis, REGISTRY_KEY, {

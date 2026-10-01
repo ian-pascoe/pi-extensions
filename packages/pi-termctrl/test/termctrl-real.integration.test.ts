@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getShellConfig, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
@@ -103,7 +103,7 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     const context = toolContext();
     const started = await tools.start.execute(
       "start",
-      { command: `less ${file}`, wait_for_text: undefined, wait_ms: 10_000 },
+      { command: `less ${file}`, wait_ms: 10_000 },
       undefined,
       undefined,
       context,
@@ -173,17 +173,21 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
   test("terminal_stop stops a process that ignores signals", { timeout: 20_000 }, async () => {
     const tools = createTools();
     const context = toolContext();
+    const pidFile = join(directory, "stubborn.pid");
     await tools.start.execute(
       "start",
-      { command: "trap '' INT TERM HUP; echo stubborn; sleep 1000" },
+      { command: `trap '' INT TERM HUP; echo stubborn; echo $$ > ${pidFile}; sleep 1000` },
       undefined,
       undefined,
       context,
     );
+    const pid = Number(await readFile(pidFile, "utf8"));
+    expect(() => process.kill(pid, 0)).not.toThrow();
     const stopped = await tools.stop.execute("stop", { id: "t1" }, undefined, undefined, context);
     expect(stopped.details).toMatchObject({ id: "t1", state: "exited" });
-    expect(stopped.details.output).toContain("stubborn");
+    expect(stopped.details.screen).toContain("stubborn");
     expect(tools.registry.entries()).toEqual([]);
+    expect(() => process.kill(pid, 0)).toThrow();
   });
 
   test("SIGKILL escalation kills the Terminal's process group", { timeout: 20_000 }, async () => {

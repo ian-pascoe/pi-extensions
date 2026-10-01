@@ -145,7 +145,7 @@ describe("Background jobs through Pi", () => {
     expect(custom).toMatchObject({
       role: "custom",
       display: true,
-      details: { exits: [{ id: "b1", kind: "job", exit_code: 0, signal: null }] },
+      details: { exits: [{ id: "b1", kind: "background_job", exit_code: 0, signal: null }] },
     });
     expect(JSON.stringify(notification)).toContain("Background job b1 exited with code 0");
     expect(JSON.stringify(notification)).toContain("all done");

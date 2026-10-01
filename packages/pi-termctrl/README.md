@@ -38,7 +38,8 @@ and opens a PTY sized by `termctrl.defaultViewport`.
 first of 250 ms of screen quiet, a `wait_for_text` match, process exit, or
 `wait_ms` running out. `wait_for_text` is a literal substring, or a regex when
 written as `/source/flags`; with `wait_for_text`, quiet alone does not end the
-wait. Default waits are 2 s for `terminal_start`, 500 ms for `terminal_send`
+wait, and text already on the screen before `terminal_send` counts only after
+the screen changes. Default waits are 2 s for `terminal_start`, 500 ms for `terminal_send`
 with input, and 30 s for a `terminal_send` with neither `text` nor `keys` (a
 poll, which settles on quiet only after new output). Every `wait_ms` clamps to
 5 minutes.
@@ -60,7 +61,9 @@ Terminals and Background jobs may exist across the whole process; starting
 another fails and lists the caller's live entries.
 
 `terminal_stop` stops a running entry (termctrl stop, then `SIGKILL` of the
-Terminal's process group after 3 s) and forgets it. Exited entries stay
+Terminal's process group if it is still alive after 3 s) and forgets it. For a
+Terminal it returns the final screen and scrolled-off lines; for a Background
+job, its recent output. Exited entries stay
 readable and listed until the agent stops them, the user removes them in `/ps`,
 or their session shuts down. `terminal_list` lists the caller's Terminals and,
 in a separate `background_jobs` section, its Background jobs with their log
@@ -75,11 +78,14 @@ process-tree kills, truncation and rendering, and foreground results are
 unchanged. A command becomes a Background job in two ways:
 
 - **`background: true`** waits 2 s. A command that finishes first returns an
-  ordinary result; otherwise the call returns a background result.
+  ordinary result; otherwise the call returns a background result. If the cap
+  is reached during those 2 s, the command stays in the foreground.
 - **Ctrl+B** while an agent `bash` call runs moves every running call to the
   background. At other times Ctrl+B stays the editor's cursor-left.
 
-Once backgrounded, a command's `timeout` is cleared, Esc and turn aborts no
+Up to 16 MiB of a command's output is kept in memory until it is backgrounded;
+older output becomes an omission line in the log. Once backgrounded, a
+command's `timeout` is cleared, Esc and turn aborts no
 longer reach it, and its output so far and all later output go to
 `$TMPDIR/pi-termctrl/<pid>-<id>.log`. The result says
 `Command moved to the background as b<n>`, includes the output so far, and
@@ -121,7 +127,9 @@ print mode has no UI but keeps the tools and notifications.
 Terminals and Background jobs live in the Pi process
 ([ADR-0001](docs/adr/0001-terminals-live-in-the-pi-process.md)). They survive
 `/reload`; every other session shutdown (quit, new, resume, fork) stops the
-session's own entries. Nothing persists across Pi restarts.
+session's own entries. Nothing persists across Pi restarts. Besides Background
+job logs, the only file written is a short-lived pid handoff file per Terminal
+launch in `$TMPDIR/pi-termctrl`, deleted as soon as it is read.
 
 ## Settings
 

@@ -48,7 +48,7 @@ describe("Exit notifications", () => {
         },
         {
           id: "b2",
-          kind: "job",
+          kind: "background_job",
           command: "sleep 100",
           exit_code: null,
           signal: "SIGKILL",

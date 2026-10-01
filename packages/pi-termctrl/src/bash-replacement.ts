@@ -15,7 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
-import { TermctrlRegistry } from "./termctrl-registry.js";
+import { KILLED_EXIT, TermctrlRegistry } from "./termctrl-registry.js";
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { TerminalExit } from "./terminal-driver.js";
 
@@ -26,7 +26,6 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 const BUFFER_LIMIT_BYTES = 16 * 1024 * 1024;
 /** Recent output kept for previews and Exit notifications. */
 const TAIL_LIMIT_CHARS = 64 * 1024;
-const KILLED: TerminalExit = { code: null, signal: "SIGKILL" };
 
 type ExecOptions = Parameters<BashOperations["exec"]>[2];
 
@@ -114,7 +113,7 @@ class BashCall {
       this.finish({ code: result.exitCode, signal: null });
       return result;
     } catch (error) {
-      this.finish(this.controller.signal.aborted ? KILLED : { code: null, signal: null });
+      this.finish(this.controller.signal.aborted ? KILLED_EXIT : { code: null, signal: null });
       if (this.timedOut && !this.isBackgrounded)
         throw new Error(`timeout:${timeout}`, { cause: error });
       throw error;
@@ -157,6 +156,8 @@ class BashCall {
   /** Move the running command to the background. Returns false when it already finished. */
   background(registry: TermctrlRegistry): boolean {
     if (this.isBackgrounded || this.settled || !this.started) return false;
+    // An aborted or timed-out command is already dying; let Pi report it.
+    if (this.controller.signal.aborted) return false;
     const entry = registry.createJob(
       this.owner,
       this.command,

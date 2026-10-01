@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   resolveTermctrlSettings,
   type TermctrlSettingsDocumentInput,
-} from "../src/termctrl-settings.js";
+} from "../src/pi-termctrl-settings.js";
 
 function reader(
   globalSettings: TermctrlSettingsDocumentInput,

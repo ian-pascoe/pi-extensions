@@ -14,7 +14,7 @@ import type {
   TerminalEntry,
 } from "./termctrl-registry.js";
 import { describeExitStatus } from "./exit-notification.js";
-import type { TerminalViewport } from "./termctrl-settings.js";
+import type { TerminalViewport } from "./pi-termctrl-settings.js";
 import type { TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
 
 /** Screen quiet period that settles a Terminal. */
@@ -106,7 +106,18 @@ const StopResultSchema = Type.Object({
   state: TerminalStateSchema,
   exit_code: Type.Optional(Type.Number()),
   signal: Type.Optional(Type.String()),
-  output: Type.String({ description: "The final screen or the Background job's recent output" }),
+  changed: Type.Optional(
+    Type.Boolean({
+      description: "Terminal only: whether the screen differs from the previous result",
+    }),
+  ),
+  screen: Type.Optional(Type.String({ description: "Terminal only: the final screen" })),
+  scrolled_off: Type.Optional(
+    Type.String({
+      description: "Terminal only: lines that scrolled off since the previous result",
+    }),
+  ),
+  output: Type.Optional(Type.String({ description: "Background job only: its recent output" })),
 });
 type StopResult = Static<typeof StopResultSchema>;
 
@@ -304,7 +315,7 @@ async function driveTerminal<T>(
   entry: TerminalEntry,
   run: () => Promise<T>,
 ): Promise<T> {
-  entry.busy++;
+  entry.activeCalls++;
   try {
     return await run();
   } catch (cause) {
@@ -314,7 +325,7 @@ async function driveTerminal<T>(
     }
     throw error;
   } finally {
-    entry.busy--;
+    entry.activeCalls--;
   }
 }
 
@@ -347,7 +358,6 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
     parameters: StartParameters,
     outputSchema: TerminalResultSchema,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
-      const startedAt = Date.now();
       const entry = await runtime.registry.startTerminal(ownerOf(context), {
         command: shellCommand(runtime.shell(), params.command),
         displayCommand: params.command,
@@ -355,6 +365,8 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
         viewport: runtime.viewport(),
         notify: params.notify ?? true,
       });
+      // Launching, including a cold driver start, does not count toward the quiet period.
+      const startedAt = Date.now();
       return driveTerminal(runtime.registry, entry, async () => {
         const { snapshot } = await settleTerminal(entry, {
           mode: "start",
@@ -426,8 +438,16 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
   });
 }
 
-function stopOutput(entry: TermctrlEntry): string {
-  return entry.kind === "terminal" ? (entry.finalScreen ?? "") : entry.child.tail();
+/** Capture the lines a Terminal scrolled off since the agent's last result, before it is stopped. */
+async function finalScrolledOff(registry: TermctrlRegistry, entry: TerminalEntry): Promise<string> {
+  try {
+    if (entry.state === "exited") return await takeScrolledOff(entry, entry.finalScreen ?? "");
+    return await driveTerminal(registry, entry, async () =>
+      takeScrolledOff(entry, (await entry.handle.snapshot()).screen),
+    );
+  } catch {
+    return "";
+  }
 }
 
 /** `terminal_stop`: stop a Terminal or Background job and forget it. */
@@ -436,7 +456,7 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
     name: "terminal_stop",
     label: "terminal_stop",
     description:
-      "Stop a Terminal (t1) or Background job (b1) and forget it. Running processes are killed; exited ones are removed. Returns the final screen or recent job output.",
+      "Stop a Terminal (t1) or Background job (b1) and forget it. Running processes are killed; exited ones are removed. Returns a Terminal's final screen and scrolled-off lines, or a Background job's recent output.",
     promptSnippet: "Stop a Terminal or Background job",
     parameters: StopParameters,
     outputSchema: StopResultSchema,
@@ -445,25 +465,33 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       const known = registry.find(owner, params.id);
       if (known === undefined) throw unknownId(params.id);
       const wasRunning = known.state === "running";
+      const previousScreen = known.kind === "terminal" ? known.lastScreen : undefined;
+      const scrolled = known.kind === "terminal" ? await finalScrolledOff(registry, known) : "";
       const entry = (await registry.stop(owner, params.id)) ?? known;
-      const output = stopOutput(entry);
+      const label = entry.kind === "terminal" ? "Terminal" : "Background job";
+      const header = wasRunning
+        ? `${label} ${entry.id} stopped.`
+        : `${label} ${entry.id} had already ${describeExit(entry.exit)}; removed.`;
       const result: StopResult = {
         id: entry.id,
         kind: entry.kind === "terminal" ? "terminal" : "background_job",
         state: "exited",
         ...exitFields(entry.exit),
-        output,
       };
-      const label = entry.kind === "terminal" ? "Terminal" : "Background job";
-      const header = wasRunning
-        ? `${label} ${entry.id} stopped.`
-        : `${label} ${entry.id} had already ${describeExit(entry.exit)}; removed.`;
-      const body =
-        output === ""
-          ? ""
-          : `\n--- ${entry.kind === "terminal" ? "final screen" : "recent output"} ---\n${output}`;
+      const parts = [header];
+      if (entry.kind === "terminal") {
+        const screen = entry.finalScreen ?? "";
+        result.changed = previousScreen !== screen;
+        result.screen = screen;
+        result.scrolled_off = scrolled;
+        if (scrolled !== "") parts.push(`--- scrolled off ---\n${scrolled}`);
+        parts.push(`--- final screen ---\n${screen === "" ? "(blank)" : screen}`);
+      } else {
+        result.output = entry.child.tail();
+        if (result.output !== "") parts.push(`--- recent output ---\n${result.output}`);
+      }
       return {
-        content: [{ type: "text" as const, text: `${header}${body}` }],
+        content: [{ type: "text" as const, text: parts.join("\n") }],
         details: result,
         structuredContent: result,
       };

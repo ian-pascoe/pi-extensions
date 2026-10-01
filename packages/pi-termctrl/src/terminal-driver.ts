@@ -1,5 +1,5 @@
 import type { Key } from "@kitlangton/terminal-control";
-import type { TerminalViewport } from "./termctrl-settings.js";
+import type { TerminalViewport } from "./pi-termctrl-settings.js";
 
 /** How a Terminal's process ended, as termctrl reports it. */
 export interface TerminalExit {
@@ -33,6 +33,8 @@ export interface TerminalHandle {
   press(keys: readonly Key[]): Promise<void>;
   /** Ask termctrl to stop the Terminal and forget it. */
   stop(): Promise<void>;
+  /** Whether the Terminal's process is known to still run. False when its pid is unknown. */
+  isAlive(): boolean;
   /** Send SIGKILL to the Terminal's process group when termctrl does not stop it. */
   kill(): void;
 }

@@ -79,6 +79,10 @@ export class FakeTerminal implements TerminalHandle {
     return Promise.resolve();
   }
 
+  isAlive(): boolean {
+    return !this.stopped && !this.killed;
+  }
+
   kill(): void {
     this.killed = true;
     this.stopped = true;

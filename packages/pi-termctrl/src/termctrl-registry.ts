@@ -5,7 +5,7 @@ import type {
   TerminalLaunchRequest,
 } from "./terminal-driver.js";
 import { isDriverGone } from "./terminal-driver.js";
-import type { TerminalViewport } from "./termctrl-settings.js";
+import type { TerminalViewport } from "./pi-termctrl-settings.js";
 
 /** The `globalThis` key every registry version shares. Its value always satisfies {@link RegistrySlot}. */
 export const REGISTRY_KEY = Symbol.for("@ian-pascoe/pi-termctrl/registry");
@@ -17,7 +17,9 @@ const DEFAULT_POLL_INTERVAL_MS = 500;
 const DEFAULT_STOP_GRACE_MS = 3_000;
 /** How long a stopped Background job may take to report its exit before it is recorded as killed. */
 const JOB_STOP_WAIT_MS = 5_000;
-const KILLED: TerminalExit = { code: null, signal: "SIGKILL" };
+const STOP_POLL_MS = 50;
+/** How an entry the registry killed is reported. */
+export const KILLED_EXIT: TerminalExit = { code: null, signal: "SIGKILL" };
 const DRIVER_EXITED: TerminalExit = { code: null, signal: "termctrl driver exited" };
 
 /** The contract every registry version keeps, so a newer module can stop an older registry. */
@@ -63,8 +65,8 @@ export interface TerminalEntry extends EntryBase {
   readonly cwd: string;
   /** The screen captured when the Terminal exited. */
   finalScreen: string | undefined;
-  /** Number of agent tool calls currently driving this Terminal; the exit watcher skips busy ones. */
-  busy: number;
+  /** Number of agent tool calls currently driving this Terminal; the exit watcher skips them. */
+  activeCalls: number;
   /** The screen the agent last received, for `changed: false`. */
   lastScreen: string | undefined;
   /** Count of log lines already accounted for in an agent result. */
@@ -253,10 +255,7 @@ export class TermctrlRegistry {
     for (const [owner, notices] of Array.from(this.state.pending)) {
       const delivery = this.state.owners.get(owner);
       if (delivery === undefined) continue;
-      const due = notices.filter((notice) => {
-        const entry = this.state.entries.get(notice.id);
-        return entry !== undefined && !entry.seen;
-      });
+      const due = notices.filter((notice) => this.state.entries.get(notice.id)?.seen !== true);
       this.state.pending.delete(owner);
       if (due.length === 0) continue;
       try {
@@ -394,7 +393,7 @@ export class TermctrlRegistry {
         handle,
         generation: slot.generation,
         finalScreen: undefined,
-        busy: 0,
+        activeCalls: 0,
         lastScreen: undefined,
         logCursor: 0,
       };
@@ -480,10 +479,10 @@ export class TermctrlRegistry {
     try {
       for (const entry of this.entries()) {
         if (entry.kind !== "terminal" || entry.state !== "running") continue;
-        if (entry.busy > 0 || entry.stopRequested !== undefined) continue;
+        if (entry.activeCalls > 0 || entry.stopRequested !== undefined) continue;
         try {
           const snapshot = await entry.handle.snapshot();
-          if (entry.busy > 0 || entry.state !== "running") continue;
+          if (entry.activeCalls > 0 || entry.state !== "running") continue;
           if (snapshot.state === "exited") {
             this.terminalExited(entry.id, snapshot.exit ?? DRIVER_EXITED, snapshot.screen, false);
           }
@@ -571,11 +570,18 @@ export class TermctrlRegistry {
   async stop(owner: string, id: string): Promise<TermctrlEntry | undefined> {
     const entry = this.find(owner, id);
     if (entry === undefined) return undefined;
+    await this.retire(entry);
+    const pending = this.state.pending.get(owner)?.filter((notice) => notice.id !== id);
+    if (pending !== undefined) this.state.pending.set(owner, pending);
+    return entry;
+  }
+
+  /** Stop and remove an entry on the agent's or its session's behalf, without a notification. */
+  private async retire(entry: TermctrlEntry): Promise<void> {
     entry.stopRequested ??= "agent";
     entry.seen = true;
     await this.stopEntry(entry);
     await this.removeEntry(entry);
-    return entry;
   }
 
   /** The user stops an entry from `/ps`: it stays listed as exited and the agent is notified. */
@@ -598,14 +604,7 @@ export class TermctrlRegistry {
   async shutdownOwner(owner: string): Promise<void> {
     this.unbindOwner(owner);
     this.state.pending.delete(owner);
-    await Promise.all(
-      this.ownedEntries(owner).map(async (entry) => {
-        entry.stopRequested ??= "agent";
-        entry.seen = true;
-        await this.stopEntry(entry);
-        await this.removeEntry(entry);
-      }),
-    );
+    await Promise.all(this.ownedEntries(owner).map((entry) => this.retire(entry)));
   }
 
   /** Stop everything in the process and release the global slot. */
@@ -615,14 +614,7 @@ export class TermctrlRegistry {
     this.state.watcher = undefined;
     this.state.pending.clear();
     this.state.owners.clear();
-    await Promise.all(
-      this.entries().map(async (entry) => {
-        entry.stopRequested ??= "agent";
-        entry.seen = true;
-        await this.stopEntry(entry);
-        await this.removeEntry(entry);
-      }),
-    );
+    await Promise.all(this.entries().map((entry) => this.retire(entry)));
     const slot = this.state.driver;
     this.state.driver = undefined;
     await slot?.driver.close().catch(() => {});
@@ -633,7 +625,7 @@ export class TermctrlRegistry {
     if (entry.kind === "job") {
       entry.child.stop();
       const outcome = await Promise.race([entry.settled, delay(JOB_STOP_WAIT_MS)]);
-      if (outcome === "timeout") this.jobExited(entry.id, KILLED);
+      if (outcome === "timeout") this.jobExited(entry.id, KILLED_EXIT);
       return;
     }
     await this.stopTerminal(entry);
@@ -642,7 +634,7 @@ export class TermctrlRegistry {
   private async stopTerminal(entry: TerminalEntry): Promise<void> {
     const seen = entry.stopRequested === "agent";
     let screen = entry.lastScreen ?? "";
-    let exit = KILLED;
+    let exit = KILLED_EXIT;
     try {
       const snapshot = await entry.handle.snapshot();
       screen = snapshot.screen;
@@ -650,20 +642,25 @@ export class TermctrlRegistry {
     } catch {
       // The Terminal may already be gone; keep the last screen the agent saw.
     }
+    const graceMs = this.dependencies.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const grace = new Promise<"timeout">((resolve) => {
-      timer = setTimeout(
-        () => resolve("timeout"),
-        this.dependencies.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
-      );
+      timer = setTimeout(() => resolve("timeout"), graceMs);
     });
+    const startedAt = performance.now();
     const stopped = entry.handle.stop().then(
       () => "stopped" as const,
       () => "failed" as const,
     );
     const outcome = await Promise.race([stopped, grace]);
     clearTimeout(timer);
-    if (outcome !== "stopped") entry.handle.kill();
+    // termctrl may forget the Terminal while its process still runs; give it the rest of the grace.
+    let remainingMs = graceMs - (performance.now() - startedAt);
+    while (outcome === "stopped" && entry.handle.isAlive() && remainingMs > 0) {
+      await delay(STOP_POLL_MS);
+      remainingMs -= STOP_POLL_MS;
+    }
+    if (outcome !== "stopped" || entry.handle.isAlive()) entry.handle.kill();
     this.terminalExited(entry.id, exit, screen, seen);
   }
 

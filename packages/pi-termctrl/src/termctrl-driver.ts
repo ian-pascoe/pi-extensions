@@ -73,6 +73,16 @@ class TermctrlTerminal implements TerminalHandle {
     return this.session.stop();
   }
 
+  isAlive(): boolean {
+    if (this.pid === undefined) return false;
+    try {
+      process.kill(this.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   kill(): void {
     if (this.pid === undefined) return;
     try {
@@ -93,7 +103,7 @@ class TermctrlDriver implements TerminalDriver {
   async launch(request: TerminalLaunchRequest): Promise<TerminalHandle> {
     const directory = termctrlTemporaryDirectory();
     await mkdir(directory, { recursive: true });
-    const pidFile = join(directory, `${request.id}-${process.pid}.pid`);
+    const pidFile = join(directory, `${process.pid}-${request.id}.pid`);
     try {
       const session = await this.control.launch({
         command: ["/bin/sh", "-c", PID_WRAPPER, "pi-termctrl", pidFile, ...request.command],
