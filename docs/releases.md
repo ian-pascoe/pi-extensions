@@ -6,8 +6,8 @@ This is the release procedure. Migration implementation publishes nothing.
 
 - Packages version independently through Changesets; no fixed or linked group
   exists.
-- `pi-adaptive-thinking`, `pi-byterover`, `@ian-pascoe/pi-codemode`, and
-  `@ian-pascoe/pi-mcp` are retired. They remain on npm only as deprecated
+- `pi-adaptive-thinking`, `pi-byterover`, `@ian-pascoe/pi-codemode`,
+  `@ian-pascoe/pi-mcp`, and `@ian-pascoe/pi-git-status-widget` are retired. They remain on npm only as deprecated
   historical artifacts and must not return to release automation.
 - Package retirement uses no Changeset because removed workspaces cannot be
   versioned; npm deprecation is the release action.
@@ -17,8 +17,8 @@ This is the release procedure. Migration implementation publishes nothing.
   `@ian-pascoe/pi-formatter`, `@ian-pascoe/pi-lsp`, `@ian-pascoe/pi-dap`,
   `@ian-pascoe/pi-codemode`, `@ian-pascoe/pi-mcp`,
   and `@ian-pascoe/pi-utils` bootstrap manually at `0.1.0`;
-  `@ian-pascoe/pi-todo`, `@ian-pascoe/pi-web-tools`, and `@ian-pascoe/pi-termctrl` bootstrap
-  manually at `0.0.0`. Do not add
+  `@ian-pascoe/pi-todo`, `@ian-pascoe/pi-web-tools`, `@ian-pascoe/pi-termctrl`, and
+  `@ian-pascoe/pi-command-deck` bootstrap manually at `0.0.0`. Do not add
   bootstrap Changesets.
 - Use `pnpm changeset` for releasable changes and inspect them with
   `pnpm changeset:status`. The workflow creates version PRs with
@@ -77,6 +77,17 @@ consuming its Changeset entry rather than scheduling another minor bump.
 
 Leave any generated version PR unmerged during bootstrap; later releases use the
 ordinary Changesets/OIDC workflow. No release workflow changes are required.
+
+## Command Deck bootstrap and Git Status Widget retirement
+
+After the implementation PR merges, publish `@ian-pascoe/pi-command-deck@0.0.0`
+from `packages/pi-command-deck` with `npm publish --access public --provenance=false`,
+then configure its trusted publisher as for Advisor. Deprecate every published
+`@ian-pascoe/pi-git-status-widget` version:
+
+```bash
+npm deprecate @ian-pascoe/pi-git-status-widget "Retired; use @ian-pascoe/pi-command-deck."
+```
 
 ## Trusted publishing and guarded automation
 

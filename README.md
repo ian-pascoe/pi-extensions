@@ -14,7 +14,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-minimal-subagents`](packages/pi-minimal-subagents)   | Persistent nested-agent coordination.                        | `pi install npm:@ian-pascoe/pi-minimal-subagents`  |
 | [`@ian-pascoe/pi-bible-verses`](packages/pi-bible-verses)             | Offline rotating verse working messages.                     | `pi install npm:@ian-pascoe/pi-bible-verses`       |
 | [`@ian-pascoe/pi-tps-tracker`](packages/pi-tps-tracker)               | Assistant output-token throughput.                           | `pi install npm:@ian-pascoe/pi-tps-tracker`        |
-| [`@ian-pascoe/pi-git-status-widget`](packages/pi-git-status-widget)   | Refreshing Git worktree status.                              | `pi install npm:@ian-pascoe/pi-git-status-widget`  |
+| [`@ian-pascoe/pi-command-deck`](packages/pi-command-deck)             | Vim prompt editor with session and Git status borders.       | `pi install npm:@ian-pascoe/pi-command-deck`       |
 | [`@ian-pascoe/pi-git-checkpoints`](packages/pi-git-checkpoints)       | Git-backed worktree checkpoints for tree navigation.         | `pi install npm:@ian-pascoe/pi-git-checkpoints`    |
 | [`@ian-pascoe/pi-formatter`](packages/pi-formatter)                   | Configured automatic post-edit formatting.                   | `pi install npm:@ian-pascoe/pi-formatter`          |
 | [`@ian-pascoe/pi-lsp`](packages/pi-lsp)                               | Configured language-server tools and post-edit diagnostics.  | `pi install npm:@ian-pascoe/pi-lsp`                |
@@ -27,7 +27,8 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |
 
 `@ian-pascoe/pi-codemode` and `@ian-pascoe/pi-mcp` are retired in favor of Pi's
-built-in `codemode` and MCP support ([ADR-0004](docs/adr/0004-retire-pi-codemode-and-pi-mcp.md)).
+built-in `codemode` (`defaultTools: ["+codemode"]`) and MCP support (`mcp.json`).
+`@ian-pascoe/pi-git-status-widget` is retired; Command Deck shows Git worktree status.
 
 The extensions share terminal capability and native session discovery utilities through the conventional
 compiled library [`@ian-pascoe/pi-utils`](packages/pi-utils). It is an npm
@@ -63,10 +64,10 @@ package entry with resource paths relative to the repository root:
 Every selectable extension path is:
 
 ```text
+packages/pi-command-deck/src/index.ts
 packages/pi-minimal-subagents/src/index.ts
 packages/pi-bible-verses/src/index.ts
 packages/pi-tps-tracker/src/index.ts
-packages/pi-git-status-widget/src/index.ts
 packages/pi-git-checkpoints/src/index.ts
 packages/pi-formatter/src/index.ts
 packages/pi-lsp/src/index.ts
@@ -82,10 +83,10 @@ packages/pi-termctrl/src/index.ts
 Every selectable configuration skill path is:
 
 ```text
+packages/pi-command-deck/skills/pi-command-deck/SKILL.md
 packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md
 packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md
 packages/pi-tps-tracker/skills/pi-tps-tracker/SKILL.md
-packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md
 packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md
 packages/pi-formatter/skills/pi-formatter/SKILL.md
 packages/pi-lsp/skills/pi-lsp/SKILL.md
@@ -106,7 +107,8 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 
 ## Prerequisites
 
-- Git Status Widget needs `git` on `PATH`.
+- Command Deck replaces the prompt editor; list it before extensions that wrap the editor, such as Minimal Subagents.
+- Command Deck needs `git` on `PATH` to show Git status; without it the Deck Header omits Git status.
 - Git Checkpoints needs `git` on `PATH`; the starting directory need not be a repository.
 - Minimal Subagents can use optional `trash`; deletion otherwise unlinks.
 - TPS Tracker can use optional `tiktoken`; absent official usage and tokenizer,
@@ -133,7 +135,7 @@ provenance.
 
 Node `22.19.0` and pnpm `11.21.0` are required.
 
-Published packages support Node `>=22.19.0` and Pi `>=0.84.1`, except Pi Context Management and Pi Advisor, which target Pi `0.85.1`, and Pi Skills Selector, which requires Pi `>=0.85.1` for stacked autocomplete.
+Published packages support Node `>=22.19.0` and Pi `>=0.84.1`, except Pi Context Management and Pi Advisor, which target Pi `0.85.1`, Pi Skills Selector, which requires Pi `>=0.85.1` for stacked autocomplete, and Pi Command Deck, which targets Pi `0.99.2` and falls back to Pi's plain editor elsewhere.
 
 ```bash
 pnpm install
@@ -146,7 +148,7 @@ Focused package checks:
 pnpm --filter @ian-pascoe/pi-minimal-subagents test
 pnpm --filter @ian-pascoe/pi-bible-verses test
 pnpm --filter @ian-pascoe/pi-tps-tracker test
-pnpm --filter @ian-pascoe/pi-git-status-widget test
+pnpm --filter @ian-pascoe/pi-command-deck test
 pnpm --filter @ian-pascoe/pi-git-checkpoints test
 pnpm --filter @ian-pascoe/pi-formatter test
 pnpm --filter @ian-pascoe/pi-lsp test

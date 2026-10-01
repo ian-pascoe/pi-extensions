@@ -63,10 +63,10 @@
   },
   "pi": {
     "extensions": [
+      "./packages/pi-command-deck/src/index.ts",
       "./packages/pi-minimal-subagents/src/index.ts",
       "./packages/pi-bible-verses/src/index.ts",
       "./packages/pi-tps-tracker/src/index.ts",
-      "./packages/pi-git-status-widget/src/index.ts",
       "./packages/pi-git-checkpoints/src/index.ts",
       "./packages/pi-formatter/src/index.ts",
       "./packages/pi-lsp/src/index.ts",
@@ -79,10 +79,10 @@
       "./packages/pi-termctrl/src/index.ts"
     ],
     "skills": [
+      "./packages/pi-command-deck/skills",
       "./packages/pi-minimal-subagents/skills",
       "./packages/pi-bible-verses/skills",
       "./packages/pi-tps-tracker/skills",
-      "./packages/pi-git-status-widget/skills",
       "./packages/pi-git-checkpoints/skills",
       "./packages/pi-formatter/skills",
       "./packages/pi-lsp/skills",

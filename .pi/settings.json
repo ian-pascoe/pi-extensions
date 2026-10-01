@@ -6,11 +6,11 @@
       "extensions": [
         "+packages/pi-advisor/src/index.ts",
         "+packages/pi-bible-verses/src/index.ts",
+        "+packages/pi-command-deck/src/index.ts",
         "-packages/pi-context-management/src/index.ts",
         "-packages/pi-dap/src/index.ts",
         "+packages/pi-formatter/src/index.ts",
         "+packages/pi-git-checkpoints/src/index.ts",
-        "-packages/pi-git-status-widget/src/index.ts",
         "+packages/pi-lsp/src/index.ts",
         "+packages/pi-minimal-subagents/src/index.ts",
         "+packages/pi-skills-selector/src/index.ts",
@@ -22,11 +22,11 @@
       "skills": [
         "+packages/pi-advisor/skills/pi-advisor/SKILL.md",
         "+packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
+        "+packages/pi-command-deck/skills/pi-command-deck/SKILL.md",
         "-packages/pi-context-management/skills/pi-context-management/SKILL.md",
         "-packages/pi-dap/skills/pi-dap/SKILL.md",
         "+packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "+packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
-        "-packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md",
         "+packages/pi-lsp/skills/pi-lsp/SKILL.md",
         "+packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "+packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
@@ -42,11 +42,11 @@
       "extensions": [
         "-packages/pi-advisor/src/index.ts",
         "-packages/pi-bible-verses/src/index.ts",
+        "-packages/pi-command-deck/src/index.ts",
         "-packages/pi-context-management/src/index.ts",
         "-packages/pi-dap/src/index.ts",
         "-packages/pi-formatter/src/index.ts",
         "-packages/pi-git-checkpoints/src/index.ts",
-        "-packages/pi-git-status-widget/src/index.ts",
         "-packages/pi-lsp/src/index.ts",
         "-packages/pi-minimal-subagents/src/index.ts",
         "-packages/pi-skills-selector/src/index.ts",
@@ -58,11 +58,11 @@
       "skills": [
         "-packages/pi-advisor/skills/pi-advisor/SKILL.md",
         "-packages/pi-bible-verses/skills/pi-bible-verses/SKILL.md",
+        "-packages/pi-command-deck/skills/pi-command-deck/SKILL.md",
         "-packages/pi-context-management/skills/pi-context-management/SKILL.md",
         "-packages/pi-dap/skills/pi-dap/SKILL.md",
         "-packages/pi-formatter/skills/pi-formatter/SKILL.md",
         "-packages/pi-git-checkpoints/skills/pi-git-checkpoints/SKILL.md",
-        "-packages/pi-git-status-widget/skills/pi-git-status-widget/SKILL.md",
         "-packages/pi-lsp/skills/pi-lsp/SKILL.md",
         "-packages/pi-minimal-subagents/skills/pi-minimal-subagents/SKILL.md",
         "-packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md",
@@ -225,5 +225,9 @@
         "requireRootMarker": true
       }
     }
-  }
+  },
+  "extensions": [
+    "/home/ianpascoe/.pi/agent/extensions/command-deck-editor.ts",
+    "-/home/ianpascoe/.pi/agent/extensions/command-deck-editor.ts"
+  ]
 }
