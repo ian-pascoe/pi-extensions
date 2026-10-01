@@ -7,6 +7,7 @@ import type {
   TerminalLaunchRequest,
 } from "./terminal-driver.js";
 import { isDriverGone } from "./terminal-driver.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 import type { TerminalViewport } from "./pi-termctrl-settings.js";
 
 /** The `globalThis` key every registry version shares. Its value always satisfies {@link RegistrySlot}. */
@@ -379,7 +380,7 @@ export class TermctrlRegistry {
         cwd: request.cwd,
         viewport: request.viewport,
       };
-      let slot = await this.ensureDriver();
+      let slot = await this.startDriver();
       let handle: TerminalHandle;
       try {
         handle = await slot.driver.launch(launch);
@@ -387,7 +388,7 @@ export class TermctrlRegistry {
         const error = cause instanceof Error ? cause : new Error(String(cause));
         if (!isDriverGone(error)) throw error;
         this.driverDied(slot.generation);
-        slot = await this.ensureDriver();
+        slot = await this.startDriver();
         handle = await slot.driver.launch(launch);
       }
       const entry: TerminalEntry = {
@@ -417,6 +418,16 @@ export class TermctrlRegistry {
       return entry;
     } finally {
       this.state.reserved--;
+    }
+  }
+
+  /** Ensure a driver, pointing the agent at the troubleshooting Skill when none can start. */
+  private async startDriver(): Promise<DriverSlot> {
+    try {
+      return await this.ensureDriver();
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      throw new Error(`${error.message}\n\n${TROUBLESHOOTING_HINT}`, { cause });
     }
   }
 

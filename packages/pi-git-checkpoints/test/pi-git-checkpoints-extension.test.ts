@@ -57,13 +57,17 @@ function assistantMessage(text: string): AssistantMessage {
   };
 }
 
-async function createHarness(hasUI = true): Promise<GitCheckpointsHarness> {
+async function createHarness(
+  hasUI = true,
+  options: { readonly blockStoreDirectory?: boolean } = {},
+): Promise<GitCheckpointsHarness> {
   const cwd = await temporaryDirectory("pi-git-checkpoints-lifecycle-cwd-");
   const agentDirectory = await temporaryDirectory("pi-git-checkpoints-lifecycle-agent-");
   const sessionDirectory = await temporaryDirectory("pi-git-checkpoints-lifecycle-session-");
   await mkdir(resolve(cwd, ".pi"));
   await writeFile(resolve(cwd, ".pi/settings.json"), "{}");
   await writeFile(resolve(agentDirectory, "settings.json"), "{}");
+  if (options.blockStoreDirectory) await writeFile(resolve(agentDirectory, "git-checkpoints"), "");
 
   const sessionManager = SessionManager.create(cwd, sessionDirectory);
   const resourceLoader = new DefaultResourceLoader({
@@ -352,5 +356,15 @@ describe("Pi Git Checkpoints lifecycle", () => {
     } satisfies SessionTreeEvent);
 
     expect(await readFile(resolve(harness.cwd, "code.txt"), "utf8")).toBe("three\n");
+  });
+
+  test("points the user at the troubleshooting Skill when checkpointing is disabled", async () => {
+    const harness = await createHarness(true, { blockStoreDirectory: true });
+
+    expect(harness.notifications).toEqual([
+      expect.stringMatching(
+        /^Git Checkpoints: checkpointing disabled: .+\nRun \/skill:pi-git-checkpoints to diagnose\.$/s,
+      ),
+    ]);
   });
 });

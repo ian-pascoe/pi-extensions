@@ -3,6 +3,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { cancelResponse, readBoundedResponseBody, requestSignal } from "./web-response.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 import { renderWebSearchToolCall, renderWebSearchToolResult } from "./web-tool-rendering.js";
 import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
 
@@ -315,7 +316,11 @@ export function createWebSearchTool(
               : { provider, truncation: output.truncation },
         };
       } catch {
-        throw new Error(`Unable to search the web for ${input.query}`);
+        const failure = `Unable to search the web for ${input.query}`;
+        // User cancellation is not a failure the Skill diagnoses.
+        throw new Error(
+          callerSignal?.aborted === true ? failure : `${failure}\n\n${TROUBLESHOOTING_HINT}`,
+        );
       }
     },
   });

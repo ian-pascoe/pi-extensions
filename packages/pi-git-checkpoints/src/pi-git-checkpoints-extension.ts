@@ -41,6 +41,7 @@ const RESTORE_CHOICE = "Restore code and navigate";
 const KEEP_CHOICE = "Keep code and navigate";
 const CANCEL_CHOICE = "Cancel navigation";
 const COMMAND_USAGE = "Usage: /checkpoint status | /checkpoint undo";
+const DIAGNOSE_POINTER = "Run /skill:pi-git-checkpoints to diagnose.";
 
 type ModelStepStart = {
   readonly stepId: string;
@@ -222,7 +223,7 @@ class PiGitCheckpointsLifecycle {
   private warnFailure(context: ExtensionContext, reason: string): void {
     if (this.failureNotified) return;
     this.failureNotified = true;
-    notify(context, `checkpointing disabled: ${reason}`, "error");
+    notify(context, `checkpointing disabled: ${reason}\n${DIAGNOSE_POINTER}`, "error");
   }
 
   private disable(context: ExtensionContext, cause: unknown): void {

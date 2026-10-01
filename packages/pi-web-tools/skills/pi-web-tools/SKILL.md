@@ -2,6 +2,7 @@
 name: pi-web-tools
 description: Diagnose missing web_search or web_fetch tools, Search Provider failures, Web Fetch content failures, truncation spills, or Web Tools API-key problems.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Web Tools

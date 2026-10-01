@@ -62,6 +62,7 @@ import {
   type RuntimeToolAdapter,
   unavailableAgent,
 } from "./minimal-subagents-sessions.js";
+import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import { shutdownMinimalSubagentsSession } from "./minimal-subagents-shutdown.js";
 import { writeMinimalSubagentsEnabled } from "./minimal-subagents-settings-writer.js";
 import {
@@ -164,7 +165,10 @@ export function reachableToolNames(
 }
 
 function rootCallerSnapshot(pi: ExtensionAPI, context: ExtensionContext): CallerSnapshot {
-  if (!context.model) throw new Error("Minimal subagents spawn: root has no effective model");
+  if (!context.model)
+    throw new Error(
+      withTroubleshootingHint("Minimal subagents spawn: root has no effective model"),
+    );
   return {
     messages: currentConversationMessages(context),
     model: `${context.model.provider}/${context.model.id}`,

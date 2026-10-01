@@ -7,13 +7,15 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import type {
-  DapEvaluateInput,
-  DapLaunchInput,
-  DapSession,
-  DapSessionResult,
-  DapStackInput,
-  DapVariablesInput,
+import { DapProtocolClientError } from "./dap-protocol-client.js";
+import {
+  DapSessionError,
+  type DapEvaluateInput,
+  type DapLaunchInput,
+  type DapSession,
+  type DapSessionResult,
+  type DapStackInput,
+  type DapVariablesInput,
 } from "./dap-session.js";
 import type { DapSessionFiles } from "./dap-session-files.js";
 import {
@@ -26,6 +28,7 @@ import {
   type DapToolResultDetails,
 } from "./dap-tool-contract.js";
 import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
@@ -73,6 +76,22 @@ export interface DapToolObserver {
 function piDapError(cause: unknown): Error {
   const message = cause instanceof Error ? cause.message : String(cause);
   return new Error(message.startsWith("Pi DAP:") ? message : `Pi DAP: ${message}`, { cause });
+}
+
+function isCancelledProtocolError(cause: unknown): boolean {
+  return cause instanceof DapProtocolClientError && cause.kind === "cancelled";
+}
+
+/** Configuration, adapter, protocol, and timeout failures are diagnosed by the Skill; state errors and adapter-rejected requests are not. */
+function needsTroubleshootingHint(cause: unknown): boolean {
+  if (cause instanceof DapSessionError) {
+    return cause.kind !== "state" && !isCancelledProtocolError(cause.cause);
+  }
+  return (
+    cause instanceof DapProtocolClientError &&
+    cause.kind !== "cancelled" &&
+    cause.kind !== "request"
+  );
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Pi arguments are validated against the strict operation branches at ingress.
@@ -419,7 +438,9 @@ export function createDapToolDefinition(
       } catch (cause) {
         const error = piDapError(cause);
         notifyDapToolObserver(() => runtime.observer?.onToolFailure(parameters, error));
-        throw error;
+        throw needsTroubleshootingHint(cause)
+          ? new Error(`${error.message}\n\n${TROUBLESHOOTING_HINT}`, { cause })
+          : error;
       } finally {
         if (progressInterval !== undefined) clearInterval(progressInterval);
       }

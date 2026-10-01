@@ -2,6 +2,7 @@
 name: pi-advisor
 description: Diagnose Pi Advisor when reviews or advisor_ask are missing, consultation fails, the Advisor is paused, settings are ineffective, backlog waits do not release, or corrective advice is not delivered safely.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Advisor

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -38,6 +39,7 @@ import {
   nodeLspWorkspaceEditFileOperations,
   type LspWorkspaceEditFileOperations,
 } from "../src/lsp-workspace-edit.js";
+import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
 import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
@@ -698,6 +700,51 @@ describe("registered LSP tool", () => {
       changed_paths: [fixture.filePath],
       state: "partial_failure",
     });
+    await fixture.close();
+  });
+
+  test("points configuration and server failures to the troubleshooting Skill", async () => {
+    expect(existsSync(TROUBLESHOOTING_SKILL_PATH)).toBe(true);
+    const fixture = await createToolFixture();
+    await expect(
+      executeTool(fixture, {
+        operation: "capabilities",
+        file_path: fixture.filePath,
+        server_id: "missing",
+      }),
+    ).rejects.toThrow(TROUBLESHOOTING_HINT);
+
+    fixture.client.failureByMethod.set("textDocument/hover", new Error("boom"));
+    await expect(
+      executeTool(fixture, {
+        operation: "hover",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      }),
+    ).rejects.toThrow(TROUBLESHOOTING_HINT);
+    await fixture.close();
+  });
+
+  test("omits the troubleshooting hint for failures the model can fix itself", async () => {
+    const fixture = await createToolFixture(["typescript", "other"]);
+    const failure = await executeTool(fixture, {
+      operation: "format_document",
+      file_path: fixture.filePath,
+      tab_size: 2,
+      insert_spaces: true,
+    }).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure)).toContain("provide server_id");
+    expect(String(failure)).not.toContain(TROUBLESHOOTING_HINT);
+    await expect(
+      executeTool(fixture, {
+        operation: "hover",
+        file_path: fixture.filePath,
+        line: 0,
+        character: 1,
+      }),
+    ).rejects.not.toThrow(TROUBLESHOOTING_HINT);
     await fixture.close();
   });
 

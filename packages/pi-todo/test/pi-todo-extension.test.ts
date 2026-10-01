@@ -11,9 +11,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component, TUI } from "@earendil-works/pi-tui";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { existsSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import todoExtension from "../src/index.js";
 import type { TodoActionInput, TodoToolDetails } from "../src/todo-list.js";
+import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
 
 type TodoToolResult = {
   readonly content: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
@@ -362,6 +364,19 @@ describe("Pi Todo extension", () => {
     });
   });
 
+  test("troubleshooting Skill exists and is hinted only on extension failures", async () => {
+    expect(existsSync(TROUBLESHOOTING_SKILL_PATH)).toBe(true);
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+    await expect(harness.execute({ action: "remove", id: 99 }, context)).rejects.not.toThrow(
+      TROUBLESHOOTING_HINT,
+    );
+    harness.failAppend = true;
+    await expect(harness.execute({ action: "add", title: "Not saved" }, context)).rejects.toThrow(
+      `disk full\n\n${TROUBLESHOOTING_HINT}`,
+    );
+  });
+
   test("canceled execution does not acknowledge or persist a mutation", async () => {
     const harness = new TodoExtensionHarness();
     await expect(
@@ -399,6 +414,9 @@ describe("Pi Todo extension", () => {
     ).rejects.toThrow("Todo is disabled in this loaded session");
     await expect(harness.execute({ action: "list" }, context)).rejects.toThrow(
       "Todo is disabled in this loaded session",
+    );
+    await expect(harness.execute({ action: "list" }, context)).rejects.toThrow(
+      TROUBLESHOOTING_HINT,
     );
     const reopened = new TodoExtensionHarness();
     const cleanContext = reopened.context();

@@ -11,6 +11,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
 import { CoordinatorToolOutputSchemas } from "../src/minimal-subagents-render-contract.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import {
   createCoordinatorToolDefinitions,
@@ -138,5 +139,35 @@ describe("minimal subagents coordinator tools", () => {
     // Script callers receive the declared object shape.
     expect(result.structuredContent).toEqual(result.details);
     expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
+  });
+
+  it("points partial deletion failures at the troubleshooting Skill", async () => {
+    const options = toolOptions("root", true);
+    vi.mocked(options.coordinator.delete).mockResolvedValue({
+      agent_id: "child",
+      recursive: true,
+      deleted_agent_ids: [],
+      trashed_session_files: [],
+      failures: [{ agent_id: "child", error: "disk full" }],
+    });
+
+    await expect(
+      requireTool(options, "subagent_delete").execute(
+        "delete-call",
+        { agent_id: "child" },
+        undefined,
+        undefined,
+        await createToolExecutionContext(),
+      ),
+    ).rejects.toThrow(`Minimal subagents deletion partially failed: {`);
+    await expect(
+      requireTool(options, "subagent_delete").execute(
+        "delete-call",
+        { agent_id: "child" },
+        undefined,
+        undefined,
+        await createToolExecutionContext(),
+      ),
+    ).rejects.toThrow(TROUBLESHOOTING_HINT);
   });
 });

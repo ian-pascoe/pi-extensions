@@ -9,6 +9,7 @@ import {
   WEB_FETCH_MAX_RESPONSE_BYTES,
   type WebFetchToolOptions,
 } from "../src/web-fetch.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import { createWebToolsTestRunner } from "./web-tools-test-harness.js";
 
 type ServedResponse = {
@@ -76,6 +77,16 @@ async function executeFetch(
   );
 }
 
+async function failureMessage(execution: Promise<unknown>): Promise<string> {
+  try {
+    await execution;
+  } catch (error) {
+    if (error instanceof Error) return error.message;
+    throw error;
+  }
+  throw new Error("Expected Web Fetch to fail");
+}
+
 describe("Web Fetch", () => {
   test("preserves ordinary HTTP, allows localhost, and reports a redirect's final URL", async () => {
     const server = await startServer(({ path }) =>
@@ -107,9 +118,11 @@ describe("Web Fetch", () => {
     expect(https.details.format).toBe("markdown");
     expect(calls).toEqual(["https://example.com/path"]);
 
-    await expect(executeFetch({ fetch }, { url: "file:///etc/passwd" })).rejects.toThrow(
-      "Unable to fetch file:///etc/passwd",
+    const invalid = await executeFetch({ fetch }, { url: "file:///etc/passwd" }).catch(
+      (cause: unknown) => cause,
     );
+    expect(String(invalid)).toContain("Unable to fetch file:///etc/passwd");
+    expect(String(invalid)).not.toContain(TROUBLESHOOTING_HINT);
     expect(calls).toHaveLength(1);
   });
 
@@ -169,7 +182,7 @@ describe("Web Fetch", () => {
         new Response("binary", { headers: { "content-type": contentType } });
       await expect(
         executeFetch({ fetch }, { url: "https://example.com/file", format: "html" }),
-      ).rejects.toThrow("Unable to fetch https://example.com/file");
+      ).rejects.toThrow(`Unable to fetch https://example.com/file\n\n${TROUBLESHOOTING_HINT}`);
     },
   );
 
@@ -236,6 +249,23 @@ describe("Web Fetch", () => {
     expect(calls).toBe(1);
   });
 
+  test.each([
+    [400, false],
+    [403, false],
+    [404, false],
+    [410, false],
+    [429, false],
+    [500, true],
+    [503, true],
+  ])("points to the troubleshooting Skill for HTTP %i: %s", async (status, hinted) => {
+    const fetch: typeof globalThis.fetch = async () => new Response("failure", { status });
+    expect(await failureMessage(executeFetch({ fetch }, { url: "https://example.com/page" }))).toBe(
+      hinted
+        ? `Unable to fetch https://example.com/page\n\n${TROUBLESHOOTING_HINT}`
+        : "Unable to fetch https://example.com/page",
+    );
+  });
+
   test("honors caller cancellation and custom timeouts", async () => {
     const server = await startServer(() => undefined);
     const controller = new AbortController();
@@ -247,11 +277,13 @@ describe("Web Fetch", () => {
     while (server.requests.length === 0)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
     controller.abort();
-    await expect(cancelled).rejects.toThrow(`Unable to fetch ${server.baseUrl}/cancel`);
+    expect(await failureMessage(cancelled)).toBe(`Unable to fetch ${server.baseUrl}/cancel`);
 
-    await expect(
-      executeFetch({}, { url: `${server.baseUrl}/timeout`, format: "text", timeout: 0.01 }),
-    ).rejects.toThrow(`Unable to fetch ${server.baseUrl}/timeout`);
+    expect(
+      await failureMessage(
+        executeFetch({}, { url: `${server.baseUrl}/timeout`, format: "text", timeout: 0.01 }),
+      ),
+    ).toBe(`Unable to fetch ${server.baseUrl}/timeout\n\n${TROUBLESHOOTING_HINT}`);
     expect(WEB_FETCH_DEFAULT_TIMEOUT_SECONDS).toBe(30);
   });
 

@@ -2,6 +2,7 @@
 name: pi-termctrl
 description: Configure or diagnose Pi Termctrl when Terminal tools are missing, the bash replacement conflicts with another extension, Background jobs misbehave, or termctrl settings need changing.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Termctrl

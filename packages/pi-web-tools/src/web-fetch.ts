@@ -5,6 +5,7 @@ import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { cancelResponse, readBoundedResponseBody, requestSignal } from "./web-response.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 import { renderWebFetchToolCall, renderWebFetchToolResult } from "./web-tool-rendering.js";
 import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
 import { redactWebUrlUserinfo } from "./web-url.js";
@@ -121,6 +122,9 @@ async function fetchOnce(
   });
 }
 
+/** A page the server answered with an HTTP client error; the URL, not the setup, is at fault. */
+class WebFetchClientError extends Error {}
+
 function isCloudflareChallenge(response: Response): boolean {
   return response.status === 403 && response.headers.get("cf-mitigated") === "challenge";
 }
@@ -193,7 +197,10 @@ async function fetchText(
   }
   if (!response.ok) {
     await cancelResponse(response);
-    throw new Error(`Web Fetch returned HTTP ${response.status}`);
+    const message = `Web Fetch returned HTTP ${response.status}`;
+    throw response.status >= 400 && response.status < 500
+      ? new WebFetchClientError(message)
+      : new Error(message);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -211,8 +218,12 @@ async function fetchText(
   };
 }
 
-function unableToFetch(safeUrl: string): Error {
-  return new Error(`Unable to fetch ${safeUrl}`);
+function unableToFetch(safeUrl: string, diagnosable = false): Error {
+  return new Error(
+    diagnosable
+      ? `Unable to fetch ${safeUrl}\n\n${TROUBLESHOOTING_HINT}`
+      : `Unable to fetch ${safeUrl}`,
+  );
 }
 
 /** Create the model-invoked Web Fetch definition. */
@@ -274,8 +285,12 @@ export function createWebFetchTool(
                   truncation: output.truncation,
                 },
         };
-      } catch {
-        throw unableToFetch(safeUrl);
+      } catch (error) {
+        // Dead links, blocked pages, and user cancellation are not failures the Skill diagnoses.
+        throw unableToFetch(
+          safeUrl,
+          !(error instanceof WebFetchClientError) && callerSignal?.aborted !== true,
+        );
       }
     },
   });

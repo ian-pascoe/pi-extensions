@@ -2,6 +2,7 @@
 name: pi-context-management
 description: Configure or diagnose Pi Context Management when Notes or History are missing, Rollover preparation fails, obsolete settings warn, or a native Context Checkpoint does not resume correctly.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Context Management

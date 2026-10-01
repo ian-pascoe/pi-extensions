@@ -13,8 +13,10 @@ import {
   type TodoStateSnapshot,
   type TodoStatus,
   type TodoTask,
+  TodoOperationError,
   type TodoToolDetails,
 } from "./todo-list.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 const TODO_STATE_ENTRY_TYPE = "pi-todo-state";
 const JOURNAL_FAULT = Symbol.for("@ian-pascoe/pi-todo/journal-fault");
@@ -161,7 +163,15 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       signal?.throwIfAborted();
-      const result = runTodoAction(params, context);
+      let result: ReturnType<typeof runTodoAction>;
+      try {
+        result = runTodoAction(params, context);
+      } catch (cause) {
+        // Task-operation errors are model-fixable input errors; anything else is a journal failure.
+        if (cause instanceof TodoOperationError) throw cause;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        throw new Error(`${message}\n\n${TROUBLESHOOTING_HINT}`, { cause });
+      }
       return {
         content: [{ type: "text", text: result.message }],
         details: result.details,

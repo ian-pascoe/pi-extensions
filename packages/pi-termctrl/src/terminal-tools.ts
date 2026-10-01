@@ -21,6 +21,7 @@ import { describeExitStatus } from "./exit-notification.js";
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { TerminalViewport } from "./pi-termctrl-settings.js";
 import type { TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 /** Screen quiet period that settles a Terminal. */
 export const QUIET_MS = 250;
@@ -480,7 +481,10 @@ async function driveTerminal<T>(
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause));
     if (registry.reportTerminalError(entry, error)) {
-      throw new Error(`${entry.id} was lost because the termctrl driver exited`, { cause });
+      throw new Error(
+        `${entry.id} was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`,
+        { cause },
+      );
     }
     throw error;
   } finally {

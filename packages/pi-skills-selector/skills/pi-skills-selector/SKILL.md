@@ -2,6 +2,7 @@
 name: pi-skills-selector
 description: Diagnose Pi Skills Selector when autocomplete is missing or a Skill Reference converts to a missing or wrong document link.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Skills Selector

@@ -14,6 +14,7 @@ import {
   type FormatterDefinition,
   type ResolvedFormatterSettings,
 } from "./pi-formatter-settings.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 const NativeMutationInputSchema = Type.Object(
   { path: Type.String() },
@@ -329,7 +330,10 @@ export function createPiFormatterExtension(
       });
       settings = resolveFormatterSettings(reader);
       if (settings.warnings.length > 0) {
-        context.ui.notify(`Pi Formatter settings:\n- ${settings.warnings.join("\n- ")}`, "warning");
+        context.ui.notify(
+          `Pi Formatter settings:\n- ${settings.warnings.join("\n- ")}\nRun /skill:pi-formatter to diagnose.`,
+          "warning",
+        );
       }
     });
     pi.on("tool_result", async (event, context) => {
@@ -337,7 +341,12 @@ export function createPiFormatterExtension(
       if (paths === undefined || paths.length === 0 || settings === undefined) return undefined;
       const warnings = await formatMutationPaths(paths, context.cwd, settings, context.signal);
       if (warnings.length === 0) return undefined;
-      return { content: [...event.content, { type: "text", text: warnings.join("\n") }] };
+      return {
+        content: [
+          ...event.content,
+          { type: "text", text: `${warnings.join("\n")}\n\n${TROUBLESHOOTING_HINT}` },
+        ],
+      };
     });
   };
 }

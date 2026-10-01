@@ -12,6 +12,7 @@ import {
   type SearchProvider,
   type WebSearchToolOptions,
 } from "../src/web-search.js";
+import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import { createWebToolsTestRunner } from "./web-tools-test-harness.js";
 
 type RecordedRequest = {
@@ -266,7 +267,7 @@ describe("Web Search", () => {
         { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
         { query: "status failure" },
       ),
-    ).rejects.toThrow("Unable to search the web for status failure");
+    ).rejects.toThrow(`Unable to search the web for status failure\n\n${TROUBLESHOOTING_HINT}`);
     expect(server.requests).toHaveLength(1);
   });
 
@@ -309,7 +310,7 @@ describe("Web Search", () => {
     while (stalled.requests.length === 0)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
     controller.abort();
-    await expect(pending).rejects.toThrow("Unable to search the web for cancel me");
+    await expect(pending).rejects.toThrow(new Error("Unable to search the web for cancel me"));
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
     expect(stalledClosed).toBe(true);
 

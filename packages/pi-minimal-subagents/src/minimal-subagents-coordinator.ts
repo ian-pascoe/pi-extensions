@@ -34,6 +34,7 @@ import {
   type DeliveryLedger,
   type DeliveryLedgerTransition,
 } from "./minimal-subagents-delivery-ledger.js";
+import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import { addCoordinatorMessageEnvelope } from "./minimal-subagents-message-envelope.js";
 import { unavailableAgent } from "./minimal-subagents-sessions.js";
 import { createRegistryEvent } from "./minimal-subagents-registry.js";
@@ -264,7 +265,9 @@ export class MinimalSubagentsCoordinator {
       const requiredMissing = missingDependencies.filter((name) => !optionalMissing.has(name));
       if (requiredMissing.length > 0) {
         throw new Error(
-          `Minimal subagents launch dependencies unavailable: ${requiredMissing.join(", ")}`,
+          withTroubleshootingHint(
+            `Minimal subagents launch dependencies unavailable: ${requiredMissing.join(", ")}`,
+          ),
         );
       }
       if (optionalMissing.size > 0) {
@@ -381,7 +384,7 @@ export class MinimalSubagentsCoordinator {
         agent_id: targetId,
         message_id: messageId,
         disposition: "failed",
-        error: deliveryError,
+        error: withTroubleshootingHint(deliveryError),
       };
     }
   }
@@ -925,7 +928,7 @@ export class MinimalSubagentsCoordinator {
         turn_id: turnId,
         status: "failed",
         output: "",
-        error: error instanceof Error ? error.message : String(error),
+        error: withTroubleshootingHint(error instanceof Error ? error.message : String(error)),
       });
     }
   }
@@ -1366,7 +1369,7 @@ export class MinimalSubagentsCoordinator {
             turn_id: turnId,
             status: "failed",
             output: "",
-            error: cause instanceof Error ? cause.message : String(cause),
+            error: withTroubleshootingHint(cause instanceof Error ? cause.message : String(cause)),
           });
         }
       });
@@ -1634,12 +1637,16 @@ export class MinimalSubagentsCoordinator {
     const agent = this.requireAgent(agentId);
     if (agent.availability === "unavailable") {
       throw new Error(
-        agent.unavailable_reason ?? `Minimal subagents ${operation}: ${agentId} is unavailable`,
+        withTroubleshootingHint(
+          agent.unavailable_reason ?? `Minimal subagents ${operation}: ${agentId} is unavailable`,
+        ),
       );
     }
     if (agent.clone_error || !agent.session_file) {
       throw new Error(
-        `Minimal subagents ${operation}: ${agent.clone_error ?? `${agentId} has no child session`}`,
+        withTroubleshootingHint(
+          `Minimal subagents ${operation}: ${agent.clone_error ?? `${agentId} has no child session`}`,
+        ),
       );
     }
     return agent;

@@ -19,6 +19,7 @@ import { completeAdvisorCommandArguments, parseAdvisorCommand } from "./advisor-
 import { AdvisorObserver } from "./advisor-observer.js";
 import { isAdvisorSession, type AdvisorResourceInputs } from "./advisor-session.js";
 import { advisorRuntimeWarning } from "./advisor-runtime.js";
+import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 interface WatchedChild {
   agentId: string;
@@ -76,13 +77,20 @@ export default function advisor(pi: ExtensionAPI): void {
         parameters: askToolParameters,
         executionMode: "sequential",
         execute: async (_id, { message }, signal) => {
-          const current = observer;
-          if (!current)
-            throw new Error(
-              `${error ?? "Advisor consultation is unavailable"}. Inspect /advisor status, then run /advisor on or correct its configuration.`,
-            );
-          const answer = await current.consult(message, signal);
-          return { content: [{ type: "text", text: answer }], details: {} };
+          try {
+            const current = observer;
+            if (!current)
+              throw new Error(
+                `${error ?? "Advisor consultation is unavailable"}. Inspect /advisor status, then run /advisor on or correct its configuration.`,
+              );
+            const answer = await current.consult(message, signal);
+            return { content: [{ type: "text", text: answer }], details: {} };
+          } catch (cause) {
+            // Caller cancellation is not a malfunction the Skill diagnoses.
+            if (signal?.aborted) throw cause;
+            const text = cause instanceof Error ? cause.message : String(cause);
+            throw new Error(`${text}\n\n${TROUBLESHOOTING_HINT}`, { cause });
+          }
         },
       });
       askToolRegistered = true;

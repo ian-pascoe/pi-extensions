@@ -2,6 +2,7 @@
 name: pi-lsp
 description: Configure or diagnose Pi LSP when a Server Definition fails, a file does not route, diagnostics are missing, or lsp settings need changing.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi LSP

@@ -53,6 +53,7 @@ marker exists above the changed file; it defaults to `false`. A required empty `
 invalid. Formatters run sequentially in configuration order. Successful output is silent. A
 timeout, spawn error, or non-zero exit appends a warning to the original tool result without
 changing that result's success state; later formatters still run.
+The warning ends with a pointer to the package's troubleshooting Skill.
 
 Global and project `timeoutMs` values override by scope. A project formatter replaces the complete
 global definition with the same ID; set it to `null` to disable it. Invalid definitions and fields

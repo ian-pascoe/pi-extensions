@@ -2,6 +2,7 @@
 name: pi-git-status-widget
 description: Diagnose Pi Git Status Widget when its Worktree Snapshot is missing, stale, or inconsistent with git status.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Git Status Widget

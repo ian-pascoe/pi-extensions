@@ -2,6 +2,7 @@
 name: pi-git-checkpoints
 description: Configure or diagnose Pi Git Checkpoints for retention, capture, Restore, /checkpoint, or tree-navigation failures.
 license: MIT
+disable-model-invocation: true
 ---
 
 # Pi Git Checkpoints
