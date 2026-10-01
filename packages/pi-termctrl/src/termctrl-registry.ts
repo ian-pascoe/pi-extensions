@@ -13,7 +13,7 @@ import type { TerminalViewport } from "./pi-termctrl-settings.js";
 /** The `globalThis` key every registry version shares. Its value always satisfies {@link RegistrySlot}. */
 export const REGISTRY_KEY = Symbol.for("@ian-pascoe/pi-termctrl/registry");
 /** Bump on any change to the state's shape: a reloaded module must not adopt an older shape. */
-export const REGISTRY_VERSION = 3;
+export const REGISTRY_VERSION = 4;
 
 /** Live Terminals plus Background jobs allowed across the whole process. */
 export const LIVE_ENTRY_CAP = 16;
@@ -59,6 +59,8 @@ interface EntryBase {
   seen: boolean;
   stopRequested: StopRequester | undefined;
   readonly notify: boolean;
+  /** `terminal_wait` calls watching this entry; they report its exit instead of a notification. */
+  watchers: number;
 }
 
 /** A PTY program driven through termctrl. */
@@ -102,10 +104,16 @@ export interface ExitNotice {
   readonly durationMs: number;
   /** The final screen of a Terminal or the recent log output of a Background job. */
   readonly output: string;
+  /** A Background job's log. */
+  readonly logPath?: string;
 }
 
-/** Delivers a batch of Exit notifications to one owner session. Throwing keeps the batch queued. */
-export type NotificationDelivery = (notices: readonly ExitNotice[]) => void;
+/**
+ * Delivers a batch of Exit notifications to one owner session. Returning `false` defers the batch:
+ * it stays queued until the next {@link TermctrlRegistry.flush}. Throwing keeps it queued and
+ * unbinds the owner.
+ */
+export type NotificationDelivery = (notices: readonly ExitNotice[]) => boolean;
 
 /** Request to start one Terminal. */
 export interface TerminalStartRequest {
@@ -272,12 +280,18 @@ export class TermctrlRegistry {
       const due = notices.filter((notice) => this.state.entries.get(notice.id)?.seen !== true);
       this.state.pending.delete(owner);
       if (due.length === 0) continue;
+      const requeue = () =>
+        this.state.pending.set(owner, [...due, ...(this.state.pending.get(owner) ?? [])]);
       try {
-        delivery(due);
+        // Only an explicit `false` defers: deliveries bound by an older module return nothing.
+        if (delivery(due) === false) {
+          requeue();
+          continue;
+        }
         for (const notice of due) this.markSeen(notice.id);
       } catch {
         this.state.owners.delete(owner);
-        this.state.pending.set(owner, [...due, ...(this.state.pending.get(owner) ?? [])]);
+        requeue();
       }
     }
   }
@@ -289,27 +303,61 @@ export class TermctrlRegistry {
     setImmediate(() => state.current.flush());
   }
 
-  private queueNotice(entry: TermctrlEntry, output: string): void {
-    if (!entry.notify || entry.seen || entry.stopRequested === "agent" || entry.exit === null) {
-      return;
-    }
-    const notices = this.state.pending.get(entry.owner) ?? [];
-    notices.push({
+  /** Describe an exited entry's exit, or `undefined` while it runs. */
+  noticeFor(entry: TermctrlEntry): ExitNotice | undefined {
+    if (entry.exit === null) return undefined;
+    const base = {
       id: entry.id,
       kind: entry.kind,
       command: entry.command,
       exit: entry.exit,
       durationMs: (entry.exitedAt ?? Date.now()) - entry.startedAt,
-      output,
-    });
+    };
+    return entry.kind === "job"
+      ? { ...base, output: entry.child.tail(), logPath: entry.child.logPath }
+      : { ...base, output: entry.finalScreen ?? "" };
+  }
+
+  private queueNotice(entry: TermctrlEntry): void {
+    if (!entry.notify || entry.seen || entry.stopRequested === "agent" || entry.watchers > 0) {
+      return;
+    }
+    const notice = this.noticeFor(entry);
+    if (notice === undefined) return;
+    const notices = this.state.pending.get(entry.owner) ?? [];
+    if (notices.some((queued) => queued.id === entry.id)) return;
+    notices.push(notice);
     this.state.pending.set(entry.owner, notices);
     this.scheduleFlush();
   }
 
-  /** Record that the agent has seen an entry's exit in a tool result. */
+  /**
+   * Watch entries for a `terminal_wait` call: their exits queue no Exit notification while watched.
+   * The returned release ends the watch and queues the notification of any exit the caller did not
+   * mark seen, such as one that happened after its wait ended.
+   */
+  watch(entries: readonly TermctrlEntry[]): () => void {
+    for (const entry of entries) entry.watchers++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const entry of entries) {
+        entry.watchers--;
+        if (entry.state === "exited" && this.state.entries.has(entry.id)) {
+          this.queueNotice(entry);
+        }
+      }
+    };
+  }
+
+  /**
+   * Record that the agent has seen an entry's exit in a tool result. A running entry has no exit to
+   * see yet, so seeing it running leaves its later Exit notification due.
+   */
   markSeen(id: string): void {
     const entry = this.state.entries.get(id);
-    if (entry !== undefined) entry.seen = true;
+    if (entry?.state === "exited") entry.seen = true;
   }
 
   // ── Queries ───────────────────────────────────────────────────────────────
@@ -404,6 +452,7 @@ export class TermctrlRegistry {
         seen: false,
         stopRequested: undefined,
         notify: request.notify,
+        watchers: 0,
         handle,
         generation: slot.generation,
         finalScreen: undefined,
@@ -467,7 +516,7 @@ export class TermctrlRegistry {
     entry.exitedAt = Date.now();
     entry.finalScreen = finalScreen;
     if (seen) entry.seen = true;
-    this.queueNotice(entry, finalScreen);
+    this.queueNotice(entry);
     this.syncWatcher();
     this.emitChange();
     this.closeIdleDriver();
@@ -568,6 +617,7 @@ export class TermctrlRegistry {
       seen: false,
       stopRequested: undefined,
       notify: true,
+      watchers: 0,
       child,
       settled,
       settle,
@@ -585,7 +635,7 @@ export class TermctrlRegistry {
     entry.exit = exit;
     entry.exitedAt = Date.now();
     entry.settle();
-    this.queueNotice(entry, entry.child.tail());
+    this.queueNotice(entry);
     this.emitChange();
   }
 

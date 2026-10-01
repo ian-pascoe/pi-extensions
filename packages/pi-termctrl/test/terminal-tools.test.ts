@@ -10,13 +10,22 @@ import {
   createTerminalSendTool,
   createTerminalStartTool,
   createTerminalStopTool,
+  createTerminalWaitTool,
   type TerminalToolRuntime,
 } from "../src/terminal-tools.js";
 import { FakeDriverFactory, type FakeTerminal } from "./fake-driver.js";
 
+/** Whether the fake session has a message queued, for `terminal_wait`. */
+let pendingMessages = false;
+
 function toolContext(owner: string): ExtensionToolContext {
-  const context = { cwd: "/work", sessionManager: { getSessionId: () => owner } };
-  // SAFETY: the Terminal tools read only `cwd` and `sessionManager.getSessionId()` from the context.
+  const context = {
+    cwd: "/work",
+    sessionManager: { getSessionId: () => owner },
+    hasPendingMessages: () => pendingMessages,
+  };
+  // SAFETY: the Terminal tools read only `cwd`, `sessionManager.getSessionId()` and
+  // `hasPendingMessages()` from the context.
   return context as ExtensionToolContext;
 }
 
@@ -32,6 +41,7 @@ interface Harness {
   readonly send: ReturnType<typeof createTerminalSendTool>;
   readonly stop: ReturnType<typeof createTerminalStopTool>;
   readonly list: ReturnType<typeof createTerminalListTool>;
+  readonly wait: ReturnType<typeof createTerminalWaitTool>;
 }
 
 function createHarness(): Harness {
@@ -52,6 +62,7 @@ function createHarness(): Harness {
     send: createTerminalSendTool(runtime),
     stop: createTerminalStopTool(registry),
     list: createTerminalListTool(registry),
+    wait: createTerminalWaitTool({ registry, exitTailLines: () => 2 }),
   };
 }
 
@@ -65,6 +76,7 @@ const root = toolContext("root");
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  pendingMessages = false;
   harness = createHarness();
 });
 
@@ -159,6 +171,25 @@ describe("terminal_start", () => {
     expect(elapsed).toBeLessThan(100);
     expect(value.structuredContent).toMatchObject({ state: "exited", exit_code: 3, screen: "bye" });
     expect(textOf(value)).toContain("t1 exited with code 3");
+  });
+
+  test("a Terminal seen running still sends an Exit notification when it exits later", async () => {
+    const delivered: string[] = [];
+    harness.runtime.registry.bindOwner("root", (notices) => {
+      delivered.push(...notices.map((notice) => notice.id));
+      return true;
+    });
+    const { result, terminal } = await startTerminal();
+    expect(result.structuredContent).toMatchObject({ state: "running" });
+    await timed(
+      harness.send.execute("call", { id: "t1", text: "1\n" }, undefined, undefined, root),
+    );
+
+    terminal.exitWith({ code: 0, signal: null });
+    await harness.runtime.registry.pollTerminals();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(delivered).toEqual(["t1"]);
   });
 });
 
@@ -536,5 +567,163 @@ describe("terminal_stop and terminal_list", () => {
       "Terminals:\nt1 running · 0s · python3\n\nBackground jobs:\nb1 exited with code 0 · 0s · npm test · log /tmp/pi-termctrl/b1.log",
     );
     expect(harness.runtime.registry.get("b1")?.seen).toBe(true);
+  });
+});
+
+describe("terminal_wait", () => {
+  function job(command: string, output = "") {
+    return harness.runtime.registry.createJob("root", command, (id) => ({
+      logPath: `/tmp/pi-termctrl/${id}.log`,
+      stop: () => {},
+      tail: () => output,
+      removeLog: async () => {},
+    }));
+  }
+
+  function collectDeliveries(): string[] {
+    const delivered: string[] = [];
+    harness.runtime.registry.bindOwner("root", (notices) => {
+      delivered.push(...notices.map((notice) => notice.id));
+      return true;
+    });
+    return delivered;
+  }
+
+  async function flushNotifications(): Promise<void> {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  test("returns at the first exit with its output and log, and what is still running", async () => {
+    const delivered = collectDeliveries();
+    job("npm test", "one\ntwo\nthree\n");
+    job("sleep 100");
+    const waiting = harness.wait.execute("call", {}, undefined, undefined, root);
+    await vi.advanceTimersByTimeAsync(1_000);
+    harness.runtime.registry.jobExited("b1", { code: 1, signal: null });
+    const value = await waiting;
+    await flushNotifications();
+
+    expect(value.structuredContent).toEqual({
+      reason: "exited",
+      exited: [
+        {
+          id: "b1",
+          kind: "background_job",
+          command: "npm test",
+          exit_code: 1,
+          duration_ms: 1_000,
+          output: "two\nthree",
+          log_path: "/tmp/pi-termctrl/b1.log",
+        },
+      ],
+      running: [{ id: "b2", kind: "background_job", command: "sleep 100", age_seconds: 1 }],
+    });
+    expect(textOf(value)).toBe(
+      "Background job b1 exited with code 1 after 1s: npm test\nLog: /tmp/pi-termctrl/b1.log\nLast lines of output:\ntwo\nthree\n\nStill running:\nb2 running · 1s · sleep 100 · log /tmp/pi-termctrl/b2.log",
+    );
+    expect(delivered).toEqual([]);
+    expect(harness.runtime.registry.get("b1")?.seen).toBe(true);
+  });
+
+  test("a Terminal's exit, found by the exit watcher, ends the wait", async () => {
+    const delivered = collectDeliveries();
+    const { terminal } = await startTerminal();
+    const waiting = harness.wait.execute("call", { ids: ["t1"] }, undefined, undefined, root);
+    await vi.advanceTimersByTimeAsync(500);
+    terminal.screen = "bye";
+    terminal.exitWith({ code: 0, signal: null });
+    await harness.runtime.registry.pollTerminals();
+    const value = await waiting;
+    await flushNotifications();
+
+    expect(value.structuredContent).toMatchObject({
+      reason: "exited",
+      exited: [{ id: "t1", kind: "terminal", exit_code: 0, output: "bye" }],
+      running: [],
+    });
+    expect(textOf(value)).toContain('terminal_send {"id": "t1"} returns its final screen.');
+    expect(delivered).toEqual([]);
+  });
+
+  test("an exit after the wait timed out still sends an Exit notification", async () => {
+    const delivered = collectDeliveries();
+    job("sleep 100");
+    const { value, elapsed } = await timed(
+      harness.wait.execute("call", { wait_ms: 3_000 }, undefined, undefined, root),
+    );
+    expect(elapsed).toBeGreaterThanOrEqual(3_000);
+    expect(elapsed).toBeLessThan(3_200);
+    expect(value.structuredContent).toMatchObject({ reason: "timeout", exited: [] });
+    expect(textOf(value)).toBe(
+      "Nothing exited within 3s.\n\nStill running:\nb1 running · 3s · sleep 100 · log /tmp/pi-termctrl/b1.log",
+    );
+
+    harness.runtime.registry.jobExited("b1", { code: 0, signal: null });
+    await flushNotifications();
+    expect(delivered).toEqual(["b1"]);
+  });
+
+  test("returns early when a message is queued, and clamps wait_ms to 5 minutes", async () => {
+    job("sleep 100");
+    const startedAt = Date.now();
+    const waiting = harness.wait.execute(
+      "call",
+      { wait_ms: 3_600_000 },
+      undefined,
+      undefined,
+      root,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    pendingMessages = true;
+    await vi.advanceTimersByTimeAsync(100);
+    const value = await waiting;
+    expect(Date.now() - startedAt).toBe(2_100);
+    expect(value.structuredContent).toMatchObject({ reason: "message", exited: [] });
+
+    pendingMessages = false;
+    const clamped = await timed(harness.wait.execute("call", {}, undefined, undefined, root));
+    expect(clamped.elapsed).toBeGreaterThanOrEqual(300_000);
+    expect(clamped.elapsed).toBeLessThan(300_200);
+  });
+
+  test("returns when the call is aborted", async () => {
+    job("sleep 100");
+    const controller = new AbortController();
+    const waiting = harness.wait.execute("call", {}, controller.signal, undefined, root);
+    await vi.advanceTimersByTimeAsync(1_000);
+    controller.abort();
+    const value = await waiting;
+    expect(value.structuredContent).toMatchObject({ reason: "aborted" });
+  });
+
+  test("reports an exit whose notification is still queued instead of notifying", async () => {
+    const delivered = collectDeliveries();
+    job("make", "built");
+    harness.runtime.registry.jobExited("b1", { code: 0, signal: null });
+    const { value, elapsed } = await timed(
+      harness.wait.execute("call", {}, undefined, undefined, root),
+    );
+    await flushNotifications();
+    expect(elapsed).toBeLessThanOrEqual(10);
+    expect(value.structuredContent).toMatchObject({ reason: "exited", exited: [{ id: "b1" }] });
+    expect(delivered).toEqual([]);
+  });
+
+  test("with nothing running returns at once, and rejects unknown or foreign ids", async () => {
+    const { value } = await timed(harness.wait.execute("call", {}, undefined, undefined, root));
+    expect(value.structuredContent).toEqual({ reason: "nothing_running", exited: [], running: [] });
+    expect(textOf(value)).toBe(
+      "Nothing to wait for: you have no running Terminals or Background jobs.",
+    );
+
+    harness.runtime.registry.createJob("child", "sleep 100", (id) => ({
+      logPath: `/tmp/pi-termctrl/${id}.log`,
+      stop: () => {},
+      tail: () => "",
+      removeLog: async () => {},
+    }));
+    await expect(
+      harness.wait.execute("call", { ids: ["b1"] }, undefined, undefined, root),
+    ).rejects.toThrow("Unknown id b1");
   });
 });

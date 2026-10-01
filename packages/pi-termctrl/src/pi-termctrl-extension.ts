@@ -24,6 +24,7 @@ import {
   createTerminalSendTool,
   createTerminalStartTool,
   createTerminalStopTool,
+  createTerminalWaitTool,
   type TerminalShell,
 } from "./terminal-tools.js";
 
@@ -40,6 +41,7 @@ interface ActiveSession {
   readonly ps: TermctrlPsController;
   readonly shell: () => TerminalShell;
   readonly viewport: TerminalViewport;
+  readonly exitTailLines: number;
 }
 
 /**
@@ -50,6 +52,14 @@ interface ActiveSession {
  */
 class PiTermctrlController {
   private active: ActiveSession | undefined;
+  /**
+   * Exit notifications sent mid-turn would queue in Pi as steering messages, beyond recall, while
+   * a tool call in the same turn, such as `terminal_wait`, can still report the exit. During an
+   * agent run they therefore wait for the turn's end, when Pi reads steering messages and those
+   * tool results are known.
+   */
+  private runActive = false;
+  private atTurnEnd = false;
   private readonly binary: TermctrlBinaryResolution;
   private readonly registry: TermctrlRegistry;
 
@@ -88,11 +98,36 @@ class PiTermctrlController {
     }
     this.pi.on("session_start", (_event, context) => this.start(context));
     this.pi.on("session_shutdown", (event) => this.shutdown(event));
+    this.pi.on("agent_start", () => {
+      this.runActive = true;
+    });
+    this.pi.on("turn_end", () => {
+      this.atTurnEnd = true;
+      try {
+        this.flushNotifications();
+      } finally {
+        this.atTurnEnd = false;
+      }
+    });
+    this.pi.on("agent_end", () => {
+      this.runActive = false;
+      this.flushNotifications();
+    });
+  }
+
+  private flushNotifications(): void {
+    (TermctrlRegistry.current() ?? this.registry).flush();
   }
 
   private registerManagementTools(): void {
     this.pi.registerTool(createTerminalStopTool(this.registry));
     this.pi.registerTool(createTerminalListTool(this.registry));
+    this.pi.registerTool(
+      createTerminalWaitTool({
+        registry: this.registry,
+        exitTailLines: () => this.session().exitTailLines,
+      }),
+    );
   }
 
   private session(): ActiveSession {
@@ -112,7 +147,9 @@ class PiTermctrlController {
     }
     const registry = this.registry;
     const owner = context.sessionManager.getSessionId();
+    this.runActive = false;
     registry.bindOwner(owner, (notices) => {
+      if (this.runActive && !this.atTurnEnd) return false;
       const message = formatExitNotification(notices, settings.exitTailLines);
       this.pi.sendMessage(
         {
@@ -123,6 +160,7 @@ class PiTermctrlController {
         },
         { triggerTurn: true, deliverAs: "steer" },
       );
+      return true;
     });
 
     const shellPath = settingsManager.getShellPath();
@@ -156,6 +194,7 @@ class PiTermctrlController {
         return { shell: shell.shell, args: shell.args, commandPrefix };
       },
       viewport: settings.defaultViewport,
+      exitTailLines: settings.exitTailLines,
     };
   }
 

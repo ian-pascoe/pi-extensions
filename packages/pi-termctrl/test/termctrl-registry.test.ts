@@ -56,7 +56,10 @@ function startJob(registry: TermctrlRegistry, owner: string, command = "sleep 10
 
 function collect(registry: TermctrlRegistry, owner: string) {
   const batches: ExitNotice[][] = [];
-  registry.bindOwner(owner, (notices) => batches.push([...notices]));
+  registry.bindOwner(owner, (notices) => {
+    batches.push([...notices]);
+    return true;
+  });
   return batches;
 }
 
@@ -156,6 +159,30 @@ describe("TermctrlRegistry", () => {
       { id: "b1", kind: "job", command: "make build", exit: { code: 0, signal: null } },
     ]);
     expect(fresh[0]?.[0]?.output).toBe("compiled\n");
+  });
+
+  test("a deferred batch waits for the next flush and drops exits seen meanwhile", async () => {
+    const { registry } = createHarness();
+    let ready = false;
+    const delivered: string[][] = [];
+    registry.bindOwner("root", (notices) => {
+      if (!ready) return false;
+      delivered.push(notices.map(({ id }) => id));
+      return true;
+    });
+    const first = startJob(registry, "root", "make").entry;
+    const second = startJob(registry, "root", "make test").entry;
+    registry.jobExited(first.id, { code: 0, signal: null });
+    registry.jobExited(second.id, { code: 1, signal: null });
+    await nextTick();
+    expect(delivered).toEqual([]);
+
+    registry.markSeen(first.id);
+    ready = true;
+    registry.flush();
+    expect(delivered).toEqual([["b2"]]);
+    registry.flush();
+    expect(delivered).toEqual([["b2"]]);
   });
 
   test("delivers a queued notice for an entry the user removed before the owner rebound", async () => {

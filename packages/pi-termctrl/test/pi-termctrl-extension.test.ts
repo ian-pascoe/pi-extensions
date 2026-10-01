@@ -1,5 +1,6 @@
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
-import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { afterEach, describe, expect, test } from "vitest";
 import { EXIT_NOTIFICATION_TYPE } from "../src/exit-notification.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
@@ -26,7 +27,7 @@ afterEach(async () => {
 });
 
 describe("tool registration", () => {
-  test("registers all four Terminal tools and the bash replacement when the binary resolves", async () => {
+  test("registers all five Terminal tools and the bash replacement when the binary resolves", async () => {
     const drivers = new FakeDriverFactory();
     const fixture = await createSdkFixture({ binary: available, createDriver: drivers.create });
     expect(toolNames(fixture)).toEqual([
@@ -38,6 +39,7 @@ describe("tool registration", () => {
       "terminal_send",
       "terminal_stop",
       "terminal_list",
+      "terminal_wait",
     ]);
     const bash = fixture.session.getToolDefinition("bash");
     expect(Object.keys(JSON.parse(JSON.stringify(bash?.parameters)).properties)).toEqual([
@@ -58,6 +60,7 @@ describe("tool registration", () => {
       "write",
       "terminal_stop",
       "terminal_list",
+      "terminal_wait",
     ]);
     expect(fixture.notifications).toEqual([
       "Pi Termctrl: Terminal tools are unavailable: test has no binary\nRun /skill:pi-termctrl to diagnose.",
@@ -149,6 +152,86 @@ describe("Background jobs through Pi", () => {
     });
     expect(JSON.stringify(notification)).toContain("Background job b1 exited with code 0");
     expect(JSON.stringify(notification)).toContain("all done");
+  });
+});
+
+describe("Exit notifications during an agent run", () => {
+  /**
+   * A tool that ends Background job b1, then yields long enough for a queued Exit notification to
+   * flush. It runs sequentially, so a later tool call in the same message starts after it.
+   */
+  const finishJob: ExtensionFactory = (pi) => {
+    pi.registerTool({
+      name: "finish_job",
+      label: "finish_job",
+      description: "Test tool: end Background job b1.",
+      parameters: Type.Object({}),
+      executionMode: "sequential",
+      async execute() {
+        TermctrlRegistry.current()?.jobExited("b1", { code: 0, signal: null });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { content: [{ type: "text", text: "ended" }], details: {} };
+      },
+    });
+  };
+
+  async function fixtureWithJob() {
+    const fixture = await createSdkFixture({
+      binary: available,
+      createDriver: new FakeDriverFactory().create,
+      extraFactories: [finishJob],
+    });
+    const owner = fixture.session.sessionManager.getSessionId();
+    TermctrlRegistry.current()?.createJob(owner, "make", (id) => ({
+      logPath: `/tmp/pi-termctrl/${id}.log`,
+      stop: () => {},
+      tail: () => "built",
+      removeLog: async () => {},
+    }));
+    return fixture;
+  }
+
+  function exitNotifications(fixture: Awaited<ReturnType<typeof createSdkFixture>>) {
+    return fixture.session.messages.filter(
+      (message) => message.role === "custom" && message.customType === EXIT_NOTIFICATION_TYPE,
+    );
+  }
+
+  test("an exit terminal_wait reports in the same turn sends no Exit notification", async () => {
+    const fixture = await fixtureWithJob();
+    fixture.responses.push(
+      fauxAssistantMessage(
+        [fauxToolCall("finish_job", {}), fauxToolCall("terminal_wait", { ids: ["b1"] })],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("Done."),
+    );
+    await fixture.session.prompt("Finish the job and wait for it");
+    await settle(fixture.session);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settle(fixture.session);
+
+    expect(toolResultText(fixture.turns[1]?.messages ?? [], "terminal_wait")).toContain(
+      "Background job b1 exited with code 0",
+    );
+    expect(exitNotifications(fixture)).toEqual([]);
+    expect(fixture.turns).toHaveLength(2);
+  });
+
+  test("an exit no tool reports reaches the agent at the end of the turn", async () => {
+    const fixture = await fixtureWithJob();
+    fixture.responses.push(
+      fauxAssistantMessage(fauxToolCall("finish_job", {}), { stopReason: "toolUse" }),
+      fauxAssistantMessage("Noted."),
+    );
+    await fixture.session.prompt("Finish the job");
+    await settle(fixture.session);
+
+    expect(fixture.turns).toHaveLength(2);
+    expect(JSON.stringify(fixture.turns[1]?.messages.at(-1))).toContain(
+      "Background job b1 exited with code 0",
+    );
+    expect(exitNotifications(fixture)).toHaveLength(1);
   });
 });
 

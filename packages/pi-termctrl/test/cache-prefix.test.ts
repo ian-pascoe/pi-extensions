@@ -97,6 +97,7 @@ describe("prefix stability", () => {
       "terminal_send",
       "terminal_stop",
       "terminal_list",
+      "terminal_wait",
     ]);
   });
 
@@ -146,6 +147,30 @@ describe("prefix stability", () => {
     await prompt(fixture, "Anything else?");
     expectStablePrefix(fixture.turns, 5);
     expect(TermctrlRegistry.current()?.entries()).toEqual([]);
+    expect(
+      fixture.session.messages.some(
+        (message) => message.role === "custom" && message.customType === EXIT_NOTIFICATION_TYPE,
+      ),
+    ).toBe(false);
+  });
+
+  test("terminal_wait reports a Background job's exit once, without an Exit notification", async () => {
+    // No termctrl binary: terminal_wait is a management tool, available wherever jobs are.
+    const fixture = await createSdkFixture();
+    fixture.responses.push(
+      toolCallTurn("bash", { command: "echo working; sleep 2.3; echo done", background: true }),
+      toolCallTurn("terminal_wait", {}),
+      fauxAssistantMessage("It finished."),
+      fauxAssistantMessage("Idle."),
+    );
+    await prompt(fixture, "Run the job and wait for it");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await prompt(fixture, "Anything else?");
+    expectStablePrefix(fixture.turns, 4);
+    const waitResult = JSON.stringify(fixture.turns[2]?.messages.at(-1));
+    expect(waitResult).toContain("Background job b1 exited with code 0");
+    expect(waitResult).toContain(`pi-termctrl/${process.pid}-b1.log`);
+    expect(waitResult).toContain("done");
     expect(
       fixture.session.messages.some(
         (message) => message.role === "custom" && message.customType === EXIT_NOTIFICATION_TYPE,
@@ -252,6 +277,7 @@ describe("configurations", () => {
       "write",
       "terminal_stop",
       "terminal_list",
+      "terminal_wait",
     ]);
   });
 });
