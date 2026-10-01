@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-lsp
 
+## 0.4.7
+
+### Patch Changes
+
+- b15f4fd: Shutting down a language server no longer fails when its connection closed before its process exited. Post-edit diagnostics and other file routing no longer list every ancestor directory for files no configured server handles, which made large batches of edits slow in big directories.
+
 ## 0.4.6
 
 ### Patch Changes

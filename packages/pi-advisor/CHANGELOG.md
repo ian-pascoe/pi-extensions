@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-advisor
 
+## 0.3.5
+
+### Patch Changes
+
+- b15f4fd: Advisor Sessions now reproduce the observed agent's codemode `models` API from the resource owner's recreation inputs, so an Advisor watching a Minimal Subagents Child Agent no longer gives its scripts a `models` API the child lacks.
+
 ## 0.3.4
 
 ### Patch Changes
