@@ -1,16 +1,16 @@
 {
-  "name": "@ian-pascoe/pi-git-status-widget",
-  "version": "0.2.1",
+  "name": "@ian-pascoe/pi-command-deck",
+  "version": "0.0.0",
   "private": false,
-  "description": "Pi extension that displays the current Git worktree status in a widget.",
+  "description": "Pi extension that replaces the prompt editor and footer with a compact Vim command deck.",
   "keywords": [
-    "git",
+    "editor",
     "pi",
     "pi-extension",
     "pi-package",
-    "status"
+    "vim"
   ],
-  "homepage": "https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-git-status-widget",
+  "homepage": "https://github.com/ian-pascoe/pi-extensions/tree/main/packages/pi-command-deck",
   "bugs": {
     "url": "https://github.com/ian-pascoe/pi-extensions/issues"
   },
@@ -19,7 +19,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ian-pascoe/pi-extensions.git",
-    "directory": "packages/pi-git-status-widget"
+    "directory": "packages/pi-command-deck"
   },
   "files": [
     "src",
@@ -36,8 +36,12 @@
     "test": "vitest run --config ../../vitest.config.ts --root .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
+  "dependencies": {
+    "@ian-pascoe/pi-utils": "^0.3.0"
+  },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "engines": {
     "node": ">=22.19.0"
