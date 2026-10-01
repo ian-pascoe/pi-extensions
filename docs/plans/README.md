@@ -41,3 +41,4 @@ Provider background: [Anthropic prompt caching](https://platform.claude.com/docs
 ## Other plans
 
 - [Pi Skills Selector](pi-skills-selector.md) — existing plan, unchanged by this audit.
+- [Pi Termctrl](pi-termctrl.md) — Terminals, Background jobs, and `/ps`; implemented in `packages/pi-termctrl`.

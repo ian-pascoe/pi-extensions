@@ -1,0 +1,531 @@
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { TermctrlRegistry } from "../src/termctrl-registry.js";
+import {
+  createTerminalListTool,
+  createTerminalSendTool,
+  createTerminalStartTool,
+  createTerminalStopTool,
+  type TerminalToolRuntime,
+} from "../src/terminal-tools.js";
+import { FakeDriverFactory, type FakeTerminal } from "./fake-driver.js";
+
+function toolContext(owner: string): ExtensionToolContext {
+  const context = { cwd: "/work", sessionManager: { getSessionId: () => owner } };
+  // SAFETY: the Terminal tools read only `cwd` and `sessionManager.getSessionId()` from the context.
+  return context as ExtensionToolContext;
+}
+
+function textOf(result: { readonly content: readonly (TextContent | ImageContent)[] }): string {
+  const [first] = result.content;
+  return first?.type === "text" ? first.text : "";
+}
+
+interface Harness {
+  readonly drivers: FakeDriverFactory;
+  readonly runtime: TerminalToolRuntime;
+  readonly start: ReturnType<typeof createTerminalStartTool>;
+  readonly send: ReturnType<typeof createTerminalSendTool>;
+  readonly stop: ReturnType<typeof createTerminalStopTool>;
+  readonly list: ReturnType<typeof createTerminalListTool>;
+}
+
+function createHarness(): Harness {
+  const drivers = new FakeDriverFactory();
+  const registry = TermctrlRegistry.acquire({
+    createDriver: drivers.create,
+    pollIntervalMs: 60_000,
+  });
+  const runtime: TerminalToolRuntime = {
+    registry,
+    shell: () => ({ shell: "/bin/bash", args: ["-c"], commandPrefix: "shopt -s expand_aliases" }),
+    viewport: () => ({ cols: 100, rows: 30 }),
+  };
+  return {
+    drivers,
+    runtime,
+    start: createTerminalStartTool(runtime),
+    send: createTerminalSendTool(runtime),
+    stop: createTerminalStopTool(registry),
+    list: createTerminalListTool(registry),
+  };
+}
+
+/** A Terminal whose output never stops, so only the wait budget can end a wait. */
+function busy(terminal: FakeTerminal): void {
+  terminal.alwaysBusy = true;
+}
+
+let harness: Harness;
+const root = toolContext("root");
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  harness = createHarness();
+});
+
+afterEach(async () => {
+  vi.useRealTimers();
+  await TermctrlRegistry.teardownForTests();
+});
+
+async function timed<T>(run: Promise<T>): Promise<{ readonly value: T; readonly elapsed: number }> {
+  const startedAt = Date.now();
+  let settled: { value: T } | undefined;
+  void run.then((value) => {
+    settled = { value };
+  });
+  while (settled === undefined) await vi.advanceTimersByTimeAsync(10);
+  return { value: settled.value, elapsed: Date.now() - startedAt };
+}
+
+async function startTerminal(prepare?: (terminal: FakeTerminal) => void) {
+  harness.drivers.onLaunch = (terminal) => {
+    terminal.screen = ">>> ";
+    terminal.lastOutputAt = Date.now() - 1_000;
+    prepare?.(terminal);
+  };
+  const { value } = await timed(
+    harness.start.execute("call", { command: "python3" }, undefined, undefined, root),
+  );
+  return { result: value, terminal: harness.drivers.terminal(0) };
+}
+
+describe("terminal_start", () => {
+  test("runs the command through Pi's shell with the prefix, cwd and viewport", async () => {
+    const { result, terminal } = await startTerminal();
+    expect(terminal.request).toEqual({
+      id: "t1",
+      command: ["/bin/bash", "-c", "shopt -s expand_aliases\npython3"],
+      cwd: "/work",
+      viewport: { cols: 100, rows: 30 },
+    });
+    expect(result.structuredContent).toEqual({
+      id: "t1",
+      state: "running",
+      changed: true,
+      screen: ">>> ",
+      scrolled_off: "",
+    });
+    expect(textOf(result)).toBe("t1 running\n--- screen ---\n>>> ");
+  });
+
+  test("settles after 250 ms of quiet", async () => {
+    harness.drivers.onLaunch = (terminal) => {
+      terminal.reportsIdle = false;
+      terminal.screen = "ready";
+    };
+    const { elapsed } = await timed(
+      harness.start.execute("call", { command: "app" }, undefined, undefined, root),
+    );
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+    expect(elapsed).toBeLessThan(400);
+  });
+
+  test("waits 2 s by default and clamps wait_ms to 5 minutes", async () => {
+    harness.drivers.onLaunch = busy;
+    const byDefault = await timed(
+      harness.start.execute("call", { command: "yes" }, undefined, undefined, root),
+    );
+    expect(byDefault.elapsed).toBeGreaterThanOrEqual(2_000);
+    expect(byDefault.elapsed).toBeLessThan(2_100);
+
+    const clamped = await timed(
+      harness.start.execute(
+        "call",
+        { command: "yes", wait_ms: 3_600_000 },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(clamped.elapsed).toBeGreaterThanOrEqual(300_000);
+    expect(clamped.elapsed).toBeLessThan(300_100);
+  });
+
+  test("returns as soon as the process exits", async () => {
+    harness.drivers.onLaunch = (terminal) => {
+      busy(terminal);
+      terminal.screen = "bye";
+      terminal.exitWith({ code: 3, signal: null });
+    };
+    const { value, elapsed } = await timed(
+      harness.start.execute("call", { command: "false" }, undefined, undefined, root),
+    );
+    expect(elapsed).toBeLessThan(100);
+    expect(value.structuredContent).toMatchObject({ state: "exited", exit_code: 3, screen: "bye" });
+    expect(textOf(value)).toContain("t1 exited with code 3");
+  });
+});
+
+describe("terminal_send", () => {
+  test("types text, presses keys, and settles 500 ms by default under constant output", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    const { value, elapsed } = await timed(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "print(1)", keys: ["Enter", "Control+C"] },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(terminal.typed).toEqual(["print(1)"]);
+    expect(terminal.pressed).toEqual([["Enter", "Control+C"]]);
+    expect(elapsed).toBeGreaterThanOrEqual(500);
+    expect(elapsed).toBeLessThan(600);
+    expect(value.structuredContent).toMatchObject({ changed: false, state: "running" });
+    expect(textOf(value)).toContain("t1 running · screen unchanged");
+  });
+
+  test("settles on a wait_for_text match, as a literal or a regex", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    terminal.onInput = (self) => {
+      setTimeout(() => {
+        self.screen = "Build finished in 12s";
+      }, 1_000);
+    };
+    const literal = await timed(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "make\n", wait_for_text: "finished", wait_ms: 10_000 },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(literal.elapsed).toBeGreaterThanOrEqual(1_000);
+    expect(literal.elapsed).toBeLessThan(1_100);
+
+    terminal.screen = "";
+    const regex = await timed(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "make\n", wait_for_text: "/FINISHED in \\d+s/i", wait_ms: 10_000 },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(regex.elapsed).toBeLessThan(1_100);
+    expect(regex.value.structuredContent).toMatchObject({ screen: "Build finished in 12s" });
+  });
+
+  test("a poll waits up to 30 s for new output, then settles on quiet", async () => {
+    const { terminal } = await startTerminal();
+    const quietPoll = await timed(
+      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(quietPoll.elapsed).toBeGreaterThanOrEqual(30_000);
+    expect(quietPoll.elapsed).toBeLessThan(30_100);
+
+    terminal.reportsIdle = false;
+    setTimeout(() => {
+      terminal.screen = ">>> tick";
+    }, 5_000);
+    const activePoll = await timed(
+      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(activePoll.elapsed).toBeGreaterThanOrEqual(5_250);
+    expect(activePoll.elapsed).toBeLessThan(5_400);
+    expect(activePoll.value.structuredContent).toMatchObject({ changed: true, screen: ">>> tick" });
+  });
+
+  test("returns every line that scrolled off since the previous result, including seen ones", async () => {
+    const { result, terminal } = await startTerminal((self) => {
+      self.logLines = ["one", "two", "three"];
+      self.screen = "two\nthree";
+    });
+    expect(result.structuredContent).toMatchObject({ scrolled_off: "one" });
+    terminal.onInput = (self) => {
+      self.logLines.push("four", "five", "six");
+      self.screen = "five\nsix";
+    };
+    const second = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(second.value.structuredContent).toMatchObject({ scrolled_off: "two\nthree\nfour" });
+    expect(second.value.details.full_output_path).toBeUndefined();
+  });
+
+  test("reports a line rewritten after the agent saw it in its final form", async () => {
+    const { result, terminal } = await startTerminal((self) => {
+      self.logLines = ["Building..."];
+      self.screen = "Building...";
+    });
+    expect(result.structuredContent).toMatchObject({ scrolled_off: "" });
+    terminal.onInput = (self) => {
+      self.logLines = ["Building... FAILED", "1", "2", "3"];
+      self.screen = "2\n3";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ scrolled_off: "Building... FAILED\n1" });
+  });
+
+  test("starts over when the log is reset, as by clear", async () => {
+    const numbers = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
+    const { result, terminal } = await startTerminal((self) => {
+      self.logLines = numbers(1, 8);
+      self.screen = numbers(4, 8).join("\n");
+    });
+    expect(result.structuredContent).toMatchObject({ scrolled_off: "1\n2\n3" });
+    terminal.onInput = (self) => {
+      self.logLines = numbers(101, 112);
+      self.screen = numbers(108, 112).join("\n");
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      scrolled_off: numbers(101, 107).join("\n"),
+      output_missing: true,
+    });
+    expect(textOf(value)).toMatch(
+      /\n\n\[Earlier output is missing: termctrl keeps limited scrollback/u,
+    );
+  });
+
+  test("keeps its place when termctrl trims scrollback it already reported", async () => {
+    const numbers = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = numbers(1, 10);
+      self.screen = numbers(6, 10).join("\n");
+    });
+    // termctrl drops 1-4, cutting into the anchor (1-5) but not into unreported lines.
+    terminal.onInput = (self) => {
+      self.logLines = numbers(5, 13);
+      self.screen = numbers(9, 13).join("\n");
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ scrolled_off: "6\n7\n8" });
+    expect(value.structuredContent).not.toHaveProperty("output_missing");
+  });
+
+  test("says output is missing when termctrl dropped lines the agent never received", async () => {
+    const numbers = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = numbers(1, 10);
+      self.screen = numbers(6, 10).join("\n");
+    });
+    terminal.onInput = (self) => {
+      self.logLines = numbers(50, 60);
+      self.screen = numbers(56, 60).join("\n");
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      scrolled_off: numbers(50, 55).join("\n"),
+      output_missing: true,
+    });
+  });
+
+  test("says output is missing when a burst overflows before anything scrolled off", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["$ "];
+      self.screen = "$ ";
+    });
+    terminal.onInput = (self) => {
+      self.logLines = ["4998", "4999", "5000", "$ "];
+      self.screen = "5000\n$ ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      scrolled_off: "4998\n4999",
+      output_missing: true,
+    });
+  });
+
+  test("a prompt line extended by typing is not missing output", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["$ "];
+      self.screen = "$ ";
+    });
+    terminal.onInput = (self) => {
+      self.logLines = ["$ seq 1 3", "1", "2", "3", "$ "];
+      self.screen = "3\n$ ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ scrolled_off: "$ seq 1 3\n1\n2" });
+    expect(value.structuredContent).not.toHaveProperty("output_missing");
+  });
+
+  test("fits large output into Pi's limits and saves every line to a full output file", async () => {
+    const rows = Array.from({ length: 3_000 }, (_, index) => `row ${index}`);
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = [">>> "];
+    });
+    terminal.onInput = (self) => {
+      self.logLines = [">>> ", ...rows, ">>> "];
+      self.screen = "row 2999\n>>> ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    const { scrolled_off: scrolled, screen, full_output_path: path } = value.details;
+    expect(screen).toBe("row 2999\n>>> ");
+    expect(scrolled.split("\n")).toEqual(rows.slice(1_001, 2_999));
+    expect(path).toMatch(/pi-termctrl\/\d+-t1-output-\d+\.log$/u);
+    expect(textOf(value)).toMatch(
+      /--- screen ---\nrow 2999\n>>> \n\n\[Showing lines 1003-3002 of 3002 \(50\.0KB or 2000 line limit\)\. Full output: .+-t1-output-\d+\.log\]$/u,
+    );
+    expect(await readFile(path ?? "", "utf8")).toBe(`>>> \n${rows.join("\n")}\n>>> `);
+  });
+
+  test("keeps the bottom of a screen larger than Pi's limits", async () => {
+    const rows = Array.from({ length: 2_500 }, (_, index) => `row ${index}`);
+    const { result } = await startTerminal((self) => {
+      self.logLines = ["earlier", ...rows];
+      self.screen = rows.join("\n");
+    });
+    expect(result.details.scrolled_off).toBe("");
+    expect(result.details.screen.split("\n")).toEqual(rows.slice(500));
+    expect(textOf(result)).toContain("[Showing lines 502-2501 of 2501");
+    expect(await readFile(result.details.full_output_path ?? "", "utf8")).toBe(
+      ["earlier", ...rows].join("\n"),
+    );
+  });
+
+  test("a wait_for_text match already on the screen counts only after the screen changes", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.screen = ">>> 6*7\n42\n>>> ";
+    });
+    busy(terminal);
+    terminal.onInput = (self) => {
+      setTimeout(() => {
+        self.screen = ">>> 6*7\n42\n>>> 1+1\n2\n>>> ";
+      }, 300);
+    };
+    const { value, elapsed } = await timed(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "1+1\n", wait_for_text: "2", wait_ms: 5_000 },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(elapsed).toBeGreaterThanOrEqual(300);
+    expect(elapsed).toBeLessThan(400);
+    expect(value.structuredContent).toMatchObject({ screen: ">>> 6*7\n42\n>>> 1+1\n2\n>>> " });
+  });
+
+  test("rejects unknown keys before sending anything", async () => {
+    const { terminal } = await startTerminal();
+    await expect(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "a", keys: ["Enter", "Ctrl+C", "F1"] },
+        undefined,
+        undefined,
+        root,
+      ),
+    ).rejects.toThrow("Unknown keys: Ctrl+C, F1. Valid keys: Enter, Escape,");
+    expect(terminal.typed).toEqual([]);
+  });
+
+  test("hides other sessions' Terminals and rejects input to Background jobs", async () => {
+    await startTerminal();
+    await expect(
+      harness.send.execute("call", { id: "t1" }, undefined, undefined, toolContext("child")),
+    ).rejects.toThrow("Unknown id t1");
+    harness.runtime.registry.createJob("root", "sleep 9", () => ({
+      logPath: "/tmp/b1.log",
+      stop: () => {},
+      tail: () => "",
+      removeLog: async () => {},
+    }));
+    await expect(
+      harness.send.execute("call", { id: "b1", text: "x" }, undefined, undefined, root),
+    ).rejects.toThrow("b1 is a Background job, which accepts no input");
+  });
+});
+
+describe("terminal_stop and terminal_list", () => {
+  test("stop returns the final screen and forgets the Terminal", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = [">>> "];
+    });
+    terminal.logLines = [">>> ", "older", ">>> exit()"];
+    terminal.screen = ">>> exit()";
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(terminal.stopCalls).toBe(1);
+    expect(value.structuredContent).toEqual({
+      id: "t1",
+      kind: "terminal",
+      state: "exited",
+      signal: "SIGKILL",
+      changed: true,
+      screen: ">>> exit()",
+      scrolled_off: ">>> \nolder",
+    });
+    expect(textOf(value)).toBe(
+      "Terminal t1 stopped.\n--- scrolled off ---\n>>> \nolder\n--- final screen ---\n>>> exit()",
+    );
+    expect(harness.runtime.registry.entries()).toEqual([]);
+  });
+
+  test("a stopped Terminal's full output file lasts until its session shuts down", async () => {
+    const rows = Array.from({ length: 2_100 }, (_, index) => `row ${index}`);
+    const { terminal } = await startTerminal();
+    terminal.logLines = [...rows, ">>> "];
+    terminal.screen = ">>> ";
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    const path = value.details.full_output_path ?? "";
+    expect(textOf(value)).toContain(`Full output: ${path}]`);
+    expect(existsSync(path)).toBe(true);
+    await harness.runtime.registry.shutdownOwner("child");
+    expect(existsSync(path)).toBe(true);
+    await harness.runtime.registry.shutdownOwner("root");
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("list shows Terminals and a separate background_jobs section", async () => {
+    await startTerminal();
+    harness.runtime.registry.createJob("root", "npm test", () => ({
+      logPath: "/tmp/pi-termctrl/b1.log",
+      stop: () => {},
+      tail: () => "",
+      removeLog: async () => {},
+    }));
+    harness.runtime.registry.jobExited("b1", { code: 0, signal: null });
+    const { value } = await timed(harness.list.execute("call", {}, undefined, undefined, root));
+    expect(value.structuredContent).toEqual({
+      terminals: [{ id: "t1", command: "python3", state: "running", age_seconds: 0 }],
+      background_jobs: [
+        {
+          id: "b1",
+          command: "npm test",
+          state: "exited",
+          exit_code: 0,
+          age_seconds: 0,
+          log_path: "/tmp/pi-termctrl/b1.log",
+        },
+      ],
+    });
+    expect(textOf(value)).toBe(
+      "Terminals:\nt1 running · 0s · python3\n\nBackground jobs:\nb1 exited with code 0 · 0s · npm test · log /tmp/pi-termctrl/b1.log",
+    );
+    expect(harness.runtime.registry.get("b1")?.seen).toBe(true);
+  });
+});
