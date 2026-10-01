@@ -273,7 +273,7 @@ function backgroundResult(outcome: BackgroundOutcome, startedAt: number) {
   if (truncation.truncated) {
     text += `\n\n[Showing lines ${truncation.totalLines - truncation.outputLines + 1}-${truncation.totalLines} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} or ${DEFAULT_MAX_LINES} line limit). Full output: ${outcome.logPath}]`;
   }
-  const status = `Command moved to the background as ${outcome.id}. Its output so far and all later output go to ${outcome.logPath}; read that file to check progress, and stop it with terminal_stop {"id": "${outcome.id}"}. You will get an Exit notification when it ends.`;
+  const status = `Command moved to the background as ${outcome.id}. Its output so far and all later output go to ${outcome.logPath}. You will get an Exit notification when it ends, so do not poll the log in a loop; to block until it ends, call terminal_wait. Stop it with terminal_stop {"id": "${outcome.id}"}.`;
   return {
     content: [{ type: "text" as const, text: text === "" ? status : `${text}\n\n${status}` }],
     details: undefined,

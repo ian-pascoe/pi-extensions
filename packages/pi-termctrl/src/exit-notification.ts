@@ -17,6 +17,7 @@ const ExitNotificationDetailsSchema = Type.Object({
       exit_code: Type.Union([Type.Number(), Type.Null()]),
       signal: Type.Union([Type.String(), Type.Null()]),
       duration_ms: Type.Number(),
+      log_path: Type.Optional(Type.String()),
     }),
   ),
 });
@@ -41,7 +42,8 @@ export function formatDuration(milliseconds: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-function lastLines(output: string, count: number): string {
+/** The last `count` lines of `output`, without trailing blank lines. */
+export function lastLines(output: string, count: number): string {
   if (count === 0) return "";
   const lines = output.replace(/\n+$/u, "").split("\n");
   return lines.slice(-count).join("\n");
@@ -50,6 +52,24 @@ function lastLines(output: string, count: number): string {
 function headline(notice: ExitNotice): string {
   const label = notice.kind === "terminal" ? "Terminal" : "Background job";
   return `${label} ${notice.id} ${describeExitStatus(notice.exit)} after ${formatDuration(notice.durationMs)}: ${notice.command}`;
+}
+
+/** Where the agent finds the rest of an exited entry's output. */
+function pointer(notice: ExitNotice): string {
+  if (notice.logPath !== undefined) return `Log: ${notice.logPath}`;
+  return `terminal_send {"id": "${notice.id}"} returns its final screen.`;
+}
+
+/**
+ * Describe one exit: what ended and how, where its full output is, and its last `tailLines` lines.
+ * Exit notifications and `terminal_wait` results share this text.
+ */
+export function formatExitNotice(notice: ExitNotice, tailLines: number): string {
+  const head = `${headline(notice)}\n${pointer(notice)}`;
+  const tail = lastLines(notice.output, tailLines);
+  if (tail === "") return head;
+  const source = notice.kind === "terminal" ? "final screen" : "output";
+  return `${head}\nLast lines of ${source}:\n${tail}`;
 }
 
 /** The text and details of one Exit notification message. */
@@ -63,26 +83,21 @@ export function formatExitNotification(
   notices: readonly ExitNotice[],
   tailLines: number,
 ): ExitNotificationMessage {
-  const content = notices
-    .map((notice) => {
-      const tail = lastLines(notice.output, tailLines);
-      const source = notice.kind === "terminal" ? "final screen" : "output";
-      return tail === ""
-        ? headline(notice)
-        : `${headline(notice)}\nLast lines of ${source}:\n${tail}`;
-    })
-    .join("\n\n");
   return {
-    content,
+    content: notices.map((notice) => formatExitNotice(notice, tailLines)).join("\n\n"),
     details: {
-      exits: notices.map((notice) => ({
-        id: notice.id,
-        kind: notice.kind === "job" ? ("background_job" as const) : ("terminal" as const),
-        command: notice.command,
-        exit_code: notice.exit.code,
-        signal: notice.exit.signal,
-        duration_ms: notice.durationMs,
-      })),
+      exits: notices.map((notice) => {
+        const exit: ExitNotificationDetails["exits"][number] = {
+          id: notice.id,
+          kind: notice.kind === "job" ? "background_job" : "terminal",
+          command: notice.command,
+          exit_code: notice.exit.code,
+          signal: notice.exit.signal,
+          duration_ms: notice.durationMs,
+        };
+        if (notice.logPath !== undefined) exit.log_path = notice.logPath;
+        return exit;
+      }),
     },
   };
 }

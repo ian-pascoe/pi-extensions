@@ -22,6 +22,7 @@ const notices = [
     exit: { code: null, signal: "SIGKILL" },
     durationMs: 800,
     output: "",
+    logPath: "/tmp/pi-termctrl/1-b2.log",
   },
 ];
 
@@ -34,7 +35,7 @@ describe("Exit notifications", () => {
   test("formats each exit with the last lines of its output", () => {
     const message = formatExitNotification(notices, 2);
     expect(message.content).toBe(
-      "Terminal t1 exited with code 1 after 1m 5s: npm run dev\nLast lines of final screen:\ntwo\nthree\n\nBackground job b2 ended by SIGKILL after 800ms: sleep 100",
+      'Terminal t1 exited with code 1 after 1m 5s: npm run dev\nterminal_send {"id": "t1"} returns its final screen.\nLast lines of final screen:\ntwo\nthree\n\nBackground job b2 ended by SIGKILL after 800ms: sleep 100\nLog: /tmp/pi-termctrl/1-b2.log',
     );
     expect(message.details).toEqual({
       exits: [
@@ -53,6 +54,7 @@ describe("Exit notifications", () => {
           exit_code: null,
           signal: "SIGKILL",
           duration_ms: 800,
+          log_path: "/tmp/pi-termctrl/1-b2.log",
         },
       ],
     });

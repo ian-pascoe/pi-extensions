@@ -29,6 +29,7 @@ For a local checkout, run `pi -e ./packages/pi-termctrl/src/index.ts`.
 | `terminal_send`  | `id`, `text?`, `keys?`, `wait_for_text?`, `wait_ms?`      |
 | `terminal_stop`  | `id`: a Terminal id (`t1`) or Background job id (`b1`)    |
 | `terminal_list`  | none                                                      |
+| `terminal_wait`  | `ids?`, `wait_ms?` (default and maximum 300000)           |
 
 `terminal_start` runs `command` through the shell Pi's `bash` uses (the
 `shellPath` setting, otherwise Pi's default bash), applies `shellCommandPrefix`,
@@ -87,6 +88,15 @@ or their session shuts down. `terminal_list` lists the caller's Terminals and,
 in a separate `background_jobs` section, its Background jobs with their log
 paths.
 
+`terminal_wait` blocks until one of the caller's Terminals or Background jobs
+exits: those listed in `ids`, otherwise every one still running. It returns
+every exit by then, in the same form as an Exit notification, plus what is still
+running, and those exits send no Exit notification. It also returns when
+`wait_ms` runs out, when the call is aborted, or as soon as a message is queued
+for the agent, such as the user steering or another entry's Exit notification;
+a watched entry that exits after that is notified as usual. With nothing to
+wait for it returns at once. Terminal exits are noticed within about 500 ms.
+
 ## `bash` replacement
 
 With `termctrl.replaceBash` (default `true`), Pi Termctrl replaces Pi's `bash`
@@ -106,9 +116,10 @@ older output becomes an omission line in the log. Once backgrounded, a
 command's `timeout` is cleared, Esc and turn aborts no
 longer reach it, and its output so far and all later output go to
 `$TMPDIR/pi-termctrl/<pid>-<id>.log`. The result says
-`Command moved to the background as b<n>`, includes the output so far, and
-gives the log path; read the log with `read` and stop the job with
-`terminal_stop`. Its structured result follows Pi's `bash` output schema, except
+`Command moved to the background as b<n>`, includes the output so far, gives
+the log path, and tells the agent not to poll the log but to wait for the Exit
+notification or call `terminal_wait`; read the log with `read` and stop the job
+with `terminal_stop`. Its structured result follows Pi's `bash` output schema, except
 that `exit_code` is absent and `background: { id, log_path }` is present.
 
 A Background job's log is deleted when the job is stopped, when the user
@@ -124,11 +135,16 @@ backgrounding paths do not exist.
 
 When a Terminal or Background job exits and the agent has neither seen the exit
 in a `terminal_*` result nor stopped it, Pi Termctrl sends an Exit notification:
-the id, command, exit code or signal, duration, and the last
-`termctrl.exitTailLines` lines of the final screen or log. Exits in the same tick
-share one message. It steers a working agent and starts a turn when the agent is
-idle. `terminal_start {notify: false}` opts a Terminal out. Notifications go
-only to the session that started the entry, and wait across `/reload`.
+the id, command, exit code or signal, duration, where to find the full output
+(a Background job's log path, or `terminal_send` for a Terminal's final screen),
+and the last `termctrl.exitTailLines` lines of the final screen or log. Seeing
+a Terminal running in a `terminal_*` result does not count as seeing its exit.
+Exits reported by `terminal_wait` are not notified again. Exits in the same tick
+share one message. While the agent works, notifications wait for the end of its
+current turn, then steer it, so an exit a tool call in that turn reported is
+not notified. When the agent is idle, a notification starts a turn.
+`terminal_start {notify: false}` opts a Terminal out. Notifications go only to
+the session that started the entry, and wait across `/reload`.
 
 ## `/ps` and footer
 
@@ -184,7 +200,8 @@ GNU/Linux on arm64 or x64 through optional dependencies. Set `TERMCTRL_BINARY`
 to use another binary. Where no binary resolves (Windows, musl, or
 `--omit=optional`), Pi Termctrl shows one diagnostic and registers no
 `terminal_start` or `terminal_send`; the `bash` replacement, Background jobs,
-`terminal_stop` and `terminal_list` keep working wherever Pi's `bash` does.
+`terminal_stop`, `terminal_list` and `terminal_wait` keep working wherever Pi's
+`bash` does.
 
 Not supported: attaching to or taking over a Terminal, recordings, mouse input,
 resize, raw bytes, persistence across Pi restarts, and graceful `SIGTERM`

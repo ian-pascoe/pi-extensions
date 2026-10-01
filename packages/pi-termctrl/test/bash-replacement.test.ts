@@ -113,7 +113,10 @@ beforeEach(async () => {
   ui = new FakeUi();
   registry = TermctrlRegistry.acquire({ createDriver: new FakeDriverFactory().create });
   notices = [];
-  registry.bindOwner("root", (batch) => notices.push([...batch]));
+  registry.bindOwner("root", (batch) => {
+    notices.push([...batch]);
+    return true;
+  });
 });
 
 afterEach(async () => {

@@ -17,7 +17,7 @@ import type {
   TermctrlRegistry,
   TerminalEntry,
 } from "./termctrl-registry.js";
-import { describeExitStatus } from "./exit-notification.js";
+import { describeExitStatus, formatExitNotice, lastLines } from "./exit-notification.js";
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { TerminalViewport } from "./pi-termctrl-settings.js";
 import type { TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
@@ -30,6 +30,8 @@ export const START_WAIT_MS = 2_000;
 export const INPUT_WAIT_MS = 500;
 export const POLL_WAIT_MS = 30_000;
 export const MAX_WAIT_MS = 5 * 60_000;
+/** How often `terminal_wait` checks for a queued message, which raises no event it can await. */
+export const PENDING_CHECK_MS = 100;
 
 const CONTROL_KEYS = Array.from(
   { length: 26 },
@@ -158,7 +160,10 @@ const StartParameters = Type.Object(
     cwd: Type.Optional(Type.String({ description: "Working directory (default: current)" })),
     wait_ms: WaitMsSchema,
     notify: Type.Optional(
-      Type.Boolean({ description: "Send an Exit notification when it exits (default true)" }),
+      Type.Boolean({
+        description:
+          "Send an Exit notification when it exits (default true); to block until it exits, use terminal_wait",
+      }),
     ),
   },
   { additionalProperties: false },
@@ -187,6 +192,66 @@ const StopParameters = Type.Object(
 );
 
 const ListParameters = Type.Object({}, { additionalProperties: false });
+
+const WaitParameters = Type.Object(
+  {
+    ids: Type.Optional(
+      Type.Array(Type.String(), {
+        description:
+          "Terminal or Background job ids to wait for (default: all of yours still running)",
+      }),
+    ),
+    wait_ms: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        description: "Maximum milliseconds to wait (default and maximum 300000)",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const EntryKindSchema = Type.Union([Type.Literal("terminal"), Type.Literal("background_job")]);
+
+const WaitResultSchema = Type.Object({
+  reason: Type.Union(
+    [
+      Type.Literal("exited"),
+      Type.Literal("timeout"),
+      Type.Literal("message"),
+      Type.Literal("aborted"),
+      Type.Literal("nothing_running"),
+    ],
+    {
+      description:
+        "Why the wait ended: an exit, wait_ms, a message queued for you, cancellation, or nothing to wait for",
+    },
+  ),
+  exited: Type.Array(
+    Type.Object({
+      id: Type.String(),
+      kind: EntryKindSchema,
+      command: Type.String(),
+      exit_code: Type.Optional(Type.Number()),
+      signal: Type.Optional(Type.String()),
+      duration_ms: Type.Number(),
+      output: Type.String({
+        description: "Last lines of a Terminal's final screen or a Background job's output",
+      }),
+      log_path: Type.Optional(Type.String({ description: "Background job only: its log" })),
+    }),
+  ),
+  running: Type.Array(
+    Type.Object({
+      id: Type.String(),
+      kind: EntryKindSchema,
+      command: Type.String(),
+      age_seconds: Type.Number(),
+    }),
+  ),
+});
+type WaitResult = Static<typeof WaitResultSchema>;
+type WaitReason = WaitResult["reason"];
 
 /** Clamp a requested wait to the fixed 0 to 5 minute range. */
 export function clampWait(requested: number | undefined, fallback: number): number {
@@ -686,6 +751,142 @@ function listLine(entry: TermctrlEntry, now: number): string {
   const age = Math.round((now - entry.startedAt) / 1000);
   const log = entry.kind === "job" ? ` · log ${entry.child.logPath}` : "";
   return `${entry.id} ${state} · ${age}s · ${entry.command}${log}`;
+}
+
+/** Session-scoped values `terminal_wait` reads at call time. */
+export interface TerminalWaitRuntime {
+  readonly registry: TermctrlRegistry;
+  readonly exitTailLines: () => number;
+}
+
+/** The entries one `terminal_wait` call watches: the listed ids, or every running entry. */
+function waitTargets(
+  registry: TermctrlRegistry,
+  owner: string,
+  ids: readonly string[] | undefined,
+): TermctrlEntry[] {
+  if (ids === undefined) {
+    // An exit whose Exit notification is still queued has not reached the agent yet.
+    return registry.ownedEntries(owner).filter((entry) => entry.state === "running" || !entry.seen);
+  }
+  const targets = new Map<string, TermctrlEntry>();
+  for (const id of ids) {
+    const entry = registry.find(owner, id);
+    if (entry === undefined) throw unknownId(id);
+    targets.set(id, entry);
+  }
+  return [...targets.values()];
+}
+
+/** Wait until a target exits, the wait runs out, the call is aborted, or a message is queued. */
+function awaitExit(
+  registry: TermctrlRegistry,
+  targets: readonly TermctrlEntry[],
+  waitMs: number,
+  signal: AbortSignal | undefined,
+  hasPendingMessages: () => boolean,
+): Promise<WaitReason> {
+  const deadline = Date.now() + waitMs;
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const check = () => {
+      let reason: WaitReason | undefined;
+      if (targets.some((entry) => entry.state === "exited")) reason = "exited";
+      else if (signal?.aborted === true) reason = "aborted";
+      else if (hasPendingMessages()) reason = "message";
+      else if (Date.now() >= deadline) reason = "timeout";
+      if (reason === undefined) {
+        clearTimeout(timer);
+        timer = setTimeout(check, Math.max(0, Math.min(PENDING_CHECK_MS, deadline - Date.now())));
+        return;
+      }
+      clearTimeout(timer);
+      unsubscribe?.();
+      signal?.removeEventListener("abort", check);
+      resolve(reason);
+    };
+    unsubscribe = registry.onChange(check);
+    signal?.addEventListener("abort", check, { once: true });
+    check();
+  });
+}
+
+const WAIT_REASON_TEXT = {
+  timeout: (waitMs) => `Nothing exited within ${Math.round(waitMs / 1000)}s.`,
+  message: () => "Returned early: a message is waiting for you.",
+  aborted: () => "Wait cancelled.",
+  nothing_running: () => "Nothing to wait for: you have no running Terminals or Background jobs.",
+} satisfies Record<Exclude<WaitReason, "exited">, (waitMs: number) => string>;
+
+/** `terminal_wait`: block until a Terminal or Background job exits. */
+export function createTerminalWaitTool(runtime: TerminalWaitRuntime) {
+  const { registry } = runtime;
+  return defineTool<typeof WaitParameters, WaitResult>({
+    name: "terminal_wait",
+    label: "terminal_wait",
+    description:
+      "Wait until one of your Terminals or Background jobs exits, then return every exit so far and what is still running. Returns early when wait_ms (default 300000) runs out or a message is queued for you. Exits it returns send no Exit notification.",
+    promptSnippet: "Wait for a Terminal or Background job to exit",
+    promptGuidelines: [
+      "Do not poll a Background job's log or a Terminal in a loop to learn when it finishes: keep working and rely on its Exit notification, or call terminal_wait when nothing else can proceed.",
+    ],
+    parameters: WaitParameters,
+    outputSchema: WaitResultSchema,
+    async execute(_toolCallId, params, signal, _onUpdate, context) {
+      const owner = ownerOf(context);
+      const targets = waitTargets(registry, owner, params.ids);
+      const waitMs = clampWait(params.wait_ms, MAX_WAIT_MS);
+      let reason: WaitReason = "nothing_running";
+      const result: WaitResult = { reason, exited: [], running: [] };
+      const parts: string[] = [];
+      if (targets.length > 0) {
+        const release = registry.watch(targets);
+        try {
+          reason = await awaitExit(registry, targets, waitMs, signal, () =>
+            context.hasPendingMessages(),
+          );
+          const tailLines = runtime.exitTailLines();
+          for (const entry of targets) {
+            const notice = registry.noticeFor(entry);
+            if (notice === undefined) continue;
+            registry.markSeen(entry.id);
+            parts.push(formatExitNotice(notice, tailLines));
+            const exited: WaitResult["exited"][number] = {
+              id: notice.id,
+              kind: notice.kind === "job" ? "background_job" : "terminal",
+              command: notice.command,
+              ...exitFields(notice.exit),
+              duration_ms: notice.durationMs,
+              output: lastLines(notice.output, tailLines),
+            };
+            if (notice.logPath !== undefined) exited.log_path = notice.logPath;
+            result.exited.push(exited);
+          }
+        } finally {
+          release();
+        }
+      }
+      result.reason = reason;
+      if (reason !== "exited") parts.unshift(WAIT_REASON_TEXT[reason](waitMs));
+      const now = Date.now();
+      const running = registry.ownedEntries(owner).filter((entry) => entry.state === "running");
+      result.running = running.map((entry) => ({
+        id: entry.id,
+        kind: entry.kind === "job" ? "background_job" : "terminal",
+        command: entry.command,
+        age_seconds: Math.round((now - entry.startedAt) / 1000),
+      }));
+      if (running.length > 0) {
+        parts.push(`Still running:\n${running.map((entry) => listLine(entry, now)).join("\n")}`);
+      }
+      return {
+        content: [{ type: "text" as const, text: parts.join("\n\n") }],
+        details: result,
+        structuredContent: result,
+      };
+    },
+  });
 }
 
 /** `terminal_list`: list the caller's Terminals and Background jobs. */
