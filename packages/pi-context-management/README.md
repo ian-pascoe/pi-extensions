@@ -31,6 +31,8 @@ Notes use labels rather than filesystem paths. A session branch may hold up to 1
 
 History is read-only and limited to recorded entries on the selected branch. Forks inherit entries on their selected path and then diverge; abandoned siblings and unrelated sessions are excluded. Context-only Child Agent inheritance does not copy the source Notes/History store, so an inherited reference may be unavailable locally. Foreign references resolve only when a persisted owned record proves the issuer had that entry; otherwise browse the current branch for a fresh reference. Reads do not open arbitrary external spill paths or reconstruct unavailable originals.
 
+Tool `annotations` (MCP semantics, reported by `pi.getAllTools()` and never sent to model providers) are all closed-world. `context_history` is read-only. `context_notes` and `context_rollover` are not read-only, but are non-destructive and not idempotent: Notes and Handoffs append to the session journal and earlier values stay readable through History.
+
 ## Transcript previews
 
 Note writes/appends and Rollover Handoffs display their text as tool arguments stream in. Collapsed previews use at most eight rendered lines, including the heading and any omission notice, and follow the newest text. Expand the tool output to read the full text. Completed writes and Rollover requests retain the preview; a saved Handoff still indicates a request, not a completed checkpoint. Other operations keep their compact summaries.

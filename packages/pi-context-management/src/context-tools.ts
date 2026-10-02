@@ -117,6 +117,12 @@ export function registerContextTools(
     description:
       "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
     parameters: HistoryParameters,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(
@@ -215,6 +221,12 @@ export function registerContextTools(
     description:
       "Session-branch Markdown Notes. Actions list/read/write/append/delete/search. Names are labels, not paths. Reads use zero-based UTF-16 offsets and return at most 2000 units; lists return at most 20 Notes. Search is case-sensitive literal text. Forks inherit Notes; plain context-only child inheritance does not copy the store.",
     parameters: NotesParameters,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(

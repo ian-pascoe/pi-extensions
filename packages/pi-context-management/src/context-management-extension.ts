@@ -301,6 +301,12 @@ export default function contextManagement(pi: ExtensionAPI): void {
     description:
       "Save an agent-written Handoff and request an immediate native Context Checkpoint after this tool batch. Must be a standalone direct tool call; never call it from a codemode script.",
     parameters: RolloverParameters,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(
