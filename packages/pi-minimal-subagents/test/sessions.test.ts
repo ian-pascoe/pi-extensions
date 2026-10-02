@@ -1262,6 +1262,152 @@ export default function (pi) {
     30_000,
   );
 
+  it.each(["codemode", "codemode-only"] as const)(
+    "hands codemode scripts partial subagent_delete failures as structured data (%s)",
+    async (mode) => {
+      const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-partial-delete-"));
+      temporaryDirectories.push(directory);
+      const requestsPath = join(directory, "requests.jsonl");
+      const providerPath = join(directory, "offline-provider.ts");
+      writeFileSync(requestsPath, "");
+      const code =
+        'const result = await tools.subagent_delete({ agent_id: "victim" }); return { result };';
+      writeFileSync(
+        providerPath,
+        `import { appendFileSync } from "node:fs";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+export default function (pi) {
+  pi.registerProvider("provider", {
+    api: "openai-completions",
+    baseUrl: "http://127.0.0.1:1/v1",
+    apiKey: "offline-test-key",
+    models: [${JSON.stringify(TEST_MODEL)}],
+    streamSimple(model, context) {
+      appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify(context) + "\\n");
+      const call = context.messages.at(-1)?.role === "user";
+      const message = {
+        role: "assistant", api: model.api, provider: model.provider, model: model.id,
+        timestamp: Date.now(), usage: ${JSON.stringify(ZERO_USAGE)},
+        content: call
+          ? [{ type: "toolCall", id: "delete-" + context.messages.length, name: "codemode", arguments: { code: ${JSON.stringify(code)} } }]
+          : [{ type: "text", text: "done" }],
+        stopReason: call ? "toolUse" : "stop",
+      };
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason, message }));
+      return stream;
+    },
+  });
+}
+`,
+      );
+      writeFileSync(
+        join(directory, "settings.json"),
+        JSON.stringify({
+          extensions: [providerPath],
+          minimalSubagents: { baseToolset: ["codemode"], readToolset: [], modifyToolset: [] },
+          codemode: { mode: mode === "codemode-only" ? "only" : "on" },
+          compaction: { enabled: false },
+          retry: { enabled: false },
+        }),
+      );
+      const failedDelete = {
+        agent_id: "victim",
+        recursive: true,
+        deleted_agent_ids: ["victim.leaf"],
+        trashed_session_files: [],
+        failures: [{ agent_id: "victim", error: "disk full" }],
+      };
+      const config = resolveMinimalSubagentsSettings(
+        SettingsManager.create(directory, directory, { projectTrusted: true }),
+        ["provider/model"],
+      );
+      expect(config.warnings).toEqual([]);
+      const coordinator: MinimalSubagentsCoordinator = new MinimalSubagentsCoordinator({
+        toolsets: config.toolsets,
+        sessions: new PiAgentSessionFactory({
+          cwd: directory,
+          agentDir: directory,
+          sessionDir: directory,
+          rootSessionId: "root",
+          extensionEntrypoint: join(directory, "minimal-subagents.ts"),
+          models: [TEST_MODEL],
+          eligibleModelIds: ["provider/model"],
+          modelScopeRestricted: false,
+          availableToolNames: ["codemode"],
+          projectTrusted: true,
+          getCoordinatorTools: (callerId) =>
+            createCoordinatorToolDefinitions({
+              // Real coordinator, except deletion reports a partial failure.
+              coordinator: {
+                spawn: (...args) => coordinator.spawn(...args),
+                inspectStatus: (...args) => coordinator.inspectStatus(...args),
+                sendAgentMessage: (...args) => coordinator.sendAgentMessage(...args),
+                wait: (...args) => coordinator.wait(...args),
+                status: (...args) => coordinator.status(...args),
+                cancel: (...args) => coordinator.cancel(...args),
+                delete: async () => failedDelete,
+              },
+              callerId,
+              allowFanoutTools: true,
+              schemas: createCoordinatorToolSchemas(["provider/model"]),
+              captureCaller: () => {
+                throw new Error("Test child must not spawn");
+              },
+            }),
+        }),
+        registry: { rootSessionId: "root", append: () => undefined },
+        root: {
+          queueCoordinatorMessage: async () => undefined,
+          isIdle: () => true,
+          hasDeliveryEvidence: () => false,
+        },
+        automaticDeliveryGraceMs: 0,
+      });
+      try {
+        await coordinator.spawn(
+          "root",
+          { agent_id: "script-child", task: "Delete", tools: "none", project_context: "omit" },
+          {
+            messages: [],
+            model: "provider/model",
+            thinkingLevel: "medium",
+            ordinaryTools: [],
+            capabilityCeiling: ["codemode"],
+            spawnEntryId: "entry",
+          },
+        );
+        await expect(coordinator.wait("root", "script-child", 10_000)).resolves.toMatchObject({
+          event: "turn",
+          status: "completed",
+          output: "done",
+        });
+        const requests: { messages: Message[] }[] = readFileSync(requestsPath, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(requests).toHaveLength(2);
+        // The partial failure does not alter the ordered declared tools or system prompt.
+        expect(getCurrentTools(requests[1]!.messages)).toEqual(
+          getCurrentTools(requests[0]!.messages),
+        );
+        expect(getCurrentSystemPrompt(requests[1]!.messages)).toEqual(
+          getCurrentSystemPrompt(requests[0]!.messages),
+        );
+        const result = requests[1]?.messages.at(-1);
+        // The script receives the declared object instead of a data-less rejection.
+        expect(result).toMatchObject({ role: "toolResult", toolName: "codemode", isError: false });
+        const content = result?.role === "toolResult" ? result.content : [];
+        const output = content.at(-1);
+        expect(JSON.parse(output?.type === "text" ? output.text : "")).toEqual({
+          result: failedDelete,
+        });
+      } finally {
+        await coordinator.shutdown();
+      }
+    },
+  );
+
   it("keeps tools loaded by tool_search declared after a child runtime reopens", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-tool-search-"));
     temporaryDirectories.push(directory);

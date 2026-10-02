@@ -260,7 +260,11 @@ tools while the Launch Contract continues to record the originally granted
 capability names.
 
 `agent_message` reports whether a message was delivered through an active
-parent wait, queued for the recipient, or failed. `subagent_wait` can return an
+parent wait, queued for the recipient, or failed. A failed delivery and a
+partially failed `subagent_delete` return an error result (`isError: true`) that
+still carries the declared structured output, so the model sees an error while
+codemode scripts receive the `failures` or `error` data instead of a data-less
+rejection. `subagent_wait` can return an
 intermediate Wait Event containing a Coordination Message before the child turn
 settles. That event claims only its message, so later unconsumed messages and the
 terminal result retain automatic fallback. If the turn has already settled, one
