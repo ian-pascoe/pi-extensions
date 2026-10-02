@@ -52,16 +52,42 @@ export async function truncateLspOutputText(
   };
 }
 
-/** Validate normalized details, truncate model-visible text, and spill every complete oversized result. */
+/** JSON-safe structured result Pi hands to programmatic callers such as codemode scripts. */
+export type LspStructuredContent = NonNullable<AgentToolResult<undefined>["structuredContent"]>;
+
+/** Structured fields of one result before the output envelope is added. */
+export type LspStructuredFields = Readonly<Record<string, LspStructuredContent>>;
+
+/** Parse one object serialized by `formatLspToolValue` back into JSON-safe structured fields. */
+export function lspStructuredFields(text: string): LspStructuredFields {
+  const fields: LspStructuredFields = JSON.parse(text);
+  return fields;
+}
+
+/** Parse one value serialized by `formatLspToolValue` back into its JSON-safe structured form. */
+export function lspStructuredValue(text: string): LspStructuredContent {
+  const value: LspStructuredContent = JSON.parse(text);
+  return value;
+}
+
+/**
+ * Validate normalized details, truncate model-visible text, and spill every complete oversized
+ * result. Structured content stays complete and reports truncation and the Result Spill path.
+ */
 export async function createLspToolOutput(
   text: string,
   details: LspToolResultDetails,
+  structured: LspStructuredFields,
   sessionFiles: LspSessionFiles,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   const normalizedDetails = Value.Parse(LspToolResultDetailsSchema, details);
   const truncated = await truncateLspOutputText(text, sessionFiles, "output");
   if (truncated.spillPath === undefined) {
-    return { content: [{ type: "text", text }], details: normalizedDetails };
+    return {
+      content: [{ type: "text", text }],
+      details: normalizedDetails,
+      structuredContent: { ...structured, truncated: false },
+    };
   }
 
   const detailsWithSpill =
@@ -74,5 +100,6 @@ export async function createLspToolOutput(
   return {
     content: [{ type: "text", text: truncated.text }],
     details: detailsWithSpill,
+    structuredContent: { ...structured, truncated: true, spill_path: truncated.spillPath },
   };
 }

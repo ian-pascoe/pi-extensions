@@ -4,9 +4,12 @@ import { fileURLToPath } from "node:url";
 import type {
   AgentToolResult,
   ExtensionContext,
+  ToolAnnotations,
   ToolDefinition,
+  ToolExposure,
+  ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
   CallHierarchyIncomingCallsRequest,
@@ -71,11 +74,19 @@ import {
 } from "./lsp-server-manager.js";
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import {
-  LspToolOperationRequirements,
-  LspToolParametersSchema,
-  LspToolProviderParametersSchema,
+  LSP_OPERATION_NAMES,
+  LspApplyOutputSchema,
+  LspCodeActionsOutputSchema,
+  LspOperationParametersSchemas,
+  LspPreviewOutputSchema,
+  LspReadOutputSchema,
+  LspServerOutputSchema,
+  LspStatusOutputSchema,
   LspWorkspaceEditPreviewRecordSchema,
   MutationManifestSchema,
+  lspToolName,
+  type LspOperationName,
+  type LspOperationParameters,
   type LspToolParameters,
   type LspToolResultDetails,
   type LspWorkspaceEditPreviewRecord,
@@ -85,8 +96,15 @@ import {
 import {
   createLspToolOutput as createBaseLspToolOutput,
   formatLspToolValue,
+  lspStructuredFields,
+  lspStructuredValue,
+  type LspStructuredFields,
 } from "./lsp-tool-output.js";
-import { renderLspToolCall, renderLspToolResult } from "./lsp-tool-rendering.js";
+import {
+  humanizeLspOperation,
+  renderLspToolCall,
+  renderLspToolResult,
+} from "./lsp-tool-rendering.js";
 import {
   LspWorkspaceEditError,
   type LspMutationManifest,
@@ -108,7 +126,6 @@ const ProtocolFoldingRangeSchema = Type.Object(
 
 const ApplyPreviewArgumentsSchema = Type.Object(
   {
-    operation: Type.Literal("apply"),
     preview_id: Type.String({ minLength: 1 }),
     mutation_manifest: Type.Optional(Type.Unknown()),
   },
@@ -179,15 +196,13 @@ export interface LspToolServerClient {
   shutdown(): Promise<void>;
 }
 
-/** Narrow Pi registration surface used to install exactly one LSP tool. */
+/** Narrow Pi registration surface used to install the LSP tools. */
 export interface LspToolRegistrar {
-  /** Register the session-bound strict LSP ToolDefinition. */
-  registerTool(
-    tool: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>,
-  ): void;
+  /** Register one session-bound strict LSP ToolDefinition. */
+  registerTool<TParams extends TSchema>(tool: ToolDefinition<TParams, LspToolResultDetails>): void;
 }
 
-/** Runtime owners used by the single registered Pi LSP tool. */
+/** Runtime owners shared by every registered Pi LSP tool. */
 export interface LspToolDependencies {
   /** Session-scoped lazy language-server registry. */
   readonly manager: LspServerManager<LspToolServerClient>;
@@ -197,10 +212,9 @@ export interface LspToolDependencies {
   readonly sessionFiles: LspSessionFiles;
 }
 
-type LspToolDefinition = ToolDefinition<
-  typeof LspToolProviderParametersSchema,
-  LspToolResultDetails
->;
+/** The registered ToolDefinition of one LSP operation. */
+export type LspToolDefinition<TOperation extends LspOperationName = LspOperationName> =
+  ToolDefinition<(typeof LspOperationParametersSchemas)[TOperation], LspToolResultDetails>;
 
 interface LspReadValue {
   readonly root_path: string;
@@ -232,6 +246,7 @@ function piLspFailureError(failures: readonly LspServerFailure[]): Error {
 async function createLspToolOutput(
   text: string,
   details: LspToolResultDetails,
+  structured: LspStructuredFields,
   dependencies: LspToolDependencies,
 ) {
   const previewRecords = dependencies.workspaceEdits.takeUnreportedPreviewRecords();
@@ -251,9 +266,17 @@ async function createLspToolOutput(
       : `\n\nServer Workspace Edit Preview${previewRecords.length === 1 ? "" : "s"}: ${previewRecords
           .map(({ preview_id: previewId }) => previewId)
           .join(", ")}`;
+  const structuredWithPreviews =
+    previewRecords.length === 0
+      ? structured
+      : {
+          ...structured,
+          server_preview_ids: previewRecords.map(({ preview_id: previewId }) => previewId),
+        };
   return createBaseLspToolOutput(
     `${text}${previewNotice}`,
     mergedDetails,
+    structuredWithPreviews,
     dependencies.sessionFiles,
   );
 }
@@ -265,24 +288,37 @@ async function readOutput(
 ) {
   const resolved = await result;
   requireReadSuccess(resolved);
+  const text = formatLspToolValue({
+    results: readOperationValue(resolved),
+    warnings: resolved.failures.map(({ message }) => message),
+  });
   return createLspToolOutput(
-    formatLspToolValue({
-      results: readOperationValue(resolved),
-      warnings: resolved.failures.map(({ message }) => message),
-    }),
+    text,
     operationDetails(operation, readOperationOutcomes(resolved)),
+    lspStructuredFields(text),
     dependencies,
   );
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Pi tool arguments are validated by the complete parameter schema at this ingress.
-function parseLspToolParameters(input: unknown): LspToolParameters {
+function parseLspOperationParameters<TOperation extends LspOperationName>(
+  operation: TOperation,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Tool arguments are validated by the operation's strict parameter schema at this ingress.
+  input: unknown,
+): LspOperationParameters<TOperation> {
   try {
-    return Value.Parse(LspToolParametersSchema, input);
+    return Value.Parse(LspOperationParametersSchemas[operation], input);
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     throw piLspError(`invalid tool arguments: ${message}`);
   }
+}
+
+function lspOperationCall<TOperation extends LspOperationName>(
+  operation: TOperation,
+  parameters: LspOperationParameters<TOperation>,
+): LspToolParameters {
+  // SAFETY: `parameters` was parsed by the strict schema of exactly `operation`, so the pair is the matching LspToolParameters member; TypeScript cannot correlate the generic key with the union.
+  return { operation, ...parameters } as LspToolParameters;
 }
 
 function absoluteLspFilePath(filePath: string, context: ExtensionContext): string {
@@ -494,6 +530,11 @@ async function normalizeProtocolResult(
   return Object.fromEntries(entries);
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Protocol fields such as titles are opaque until checked here.
+function protocolString(value: unknown): string | undefined {
+  return Value.Check(ProtocolStringSchema, value) ? value : undefined;
+}
+
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Capability values may be booleans or provider objects; only resolveProvider is inspected.
 function supportsResolveProvider(value: unknown): boolean {
   return protocolRecord(value)?.resolveProvider === true;
@@ -609,6 +650,12 @@ async function workspacePreviewOutput(
   return createLspToolOutput(
     `Workspace Edit Preview ${preview.preview_id}\n${preview.summary}`,
     details,
+    {
+      preview_id: preview.preview_id,
+      server_id: serverId,
+      summary: preview.summary,
+      mutation_manifest: manifest,
+    },
     dependencies,
   );
 }
@@ -982,8 +1029,8 @@ async function executeCodeActions(
   const results: {
     applicable: boolean;
     command?: unknown;
-    kind?: unknown;
-    title?: unknown;
+    kind?: string | undefined;
+    title?: string | undefined;
     mutation_manifest?: MutationManifest;
     preview_id?: string;
     summary?: string;
@@ -996,8 +1043,8 @@ async function executeCodeActions(
       results.push({
         applicable: false,
         command: record.command,
-        kind: record.kind,
-        title: record.title,
+        kind: protocolString(record.kind),
+        title: protocolString(record.title),
       });
       continue;
     }
@@ -1010,13 +1057,13 @@ async function executeCodeActions(
     previewRecords.push(preview);
     results.push({
       applicable: true,
-      kind: record.kind,
+      kind: protocolString(record.kind),
       mutation_manifest: normalizeStoreMutationManifest(
         dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
       ),
       preview_id: preview.preview_id,
       summary: preview.summary,
-      title: record.title,
+      title: protocolString(record.title),
     });
   }
   const details = operationDetails(
@@ -1024,14 +1071,20 @@ async function executeCodeActions(
     [{ server_id: route.serverId, outcome: "success" }],
     previewRecords,
   );
-  return createLspToolOutput(formatLspToolValue(results), details, dependencies);
+  const text = formatLspToolValue(results);
+  return createLspToolOutput(
+    text,
+    details,
+    { server_id: route.serverId, actions: lspStructuredValue(text) },
+    dependencies,
+  );
 }
 
 async function executeApplyPreview(
   dependencies: LspToolDependencies,
   parameters: Extract<LspToolParameters, { operation: "apply" }>,
   signal: AbortSignal | undefined,
-) {
+): Promise<AgentToolResult<LspToolResultDetails>> {
   const storeManifest = dependencies.workspaceEdits.prepareMutationManifest(parameters.preview_id);
   const canonicalManifest = normalizeStoreMutationManifest(storeManifest);
   if (
@@ -1054,17 +1107,29 @@ async function executeApplyPreview(
     ) {
       throw cause;
     }
-    return createLspToolOutput(
+    const changedPaths = [...cause.recoveryFailures].sort((left, right) =>
+      left.localeCompare(right),
+    );
+    // A partial failure is an error at its source; scripts still receive the structured result.
+    const output = await createLspToolOutput(
       cause.message,
       {
         kind: "workspace_edit_apply",
         preview_id: parameters.preview_id,
         mutation_manifest: canonicalManifest,
-        changed_paths: [...cause.recoveryFailures].sort((left, right) => left.localeCompare(right)),
+        changed_paths: changedPaths,
         state: "partial_failure",
+      },
+      {
+        preview_id: parameters.preview_id,
+        state: "partial_failure",
+        changed_paths: changedPaths,
+        mutation_manifest: canonicalManifest,
+        message: cause.message,
       },
       dependencies,
     );
+    return { ...output, isError: true };
   }
   const changedPaths = [
     ...result.changed_files,
@@ -1072,158 +1137,346 @@ async function executeApplyPreview(
     ...result.deleted_files,
     ...result.moved_files.flatMap((move) => [move.from, move.to]),
   ];
+  const sortedChangedPaths = [...new Set(changedPaths)].sort((left, right) =>
+    left.localeCompare(right),
+  );
   const details: Extract<LspToolResultDetails, { kind: "workspace_edit_apply" }> = {
     kind: "workspace_edit_apply",
     preview_id: parameters.preview_id,
     mutation_manifest: canonicalManifest,
-    changed_paths: [...new Set(changedPaths)].sort((left, right) => left.localeCompare(right)),
+    changed_paths: sortedChangedPaths,
     state: result.state,
   };
-  return createLspToolOutput(formatLspToolValue(result), details, dependencies);
+  const text = formatLspToolValue(result);
+  return createLspToolOutput(
+    text,
+    details,
+    {
+      ...lspStructuredFields(text),
+      changed_paths: sortedChangedPaths,
+      mutation_manifest: canonicalManifest,
+    },
+    dependencies,
+  );
 }
 
-/** Create the single strict Pi LSP ToolDefinition backed by the current session's runtime owners. */
-export function createLspToolDefinition(
+async function executeLspOperation(
+  dependencies: LspToolDependencies,
+  parameters: LspToolParameters,
+  context: ExtensionContext,
+  signal: AbortSignal | undefined,
+): Promise<AgentToolResult<LspToolResultDetails>> {
+  switch (parameters.operation) {
+    case "status": {
+      const status = dependencies.manager.getStatus();
+      const outcomes = status.servers.map((server): ServerOperationOutcome => {
+        const outcome: ServerOperationOutcome = {
+          server_id: server.serverId,
+          outcome: server.state === "unavailable" ? "unavailable" : "success",
+        };
+        if (server.error === undefined) return outcome;
+        return { ...outcome, message: server.error };
+      });
+      const text = formatLspToolValue({
+        servers: status.servers.map((server) => ({
+          error: server.error,
+          root_path: server.rootPath,
+          server_id: server.serverId,
+          state: server.state,
+        })),
+        warnings: status.warnings,
+      });
+      return createLspToolOutput(
+        text,
+        operationDetails("status", outcomes),
+        lspStructuredFields(text),
+        dependencies,
+      );
+    }
+    case "capabilities":
+    case "restart": {
+      const filePath = absoluteLspFilePath(parameters.file_path, context);
+      const resolution =
+        parameters.operation === "capabilities"
+          ? await dependencies.manager.getCapabilities(parameters.server_id, filePath)
+          : await dependencies.manager.restartServer(parameters.server_id, filePath);
+      if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
+      const text = formatLspToolValue({
+        capabilities: resolution.instance.client.capabilities,
+        root_path: resolution.instance.route.rootPath,
+        server_id: resolution.instance.route.serverId,
+      });
+      return createLspToolOutput(
+        text,
+        operationDetails(parameters.operation, [
+          { server_id: resolution.instance.route.serverId, outcome: "success" },
+        ]),
+        lspStructuredFields(text),
+        dependencies,
+      );
+    }
+    case "completion":
+    case "hover":
+    case "signature_help":
+    case "declaration":
+    case "goto_definition":
+    case "goto_type_definition":
+    case "goto_implementation":
+    case "find_references":
+    case "document_highlights":
+    case "call_hierarchy":
+    case "incoming_calls":
+    case "outgoing_calls":
+    case "type_hierarchy":
+    case "supertypes":
+    case "subtypes":
+    case "prepare_rename":
+      return readOutput(
+        parameters.operation,
+        executePositionRead(dependencies, parameters, context, signal),
+        dependencies,
+      );
+    case "diagnostics":
+    case "document_symbols":
+    case "document_links":
+    case "folding_ranges":
+    case "code_lenses":
+    case "document_colors":
+      return readOutput(
+        parameters.operation,
+        executeFileRead(dependencies, parameters, context, signal),
+        dependencies,
+      );
+    case "workspace_diagnostics":
+    case "workspace_symbols":
+      return readOutput(
+        parameters.operation,
+        executeWorkspaceRead(dependencies, parameters, context, signal),
+        dependencies,
+      );
+    case "selection_ranges":
+      return readOutput(
+        parameters.operation,
+        executeSelectionRanges(dependencies, parameters, context, signal),
+        dependencies,
+      );
+    case "inlay_hints":
+      return readOutput(
+        parameters.operation,
+        executeInlayHints(dependencies, parameters, context, signal),
+        dependencies,
+      );
+    case "format_document":
+    case "format_range":
+    case "format_on_type":
+      return executeFormattingPreview(dependencies, parameters, context, signal);
+    case "rename":
+      return executeRenamePreview(dependencies, parameters, context, signal);
+    case "code_actions":
+      return executeCodeActions(dependencies, parameters, context, signal);
+    case "apply":
+      return executeApplyPreview(dependencies, parameters, signal);
+  }
+}
+
+/**
+ * Shared rules of every LSP tool. Pi lists namespace instructions only on request (codemode's
+ * `describeNamespace()`), so the declared tools receive the same rules as one system-prompt
+ * guideline, which Pi adds once however many LSP tools are active.
+ */
+const LSP_TOOL_RULES = [
+  "Lines and characters are one-based and count Unicode code points. Paths may start with @.",
+  "Reads query every matching server unless server_id narrows them; a tool that creates a preview needs server_id when several servers match.",
+  "Model-visible output is limited to 2,000 lines or 50 KB; the complete output is saved as a Result Spill file named in the result. Structured results stay complete and set truncated and spill_path.",
+  "lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews. Nothing changes until lsp_apply applies a preview_id.",
+  'lsp_apply resolves to state "partial_failure" with an error result when rollback leaves files changed; changed_paths lists them.',
+];
+
+/** The `lsp` tool namespace: a short listing description and the shared rules for scripts. */
+export const LSP_TOOL_NAMESPACE: ToolNamespace = {
+  name: "lsp",
+  description: "Language-server navigation, diagnostics, and previewed edits",
+  instructions: LSP_TOOL_RULES.map((rule) => `- ${rule}`).join("\n"),
+};
+
+/** One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. */
+export const LSP_TOOL_GUIDELINE =
+  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters are one-based Unicode code points, and paths may start with @. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
+
+/** Operations declared to the model by default; every other operation is reachable through codemode (ADR-0003). */
+const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
+  "diagnostics",
+  "goto_definition",
+  "find_references",
+  "hover",
+  "document_symbols",
+  "workspace_symbols",
+  "rename",
+  "code_actions",
+  "apply",
+]);
+
+const LSP_TOOL_DESCRIPTIONS = {
+  status: "Report each configured language server's state, workspace root, and last error.",
+  capabilities: "Start a server for a workspace and report its negotiated capabilities.",
+  restart:
+    "Restart a server for a workspace, clearing its unavailable state, and report its capabilities.",
+  diagnostics: "Get fresh LSP Diagnostics for a file from every matching server.",
+  workspace_diagnostics:
+    "Get a server's diagnostics for its whole workspace, from workspace pull or cached push diagnostics.",
+  completion: "List completions at a position.",
+  hover: "Get type information and documentation for the symbol at a position.",
+  signature_help: "Get signature help for the call at a position.",
+  declaration: "Find the declaration of the symbol at a position.",
+  goto_definition: "Find the definition of the symbol at a position.",
+  goto_type_definition: "Find the type definition of the symbol at a position.",
+  goto_implementation: "Find the implementations of the symbol at a position.",
+  find_references:
+    "Find references to the symbol at a position. include_declaration defaults to true.",
+  document_highlights: "Find the occurrences of the symbol at a position within its file.",
+  document_symbols: "List the symbols declared in a file.",
+  workspace_symbols: "Search the workspace's symbols by name.",
+  document_links: "List the links in a file.",
+  call_hierarchy: "Prepare call hierarchy items for the function at a position.",
+  incoming_calls: "Find the calls to the function at a position.",
+  outgoing_calls: "Find the calls made by the function at a position.",
+  type_hierarchy: "Prepare type hierarchy items for the type at a position.",
+  supertypes: "Find the supertypes of the type at a position.",
+  subtypes: "Find the subtypes of the type at a position.",
+  selection_ranges: "Get the nested selection ranges around positions.",
+  folding_ranges: "List the folding ranges of a file.",
+  code_lenses: "List the code lenses of a file.",
+  inlay_hints: "List the inlay hints in a range.",
+  document_colors: "List the color values in a file.",
+  format_document: "Preview formatting a file. Apply the preview with lsp_apply.",
+  format_range: "Preview formatting a range. Apply the preview with lsp_apply.",
+  format_on_type:
+    "Preview the formatting after typing trigger_character at a position. Apply the preview with lsp_apply.",
+  prepare_rename: "Check whether the symbol at a position can be renamed, and get its range.",
+  rename:
+    "Preview renaming the symbol at a position across the workspace. Apply the preview with lsp_apply.",
+  code_actions:
+    "List code actions for a range. Each action with an edit gets a Workspace Edit Preview to apply with lsp_apply; command-only actions cannot be applied.",
+  apply:
+    "Apply a Workspace Edit Preview by preview_id. Nothing changes if its files changed since the preview.",
+} as const satisfies Record<LspOperationName, string>;
+
+/** Queries and Workspace Edit Preview producers: no file changes, local servers only. */
+const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+function lspToolAnnotations(operation: LspOperationName): ToolAnnotations {
+  if (operation === "apply") {
+    return {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    };
+  }
+  if (operation === "restart") {
+    return {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    };
+  }
+  return READ_ONLY_ANNOTATIONS;
+}
+
+function lspToolOutputSchema(operation: LspOperationName): TSchema {
+  switch (operation) {
+    case "status":
+      return LspStatusOutputSchema;
+    case "capabilities":
+    case "restart":
+      return LspServerOutputSchema;
+    case "format_document":
+    case "format_range":
+    case "format_on_type":
+    case "rename":
+      return LspPreviewOutputSchema;
+    case "code_actions":
+      return LspCodeActionsOutputSchema;
+    case "apply":
+      return LspApplyOutputSchema;
+    default:
+      return LspReadOutputSchema;
+  }
+}
+
+/** How the model reaches one LSP operation's tool. */
+export function lspToolExposure(operation: LspOperationName): ToolExposure {
+  return DIRECT_LSP_OPERATIONS.has(operation) ? "direct" : "codemode";
+}
+
+function prepareApplyArguments(
   getDependencies: () => LspToolDependencies,
-): LspToolDefinition {
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Raw model arguments are checked before the canonical manifest replaces any supplied one.
+  argumentsValue: unknown,
+): LspOperationParameters<"apply"> {
+  if (!Value.Check(ApplyPreviewArgumentsSchema, argumentsValue)) {
+    return parseLspOperationParameters("apply", argumentsValue);
+  }
+  const applyArguments: ApplyPreviewArguments = argumentsValue;
+  const storeManifest = getDependencies().workspaceEdits.prepareMutationManifest(
+    applyArguments.preview_id,
+  );
+  return parseLspOperationParameters("apply", {
+    ...applyArguments,
+    mutation_manifest: normalizeStoreMutationManifest(storeManifest),
+  });
+}
+
+/** Create the strict `lsp_<operation>` ToolDefinition backed by the current session's runtime owners. */
+export function createLspToolDefinition<TOperation extends LspOperationName>(
+  operation: TOperation,
+  getDependencies: () => LspToolDependencies,
+): LspToolDefinition<TOperation> {
   return {
-    name: "lsp",
-    label: "LSP",
-    description:
-      "Query configured language servers and create/apply guarded Workspace Edit Previews. All paths accept an optional leading @. Lines and characters are one-based Unicode code points. Output is limited to 2,000 lines or 50 KB; complete truncated output is saved as a Result Spill.\nRequired fields by operation (in addition to operation):\n" +
-      LspToolOperationRequirements,
-    promptSnippet: "Query configured language servers and preview guarded LSP mutations",
-    promptGuidelines: [
-      "Use lsp read operations for semantic source navigation and diagnostics; use preview-producing lsp operations followed by lsp apply for language-server mutations.",
-    ],
-    parameters: LspToolProviderParametersSchema,
+    name: lspToolName(operation),
+    label: `LSP ${humanizeLspOperation(operation)}`,
+    description: LSP_TOOL_DESCRIPTIONS[operation],
+    promptGuidelines: [LSP_TOOL_GUIDELINE],
+    parameters: LspOperationParametersSchemas[operation],
+    outputSchema: lspToolOutputSchema(operation),
+    exposure: lspToolExposure(operation),
+    namespace: LSP_TOOL_NAMESPACE,
+    annotations: lspToolAnnotations(operation),
     renderCall: (argumentsValue, theme, context) =>
-      renderLspToolCall(argumentsValue, theme, context.expanded, context.cwd),
+      renderLspToolCall(operation, argumentsValue, theme, context.expanded, context.cwd),
     renderResult: (result, options, theme, context) =>
       renderLspToolResult(result, options, theme, context.isError),
-    prepareArguments(argumentsValue) {
-      if (!Value.Check(ApplyPreviewArgumentsSchema, argumentsValue)) {
-        return parseLspToolParameters(argumentsValue);
-      }
-      const applyArguments: ApplyPreviewArguments = argumentsValue;
-      const storeManifest = getDependencies().workspaceEdits.prepareMutationManifest(
-        applyArguments.preview_id,
-      );
-      return parseLspToolParameters({
-        ...applyArguments,
-        mutation_manifest: normalizeStoreMutationManifest(storeManifest),
-      });
-    },
     async execute(_toolCallId, input, signal, _onUpdate, context) {
-      const parameters = parseLspToolParameters(input);
-      const dependencies = getDependencies();
-      switch (parameters.operation) {
-        case "status": {
-          const status = dependencies.manager.getStatus();
-          const outcomes = status.servers.map((server): ServerOperationOutcome => {
-            const outcome: ServerOperationOutcome = {
-              server_id: server.serverId,
-              outcome: server.state === "unavailable" ? "unavailable" : "success",
-            };
-            if (server.error === undefined) return outcome;
-            return { ...outcome, message: server.error };
-          });
-          return createLspToolOutput(
-            formatLspToolValue(status),
-            operationDetails("status", outcomes),
-            dependencies,
-          );
-        }
-        case "capabilities":
-        case "restart": {
-          const filePath = absoluteLspFilePath(parameters.file_path, context);
-          const resolution =
-            parameters.operation === "capabilities"
-              ? await dependencies.manager.getCapabilities(parameters.server_id, filePath)
-              : await dependencies.manager.restartServer(parameters.server_id, filePath);
-          if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
-          return createLspToolOutput(
-            formatLspToolValue({
-              capabilities: resolution.instance.client.capabilities,
-              root_path: resolution.instance.route.rootPath,
-              server_id: resolution.instance.route.serverId,
-            }),
-            operationDetails(parameters.operation, [
-              { server_id: resolution.instance.route.serverId, outcome: "success" },
-            ]),
-            dependencies,
-          );
-        }
-        case "completion":
-        case "hover":
-        case "signature_help":
-        case "declaration":
-        case "goto_definition":
-        case "goto_type_definition":
-        case "goto_implementation":
-        case "find_references":
-        case "document_highlights":
-        case "call_hierarchy":
-        case "incoming_calls":
-        case "outgoing_calls":
-        case "type_hierarchy":
-        case "supertypes":
-        case "subtypes":
-        case "prepare_rename":
-          return readOutput(
-            parameters.operation,
-            executePositionRead(dependencies, parameters, context, signal),
-            dependencies,
-          );
-        case "diagnostics":
-        case "document_symbols":
-        case "document_links":
-        case "folding_ranges":
-        case "code_lenses":
-        case "document_colors":
-          return readOutput(
-            parameters.operation,
-            executeFileRead(dependencies, parameters, context, signal),
-            dependencies,
-          );
-        case "workspace_diagnostics":
-        case "workspace_symbols":
-          return readOutput(
-            parameters.operation,
-            executeWorkspaceRead(dependencies, parameters, context, signal),
-            dependencies,
-          );
-        case "selection_ranges":
-          return readOutput(
-            parameters.operation,
-            executeSelectionRanges(dependencies, parameters, context, signal),
-            dependencies,
-          );
-        case "inlay_hints":
-          return readOutput(
-            parameters.operation,
-            executeInlayHints(dependencies, parameters, context, signal),
-            dependencies,
-          );
-        case "format_document":
-        case "format_range":
-        case "format_on_type":
-          return executeFormattingPreview(dependencies, parameters, context, signal);
-        case "rename":
-          return executeRenamePreview(dependencies, parameters, context, signal);
-        case "code_actions":
-          return executeCodeActions(dependencies, parameters, context, signal);
-        case "apply":
-          return executeApplyPreview(dependencies, parameters, signal);
-      }
+      const parameters = lspOperationCall(operation, parseLspOperationParameters(operation, input));
+      return executeLspOperation(getDependencies(), parameters, context, signal);
     },
   };
 }
 
-/** Register exactly one strict `lsp` tool backed by the current Pi extension session. */
-export function registerLspTool(
+/** Create `lsp_apply`, whose prepared arguments carry the canonical Mutation Manifest. */
+export function createLspApplyToolDefinition(
+  getDependencies: () => LspToolDependencies,
+): LspToolDefinition<"apply"> {
+  return {
+    ...createLspToolDefinition("apply", getDependencies),
+    // Permission hooks see the canonical Mutation Manifest before execution (ADR-0002).
+    prepareArguments: (argumentsValue) => prepareApplyArguments(getDependencies, argumentsValue),
+  };
+}
+
+/** Register one strict `lsp_<operation>` tool per LSP operation for the current Pi extension session. */
+export function registerLspTools(
   pi: LspToolRegistrar,
   getDependencies: () => LspToolDependencies,
 ): void {
-  pi.registerTool(createLspToolDefinition(getDependencies));
+  for (const operation of LSP_OPERATION_NAMES) {
+    if (operation === "apply") pi.registerTool(createLspApplyToolDefinition(getDependencies));
+    else pi.registerTool(createLspToolDefinition(operation, getDependencies));
+  }
 }

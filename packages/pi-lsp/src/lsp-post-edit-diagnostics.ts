@@ -1,7 +1,7 @@
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { MutationManifestSchema } from "./lsp-tool-contract.js";
+import { LSP_APPLY_RESULT_TOOL_NAMES, MutationManifestSchema } from "./lsp-tool-contract.js";
 
 const NativeMutationInputSchema = Type.Object(
   { path: Type.String() },
@@ -108,6 +108,8 @@ export interface PostEditDiagnosticsResultPatch {
   readonly content: ToolResultEvent["content"];
   /** Original details retained exactly for downstream middleware and session replay. */
   readonly details: ToolResultEvent["details"];
+  /** Original structured result retained for programmatic callers; Pi drops it with replaced content otherwise. */
+  readonly structuredContent: ToolResultEvent["structuredContent"];
   /** Original mutation error state retained exactly. */
   readonly isError: boolean;
   /** Original usage retained when Pi supplied it. */
@@ -174,7 +176,8 @@ export function extractPostEditDiagnosticPaths(
     return { paths: pathsAfterMutation(mutationResult(event.details)), warnings: [] };
   }
 
-  if (event.toolName === "lsp" && event.input.operation === "apply") {
+  // `lsp_apply` and the legacy `lsp` tool's apply operation both report `workspace_edit_apply` details.
+  if (LSP_APPLY_RESULT_TOOL_NAMES.has(event.toolName)) {
     if (
       !Value.Check(MutationManifestSchema, event.input.mutation_manifest) ||
       !Value.Check(WorkspaceEditApplyDetailsSchema, event.details)
@@ -258,6 +261,7 @@ export async function appendPostEditDiagnostics(
   const patch: PostEditDiagnosticsResultPatch = {
     content: [...event.content, { type: "text", text: formatPostEditDiagnostics(outcomes) }],
     details: event.details,
+    structuredContent: event.structuredContent,
     isError: event.isError,
     outcomes,
   };

@@ -20,7 +20,7 @@
 
 ## Behavior boundary
 
-The extension provides agent-useful language-server operations through one Pi tool. Mutating operations produce a Workspace Edit Preview and require a separate apply operation. Apply requires a Validated Workspace Edit and may include file creation, deletion, or renaming.
+The extension provides agent-useful language-server operations through one Pi tool per operation. Mutating operations produce a Workspace Edit Preview and require a separate apply tool call. Apply requires a Validated Workspace Edit and may include file creation, deletion, or renaming.
 
 Language-server requests to apply edits are also converted into Workspace Edit Previews; servers never bypass explicit application. The extension imposes no workspace path boundary on a Validated Workspace Edit. Before application, its verified Mutation Manifest is visible to other extensions, which may block the tool call.
 

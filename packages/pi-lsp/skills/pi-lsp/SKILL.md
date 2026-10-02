@@ -7,11 +7,13 @@ disable-model-invocation: true
 
 # Pi LSP
 
-1. Read [`../../README.md`](../../README.md)'s Settings, `/lsp` command, and `lsp` tool sections, then identify the effective settings scope.
-2. Call `lsp` with `{"operation":"status"}`. If the Server Definition is disabled, report that state and its enablement controls before attempting startup.
-3. Test a representative file with `capabilities`, then `diagnostics`, supplying `server_id` when needed.
+1. Read [`../../README.md`](../../README.md)'s Settings, `/lsp` command, and LSP tools sections, then identify the effective settings scope.
+2. Call `lsp_status`. If the Server Definition is disabled, report that state and its enablement controls before attempting startup.
+3. Test a representative file with `lsp_capabilities`, then `lsp_diagnostics`, supplying `server_id` when needed.
 4. Classify the result as settings, routing, process, capability, or Post-edit Diagnostics behavior.
-5. If Server Definitions changed, reload Pi. Enablement commands apply immediately. For an unavailable Server Instance, use the `restart` tool operation only when recovery is authorized.
+5. If Server Definitions changed, reload Pi. Enablement commands apply immediately. For an unavailable Server Instance, use `lsp_restart` only when recovery is authorized; otherwise ask the user to run `/lsp stop <server-id> <root>`, which permits a fresh lazy start.
 6. Repeat status, capabilities, and diagnostics. Finish when the representative file reaches the intended Server Instance and operation, or an exact unsupported capability is evidenced.
+
+`lsp_status`, `lsp_capabilities`, and `lsp_restart` are not declared by default. Call them from a `codemode` script (`await tools.lsp_status({})`) or load them with `tool_search`. If neither tool is active, ask the user to run `/lsp` for status, or to add the tools to `defaultTools` (for example `"+lsp_status"`).
 
 `configured` has not routed a file yet; `stopped` permits lazy startup; `disabled` blocks startup. `unavailable` is sticky and retains stderr. Keep diagnosis read-only until a lifecycle change is authorized; stop before applying a Workspace Edit Preview.

@@ -6,8 +6,12 @@ import { pathToFileURL } from "node:url";
 import type {
   AgentToolResult,
   ExtensionToolContext,
+  ToolAnnotations,
   ToolDefinition,
+  ToolExposure,
+  ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
+import type { TSchema } from "typebox";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   PositionEncodingKind,
@@ -22,14 +26,18 @@ import type {
 import { LspServerManager } from "../src/lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "../src/lsp-session-files.js";
 import {
-  LspToolProviderParametersSchema,
+  LSP_OPERATION_NAMES,
+  LspApplyOutputSchema,
+  LspReadOutputSchema,
   type LspToolParameters,
-  type LspToolProviderParameters,
   type LspToolResultDetails,
 } from "../src/lsp-tool-contract.js";
 import {
+  createLspApplyToolDefinition,
   createLspToolDefinition,
-  registerLspTool,
+  LSP_TOOL_GUIDELINE,
+  LSP_TOOL_NAMESPACE,
+  registerLspTools,
   type LspToolDependencies,
   type LspToolRegistrar,
   type LspToolServerClient,
@@ -105,14 +113,34 @@ class RecordingLspClient implements LspToolServerClient {
   }
 }
 
-class RecordingLspToolRegistrar implements LspToolRegistrar {
-  readonly tools: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>[] =
-    [];
+/** The registration fields Pi reads to declare, list, and gate one tool. */
+interface RegisteredLspTool {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: TSchema;
+  readonly outputSchema: TSchema | undefined;
+  readonly exposure: ToolExposure | undefined;
+  readonly namespace: ToolNamespace | undefined;
+  readonly annotations: ToolAnnotations | undefined;
+  readonly promptGuidelines: readonly string[] | undefined;
+  readonly hasPrepareArguments: boolean;
+}
 
-  registerTool(
-    tool: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>,
-  ): void {
-    this.tools.push(tool);
+class RecordingLspToolRegistrar implements LspToolRegistrar {
+  readonly tools: RegisteredLspTool[] = [];
+
+  registerTool<TParams extends TSchema>(tool: ToolDefinition<TParams, LspToolResultDetails>): void {
+    this.tools.push({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      outputSchema: tool.outputSchema,
+      exposure: tool.exposure,
+      namespace: tool.namespace,
+      annotations: tool.annotations,
+      promptGuidelines: tool.promptGuidelines,
+      hasPrepareArguments: tool.prepareArguments !== undefined,
+    });
   }
 }
 
@@ -122,7 +150,6 @@ interface LspToolFixture {
   readonly dependencies: LspToolDependencies;
   readonly filePath: string;
   readonly sessionFiles: LspSessionFiles;
-  readonly tool: ToolDefinition<typeof LspToolProviderParametersSchema, LspToolResultDetails>;
   close(): Promise<void>;
 }
 
@@ -172,11 +199,6 @@ async function createToolFixture(
     workspaceEdits: new LspWorkspaceEditStore(),
     sessionFiles,
   };
-  const registrar = new RecordingLspToolRegistrar();
-  registerLspTool(registrar, () => dependencies);
-  expect(registrar.tools).toHaveLength(1);
-  const tool = registrar.tools[0];
-  if (tool === undefined) throw new Error("Expected registered LSP tool");
   // SAFETY: Tool execution only reads cwd from ExtensionContext; the recording fixture supplies that complete observed surface.
   const context = { cwd } as ExtensionToolContext;
   return {
@@ -185,7 +207,6 @@ async function createToolFixture(
     dependencies,
     filePath,
     sessionFiles,
-    tool,
     close: async () => {
       await manager.shutdown();
       await sessionFiles.close();
@@ -193,11 +214,33 @@ async function createToolFixture(
   };
 }
 
+/** Execute one operation through its own `lsp_<operation>` ToolDefinition. */
 async function executeTool(
   fixture: LspToolFixture,
-  input: LspToolProviderParameters,
+  call: LspToolParameters,
+  dependencies: LspToolDependencies = fixture.dependencies,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
-  return fixture.tool.execute("tool-call", input, undefined, undefined, fixture.context);
+  const { operation, ...input } = call;
+  const tool = createLspToolDefinition(operation, () => dependencies);
+  return tool.execute("tool-call", input, undefined, undefined, fixture.context);
+}
+
+/** Prepare `lsp_apply` arguments as Pi does before its `tool_call` hooks run. */
+function prepareApply(
+  fixture: LspToolFixture,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Preparation receives raw model arguments.
+  argumentsValue: unknown,
+  dependencies: LspToolDependencies = fixture.dependencies,
+) {
+  const prepared = createLspApplyToolDefinition(() => dependencies).prepareArguments?.(
+    argumentsValue,
+  );
+  if (prepared === undefined) throw new Error("Expected apply argument preparation");
+  return prepared;
+}
+
+function resultText(result: AgentToolResult<LspToolResultDetails>): string {
+  return result.content[0]?.type === "text" ? result.content[0].text : "";
 }
 
 function oneBasedRange() {
@@ -216,16 +259,77 @@ afterEach(async () => {
 });
 
 describe("registered LSP tool", () => {
-  test("declares text output so codemode scripts receive complete results", async () => {
+  test("registers one namespaced tool per operation with exact exposure and annotations", async () => {
     const fixture = await createToolFixture();
-    const tool = createLspToolDefinition(() => fixture.dependencies);
+    const registrar = new RecordingLspToolRegistrar();
+    registerLspTools(registrar, () => fixture.dependencies);
 
-    // Details omit raw protocol payloads; an outputSchema would hand scripts only them.
-    expect(Object.hasOwn(tool, "outputSchema")).toBe(false);
+    expect(registrar.tools.map(({ name }) => name)).toEqual(
+      LSP_OPERATION_NAMES.map((operation) => `lsp_${operation}`),
+    );
+    expect(
+      registrar.tools.filter(({ exposure }) => exposure === "direct").map(({ name }) => name),
+    ).toEqual([
+      "lsp_diagnostics",
+      "lsp_hover",
+      "lsp_goto_definition",
+      "lsp_find_references",
+      "lsp_document_symbols",
+      "lsp_workspace_symbols",
+      "lsp_rename",
+      "lsp_code_actions",
+      "lsp_apply",
+    ]);
+    for (const tool of registrar.tools) {
+      expect(tool.exposure === "direct" || tool.exposure === "codemode", tool.name).toBe(true);
+      expect(tool.namespace, tool.name).toBe(LSP_TOOL_NAMESPACE);
+      expect(tool.promptGuidelines, tool.name).toEqual([LSP_TOOL_GUIDELINE]);
+      expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
+      expect(tool.hasPrepareArguments, tool.name).toBe(tool.name === "lsp_apply");
+      // Shared rules live in the namespace instructions and one deduplicated guideline.
+      expect(tool.description, tool.name).not.toMatch(/one-based|Result Spill|leading @/u);
+    }
+    expect(LSP_TOOL_NAMESPACE.description?.length ?? 0).toBeLessThan(80);
+    expect(LSP_TOOL_NAMESPACE.instructions).toContain("one-based");
+    expect(LSP_TOOL_NAMESPACE.instructions).toContain("Result Spill");
+    expect(LSP_TOOL_NAMESPACE.instructions).toContain("Paths may start with @");
+    expect(LSP_TOOL_NAMESPACE.instructions).toContain("lsp_apply");
+
+    const annotationsOf = (name: string) =>
+      registrar.tools.find((tool) => tool.name === name)?.annotations;
+    const readOnly = {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    };
+    for (const name of ["lsp_hover", "lsp_status", "lsp_capabilities", "lsp_workspace_diagnostics"])
+      expect(annotationsOf(name), name).toEqual(readOnly);
+    // Preview producers only create a session-local Workspace Edit Preview.
+    for (const name of ["lsp_rename", "lsp_code_actions", "lsp_format_document"])
+      expect(annotationsOf(name), name).toEqual(readOnly);
+    expect(annotationsOf("lsp_restart")).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    expect(annotationsOf("lsp_apply")).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
+    expect(registrar.tools.find(({ name }) => name === "lsp_hover")?.outputSchema).toBe(
+      LspReadOutputSchema,
+    );
+    expect(registrar.tools.find(({ name }) => name === "lsp_apply")?.outputSchema).toBe(
+      LspApplyOutputSchema,
+    );
     await fixture.close();
   });
 
-  test("registers one strict definition and dispatches every protocol operation", async () => {
+  test("dispatches every protocol operation through its own tool", async () => {
     const fixture = await createToolFixture();
     const uri = pathToFileURL(fixture.filePath).href;
     const edit: WorkspaceEdit = {
@@ -470,17 +574,123 @@ describe("registered LSP tool", () => {
       edit,
       serverId: "typescript",
     });
-    const prepared = fixture.tool.prepareArguments?.({
-      operation: "apply",
+    const prepared = prepareApply(fixture, {
       preview_id: preview.preview_id,
       mutation_manifest: [{ operation: "delete", path: fixture.filePath }],
     });
-    if (prepared === undefined) throw new Error("Expected apply argument preparation");
-    const applyResult = await executeTool(fixture, prepared);
+    const applyResult = await executeTool(fixture, { operation: "apply", ...prepared });
     expect(applyResult.details).toMatchObject({
       kind: "workspace_edit_apply",
       preview_id: preview.preview_id,
       state: "applied",
+    });
+    await fixture.close();
+  });
+
+  test("returns complete structured results for programmatic callers", async () => {
+    const fixture = await createToolFixture();
+    const uri = pathToFileURL(fixture.filePath).href;
+    const edit: WorkspaceEdit = {
+      changes: {
+        [uri]: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+            newText: "// ",
+          },
+        ],
+      },
+    };
+    fixture.client.responseByMethod.set("textDocument/references", [
+      { uri, range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } } },
+    ]);
+    fixture.client.responseByMethod.set("textDocument/rename", edit);
+    fixture.client.responseByMethod.set("textDocument/codeAction", [
+      { title: "Run command", kind: "source", command: "example.run" },
+      { title: "Apply edit", kind: "quickfix", edit },
+    ]);
+
+    const references = await executeTool(fixture, {
+      operation: "find_references",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 7,
+    });
+    expect(references.structuredContent).toEqual({
+      ...JSON.parse(resultText(references)),
+      truncated: false,
+    });
+    expect(references.structuredContent).toMatchObject({
+      results: [
+        {
+          server_id: "typescript",
+          value: [{ uri: fixture.filePath, range: { start: { line: 1, character: 7 } } }],
+        },
+      ],
+    });
+
+    await executeTool(fixture, {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+    const status = await executeTool(fixture, { operation: "status" });
+    expect(status.structuredContent).toEqual({
+      servers: [{ server_id: "typescript", root_path: fixture.context.cwd, state: "running" }],
+      warnings: [],
+      truncated: false,
+    });
+    expect(JSON.parse(resultText(status))).toEqual({
+      servers: [{ server_id: "typescript", root_path: fixture.context.cwd, state: "running" }],
+      warnings: [],
+    });
+
+    const rename = await executeTool(fixture, {
+      operation: "rename",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 7,
+      new_name: "renamed",
+    });
+    if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
+    expect(rename.structuredContent).toEqual({
+      preview_id: rename.details.preview_id,
+      server_id: "typescript",
+      summary: rename.details.summary,
+      mutation_manifest: [{ operation: "modify", path: fixture.filePath }],
+      truncated: false,
+    });
+
+    const actions = await executeTool(fixture, {
+      operation: "code_actions",
+      file_path: fixture.filePath,
+      range: oneBasedRange(),
+    });
+    expect(actions.structuredContent).toEqual({
+      server_id: "typescript",
+      actions: JSON.parse(resultText(actions)),
+      truncated: false,
+    });
+    expect(actions.structuredContent).toMatchObject({
+      actions: [
+        { applicable: false, title: "Run command", kind: "source", command: "example.run" },
+        { applicable: true, title: "Apply edit", kind: "quickfix", preview_id: expect.any(String) },
+      ],
+    });
+
+    const prepared = prepareApply(fixture, { preview_id: rename.details.preview_id });
+    const applied = await executeTool(fixture, { operation: "apply", ...prepared });
+    expect(applied.isError).toBeUndefined();
+    expect(applied.structuredContent).toEqual({
+      preview_id: rename.details.preview_id,
+      state: "applied",
+      changed_paths: [fixture.filePath],
+      mutation_manifest: [{ operation: "modify", path: fixture.filePath }],
+      changed_files: [fixture.filePath],
+      created_files: [],
+      deleted_files: [],
+      moved_files: [],
+      truncated: false,
     });
     await fixture.close();
   });
@@ -499,19 +709,10 @@ describe("registered LSP tool", () => {
         return definition.id === "good" ? good : failing;
       },
     });
-    const registrar = new RecordingLspToolRegistrar();
-    registerLspTool(registrar, () => ({
-      ...fixture.dependencies,
-      manager,
-    }));
-    const tool = registrar.tools[0];
-    if (tool === undefined) throw new Error("Expected registered LSP tool");
-    const result = await tool.execute(
-      "hover",
+    const result = await executeTool(
+      fixture,
       { operation: "hover", file_path: fixture.filePath, line: 1, character: 1 },
-      undefined,
-      undefined,
-      fixture.context,
+      { ...fixture.dependencies, manager },
     );
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
     expect(starts).toBe(2);
@@ -660,10 +861,7 @@ describe("registered LSP tool", () => {
       },
     };
     const workspaceEdits = new LspWorkspaceEditStore({ fileOperations: failingFiles });
-    const registrar = new RecordingLspToolRegistrar();
-    registerLspTool(registrar, () => ({ ...fixture.dependencies, workspaceEdits }));
-    const tool = registrar.tools[0];
-    if (tool === undefined) throw new Error("Expected registered LSP tool");
+    const dependencies = { ...fixture.dependencies, workspaceEdits };
     const preview = await workspaceEdits.createPreview({
       edit: {
         changes: {
@@ -683,22 +881,27 @@ describe("registered LSP tool", () => {
       },
       serverId: "typescript",
     });
-    const prepared = tool.prepareArguments?.({
-      operation: "apply",
-      preview_id: preview.preview_id,
-    });
-    if (prepared === undefined) throw new Error("Expected prepared apply arguments");
-    const result = await tool.execute(
-      "partial-apply",
-      prepared,
-      undefined,
-      undefined,
-      fixture.context,
-    );
+    const prepared = prepareApply(fixture, { preview_id: preview.preview_id }, dependencies);
+    const result = await executeTool(fixture, { operation: "apply", ...prepared }, dependencies);
     expect(result.details).toMatchObject({
       kind: "workspace_edit_apply",
       changed_paths: [fixture.filePath],
       state: "partial_failure",
+    });
+    // The partial failure is an error at its source, and scripts still receive its data.
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({
+      preview_id: preview.preview_id,
+      state: "partial_failure",
+      changed_paths: [fixture.filePath],
+      mutation_manifest: [
+        { operation: "modify", path: secondFile },
+        { operation: "modify", path: fixture.filePath },
+      ],
+      message: `Pi LSP: Workspace Edit rollback failed for: ${fixture.filePath}`,
+      truncated: false,
+      // The directly created preview was never reported, like a server-initiated one.
+      server_preview_ids: [preview.preview_id],
     });
     await fixture.close();
   });
@@ -772,15 +975,14 @@ describe("registered LSP tool", () => {
       edit,
       serverId: "typescript",
     });
-    const prepared = fixture.tool.prepareArguments?.({
-      operation: "apply",
+    const prepared = prepareApply(fixture, {
       preview_id: preview.preview_id,
+      mutation_manifest: [{ operation: "delete", path: fixture.filePath }],
     });
-    if (prepared === undefined || prepared.operation !== "apply") {
-      throw new Error("Expected prepared apply arguments");
-    }
+    expect(prepared.mutation_manifest).toEqual([{ operation: "modify", path: fixture.filePath }]);
     await expect(
       executeTool(fixture, {
+        operation: "apply",
         ...prepared,
         mutation_manifest: [{ operation: "delete", path: fixture.filePath }],
       }),
@@ -800,6 +1002,22 @@ describe("registered LSP tool", () => {
       throw new Error("Expected Result Spill path");
     }
     expect(await readFile(spillResult.details.spill_path, "utf8")).toContain("x".repeat(1024));
+    // The structured result stays complete and names the Result Spill of the cut text.
+    expect(resultText(spillResult).length).toBeLessThan(60 * 1024);
+    expect(spillResult.structuredContent).toEqual({
+      results: [
+        {
+          root_path: fixture.context.cwd,
+          server_id: "typescript",
+          value: [{ name: "x".repeat(60 * 1024) }],
+        },
+      ],
+      warnings: [],
+      truncated: true,
+      spill_path: spillResult.details.spill_path,
+      // The directly created preview was never reported, like a server-initiated one.
+      server_preview_ids: [preview.preview_id],
+    });
     await fixture.close();
   });
 });

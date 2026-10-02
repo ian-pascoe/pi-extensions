@@ -11,8 +11,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
   LspToolResultDetailsSchema,
-  type LspToolParameters,
-  type LspToolProviderParameters,
+  type LspOperationName,
   type LspToolResultDetails,
   type ServerOperationOutcome,
 } from "./lsp-tool-contract.js";
@@ -22,8 +21,16 @@ import { pluralizedCount } from "./lsp-post-edit-diagnostics-rendering.js";
 export type LspRenderTheme = Pick<Theme, "bold" | "fg">;
 
 const LspRenderRecordSchema = Type.Record(Type.String(), Type.Unknown());
+/** The call fields shown in a compact row; Pi renders raw arguments before validation. */
+const LspCallTargetSchema = Type.Object({
+  file_path: Type.Optional(Type.String()),
+  line: Type.Optional(Type.Number()),
+  character: Type.Optional(Type.Number()),
+  preview_id: Type.Optional(Type.String()),
+});
 
-function humanizeLspOperation(operation: LspToolParameters["operation"]): string {
+/** Title-case one operation name for transcript rows and tool labels. */
+export function humanizeLspOperation(operation: LspOperationName): string {
   const words = operation.replaceAll("_", " ");
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
@@ -35,16 +42,17 @@ function workspaceRelativeLspPath(cwd: string, filePath: string): string {
   return relativePath !== "" && !relativePath.startsWith("..") ? relativePath : normalizedPath;
 }
 
-function lspCallTarget(parameters: LspToolProviderParameters, cwd: string): string | undefined {
-  if ("file_path" in parameters) {
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Raw call arguments are rendered before validation; only checked display fields are read.
+function lspCallTarget(parameters: unknown, cwd: string): string | undefined {
+  if (!Value.Check(LspCallTargetSchema, parameters)) return undefined;
+  if (parameters.file_path !== undefined) {
     const filePath = workspaceRelativeLspPath(cwd, parameters.file_path);
-    if ("line" in parameters && "character" in parameters) {
+    if (parameters.line !== undefined && parameters.character !== undefined) {
       return `${filePath}:${parameters.line}:${parameters.character}`;
     }
     return filePath;
   }
-  if (parameters.operation === "apply") return parameters.preview_id;
-  return undefined;
+  return parameters.preview_id;
 }
 
 function expansionHint(theme: LspRenderTheme): string {
@@ -94,7 +102,7 @@ function semanticLspValueCount(value: unknown): number {
   return 1;
 }
 
-function semanticLspOperationNoun(operation: LspToolParameters["operation"]): string {
+function semanticLspOperationNoun(operation: LspOperationName): string {
   switch (operation) {
     case "status":
       return "server";
@@ -123,7 +131,7 @@ function semanticLspOperationNoun(operation: LspToolParameters["operation"]): st
 }
 
 function semanticLspOperationMetric(
-  operation: LspToolParameters["operation"],
+  operation: LspOperationName,
   output: string,
 ): string | undefined {
   const parsed = parsedLspOutput(output);
@@ -248,12 +256,13 @@ function appendExpandedMutationDetails(
 /**
  * Render one Pi LSP tool call using Pi's supplied theme and native expansion state.
  *
- * Pi renders the call with the provider-facing arguments the model sent, before the strict
- * per-operation validator runs at the tool ingress, so the renderer reads only the fields it
- * displays and tolerates any combination the model may produce.
+ * Pi renders the call with the arguments the model sent, before validation, so the renderer reads
+ * only the fields it displays and tolerates any combination the model may produce.
  */
 export function renderLspToolCall(
-  parameters: LspToolProviderParameters,
+  operation: LspOperationName,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Raw model arguments are displayed before validation.
+  parameters: unknown,
   theme: LspRenderTheme,
   expanded: boolean,
   cwd: string,
@@ -264,7 +273,7 @@ export function renderLspToolCall(
     new Text(
       [
         theme.fg("toolTitle", theme.bold("LSP")),
-        theme.fg("accent", humanizeLspOperation(parameters.operation)),
+        theme.fg("accent", humanizeLspOperation(operation)),
         target === undefined ? undefined : theme.fg("muted", target),
       ]
         .filter((part) => part !== undefined)
@@ -289,7 +298,11 @@ export function renderLspToolResult(
 ): Component {
   const output = toolResultText(result);
   if (options.isPartial) return new Text(theme.fg("accent", "Running…"), 0, 0);
-  if (isError || !Value.Check(LspToolResultDetailsSchema, result.details)) {
+  // An apply partial failure is an error result whose details still summarize the changed files.
+  const details = Value.Check(LspToolResultDetailsSchema, result.details)
+    ? result.details
+    : undefined;
+  if (details === undefined || (isError && details.kind !== "workspace_edit_apply")) {
     const visibleOutput = options.expanded
       ? output
       : (output.split("\n").find(Boolean) ?? "LSP failed");
@@ -299,19 +312,19 @@ export function renderLspToolResult(
 
   if (!options.expanded) {
     return new Text(
-      `${renderCollapsedLspResult(result.details, theme, output)}${expansionHint(theme)}`,
+      `${renderCollapsedLspResult(details, theme, output)}${expansionHint(theme)}`,
       0,
       0,
     );
   }
 
   const container = new Container();
-  container.addChild(new Text(renderCollapsedLspResult(result.details, theme, output), 0, 0));
+  container.addChild(new Text(renderCollapsedLspResult(details, theme, output), 0, 0));
   container.addChild(new Spacer(1));
-  if (result.details.kind === "operation") {
-    appendExpandedOperationDetails(container, result.details, theme);
+  if (details.kind === "operation") {
+    appendExpandedOperationDetails(container, details, theme);
   } else {
-    appendExpandedMutationDetails(container, result.details, theme);
+    appendExpandedMutationDetails(container, details, theme);
   }
   container.addChild(new Spacer(1));
   container.addChild(new Text(theme.fg("muted", theme.bold("Output")), 0, 0));

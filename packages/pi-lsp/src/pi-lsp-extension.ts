@@ -9,6 +9,7 @@ import {
   type ExtensionFactory,
   type SessionEntry,
   type ToolResultEvent,
+  type ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -47,10 +48,11 @@ import { writeLspEnablement } from "./lsp-settings-store.js";
 import { LspServerManager, normalizeLspFilePath } from "./lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "./lsp-session-files.js";
 import {
+  LSP_RESULT_TOOL_NAMES,
   LspToolResultDetailsSchema,
   type LspWorkspaceEditPreviewRecord,
 } from "./lsp-tool-contract.js";
-import { registerLspTool } from "./lsp-tool.js";
+import { registerLspTools } from "./lsp-tool.js";
 import { truncateLspOutputText } from "./lsp-tool-output.js";
 import { LspWorkspaceEditStore } from "./lsp-workspace-edit.js";
 import { resolveLspSettings, type LspServerEnablement } from "./pi-lsp-settings.js";
@@ -113,7 +115,8 @@ function branchLspToolResultDetails(
   for (const entry of entries) {
     if (entry.type !== "message") continue;
     const message = entry.message;
-    if (message.role !== "toolResult" || message.toolName !== "lsp") continue;
+    // Results of the legacy `lsp` tool stay recognized so resumed sessions keep their previews.
+    if (message.role !== "toolResult" || !LSP_RESULT_TOOL_NAMES.has(message.toolName)) continue;
     if (!Value.Check(LspToolResultDetailsSchema, message.details)) continue;
     const details = message.details;
     for (const record of details.preview_records ?? []) {
@@ -251,16 +254,7 @@ async function appendSessionPostEditDiagnostics(
   if (truncation.spillPath !== undefined) {
     appended = { type: "text", text: truncation.text };
   }
-  const partialApplyFailure =
-    event.toolName === "lsp" &&
-    Value.Check(LspToolResultDetailsSchema, event.details) &&
-    event.details.kind === "workspace_edit_apply" &&
-    event.details.state === "partial_failure";
-  return {
-    ...patch,
-    content: [...event.content, appended],
-    isError: partialApplyFailure || patch.isError,
-  };
+  return { ...patch, content: [...event.content, appended] };
 }
 
 /** Own settings, tool registration, replay, diagnostics middleware, and resource shutdown for one extension instance. */
@@ -278,7 +272,7 @@ export class PiLspLifecycleController {
 
   /** Register Pi LSP lifecycle handlers and model-invisible diagnostics entry rendering. */
   register(): void {
-    registerLspTool(this.pi, () => this.activeSession());
+    registerLspTools(this.pi, () => this.activeSession());
     this.pi.registerCommand("lsp", {
       description: "Manage language-server enablement and Instances",
       getArgumentCompletions: (prefix) =>
@@ -463,22 +457,20 @@ export class PiLspLifecycleController {
   private handleToolResult(
     event: ToolResultEvent,
     context: ExtensionContext,
-  ):
-    | Promise<
-        | {
-            readonly content: ToolResultEvent["content"];
-            readonly details: ToolResultEvent["details"];
-            readonly isError: boolean;
-          }
-        | undefined
-      >
-    | undefined {
+  ): Promise<ToolResultEventResult | undefined> | undefined {
     const session = this.session;
     if (session === undefined) return undefined;
     return appendSessionPostEditDiagnostics(event, session, context).then((patch) => {
       if (patch === undefined) return undefined;
       this.pendingPostEditDiagnosticOutcomes.push(...patch.outcomes);
-      return { content: patch.content, details: patch.details, isError: patch.isError };
+      const result: ToolResultEventResult = {
+        content: patch.content,
+        details: patch.details,
+        isError: patch.isError,
+      };
+      // Pi drops structured content whose content was replaced unless the handler returns it.
+      if (patch.structuredContent !== undefined) result.structuredContent = patch.structuredContent;
+      return result;
     });
   }
 
