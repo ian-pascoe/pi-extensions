@@ -37,9 +37,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=0.99.0",
+    "@earendil-works/pi-coding-agent": ">=0.99.0",
+    "@earendil-works/pi-tui": ">=0.99.0",
     "typebox": "*"
   },
   "engines": {

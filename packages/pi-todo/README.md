@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-todo` gives Pi agents a minimal, session-native **Todo List** without imposing a planning workflow.
 
-Requires Node `>=22.19.0` and Pi `>=0.84.1`.
+Requires Node `>=22.19.0` and Pi `>=0.99.0`.
 
 ## Install
 

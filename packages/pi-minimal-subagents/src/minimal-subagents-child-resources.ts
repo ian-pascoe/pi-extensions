@@ -1,10 +1,13 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import {
+  createCodemodeExtension,
+  createMcpExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   type ExtensionFactory,
+  getPackageDir,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -25,9 +28,6 @@ type InlineExtension = NonNullable<
   ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"]
 >[number];
 
-// SAFETY: Older Pi hosts lack these exports; the namespace yields undefined rather than failing.
-const sdk = piCodingAgent as Partial<typeof piCodingAgent>;
-
 const ExtensionModuleSchema = Type.Object({
   default: Type.Function([Type.Unknown()], Type.Unknown()),
 });
@@ -37,8 +37,7 @@ const LLAMA = "llama.cpp";
 
 /** Pi ships a file-backed llama.cpp factory but does not export it; undefined when it is absent. */
 function piLlamaExtensionPath(): string | undefined {
-  if (!sdk.getPackageDir) return undefined;
-  const path = join(sdk.getPackageDir(), "dist", "extensions", "llama", "index.js");
+  const path = join(getPackageDir(), "dist", "extensions", "llama", "index.js");
   return existsSync(path) ? path : undefined;
 }
 
@@ -62,20 +61,18 @@ export function childProviderAvailable(provider: string): boolean {
 /** Child scripts must not call models outside their Launch Contract. */
 export const CHILD_CODEMODE_MODELS = false;
 
-/** Pi's built-in extensions (Pi 0.99+) in Pi's order; older hosts have none, so neither do children. */
+/** Pi's built-in extensions in Pi's order, so children match the root's built-in surface. */
 export function childBuiltinExtensions(): InlineExtension[] {
-  const createCodemode = sdk.createCodemodeExtension;
   return [
     ...llamaExtension(),
-    ...(
-      [
-        ["codemode", createCodemode && (() => createCodemode({ models: CHILD_CODEMODE_MODELS }))],
-        ["tool-search", sdk.createToolSearchExtension],
-        ["mcp", sdk.createMcpExtension],
-      ] as const
-    ).flatMap(([name, create]) =>
-      create ? [{ name, factory: create(), builtin: true, replaceable: true }] : [],
-    ),
+    {
+      name: "codemode",
+      factory: createCodemodeExtension({ models: CHILD_CODEMODE_MODELS }),
+      builtin: true,
+      replaceable: true,
+    },
+    { name: "tool-search", factory: createToolSearchExtension(), builtin: true, replaceable: true },
+    { name: "mcp", factory: createMcpExtension(), builtin: true, replaceable: true },
   ];
 }
 

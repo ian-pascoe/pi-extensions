@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-tps-tracker` reports assistant-output token speed after each Pi agent run.
 
-Requires Node `>=22.19.0` and Pi `>=0.84.1`.
+Requires Node `>=22.19.0` and Pi `>=0.99.0`.
 
 ## Install
 

@@ -248,10 +248,12 @@ export interface BashReplacementOptions {
   readonly definitionFactory?: typeof createBashToolDefinition;
 }
 
+/** Pi's `bash` declares an object `outputSchema` since 0.99.0; extend it with the background fields. */
 function backgroundOutputSchema(builtin: TSchema | undefined) {
-  const properties = builtin !== undefined && Type.IsObject(builtin) ? builtin.properties : {};
+  if (builtin === undefined || !Type.IsObject(builtin))
+    throw new Error("Pi's bash tool does not declare an object outputSchema");
   return Type.Object({
-    ...properties,
+    ...builtin.properties,
     exit_code: Type.Optional(
       Type.Number({ description: "Absent only when the command was moved to the background" }),
     ),

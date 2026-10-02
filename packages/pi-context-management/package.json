@@ -40,10 +40,10 @@
     "@ian-pascoe/pi-utils": "^0.3.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-agent-core": ">=0.99.0",
+    "@earendil-works/pi-ai": ">=0.99.0",
+    "@earendil-works/pi-coding-agent": ">=0.99.0",
+    "@earendil-works/pi-tui": ">=0.99.0",
     "typebox": "*"
   },
   "engines": {

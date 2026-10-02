@@ -2,7 +2,7 @@
 
 An offline Pi extension that shows a Bible passage in Pi's working-message area while a turn runs.
 
-Requires Node `>=22.19.0` and Pi `>=0.84.1`.
+Requires Node `>=22.19.0` and Pi `>=0.99.0`.
 
 ## Install
 
