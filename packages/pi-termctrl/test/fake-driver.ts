@@ -28,6 +28,8 @@ export class FakeTerminal implements TerminalHandle {
   hangOnStop = false;
   /** Called after each input so tests can react like a program would. */
   onInput: ((terminal: FakeTerminal) => void) | undefined;
+  /** Called before the log is read, like output that arrives after a screen was captured. */
+  onLogs: ((terminal: FakeTerminal) => void) | undefined;
 
   constructor(
     readonly request: TerminalLaunchRequest,
@@ -56,6 +58,7 @@ export class FakeTerminal implements TerminalHandle {
 
   async logs(): Promise<string> {
     this.driver.assertAlive();
+    this.onLogs?.(this);
     return this.logLines.join("\n");
   }
 
