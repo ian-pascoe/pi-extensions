@@ -8,6 +8,7 @@ import {
   createEmptyTodoState,
   TODO_ACTIONS,
   TODO_STATUSES,
+  TodoToolOutputSchema,
   todoStatusMarker,
   type TodoActionInput,
   type TodoStateSnapshot,
@@ -166,6 +167,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
       idempotentHint: false,
       openWorldHint: false,
     },
+    outputSchema: TodoToolOutputSchema,
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       signal?.throwIfAborted();
@@ -181,6 +183,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
       return {
         content: [{ type: "text", text: result.message }],
         details: result.details,
+        structuredContent: result.details,
       };
     },
     renderCall: (params, theme) => {

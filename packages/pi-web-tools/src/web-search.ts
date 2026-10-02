@@ -61,6 +61,23 @@ export const WebSearchDetailsSchema = Type.Object(
 /** Model-invisible Web Search execution metadata. */
 export type WebSearchDetails = Static<typeof WebSearchDetailsSchema>;
 
+/**
+ * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
+ * `content` is the Search Provider's complete text answer (at most 256 KiB), which is free-form
+ * rather than a result list; `fullOutputPath` is present when the model saw it truncated.
+ */
+export const WebSearchOutputSchema = Type.Object(
+  {
+    provider: SearchProviderSchema,
+    content: Type.String({ description: "Search Provider's complete text answer" }),
+    fullOutputPath: Type.Optional(Type.String({ description: "Private file with the full text" })),
+  },
+  { additionalProperties: false },
+);
+
+/** Value a codemode script receives from Web Search. */
+export type WebSearchOutput = Static<typeof WebSearchOutputSchema>;
+
 const WEB_SEARCH_PARAMETERS = Type.Object(
   {
     query: Type.String({ description: "Web Search query" }),
@@ -115,7 +132,8 @@ const MCP_RESPONSE_SCHEMA = Type.Object(
   { additionalProperties: true },
 );
 
-const WEB_SEARCH_DESCRIPTION = `Discover current public web information using Exa or Parallel. Results are textual and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file. The current year is ${new Date().getFullYear()}.`;
+const WEB_SEARCH_DESCRIPTION =
+  "Discover current public web information using Exa or Parallel. Results are textual and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
 type ExaSearchArguments = {
   query: string;
@@ -286,6 +304,7 @@ export function createWebSearchTool(
       openWorldHint: true,
     },
     parameters: WEB_SEARCH_PARAMETERS,
+    outputSchema: WebSearchOutputSchema,
     renderCall: (parameters, theme, context) =>
       renderWebSearchToolCall(parameters, theme, context.expanded),
     renderResult: (result, renderOptions, theme, context) =>
@@ -314,12 +333,17 @@ export function createWebSearchTool(
           requestSignal(callerSignal, WEB_SEARCH_TIMEOUT_MS),
         );
         const output = await createWebToolOutput(search);
+        const structuredContent: WebSearchOutput = { provider, content: search };
+        if (output.truncation !== undefined) {
+          structuredContent.fullOutputPath = output.truncation.fullOutputPath;
+        }
         return {
           content: [{ type: "text", text: output.content }],
           details:
             output.truncation === undefined
               ? { provider }
               : { provider, truncation: output.truncation },
+          structuredContent,
         };
       } catch {
         const failure = `Unable to search the web for ${input.query}`;

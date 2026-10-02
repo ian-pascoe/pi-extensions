@@ -53,9 +53,22 @@ Only textual MIME types are returned: an absent type, `text/*`, JSON, XML, JavaS
 
 Both tools declare MCP-style `annotations`: read-only, non-destructive, idempotent, and open-world. Pi reports them through `pi.getAllTools()` so permission extensions can decide which calls to confirm; Pi does not send them to model providers.
 
+## Script results
+
+Both tools declare an `outputSchema` and return matching `structuredContent`, so a Pi `codemode` script receives an object instead of the model-facing text. The model still reads the same text, and a failed call still throws.
+
+| Tool         | Script value                                                                    |
+| ------------ | ------------------------------------------------------------------------------- |
+| `web_search` | `{ provider, content, fullOutputPath? }`                                        |
+| `web_fetch`  | `{ url, contentType, format, content, truncated, fullOutputPath? }` (final URL) |
+
+Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's complete text answer (at most 256 KiB). Web Fetch `content` is the complete converted text up to 1 MiB of UTF-8, cut on a character boundary; `truncated` is `true` only for a longer page. `fullOutputPath` appears whenever the model-visible text was truncated, and then names the file with the complete text.
+
+Search results stay provider free text: Exa and Parallel return prose-and-snippet blobs rather than records, so the schema does not invent result fields. It adds the selected `provider` and the complete text.
+
 ## Limits and security
 
-Web Search response bodies stop at 256 KiB. Web Fetch response bodies stop at 5 MiB. Both tools apply Pi's 50 KiB or 2,000-line model-output limit after parsing or conversion. When output is truncated, the complete text is written to a unique private temporary directory and the returned result includes its path and exact counts. The operating system owns later temporary-file cleanup.
+Web Search response bodies stop at 256 KiB. Web Fetch response bodies stop at 5 MiB. Both tools apply Pi's 50 KiB or 2,000-line model-output limit after parsing or conversion. When output is truncated, the complete text is written to a unique private temporary directory and the returned result includes its path and exact counts. Script results are bounded separately, as described above. The operating system owns later temporary-file cleanup.
 
 Queries and URLs leave the machine for their Search Provider or requested host. Web Fetch intentionally permits private-network destinations, so use it only where the model and extension are trusted. The package provides no browser automation, JavaScript execution, extension-owned crawling, cookie storage, cache, settings, commands, or citation rewriting.
 

@@ -3,12 +3,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   createWebSearchTool,
   redactWebSearchApiKey,
   selectSearchProvider,
   WEB_SEARCH_TIMEOUT_MS,
+  WebSearchOutputSchema,
   type SearchProvider,
   type WebSearchToolOptions,
 } from "../src/web-search.js";
@@ -157,6 +159,7 @@ describe("Web Search", () => {
     expect(result).toEqual({
       content: [{ type: "text", text: "exa results" }],
       details: { provider: "exa" },
+      structuredContent: { provider: "exa", content: "exa results" },
     });
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -219,6 +222,7 @@ describe("Web Search", () => {
     expect(result).toEqual({
       content: [{ type: "text", text: "parallel results" }],
       details: { provider: "parallel" },
+      structuredContent: { provider: "parallel", content: "parallel results" },
     });
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -374,6 +378,13 @@ describe("Web Search", () => {
     if (visible?.type !== "text") throw new Error("Expected text search result");
     expect(Buffer.byteLength(visible.text)).toBeLessThanOrEqual(50 * 1024);
     expect(await readFile(path, "utf8")).toBe(complete);
+    // Scripts cannot read the spill file, so they receive the complete provider text.
+    expect(result.structuredContent).toEqual({
+      provider: "exa",
+      content: complete,
+      fullOutputPath: path,
+    });
+    expect(Value.Check(WebSearchOutputSchema, result.structuredContent)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(await readFile(path, "utf8")).not.toContain(secret);
   });

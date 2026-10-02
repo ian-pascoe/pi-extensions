@@ -1247,9 +1247,9 @@ export default function (pi) {
           }
           const content = result?.role === "toolResult" ? result.content : [];
           const output = content.at(-1);
-          // Coordinator tools resolve to structured objects; context_notes has no outputSchema.
+          // Coordinator tools and context_notes declare an outputSchema, so scripts get structured objects.
           expect(JSON.parse(output?.type === "text" ? output.text : "")).toEqual({
-            notes: JSON.stringify({ notes: [], total: 0, nextOffset: null }),
+            notes: { notes: [], total: 0, nextOffset: null },
             coordination: { parent_id: "notes-child", agents: [] },
             script: "script ok",
             // Model-only context_rollover is declared to the child but never script-callable.

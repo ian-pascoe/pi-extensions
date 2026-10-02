@@ -7,6 +7,8 @@ import { fauxAssistantMessage, type JsonValue } from "@earendil-works/pi-ai";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TSchema } from "typebox";
+import { Value } from "typebox/value";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { ensureReferenceOrigin } from "../src/context-store.js";
 import { registerContextTools } from "../src/context-tools.js";
@@ -25,13 +27,17 @@ interface ToolInput {
 interface RegisteredTool {
   name: string;
   executionMode?: string;
+  outputSchema?: TSchema;
   execute(
     id: string,
     params: ToolInput,
     signal: AbortSignal | undefined,
     update: undefined,
     ctx: ExtensionContext,
-  ): Promise<{ content: Array<{ type: string; text?: string }> }>;
+  ): Promise<{
+    content: Array<{ type: string; text?: string }>;
+    structuredContent?: JsonValue;
+  }>;
 }
 function harness(manager = SessionManager.inMemory(), onFailure?: (error: Error) => void) {
   const tools = new Map<string, RegisteredTool>();
@@ -58,6 +64,16 @@ function harness(manager = SessionManager.inMemory(), onFailure?: (error: Error)
       if (!tool) throw new Error(`Missing tool ${name}`);
       const result = await tool.execute("test-call", input, signal, undefined, ctx);
       return result.content.map((item) => item.text ?? "").join("\n");
+    },
+    /** The value a codemode script receives, checked against the tool's declared schema. */
+    async structured(name: string, input: ToolInput) {
+      const tool = tools.get(name);
+      if (!tool?.outputSchema) throw new Error(`Missing outputSchema for ${name}`);
+      const result = await tool.execute("test-call", input, undefined, undefined, ctx);
+      const text = result.content.map((item) => item.text ?? "").join("\n");
+      expect(Value.Check(tool.outputSchema, result.structuredContent)).toBe(true);
+      expect(result.structuredContent).toEqual(JSON.parse(text));
+      return result.structuredContent;
     },
   };
 }
@@ -340,5 +356,60 @@ describe("Context Notes tools", () => {
     ).toContain('"content":"Blue"');
     expect(await f.run("context_notes", { action: "list" })).toContain('"name":"task"');
     expect(f.tools.get("context_notes")?.executionMode).toBe("sequential");
+  });
+});
+
+describe("structured results for codemode scripts", () => {
+  test("context_notes returns schema-valid structuredContent matching its text for every action", async () => {
+    const f = harness();
+    expect(
+      await f.structured("context_notes", {
+        action: "write",
+        name: "task",
+        content: "# Task\nBlue",
+      }),
+    ).toEqual({ action: "write", name: "task", saved: true });
+    await f.structured("context_notes", { action: "append", name: "task", content: " widget" });
+    expect(await f.structured("context_notes", { action: "list" })).toMatchObject({
+      notes: [{ name: "task", characters: 18 }],
+      total: 1,
+      nextOffset: null,
+    });
+    expect(
+      await f.structured("context_notes", { action: "read", name: "task", offset: 7, limit: 4 }),
+    ).toMatchObject({ name: "task", content: "Blue", offset: 7, totalCharacters: 18 });
+    expect(
+      await f.structured("context_notes", { action: "search", query: "Blue", name: "task" }),
+    ).toMatchObject({ matches: [{ name: "task", offset: 7 }], nextOffset: null });
+    expect(await f.structured("context_notes", { action: "delete", name: "task" })).toEqual({
+      action: "delete",
+      name: "task",
+      saved: true,
+    });
+  });
+
+  test("context_history returns schema-valid structuredContent matching its text for every action", async () => {
+    const f = harness();
+    const messageId = f.manager.appendMessage({
+      role: "user",
+      content: "needle in a haystack",
+      timestamp: 0,
+    });
+    f.ensureOrigin();
+    const windows = await f.structured("context_history", { action: "windows" });
+    expect(windows).toMatchObject({ total: 1, nextOffset: null });
+    const listed = await f.structured("context_history", { action: "list" });
+    expect(listed).toMatchObject({ nextOffset: null });
+    const ref = `context:${f.manager.getSessionId()}:${messageId}`;
+    expect(listed).toMatchObject({
+      total: 2,
+      items: [{ ref, type: "message" }, { type: "custom" }],
+    });
+    expect(await f.structured("context_history", { action: "read", ref, limit: 40 })).toMatchObject(
+      { ref, format: "recorded-entry-json", offset: 0 },
+    );
+    expect(
+      await f.structured("context_history", { action: "search", query: "needle" }),
+    ).toMatchObject({ matches: [{ ref }], nextOffset: null });
   });
 });

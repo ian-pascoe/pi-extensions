@@ -12,7 +12,7 @@
 - Depends on: none
 - Category: perf
 - Planned at: `127e85a`, 2026-09-09
-- Execution status: TODO
+- Execution status: DONE (implemented with the Web Tools typed `outputSchema` change so the tool descriptions change once)
 
 ## Why this matters
 

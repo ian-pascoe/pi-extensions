@@ -408,6 +408,73 @@ const scriptOutput = (message: AgentMessage | undefined) =>
     ? message.content.map((part) => (part.type === "text" ? part.text : "")).join("")
     : "";
 
+it("hands codemode scripts typed todo, context_notes and context_history values and keeps tool definitions stable", async () => {
+  const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));
+  const f = await createSdkHarness([contextManagement, createCodemodeExtension()], {
+    additionalExtensionPaths: [todoPath],
+  });
+  expect(f.session.resourceLoader.getExtensions().errors).toEqual([]);
+  activateCodemode(f.session);
+  const script = `
+    const added = await tools.todo({ action: "add", title: "Typed Task", status: "active" });
+    const listed = await tools.todo({ action: "list" });
+    const saved = await tools.context_notes({ action: "write", name: "n", content: "hello" });
+    const read = await tools.context_notes({ action: "read", name: "n" });
+    const windows = await tools.context_history({ action: "windows" });
+    return {
+      taskId: added.task.id,
+      listedTitles: listed.tasks.map((task) => task.title),
+      saved: saved.saved,
+      note: read.content,
+      windowCount: windows.total,
+      windowRef: typeof windows.windows[0].ref,
+    };`;
+  f.responses.push(toolCall("codemode", { code: script }), reply("Typed."));
+  await f.session.prompt("Use typed results");
+  // The Todo projection follows the script's result as a hidden user message.
+  const output = scriptOutput(f.requests[1]?.messages.findLast((m) => m.role === "toolResult"));
+  expect(output).toMatch(/^Script completed/);
+  expect(output).toContain(
+    '{"taskId":1,"listedTitles":["Typed Task"],"saved":true,"note":"hello","windowCount":1,"windowRef":"string"}',
+  );
+
+  // The model still reads the unchanged JSON text of a direct call.
+  f.responses.push(
+    toolCall("context_notes", { action: "read", name: "n" }, "direct"),
+    reply("Done."),
+  );
+  await f.session.prompt("Read it directly");
+  const direct = f.requests[3]?.messages.at(-1);
+  expect(JSON.stringify(direct)).toContain(
+    JSON.stringify(
+      JSON.stringify({
+        name: "n",
+        ref: readNotes(f.manager)[0]?.ref,
+        content: "hello",
+        offset: 0,
+        totalCharacters: 5,
+        nextOffset: null,
+      }),
+    ),
+  );
+
+  // Ordered declarations (name, description with the Codemode result line, parameters) never move.
+  const declared = (index: number) => f.requests[index]?.toolDefinitions;
+  expect(f.requests[0]?.tools).toEqual(
+    expect.arrayContaining(["todo", "context_notes", "context_history"]),
+  );
+  const todoDescription = declared(0)?.find((tool) => tool.name === "todo")?.description ?? "";
+  expect(todoDescription).toMatch(
+    /Codemode: `tools\.todo\(args\)` resolves to `\{ action, tasks\?, task\?, id\?, cleared\? \}`/,
+  );
+  f.responses.push(reply("After reload."));
+  await f.session.reload();
+  await f.session.prompt("Turn after reload");
+  const last = f.requests.length - 1;
+  for (let index = 1; index <= last; index++) expect(declared(index)).toEqual(declared(0));
+  expect(f.providerRequests).toEqual([]);
+}, 30_000);
+
 for (const outcome of ["success", "throw", "cancel"] as const) {
   it(`retains nested Todo mutations after a codemode script ${outcome}`, async () => {
     const todoPath = fileURLToPath(new URL("../../pi-todo/src/index.ts", import.meta.url));

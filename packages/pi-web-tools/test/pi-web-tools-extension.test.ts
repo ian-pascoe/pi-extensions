@@ -2,7 +2,7 @@ import { toToolContext } from "./tool-context.js";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { WebFetchParameters } from "../src/web-fetch.js";
 import type { WebSearchParameters } from "../src/web-search.js";
 import piWebToolsExtension, { createPiWebToolsExtension } from "../src/index.js";
@@ -41,6 +41,32 @@ function renderText(component: { render(width: number): string[] }): string {
 
 beforeAll(() => initTheme("dark"));
 
+afterEach(() => {
+  vi.useRealTimers();
+  vi.resetModules();
+});
+
+/** Register the tools from a fresh module evaluation under a mocked clock. */
+async function modelFacingDefinitionsAt(date: string) {
+  vi.resetModules();
+  vi.useFakeTimers({ toFake: ["Date"], now: new Date(date) });
+  try {
+    const { default: freshExtension } = await import("../src/index.js");
+    const runner = await createWebToolsTestRunner(freshExtension);
+    return runner
+      .getAllRegisteredTools()
+      .map(({ definition: { name, description, parameters, outputSchema, promptSnippet } }) => ({
+        name,
+        description,
+        parameters,
+        outputSchema,
+        promptSnippet,
+      }));
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 // SAFETY: These public renderer tests exercise callbacks that only consume Theme.bold and Theme.fg.
 const registeredRenderTheme = {
   bold: (text: string) => text,
@@ -60,7 +86,7 @@ describe("Pi Web Tools extension", () => {
       renderCall: expect.any(Function),
       renderResult: expect.any(Function),
     });
-    expect(search?.description).toContain(String(new Date().getFullYear()));
+    expect(search?.description).not.toMatch(/\b(19|20)\d{2}\b/);
     expect(search?.description).toContain("50 KiB or 2,000 lines");
     expect(fetch).toMatchObject({
       label: "Web Fetch",
@@ -69,6 +95,20 @@ describe("Pi Web Tools extension", () => {
       renderResult: expect.any(Function),
     });
     expect(fetch?.description).toContain("50 KiB or 2,000 lines");
+  });
+
+  test("declares the same model-facing definitions when loaded in different calendar years", async () => {
+    const before = await modelFacingDefinitionsAt("2026-06-15T12:00:00Z");
+    const after = await modelFacingDefinitionsAt("2027-06-15T12:00:00Z");
+    expect(after).toEqual(before);
+    expect(before.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
+  });
+
+  test("declares output schemas for the structured results scripts receive", async () => {
+    const tools = await registeredTools();
+    for (const tool of tools) {
+      expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
+    }
   });
 
   test("renders calls and results through the registered Tool Definitions", async () => {

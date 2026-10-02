@@ -43,6 +43,92 @@ const HistoryParameters = Type.Object(
   { additionalProperties: false },
 );
 
+const NextOffset = Type.Union([Type.Integer({ minimum: 0 }), Type.Null()], {
+  description: "Offset of the next page or chunk, or null when this one is the last",
+});
+const SearchMatches = Type.Array(
+  Type.Object({
+    ref: Type.String(),
+    name: Type.Optional(Type.String({ description: "Note name; absent for History matches" })),
+    offset: Type.Integer({ minimum: 0 }),
+    preview: Type.String(),
+  }),
+  { description: "search: literal matches" },
+);
+
+// Flat on purpose: Pi renders a script-callable tool's result as one declaration line, and each
+// action fills a different subset of fields. The tool descriptions and README name the subsets.
+const HistoryOutputSchema = Type.Object(
+  {
+    windows: Type.Optional(
+      Type.Array(Type.Object({ ref: Type.String(), items: Type.Integer({ minimum: 0 }) }), {
+        description: "windows: one page of Context Windows",
+      }),
+    ),
+    items: Type.Optional(
+      Type.Array(
+        Type.Object({
+          ref: Type.String(),
+          type: Type.String(),
+          timestamp: Type.String(),
+          preview: Type.String(),
+        }),
+        { description: "list: one page of recorded entries" },
+      ),
+    ),
+    matches: Type.Optional(SearchMatches),
+    total: Type.Optional(
+      Type.Integer({ minimum: 0, description: "windows/list: total windows or entries" }),
+    ),
+    nextOffset: Type.Optional(NextOffset),
+    ref: Type.Optional(Type.String({ description: "read: the requested entry reference" })),
+    resolvedInSession: Type.Optional(Type.String({ description: "read: issuing session ID" })),
+    format: Type.Optional(
+      Type.Literal("recorded-entry-json", { description: "read: content kind" }),
+    ),
+    content: Type.Optional(Type.String({ description: "read: serialized entry JSON chunk" })),
+    offset: Type.Optional(Type.Integer({ minimum: 0, description: "read: chunk start" })),
+    totalCharacters: Type.Optional(
+      Type.Integer({ minimum: 0, description: "read: length of the whole serialized entry" }),
+    ),
+    availability: Type.Optional(Type.String({ description: "read: what the content omits" })),
+  },
+  { additionalProperties: false },
+);
+
+const NotesOutputSchema = Type.Object(
+  {
+    notes: Type.Optional(
+      Type.Array(
+        Type.Object({
+          name: Type.String(),
+          updatedAt: Type.String(),
+          ref: Type.String(),
+          characters: Type.Integer({ minimum: 0 }),
+        }),
+        { description: "list: one page of Notes" },
+      ),
+    ),
+    matches: Type.Optional(SearchMatches),
+    total: Type.Optional(Type.Integer({ minimum: 0, description: "list: total Notes" })),
+    nextOffset: Type.Optional(NextOffset),
+    name: Type.Optional(Type.String({ description: "read/write/append/delete: the Note name" })),
+    ref: Type.Optional(Type.String({ description: "read: the Note reference" })),
+    content: Type.Optional(Type.String({ description: "read: Note text chunk" })),
+    offset: Type.Optional(Type.Integer({ minimum: 0, description: "read: chunk start" })),
+    totalCharacters: Type.Optional(
+      Type.Integer({ minimum: 0, description: "read: length of the whole Note" }),
+    ),
+    action: Type.Optional(
+      StringEnum(["write", "append", "delete"], { description: "mutations: the action performed" }),
+    ),
+    saved: Type.Optional(
+      Type.Literal(true, { description: "mutations: the change was persisted" }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 interface SearchItem {
   ref: string;
   content: string;
@@ -103,7 +189,13 @@ function search(items: Iterable<SearchItem>, query: string, offset: number, limi
 }
 
 function result<T>(data: T) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data };
+  const text = JSON.stringify(data);
+  // The text the model reads and the value scripts receive come from one serialization.
+  return {
+    content: [{ type: "text" as const, text }],
+    details: data,
+    structuredContent: JSON.parse(text),
+  };
 }
 
 /** Registers branch-local storage tools; Handoff/checkpoint policy lives elsewhere. */
@@ -123,6 +215,7 @@ export function registerContextTools(
       idempotentHint: true,
       openWorldHint: false,
     },
+    outputSchema: HistoryOutputSchema,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(
@@ -227,6 +320,7 @@ export function registerContextTools(
       idempotentHint: false,
       openWorldHint: false,
     },
+    outputSchema: NotesOutputSchema,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(

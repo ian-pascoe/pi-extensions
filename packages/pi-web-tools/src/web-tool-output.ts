@@ -11,6 +11,29 @@ import { type Static, Type } from "typebox";
 
 const TRUNCATION_NOTICE_LINES = 2;
 
+/**
+ * Largest UTF-8 byte length of the text a codemode script receives in `structuredContent`. Scripts
+ * cannot read the private spill file, so this is far above the 50 KiB the model sees; it matches
+ * the 1 MiB Pi gives scripts for `bash` output and keeps one result from exhausting memory.
+ */
+export const WEB_TOOL_STRUCTURED_MAX_BYTES = 1024 * 1024;
+
+/** Result text for script callers and whether it was cut at the limit. */
+export type WebToolStructuredText = {
+  readonly content: string;
+  readonly truncated: boolean;
+};
+
+/** Text for script callers: the head of a result, cut on a character boundary at the limit. */
+export function boundWebToolStructuredText(text: string): WebToolStructuredText {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= WEB_TOOL_STRUCTURED_MAX_BYTES) return { content: text, truncated: false };
+  let end = WEB_TOOL_STRUCTURED_MAX_BYTES;
+  // Back up over UTF-8 continuation bytes so a multi-byte character is never split.
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return { content: bytes.toString("utf8", 0, end), truncated: true };
+}
+
 /** Runtime contract for exact complete-output metadata returned after Web Tool truncation. */
 export const WebToolTruncationDetailsSchema = Type.Object(
   {
