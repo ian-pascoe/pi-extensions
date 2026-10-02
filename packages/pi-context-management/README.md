@@ -25,7 +25,7 @@ pi -e ./packages/pi-context-management/src/index.ts
 | `/compact`         | Ask the agent to update Notes, write a fresh Handoff, roll over, and then wait for the next user input.                  |
 | `/rollover`        | Request the same pausing preparation directly, including when native compaction has no history to compact.               |
 
-`context_rollover` must be the only direct call in its tool batch. Nested rollover, including from a `codemode` script, is rejected before checkpoint mutation. The extension does not change tool exposure.
+`context_rollover` registers with Pi's `model-only` exposure: it stays declared to the model while active, including under `codemode.mode: "only"`, but Pi never offers it to `codemode` scripts or other tools' `ctx.executeTool()` calls, so a script sees `tools.context_rollover` as nonexistent. It must also be the only direct call in its tool batch; batched calls are rejected before checkpoint mutation, which also keeps nested calls out on Pi runtimes that predate `exposure`. `context_notes` and `context_history` keep Pi's default exposure.
 
 Notes use labels rather than filesystem paths. A session branch may hold up to 128 Notes; a Note name is 1–64 characters and content is at most 64,000 UTF-16 units. Lists and search return at most 20 results per page. Exact reads use zero-based UTF-16 offsets and return at most 2,000 units per call. Stable references have the form `context:<source-session>:<entry>`.
 

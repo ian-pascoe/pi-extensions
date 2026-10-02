@@ -1225,9 +1225,9 @@ export default function (pi) {
         expect(requests).toHaveLength(6);
         const tools = getCurrentTools(requests[0]!.messages);
         expect(tools.map((tool) => tool.name)).toEqual(
-          // Granted script-only tools stay undeclared.
+          // Granted script-only tools stay undeclared; model-only context_rollover stays declared.
           mode === "codemode-only"
-            ? ["codemode"]
+            ? ["context_rollover", "codemode"]
             : [...toolNames.filter((name) => name !== "script_tool"), ...coordinatorToolNames],
         );
         expect(getCurrentSystemPrompt(requests[0]!.messages)).toContain("Context Management:");
@@ -1252,7 +1252,11 @@ export default function (pi) {
             notes: JSON.stringify({ notes: [], total: 0, nextOffset: null }),
             coordination: { parent_id: "notes-child", agents: [] },
             script: "script ok",
-            names: [...coordinatorToolNames, ...toolNames.slice(0, 4)].sort(),
+            // Model-only context_rollover is declared to the child but never script-callable.
+            names: [
+              ...coordinatorToolNames,
+              ...toolNames.filter((name) => name !== "context_rollover").slice(0, 3),
+            ].sort(),
           });
         }
       } finally {

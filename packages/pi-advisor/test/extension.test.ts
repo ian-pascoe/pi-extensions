@@ -241,9 +241,16 @@ it.each(["none", "on", "only"] as const)(
     expect(mainRequests).toHaveLength(4);
     // Pi 0.99 declares the removed tool with an appended delta instead of rewriting the prefix.
     const [disabledFollowUp, enabledFollowUp] = mainRequests.slice(2);
+    // Under `only`, withdrawing advisor_ask changes the codemode listing, so Pi redeclares codemode
+    // after the other declared tools, including model-only context_rollover.
+    const codemodeLast = (tools: NonNullable<Context["tools"]> = []) => [
+      ...tools.filter((tool) => tool.name !== "codemode"),
+      ...tools.filter((tool) => tool.name === "codemode"),
+    ];
     expect({ ...enabledFollowUp, messages: conversation(enabledFollowUp?.messages) }).toEqual({
       ...disabledFollowUp,
       messages: conversation(disabledFollowUp?.messages),
+      ...(codemodeMode === "only" && { tools: codemodeLast(disabledFollowUp?.tools) }),
     });
     const disabledState = sessionState(runtimes[0]);
     const disabledCodemode = disabledState.tools.find((tool) => tool.name === "codemode");

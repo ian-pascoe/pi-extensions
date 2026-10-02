@@ -6,6 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
   createCodemodeExtension,
   SessionManager,
+  SettingsManager,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import contextManagement from "../src/context-management-extension.js";
@@ -482,7 +483,7 @@ for (const outcome of ["success", "throw", "cancel"] as const) {
   }, 30_000);
 }
 
-it("keeps codemode store() values through native compaction and rejects nested rollover", async () => {
+it("keeps codemode store() values through native compaction and keeps rollover out of scripts", async () => {
   const f = await createSdkHarness([contextManagement, createCodemodeExtension()]);
   expect(f.session.resourceLoader.getExtensions().errors).toEqual([]);
   activateCodemode(f.session);
@@ -518,8 +519,83 @@ it("keeps codemode store() values through native compaction and rejects nested r
   ).toBe(false);
   expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
   const failed = scriptOutput(f.requests[6]?.messages.at(-1));
-  expect(failed, failed).toMatch(/^Script failed[\s\S]*Rollover must be the sole direct tool call/);
+  expect(failed, failed).toMatch(/^Script failed[\s\S]*tools\.context_rollover does not exist/);
 }, 30_000);
+
+for (const mode of ["on", "only"] as const) {
+  it(`declares model-only context_rollover but never offers it to scripts or nested calls under codemode ${mode}`, async () => {
+    let nested: unknown;
+    const probe: ExtensionFactory = (pi) => {
+      pi.registerTool({
+        name: "nested_probe",
+        label: "Nested probe",
+        description: "Try to run Rollover through ctx.executeTool",
+        parameters: Type.Object({}),
+        async execute(_id, _args, _signal, _update, ctx) {
+          nested = await ctx.executeTool("context_rollover", { handoff: "Unsafe nested Handoff" });
+          return { content: [{ type: "text", text: "Probed." }], details: {} };
+        },
+      });
+    };
+    const f = await createSdkHarness([contextManagement, createCodemodeExtension(), probe], {
+      settings: SettingsManager.inMemory({
+        codemode: { mode },
+        compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 512 },
+        retry: { enabled: false },
+      }),
+    });
+    expect(f.session.resourceLoader.getExtensions().errors).toEqual([]);
+    activateCodemode(f.session);
+    expect(f.session.getAllTools().find((tool) => tool.name === "context_rollover")).toMatchObject({
+      exposure: "model-only",
+    });
+    expect(f.session.getActiveToolNames()).toContain("context_rollover");
+    expect(f.session.getCallableToolNames()).not.toContain("context_rollover");
+    const attempt =
+      'try { await tools.context_rollover({ handoff: "Unsafe script Handoff" }); return "called"; } catch (error) { return String(error.message); }';
+    f.responses.push(
+      toolCall("codemode", { code: attempt }),
+      toolCall("nested_probe", {}, "probe-1"),
+      reply("Both refused."),
+    );
+    await f.session.prompt("Try to roll over from a script and a nested call");
+    const scripted = scriptOutput(f.requests[1]?.messages.at(-1));
+    expect(scripted, scripted).toContain("tools.context_rollover does not exist");
+    expect(scripted).not.toContain("called");
+    expect(nested).toMatchObject({ isError: true });
+    expect(JSON.stringify(nested)).toContain("context_rollover");
+    const handoffs = () =>
+      f.manager
+        .getBranch()
+        .filter((entry) => entry.type === "custom" && entry.customType === "pi-context-handoff");
+    expect(handoffs()).toHaveLength(0);
+    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+    // Model-only tools stay declared in both modes, including when `only` hides direct tools.
+    const declared = f.requests[0]!.tools;
+    expect(declared).toContain("context_rollover");
+    expect(declared.includes("context_notes")).toBe(mode === "on");
+    const codemodeDescription = f.requests[0]!.toolDefinitions?.find(
+      (tool) => tool.name === "codemode",
+    )?.description;
+    expect(codemodeDescription).toBeDefined();
+    expect(codemodeDescription).not.toContain("context_rollover");
+    expect(codemodeDescription?.includes("context_notes")).toBe(mode === "only");
+    // The direct call still checkpoints.
+    f.responses.push(
+      toolCall("context_rollover", { handoff: "Continue after the direct call." }),
+      reply("Checkpointed."),
+    );
+    await f.session.prompt("Now roll over directly");
+    expect(handoffs()).toHaveLength(1);
+    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+    const first = f.requests[0]!;
+    for (const request of f.requests) {
+      expect(request.toolDefinitions).toEqual(first.toolDefinitions);
+      expect(request.systemPrompt).toBe(first.systemPrompt);
+    }
+    expect(f.providerRequests).toEqual([]);
+  }, 30_000);
+}
 
 for (const position of ["before", "after"]) {
   it(`preserves MCP-style replay/instructions under ${position} hook order (contract fixture, no server)`, async () => {
