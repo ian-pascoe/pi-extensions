@@ -123,12 +123,13 @@ export function renderAdvisorIntervention(
 ): Component | undefined {
   if (!Value.Check(findingSchema, details)) return undefined;
   const style = severityStyle[details.severity];
-  const heading = [
-    theme.fg(style.color, theme.bold(`${style.symbol} Advisor ${details.severity}`)),
-    agentId ? theme.fg("accent", `↳ ${agentId}`) : undefined,
-  ]
-    .filter((part) => part !== undefined)
-    .join("  ");
+  const heading = joinDefined(
+    [
+      theme.fg(style.color, theme.bold(`${style.symbol} Advisor ${details.severity}`)),
+      agentId ? theme.fg("accent", `↳ ${agentId}`) : undefined,
+    ],
+    "  ",
+  );
   const body: Component = new Markdown(details.message, 0, 0, getMarkdownTheme());
   const container = new Container();
   container.addChild(new Text(heading, 0, 0));

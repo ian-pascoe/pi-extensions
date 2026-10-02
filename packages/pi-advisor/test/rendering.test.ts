@@ -38,7 +38,7 @@ describe("Advisor Interventions", () => {
     }
   });
 
-  it("always shows corrective findings in full but collapses long Nits", () => {
+  it("always shows Concerns and Blockers in full but collapses long Nits", () => {
     for (const severity of ["concern", "blocker"] as const) {
       const text = lines(
         renderAdvisorIntervention({ severity, message: longMessage }, collapsed, plainTheme),

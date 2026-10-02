@@ -29,7 +29,7 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 
 Argument autocomplete suggests command names, settings keys, and valid trailing scope flags.
 
-Each command records a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the change it applied. While enabled, the footer shows `advisor`, `advisor: reviewing · backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused.
+Each command records a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the change it applied. While enabled, the footer shows `advisor` when idle, `advisor: reviewing`/`consulting` with any `backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused. `advisor_ask` renders its question and a Markdown answer preview, and Child Agent findings carry a `↳ <agentId>` label.
 
 Interventions render with their severity and Advisor attribution. Long Nits collapse until expanded; Concerns and Blockers always show in full.
 

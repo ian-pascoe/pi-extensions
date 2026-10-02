@@ -64,7 +64,7 @@ export async function fixture({
   interactive = false,
   ui = {},
 }: { enabled?: boolean; interactive?: boolean; ui?: Partial<ExtensionUIContext> } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "advisor-review-regression-"));
+  const directory = await mkdtemp(join(tmpdir(), "advisor-runtime-"));
   const cleanupGates: Array<() => void> = [];
   globalThis.advisorReviewRegression = {};
   const models = await ModelRuntime.create({
