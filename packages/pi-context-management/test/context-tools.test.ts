@@ -36,8 +36,21 @@ interface RegisteredTool {
     ctx: ExtensionContext,
   ): Promise<{
     content: Array<{ type: string; text?: string }>;
+    details?: JsonValue;
     structuredContent?: JsonValue;
   }>;
+}
+/** Independent reference conversion for the camelCase text/details to the script-facing keys. */
+function snakeCaseKeys(value: JsonValue | undefined): JsonValue | undefined {
+  if (Array.isArray(value)) return value.map((item) => snakeCaseKeys(item) ?? null);
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: Test input is JSON this suite just parsed; this separates object nodes from primitives.
+  if (value === null || typeof value !== "object" || value === undefined) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase(),
+      snakeCaseKeys(entry) ?? null,
+    ]),
+  );
 }
 function harness(manager = SessionManager.inMemory(), onFailure?: (error: Error) => void) {
   const tools = new Map<string, RegisteredTool>();
@@ -72,7 +85,10 @@ function harness(manager = SessionManager.inMemory(), onFailure?: (error: Error)
       const result = await tool.execute("test-call", input, undefined, undefined, ctx);
       const text = result.content.map((item) => item.text ?? "").join("\n");
       expect(Value.Check(tool.outputSchema, result.structuredContent)).toBe(true);
-      expect(result.structuredContent).toEqual(JSON.parse(text));
+      // The model's text and persisted details keep camelCase; scripts get the snake_case value.
+      expect(JSON.parse(text)).toEqual(result.details);
+      expect(result.structuredContent).toEqual(snakeCaseKeys(JSON.parse(text)));
+      expect(JSON.stringify(result.structuredContent)).not.toMatch(/"[a-z]+[A-Z]\w*":/);
       return result.structuredContent;
     },
   };
@@ -373,14 +389,14 @@ describe("structured results for codemode scripts", () => {
     expect(await f.structured("context_notes", { action: "list" })).toMatchObject({
       notes: [{ name: "task", characters: 18 }],
       total: 1,
-      nextOffset: null,
+      next_offset: null,
     });
     expect(
       await f.structured("context_notes", { action: "read", name: "task", offset: 7, limit: 4 }),
-    ).toMatchObject({ name: "task", content: "Blue", offset: 7, totalCharacters: 18 });
+    ).toMatchObject({ name: "task", content: "Blue", offset: 7, total_characters: 18 });
     expect(
       await f.structured("context_notes", { action: "search", query: "Blue", name: "task" }),
-    ).toMatchObject({ matches: [{ name: "task", offset: 7 }], nextOffset: null });
+    ).toMatchObject({ matches: [{ name: "task", offset: 7 }], next_offset: null });
     expect(await f.structured("context_notes", { action: "delete", name: "task" })).toEqual({
       action: "delete",
       name: "task",
@@ -397,9 +413,9 @@ describe("structured results for codemode scripts", () => {
     });
     f.ensureOrigin();
     const windows = await f.structured("context_history", { action: "windows" });
-    expect(windows).toMatchObject({ total: 1, nextOffset: null });
+    expect(windows).toMatchObject({ total: 1, next_offset: null });
     const listed = await f.structured("context_history", { action: "list" });
-    expect(listed).toMatchObject({ nextOffset: null });
+    expect(listed).toMatchObject({ next_offset: null });
     const ref = `context:${f.manager.getSessionId()}:${messageId}`;
     expect(listed).toMatchObject({
       total: 2,
@@ -410,6 +426,6 @@ describe("structured results for codemode scripts", () => {
     );
     expect(
       await f.structured("context_history", { action: "search", query: "needle" }),
-    ).toMatchObject({ matches: [{ ref }], nextOffset: null });
+    ).toMatchObject({ matches: [{ ref }], next_offset: null });
   });
 });

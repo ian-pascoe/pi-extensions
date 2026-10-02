@@ -27,17 +27,17 @@ pi -e ./packages/pi-context-management/src/index.ts
 
 `context_rollover` registers with Pi's `model-only` exposure: it stays declared to the model while active, including under `codemode.mode: "only"`, but Pi never offers it to `codemode` scripts or other tools' `ctx.executeTool()` calls, so a script sees `tools.context_rollover` as nonexistent. It must also be the only direct call in its tool batch; batched calls are rejected before checkpoint mutation, which also keeps nested calls out on Pi runtimes that predate `exposure`. `context_notes` and `context_history` keep Pi's default exposure.
 
-`context_notes` and `context_history` declare an `outputSchema` and return matching `structuredContent`, so a Pi `codemode` script receives the parsed object rather than JSON text; the model still reads the same JSON text. Fields present depend on the action:
+`context_notes` and `context_history` declare an `outputSchema` and return matching `structuredContent`, so a Pi `codemode` script receives an object rather than JSON text. Script fields are snake_case, like Pi's `bash` and `pi-termctrl`; the model still reads the same camelCase JSON text, and session `details` keep their camelCase shape. Fields present depend on the action:
 
-| Tool / action                              | Script value                                                                                     |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `context_notes` list                       | `{ notes: [{ name, updatedAt, ref, characters }], total, nextOffset }`                           |
-| `context_notes` read                       | `{ name, ref, content, offset, totalCharacters, nextOffset }`                                    |
-| `context_notes` write/append/delete        | `{ action, name, saved: true }`                                                                  |
-| `context_notes` / `context_history` search | `{ matches: [{ ref, name?, offset, preview }], nextOffset }`                                     |
-| `context_history` windows                  | `{ windows: [{ ref, items }], total, nextOffset }`                                               |
-| `context_history` list                     | `{ items: [{ ref, type, timestamp, preview }], total, nextOffset }`                              |
-| `context_history` read                     | `{ ref, resolvedInSession, format, content, offset, totalCharacters, nextOffset, availability }` |
+| Tool / action                              | Script value                                                                                         |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `context_notes` list                       | `{ notes: [{ name, updated_at, ref, characters }], total, next_offset }`                             |
+| `context_notes` read                       | `{ name, ref, content, offset, total_characters, next_offset }`                                      |
+| `context_notes` write/append/delete        | `{ action, name, saved: true }`                                                                      |
+| `context_notes` / `context_history` search | `{ matches: [{ ref, name?, offset, preview }], next_offset }`                                        |
+| `context_history` windows                  | `{ windows: [{ ref, items }], total, next_offset }`                                                  |
+| `context_history` list                     | `{ items: [{ ref, type, timestamp, preview }], total, next_offset }`                                 |
+| `context_history` read                     | `{ ref, resolved_in_session, format, content, offset, total_characters, next_offset, availability }` |
 
 Failures still throw. `context_rollover` has no schema because it cannot run inside a script.
 

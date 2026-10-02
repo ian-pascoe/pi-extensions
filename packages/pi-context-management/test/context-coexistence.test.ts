@@ -428,6 +428,9 @@ it("hands codemode scripts typed todo, context_notes and context_history values 
       note: read.content,
       windowCount: windows.total,
       windowRef: typeof windows.windows[0].ref,
+      noteLength: read.total_characters,
+      windowsNext: windows.next_offset,
+      camelCase: [read.totalCharacters, windows.nextOffset],
     };`;
   f.responses.push(toolCall("codemode", { code: script }), reply("Typed."));
   await f.session.prompt("Use typed results");
@@ -435,7 +438,7 @@ it("hands codemode scripts typed todo, context_notes and context_history values 
   const output = scriptOutput(f.requests[1]?.messages.findLast((m) => m.role === "toolResult"));
   expect(output).toMatch(/^Script completed/);
   expect(output).toContain(
-    '{"taskId":1,"listedTitles":["Typed Task"],"saved":true,"note":"hello","windowCount":1,"windowRef":"string"}',
+    '{"taskId":1,"listedTitles":["Typed Task"],"saved":true,"note":"hello","windowCount":1,"windowRef":"string","noteLength":5,"windowsNext":null,"camelCase":[null,null]}',
   );
 
   // The model still reads the unchanged JSON text of a direct call.

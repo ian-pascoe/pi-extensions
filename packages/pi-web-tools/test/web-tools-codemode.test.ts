@@ -161,13 +161,13 @@ describe("Web Tools through Pi codemode", () => {
       return {
         provider: search.provider,
         searchContent: search.content,
-        searchSpilled: search.fullOutputPath !== undefined,
+        searchSpilled: search.full_output_path !== undefined,
         url: page.url,
-        contentType: page.contentType,
+        content_type: page.content_type,
         format: page.format,
         truncated: page.truncated,
         hasFinalMarker: page.content.includes("FINAL MARKER"),
-        spilled: typeof page.fullOutputPath,
+        spilled: typeof page.full_output_path,
       };`;
     fixture.responses.push(
       fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
@@ -183,7 +183,7 @@ describe("Web Tools through Pi codemode", () => {
       searchContent: SEARCH_TEXT,
       searchSpilled: false,
       url: "https://example.com/long",
-      contentType: "text/html",
+      content_type: "text/html",
       format: "text",
       truncated: false,
       hasFinalMarker: true,
@@ -216,10 +216,10 @@ describe("Web Tools through Pi codemode", () => {
     // Pi appends the script-call result line to a declared tool's description (or lists it in codemode's).
     const text = (first?.tools ?? []).map(({ description }) => description).join("\n");
     expect(text).toMatch(
-      /web_search\(args\)` resolves to `\{ provider, content, fullOutputPath\? \}`/,
+      /web_search\(args\)` resolves to `\{ provider, content, full_output_path\? \}`/,
     );
     expect(text).toMatch(
-      /web_fetch\(args\)` resolves to `\{ url, contentType, format, content, truncated, fullOutputPath\? \}`/,
+      /web_fetch\(args\)` resolves to `\{ url, content_type, format, content, truncated, full_output_path\? \}`/,
     );
     for (const turn of fixture.turns) {
       expect(turn.systemPrompt).toBe(first?.systemPrompt);

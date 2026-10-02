@@ -1249,7 +1249,7 @@ export default function (pi) {
           const output = content.at(-1);
           // Coordinator tools and context_notes declare an outputSchema, so scripts get structured objects.
           expect(JSON.parse(output?.type === "text" ? output.text : "")).toEqual({
-            notes: { notes: [], total: 0, nextOffset: null },
+            notes: { notes: [], total: 0, next_offset: null },
             coordination: { parent_id: "notes-child", agents: [] },
             script: "script ok",
             // Model-only context_rollover is declared to the child but never script-callable.

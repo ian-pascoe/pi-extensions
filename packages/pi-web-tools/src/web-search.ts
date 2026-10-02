@@ -64,13 +64,15 @@ export type WebSearchDetails = Static<typeof WebSearchDetailsSchema>;
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
  * `content` is the Search Provider's complete text answer (at most 256 KiB), which is free-form
- * rather than a result list; `fullOutputPath` is present when the model saw it truncated.
+ * rather than a result list; `full_output_path` is present when the model saw it truncated.
  */
 export const WebSearchOutputSchema = Type.Object(
   {
     provider: SearchProviderSchema,
     content: Type.String({ description: "Search Provider's complete text answer" }),
-    fullOutputPath: Type.Optional(Type.String({ description: "Private file with the full text" })),
+    full_output_path: Type.Optional(
+      Type.String({ description: "Private file with the full text" }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -335,7 +337,7 @@ export function createWebSearchTool(
         const output = await createWebToolOutput(search);
         const structuredContent: WebSearchOutput = { provider, content: search };
         if (output.truncation !== undefined) {
-          structuredContent.fullOutputPath = output.truncation.fullOutputPath;
+          structuredContent.full_output_path = output.truncation.fullOutputPath;
         }
         return {
           content: [{ type: "text", text: output.content }],

@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, type JsonValue } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -80,15 +80,15 @@ const HistoryOutputSchema = Type.Object(
     total: Type.Optional(
       Type.Integer({ minimum: 0, description: "windows/list: total windows or entries" }),
     ),
-    nextOffset: Type.Optional(NextOffset),
+    next_offset: Type.Optional(NextOffset),
     ref: Type.Optional(Type.String({ description: "read: the requested entry reference" })),
-    resolvedInSession: Type.Optional(Type.String({ description: "read: issuing session ID" })),
+    resolved_in_session: Type.Optional(Type.String({ description: "read: issuing session ID" })),
     format: Type.Optional(
       Type.Literal("recorded-entry-json", { description: "read: content kind" }),
     ),
     content: Type.Optional(Type.String({ description: "read: serialized entry JSON chunk" })),
     offset: Type.Optional(Type.Integer({ minimum: 0, description: "read: chunk start" })),
-    totalCharacters: Type.Optional(
+    total_characters: Type.Optional(
       Type.Integer({ minimum: 0, description: "read: length of the whole serialized entry" }),
     ),
     availability: Type.Optional(Type.String({ description: "read: what the content omits" })),
@@ -102,7 +102,7 @@ const NotesOutputSchema = Type.Object(
       Type.Array(
         Type.Object({
           name: Type.String(),
-          updatedAt: Type.String(),
+          updated_at: Type.String(),
           ref: Type.String(),
           characters: Type.Integer({ minimum: 0 }),
         }),
@@ -111,12 +111,12 @@ const NotesOutputSchema = Type.Object(
     ),
     matches: Type.Optional(SearchMatches),
     total: Type.Optional(Type.Integer({ minimum: 0, description: "list: total Notes" })),
-    nextOffset: Type.Optional(NextOffset),
+    next_offset: Type.Optional(NextOffset),
     name: Type.Optional(Type.String({ description: "read/write/append/delete: the Note name" })),
     ref: Type.Optional(Type.String({ description: "read: the Note reference" })),
     content: Type.Optional(Type.String({ description: "read: Note text chunk" })),
     offset: Type.Optional(Type.Integer({ minimum: 0, description: "read: chunk start" })),
-    totalCharacters: Type.Optional(
+    total_characters: Type.Optional(
       Type.Integer({ minimum: 0, description: "read: length of the whole Note" }),
     ),
     action: Type.Optional(
@@ -188,13 +188,29 @@ function search(items: Iterable<SearchItem>, query: string, offset: number, limi
   return { matches, nextOffset: null };
 }
 
+const CAMEL_BOUNDARY = /([a-z0-9])([A-Z])/g;
+
+/** Rename object keys to snake_case; every key is a fixed field name, so values are untouched. */
+function snakeCaseKeys(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(snakeCaseKeys);
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: The value is JSON this module just serialized; this separates object nodes from primitives, and the output schema test covers every action.
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key.replace(CAMEL_BOUNDARY, "$1_$2").toLowerCase(),
+      snakeCaseKeys(entry),
+    ]),
+  );
+}
+
 function result<T>(data: T) {
   const text = JSON.stringify(data);
-  // The text the model reads and the value scripts receive come from one serialization.
+  // The text the model reads and the value scripts receive come from one serialization. `details`
+  // keeps its persisted camelCase shape; only the script-facing value uses snake_case keys.
   return {
     content: [{ type: "text" as const, text }],
     details: data,
-    structuredContent: JSON.parse(text),
+    structuredContent: snakeCaseKeys(JSON.parse(text)),
   };
 }
 

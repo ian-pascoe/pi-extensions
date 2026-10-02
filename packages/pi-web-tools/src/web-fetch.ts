@@ -54,17 +54,19 @@ export type WebFetchDetails = Static<typeof WebFetchDetailsSchema>;
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
  * `content` is the complete fetched text up to 1 MiB; `truncated` marks a longer page cut at that
- * limit. `fullOutputPath` names the private file holding the complete text whenever it exceeded the
+ * limit. `full_output_path` names the private file holding the complete text whenever it exceeded the
  * model-visible 50 KiB / 2,000-line limit.
  */
 export const WebFetchOutputSchema = Type.Object(
   {
     url: Type.String({ description: "Final URL after redirects, without credentials" }),
-    contentType: Type.String({ description: "Response Content-Type header" }),
+    content_type: Type.String({ description: "Response Content-Type header" }),
     format: WebFetchFormatSchema,
     content: Type.String({ description: "Fetched text in the requested format" }),
     truncated: Type.Boolean({ description: "content was cut at 1 MiB" }),
-    fullOutputPath: Type.Optional(Type.String({ description: "Private file with the full text" })),
+    full_output_path: Type.Optional(
+      Type.String({ description: "Private file with the full text" }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -304,13 +306,13 @@ export function createWebFetchTool(
         const structured = boundWebToolStructuredText(fetched.content);
         const structuredContent: WebFetchOutput = {
           url: fetched.finalUrl,
-          contentType: fetched.contentType,
+          content_type: fetched.contentType,
           format,
           content: structured.content,
           truncated: structured.truncated,
         };
         if (output.truncation !== undefined) {
-          structuredContent.fullOutputPath = output.truncation.fullOutputPath;
+          structuredContent.full_output_path = output.truncation.fullOutputPath;
         }
         return {
           content: [{ type: "text", text: output.content }],

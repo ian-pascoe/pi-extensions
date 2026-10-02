@@ -24,7 +24,7 @@ The `todo` tool supports five actions:
 | `remove` | `id`                                         | Removes one Task                  |
 | `clear`  | —                                            | Removes every Task and resets IDs |
 
-A Pi `codemode` script receives the result as an object (the tool declares an `outputSchema`) instead of the text; the model still reads the same text, and failures still throw:
+A Pi `codemode` script receives the result as an object (the tool declares an `outputSchema`) instead of the text (its field names are already single words, so they match Pi's snake_case convention); the model still reads the same text, and failures still throw:
 
 | Action           | Script value                                                                 |
 | ---------------- | ---------------------------------------------------------------------------- |

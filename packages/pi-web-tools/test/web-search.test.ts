@@ -382,7 +382,7 @@ describe("Web Search", () => {
     expect(result.structuredContent).toEqual({
       provider: "exa",
       content: complete,
-      fullOutputPath: path,
+      full_output_path: path,
     });
     expect(Value.Check(WebSearchOutputSchema, result.structuredContent)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(secret);

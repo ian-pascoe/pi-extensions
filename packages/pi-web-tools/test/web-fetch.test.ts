@@ -108,7 +108,7 @@ describe("Web Fetch", () => {
       },
       structuredContent: {
         url: `${server.baseUrl}/target`,
-        contentType: "text/plain",
+        content_type: "text/plain",
         format: "text",
         content: "redirected",
         truncated: false,
@@ -341,7 +341,7 @@ describe("Web Fetch", () => {
     expect(result.structuredContent).toMatchObject({
       content: expect.stringContaining("paragraph 2099"),
       truncated: false,
-      fullOutputPath: path,
+      full_output_path: path,
     });
     expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
   });
@@ -362,7 +362,7 @@ describe("Web Fetch", () => {
     expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
     const structured = Value.Parse(WebFetchOutputSchema, result.structuredContent);
     expect(structured.truncated).toBe(true);
-    expect(structured.fullOutputPath).toBe(path);
+    expect(structured.full_output_path).toBe(path);
     const content = structured.content;
     expect(Buffer.byteLength(content)).toBe(WEB_TOOL_STRUCTURED_MAX_BYTES - 1);
     expect(content).not.toContain("\uFFFD");
@@ -379,7 +379,7 @@ describe("Web Fetch", () => {
     );
     expect(result.structuredContent).toEqual({
       url: "https://example.com/tiny",
-      contentType: "text/plain",
+      content_type: "text/plain",
       format: "text",
       content: "tiny",
       truncated: false,

@@ -277,6 +277,7 @@ describe("Pi Todo extension", () => {
       const result = await harness.execute(params, context);
       expect(Value.Check(outputSchema, result.structuredContent)).toBe(true);
       expect(result.structuredContent).toEqual(result.details);
+      expect(result.structuredContent).not.toBe(result.details);
       return result.structuredContent;
     };
 

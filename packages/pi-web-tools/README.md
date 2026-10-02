@@ -55,14 +55,14 @@ Both tools declare MCP-style `annotations`: read-only, non-destructive, idempote
 
 ## Script results
 
-Both tools declare an `outputSchema` and return matching `structuredContent`, so a Pi `codemode` script receives an object instead of the model-facing text. The model still reads the same text, and a failed call still throws.
+Both tools declare an `outputSchema` and return matching `structuredContent`, so a Pi `codemode` script receives an object instead of the model-facing text. Field names are snake_case, like Pi's `bash` and `pi-termctrl`; the session `details` keep their existing shape. The model still reads the same text, and a failed call still throws.
 
-| Tool         | Script value                                                                    |
-| ------------ | ------------------------------------------------------------------------------- |
-| `web_search` | `{ provider, content, fullOutputPath? }`                                        |
-| `web_fetch`  | `{ url, contentType, format, content, truncated, fullOutputPath? }` (final URL) |
+| Tool         | Script value                                                                       |
+| ------------ | ---------------------------------------------------------------------------------- |
+| `web_search` | `{ provider, content, full_output_path? }`                                         |
+| `web_fetch`  | `{ url, content_type, format, content, truncated, full_output_path? }` (final URL) |
 
-Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's complete text answer (at most 256 KiB). Web Fetch `content` is the complete converted text up to 1 MiB of UTF-8, cut on a character boundary; `truncated` is `true` only for a longer page. `fullOutputPath` appears whenever the model-visible text was truncated, and then names the file with the complete text.
+Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's complete text answer (at most 256 KiB). Web Fetch `content` is the complete converted text up to 1 MiB of UTF-8, cut on a character boundary; `truncated` is `true` only for a longer page. `full_output_path` appears whenever the model-visible text was truncated, and then names the file with the complete text.
 
 Search results stay provider free text: Exa and Parallel return prose-and-snippet blobs rather than records, so the schema does not invent result fields. It adds the selected `provider` and the complete text.
 
