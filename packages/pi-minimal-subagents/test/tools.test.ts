@@ -19,6 +19,7 @@ import {
   type CoordinatorToolDefinitionOptions,
   type CoordinatorToolOperations,
 } from "../src/minimal-subagents-tools.js";
+import type { ActiveTurnProgress } from "../src/minimal-subagents-types.js";
 
 type RecordingWait = ReturnType<typeof vi.fn<CoordinatorToolOperations["wait"]>>;
 
@@ -38,6 +39,10 @@ function toolOptions(
       root_id: "root",
       agents: [],
     })),
+    previewActiveTurn: vi.fn<CoordinatorToolOperations["previewActiveTurn"]>(() => undefined),
+    inspectActiveTurnTranscript: vi.fn<CoordinatorToolOperations["inspectActiveTurnTranscript"]>(
+      () => undefined,
+    ),
     sendAgentMessage: vi.fn<CoordinatorToolOperations["sendAgentMessage"]>(),
     wait: recordedWait,
     status: vi.fn<CoordinatorToolOperations["status"]>(() => ({ parent_id: callerId, agents: [] })),
@@ -110,6 +115,71 @@ describe("minimal subagents coordinator tools", () => {
     expect(outputSchemas).toEqual(CoordinatorToolOutputSchemas);
   });
 
+  it("runs a spawn sequentially so later calls in the same batch can target the new child", () => {
+    const tools = createCoordinatorToolDefinitions(toolOptions("root", true));
+    expect(
+      Object.fromEntries(tools.map(({ name, executionMode }) => [name, executionMode])),
+    ).toEqual({
+      subagent: "sequential",
+      agent_message: undefined,
+      subagent_wait: undefined,
+      subagent_status: undefined,
+      subagent_cancel: undefined,
+      subagent_delete: undefined,
+    });
+  });
+
+  it("returns a compact spawn result while keeping full detail for the transcript renderer", async () => {
+    const options = toolOptions("root", true);
+    const spawned = {
+      agent_id: "child",
+      turn_id: "child:turn-1",
+      status: "running" as const,
+      model: "provider/model",
+      thinking_level: "medium" as const,
+      tools: ["read"],
+      delegation: "none" as const,
+    };
+    vi.mocked(options.coordinator.spawn).mockResolvedValue(spawned);
+    const agent = {
+      ...spawned,
+      parent_id: "root",
+      state: "running" as const,
+      availability: "available" as const,
+      child_count: 0,
+      task: "Investigate",
+      launch_contract: {
+        session_context: "omit" as const,
+        project_context: "inherit" as const,
+        model: "provider/model",
+        thinking_level: "medium" as const,
+        tools: "read" as const,
+        ordinary_tools: ["read"],
+      },
+      capability_ceiling: ["read"],
+      spawn_entry_id: "entry",
+      recent_messages: [],
+      recent_activity: [],
+      missing_dependencies: [],
+    };
+    vi.mocked(options.coordinator.inspectStatus).mockReturnValue({ agent });
+
+    const result = await requireTool(options, "subagent").execute(
+      "spawn-call",
+      { task: "Investigate" },
+      undefined,
+      undefined,
+      await createToolExecutionContext(),
+    );
+
+    expect(result.structuredContent).toEqual(spawned);
+    expect(Value.Check(CoordinatorToolOutputSchemas.subagent, result.structuredContent)).toBe(true);
+    expect(JSON.parse(result.content[0]?.type === "text" ? result.content[0].text : "")).toEqual(
+      spawned,
+    );
+    expect(result.details).toEqual({ ...spawned, agent });
+  });
+
   it("forwards an exact retained turn ID through subagent_wait", async () => {
     const options = toolOptions("root", true);
     options.recordedWait.mockResolvedValue({
@@ -140,6 +210,39 @@ describe("minimal subagents coordinator tools", () => {
     // Script callers receive the declared object shape.
     expect(result.structuredContent).toEqual(result.details);
     expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
+  });
+
+  it("streams the waited-on child's running-turn progress in partial wait updates", async () => {
+    const options = toolOptions("root", true);
+    const progress: ActiveTurnProgress = { turn_id: "child:turn-1", tool_calls: 2 };
+    vi.mocked(options.coordinator.previewActiveTurn).mockReturnValue(progress);
+    options.recordedWait.mockResolvedValue({
+      event: "turn",
+      agent_id: "child",
+      turn_id: "child:turn-1",
+      status: "completed",
+      output: "done",
+    });
+    const onUpdate = vi.fn();
+
+    await requireTool(options, "subagent_wait").execute(
+      "wait-call",
+      { agent_id: "child", turn_id: "child:turn-1" },
+      undefined,
+      onUpdate,
+      await createToolExecutionContext(),
+    );
+
+    expect(options.coordinator.previewActiveTurn).toHaveBeenCalledWith(
+      "root",
+      "child",
+      "child:turn-1",
+    );
+    expect(onUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: expect.objectContaining({ agent_id: "child", status: "waiting", ...progress }),
+      }),
+    );
   });
 
   it("returns partial deletion failures as an error result that keeps the declared output", async () => {

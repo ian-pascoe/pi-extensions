@@ -19,10 +19,13 @@ import {
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import {
   parseCoordinatorMessageDetails,
   parseCoordinatorToolCall,
   parseCoordinatorToolResult,
+  parseWaitProgressDetails,
   type CancelRenderDetails,
   type CoordinatorMessageRenderDetails,
   type CoordinatorToolCallInput,
@@ -31,11 +34,13 @@ import {
   type ManagementCallArguments,
   type MessageCallArguments,
   type MessageRenderDetails,
+  type RenderRecentActivity,
   type RenderStatusAgent,
   type SpawnCallArguments,
   type SpawnRenderDetails,
   type StatusRenderDetails,
   type WaitCallArguments,
+  type WaitProgressRenderDetails,
   type WaitRenderDetails,
 } from "./minimal-subagents-render-contract.js";
 import { stripCoordinatorMessageEnvelope } from "./minimal-subagents-message-envelope.js";
@@ -63,6 +68,7 @@ type SubagentPresentationStatus =
   | "delivered"
   | "delivered-via-wait"
   | "queued"
+  | "started-turn"
   | "message"
   | "timed out";
 
@@ -80,6 +86,7 @@ const SUBAGENT_STATUS_PRESENTATION = {
   delivered: { symbol: "→", color: "accent" },
   "delivered-via-wait": { symbol: "→", color: "accent" },
   queued: { symbol: "↗", color: "accent" },
+  "started-turn": { symbol: "◉", color: "accent" },
   message: { symbol: "→", color: "accent" },
   "timed out": { symbol: "!", color: "warning" },
 } satisfies { readonly [Status in SubagentPresentationStatus]: SubagentStatusPresentation };
@@ -106,7 +113,7 @@ export function orderActiveAgentSubtrees(agents: readonly AgentSummary[]): Agent
   ): { agent: AgentSummary; active: boolean }[] =>
     siblings
       .map((agent) => {
-        const children = orderSiblings(agent.children);
+        const children = orderSiblings(agent.children ?? []);
         return {
           agent: { ...agent, children: children.map((child) => child.agent) },
           active: agent.state === "running" || children.some((child) => child.active),
@@ -215,6 +222,169 @@ function collapsedExpansionHint(theme: MinimalSubagentsRenderTheme): string {
   return theme.fg("dim", `  ·  ${keyHint("app.tools.expand", "to expand")}`);
 }
 
+/** Collapsed previews match Pi's built-in `read` output height. */
+const COLLAPSED_PREVIEW_LINES = 10;
+
+function isBlankRenderedLine(line: string): boolean {
+  return visibleWidth(line.trim()) === 0;
+}
+
+function withoutTrailingBlankLines(lines: string[]): string[] {
+  const end = lines.findLastIndex((line) => !isBlankRenderedLine(line));
+  return lines.slice(0, end + 1);
+}
+
+/** Shows the first rendered lines of `content`, noting how many lines expanding would reveal. */
+class CollapsedPreview implements Component {
+  constructor(
+    private readonly content: Component,
+    private readonly theme: MinimalSubagentsRenderTheme,
+  ) {}
+
+  render(width: number): string[] {
+    const lines = withoutTrailingBlankLines(this.content.render(width));
+    if (lines.length <= COLLAPSED_PREVIEW_LINES) return lines;
+    // A cut at a paragraph break would leave a blank line above the hint.
+    const shown = withoutTrailingBlankLines(lines.slice(0, COLLAPSED_PREVIEW_LINES));
+    const hidden = lines.length - shown.length;
+    return [
+      ...shown,
+      // The result's first line already carries the expansion hint.
+      this.theme.fg("muted", `... (${hidden} more lines)`),
+    ];
+  }
+
+  invalidate(): void {
+    this.content.invalidate();
+  }
+}
+
+function collapsedMarkdownPreview(content: string, theme: MinimalSubagentsRenderTheme): Component {
+  return new CollapsedPreview(new Markdown(content, 0, 0, getMarkdownTheme()), theme);
+}
+
+function collapsedTextPreview(content: string, theme: MinimalSubagentsRenderTheme): Component {
+  return new CollapsedPreview(new Text(content, 0, 0), theme);
+}
+
+const ToolArgumentsSchema = Type.Record(Type.String(), Type.Unknown());
+const ScalarArgumentSchema = Type.Union([Type.String(), Type.Number(), Type.Boolean()]);
+
+/** Summarize tool-call arguments by their values, e.g. a path or command rather than its JSON. */
+function toolArgumentSummary(content: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    // Recent Activity keeps the tail of long arguments, which is no longer valid JSON.
+    return content;
+  }
+  if (!Value.Check(ToolArgumentsSchema, parsed)) return content;
+  return Object.values(parsed)
+    .filter((value) => value !== null && value !== undefined)
+    .map((value) =>
+      Value.Check(ScalarArgumentSchema, value) ? String(value) : JSON.stringify(value),
+    )
+    .join(" ");
+}
+
+function lastNonEmptyLine(content: string): string {
+  return (
+    content
+      .split("\n")
+      .map((line) => line.trim())
+      .findLast((line) => line.length > 0) ?? ""
+  );
+}
+
+/** One activity entry as a single width-bounded line, truncating plain text before styling it. */
+function formatActivityLine(
+  activity: RenderRecentActivity,
+  theme: MinimalSubagentsRenderTheme,
+  width: number,
+): string {
+  const fit = (prefix: string, text: string) =>
+    formatSubagentPreview(text, Math.max(1, width - visibleWidth(prefix)));
+  if (activity.label.startsWith("tool call ")) {
+    const name = activity.label.slice("tool call ".length);
+    const prefix = `\u2192 ${name} `;
+    return `${theme.fg("accent", "\u2192")} ${theme.fg("toolTitle", name)} ${theme.fg("dim", fit(prefix, toolArgumentSummary(activity.content)))}`;
+  }
+  if (activity.label.startsWith("tool result ")) {
+    const failed = activity.label.endsWith(" (error)");
+    const name = activity.label.slice("tool result ".length).replace(/ \(error\)$/, "");
+    const prefix = `${failed ? "\u2717" : "\u2190"} ${name}: `;
+    return theme.fg(failed ? "error" : "dim", `${prefix}${fit(prefix, activity.content)}`);
+  }
+  if (activity.label === "reasoning") {
+    const prefix = "thinking: ";
+    return theme.fg("dim", `${prefix}${fit(prefix, lastNonEmptyLine(activity.content))}`);
+  }
+  if (activity.label === "assistant message") {
+    return theme.fg("muted", fit("", lastNonEmptyLine(activity.content)));
+  }
+  const prefix = `${activity.label}: `;
+  return theme.fg("dim", `${prefix}${fit(prefix, activity.content)}`);
+}
+
+/** Columns the activity rail takes before each item's own lines. */
+export const ACTIVITY_RAIL_WIDTH = 3;
+
+/** Hang rendered items off a tree rail: `├─` opens each item, `│` continues it, `└─` opens the last. */
+export function drawActivityRail(
+  items: readonly (readonly string[])[],
+  theme: MinimalSubagentsRenderTheme,
+): string[] {
+  return items.flatMap((lines, index) => {
+    const last = index === items.length - 1;
+    const [first = "", ...rest] = lines;
+    return [
+      `${theme.fg("dim", last ? "└─ " : "├─ ")}${first}`,
+      ...rest.map((line) => `${theme.fg("dim", last ? "   " : "│  ")}${line}`),
+    ];
+  });
+}
+
+/** Width-aware rendering of recorded activity, one rail item per entry. */
+class ActivityLines implements Component {
+  constructor(
+    private readonly activity: readonly RenderRecentActivity[],
+    private readonly theme: MinimalSubagentsRenderTheme,
+  ) {}
+
+  render(width: number): string[] {
+    const itemWidth = Math.max(1, width - ACTIVITY_RAIL_WIDTH);
+    return drawActivityRail(
+      this.activity.map((entry) => [formatActivityLine(entry, this.theme, itemWidth)]),
+      this.theme,
+    );
+  }
+
+  invalidate(): void {}
+}
+
+const COLLAPSED_ACTIVITY_LINES = 3;
+
+/** Latest progress-relevant activity: model output and tool calls, plus only failed tool results. */
+function latestProgressActivity(activity: readonly RenderRecentActivity[]): RenderRecentActivity[] {
+  return activity
+    .filter(
+      (entry) =>
+        entry.label === "assistant message" ||
+        entry.label === "reasoning" ||
+        entry.label.startsWith("tool call ") ||
+        (entry.label.startsWith("tool result ") && entry.label.endsWith(" (error)")),
+    )
+    .slice(-COLLAPSED_ACTIVITY_LINES);
+}
+
+/** Format a turn's cost for summary rows; sub-cent costs keep enough precision to be non-zero. */
+function formatSubagentCost(usage: Usage | undefined): string | undefined {
+  const total = usage?.cost.total;
+  if (total === undefined || !(total > 0)) return undefined;
+  return `$${total.toFixed(total < 0.01 ? 4 : 2)}`;
+}
+
 /** Format milliseconds for compact subagent rows without losing sub-second durations. */
 export function formatSubagentDuration(elapsedMs: number | undefined): string | undefined {
   if (elapsedMs === undefined || !Number.isFinite(elapsedMs) || elapsedMs < 0) return undefined;
@@ -245,10 +415,6 @@ export function formatSubagentPreview(content: string | undefined, maxWidth = 72
   return `${sliceByColumn(singleLine, 0, boundedWidth - 1, true).trimEnd()}…`;
 }
 
-function currentSubagentPreviewWidth(reservedWidth: number): number {
-  return Math.max(12, Math.min(72, (process.stdout.columns || 100) - reservedWidth));
-}
-
 /** Format complete Pi usage metrics for expanded subagent output. */
 export function formatSubagentUsage(usage: Usage | undefined): string | undefined {
   if (usage === undefined) return undefined;
@@ -267,13 +433,40 @@ function coordinatorToolCallTitle(theme: MinimalSubagentsRenderTheme, label: str
   return theme.fg("toolTitle", theme.bold(label));
 }
 
-function coordinatorToolCallPreview(
+/** Launch settings the caller chose explicitly; defaults are omitted to keep the header short. */
+function spawnCallLaunchSummary(args: SpawnCallArguments): string[] {
+  const profile = args.model
+    ? `${args.model}${args.thinking_level ? `:${args.thinking_level}` : ""}`
+    : args.thinking_level
+      ? `thinking ${args.thinking_level}`
+      : undefined;
+  const tools =
+    args.tools === undefined
+      ? undefined
+      : `tools ${Array.isArray(args.tools) ? args.tools.join(", ") || "none" : args.tools}`;
+  return [
+    profile,
+    tools,
+    args.session_context && args.session_context !== "omit"
+      ? `context ${args.session_context}`
+      : undefined,
+    args.project_context === "omit" ? "no project context" : undefined,
+    args.delegation && args.delegation !== "none" ? args.delegation : undefined,
+  ].filter((part): part is string => part !== undefined);
+}
+
+/** A call header followed by its long text argument, previewed when collapsed. */
+function renderCallWithText(
+  header: string,
+  text: string | undefined,
   theme: MinimalSubagentsRenderTheme,
-  value: string | undefined,
-): string {
-  return value && value.length > 0
-    ? ` · ${theme.fg("dim", `“${formatSubagentPreview(value, currentSubagentPreviewWidth(36))}”`)}`
-    : "";
+  expanded: boolean,
+): Component {
+  if (!text) return new Text(header, 0, 0);
+  const container = new Container();
+  container.addChild(new Text(header, 0, 0));
+  container.addChild(expanded ? new Text(text, 0, 0) : collapsedTextPreview(text, theme));
+  return container;
 }
 
 function renderManagementToolCall(
@@ -308,12 +501,11 @@ function renderSpawnResult(
   const container = new Container();
   container.addChild(new Text(renderSubagentSummary(theme, status, agentId), 0, 0));
   container.addChild(renderLabelValue(theme, "Turn", details.turn_id));
-  appendTextSection(container, theme, "Task", args.task ?? "(task unavailable)");
   const resolvedModel = launchContract?.model ?? args.model;
   const resolvedThinking = launchContract?.thinking_level ?? args.thinking_level;
   const launch = [
     `delegation ${launchContract?.delegation ?? args.delegation ?? "none"}`,
-    `session context ${launchContract?.session_context ?? args.session_context ?? "inherit"}`,
+    `session context ${launchContract?.session_context ?? args.session_context ?? "omit"}`,
     `project context ${launchContract?.project_context ?? args.project_context ?? "inherit"}`,
     resolvedModel ? `model ${resolvedModel}` : undefined,
     resolvedThinking ? `thinking ${resolvedThinking}` : undefined,
@@ -350,11 +542,63 @@ function renderMessageResult(
   if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
-  appendTextSection(container, theme, "Message", args.message ?? "(message unavailable)");
   appendTextSection(container, theme, "Recipient", agentId);
   appendTextSection(container, theme, "Disposition", disposition);
+  if ("turn_id" in details && details.turn_id) {
+    appendTextSection(container, theme, "Started turn", details.turn_id);
+  }
   if (details.error) appendTextSection(container, theme, "Error", details.error);
   return container;
+}
+
+/** Renders a running child's turn for a waiting parent; returns nothing when the turn is not live. */
+export type LiveTurnRenderer = (
+  agentId: string,
+  turnId: string | undefined,
+  expanded: boolean,
+) => Component | undefined;
+
+function renderWaitProgress(
+  details: WaitProgressRenderDetails,
+  options: ToolRenderResultOptions,
+  theme: MinimalSubagentsRenderTheme,
+  renderLiveTurn: LiveTurnRenderer | undefined,
+): Component {
+  const toolCalls = details.tool_calls ?? 0;
+  const metrics = [
+    formatSubagentDuration(details.elapsed_ms),
+    toolCalls > 0 ? `${toolCalls} tool ${toolCalls === 1 ? "call" : "calls"}` : undefined,
+  ].filter((metric): metric is string => metric !== undefined);
+  const summary = renderSubagentSummary(theme, "waiting", details.agent_id, metrics);
+  const liveTurn = renderLiveTurn?.(details.agent_id, details.turn_id, options.expanded);
+  if (!liveTurn) return new Text(summary, 0, 0);
+  const container = new Container();
+  container.addChild(
+    new Text(options.expanded ? summary : `${summary}${collapsedExpansionHint(theme)}`, 0, 0),
+  );
+  container.addChild(liveTurn);
+  return container;
+}
+
+/** The collapsed body of a settled wait: what the child said, or why it stopped. */
+function collapsedWaitBody(
+  details: WaitRenderDetails,
+  status: string,
+  theme: MinimalSubagentsRenderTheme,
+): Component | undefined {
+  if (details.event === "message") return collapsedTextPreview(details.message, theme);
+  if (details.event === "timeout") {
+    const activity = latestProgressActivity(details.agent.recent_activity ?? []);
+    return activity.length > 0 ? new ActivityLines(activity, theme) : undefined;
+  }
+  const output = details.output ?? "";
+  if (status === "completed") {
+    return output ? collapsedMarkdownPreview(output, theme) : undefined;
+  }
+  return collapsedTextPreview(
+    theme.fg("error", details.error ?? (output || "(no error detail)")),
+    theme,
+  );
 }
 
 function renderWaitResult(
@@ -374,9 +618,8 @@ function renderWaitResult(
   const duration = formatSubagentDuration(
     details.event === "timeout" ? details.timeout_ms : details.elapsed_ms,
   );
-  const tokens = formatSubagentTokenCount(
-    details.event === "timeout" ? undefined : details.usage?.totalTokens,
-  );
+  const usage = details.event === "timeout" ? undefined : details.usage;
+  const tokens = formatSubagentTokenCount(usage?.totalTokens);
   const drainedMessageCount =
     details.event === "message" || details.event === "timeout"
       ? 0
@@ -384,11 +627,19 @@ function renderWaitResult(
   const metrics = [
     duration,
     tokens ? `${tokens} tokens` : undefined,
+    formatSubagentCost(usage),
     drainedMessageCount > 0 ? `${drainedMessageCount} messages` : undefined,
   ].filter((metric): metric is string => metric !== undefined);
   const summary = renderSubagentSummary(theme, status, agentId, metrics);
-  if (options.isPartial || !options.expanded) {
-    return new Text(`${summary}${options.isPartial ? "" : collapsedExpansionHint(theme)}`, 0, 0);
+  if (options.isPartial) return new Text(summary, 0, 0);
+  if (!options.expanded) {
+    const body = collapsedWaitBody(details, status, theme);
+    const heading = `${summary}${collapsedExpansionHint(theme)}`;
+    if (!body) return new Text(heading, 0, 0);
+    const container = new Container();
+    container.addChild(new Text(heading, 0, 0));
+    container.addChild(body);
+    return container;
   }
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
@@ -460,9 +711,10 @@ function renderDirectStatusRows(
   return agents.map((agent) => {
     const duration = formatSubagentDuration(agent.elapsed_ms);
     const childCount = agent.child_count ?? 0;
-    const metrics = [duration, childCount > 0 ? `${childCount} children` : undefined].filter(
-      (metric): metric is string => metric !== undefined,
-    );
+    const metrics = [
+      duration,
+      childCount > 0 ? `${childCount} ${childCount === 1 ? "child" : "children"}` : undefined,
+    ].filter((metric): metric is string => metric !== undefined);
     return renderSubagentSummary(
       theme,
       statusAgentPresentation(agent),
@@ -484,11 +736,19 @@ function renderDetailedStatusAgent(
   const id = agent.agent_id ?? "agent";
   const childCount = agent.child_count ?? 0;
   const duration = formatSubagentDuration(agent.elapsed_ms);
-  const metrics = [duration, `${childCount} children`].filter(
+  const metrics = [duration, `${childCount} ${childCount === 1 ? "child" : "children"}`].filter(
     (metric): metric is string => metric !== undefined,
   );
   const summary = renderSubagentSummary(theme, status, id, metrics);
-  if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
+  if (!options.expanded) {
+    const activity = latestProgressActivity(agent.recent_activity ?? []);
+    const heading = `${summary}${collapsedExpansionHint(theme)}`;
+    if (activity.length === 0) return new Text(heading, 0, 0);
+    const collapsed = new Container();
+    collapsed.addChild(new Text(heading, 0, 0));
+    collapsed.addChild(new ActivityLines(activity, theme));
+    return collapsed;
+  }
   const container = new Container();
   container.addChild(new Text(summary, 0, 0));
   const labels = [
@@ -590,12 +850,14 @@ function renderStatusResult(
       theme.fg("muted", `${counts.children} children`),
       theme.fg(counts.running > 0 ? "accent" : "dim", `${counts.running} running`),
     ].join(renderSubagentSeparator(theme));
-    if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
-    return new Text(
-      `${summary}\n${renderDirectStatusRows(details.agents, theme).join("\n") || theme.fg("dim", "(no agents)")}`,
-      0,
-      0,
+    const rows =
+      renderDirectStatusRows(details.agents, theme).join("\n") || theme.fg("dim", "(no agents)");
+    const container = new Container();
+    container.addChild(
+      new Text(options.expanded ? summary : `${summary}${collapsedExpansionHint(theme)}`, 0, 0),
     );
+    container.addChild(options.expanded ? new Text(rows, 0, 0) : collapsedTextPreview(rows, theme));
+    return container;
   }
   return renderDetailedStatusAgent(details.agent, options, theme);
 }
@@ -609,7 +871,8 @@ function renderCancelResult(
   const summary =
     turns.length > 0
       ? renderSubagentSummary(theme, "cancelled", details.agent_id, [
-          `${turns.length} turns cancelled`,
+          `${turns.length} ${turns.length === 1 ? "turn" : "turns"} cancelled`,
+          details.affected_agent_ids.join(", "),
         ])
       : renderSubagentSummary(theme, "completed", details.agent_id, ["no active turns"]);
   if (!options.expanded) return new Text(`${summary}${collapsedExpansionHint(theme)}`, 0, 0);
@@ -635,9 +898,10 @@ function renderDeleteResult(
   theme: MinimalSubagentsRenderTheme,
 ): Component {
   const status = details.failures.length > 0 ? "failed" : "completed";
+  const deletedCount = details.deleted_agent_ids.length;
   const metrics = [
-    `${details.deleted_agent_ids.length} agents deleted`,
-    `${details.deleted_agent_ids.length} tombstones`,
+    `${deletedCount} ${deletedCount === 1 ? "agent" : "agents"} deleted`,
+    deletedCount > 0 ? details.deleted_agent_ids.join(", ") : undefined,
     details.failures.length > 0 ? `${details.failures.length} failed` : undefined,
   ].filter((metric): metric is string => metric !== undefined);
   const summary = renderSubagentSummary(theme, status, details.agent_id, metrics);
@@ -676,21 +940,24 @@ export function renderCoordinatorToolCall(
   toolName: CoordinatorToolName,
   args: CoordinatorToolCallInput,
   theme: MinimalSubagentsRenderTheme,
+  expanded = false,
 ): Component {
   const parsed = parseCoordinatorToolCall(toolName, args);
   if (parsed === undefined) return new Text(coordinatorToolCallTitle(theme, toolName), 0, 0);
   switch (parsed.toolName) {
-    case "subagent":
-      return new Text(
-        `${coordinatorToolCallTitle(theme, "Subagent")} ${theme.fg("accent", parsed.args.agent_id ?? "generated")}${coordinatorToolCallPreview(theme, parsed.args.task)}`,
-        0,
-        0,
-      );
+    case "subagent": {
+      const header = [
+        `${coordinatorToolCallTitle(theme, "Subagent")} ${theme.fg("accent", parsed.args.agent_id ?? "generated")}`,
+        ...spawnCallLaunchSummary(parsed.args).map((part) => theme.fg("dim", part)),
+      ].join(theme.fg("dim", " · "));
+      return renderCallWithText(header, parsed.args.task, theme, expanded);
+    }
     case "agent_message":
-      return new Text(
-        `${coordinatorToolCallTitle(theme, "Message")} ${theme.fg("accent", parsed.args.agent_id ?? "parent")}${coordinatorToolCallPreview(theme, parsed.args.message)}`,
-        0,
-        0,
+      return renderCallWithText(
+        `${coordinatorToolCallTitle(theme, "Message")} ${theme.fg("accent", parsed.args.agent_id ?? "parent")}`,
+        parsed.args.message,
+        theme,
+        expanded,
       );
     case "subagent_wait":
       return new Text(
@@ -719,7 +986,12 @@ export function renderCoordinatorToolResult(
   theme: MinimalSubagentsRenderTheme,
   args: CoordinatorToolCallInput,
   isError = false,
+  renderLiveTurn?: LiveTurnRenderer,
 ): Component {
+  if (toolName === "subagent_wait" && options.isPartial) {
+    const progress = parseWaitProgressDetails(result.details);
+    if (progress) return renderWaitProgress(progress, options, theme, renderLiveTurn);
+  }
   const parsedResult = parseCoordinatorToolResult(toolName, result.details);
   if (parsedResult === undefined) return renderFallbackToolResult(result, theme, isError);
   const parsedCall = parseCoordinatorToolCall(toolName, args);
@@ -795,30 +1067,24 @@ function renderCoordinatorMessage(
   const destination = details?.destination_agent_id ?? "recipient";
   const sourceTurn = messageSourceTurn(details);
   const route = `${theme.fg("accent", theme.bold(source))} ${theme.fg("dim", "→")} ${theme.fg("accent", theme.bold(destination))}`;
+  const metrics = [formatSubagentDuration(details?.elapsed_ms), formatSubagentCost(details?.usage)];
   const heading = [
     `${theme.fg(symbol === "✓" ? "success" : "accent", symbol)} ${theme.bold(label)}`,
     route,
-    sourceTurn ? theme.fg("dim", `turn ${sourceTurn}`) : undefined,
     details?.status ? renderSubagentStatusLabel(theme, details.status) : undefined,
+    ...metrics.map((metric) => (metric ? theme.fg("muted", metric) : undefined)),
   ]
     .filter((part): part is string => part !== undefined)
     .join(renderSubagentSeparator(theme));
   const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
   if (!options.expanded) {
-    box.addChild(
-      new Text(
-        `${heading}\n${theme.fg("muted", formatSubagentPreview(content, currentSubagentPreviewWidth(24)))}`,
-        0,
-        0,
-      ),
-    );
+    box.addChild(new Text(`${heading}${collapsedExpansionHint(theme)}`, 0, 0));
+    box.addChild(collapsedMarkdownPreview(content, theme));
     return box;
   }
   const container = new Container();
   container.addChild(new Text(heading, 0, 0));
   if (sourceTurn) container.addChild(renderLabelValue(theme, "Source turn", sourceTurn));
-  const duration = formatSubagentDuration(details?.elapsed_ms);
-  if (duration) container.addChild(renderLabelValue(theme, "Duration", duration));
   container.addChild(new Spacer(1));
   container.addChild(new Markdown(content, 0, 0, getMarkdownTheme()));
   const usageText = formatSubagentUsage(details?.usage);

@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-ai";
 import {
   AgentSession,
+  findCutPoint,
   SessionManager,
   SettingsManager,
   type SessionEntry,
@@ -24,6 +25,7 @@ import {
 import fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createChildResourceLoader } from "../src/minimal-subagents-child-resources.js";
+import { assembleImportedContext } from "../src/minimal-subagents-context.js";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { resolveMinimalSubagentsSettings } from "../src/minimal-subagents-config.js";
 import { createCoordinatorToolDefinitions } from "../src/minimal-subagents-tools.js";
@@ -280,6 +282,37 @@ describe("minimal subagent sessions", () => {
     }
   });
 
+  it("persists quoted parent context that the child replays as user-role entries and compaction can cut", () => {
+    const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-quoted-context-"));
+    temporaryDirectories.push(directory);
+    const parentMessages = Array.from({ length: 12 }, (_, index) =>
+      index % 2 === 0
+        ? userMessage(`parent request ${index} ${"x".repeat(400)}`, index + 1)
+        : assistantMessage(`parent answer ${index} ${"y".repeat(400)}`, index + 1),
+    );
+    const imported = assembleImportedContext("compact", parentMessages, "root");
+    const identity = createPersistentChildIdentity({
+      agent: persistedAgent(),
+      importedMessages: imported.messages,
+      cwd: directory,
+      sessionDir: directory,
+      rootSessionId: "root",
+    });
+    const manager = SessionManager.open(identity.sessionFile, directory, directory);
+    const replayed = manager.buildSessionContext().messages;
+    // Cache proof: the child's history is the imported quotes, in order, on every reopen.
+    expect(replayed.every((message) => message.role === "custom")).toBe(true);
+    expect(replayed).toEqual(imported.messages);
+    expect(
+      SessionManager.open(identity.sessionFile, directory, directory).buildSessionContext()
+        .messages,
+    ).toEqual(replayed);
+    const entries = manager.buildContextEntries();
+    const cut = findCutPoint(entries, 0, entries.length, 300);
+    expect(cut.firstKeptEntryIndex).toBeGreaterThan(0);
+    expect(cut.firstKeptEntryIndex).toBeLessThan(entries.length);
+  });
+
   it("reads and validates the complete verified Child Session Position without restoring or rewriting its file", async () => {
     const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-history-"));
     temporaryDirectories.push(directory);
@@ -457,7 +490,10 @@ describe("minimal subagent sessions", () => {
       for (const message of ["continue", "one more question"]) {
         await expect(
           coordinator.sendAgentMessage("root", { agent_id: "child-0", message }, "root:turn"),
-        ).resolves.toMatchObject({ disposition: "queued" });
+        ).resolves.toMatchObject({
+          disposition: "started-turn",
+          turn_id: expect.stringMatching(/^child-0:turn-/),
+        });
         await coordinator.waitForSettledOperations();
       }
       expect(opened).toHaveBeenCalledTimes(1);
@@ -1346,6 +1382,9 @@ export default function (pi) {
               coordinator: {
                 spawn: (...args) => coordinator.spawn(...args),
                 inspectStatus: (...args) => coordinator.inspectStatus(...args),
+                previewActiveTurn: (...args) => coordinator.previewActiveTurn(...args),
+                inspectActiveTurnTranscript: (...args) =>
+                  coordinator.inspectActiveTurnTranscript(...args),
                 sendAgentMessage: (...args) => coordinator.sendAgentMessage(...args),
                 wait: (...args) => coordinator.wait(...args),
                 status: (...args) => coordinator.status(...args),

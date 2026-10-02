@@ -2,7 +2,10 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { THINKING_LEVELS } from "./minimal-subagents-capabilities.js";
 
-const SessionContextSchema = StringEnum(["inherit", "compact", "omit"] as const);
+const SessionContextSchema = StringEnum(["inherit", "compact", "omit"] as const, {
+  description:
+    "Default omit: the child starts blank, so write a self-contained task. inherit copies your whole conversation (costly; no prompt-cache reuse); compact summarizes it first (adds a summarization call). Opt in only when the child needs the discussion itself.",
+});
 const ProjectContextSchema = StringEnum(["inherit", "omit"] as const, {
   description:
     "Whether to include project-scoped AGENTS.md instructions and skills. Settings, extensions, providers, and tools remain available.",
@@ -38,7 +41,11 @@ export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
     firstModelId === undefined ? Type.Never() : StringEnum([firstModelId, ...remainingModelIds]);
   return {
     subagent: Type.Object({
-      task: Type.String({ minLength: 1, description: "Task for the persistent child agent" }),
+      task: Type.String({
+        minLength: 1,
+        description:
+          "Self-contained brief for the persistent child agent: the goal and relevant background, target files and non-goals, the change or question, and observable acceptance criteria. Reference large inputs by file path instead of pasting them.",
+      }),
       agent_id: Type.Optional(
         Type.String({
           pattern: FRIENDLY_AGENT_ID_PATTERN,
@@ -69,7 +76,9 @@ export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
       timeout_ms: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
     subagent_status: Type.Object({
-      agent_id: Type.Optional(canonicalAgentIdSchema("Direct child canonical agent ID")),
+      agent_id: Type.Optional(
+        canonicalAgentIdSchema("Direct child canonical agent ID; the root may name any descendant"),
+      ),
     }),
     subagent_cancel: Type.Object({
       agent_id: canonicalAgentIdSchema("Direct child canonical agent ID"),

@@ -1,21 +1,10 @@
 import { stripVTControlCharacters } from "node:util";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { contentText } from "@earendil-works/pi-ai";
 import {
-  AssistantMessageComponent,
-  BashExecutionComponent,
-  BranchSummaryMessageComponent,
-  CompactionSummaryMessageComponent,
-  CustomMessageComponent,
-  ToolExecutionComponent,
-  UserMessageComponent,
   type ExtensionContext,
   type KeybindingsManager,
   type Theme,
-  type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import {
-  Container,
   Text,
   matchesKey,
   truncateToWidth,
@@ -28,11 +17,14 @@ import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinato
 import {
   formatSubagentDuration,
   orderActiveAgentSubtrees,
-  renderMinimalSubagentsMessage,
-  renderMinimalSubagentsResult,
   subagentStatusLadder,
 } from "./minimal-subagents-rendering.js";
 import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
+import {
+  createTranscriptRenderCache,
+  renderTranscriptSnapshot,
+  type TranscriptLayout,
+} from "./minimal-subagents-transcript.js";
 import type { SubagentAccessSnapshot } from "./minimal-subagents-access.js";
 import type {
   AgentSummary,
@@ -66,7 +58,7 @@ function flattenStatusAgents(status: HierarchyStatusResult): FlattenedStatusAgen
   const flattened: FlattenedStatusAgent[] = [];
   const visit = (agent: AgentSummary, depth: number): void => {
     flattened.push({ agent, depth });
-    for (const child of agent.children) visit(child, depth + 1);
+    for (const child of agent.children ?? []) visit(child, depth + 1);
   };
   const roots = "agents" in status ? status.agents : [status.agent];
   for (const agent of orderActiveAgentSubtrees(roots)) visit(agent, 0);
@@ -90,16 +82,20 @@ function statusAccessSourceLabel(source: SubagentAccessSnapshot["source"]): stri
   }
 }
 
-interface CachedTranscriptMessage {
-  container: Container;
-  tools: Map<string, ToolExecutionComponent>;
-  expanded: boolean;
-  streaming: boolean;
-}
+const BACKGROUND_CLEARING_SEQUENCES = ["\u001b[0m", "\u001b[m", "\u001b[49m"] as const;
 
-interface TranscriptLayout {
-  lines: string[];
-  messageStarts: number[];
+/**
+ * Re-open the panel background after each sequence that clears it. Truncation ends its cut text
+ * and ellipsis with full resets, and embedded native components may reset or close their own
+ * backgrounds; without this the rest of the row (ellipsis, padding, border) loses the panel fill.
+ */
+function keepBackgroundThroughResets(text: string, backgroundOpen: string): string {
+  if (!backgroundOpen) return text;
+  let result = text;
+  for (const sequence of BACKGROUND_CLEARING_SEQUENCES) {
+    result = result.replaceAll(sequence, `${sequence}${backgroundOpen}`);
+  }
+  return result;
 }
 
 function transcriptText(line: string): string {
@@ -137,180 +133,6 @@ function anchoredTranscriptOffset(
   return nextStart + Math.max(0, newLines.length - 1);
 }
 
-interface TranscriptRenderCache {
-  messages: WeakMap<AgentMessage, CachedTranscriptMessage>;
-  results: WeakMap<ToolExecutionComponent, AgentMessage>;
-}
-
-function renderTranscriptSnapshot(
-  snapshot: ChildAgentTranscriptSnapshot,
-  tui: TUI,
-  cwd: string,
-  expanded: boolean,
-  width: number,
-  cache: TranscriptRenderCache,
-): TranscriptLayout {
-  if (snapshot.messages.length === 0) {
-    return {
-      lines: new Text(snapshot.fallback || "No conversation messages yet.", 3, 0).render(width),
-      messageStarts: [0],
-    };
-  }
-  const blocks: Container[] = [];
-  const tools = new Map(
-    snapshot.toolDefinitions.map((definition) => [definition.name, definition]),
-  );
-  const pendingTools = new Map<string, ToolExecutionComponent>();
-  const currentMessages = new Set(snapshot.messages);
-
-  for (const [messageIndex, message] of snapshot.messages.entries()) {
-    if (message.role === "toolResult") {
-      const paired = pendingTools.get(message.toolCallId);
-      if (paired) {
-        if (cache.results.get(paired) !== message) {
-          paired.updateResult(message);
-          cache.results.set(paired, message);
-        }
-        pendingTools.delete(message.toolCallId);
-        blocks.push(new Container());
-        continue;
-      }
-    }
-    const streaming = messageIndex === snapshot.streamingAssistantIndex;
-    const cached = cache.messages.get(message);
-    const staleResult =
-      cached &&
-      [...cached.tools.values()].some((tool) => {
-        const result = cache.results.get(tool);
-        return result !== undefined && !currentMessages.has(result);
-      });
-    if (cached && !staleResult && cached.expanded === expanded && cached.streaming === streaming) {
-      blocks.push(cached.container);
-      for (const [id, tool] of cached.tools) pendingTools.set(id, tool);
-      continue;
-    }
-    const container = new Container();
-    const messageTools = new Map<string, ToolExecutionComponent>();
-    switch (message.role) {
-      case "user": {
-        const text = contentText(message.content, "\n\n");
-        if (text) container.addChild(new UserMessageComponent(text));
-        break;
-      }
-      case "assistant": {
-        const assistant = new AssistantMessageComponent(message);
-        assistant.updateContent(message, messageIndex === snapshot.streamingAssistantIndex);
-        container.addChild(assistant);
-        for (const content of message.content) {
-          if (content.type !== "toolCall") continue;
-          const tool = new ToolExecutionComponent(
-            content.name,
-            content.id,
-            content.arguments,
-            { showImages: false },
-            tools.get(content.name) ?? {},
-            tui,
-            cwd,
-          );
-          tool.setExpanded(expanded);
-          container.addChild(tool);
-          if (message.stopReason === "aborted" || message.stopReason === "error") {
-            tool.updateResult({
-              content: [
-                {
-                  type: "text",
-                  text:
-                    message.stopReason === "aborted"
-                      ? "Operation aborted"
-                      : (message.errorMessage ?? "Error"),
-                },
-              ],
-              isError: true,
-            });
-          } else {
-            pendingTools.set(content.id, tool);
-            messageTools.set(content.id, tool);
-          }
-        }
-        break;
-      }
-      case "toolResult": {
-        const inherited = new ToolExecutionComponent(
-          message.toolName,
-          message.toolCallId,
-          {},
-          { showImages: false },
-          {},
-          tui,
-          cwd,
-        );
-        inherited.setExpanded(expanded);
-        inherited.updateResult(message);
-        container.addChild(inherited);
-        break;
-      }
-      case "custom": {
-        if (!message.display) break;
-        const renderer =
-          message.customType === "minimal-subagents.message"
-            ? renderMinimalSubagentsMessage
-            : message.customType === "minimal-subagents.result"
-              ? renderMinimalSubagentsResult
-              : undefined;
-        const custom = new CustomMessageComponent(message, renderer);
-        custom.setExpanded(expanded);
-        container.addChild(custom);
-        break;
-      }
-      case "bashExecution": {
-        const bash = new BashExecutionComponent(message.command, tui, message.excludeFromContext);
-        if (message.output) bash.appendOutput(message.output);
-        bash.setComplete(
-          message.exitCode,
-          message.cancelled,
-          // SAFETY: Persisted bash messages retain only the truncation flag; BashExecutionComponent reads that flag here.
-          message.truncated ? ({ truncated: true } as TruncationResult) : undefined,
-          message.fullOutputPath,
-        );
-        bash.setExpanded(expanded);
-        container.addChild(bash);
-        break;
-      }
-      case "branchSummary": {
-        const summary = new BranchSummaryMessageComponent(message);
-        summary.setExpanded(expanded);
-        container.addChild(summary);
-        break;
-      }
-      case "compactionSummary": {
-        const summary = new CompactionSummaryMessageComponent(message);
-        summary.setExpanded(expanded);
-        container.addChild(summary);
-        break;
-      }
-    }
-    cache.messages.set(message, { container, tools: messageTools, expanded, streaming });
-    blocks.push(container);
-  }
-  let length = 0;
-  const messageStarts: number[] = [];
-  const lines = blocks.flatMap((block) => {
-    messageStarts.push(length);
-    // Native user-message prompt zones belong to the main terminal, not an embedded overlay.
-    const rendered = block
-      .render(width)
-      .map((line) =>
-        line
-          .replaceAll("\x1b]133;A\x07", "")
-          .replaceAll("\x1b]133;B\x07", "")
-          .replaceAll("\x1b]133;C\x07", ""),
-      );
-    length += rendered.length;
-    return rendered;
-  });
-  return { lines, messageStarts };
-}
-
 /** Interactive, read-only Child Agent hierarchy and transcript status component. */
 export class MinimalSubagentsStatusPanelComponent implements Component {
   private status!: HierarchyStatusResult;
@@ -324,10 +146,7 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
   private following = true;
   private transcriptLineCount = 0;
   private transcriptLayout?: TranscriptLayout;
-  private readonly transcriptCache: TranscriptRenderCache = {
-    messages: new WeakMap(),
-    results: new WeakMap(),
-  };
+  private readonly transcriptCache = createTranscriptRenderCache();
   private bodyHeight = 1;
   private ensureSelectionVisible = true;
   private toolOutputExpanded = false;
@@ -461,8 +280,12 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     const visibleBody = body.slice(this.scrollOffset, this.scrollOffset + this.bodyHeight);
     while (visibleBody.length < this.bodyHeight) visibleBody.push("");
     const border = (text: string) => this.theme.fg("border", text);
+    const backgroundOpen = this.theme.getBgAnsi("customMessageBg");
     const rows = [...visibleHeader, ...visibleBody, ...help].map((line) => {
-      const content = truncateToWidth(line, innerWidth, "…");
+      const content = keepBackgroundThroughResets(
+        truncateToWidth(line, innerWidth, "…"),
+        backgroundOpen,
+      );
       return this.theme.bg(
         "customMessageBg",
         `${border("│")} ${content}${" ".repeat(innerWidth - visibleWidth(content))} ${border("│")}`,

@@ -1,6 +1,7 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { Value } from "typebox/value";
 import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
+import { normalizeMinimalSubagentsUsage } from "./minimal-subagents-usage.js";
 import {
   createDeliveryLedger,
   deliveryLedgerSnapshot,
@@ -280,7 +281,8 @@ function cloneRegistryTurnResult(value: RegistryTurnResultWire): TurnResult {
     output: value.output,
   };
   if (value.error !== undefined) result.error = value.error;
-  if (value.usage !== undefined) result.usage = structuredClone(value.usage);
+  // Records from older versions may lack optional usage counters.
+  if (value.usage !== undefined) result.usage = normalizeMinimalSubagentsUsage(value.usage);
   if (value.elapsed_ms !== undefined) result.elapsed_ms = value.elapsed_ms;
   return result;
 }

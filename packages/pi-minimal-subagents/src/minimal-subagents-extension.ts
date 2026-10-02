@@ -505,6 +505,9 @@ export class MinimalSubagentsLifecycleController {
   private readonly coordinatorOperations: CoordinatorToolOperations = {
     spawn: (...args) => this.requireCoordinator().spawn(...args),
     inspectStatus: (...args) => this.requireCoordinator().inspectStatus(...args),
+    previewActiveTurn: (...args) => this.requireCoordinator().previewActiveTurn(...args),
+    inspectActiveTurnTranscript: (...args) =>
+      this.requireCoordinator().inspectActiveTurnTranscript(...args),
     sendAgentMessage: (...args) => this.requireCoordinator().sendAgentMessage(...args),
     wait: (...args) => this.requireCoordinator().wait(...args),
     status: (...args) => this.requireCoordinator().status(...args),

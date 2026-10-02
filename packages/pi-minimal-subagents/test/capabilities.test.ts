@@ -37,11 +37,26 @@ describe("minimal subagent capabilities", () => {
     ]);
     expect(resolveOrdinaryToolSelection(["read"], context).ordinaryTools).toEqual(["read"]);
     expect(() => resolveOrdinaryToolSelection(["write"], context)).toThrow(
-      "Minimal subagents capability ceiling exceeded: write",
+      "Minimal subagents tool selection: write is unknown or outside the caller's capability ceiling. Permitted ordinary tools: read, grep, find, ls.",
     );
     expect(() => resolveOrdinaryToolSelection(["read", "agent_message"], context)).toThrow(
       "Minimal subagents ordinary tool selection: coordinator tools are injected separately and must not appear in tools: agent_message",
     );
+  });
+
+  it("lists a bounded set of permitted tools when a requested tool is unavailable", () => {
+    const permitted = Array.from({ length: 45 }, (_, index) => `tool_${index}`);
+    expect(() =>
+      resolveOrdinaryToolSelection(["missing", "absent"], {
+        ordinaryTools: permitted,
+        capabilityCeiling: [...permitted, "subagent"],
+      }),
+    ).toThrow(
+      `Minimal subagents tool selection: missing, absent are unknown or outside the caller's capability ceiling. Permitted ordinary tools: ${permitted.slice(0, 40).join(", ")}, and 5 more.`,
+    );
+    expect(() =>
+      resolveOrdinaryToolSelection(["read"], { ordinaryTools: [], capabilityCeiling: [] }),
+    ).toThrow("No ordinary tools are permitted.");
   });
 
   it("bounds fanout by hierarchy depth and strips all coordinator tools", () => {

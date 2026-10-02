@@ -90,6 +90,7 @@ const SpawnCallArgumentsSchema = Type.Object({
   model: Type.Optional(Type.String()),
   thinking_level: Type.Optional(Type.String()),
   delegation: Type.Optional(Type.String()),
+  tools: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
 });
 const MessageCallArgumentsSchema = Type.Object({
   agent_id: Type.Optional(Type.String()),
@@ -113,6 +114,7 @@ const CurrentMessageDetailsSchema = Type.Object({
   agent_id: Type.String(),
   message_id: Type.Optional(Type.String()),
   disposition: Type.String(),
+  turn_id: Type.Optional(Type.String()),
   behavior: Type.Optional(Type.String()),
   error: Type.Optional(Type.String()),
 });
@@ -209,7 +211,7 @@ const CoordinatorAgentSummaryOutputSchema = Type.Object({
   latest_activity_at: Type.Optional(Type.String()),
   task: Type.Optional(Type.String()),
   child_count: Type.Number(),
-  children: Type.Array(Type.Unknown()),
+  children: Type.Optional(Type.Array(Type.Unknown())),
   model: Type.String(),
   thinking_level: Type.String(),
 });
@@ -266,7 +268,11 @@ export const CoordinatorToolOutputSchemas = {
     agent_id: Type.String(),
     turn_id: Type.String(),
     status: Type.Literal("running"),
-    agent: Type.Optional(CoordinatorAgentDetailOutputSchema),
+    model: Type.String(),
+    thinking_level: Type.String(),
+    tools: Type.Array(Type.String()),
+    delegation: Type.Union([Type.Literal("none"), Type.Literal("fanout")]),
+    warnings: Type.Optional(Type.Array(Type.String())),
   }),
   agent_message: Type.Object({
     agent_id: Type.String(),
@@ -274,8 +280,10 @@ export const CoordinatorToolOutputSchemas = {
     disposition: Type.Union([
       Type.Literal("delivered-via-wait"),
       Type.Literal("queued"),
+      Type.Literal("started-turn"),
       Type.Literal("failed"),
     ]),
+    turn_id: Type.Optional(Type.String()),
     error: Type.Optional(Type.String()),
   }),
   subagent_wait: Type.Union([
@@ -319,6 +327,25 @@ const WaitRenderDetailsSchema = Type.Union([
   WaitTimeoutDetailsSchema,
 ]);
 
+/** Partial `subagent_wait` updates: elapsed wait time and, while the child runs, its progress. */
+const WaitProgressRenderDetailsSchema = Type.Object({
+  agent_id: Type.String(),
+  status: Type.Literal("waiting"),
+  elapsed_ms: Type.Number(),
+  turn_id: Type.Optional(Type.String()),
+  tool_calls: Type.Optional(Type.Number()),
+});
+
+export type WaitProgressRenderDetails = Static<typeof WaitProgressRenderDetailsSchema>;
+
+/** Parse one partial `subagent_wait` progress update. */
+export function parseWaitProgressDetails(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Partial tool details are unparsed until the progress schema checks them below.
+  details: unknown,
+): WaitProgressRenderDetails | undefined {
+  return Value.Check(WaitProgressRenderDetailsSchema, details) ? details : undefined;
+}
+
 export type SpawnCallArguments = Static<typeof SpawnCallArgumentsSchema>;
 export type MessageCallArguments = Static<typeof MessageCallArgumentsSchema>;
 export type WaitCallArguments = Static<typeof WaitCallArgumentsSchema>;
@@ -331,6 +358,7 @@ export type StatusRenderDetails = Static<typeof StatusDetailsSchema>;
 export type CancelRenderDetails = Static<typeof CancelDetailsSchema>;
 export type DeleteRenderDetails = Static<typeof DeleteDetailsSchema>;
 export type RenderStatusAgent = Static<typeof RenderStatusAgentSchema>;
+export type RenderRecentActivity = Static<typeof RenderRecentActivitySchema>;
 
 /** Raw tool arguments supplied by Pi's tool-rendering interface. */
 export type CoordinatorToolCallInput = Parameters<NonNullable<ToolDefinition["renderCall"]>>[0];

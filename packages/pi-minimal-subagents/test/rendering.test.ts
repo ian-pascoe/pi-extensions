@@ -1,10 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { stripVTControlCharacters } from "node:util";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   type MinimalSubagentsRenderTheme,
   renderCoordinatorToolCall,
   renderCoordinatorToolResult,
   renderMinimalSubagentsMessage,
+  renderMinimalSubagentsResult,
 } from "../src/minimal-subagents-rendering.js";
+import {
+  createTranscriptRenderCache,
+  TranscriptRail,
+} from "../src/minimal-subagents-transcript.js";
 
 const plainTheme = {
   fg: (_color, text) => text,
@@ -24,6 +33,243 @@ const usage = {
 function renderLines(component: { render(width: number): string[] }): string {
   return component.render(120).join("\n");
 }
+
+beforeAll(() => initTheme("dark"));
+
+const numberedLines = (count: number) =>
+  Array.from({ length: count }, (_, index) => `line ${index + 1}`).join("\n\n");
+
+describe("minimal subagents collapsed previews", () => {
+  it("shows the spawn's launch settings and task, previewing long tasks until expanded", () => {
+    const args = {
+      agent_id: "worker",
+      task: numberedLines(12),
+      model: "provider/model",
+      thinking_level: "medium",
+      tools: "read",
+      session_context: "inherit",
+    };
+    const collapsed = renderLines(renderCoordinatorToolCall("subagent", args, plainTheme));
+    expect(collapsed).toContain(
+      "Subagent worker · provider/model:medium · tools read · context inherit",
+    );
+    expect(collapsed).toContain("line 5");
+    expect(collapsed).not.toContain("line 6");
+    expect(collapsed).toMatch(/\.\.\. \(\d+ more lines\)$/m);
+    expect(renderLines(renderCoordinatorToolCall("subagent", args, plainTheme, true))).toContain(
+      "line 12",
+    );
+  });
+
+  it("shows a settled wait's output or error without expanding", () => {
+    const completed = renderLines(
+      renderCoordinatorToolResult(
+        "subagent_wait",
+        {
+          content: [],
+          details: {
+            event: "turn",
+            agent_id: "worker",
+            turn_id: "worker:turn-1",
+            status: "completed",
+            output: `**Findings**\n\n${numberedLines(12)}`,
+            usage,
+          },
+        },
+        { expanded: false, isPartial: false },
+        plainTheme,
+        { agent_id: "worker" },
+      ),
+    );
+    expect(completed).toContain("120 tokens  ·  $0.01");
+    expect(completed).toContain("Findings");
+    expect(completed).not.toContain("**");
+    expect(completed).toContain("line 4");
+    expect(completed).not.toContain("line 12");
+    expect(completed).toMatch(/\.\.\. \(\d+ more lines\)$/m);
+
+    const failed = renderLines(
+      renderCoordinatorToolResult(
+        "subagent_wait",
+        {
+          content: [],
+          details: {
+            event: "turn",
+            agent_id: "worker",
+            turn_id: "worker:turn-1",
+            status: "failed",
+            error: "Provider overloaded",
+          },
+        },
+        { expanded: false, isPartial: false },
+        plainTheme,
+        { agent_id: "worker" },
+      ),
+    );
+    expect(failed).toContain("Provider overloaded");
+  });
+
+  it("hangs a waiting child's turn off a rail of Pi-rendered items", () => {
+    const toolTurn = (index: number): AgentMessage[] => [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: `Inspecting part ${index}` },
+          { type: "toolCall", id: `call-${index}`, name: "mystery_tool", arguments: { index } },
+        ],
+        api: "openai-completions",
+        provider: "test",
+        model: "model",
+        usage: { ...usage, cost: { ...usage.cost, total: 0 } },
+        stopReason: "toolUse",
+        timestamp: index,
+      },
+      {
+        role: "toolResult",
+        toolCallId: `call-${index}`,
+        toolName: "mystery_tool",
+        content: [{ type: "text", text: `result ${index}` }],
+        isError: false,
+        timestamp: index,
+      },
+    ];
+    const stubTui: Pick<TUI, "requestRender"> = { requestRender: () => undefined };
+    // SAFETY: Native transcript components only call requestRender on their TUI.
+    const tui = stubTui as TUI;
+    const progress = (turns: number, expanded: boolean) =>
+      renderCoordinatorToolResult(
+        "subagent_wait",
+        {
+          content: [{ type: "text", text: "Waiting for worker" }],
+          details: {
+            agent_id: "worker",
+            status: "waiting",
+            elapsed_ms: 9_000,
+            turn_id: "worker:turn-1",
+            tool_calls: turns,
+          },
+        },
+        { expanded, isPartial: true },
+        plainTheme,
+        { agent_id: "worker" },
+        false,
+        (agentId, turnId, liveExpanded) =>
+          agentId === "worker" && turnId === "worker:turn-1"
+            ? new TranscriptRail(
+                {
+                  messages: Array.from({ length: turns }, (_, index) => toolTurn(index + 1)).flat(),
+                  toolDefinitions: [],
+                },
+                tui,
+                "/project",
+                liveExpanded,
+                createTranscriptRenderCache(),
+                plainTheme,
+              )
+            : undefined,
+      ).render(60);
+
+    const lines = progress(1, false);
+    const text = lines.map((line) => stripVTControlCharacters(line));
+    expect(text[0]).toContain("worker  ·  waiting  ·  9s  ·  1 tool call");
+    expect(text[0]).toContain("to expand");
+    expect(text[1]).toMatch(/^├─ .*Inspecting part 1/);
+    expect(text.find((line) => line.startsWith("└─ "))).toContain("mystery_tool");
+    expect(text.join("\n")).toContain("result 1");
+    expect(lines.every((line) => visibleWidth(line) <= 60)).toBe(true);
+
+    const collapsed = progress(12, false).map((line) => stripVTControlCharacters(line));
+    expect(collapsed[1]).toMatch(/^├─ … \d+ earlier steps$/);
+    expect(collapsed.join("\n")).toContain("result 12");
+    expect(collapsed.join("\n")).not.toContain("result 1\n");
+    const expanded = progress(12, true).map((line) => stripVTControlCharacters(line));
+    expect(expanded.join("\n")).not.toContain("earlier steps");
+    expect(expanded.join("\n")).toContain("Inspecting part 1");
+  });
+
+  it("ends every collapsed result's first line with the expansion hint, except live progress", () => {
+    const turn = { event: "turn", agent_id: "worker", turn_id: "worker:turn-1" };
+    const activity = [{ label: "tool call read", content: '{"path":"a.ts"}', truncated: false }];
+    const collapsedResults = [
+      ["subagent", { agent_id: "worker", turn_id: "worker:turn-1", status: "running" }],
+      ["agent_message", { agent_id: "worker", message_id: "m", disposition: "queued" }],
+      ["subagent_wait", { ...turn, status: "completed", output: "short output" }],
+      ["subagent_wait", { ...turn, status: "completed", output: "" }],
+      ["subagent_wait", { ...turn, status: "failed", error: "boom" }],
+      ["subagent_wait", { ...turn, event: "message", message_id: "m", message: "update" }],
+      [
+        "subagent_wait",
+        {
+          ...turn,
+          event: "timeout",
+          timeout_ms: 10,
+          agent: { agent_id: "worker", state: "running", recent_activity: activity },
+        },
+      ],
+      ["subagent_status", { parent_id: "root", agents: [{ agent_id: "worker", state: "idle" }] }],
+      ["subagent_status", { agent: { agent_id: "worker", recent_activity: activity } }],
+      [
+        "subagent_cancel",
+        { agent_id: "worker", recursive: true, affected_agent_ids: [], cancelled_turn_ids: [] },
+      ],
+      [
+        "subagent_delete",
+        {
+          agent_id: "worker",
+          recursive: true,
+          deleted_agent_ids: ["worker"],
+          trashed_session_files: [],
+          failures: [],
+        },
+      ],
+    ] as const;
+    const firstLine = (component: { render(width: number): string[] }) =>
+      component.render(120).find((line) => line.trim().length > 0) ?? "";
+
+    for (const [toolName, details] of collapsedResults) {
+      const component = renderCoordinatorToolResult(
+        toolName,
+        { content: [], details },
+        { expanded: false, isPartial: false },
+        plainTheme,
+        { agent_id: "worker" },
+      );
+      expect(firstLine(component), `${toolName} ${JSON.stringify(details)}`).toContain("to expand");
+    }
+    const agentResult = renderMinimalSubagentsResult(
+      { content: "done", details: { source_agent_id: "worker", destination_agent_id: "root" } },
+      { expanded: false, outputPad: 1 },
+      plainTheme,
+    );
+    expect(firstLine(agentResult)).toContain("to expand");
+    const progress = renderCoordinatorToolResult(
+      "subagent_wait",
+      {
+        content: [],
+        details: { agent_id: "worker", status: "waiting", elapsed_ms: 1_000, activity },
+      },
+      { expanded: false, isPartial: true },
+      plainTheme,
+      { agent_id: "worker" },
+    );
+    expect(renderLines(progress)).not.toContain("to expand");
+  });
+
+  it("previews automatic agent results as Markdown", () => {
+    const component = renderMinimalSubagentsResult(
+      {
+        content: "**Done**: updated `a.ts`",
+        details: { source_agent_id: "worker", destination_agent_id: "root", status: "completed" },
+      },
+      { expanded: false, outputPad: 1 },
+      plainTheme,
+    );
+    const lines = renderLines(component);
+    expect(lines).toContain("Done");
+    expect(lines).toContain("updated");
+    expect(lines).not.toContain("**");
+  });
+});
 
 describe("minimal subagents rendering", () => {
   it("renders every current coordinator result DTO", () => {

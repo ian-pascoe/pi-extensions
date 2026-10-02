@@ -73,6 +73,7 @@ function panelFixture(
     agents?: AgentSummary[];
     transcript?: ChildAgentTranscriptSnapshot;
     startRefresh?: (refresh: () => void) => () => void;
+    background?: (text: string) => string;
   } = {},
 ) {
   const nested = summary("parent.child", { parent_id: "parent", state: "running" });
@@ -99,8 +100,9 @@ function panelFixture(
   const theme = {
     fg: (_color, text) => text,
     bold: (text) => text,
-    bg: (_color, text) => text,
-  } satisfies Pick<Theme, "fg" | "bold" | "bg">;
+    bg: (_color, text) => options.background?.(text) ?? text,
+    getBgAnsi: (_color) => (options.background ? BG_OPEN : ""),
+  } satisfies Pick<Theme, "fg" | "bold" | "bg" | "getBgAnsi">;
   const bindings = new Map([
     ["up", "tui.select.up"],
     ["down", "tui.select.down"],
@@ -121,7 +123,7 @@ function panelFixture(
     () => access,
     // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel uses only checked terminal dimensions and the typed requestRender mock, not a full terminal runtime.
     tui as unknown as TUI,
-    // SAFETY: These panel render paths use only the checked fg and bold theme methods.
+    // SAFETY: These panel render paths use only the checked fg, bold, bg, and getBgAnsi theme methods.
     theme as Theme,
     // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel reads only the checked input matcher and configured key hints.
     keybindings as unknown as KeybindingsManager,
@@ -131,6 +133,9 @@ function panelFixture(
   );
   return { coordinator, onClose, panel, tui };
 }
+
+const BG_OPEN = "\u001b[48;5;236m";
+const BG_CLOSE = "\u001b[49m";
 
 afterEach(() => vi.useRealTimers());
 beforeAll(() => initTheme("dark"));
@@ -150,6 +155,26 @@ describe("minimal subagents status panel", () => {
     panel.dispose();
   });
 
+  it("keeps the panel background behind truncation ellipses and padding", () => {
+    const { panel } = panelFixture({
+      agents: [summary("long", { task: "A task long enough to be truncated ".repeat(6) })],
+      background: (text) => `${BG_OPEN}${text}${BG_CLOSE}`,
+    });
+    const rows = panel.render(60).slice(1, -1);
+    const truncated = rows.filter((row) => row.includes("\u2026"));
+    expect(truncated.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const inner = row.slice(BG_OPEN.length, -BG_CLOSE.length);
+      expect(
+        inner
+          .split("\u001b[0m")
+          .slice(1)
+          .every((rest) => rest.startsWith(BG_OPEN)),
+      ).toBe(true);
+    }
+    panel.dispose();
+  });
+
   it("orders active subtrees first and retains the selected Child Agent across reordering", async () => {
     vi.useFakeTimers();
     const parent = summary("parent", {
@@ -165,7 +190,7 @@ describe("minimal subagents status panel", () => {
         .filter(Boolean),
     ).toEqual(["parent", "parent.active", "parent.idle", "running", "idle"]);
     panel.handleInput("down");
-    parent.children[0]!.state = "running";
+    parent.children![0]!.state = "running";
     await vi.advanceTimersByTimeAsync(1_000);
     expect(panel.render(100).join("\n")).toContain(">   ▸ parent.active");
     panel.dispose();

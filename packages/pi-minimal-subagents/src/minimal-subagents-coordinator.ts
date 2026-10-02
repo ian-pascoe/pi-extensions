@@ -2,10 +2,14 @@ import { randomUUID } from "node:crypto";
 import {
   assembleImportedContext,
   boundRecentAgentText,
+  buildActiveTurnProgress,
+  buildInheritedContextTaskPrompt,
   buildRecentAgentActivity,
   contextContainsImages,
+  selectActiveTurnTranscript,
   selectChildAgentTranscript,
 } from "./minimal-subagents-context.js";
+
 import {
   canAgentContractSpawn,
   DEFAULT_MAX_SUBAGENT_DEPTH,
@@ -39,6 +43,7 @@ import { addCoordinatorMessageEnvelope } from "./minimal-subagents-message-envel
 import { unavailableAgent } from "./minimal-subagents-sessions.js";
 import { createRegistryEvent } from "./minimal-subagents-registry.js";
 import type {
+  ActiveTurnProgress,
   AgentDetail,
   AgentMessageDisposition,
   AgentMessageResult,
@@ -69,6 +74,16 @@ const FRIENDLY_AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const RESERVED_AGENT_IDS = new Set(["root", "parent"]);
 const RECENT_MESSAGE_LIMIT = 20;
 const DEFAULT_AUTOMATIC_DELIVERY_GRACE_MS = 1_000;
+
+/** Assistant messages a waiting parent's live view renders from the child's running turn. */
+const ACTIVE_TURN_TRANSCRIPT_ASSISTANT_MESSAGES = 3;
+
+/** A direct child's running turn as its waiting parent may observe it. */
+interface ObservedActiveTurn {
+  turnId: string;
+  startedAtMs: number;
+  runtime: ChildAgentRuntime;
+}
 
 interface MessageParameters {
   agent_id?: string;
@@ -197,13 +212,15 @@ export class MinimalSubagentsCoordinator {
     this.validateFriendlyId(friendlyId);
     const agentId = this.buildChildAgentId(callerId, friendlyId);
     if (this.tombstones.has(agentId)) {
-      throw new Error(`Minimal subagents agent ID is tombstoned: ${agentId}`);
+      throw new Error(
+        `Minimal subagents agent ID ${agentId} belonged to a deleted agent and cannot be reused; choose a different agent_id`,
+      );
     }
     if (this.agents.has(agentId) || this.pendingAgentIds.has(agentId)) {
       throw new Error(`Minimal subagents duplicate agent ID: ${agentId}`);
     }
 
-    const sessionContext = parameters.session_context ?? "inherit";
+    const sessionContext = parameters.session_context ?? "omit";
     const projectContext = parameters.project_context ?? "inherit";
     const model = parameters.model ?? caller.model;
     const requestedThinking = parameters.thinking_level ?? caller.thinkingLevel;
@@ -218,7 +235,7 @@ export class MinimalSubagentsCoordinator {
       toolsets: this.dependencies.toolsets,
     });
     const committedMessages = structuredClone(caller.messages);
-    const imported = assembleImportedContext(sessionContext, committedMessages);
+    const imported = assembleImportedContext(sessionContext, committedMessages, callerId);
     if (
       contextContainsImages(imported.messages) &&
       !this.dependencies.sessions.modelSupportsImages(model)
@@ -296,11 +313,12 @@ export class MinimalSubagentsCoordinator {
       createRegistryEvent(this.dependencies.registry.rootSessionId, "agent-created", { agent }),
     );
     const turnId = this.beginTurn(agent);
-    if (toolWarnings.length > 0) {
+    const warnings = [...new Set(toolWarnings)];
+    if (warnings.length > 0) {
       this.dependencies.notify?.({
         type: "tool-warning",
         agentId,
-        message: `Minimal subagents tool warnings for ${agentId}:\n- ${[...new Set(toolWarnings)].join("\n- ")}`,
+        message: `Minimal subagents tool warnings for ${agentId}:\n- ${warnings.join("\n- ")}`,
       });
     }
     this.dependencies.notify?.({
@@ -313,13 +331,25 @@ export class MinimalSubagentsCoordinator {
       this.initializeAndRunPrompt(
         agentId,
         turnId,
-        parameters.task,
+        imported.messages.length > 0
+          ? buildInheritedContextTaskPrompt(parameters.task, agentId, callerId)
+          : parameters.task,
         imported.compact,
         caller.model,
         caller.thinkingLevel,
       ),
     );
-    return { agent_id: agentId, turn_id: turnId, status: "running" };
+    const result: SpawnResult = {
+      agent_id: agentId,
+      turn_id: turnId,
+      status: "running",
+      model: agent.launch_contract.model,
+      thinking_level: agent.launch_contract.thinking_level,
+      tools: [...agent.launch_contract.ordinary_tools],
+      delegation: agent.launch_contract.delegation ?? "none",
+    };
+    if (warnings.length > 0) result.warnings = warnings;
+    return result;
   }
 
   /** Capture immutable launch defaults for a nested caller from its active child runtime. */
@@ -365,10 +395,12 @@ export class MinimalSubagentsCoordinator {
         this.queuePendingParentMessage(targetId, message, delivery);
         return { agent_id: targetId, message_id: messageId, disposition: "queued" };
       }
-      const disposition = await this.enqueueRecipientDelivery(targetId, async () =>
+      const { disposition, turnId } = await this.enqueueRecipientDelivery(targetId, async () =>
         this.deliverExplicitMessage(message, targetId, delivery),
       );
-      return { agent_id: targetId, message_id: messageId, disposition };
+      const result: AgentMessageResult = { agent_id: targetId, message_id: messageId, disposition };
+      if (turnId) result.turn_id = turnId;
+      return result;
     } catch (error) {
       const deliveryError = error instanceof Error ? error.message : String(error);
       if (this.isCoordinationDeliveryCurrent(delivery)) {
@@ -423,7 +455,9 @@ export class MinimalSubagentsCoordinator {
     if (pendingMessage) return Promise.resolve(pendingMessage);
     if (agent.active_turn_id !== turnId) {
       return Promise.reject(
-        new Error(`Minimal subagents wait: turn ${turnId} is no longer retained for ${agentId}`),
+        new Error(
+          `Minimal subagents wait: turn ${turnId} is unknown or no longer retained for ${agentId}; omit turn_id to wait for its oldest observable turn`,
+        ),
       );
     }
 
@@ -460,11 +494,11 @@ export class MinimalSubagentsCoordinator {
     });
   }
 
-  /** Return direct-child status authorized for one root or child caller. */
+  /** Return direct-child status for a child caller; the root may inspect any descendant. */
   status(callerId: string, agentId?: string): StatusResult {
     this.assertCallerExists(callerId);
     if (agentId !== undefined) {
-      this.assertCallerTargetsDirectChild(callerId, agentId, "status");
+      if (callerId !== "root") this.assertCallerTargetsDirectChild(callerId, agentId, "status");
       return { agent: this.buildAgentDetail(this.requireAgent(agentId), false) };
     }
     return {
@@ -480,6 +514,56 @@ export class MinimalSubagentsCoordinator {
       root_id: "root",
       agents: this.childrenOf("root").map((agent) => this.buildAgentSummary(agent)),
     };
+  }
+
+  /**
+   * Find a direct child's running turn for its parent's live wait view. Only the direct parent
+   * observes it, and a requested `turnId` must be the active turn.
+   */
+  private observeActiveTurn(
+    callerId: string,
+    agentId: string,
+    turnId: string | undefined,
+  ): ObservedActiveTurn | undefined {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.parent_id !== callerId) return undefined;
+    const activeTurnId = agent.active_turn_id;
+    const startedAt = agent.active_turn_started_at;
+    if (!activeTurnId || !startedAt || (turnId !== undefined && turnId !== activeTurnId)) {
+      return undefined;
+    }
+    const runtime = this.runtimes.get(agentId);
+    if (!runtime) return undefined;
+    return { turnId: activeTurnId, startedAtMs: Date.parse(startedAt), runtime };
+  }
+
+  /** Count a direct child's running-turn tool calls for its waiting parent. */
+  previewActiveTurn(
+    callerId: string,
+    agentId: string,
+    turnId?: string,
+  ): ActiveTurnProgress | undefined {
+    const turn = this.observeActiveTurn(callerId, agentId, turnId);
+    if (!turn) return undefined;
+    return {
+      turn_id: turn.turnId,
+      ...buildActiveTurnProgress(turn.runtime.snapshotActivityMessages(), turn.startedAtMs),
+    };
+  }
+
+  /** Return a direct child's Active Turn Tail, with its tool definitions, for its waiting parent. */
+  inspectActiveTurnTranscript(
+    callerId: string,
+    agentId: string,
+    turnId?: string,
+  ): ChildAgentTranscriptSnapshot | undefined {
+    const turn = this.observeActiveTurn(callerId, agentId, turnId);
+    if (!turn) return undefined;
+    return selectActiveTurnTranscript(
+      this.inspectTranscript(agentId),
+      turn.startedAtMs,
+      ACTIVE_TURN_TRANSCRIPT_ASSISTANT_MESSAGES,
+    );
   }
 
   /** Lazily inspect one Child Session Transcript without restoring a missing runtime. */
@@ -528,15 +612,18 @@ export class MinimalSubagentsCoordinator {
     this.assertCallerCanManageAgent(callerId, agentId, "cancel");
     const target = this.requireUsableAgent(agentId, "cancel");
     const affected = recursive ? [target, ...this.descendantsOf(agentId)] : [target];
+    const affectedAgentIds: string[] = [];
     const cancelledTurnIds: string[] = [];
     for (const agent of affected) {
       const cancelledTurnId = await this.cancelActiveTurn(agent);
-      if (cancelledTurnId) cancelledTurnIds.push(cancelledTurnId);
+      if (!cancelledTurnId) continue;
+      affectedAgentIds.push(agent.agent_id);
+      cancelledTurnIds.push(cancelledTurnId);
     }
     return {
       agent_id: agentId,
       recursive,
-      affected_agent_ids: affected.map((agent) => agent.agent_id),
+      affected_agent_ids: affectedAgentIds,
       cancelled_turn_ids: cancelledTurnIds,
     };
   }
@@ -1315,24 +1402,27 @@ export class MinimalSubagentsCoordinator {
     message: CoordinatorMessage,
     targetId: string,
     delivery: PersistedCoordinationDelivery,
-  ): Promise<AgentMessageDisposition> {
+  ): Promise<{ disposition: AgentMessageDisposition; turnId?: string }> {
     this.waitHandedDeliveryIds.add(delivery.delivery_id);
     try {
-      await this.deliverToRecipient(targetId, message, () =>
+      const startedTurnId = await this.deliverToRecipient(targetId, message, () =>
         this.isCoordinationDeliveryCurrent(delivery),
       );
-      return "queued";
+      return startedTurnId
+        ? { disposition: "started-turn", turnId: startedTurnId }
+        : { disposition: "queued" };
     } catch (error) {
       this.waitHandedDeliveryIds.delete(delivery.delivery_id);
       throw error;
     }
   }
 
+  /** Deliver one message, returning the turn ID when it starts a new turn on an idle child. */
   private async deliverToRecipient(
     targetId: string,
     message: CoordinatorMessage,
     isCurrentDelivery: () => boolean = () => true,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     if (!isCurrentDelivery()) {
       throw new Error("Minimal subagents delivery abandoned after session branch change");
     }
@@ -1352,7 +1442,7 @@ export class MinimalSubagentsCoordinator {
     const visibleMessage = addCoordinatorMessageEnvelope(message);
     if (target.active_turn_id || runtime.isRunning) {
       await runtime.queueCoordinatorMessage(visibleMessage);
-      return;
+      return undefined;
     }
     const turnId = this.beginTurn(target);
     const runMessage = runtime
@@ -1374,6 +1464,7 @@ export class MinimalSubagentsCoordinator {
         }
       });
     this.trackBackgroundOperation(runMessage);
+    return turnId;
   }
 
   private trackBackgroundOperation(operation: Promise<void>): void {
@@ -1527,9 +1618,6 @@ export class MinimalSubagentsCoordinator {
 
   private buildAgentSummary(agent: PersistedAgent, includeDescendants = true): AgentSummary {
     const directChildren = this.childrenOf(agent.agent_id);
-    const children = includeDescendants
-      ? directChildren.map((child) => this.buildAgentSummary(child))
-      : [];
     const elapsed = agent.active_turn_started_at
       ? Math.max(0, this.now().getTime() - new Date(agent.active_turn_started_at).getTime())
       : undefined;
@@ -1538,7 +1626,7 @@ export class MinimalSubagentsCoordinator {
       model: agent.launch_contract.model,
       thinking_level: agent.launch_contract.thinking_level,
     };
-    return {
+    const summary: AgentSummary = {
       agent_id: agent.agent_id,
       parent_id: agent.parent_id,
       state: agent.active_turn_id ? "running" : "idle",
@@ -1553,8 +1641,11 @@ export class MinimalSubagentsCoordinator {
       latest_activity_at: agent.latest_activity_at ?? agent.created_at,
       task: agent.task,
       child_count: directChildren.length,
-      children,
     };
+    if (includeDescendants) {
+      summary.children = directChildren.map((child) => this.buildAgentSummary(child));
+    }
+    return summary;
   }
 
   private buildAgentDetail(agent: PersistedAgent, includeDescendants = true): AgentDetail {

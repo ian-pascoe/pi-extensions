@@ -31,6 +31,20 @@ filter in `~/.pi/agent/settings.json` using the repository-relative path:
 From this package checkout, load the source directly with
 `pi -e ./src/index.ts`. Requires Node `>=22.19.0` and Pi `>=0.99.0`.
 
+## Typical workflow
+
+1. `subagent` launches a Child Agent from a self-contained task: by default the
+   child starts without the parent's conversation. It returns at once with its `agent_id`,
+   `turn_id`, and resolved model, thinking level, tools, delegation, and any
+   tool-resolution `warnings`. Spawns run sequentially, so a `subagent_wait` or
+   `agent_message` in the same tool batch can target the new child.
+2. `subagent_wait` claims the turn's result, or leave it unclaimed and the final
+   response arrives automatically as a steer message.
+3. `agent_message` continues an idle child: the result reports
+   `disposition: "started-turn"` with the new `turn_id` to wait on.
+4. `subagent_status` inspects children; `subagent_cancel` stops work but keeps
+   the session; `subagent_delete` removes it. Deleted IDs cannot be reused.
+
 ## Configuration
 
 Configure the extension in Pi's standard settings files:
@@ -240,7 +254,32 @@ and `subagent_status`.
 Targeted `subagent_status` includes `recent_activity`, a bounded tail of message
 text, reasoning, tool calls, and tool results. It includes the current streaming
 assistant message but omits image data. Timeout Wait Events include the same
-detailed status snapshot.
+detailed status snapshot. Children target only direct children; the Root Agent
+may inspect any descendant. Model-facing status reports a `child_count` but no
+nested `children` summaries. Reported `usage` always includes `cacheWrite1h`
+and `reasoning`, as `0` when the provider reports none. `subagent_cancel`
+lists in `affected_agent_ids` only agents whose active turns it cancelled.
+
+`session_context` defaults to `omit`: the child starts with only its system
+prompt and task, so the task should be a self-contained brief covering the goal,
+target files and non-goals, the change or question, and acceptance criteria.
+Opt in to `inherit` to copy the parent's conversation, or `compact` to summarize
+it first, only when the child needs that discussion. Inheriting is costly: the
+child's system prompt differs from its parent's, so the copied conversation
+cannot reuse the parent's prompt cache, and `compact` adds a summarization call.
+With either opt-in, the parent's conversation is quoted rather than replayed as
+the child's own turns: each parent message becomes one
+`minimal-subagents.parent-context` custom message, sent to the model as
+user-role text wrapped in `<parent_message from="…" role="…">`. Tool calls and
+results become text, a custom message's label names its `customType`, and an
+errored, aborted, or length-limited parent turn is marked as incomplete. Images
+are kept; parent reasoning and the parent's system prompt and tool declarations
+are omitted, since the child declares its own. Each quoted message stays a
+separate session entry, so `compact` can still summarize older entries. The task
+is then framed as a handoff: the quoted conversation is background, its requests
+belonged to the parent, and the child's own assignment follows. Quoting keeps
+the parent's turns distinct from the child's own; it does not guarantee that a
+child, particularly a small model, ignores the quoted requests. Existing Child Agents keep the mode recorded in their Launch Contracts.
 
 The `subagent` `tools` argument distinguishes configurable Tool Presets from
 exact lists; every selection also receives the permitted Base Toolset described
@@ -260,15 +299,18 @@ tools while the Launch Contract continues to record the originally granted
 capability names.
 
 `agent_message` reports whether a message was delivered through an active
-parent wait, queued for the recipient, or failed. A failed delivery and a
+parent wait (`delivered-via-wait`), queued into the recipient's active turn
+(`queued`), started a new turn on an idle child (`started-turn`, with its
+`turn_id`), or failed. A failed delivery and a
 partially failed `subagent_delete` return an error result (`isError: true`) that
 still carries the declared structured output, so the model sees an error while
 codemode scripts receive the `failures` or `error` data instead of a data-less
 rejection. `subagent_wait` can return an
 intermediate Wait Event containing a Coordination Message before the child turn
 settles. That event claims only its message, so later unconsumed messages and the
-terminal result retain automatic fallback. If the turn has already settled, one
-wait returns its terminal result with queued messages in `messages`. Pass
+terminal result retain automatic fallback. If the turn has already settled, a
+wait returns its terminal result with queued messages in `messages`; waiting
+again for the same settled turn returns the same result. Pass
 optional `turn_id` to address an older retained turn exactly. Without it, waits
 select the oldest observable claimed or pending turn before the active/latest
 turn. A caller may have only one outstanding wait for the same source turn; a
@@ -332,6 +374,18 @@ source file; it never substitutes the source session's newer head.
 The coordinator tools declare MCP-style `annotations`, which Pi reports through `pi.getAllTools()` for permission extensions and does not send to model providers. `subagent` is destructive and open-world because a Child Agent can use any tool it is granted. `agent_message` is not read-only but is non-destructive and closed-world. `subagent_cancel` is non-destructive and idempotent; `subagent_delete` is destructive and idempotent. `subagent_status` and `subagent_wait` are read-only (`subagent_wait` consumes queued deliveries, so it is not idempotent).
 
 ## Status and TUI
+
+Coordinator tool calls and results stay readable without expanding. A
+`subagent` call shows the launch settings the caller chose and its task; an
+`agent_message` call shows its message. While `subagent_wait` blocks, it shows
+the child's tool-call count and, on a tree rail, the latest work of the turn
+being waited on, rendered with Pi's own message and tool components as in the
+`/subagents` viewer and refreshed each second; collapsed, the rail keeps the
+newest items within 20 lines. A settled wait shows the child's output as
+Markdown, or its error, with duration, tokens, and cost. Long text previews its
+first 10 lines, like Pi's `read`. Every collapsed result ends its first line
+with Pi's tool-expansion hint (normally Ctrl+O), which reveals the rest and the
+full detail. Automatic agent results and messages preview the same way.
 
 In TUI mode, `/subagents` or `/subagents status` opens a large, centered,
 framed overlay. Up/Down selects a Child Agent; Enter opens its Child Session
