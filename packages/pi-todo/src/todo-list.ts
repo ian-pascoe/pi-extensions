@@ -41,10 +41,15 @@ export type TodoActionInput = {
   readonly status?: TodoStatus;
 };
 
-/** Render details whose action discriminates list data from mutation acknowledgements. */
+/**
+ * Render details and the tool's structured result. The action discriminates the list from the
+ * Task a mutation added or updated, the ID it removed, and the count it cleared.
+ */
 export type TodoToolDetails =
   | { readonly action: "list"; readonly tasks: readonly TodoTask[] }
-  | { readonly action: Exclude<TodoAction, "list"> };
+  | { readonly action: "add" | "update"; readonly task: TodoTask }
+  | { readonly action: "remove"; readonly id: TodoTaskId }
+  | { readonly action: "clear"; readonly cleared: number };
 
 const PositiveSafeIntegerRecord = Type.Integer({
   minimum: 1,
@@ -56,6 +61,32 @@ const TodoTaskRecord = Type.Object({
   description: Type.Optional(Type.String({ minLength: 1 })),
   status: StringEnum(TODO_STATUSES),
 });
+
+/**
+ * JSON Schema of the `todo` tool's `structuredContent`, which codemode scripts receive instead of
+ * the model-facing text. Flat so Pi's one-line script declaration stays compact; `action` says
+ * which other field is present.
+ */
+export const TodoToolOutputSchema = Type.Object(
+  {
+    action: StringEnum(TODO_ACTIONS, { description: "The operation that ran" }),
+    tasks: Type.Optional(
+      Type.Array(TodoTaskRecord, { description: "list: every Task in ID order" }),
+    ),
+    task: Type.Optional(TodoTaskRecord),
+    id: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: "remove: ID of the removed Task",
+      }),
+    ),
+    cleared: Type.Optional(
+      Type.Integer({ minimum: 0, description: "clear: number of Tasks removed" }),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 /** Serialized shape stored in a `pi-todo-state` session entry. */
 export const TodoStateRecord = Type.Object({
@@ -158,7 +189,7 @@ export function applyTodoAction(
         ok: true,
         state: { nextId: state.nextId + 1, tasks: [...state.tasks, task] },
         message: `Added Task #${task.id}`,
-        details: { action: "add" },
+        details: { action: "add", task },
       };
     }
 
@@ -190,7 +221,7 @@ export function applyTodoAction(
             tasks: state.tasks.filter((candidate) => candidate.id !== task.id),
           },
           message: `Removed Task #${task.id}`,
-          details: { action: "remove" },
+          details: { action: "remove", id: task.id },
         };
       }
       if (
@@ -224,7 +255,7 @@ export function applyTodoAction(
           ),
         },
         message: `Updated Task #${task.id}`,
-        details: { action: "update" },
+        details: { action: "update", task: updatedTask },
       };
     }
 
@@ -234,7 +265,7 @@ export function applyTodoAction(
         ok: true,
         state: count > 0 || state.nextId !== 1 ? createEmptyTodoState() : state,
         message: `Cleared ${count} ${count === 1 ? "Task" : "Tasks"}`,
-        details: { action: "clear" },
+        details: { action: "clear", cleared: count },
       };
     }
   }

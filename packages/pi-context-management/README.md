@@ -27,6 +27,20 @@ pi -e ./packages/pi-context-management/src/index.ts
 
 `context_rollover` registers with Pi's `model-only` exposure: it stays declared to the model while active, including under `codemode.mode: "only"`, but Pi never offers it to `codemode` scripts or other tools' `ctx.executeTool()` calls, so a script sees `tools.context_rollover` as nonexistent. It must also be the only direct call in its tool batch; batched calls are rejected before checkpoint mutation, which also keeps nested calls out on Pi runtimes that predate `exposure`. `context_notes` and `context_history` keep Pi's default exposure.
 
+`context_notes` and `context_history` declare an `outputSchema` and return matching `structuredContent`, so a Pi `codemode` script receives an object rather than JSON text. Script fields are snake_case, like Pi's `bash` and `pi-termctrl`; the model still reads the same camelCase JSON text, and session `details` keep their camelCase shape. Fields present depend on the action:
+
+| Tool / action                              | Script value                                                                                         |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `context_notes` list                       | `{ notes: [{ name, updated_at, ref, characters }], total, next_offset }`                             |
+| `context_notes` read                       | `{ name, ref, content, offset, total_characters, next_offset }`                                      |
+| `context_notes` write/append/delete        | `{ action, name, saved: true }`                                                                      |
+| `context_notes` / `context_history` search | `{ matches: [{ ref, name?, offset, preview }], next_offset }`                                        |
+| `context_history` windows                  | `{ windows: [{ ref, items }], total, next_offset }`                                                  |
+| `context_history` list                     | `{ items: [{ ref, type, timestamp, preview }], total, next_offset }`                                 |
+| `context_history` read                     | `{ ref, resolved_in_session, format, content, offset, total_characters, next_offset, availability }` |
+
+Failures still throw. `context_rollover` has no schema because it cannot run inside a script.
+
 Notes use labels rather than filesystem paths. A session branch may hold up to 128 Notes; a Note name is 1–64 characters and content is at most 64,000 UTF-16 units. Lists and search return at most 20 results per page. Exact reads use zero-based UTF-16 offsets and return at most 2,000 units per call. Stable references have the form `context:<source-session>:<entry>`.
 
 History is read-only and limited to recorded entries on the selected branch. Forks inherit entries on their selected path and then diverge; abandoned siblings and unrelated sessions are excluded. Context-only Child Agent inheritance does not copy the source Notes/History store, so an inherited reference may be unavailable locally. Foreign references resolve only when a persisted owned record proves the issuer had that entry; otherwise browse the current branch for a fresh reference. Reads do not open arbitrary external spill paths or reconstruct unavailable originals.

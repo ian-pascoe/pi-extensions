@@ -24,6 +24,15 @@ The `todo` tool supports five actions:
 | `remove` | `id`                                         | Removes one Task                  |
 | `clear`  | —                                            | Removes every Task and resets IDs |
 
+A Pi `codemode` script receives the result as an object (the tool declares an `outputSchema`) instead of the text (its field names are already single words, so they match Pi's snake_case convention); the model still reads the same text, and failures still throw:
+
+| Action           | Script value                                                                 |
+| ---------------- | ---------------------------------------------------------------------------- |
+| `list`           | `{ action: "list", tasks }`, each Task `{ id, title, description?, status }` |
+| `add` / `update` | `{ action, task }` with the resulting Task                                   |
+| `remove`         | `{ action: "remove", id }`                                                   |
+| `clear`          | `{ action: "clear", cleared }` with the number of Tasks removed              |
+
 Task status is `pending`, `active`, or `completed`; `add` defaults to `pending`. Tasks are flat, duplicate titles are allowed, and multiple Tasks may be active. Set `description` to `null` during `update` to remove it.
 
 Each changed Todo List is projected from its immutable session state entry as a hidden full snapshot at a fixed conversation position. Mutations inside a tool group appear after all sibling results; later requests keep earlier snapshots in place. Clearing the list produces an explicit empty snapshot. The system prompt and tool description do not change.

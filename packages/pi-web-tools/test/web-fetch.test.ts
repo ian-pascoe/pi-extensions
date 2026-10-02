@@ -2,13 +2,16 @@ import { toToolContext } from "./tool-context.js";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { dirname } from "node:path";
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   createWebFetchTool,
   WEB_FETCH_DEFAULT_TIMEOUT_SECONDS,
   WEB_FETCH_MAX_RESPONSE_BYTES,
+  WebFetchOutputSchema,
   type WebFetchToolOptions,
 } from "../src/web-fetch.js";
+import { WEB_TOOL_STRUCTURED_MAX_BYTES } from "../src/web-tool-output.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import { createWebToolsTestRunner } from "./web-tools-test-harness.js";
 
@@ -102,6 +105,13 @@ describe("Web Fetch", () => {
         url: `${server.baseUrl}/target`,
         contentType: "text/plain",
         format: "text",
+      },
+      structuredContent: {
+        url: `${server.baseUrl}/target`,
+        content_type: "text/plain",
+        format: "text",
+        content: "redirected",
+        truncated: false,
       },
     });
     expect(server.requests.map(({ path }) => path)).toEqual(["/redirect", "/target"]);
@@ -327,5 +337,52 @@ describe("Web Fetch", () => {
 
     expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(path) });
     expect(await readFile(path, "utf8")).toContain("paragraph 2099");
+    // Scripts receive the complete converted text, not the 50 KiB the model sees.
+    expect(result.structuredContent).toMatchObject({
+      content: expect.stringContaining("paragraph 2099"),
+      truncated: false,
+      full_output_path: path,
+    });
+    expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+  });
+
+  test("bounds script content at 1 MiB on a character boundary and keeps the spill complete", async () => {
+    // "é" is two bytes, so the limit falls inside a character when the text starts with "a".
+    const body = `a${"é".repeat(700_000)}`;
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(body, { headers: { "content-type": "text/plain" } });
+    const result = await executeFetch(
+      { fetch },
+      { url: "https://example.com/huge", format: "text" },
+    );
+    const path = result.details.truncation?.fullOutputPath;
+    if (path === undefined) throw new Error("Expected Web Fetch spill");
+    spillDirectories.push(dirname(path));
+
+    expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+    const structured = Value.Parse(WebFetchOutputSchema, result.structuredContent);
+    expect(structured.truncated).toBe(true);
+    expect(structured.full_output_path).toBe(path);
+    const content = structured.content;
+    expect(Buffer.byteLength(content)).toBe(WEB_TOOL_STRUCTURED_MAX_BYTES - 1);
+    expect(content).not.toContain("\uFFFD");
+    expect(body.startsWith(content)).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(body);
+  });
+
+  test("returns small pages unspilled with no full output path", async () => {
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response("tiny", { headers: { "content-type": "text/plain" } });
+    const result = await executeFetch(
+      { fetch },
+      { url: "https://example.com/tiny", format: "text" },
+    );
+    expect(result.structuredContent).toEqual({
+      url: "https://example.com/tiny",
+      content_type: "text/plain",
+      format: "text",
+      content: "tiny",
+      truncated: false,
+    });
   });
 });

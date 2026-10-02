@@ -12,6 +12,8 @@ import type {
 import type { AutocompleteItem, Component, TUI } from "@earendil-works/pi-tui";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { existsSync } from "node:fs";
+import type { TSchema } from "typebox";
+import { Value } from "typebox/value";
 import { describe, expect, test } from "vitest";
 import todoExtension from "../src/index.js";
 import type { TodoActionInput, TodoToolDetails } from "../src/todo-list.js";
@@ -20,12 +22,14 @@ import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/trouble
 type TodoToolResult = {
   readonly content: ReadonlyArray<{ readonly type: string; readonly text?: string }>;
   readonly details?: TodoToolDetails;
+  readonly structuredContent?: JsonValue;
 };
 type TodoWidgetFactory = (tui: TUI, theme: Theme) => Component;
 type ContextEventResult = { readonly messages?: ContextEvent["messages"] };
 type ExtensionMode = ExtensionContext["mode"];
 type RegisteredTodoTool = {
   readonly name: string;
+  readonly outputSchema?: TSchema;
   execute(
     toolCallId: string,
     params: TodoActionInput,
@@ -262,6 +266,44 @@ describe("Pi Todo extension", () => {
       nextId: 2,
       tasks: [{ id: 1, title: "After clear", status: "pending" }],
     });
+  });
+
+  test("every action returns schema-valid structured content for scripts", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+    const outputSchema = harness.tool.outputSchema;
+    if (outputSchema === undefined) throw new Error("todo declares no outputSchema");
+    const run = async (params: TodoActionInput) => {
+      const result = await harness.execute(params, context);
+      expect(Value.Check(outputSchema, result.structuredContent)).toBe(true);
+      expect(result.structuredContent).toEqual(result.details);
+      expect(result.structuredContent).not.toBe(result.details);
+      return result.structuredContent;
+    };
+
+    expect(await run({ action: "add", title: "First", description: "Details" })).toEqual({
+      action: "add",
+      task: { id: 1, title: "First", description: "Details", status: "pending" },
+    });
+    await run({ action: "add", title: "Second", status: "active" });
+    expect(await run({ action: "update", id: 1, description: null, status: "completed" })).toEqual({
+      action: "update",
+      task: { id: 1, title: "First", status: "completed" },
+    });
+    expect(await run({ action: "list" })).toEqual({
+      action: "list",
+      tasks: [
+        { id: 1, title: "First", status: "completed" },
+        { id: 2, title: "Second", status: "active" },
+      ],
+    });
+    expect(await run({ action: "remove", id: 2 })).toEqual({ action: "remove", id: 2 });
+    expect(await run({ action: "clear" })).toEqual({ action: "clear", cleared: 1 });
+    expect(await run({ action: "list" })).toEqual({ action: "list", tasks: [] });
+    // Model-facing text is unchanged.
+    expect(resultText(await harness.execute({ action: "add", title: "Again" }, context))).toBe(
+      "Added Task #1",
+    );
   });
 
   test("clear resets IDs after every Task was individually removed", async () => {

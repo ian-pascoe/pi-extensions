@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, type JsonValue } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -39,6 +39,92 @@ const HistoryParameters = Type.Object(
     query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
     offset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
+  },
+  { additionalProperties: false },
+);
+
+const NextOffset = Type.Union([Type.Integer({ minimum: 0 }), Type.Null()], {
+  description: "Offset of the next page or chunk, or null when this one is the last",
+});
+const SearchMatches = Type.Array(
+  Type.Object({
+    ref: Type.String(),
+    name: Type.Optional(Type.String({ description: "Note name; absent for History matches" })),
+    offset: Type.Integer({ minimum: 0 }),
+    preview: Type.String(),
+  }),
+  { description: "search: literal matches" },
+);
+
+// Flat on purpose: Pi renders a script-callable tool's result as one declaration line, and each
+// action fills a different subset of fields. The tool descriptions and README name the subsets.
+const HistoryOutputSchema = Type.Object(
+  {
+    windows: Type.Optional(
+      Type.Array(Type.Object({ ref: Type.String(), items: Type.Integer({ minimum: 0 }) }), {
+        description: "windows: one page of Context Windows",
+      }),
+    ),
+    items: Type.Optional(
+      Type.Array(
+        Type.Object({
+          ref: Type.String(),
+          type: Type.String(),
+          timestamp: Type.String(),
+          preview: Type.String(),
+        }),
+        { description: "list: one page of recorded entries" },
+      ),
+    ),
+    matches: Type.Optional(SearchMatches),
+    total: Type.Optional(
+      Type.Integer({ minimum: 0, description: "windows/list: total windows or entries" }),
+    ),
+    next_offset: Type.Optional(NextOffset),
+    ref: Type.Optional(Type.String({ description: "read: the requested entry reference" })),
+    resolved_in_session: Type.Optional(Type.String({ description: "read: issuing session ID" })),
+    format: Type.Optional(
+      Type.Literal("recorded-entry-json", { description: "read: content kind" }),
+    ),
+    content: Type.Optional(Type.String({ description: "read: serialized entry JSON chunk" })),
+    offset: Type.Optional(Type.Integer({ minimum: 0, description: "read: chunk start" })),
+    total_characters: Type.Optional(
+      Type.Integer({ minimum: 0, description: "read: length of the whole serialized entry" }),
+    ),
+    availability: Type.Optional(Type.String({ description: "read: what the content omits" })),
+  },
+  { additionalProperties: false },
+);
+
+const NotesOutputSchema = Type.Object(
+  {
+    notes: Type.Optional(
+      Type.Array(
+        Type.Object({
+          name: Type.String(),
+          updated_at: Type.String(),
+          ref: Type.String(),
+          characters: Type.Integer({ minimum: 0 }),
+        }),
+        { description: "list: one page of Notes" },
+      ),
+    ),
+    matches: Type.Optional(SearchMatches),
+    total: Type.Optional(Type.Integer({ minimum: 0, description: "list: total Notes" })),
+    next_offset: Type.Optional(NextOffset),
+    name: Type.Optional(Type.String({ description: "read/write/append/delete: the Note name" })),
+    ref: Type.Optional(Type.String({ description: "read: the Note reference" })),
+    content: Type.Optional(Type.String({ description: "read: Note text chunk" })),
+    offset: Type.Optional(Type.Integer({ minimum: 0, description: "read: chunk start" })),
+    total_characters: Type.Optional(
+      Type.Integer({ minimum: 0, description: "read: length of the whole Note" }),
+    ),
+    action: Type.Optional(
+      StringEnum(["write", "append", "delete"], { description: "mutations: the action performed" }),
+    ),
+    saved: Type.Optional(
+      Type.Literal(true, { description: "mutations: the change was persisted" }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -102,8 +188,30 @@ function search(items: Iterable<SearchItem>, query: string, offset: number, limi
   return { matches, nextOffset: null };
 }
 
+const CAMEL_BOUNDARY = /([a-z0-9])([A-Z])/g;
+
+/** Rename object keys to snake_case; every key is a fixed field name, so values are untouched. */
+function snakeCaseKeys(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(snakeCaseKeys);
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: The value is JSON this module just serialized; this separates object nodes from primitives, and the output schema test covers every action.
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      key.replace(CAMEL_BOUNDARY, "$1_$2").toLowerCase(),
+      snakeCaseKeys(entry),
+    ]),
+  );
+}
+
 function result<T>(data: T) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data) }], details: data };
+  const text = JSON.stringify(data);
+  // The text the model reads and the value scripts receive come from one serialization. `details`
+  // keeps its persisted camelCase shape; only the script-facing value uses snake_case keys.
+  return {
+    content: [{ type: "text" as const, text }],
+    details: data,
+    structuredContent: snakeCaseKeys(JSON.parse(text)),
+  };
 }
 
 /** Registers branch-local storage tools; Handoff/checkpoint policy lives elsewhere. */
@@ -123,6 +231,7 @@ export function registerContextTools(
       idempotentHint: true,
       openWorldHint: false,
     },
+    outputSchema: HistoryOutputSchema,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(
@@ -227,6 +336,7 @@ export function registerContextTools(
       idempotentHint: false,
       openWorldHint: false,
     },
+    outputSchema: NotesOutputSchema,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(
