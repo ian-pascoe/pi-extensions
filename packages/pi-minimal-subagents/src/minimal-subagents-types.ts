@@ -41,11 +41,16 @@ export interface SpawnParameters {
   delegation?: DelegationMode;
 }
 
-/** Returns persistent agent and turn identities immediately after launch scheduling. */
-export interface SpawnResult {
+/** Returns persistent agent and turn identities plus the resolved grant immediately after launch scheduling. */
+export interface SpawnResult extends RuntimeProfile {
   agent_id: string;
   turn_id: string;
   status: "running";
+  /** Concrete ordinary tools granted by the Launch Contract. */
+  tools: string[];
+  delegation: DelegationMode;
+  /** Non-fatal tool-resolution warnings, such as skipped configured tools. */
+  warnings?: string[];
 }
 
 /** Retains one keyed terminal turn result for waits and durable delivery recovery. */
@@ -59,13 +64,18 @@ export interface TurnResult {
   elapsed_ms?: number;
 }
 
-/** Reports whether one direct message was handed to a wait, queued, or failed. */
-export type AgentMessageDisposition = "delivered-via-wait" | "queued" | "failed";
+/**
+ * Reports whether one direct message was handed to a wait, queued into an active turn, started a
+ * new turn on an idle recipient, or failed.
+ */
+export type AgentMessageDisposition = "delivered-via-wait" | "queued" | "started-turn" | "failed";
 
 export interface AgentMessageResult {
   agent_id: string;
   message_id: string;
   disposition: AgentMessageDisposition;
+  /** Turn started on an idle recipient; present only for `started-turn`. */
+  turn_id?: string;
   error?: string;
 }
 
@@ -112,7 +122,8 @@ export interface AgentSummary extends RuntimeProfile {
   latest_activity_at?: string;
   task?: string;
   child_count: number;
-  children: AgentSummary[];
+  /** Nested summaries; omitted from caller-scoped status, which reports only `child_count`. */
+  children?: AgentSummary[];
 }
 
 /** Provides bounded recent child conversation text for detailed status. */
@@ -127,6 +138,12 @@ export interface RecentAgentActivity {
   label: string;
   content: string;
   truncated: boolean;
+}
+
+/** Live progress of a Child Agent's running turn, shown while its parent waits. */
+export interface ActiveTurnProgress {
+  turn_id: string;
+  tool_calls: number;
 }
 
 /** Holds the complete selected-branch Child Session Transcript for trusted status UI. */

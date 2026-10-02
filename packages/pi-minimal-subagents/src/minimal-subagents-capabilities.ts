@@ -75,7 +75,9 @@ export function resolveOrdinaryToolSelection(
   const ceiling = new Set(context.capabilityCeiling);
   const exceeded = uniqueRequested.filter((name) => !ceiling.has(name));
   if (exceeded.length > 0) {
-    throw new Error(`Minimal subagents capability ceiling exceeded: ${exceeded.join(", ")}`);
+    throw new Error(
+      `Minimal subagents tool selection: ${exceeded.join(", ")} ${exceeded.length === 1 ? "is" : "are"} unknown or outside the caller's capability ceiling. ${describePermittedTools(excludeCoordinatorTools(context.capabilityCeiling))}`,
+    );
   }
 
   const toolsets = context.toolsets ?? DEFAULT_TOOLSETS;
@@ -101,6 +103,15 @@ export function resolveOrdinaryToolSelection(
     requiredTools: uniqueRequested,
     warnings,
   };
+}
+
+const PERMITTED_TOOL_LISTING_LIMIT = 40;
+
+function describePermittedTools(permitted: readonly string[]): string {
+  if (permitted.length === 0) return "No ordinary tools are permitted.";
+  const listed = permitted.slice(0, PERMITTED_TOOL_LISTING_LIMIT).join(", ");
+  const remaining = permitted.length - PERMITTED_TOOL_LISTING_LIMIT;
+  return `Permitted ordinary tools: ${listed}${remaining > 0 ? `, and ${remaining} more` : ""}.`;
 }
 
 /** Return an agent's hierarchy depth where the interactive root is depth zero. */

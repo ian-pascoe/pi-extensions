@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
@@ -285,7 +286,9 @@ describe("minimal subagents coordinator", () => {
           { task: "Must not expand explicit requests", agent_id: "denied", tools: [tool] },
           parentCaller,
         ),
-      ).rejects.toThrow(/capability ceiling exceeded|coordinator tools are injected separately/);
+      ).rejects.toThrow(
+        /outside the caller's capability ceiling|coordinator tools are injected separately/,
+      );
     }
     await coordinator.shutdown();
   });
@@ -417,6 +420,131 @@ describe("minimal subagents coordinator", () => {
     expect(() => coordinator.status("other", "worker")).toThrow(
       "Minimal subagents unknown agent: other",
     );
+  });
+
+  it("returns the resolved launch grant and tool warnings from spawn", async () => {
+    const { coordinator } = coordinatorFixture(childRuntime(), 0, {
+      toolsets: { baseToolset: ["missing_*"], readToolset: ["read"], modifyToolset: [] },
+    });
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Investigate", agent_id: "worker", tools: "read", delegation: "fanout" },
+      caller,
+    );
+    expect(spawned).toEqual({
+      agent_id: "worker",
+      turn_id: expect.stringMatching(/^worker:turn-/),
+      status: "running",
+      model: "provider/model",
+      thinking_level: "medium",
+      tools: ["read"],
+      delegation: "fanout",
+      warnings: [expect.stringContaining('"missing_*" matched no permitted ordinary tools')],
+    });
+    await coordinator.shutdown();
+  });
+
+  it("quotes inherited context and frames the task so the child does not adopt the parent's requests", async () => {
+    const runtime = childRuntime();
+    const { coordinator, sessions } = coordinatorFixture(runtime);
+    const inheritedCaller: CallerSnapshot = {
+      ...caller,
+      messages: [{ role: "user", content: "Spawn a child named leaf", timestamp: 1 }],
+    };
+    await coordinator.spawn(
+      "root",
+      { task: "Reply with pong", agent_id: "leaf", session_context: "inherit" },
+      inheritedCaller,
+    );
+    await coordinator.spawn(
+      "root",
+      { task: "Reply with pong", agent_id: "fresh" },
+      inheritedCaller,
+    );
+    await coordinator.waitForSettledOperations();
+    expect(sessions.createIdentity).toHaveBeenNthCalledWith(1, expect.anything(), [
+      expect.objectContaining({
+        role: "custom",
+        customType: "minimal-subagents.parent-context",
+        content: [
+          { type: "text", text: '<parent_message from="root" role="user">' },
+          { type: "text", text: "Spawn a child named leaf" },
+          { type: "text", text: "</parent_message>" },
+        ],
+      }),
+    ]);
+    expect(sessions.createIdentity).toHaveBeenNthCalledWith(2, expect.anything(), []);
+    expect(runtime.runPrompt).toHaveBeenCalledTimes(2);
+    expect(runtime.runPrompt).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(
+        /parent_message entries above, and any summary of earlier ones, come from the conversation of your parent `root`[\s\S]*You are `leaf`\. Your assigned task is:\n\nReply with pong$/,
+      ),
+      false,
+      "provider/model",
+      "medium",
+    );
+    expect(runtime.runPrompt).toHaveBeenNthCalledWith(
+      2,
+      "Reply with pong",
+      false,
+      "provider/model",
+      "medium",
+    );
+    expect(coordinator.status("root", "leaf")).toMatchObject({
+      agent: { task: "Reply with pong", launch_contract: { session_context: "inherit" } },
+    });
+    expect(coordinator.status("root", "fresh")).toMatchObject({
+      agent: { launch_contract: { session_context: "omit" } },
+    });
+    await coordinator.shutdown();
+  });
+
+  it("lets only the root inspect non-direct descendants and omits nested summaries", async () => {
+    const { coordinator } = coordinatorFixture();
+    await coordinator.restore({
+      agents: [
+        persistedAgent("parent", "root"),
+        persistedAgent("parent.child", "parent"),
+        persistedAgent("parent.child.leaf", "parent.child"),
+      ],
+      tombstones: [],
+      deliveries: [],
+    });
+    expect(coordinator.status("root", "parent.child.leaf")).toMatchObject({
+      agent: { agent_id: "parent.child.leaf" },
+    });
+    expect(() => coordinator.status("parent", "parent.child.leaf")).toThrow(
+      "Minimal subagents status authorization denied: parent cannot target parent.child.leaf",
+    );
+    const listed = coordinator.status("root");
+    expect("agents" in listed && listed.agents[0]).toMatchObject({ child_count: 1 });
+    expect("agents" in listed && listed.agents[0]).not.toHaveProperty("children");
+    const detail = coordinator.status("root", "parent");
+    expect("agent" in detail && detail.agent).not.toHaveProperty("children");
+    const hierarchy = coordinator.inspectStatus();
+    expect("agents" in hierarchy && hierarchy.agents[0]?.children).toHaveLength(1);
+    await coordinator.shutdown();
+  });
+
+  it("explains unknown wait turns and reused deleted agent IDs", async () => {
+    const { coordinator } = coordinatorFixture();
+    await coordinator.spawn("root", { task: "Investigate", agent_id: "worker" }, caller);
+    await coordinator.wait("root", "worker", 1_000);
+    await expect(coordinator.wait("root", "worker", 10, undefined, "bogus")).rejects.toThrow(
+      "Minimal subagents wait: turn bogus is unknown or no longer retained for worker; omit turn_id",
+    );
+    expect(await coordinator.cancel("root", "worker")).toEqual({
+      agent_id: "worker",
+      recursive: true,
+      affected_agent_ids: [],
+      cancelled_turn_ids: [],
+    });
+    await coordinator.delete("root", "worker");
+    await expect(
+      coordinator.spawn("root", { task: "Again", agent_id: "worker" }, caller),
+    ).rejects.toThrow("choose a different agent_id");
+    await coordinator.shutdown();
   });
 
   it("reports the live Runtime Profile while preserving the Launch Contract and nested defaults", async () => {
@@ -652,6 +780,85 @@ describe("minimal subagents coordinator", () => {
     abortController.abort();
     await expect(firstWait).rejects.toThrow("Minimal subagents wait cancelled for worker");
     await coordinator.cancel("root", "worker");
+  });
+
+  it("previews only the waited-on running turn's work, and only to the child's parent", async () => {
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
+    const { coordinator } = coordinatorFixture(runtime);
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Inspect", agent_id: "worker" },
+      caller,
+    );
+    await vi.waitFor(() => expect(runtime.runPrompt).toHaveBeenCalledOnce());
+    const turnStart = Date.parse("2026-01-01T00:00:00.000Z");
+    const assistant = (content: AssistantMessage["content"], timestamp: number) =>
+      ({
+        role: "assistant",
+        content,
+        api: "openai-completions",
+        provider: "provider",
+        model: "model",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "toolUse",
+        timestamp,
+      }) satisfies AssistantMessage;
+    const toolCall = (name: string) =>
+      ({ type: "toolCall", id: name, name, arguments: { path: "a.ts" } }) as const;
+    runtime.snapshotActivityMessages.mockReturnValue([
+      assistant([toolCall("earlier")], turnStart - 1),
+      { role: "user", content: "Inspect", timestamp: turnStart },
+      assistant([{ type: "text", text: "Looking" }, toolCall("read"), toolCall("grep")], turnStart),
+      {
+        role: "toolResult",
+        toolCallId: "read",
+        toolName: "read",
+        content: [{ type: "text", text: "file contents" }],
+        isError: false,
+        timestamp: turnStart + 1,
+      },
+      {
+        role: "toolResult",
+        toolCallId: "grep",
+        toolName: "grep",
+        content: [{ type: "text", text: "bad pattern" }],
+        isError: true,
+        timestamp: turnStart + 2,
+      },
+    ]);
+
+    runtime.snapshotActivityTranscript.mockReturnValue({
+      messages: runtime.snapshotActivityMessages(),
+      toolDefinitions: [],
+    });
+    const [earlier, prompt, ...turnWork] = runtime.snapshotActivityMessages();
+
+    expect(coordinator.previewActiveTurn("root", "worker")).toEqual({
+      turn_id: spawned.turn_id,
+      tool_calls: 2,
+    });
+    const transcript = coordinator.inspectActiveTurnTranscript("root", "worker");
+    expect(transcript?.messages).toEqual(turnWork);
+    expect(transcript?.messages).not.toContain(earlier);
+    expect(transcript?.messages).not.toContain(prompt);
+    for (const [callerId, turnId] of [
+      ["other", undefined],
+      ["root", "worker:turn-other"],
+    ] as const) {
+      expect(coordinator.previewActiveTurn(callerId, "worker", turnId)).toBeUndefined();
+      expect(coordinator.inspectActiveTurnTranscript(callerId, "worker", turnId)).toBeUndefined();
+    }
+    await coordinator.cancel("root", "worker");
+    expect(coordinator.previewActiveTurn("root", "worker")).toBeUndefined();
+    expect(coordinator.inspectActiveTurnTranscript("root", "worker")).toBeUndefined();
   });
 
   it("returns detailed child status when one waiter times out without cancelling", async () => {
@@ -1443,7 +1650,9 @@ describe("minimal subagents coordinator", () => {
     });
     await expect(
       coordinator.spawn("root", { task: "Reuse", agent_id: "team" }, caller),
-    ).rejects.toThrow("Minimal subagents agent ID is tombstoned: team");
+    ).rejects.toThrow(
+      "Minimal subagents agent ID team belonged to a deleted agent and cannot be reused",
+    );
   });
 
   it("restores inactive child metadata without opening runtimes", async () => {
@@ -1720,7 +1929,8 @@ describe("minimal subagents coordinator", () => {
       active_turn_id: undefined,
     });
     await expect(coordinator.cancel("root", "worker")).resolves.toMatchObject({
-      affected_agent_ids: ["worker"],
+      affected_agent_ids: [],
+      cancelled_turn_ids: [],
     });
   });
 

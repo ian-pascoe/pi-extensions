@@ -9,6 +9,7 @@ import {
   type ToolDefinition,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
@@ -16,13 +17,21 @@ import {
   renderCoordinatorToolCall,
   renderCoordinatorToolResult,
   type CoordinatorToolName,
+  type LiveTurnRenderer,
 } from "./minimal-subagents-rendering.js";
+import {
+  createTranscriptRenderCache,
+  TranscriptRail,
+  type TranscriptRenderCache,
+} from "./minimal-subagents-transcript.js";
 import {
   CoordinatorToolOutputSchemas,
   type CoordinatorToolCallInput,
 } from "./minimal-subagents-render-contract.js";
 import type { createCoordinatorToolSchemas } from "./minimal-subagents-tool-schemas.js";
 import type {
+  ActiveTurnProgress,
+  AgentDetail,
   AgentMessageResult,
   CallerSnapshot,
   CancelResult,
@@ -41,7 +50,15 @@ const ORDINARY_CHILD_COORDINATOR_TOOL_NAMES = new Set([
 /** Coordinator operations consumed by the six public coordinator tool definitions. */
 export type CoordinatorToolOperations = Pick<
   MinimalSubagentsCoordinator,
-  "spawn" | "inspectStatus" | "sendAgentMessage" | "wait" | "status" | "cancel" | "delete"
+  | "spawn"
+  | "inspectStatus"
+  | "previewActiveTurn"
+  | "inspectActiveTurnTranscript"
+  | "sendAgentMessage"
+  | "wait"
+  | "status"
+  | "cancel"
+  | "delete"
 >;
 
 /** Dependencies and caller policy used to create caller-bound coordinator tools. */
@@ -81,37 +98,84 @@ async function runCoordinatorToolActivity<T>(
   }
 }
 
+/** The compact launch result, plus the full agent detail its transcript renderer displays. */
+type SpawnResultDetails = SpawnResult & { agent?: AgentDetail };
+
 type CoordinatorToolResultDetails =
-  | SpawnResult
+  | SpawnResultDetails
   | AgentMessageResult
   | WaitResult
   | StatusResult
   | CancelResult
   | DeleteResult
-  | { agent_id: string; status: "waiting"; elapsed_ms: number };
+  | WaitProgressDetails;
+
+/** Partial `subagent_wait` details: elapsed wait time plus the child's running-turn progress. */
+type WaitProgressDetails = {
+  agent_id: string;
+  status: "waiting";
+  elapsed_ms: number;
+} & Partial<ActiveTurnProgress>;
 
 type CoordinatorToolDefinition = ToolDefinition & {
   readonly outputSchema: (typeof CoordinatorToolOutputSchemas)[keyof typeof CoordinatorToolOutputSchemas];
 };
 
-function createCoordinatorToolRendering(toolName: CoordinatorToolName) {
+/** Native transcript components are re-rendered on each wait update, so their render requests are not needed. */
+const NON_RENDERING_TUI: Pick<TUI, "requestRender"> = { requestRender: () => undefined };
+
+/** Pi's per-call render context; the installed Pi does not export its named type. */
+type CoordinatorToolRenderContext = Parameters<NonNullable<ToolDefinition["renderResult"]>>[3];
+
+/** Renderer state Pi keeps for one tool row across its partial and final renders. */
+interface CoordinatorToolRowState {
+  liveTurnCache?: TranscriptRenderCache;
+}
+
+function createCoordinatorToolRendering(
+  options: CoordinatorToolDefinitionOptions,
+  toolName: CoordinatorToolName,
+) {
   return {
-    renderCall: (args: CoordinatorToolCallInput, theme: Theme) =>
-      renderCoordinatorToolCall(toolName, args, theme),
+    renderCall: (
+      args: CoordinatorToolCallInput,
+      theme: Theme,
+      context: { expanded: boolean } | undefined,
+    ) => renderCoordinatorToolCall(toolName, args, theme, context?.expanded ?? false),
     renderResult: (
       result: AgentToolResult<CoordinatorToolResultDetails>,
       renderOptions: ToolRenderResultOptions,
       theme: Theme,
-      context: { args: CoordinatorToolCallInput; isError: boolean },
-    ) =>
-      renderCoordinatorToolResult(
+      context: CoordinatorToolRenderContext,
+    ) => {
+      const rowState: CoordinatorToolRowState = context.state;
+      const renderLiveTurn: LiveTurnRenderer = (agentId, turnId, expanded) => {
+        const snapshot = options.coordinator.inspectActiveTurnTranscript(
+          options.callerId,
+          agentId,
+          turnId,
+        );
+        if (!snapshot || snapshot.messages.length === 0) return undefined;
+        return new TranscriptRail(
+          snapshot,
+          // SAFETY: Native transcript components only call requestRender on the TUI they receive.
+          NON_RENDERING_TUI as TUI,
+          context.cwd,
+          expanded,
+          (rowState.liveTurnCache ??= createTranscriptRenderCache()),
+          theme,
+        );
+      };
+      return renderCoordinatorToolResult(
         toolName,
         result,
         renderOptions,
         theme,
         context.args,
         context.isError,
-      ),
+        toolName === "subagent_wait" ? renderLiveTurn : undefined,
+      );
+    },
   };
 }
 
@@ -178,10 +242,12 @@ export function createCoordinatorToolDefinitions(
     name: "subagent",
     label: "Subagent",
     description:
-      "Create a persistent nested agent asynchronously. Returns its canonical agent ID and active turn ID immediately. Root-child IDs omit the root prefix; nested IDs retain the parent path.",
+      "Create a persistent nested agent asynchronously. Returns its canonical agent ID, active turn ID, and resolved model and tools immediately. Root-child IDs omit the root prefix; nested IDs retain the parent path. Children start without your conversation unless session_context opts in, so the task must be self-contained. Its final response is delivered automatically unless you claim it with subagent_wait. To continue an idle child later, send it agent_message; that starts a new turn you can wait on.",
     promptSnippet: "Spawn a persistent child with a prefix-free root-child ID",
     promptGuidelines: modelRolePromptGuidelines,
     parameters: options.schemas.subagent,
+    // A spawn must finish registering before a wait or message in the same batch can target it.
+    executionMode: "sequential",
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,
@@ -195,24 +261,22 @@ export function createCoordinatorToolDefinitions(
           parameters,
           options.captureCaller(context),
         );
+        // The model and codemode receive the compact launch result; the transcript renderer
+        // additionally receives the full detail it displays.
         const status = options.coordinator.inspectStatus(result.agent_id);
-        const details: SpawnResult & {
-          agent?: import("./minimal-subagents-types.js").AgentDetail;
-        } = {
-          ...result,
-        };
-        if (status && "agent" in status) details.agent = status.agent;
-        return structuredToolResult(details);
+        const details: SpawnResultDetails = { ...result };
+        if ("agent" in status) details.agent = status.agent;
+        return { ...structuredToolResult(result), details };
       });
     },
-    ...createCoordinatorToolRendering("subagent"),
+    ...createCoordinatorToolRendering(options, "subagent"),
   });
 
   const messageTool = defineTool({
     name: "agent_message",
     label: "Agent Message",
     description:
-      "Send one mid-turn coordination message to a direct parent, direct sibling, or direct child. The result says whether it was delivered through an active wait, queued for the recipient, or failed.",
+      "Send one coordination message to a direct parent, direct sibling, or direct child. The result says whether it was delivered through an active wait, queued into the recipient's active turn, started a new turn on an idle child (with its turn_id), or failed.",
     promptSnippet: "Coordinate required mid-turn action with one adjacent agent",
     parameters: options.schemas.agent_message,
     annotations: {
@@ -239,14 +303,14 @@ export function createCoordinatorToolDefinitions(
           : structuredToolResult(result);
       });
     },
-    ...createCoordinatorToolRendering("agent_message"),
+    ...createCoordinatorToolRendering(options, "agent_message"),
   });
 
   const waitTool = defineTool({
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's oldest observable turn, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. An already settled turn returns event=turn once with queued messages in messages. Timeout returns event=timeout with detailed child status and never cancels the child.",
+      "Wait for one direct child's oldest observable turn, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. A settled turn returns event=turn, with any queued messages in messages; waiting again returns the same result. Timeout returns event=timeout with detailed child status and never cancels the child.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     annotations: {
@@ -257,15 +321,22 @@ export function createCoordinatorToolDefinitions(
     },
     async execute(_toolCallId, parameters, signal, onUpdate) {
       const startedAt = Date.now();
-      const updateWaitingResult = () =>
+      const updateWaitingResult = () => {
+        const details: WaitProgressDetails = {
+          agent_id: parameters.agent_id,
+          status: "waiting",
+          elapsed_ms: Date.now() - startedAt,
+          ...options.coordinator.previewActiveTurn(
+            options.callerId,
+            parameters.agent_id,
+            parameters.turn_id,
+          ),
+        };
         onUpdate?.({
           content: [{ type: "text", text: `Waiting for ${parameters.agent_id}` }],
-          details: {
-            agent_id: parameters.agent_id,
-            status: "waiting",
-            elapsed_ms: Date.now() - startedAt,
-          },
+          details,
         });
+      };
       updateWaitingResult();
       const waitingInterval = setInterval(updateWaitingResult, 1_000);
       waitingInterval.unref?.();
@@ -293,14 +364,14 @@ export function createCoordinatorToolDefinitions(
         clearInterval(waitingInterval);
       }
     },
-    ...createCoordinatorToolRendering("subagent_wait"),
+    ...createCoordinatorToolRendering(options, "subagent_wait"),
   });
 
   const statusTool = defineTool({
     name: "subagent_status",
     label: "Subagent Status",
     description:
-      "List direct children when agent_id is omitted, or inspect one direct child's launch contract, result, usage, dependencies, and bounded recent activity including message text and reasoning.",
+      "List direct children when agent_id is omitted, or inspect one direct child's launch contract, result, usage, dependencies, and bounded recent activity including message text and reasoning. The root may inspect any descendant.",
     promptSnippet: "Inspect direct child state",
     parameters: options.schemas.subagent_status,
     annotations: {
@@ -314,7 +385,7 @@ export function createCoordinatorToolDefinitions(
         structuredToolResult(options.coordinator.status(options.callerId, parameters.agent_id)),
       );
     },
-    ...createCoordinatorToolRendering("subagent_status"),
+    ...createCoordinatorToolRendering(options, "subagent_status"),
   });
 
   const cancelTool = defineTool({
@@ -341,7 +412,7 @@ export function createCoordinatorToolDefinitions(
         ),
       );
     },
-    ...createCoordinatorToolRendering("subagent_cancel"),
+    ...createCoordinatorToolRendering(options, "subagent_cancel"),
   });
 
   const deleteTool = defineTool({
@@ -375,7 +446,7 @@ export function createCoordinatorToolDefinitions(
         return structuredToolResult(result);
       });
     },
-    ...createCoordinatorToolRendering("subagent_delete"),
+    ...createCoordinatorToolRendering(options, "subagent_delete"),
   });
 
   const coordinatorTools: CoordinatorToolDefinition[] = [

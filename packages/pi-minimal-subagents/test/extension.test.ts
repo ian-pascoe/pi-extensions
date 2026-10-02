@@ -943,7 +943,8 @@ describe("minimal subagents extension lifecycle", () => {
       fg: (_color, text) => text,
       bg: (_color, text) => text,
       bold: (text) => text,
-    } satisfies Pick<Theme, "fg" | "bg" | "bold">;
+      getBgAnsi: (_color) => "",
+    } satisfies Pick<Theme, "fg" | "bg" | "bold" | "getBgAnsi">;
     const keybindings: Pick<KeybindingsManager, "matches" | "getKeys"> = {
       matches: (data, binding) => data === "escape" && binding === "tui.select.cancel",
       getKeys: () => ["ctrl+o"],

@@ -59,7 +59,7 @@ function flattenAgentHierarchy(agents: readonly AgentSummary[]): FlattenedAgentS
   const flattened: FlattenedAgentSummary[] = [];
   const visit = (agent: AgentSummary, depth: number, parentId?: string) => {
     flattened.push({ agent, depth, parentId, order: flattened.length });
-    for (const child of agent.children) visit(child, depth + 1, agent.agent_id);
+    for (const child of agent.children ?? []) visit(child, depth + 1, agent.agent_id);
   };
   for (const agent of agents) visit(agent, 0);
   return flattened;

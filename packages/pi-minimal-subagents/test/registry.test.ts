@@ -121,6 +121,31 @@ describe("minimal subagents registry", () => {
     expect(diagnostics).toEqual([]);
   });
 
+  it("restores usage recorded without optional counters with those counters present", () => {
+    const legacyUsage = {
+      input: 1,
+      output: 2,
+      cacheRead: 3,
+      cacheWrite: 4,
+      totalTokens: 10,
+      cost: { input: 0.1, output: 0.2, cacheRead: 0, cacheWrite: 0, total: 0.3 },
+    };
+    const events = [
+      createRegistryEvent("root", "agent-created", { agent: persistedAgent() }),
+      createRegistryEvent("root", "turn-started", {
+        agent_id: "child",
+        turn_id: "child:old",
+        started_at: "2026-01-01T00:00:01.000Z",
+      }),
+      createRegistryEvent("root", "turn-settled", {
+        result: { ...completedResult("child", "child:old"), usage: legacyUsage },
+      }),
+    ];
+
+    const [agent] = replayRegistryEntries(events.map(customEntry), "root").agents;
+    expect(agent?.latest_result?.usage).toEqual({ ...legacyUsage, cacheWrite1h: 0, reasoning: 0 });
+  });
+
   it("ignores foreign-root records before inspecting nested non-JSON fields", () => {
     const diagnostics: RegistryReplayDiagnostic[] = [];
     const replayed = replayRegistryEntries(

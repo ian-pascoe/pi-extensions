@@ -11,6 +11,8 @@ import {
   buildRecentAgentActivity,
   buildSubagentSystemPrompt,
   contextContainsImages,
+  PARENT_CONTEXT_MESSAGE_TYPE,
+  selectActiveTurnTranscript,
   selectChildAgentTranscript,
   snapshotCommittedContext,
 } from "../src/minimal-subagents-context.js";
@@ -42,6 +44,41 @@ function assistantMessage(text: string): AssistantMessage {
 }
 
 describe("minimal subagents context", () => {
+  it("keeps a running turn's latest assistant messages and their tool results", () => {
+    const at = (message: AgentMessage, timestamp: number): AgentMessage => ({
+      ...message,
+      timestamp,
+    });
+    const result = (toolCallId: string, timestamp: number): AgentMessage => ({
+      role: "toolResult",
+      toolCallId,
+      toolName: "read",
+      content: [{ type: "text", text: toolCallId }],
+      isError: false,
+      timestamp,
+    });
+    const before = at(assistantMessage("previous turn"), 5);
+    const prompt = userMessage("task", 10);
+    const first = at(assistantMessage("first"), 11);
+    const firstResult = result("first", 12);
+    const second = at(assistantMessage("second"), 13);
+    const secondResult = result("second", 14);
+    const streaming = at(assistantMessage("streaming"), 15);
+
+    const tail = selectActiveTurnTranscript(
+      {
+        messages: [before, prompt, first, firstResult, second, secondResult, streaming],
+        streamingAssistantIndex: 6,
+        toolDefinitions: [],
+      },
+      10,
+      2,
+    );
+
+    expect(tail.messages).toEqual([second, secondResult, streaming]);
+    expect(tail.streamingAssistantIndex).toBe(2);
+  });
+
   it("clones committed messages and omits only a streaming assistant tail", () => {
     const messages: AgentMessage[] = [userMessage("question"), assistantMessage("partial")];
     const snapshot = snapshotCommittedContext(messages, true);
@@ -52,9 +89,104 @@ describe("minimal subagents context", () => {
 
   it("selects inherited, compact, and omitted imported context", () => {
     const messages: AgentMessage[] = [userMessage("question")];
-    expect(assembleImportedContext("inherit", messages)).toEqual({ messages, compact: false });
-    expect(assembleImportedContext("compact", messages)).toEqual({ messages, compact: true });
-    expect(assembleImportedContext("omit", messages)).toEqual({ messages: [], compact: false });
+    const quoted = [
+      {
+        role: "custom",
+        customType: PARENT_CONTEXT_MESSAGE_TYPE,
+        content: [
+          { type: "text", text: '<parent_message from="root" role="user">' },
+          { type: "text", text: "question" },
+          { type: "text", text: "</parent_message>" },
+        ],
+        display: true,
+        timestamp: 1,
+      },
+    ];
+    expect(assembleImportedContext("inherit", messages, "root")).toEqual({
+      messages: quoted,
+      compact: false,
+    });
+    expect(assembleImportedContext("compact", messages, "root")).toEqual({
+      messages: quoted,
+      compact: true,
+    });
+    expect(assembleImportedContext("omit", messages, "root")).toEqual({
+      messages: [],
+      compact: false,
+    });
+  });
+
+  it("quotes every parent role so the child never replays the parent's turns as its own", () => {
+    const image = { type: "image" as const, data: "x", mimeType: "image/png" };
+    const assistant: AssistantMessage = {
+      ...assistantMessage("I will spawn a child"),
+      content: [
+        { type: "thinking", thinking: "private reasoning" },
+        { type: "text", text: "I will spawn a child" },
+        { type: "toolCall", id: "call-1", name: "subagent", arguments: { task: "x" } },
+      ],
+    };
+    const toolResult: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "subagent",
+      content: [{ type: "text", text: "spawned" }, image],
+      isError: true,
+      timestamp: 3,
+    };
+    const messages: AgentMessage[] = [
+      { role: "compactionSummary", summary: "earlier work", tokensBefore: 10, timestamp: 0 },
+      userMessage("spawn one"),
+      assistant,
+      { ...assistantMessage(""), content: [{ type: "thinking", thinking: "only reasoning" }] },
+      toolResult,
+      { role: "custom", customType: "steer", content: "note", display: false, timestamp: 4 },
+      { role: "system", content: "", sections: { tools: "parent tools" }, timestamp: 4 },
+      {
+        ...assistantMessage("partial answer"),
+        stopReason: "aborted",
+      },
+      { ...assistantMessage(""), content: [], stopReason: "error", errorMessage: "overloaded" },
+      { ...assistantMessage("cut off"), stopReason: "length" },
+      {
+        role: "bashExecution",
+        command: "ls",
+        output: "a.ts",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+        timestamp: 5,
+      },
+      {
+        role: "bashExecution",
+        command: "secret",
+        output: "hidden",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+        excludeFromContext: true,
+        timestamp: 6,
+      },
+    ];
+    const { messages: imported } = assembleImportedContext("inherit", messages, "mid");
+    expect(imported.every((message) => message.role === "custom")).toBe(true);
+    const rendered = imported.map((message) =>
+      message.role === "custom" && Array.isArray(message.content)
+        ? message.content.map((part) => (part.type === "text" ? part.text : "[image]")).join("|")
+        : "",
+    );
+    expect(rendered).toEqual([
+      '<parent_message from="mid" role="compaction summary">|earlier work|</parent_message>',
+      '<parent_message from="mid" role="user">|spawn one|</parent_message>',
+      '<parent_message from="mid" role="assistant">|I will spawn a child|[tool call subagent] {"task":"x"}|</parent_message>',
+      '<parent_message from="mid" role="tool result subagent (error)">|spawned|[image]|</parent_message>',
+      '<parent_message from="mid" role="context message: steer">|note|</parent_message>',
+      '<parent_message from="mid" role="assistant">|partial answer|[turn aborted before completion]|</parent_message>',
+      '<parent_message from="mid" role="assistant">|[turn failed: overloaded]|</parent_message>',
+      '<parent_message from="mid" role="assistant">|cut off|[turn stopped at the output length limit]|</parent_message>',
+      '<parent_message from="mid" role="shell command">|$ ls\na.ts|</parent_message>',
+    ]);
+    expect(contextContainsImages(imported)).toBe(true);
   });
 
   it("builds a bounded recent activity tail with reasoning and message text", () => {
