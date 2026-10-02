@@ -12,6 +12,7 @@ import type {
   ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   PositionEncodingKind,
@@ -270,6 +271,7 @@ describe("registered LSP tool", () => {
     expect(
       registrar.tools.filter(({ exposure }) => exposure === "direct").map(({ name }) => name),
     ).toEqual([
+      "lsp_status",
       "lsp_diagnostics",
       "lsp_hover",
       "lsp_goto_definition",
@@ -1018,6 +1020,36 @@ describe("registered LSP tool", () => {
       // The directly created preview was never reported, like a server-initiated one.
       server_preview_ids: [preview.preview_id],
     });
+    await fixture.close();
+  });
+
+  test("caps structured results at 1 MiB, bounding them and keeping the complete Result Spill", async () => {
+    const fixture = await createToolFixture();
+    const hugeName = "y".repeat(3 * 1024 * 1024);
+    const symbols = Array.from({ length: 50_000 }, (_, index) => ({
+      name: `symbol-${index}`,
+    }));
+    fixture.client.responseByMethod.set("workspace/symbol", [{ name: hugeName }, ...symbols]);
+    const result = await executeTool(fixture, {
+      operation: "workspace_symbols",
+      query: "y",
+      file_path: fixture.filePath,
+    });
+    if (result.details.kind !== "operation" || result.details.spill_path === undefined) {
+      throw new Error("Expected Result Spill path");
+    }
+    const structured = Value.Parse(LspReadOutputSchema, result.structuredContent);
+    expect(Buffer.byteLength(JSON.stringify(structured), "utf8")).toBeLessThanOrEqual(1024 * 1024);
+    expect(structured).toMatchObject({
+      truncated: true,
+      spill_path: result.details.spill_path,
+    });
+    const complete = await readFile(result.details.spill_path, "utf8");
+    expect(complete).toContain(hugeName);
+    expect(complete).toContain("symbol-49999");
+    const [answer] = structured.results;
+    expect(answer?.value).toEqual(expect.any(Array));
+    expect(structured.warnings.join("\n")).toContain(result.details.spill_path);
     await fixture.close();
   });
 });

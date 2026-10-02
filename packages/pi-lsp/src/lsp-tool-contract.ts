@@ -479,10 +479,11 @@ export type LspWorkspaceEditPreviewRecord = Static<typeof LspWorkspaceEditPrevie
 export type ServerOperationOutcome = Static<typeof ServerOperationOutcomeSchema>;
 
 /**
- * Fields every structured LSP result carries. The structured result itself is always complete:
- * Pi keeps it out of model context and session history, so the model-facing output limit does not
- * apply. `truncated` reports that the model-visible text was cut at that limit, and `spill_path`
- * names the Result Spill holding the complete text.
+ * Fields every structured LSP result carries. Pi keeps the structured result out of model context
+ * and session history, so the model-facing output limit does not apply; it has its own 1 MiB cap,
+ * beyond which the result is bounded. `truncated` reports that the model-visible text was cut or
+ * the structured result was bounded, and `spill_path` names the Result Spill holding the complete
+ * text.
  */
 const StructuredResultEnvelope = {
   truncated: Type.Boolean(),

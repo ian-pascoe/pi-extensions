@@ -1287,7 +1287,7 @@ async function executeLspOperation(
 const LSP_TOOL_RULES = [
   "Lines and characters are one-based and count Unicode code points. Paths may start with @.",
   "Reads query every matching server unless server_id narrows them; a tool that creates a preview needs server_id when several servers match.",
-  "Model-visible output is limited to 2,000 lines or 50 KB; the complete output is saved as a Result Spill file named in the result. Structured results stay complete and set truncated and spill_path.",
+  "Model-visible output is limited to 2,000 lines or 50 KB; the complete output is saved as a Result Spill file named in the result. Structured results are capped at 1 MiB; a larger one is bounded, and truncated and spill_path then name the complete output.",
   "lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews. Nothing changes until lsp_apply applies a preview_id.",
   'lsp_apply resolves to state "partial_failure" with an error result when rollback leaves files changed; changed_paths lists them.',
 ];
@@ -1305,6 +1305,7 @@ export const LSP_TOOL_GUIDELINE =
 
 /** Operations declared to the model by default; every other operation is reachable through codemode (ADR-0003). */
 const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
+  "status",
   "diagnostics",
   "goto_definition",
   "find_references",

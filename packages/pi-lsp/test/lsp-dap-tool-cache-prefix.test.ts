@@ -291,6 +291,21 @@ const DAP_TOOLS = [
   "dap_stop",
 ];
 
+test("declares lsp_status directly for the troubleshooting Skill", () => {
+  expect(DIRECT_LSP_TOOLS).toEqual([
+    "lsp_status",
+    "lsp_diagnostics",
+    "lsp_hover",
+    "lsp_goto_definition",
+    "lsp_find_references",
+    "lsp_document_symbols",
+    "lsp_workspace_symbols",
+    "lsp_rename",
+    "lsp_code_actions",
+    "lsp_apply",
+  ]);
+});
+
 function declaredToolNames(toolNames: readonly ExtensionName[]): string[] {
   return toolNames.flatMap((name) => (name === "lsp" ? DIRECT_LSP_TOOLS : DAP_TOOLS));
 }
@@ -421,7 +436,9 @@ test.each([
     const codemode = tools.find(({ name }) => name === "codemode")?.description ?? "";
     expect(codemode).toContain("## lsp");
     expect(codemode).toContain("Language-server navigation, diagnostics, and previewed edits");
-    expect(codemode).toContain("lsp_status");
+    // Long-tail tools are listed; declared ones, including lsp_status, are not repeated.
+    expect(codemode).toContain("lsp_capabilities");
+    expect(codemode).not.toContain("lsp_status");
     expect(codemode).not.toContain("lsp_hover(");
     const hover = tools.find(({ name }) => name === "lsp_hover")?.description ?? "";
     expect(hover).toContain(

@@ -127,16 +127,16 @@ disabled server.
 
 The extension registers one Pi tool per operation, named `lsp_<operation>` and grouped under the
 `lsp` tool namespace. Each tool's parameters contain only that operation's fields. The core tools
-are declared to the model; the others use Pi's `codemode` exposure:
+are declared to the model (`lsp_status` included, since the troubleshooting Skill starts from it); the others use Pi's `codemode` exposure:
 
-| Exposure                     | Tools                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Declared (`direct`)          | `lsp_diagnostics`, `lsp_hover`, `lsp_goto_definition`, `lsp_find_references`, `lsp_document_symbols`, `lsp_workspace_symbols`, `lsp_rename`, `lsp_code_actions`, `lsp_apply`                                                                                                                                                                                                                                                                                                                                                                                                |
-| Script-callable (`codemode`) | `lsp_status`, `lsp_capabilities`, `lsp_restart`, `lsp_workspace_diagnostics`, `lsp_completion`, `lsp_signature_help`, `lsp_declaration`, `lsp_goto_type_definition`, `lsp_goto_implementation`, `lsp_document_highlights`, `lsp_document_links`, `lsp_call_hierarchy`, `lsp_incoming_calls`, `lsp_outgoing_calls`, `lsp_type_hierarchy`, `lsp_supertypes`, `lsp_subtypes`, `lsp_selection_ranges`, `lsp_folding_ranges`, `lsp_code_lenses`, `lsp_inlay_hints`, `lsp_document_colors`, `lsp_format_document`, `lsp_format_range`, `lsp_format_on_type`, `lsp_prepare_rename` |
+| Exposure                     | Tools                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Declared (`direct`)          | `lsp_status`, `lsp_diagnostics`, `lsp_hover`, `lsp_goto_definition`, `lsp_find_references`, `lsp_document_symbols`, `lsp_workspace_symbols`, `lsp_rename`, `lsp_code_actions`, `lsp_apply`                                                                                                                                                                                                                                                                                                                                                                    |
+| Script-callable (`codemode`) | `lsp_capabilities`, `lsp_restart`, `lsp_workspace_diagnostics`, `lsp_completion`, `lsp_signature_help`, `lsp_declaration`, `lsp_goto_type_definition`, `lsp_goto_implementation`, `lsp_document_highlights`, `lsp_document_links`, `lsp_call_hierarchy`, `lsp_incoming_calls`, `lsp_outgoing_calls`, `lsp_type_hierarchy`, `lsp_supertypes`, `lsp_subtypes`, `lsp_selection_ranges`, `lsp_folding_ranges`, `lsp_code_lenses`, `lsp_inlay_hints`, `lsp_document_colors`, `lsp_format_document`, `lsp_format_range`, `lsp_format_on_type`, `lsp_prepare_rename` |
 
 Script-callable tools are not declared to the model. They are reachable in three ways:
 
-- With Pi's `codemode` tool active, scripts call them as `tools.lsp_status({})`, and the `codemode`
+- With Pi's `codemode` tool active, scripts call them as `tools.lsp_capabilities({ server_id, file_path })`, and the `codemode`
   description lists them with their declarations under the `lsp` namespace.
 - With Pi's `tool_search` tool active, the model can find one and declare it for later turns.
 - Any tool can be declared by name, like other inactive extension tools: add it to `defaultTools`
@@ -206,10 +206,16 @@ the server's response with one-based positions and file paths instead of `file:`
 `lsp_status`, `lsp_capabilities`/`lsp_restart`, the preview tools, `lsp_code_actions`, and
 `lsp_apply` have their own shapes; `describeTool(name)` shows each declaration.
 
-Structured results are always complete. Pi keeps them out of model context and session history, so
-the model-facing output limit does not cut them: `truncated` reports that the text the model saw was
-cut, and `spill_path` names the Result Spill with the complete text. Server-initiated previews
-reported with a result appear in `server_preview_ids`.
+Pi keeps structured results out of model context and session history, so the model-facing output
+limit does not cut them. They have their own cap of 1 MiB, like Pi's built-in `bash` tool. A larger
+result is bounded deterministically: the longest strings are shortened (ending in
+`…[n characters truncated]`) and the longest arrays lose their tails, with limits that tighten
+step by step until the result fits, so it still matches the output schema. `server_preview_ids` is
+never cut. A bounded result sets `truncated: true`, adds a warning to `warnings` where the tool has
+one, and keeps `spill_path` pointing to the Result Spill with the complete output. `truncated` is
+also `true` when only the model-visible text was cut at 2,000 lines or 50 KB; `spill_path` then
+names the Result Spill with the complete text. Server-initiated previews reported with a result
+appear in `server_preview_ids`.
 
 Workspace diagnostics use protocol workspace pull when available and cached push diagnostics
 otherwise. They never crawl the project to open files. Non-file result URIs such as `jar:` remain

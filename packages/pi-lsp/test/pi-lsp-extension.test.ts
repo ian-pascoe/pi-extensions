@@ -562,9 +562,9 @@ describe("Pi LSP extension lifecycle", () => {
         );
       };
       expect(await status()).toMatchObject({ details: { operation: "status" } });
-      // Nine declared LSP tools share one deduplicated system-prompt guideline.
+      // Ten declared LSP tools share one deduplicated system-prompt guideline.
       expect(session.getActiveToolNames().filter((name) => name.startsWith("lsp_"))).toHaveLength(
-        9,
+        10,
       );
       expect(session.systemPrompt.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
       const firstDirectories = await piLspSessionDirectories(harness.sessionDirectory);

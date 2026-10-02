@@ -14,6 +14,6 @@ disable-model-invocation: true
 5. If Server Definitions changed, reload Pi. Enablement commands apply immediately. For an unavailable Server Instance, use `lsp_restart` only when recovery is authorized; otherwise ask the user to run `/lsp stop <server-id> <root>`, which permits a fresh lazy start.
 6. Repeat status, capabilities, and diagnostics. Finish when the representative file reaches the intended Server Instance and operation, or an exact unsupported capability is evidenced.
 
-`lsp_status`, `lsp_capabilities`, and `lsp_restart` are not declared by default. Call them from a `codemode` script (`await tools.lsp_status({})`) or load them with `tool_search`. If neither tool is active, ask the user to run `/lsp` for status, or to add the tools to `defaultTools` (for example `"+lsp_status"`).
+`lsp_status` is declared to the model. `lsp_capabilities` and `lsp_restart` are not declared by default. Call them from a `codemode` script (`await tools.lsp_capabilities({...})`) or load them with `tool_search`. If neither tool is active, ask the user to add the tools to `defaultTools` (for example `"+lsp_capabilities"`); the user can also run `/lsp` for status or `/lsp stop <server-id> <root>` to recover a server.
 
 `configured` has not routed a file yet; `stopped` permits lazy startup; `disabled` blocks startup. `unavailable` is sticky and retains stderr. Keep diagnosis read-only until a lifecycle change is authorized; stop before applying a Workspace Edit Preview.

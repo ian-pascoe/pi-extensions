@@ -70,19 +70,116 @@ export function lspStructuredValue(text: string): LspStructuredContent {
   return value;
 }
 
+/** Largest `structuredContent` a result carries, matching Pi's built-in `bash` tool (1 MiB). */
+export const LSP_STRUCTURED_CONTENT_MAX_BYTES = 1024 * 1024;
+
+/** Fields reserved for the envelope and the bounding warning when sizing the bounded fields. */
+const STRUCTURED_ENVELOPE_RESERVE_BYTES = 4096;
+
+/** Top-level fields that identify a result and are never cut. */
+const UNBOUNDED_STRUCTURED_FIELDS: ReadonlySet<string> = new Set([
+  "truncated",
+  "spill_path",
+  "server_preview_ids",
+]);
+
+/** Successively harsher limits; the last one empties every string and array. */
+const STRUCTURED_BOUND_LADDER: readonly {
+  readonly strings: number;
+  readonly items: number;
+}[] = [
+  { strings: 256 * 1024, items: 10_000 },
+  { strings: 64 * 1024, items: 2000 },
+  { strings: 16 * 1024, items: 500 },
+  { strings: 4096, items: 100 },
+  { strings: 1024, items: 20 },
+  { strings: 256, items: 5 },
+  { strings: 64, items: 1 },
+  { strings: 0, items: 0 },
+];
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- Structured values are JSON-safe but recursively opaque; only strings, arrays, and objects are inspected.
+function boundStructuredValue(value: unknown, strings: number, items: number): unknown {
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON values are recursively inspected at this boundary.
+  if (typeof value === "string") {
+    if (value.length <= strings) return value;
+    // Never split a surrogate pair.
+    const last = value.charCodeAt(strings - 1);
+    const end = strings > 0 && last >= 0xd800 && last <= 0xdbff ? strings - 1 : strings;
+    const kept = value.slice(0, end);
+    return strings === 0 ? "" : `${kept}…[${value.length - end} characters truncated]`;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, items).map((item) => boundStructuredValue(item, strings, items));
+  }
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON values are recursively inspected at this boundary.
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, boundStructuredValue(entry, strings, items)]),
+  );
+}
+
+function structuredByteLength(value: LspStructuredFields): number {
+  return Buffer.byteLength(JSON.stringify(value) ?? "null", "utf8");
+}
+
+/** Structured fields after the 1 MiB cap was applied, and whether anything was cut. */
+export interface LspBoundedStructuredFields {
+  readonly fields: LspStructuredFields;
+  readonly bounded: boolean;
+}
+
+/**
+ * Bound structured fields to `LSP_STRUCTURED_CONTENT_MAX_BYTES`, like Pi's built-in `bash` tool.
+ * Results within the cap are returned untouched. A larger result is cut deterministically: the
+ * longest strings are shortened and the longest arrays lose their tail, with limits that tighten
+ * step by step until the result fits. Identifying fields (`server_preview_ids`) are never cut.
+ */
+export function boundLspStructuredFields(
+  fields: LspStructuredFields,
+  maxBytes: number = LSP_STRUCTURED_CONTENT_MAX_BYTES,
+): LspBoundedStructuredFields {
+  const kept = Object.entries(fields).filter(([key]) => UNBOUNDED_STRUCTURED_FIELDS.has(key));
+  const cuttable = Object.entries(fields).filter(([key]) => !UNBOUNDED_STRUCTURED_FIELDS.has(key));
+  const reserved =
+    structuredByteLength(Object.fromEntries(kept)) + STRUCTURED_ENVELOPE_RESERVE_BYTES;
+  const budget = maxBytes - reserved;
+  if (structuredByteLength(Object.fromEntries(cuttable)) <= budget)
+    return { fields, bounded: false };
+  for (const { strings, items } of STRUCTURED_BOUND_LADDER) {
+    const candidate: LspStructuredFields = Object.fromEntries(
+      cuttable.map(([key, value]) => [
+        key,
+        lspStructuredValue(JSON.stringify(boundStructuredValue(value, strings, items))),
+      ]),
+    );
+    if (structuredByteLength(candidate) <= budget) {
+      return {
+        fields: { ...candidate, ...Object.fromEntries(kept) },
+        bounded: true,
+      };
+    }
+  }
+  // Only reachable for pathologically wide objects; keep the identifying fields alone.
+  return { fields: Object.fromEntries(kept), bounded: true };
+}
+
 /**
  * Validate normalized details, truncate model-visible text, and spill every complete oversized
- * result. Structured content stays complete and reports truncation and the Result Spill path.
+ * result. Structured content is capped at 1 MiB; a larger one is bounded, and every bounded or
+ * truncated result reports `truncated` and the Result Spill path of the complete text.
  */
 export async function createLspToolOutput(
   text: string,
   details: LspToolResultDetails,
   structured: LspStructuredFields,
   sessionFiles: LspSessionFiles,
+  maxStructuredBytes: number = LSP_STRUCTURED_CONTENT_MAX_BYTES,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   const normalizedDetails = Value.Parse(LspToolResultDetailsSchema, details);
   const truncated = await truncateLspOutputText(text, sessionFiles, "output");
-  if (truncated.spillPath === undefined) {
+  const bounded = boundLspStructuredFields(structured, maxStructuredBytes);
+  if (truncated.spillPath === undefined && !bounded.bounded) {
     return {
       content: [{ type: "text", text }],
       details: normalizedDetails,
@@ -90,16 +187,32 @@ export async function createLspToolOutput(
     };
   }
 
+  const spillPath = truncated.spillPath ?? (await sessionFiles.writeResultSpill(text));
   const detailsWithSpill =
     normalizedDetails.kind === "operation"
       ? Value.Parse(LspToolResultDetailsSchema, {
           ...normalizedDetails,
-          spill_path: truncated.spillPath,
+          spill_path: spillPath,
         })
       : normalizedDetails;
+  const warnings = bounded.fields["warnings"];
+  const boundedFields =
+    bounded.bounded && Array.isArray(warnings)
+      ? {
+          ...bounded.fields,
+          warnings: [
+            ...warnings,
+            `Structured result exceeded ${maxStructuredBytes} bytes and was bounded; the complete output is in ${spillPath}.`,
+          ],
+        }
+      : bounded.fields;
   return {
     content: [{ type: "text", text: truncated.text }],
     details: detailsWithSpill,
-    structuredContent: { ...structured, truncated: true, spill_path: truncated.spillPath },
+    structuredContent: {
+      ...boundedFields,
+      truncated: true,
+      spill_path: spillPath,
+    },
   };
 }
