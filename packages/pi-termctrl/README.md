@@ -97,6 +97,10 @@ for the agent, such as the user steering or another entry's Exit notification;
 a watched entry that exits after that is notified as usual. With nothing to
 wait for it returns at once. Terminal exits are noticed within about 500 ms.
 
+### Tool annotations
+
+Each terminal tool declares MCP-style `annotations`, which Pi reports through `pi.getAllTools()` for permission extensions and does not send to model providers. `terminal_start` and `terminal_send` run arbitrary programs, so they are marked destructive and open-world; neither is idempotent. `terminal_stop` kills processes: destructive and idempotent, closed-world. `terminal_list` and `terminal_wait` are read-only and closed-world. The `bash` replacement keeps the annotations of Pi's built-in `bash`, which declares none.
+
 ## `bash` replacement
 
 With `termctrl.replaceBash` (default `true`), Pi Termctrl replaces Pi's `bash`

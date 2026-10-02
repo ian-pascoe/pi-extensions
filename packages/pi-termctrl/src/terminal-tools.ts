@@ -605,6 +605,12 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
       "Terminals keep limited scrollback, so long output can be lost; run commands whose full output you need with bash, or redirect their output to a file.",
     ],
     parameters: StartParameters,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     outputSchema: TerminalResultSchema,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       const entry = await runtime.registry.startTerminal(ownerOf(context), {
@@ -640,6 +646,12 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
       "Type text and press keys in a Terminal, then return its screen once it settles: 250 ms of quiet, a wait_for_text match, exit, or wait_ms (default 500). With neither text nor keys it polls: it waits up to wait_ms (default 30000) for new output. Results include the lines that scrolled off since your previous result; a truncated result names a file with its full output.",
     promptSnippet: "Send input to a Terminal, or poll it, and read its screen",
     parameters: SendParameters,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     outputSchema: TerminalResultSchema,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       const entry = runtime.registry.find(ownerOf(context), params.id);
@@ -711,6 +723,12 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       "Stop a Terminal (t1) or Background job (b1) and forget it. Running processes are killed; exited ones are removed. Returns a Terminal's final screen and scrolled-off lines, or a Background job's recent output.",
     promptSnippet: "Stop a Terminal or Background job",
     parameters: StopParameters,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     outputSchema: StopResultSchema,
     async execute(_toolCallId, params, _signal, _onUpdate, context) {
       const owner = ownerOf(context);
@@ -852,6 +870,12 @@ export function createTerminalWaitTool(runtime: TerminalWaitRuntime) {
       "Do not poll a Background job's log or a Terminal in a loop to learn when it finishes: keep working and rely on its Exit notification, or call terminal_wait when nothing else can proceed.",
     ],
     parameters: WaitParameters,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     outputSchema: WaitResultSchema,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       const owner = ownerOf(context);
@@ -918,6 +942,12 @@ export function createTerminalListTool(registry: TermctrlRegistry) {
       "List your Terminals and Background jobs, running and exited, with their state. Background jobs include their log path.",
     promptSnippet: "List Terminals and Background jobs",
     parameters: ListParameters,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     outputSchema: ListResultSchema,
     async execute(_toolCallId, _params, _signal, _onUpdate, context) {
       const now = Date.now();
