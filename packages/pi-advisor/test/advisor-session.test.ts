@@ -8,6 +8,7 @@ import {
   InMemoryCredentialStore,
   InMemoryModelsStore,
   fauxAssistantMessage,
+  type Tool,
 } from "@earendil-works/pi-ai";
 import {
   createAgentSessionServices,
@@ -37,7 +38,11 @@ const adviceTool = defineTool({
   description: "Finish review",
   parameters: Type.Object({}),
   async execute() {
-    return { content: [{ type: "text", text: "Done" }], details: {}, terminate: true };
+    return {
+      content: [{ type: "text", text: "Done" }],
+      details: {},
+      terminate: true,
+    };
   },
 });
 
@@ -245,7 +250,9 @@ describe("private Advisor native sessions", () => {
     const authPath = join(authDir, "custom-auth.json");
     await writeFile(
       authPath,
-      JSON.stringify({ "advisor-fixture": { type: "api_key", key: "first-file-key" } }),
+      JSON.stringify({
+        "advisor-fixture": { type: "api_key", key: "first-file-key" },
+      }),
     );
     const models = await ModelRuntime.create({
       authPath,
@@ -265,7 +272,9 @@ describe("private Advisor native sessions", () => {
     });
     await writeFile(
       authPath,
-      JSON.stringify({ "advisor-fixture": { type: "api_key", key: "rotated-native-file-key" } }),
+      JSON.stringify({
+        "advisor-fixture": { type: "api_key", key: "rotated-native-file-key" },
+      }),
     );
     expect((await runtime.session.modelRuntime.getAuth("advisor-fixture"))?.auth.apiKey).toBe(
       "rotated-native-file-key",
@@ -293,7 +302,11 @@ describe("private Advisor native sessions", () => {
         })),
       flagValues: new Map(observed.extensionRunner?.getFlagValues()),
     };
-    const runtime = await createAdvisorSession(observed, { config, adviceTool, resourceInputs });
+    const runtime = await createAdvisorSession(observed, {
+      config,
+      adviceTool,
+      resourceInputs,
+    });
     afterEach(async () => {
       await disposeAdvisorSession(runtime);
     });
@@ -312,10 +325,17 @@ describe("private Advisor native sessions", () => {
 
   it("reproduces the resource owner's codemode model API", async () => {
     const { observed, dir } = await observedFixture([fixture], undefined, false, undefined, [
-      { name: "codemode", factory: createCodemodeExtension({ models: false }), builtin: true },
+      {
+        name: "codemode",
+        factory: createCodemodeExtension({ models: false }),
+        builtin: true,
+      },
     ]);
     const settings = readAdvisorSettings(observed).settings;
-    const config = { ...settings, allowedTools: [...settings.allowedTools, "codemode"] };
+    const config = {
+      ...settings,
+      allowedTools: [...settings.allowedTools, "codemode"],
+    };
     const resourceInputs: AdvisorResourceInputs = {
       agentDir: dir,
       extensions: observed.resourceLoader
@@ -352,7 +372,10 @@ describe("private Advisor native sessions", () => {
   it("keeps the advice tool active under built-in codemode only mode without widening the grant", async () => {
     const { observed } = await observedFixture(
       [fixture],
-      SettingsManager.inMemory({ codemode: { mode: "only" }, compaction: { enabled: false } }),
+      SettingsManager.inMemory({
+        codemode: { mode: "only" },
+        compaction: { enabled: false },
+      }),
       false,
       undefined,
       [{ name: "codemode", factory: createCodemodeExtension(), builtin: true }],
@@ -385,6 +408,108 @@ describe("private Advisor native sessions", () => {
       globalThis.advisorSessionDeactivatedTool = undefined;
     }
   });
+
+  it("declares only granted direct and model-only tools while script-only grants stay callable", async () => {
+    const exposures = fileURLToPath(new URL("./fixtures/exposure-extension.ts", import.meta.url));
+    const { observed } = await observedFixture([fixture, exposures]);
+    const settings = readAdvisorSettings(observed).settings;
+    const config = {
+      ...settings,
+      allowedTools: [
+        ...settings.allowedTools,
+        "direct_tool",
+        "codemode_tool",
+        "deferred_tool",
+        "model_only_tool",
+      ],
+    };
+    const runtime = await createAdvisorSession(observed, {
+      config,
+      adviceTool,
+    });
+    afterEach(() => disposeAdvisorSession(runtime));
+    const declared = [
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "direct_tool",
+      "model_only_tool",
+      "advisor_report",
+    ];
+    expect(runtime.session.getActiveToolNames().toSorted()).toEqual(declared.toSorted());
+    expect(runtime.session.agent.state.tools.map((tool) => tool.name).toSorted()).toEqual(
+      declared.toSorted(),
+    );
+    // The model request declares exactly those tools, in the same order after every change.
+    const requests: Tool[][] = [];
+    globalThis.advisorSessionRequestTools = requests;
+    afterEach(() => {
+      globalThis.advisorSessionRequestTools = undefined;
+    });
+    await runtime.session.prompt("First review");
+    await runtime.session.reload();
+    await runtime.session.prompt("Second review");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.map((tool) => tool.name).toSorted()).toEqual(declared.toSorted());
+    expect(requests[1]).toEqual(requests[0]);
+    const declaredOrder = requests[0]?.map((tool) => tool.name) ?? [];
+    // Script-only grants stay registered and callable through `ctx.executeTool`.
+    expect(runtime.session.getCallableToolNames()).toEqual(
+      expect.arrayContaining(["codemode_tool", "deferred_tool"]),
+    );
+    expect(runtime.session.getAllTools().map((tool) => tool.name)).toEqual(
+      expect.arrayContaining(config.allowedTools),
+    );
+    // An extension such as `tool_search` can still declare a granted script-only tool.
+    runtime.session.setActiveToolsByName([
+      ...runtime.session.getActiveToolNames(),
+      "deferred_tool",
+    ]);
+    await runtime.session.prompt("Third review");
+    expect(requests[2]?.map((tool) => tool.name)).toEqual([...declaredOrder, "deferred_tool"]);
+    expect(requests[2]?.slice(0, declaredOrder.length)).toEqual(requests[0]);
+  });
+
+  it.each(["on", "only"] as const)(
+    "lists granted script-only tools in built-in codemode %s mode without declaring them",
+    async (mode) => {
+      const exposures = fileURLToPath(new URL("./fixtures/exposure-extension.ts", import.meta.url));
+      const { observed } = await observedFixture(
+        [fixture, exposures],
+        SettingsManager.inMemory({ codemode: { mode }, compaction: { enabled: false } }),
+        false,
+        undefined,
+        [{ name: "codemode", factory: createCodemodeExtension(), builtin: true }],
+      );
+      const settings = readAdvisorSettings(observed).settings;
+      const config = {
+        ...settings,
+        allowedTools: [...settings.allowedTools, "codemode", "codemode_tool", "deferred_tool"],
+      };
+      const runtime = await createAdvisorSession(observed, { config, adviceTool });
+      afterEach(() => disposeAdvisorSession(runtime));
+      const requests: Tool[][] = [];
+      globalThis.advisorSessionRequestTools = requests;
+      afterEach(() => {
+        globalThis.advisorSessionRequestTools = undefined;
+      });
+      await runtime.session.prompt("Review");
+      const names = requests[0]?.map((tool) => tool.name);
+      expect(names).toContain("codemode");
+      // `only` hides direct declarations behind codemode, which lists the callable tools.
+      expect(names?.includes("advisor_report")).toBe(mode === "on");
+      expect(names).not.toContain("codemode_tool");
+      expect(names).not.toContain("deferred_tool");
+      expect(runtime.session.getCallableToolNames()).toEqual(
+        expect.arrayContaining(["codemode_tool", "deferred_tool"]),
+      );
+      if (mode === "only")
+        expect(requests[0]?.find((tool) => tool.name === "codemode")?.description).toContain(
+          "codemode_tool",
+        );
+    },
+  );
 
   it("requires Context Management grants and keeps granted Notes and journals private", async () => {
     const contextManagement = fileURLToPath(
@@ -421,7 +546,11 @@ describe("private Advisor native sessions", () => {
             type: "toolCall",
             id: "write-note",
             name: "context_notes",
-            arguments: { action: "write", name: "Private", content: "Advisor-only note" },
+            arguments: {
+              action: "write",
+              name: "Private",
+              content: "Advisor-only note",
+            },
           },
         ],
       },
@@ -444,14 +573,20 @@ describe("private Advisor native sessions", () => {
     expect(reopened.getSessionId()).not.toBe(observed.sessionId);
     await disposeAdvisorSession(runtime);
     closed = true;
-    expect(entry(runtime.session, "fixture-shutdown")).toMatchObject({ data: { stopped: true } });
+    expect(entry(runtime.session, "fixture-shutdown")).toMatchObject({
+      data: { stopped: true },
+    });
   });
 
   it("bounds cancelled creation and shuts down late startup without retaining its signal", async () => {
     const { observed } = await observedFixture();
     const config = readAdvisorSettings(observed).settings;
     await expect(
-      createAdvisorSession(observed, { config, adviceTool, signal: AbortSignal.abort() }),
+      createAdvisorSession(observed, {
+        config,
+        adviceTool,
+        signal: AbortSignal.abort(),
+      }),
     ).rejects.toThrow(/abort/i);
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -489,7 +624,9 @@ describe("private Advisor native sessions", () => {
     });
     creationOnly.abort();
     await runtime.session.prompt("/touch-fixture");
-    expect(entry(runtime.session, "fixture-touch")).toMatchObject({ data: { touches: 1 } });
+    expect(entry(runtime.session, "fixture-touch")).toMatchObject({
+      data: { touches: 1 },
+    });
   });
 
   it("honors explicit model/thinking and runtime-only API keys without sharing provider state", async () => {
@@ -500,7 +637,10 @@ describe("private Advisor native sessions", () => {
       model: "advisor-fixture/alternate",
       thinkingLevel: "high" as const,
     };
-    const runtime = await createAdvisorSession(observed, { config, adviceTool });
+    const runtime = await createAdvisorSession(observed, {
+      config,
+      adviceTool,
+    });
     afterEach(async () => {
       await runtime.session.abort();
       await runtime.dispose();
@@ -522,12 +662,17 @@ describe("private Advisor native sessions", () => {
 
   it("retains native runtime settings and exact dynamic grants through reload", async () => {
     const { observed } = await observedFixture();
-    observed.settingsManager.applyOverrides({ compaction: { enabled: true, reserveTokens: 4096 } });
+    observed.settingsManager.applyOverrides({
+      compaction: { enabled: true, reserveTokens: 4096 },
+    });
     const config = {
       ...readAdvisorSettings(observed).settings,
       allowedTools: ["read", "grep", "find", "ls", "allowed_dynamic", "not_installed"],
     };
-    const runtime = await createAdvisorSession(observed, { config, adviceTool });
+    const runtime = await createAdvisorSession(observed, {
+      config,
+      adviceTool,
+    });
     afterEach(async () => {
       await runtime.session.abort();
       await runtime.dispose();
@@ -560,7 +705,10 @@ describe("private Advisor native sessions", () => {
   it("loads fresh session-bound factories with inherited provenance and false flags", async () => {
     const { observed } = await observedFixture(
       [],
-      SettingsManager.inMemory({ extensions: [fixture], compaction: { enabled: false } }),
+      SettingsManager.inMemory({
+        extensions: [fixture],
+        compaction: { enabled: false },
+      }),
     );
     await observed.prompt("/touch-fixture");
     const before = structuredClone(observed.messages);
@@ -579,7 +727,9 @@ describe("private Advisor native sessions", () => {
     expect(entry(observed, "fixture-touch")).toMatchObject({
       data: { touches: 1, sessionId: observed.sessionId },
     });
-    expect(entry(runtime.session, "fixture-start")).toMatchObject({ data: { privateRole: true } });
+    expect(entry(runtime.session, "fixture-start")).toMatchObject({
+      data: { privateRole: true },
+    });
     expect(runtime.session.messages).toEqual([]);
     expect(observed.messages).toEqual(before);
     expect(runtime.session.modelRuntime).not.toBe(observed.modelRuntime);

@@ -1,14 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { endpointContext } from "./endpoint-context.js";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
   type AssistantMessage,
+  type Tool,
 } from "@earendil-works/pi-ai";
 
 declare global {
   var advisorSessionResponses: AssistantMessage[] | undefined;
   var advisorSessionDeactivatedTool: string | undefined;
+  /** Ordered tool definitions of each model request, when a test installs the array. */
+  var advisorSessionRequestTools: Tool[][] | undefined;
 }
 
 /** File-backed provider: the model boundary is entirely offline. */
@@ -32,7 +36,10 @@ export default function sessionFixture(pi: ExtensionAPI): void {
       contextWindow: 200_000,
       maxTokens: 2048,
     })),
-    streamSimple(model) {
+    streamSimple(model, context) {
+      globalThis.advisorSessionRequestTools?.push(
+        structuredClone(endpointContext(context).tools ?? []),
+      );
       const stream = createAssistantMessageEventStream();
       const message = {
         ...(globalThis.advisorSessionResponses?.shift() ??
