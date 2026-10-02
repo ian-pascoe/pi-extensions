@@ -466,6 +466,12 @@ export class AdvisorObserver {
         label: "Advisor report",
         description: `Finish the Review with up to ${this.config.maxFindingsPerReview} concise, actionable findings. Prioritize blockers, then concerns, then worthwhile nits.`,
         parameters: reportSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
         prepareArguments: (arguments_) => {
           if (Value.Check(reportSchema, arguments_)) return arguments_;
           if (!Value.Check(legacyReportSchema, arguments_))

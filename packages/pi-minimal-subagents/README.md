@@ -327,6 +327,10 @@ process-local fork handoff is lost, recovery reads only the destination's
 selected branch and proceeds only when its canonical `parentSession` proves the
 source file; it never substitutes the source session's newer head.
 
+## Tool annotations
+
+The coordinator tools declare MCP-style `annotations`, which Pi reports through `pi.getAllTools()` for permission extensions and does not send to model providers. `subagent` is destructive and open-world because a Child Agent can use any tool it is granted. `agent_message` is not read-only but is non-destructive and closed-world. `subagent_cancel` is non-destructive and idempotent; `subagent_delete` is destructive and idempotent. `subagent_status` and `subagent_wait` are read-only (`subagent_wait` consumes queued deliveries, so it is not idempotent).
+
 ## Status and TUI
 
 In TUI mode, `/subagents` or `/subagents status` opens a large, centered,

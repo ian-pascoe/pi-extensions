@@ -75,7 +75,10 @@ it.each(["none", "on", "only"] as const)(
     });
     const mainRequests: Context[] = [];
     const reviewRequests: Context[] = [];
+    const reportHints: unknown[] = [];
     globalThis.advisorObserverTest = {
+      privateTools: (tools) =>
+        reportHints.push(tools.find((tool) => tool.name === "advisor_report")?.annotations),
       stream(model, context) {
         const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
         (privateRole ? reviewRequests : mainRequests).push(
@@ -233,6 +236,24 @@ it.each(["none", "on", "only"] as const)(
     const codemodeDescription = (runtime: AgentSessionRuntime | undefined) =>
       runtime?.session.agent.state.tools.find((tool) => tool.name === "codemode")?.description;
     expect(codemodeDescription(runtimes[1]) === undefined).toBe(!combined);
+    // Annotations are reported to permission extensions only; the exact provider-facing
+    // declarations above are unchanged. advisor_ask only consults; advisor_report records findings.
+    expect(enabledSession.getAllTools().find((tool) => tool.name === "advisor_ask")).toMatchObject({
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    });
+    expect(reportHints).toEqual([
+      {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    ]);
     for (const runtime of runtimes) await runtime.session.prompt("/advisor off");
     // Disabling withdraws advisor_ask from scripts too, leaving other listings unchanged.
     expect(codemodeDescription(runtimes[1])).toEqual(codemodeDescription(runtimes[0]));

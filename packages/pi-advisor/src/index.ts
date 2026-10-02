@@ -73,6 +73,12 @@ export default function advisor(pi: ExtensionAPI): void {
         description:
           "Ask the enabled Advisor for analysis or a second opinion. Waits for its answer; does not delegate implementation.",
         parameters: askToolParameters,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
         executionMode: "sequential",
         execute: async (_id, { message }, signal) => {
           try {

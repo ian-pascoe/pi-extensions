@@ -1,4 +1,4 @@
-import type { ExtensionAPI, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolInfo, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import type {
   Context,
   Model,
@@ -20,6 +20,8 @@ declare global {
     settled?: () => Promise<void>;
     privateSettled?: () => Promise<void>;
     privateShutdown?: () => Promise<void>;
+    /** Tools the private Advisor Session reports to its inherited extensions. */
+    privateTools?: (tools: ToolInfo[]) => void;
   };
 }
 
@@ -47,9 +49,10 @@ export default function observerFixture(pi: ExtensionAPI): void {
       .getBranch()
       .some((entry) => entry.type === "custom" && entry.customType === "pi-advisor-role");
   });
-  pi.on("before_agent_start", () =>
-    privateRole ? undefined : globalThis.advisorObserverTest.beforeTask?.(),
-  );
+  pi.on("before_agent_start", () => {
+    if (privateRole) globalThis.advisorObserverTest.privateTools?.(pi.getAllTools());
+    else globalThis.advisorObserverTest.beforeTask?.();
+  });
   pi.on("turn_end", (event) =>
     privateRole ? undefined : globalThis.advisorObserverTest.turnEnd?.(event),
   );

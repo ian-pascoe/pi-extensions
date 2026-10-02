@@ -279,6 +279,12 @@ export function createWebSearchTool(
     label: "Web Search",
     description: WEB_SEARCH_DESCRIPTION,
     promptSnippet: "Search the web for current information",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     parameters: WEB_SEARCH_PARAMETERS,
     renderCall: (parameters, theme, context) =>
       renderWebSearchToolCall(parameters, theme, context.expanded),

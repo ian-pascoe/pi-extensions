@@ -61,6 +61,8 @@ export interface SdkFixtureOptions {
   readonly binary?: TermctrlBinaryResolution;
   readonly createDriver?: (binaryPath: string) => Promise<TerminalDriver>;
   readonly withTermctrl?: boolean;
+  /** Wrap the Termctrl factory, for example to compare against an unannotated registration. */
+  readonly transformTermctrl?: ((factory: ExtensionFactory) => ExtensionFactory) | undefined;
   readonly extraFactories?: readonly ExtensionFactory[];
   readonly mode?: "rpc" | "print";
   /** Load Pi's built-in `codemode` extension and activate its tool. */
@@ -117,13 +119,14 @@ export async function createSdkFixture(options: SdkFixtureOptions = {}): Promise
       getAgentDirectory: () => agentDir,
       resolveBinary: () => options.binary ?? { kind: "missing", reason: "test has no binary" },
     };
+    const termctrl = createPiTermctrlExtension(
+      options.createDriver === undefined
+        ? extensionOptions
+        : { ...extensionOptions, createDriver: options.createDriver },
+    );
     factories.push({
       name: "pi-termctrl-test",
-      factory: createPiTermctrlExtension(
-        options.createDriver === undefined
-          ? extensionOptions
-          : { ...extensionOptions, createDriver: options.createDriver },
-      ),
+      factory: options.transformTermctrl?.(termctrl) ?? termctrl,
     });
   }
   for (const [index, factory] of (options.extraFactories ?? []).entries()) {

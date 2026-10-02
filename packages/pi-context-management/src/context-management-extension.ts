@@ -303,6 +303,12 @@ export default function contextManagement(pi: ExtensionAPI): void {
     // Pi never exposes model-only tools to codemode scripts or ctx.executeTool callers.
     exposure: "model-only",
     parameters: RolloverParameters,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
       renderContextToolCall(

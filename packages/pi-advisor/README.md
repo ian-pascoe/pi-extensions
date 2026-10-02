@@ -41,6 +41,8 @@ Consultation authorizes analysis and investigation, not implementation or other 
 
 `prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range); `maxFindingsPerReview` accepts an integer from 1 through 32.
 
+`advisor_ask` declares MCP-style `annotations` (read-only, non-destructive, idempotent, closed-world) that Pi reports through `pi.getAllTools()` for permission extensions; Pi does not send them to model providers. They describe the consultation itself, not the tools granted to the Advisor. The Advisor Session's internal `advisor_report` tool, which extensions inherited by that session can see, declares non-destructive, closed-world annotations and is not read-only, because it records the Review's findings.
+
 ## Defaults and access
 
 | Option                         | Default                      |

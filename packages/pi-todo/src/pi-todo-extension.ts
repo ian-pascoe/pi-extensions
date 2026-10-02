@@ -160,6 +160,12 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
     label: "Todo",
     description: "Manage the current session branch's Todo List.",
     parameters: TodoParameters,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     executionMode: "sequential",
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       signal?.throwIfAborted();
