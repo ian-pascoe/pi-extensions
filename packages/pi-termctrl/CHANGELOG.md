@@ -1,5 +1,19 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.3.0
+
+### Minor Changes
+
+- 0ea1e75: These packages now require Pi `>=0.99.0`, raised from an undeclared (`*`) peer range and a documented floor of `0.84.1` or `0.85.1`. Pi 0.99.0 is the first release that provides the tool exposure, output schema, and built-in extension APIs the repository uses, so the packages no longer carry fallbacks for older hosts.
+
+  Advisor no longer probes the Pi SDK for missing exports and methods at load. It no longer pauses with "this Pi runtime lacks ..." diagnostics, because the peer range guarantees those members. Minimal Subagents always gives Child Agents Pi's built-in `codemode`, `tool-search`, and `mcp` extensions instead of skipping any the host lacked. Termctrl's `bash` replacement now requires Pi's `bash` to declare an object `outputSchema`, which Pi provides from 0.99.0, instead of silently falling back to an empty schema.
+
+- bf36a67: The Terminal tools now declare MCP-style tool `annotations`, reported through `pi.getAllTools()` for permission extensions. `terminal_start` and `terminal_send` run arbitrary programs, so they are destructive and open-world and not idempotent. `terminal_stop` is destructive and idempotent. `terminal_list` and `terminal_wait` are read-only and closed-world. The `bash` replacement keeps the annotations of Pi's built-in `bash`, which declares none. Annotations are not sent to model providers, so tool declarations, the system prompt, and the prompt cache prefix are unchanged, with and without built-in `codemode`.
+
+### Patch Changes
+
+- af2f405: A Terminal result no longer reports lines its own screen still shows as scrolled off. termctrl's screen and log are read in two requests, and output that arrived between them made the result count the screen's top lines as scrolled off, so the next result skipped the line the agent had just seen at the top of the screen. Before a Terminal's screen filled, lines that had never scrolled off could be reported as scrolled off, and a line rewritten after that was never reported in its final form. The result now finds its screen in the log and leaves every line on it unread.
+
 ## 0.2.0
 
 ### Minor Changes

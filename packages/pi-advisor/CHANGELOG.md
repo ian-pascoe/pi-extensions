@@ -1,5 +1,20 @@
 # @ian-pascoe/pi-advisor
 
+## 0.4.0
+
+### Minor Changes
+
+- bf36a67: `advisor_ask` now declares MCP-style tool `annotations` (read-only, non-destructive, idempotent, closed-world), and the Advisor Session's internal `advisor_report` tool declares non-destructive, closed-world annotations, so permission extensions inherited by either session no longer fall back to the pessimistic defaults. Pi reports them through `pi.getAllTools()` and does not send them to model providers, so tool declarations, the system prompt, and the prompt cache prefix are unchanged.
+- 0ea1e75: These packages now require Pi `>=0.99.0`, raised from an undeclared (`*`) peer range and a documented floor of `0.84.1` or `0.85.1`. Pi 0.99.0 is the first release that provides the tool exposure, output schema, and built-in extension APIs the repository uses, so the packages no longer carry fallbacks for older hosts.
+
+  Advisor no longer probes the Pi SDK for missing exports and methods at load. It no longer pauses with "this Pi runtime lacks ..." diagnostics, because the peer range guarantees those members. Minimal Subagents always gives Child Agents Pi's built-in `codemode`, `tool-search`, and `mcp` extensions instead of skipping any the host lacked. Termctrl's `bash` replacement now requires Pi's `bash` to declare an object `outputSchema`, which Pi provides from 0.99.0, instead of silently falling back to an empty schema.
+
+### Patch Changes
+
+- 0c82034: Stop declaring granted `codemode` and `deferred` tools, including MCP tools, to the Advisor model. Pi's `tools` option activated every granted tool, so the Advisor request carried script-only tools in its tool list. They now stay callable from granted `codemode` scripts and can still be declared through `tool_search`, as for Minimal Subagents Child Agents.
+- Updated dependencies [0ea1e75]
+  - @ian-pascoe/pi-utils@0.3.1
+
 ## 0.3.5
 
 ### Patch Changes
