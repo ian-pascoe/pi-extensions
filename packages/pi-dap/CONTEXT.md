@@ -1,7 +1,8 @@
 # Pi DAP
 
 Pi DAP gives an agent one interactive debugging session through a configured
-Debug Adapter Protocol adapter.
+Debug Adapter Protocol adapter. The agent drives that one Debug Session with one
+Pi tool per DAP operation, named `dap_<operation>` (ADR-0002).
 
 ## Language
 

@@ -2,10 +2,16 @@ import { resolve } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
+  defineTool,
   truncateHead,
   type AgentToolResult,
+  type AgentToolUpdateCallback,
+  type Theme,
+  type ToolAnnotations,
   type ToolDefinition,
+  type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
+import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { DapProtocolClientError } from "./dap-protocol-client.js";
 import {
@@ -14,15 +20,25 @@ import {
   type DapLaunchInput,
   type DapSession,
   type DapSessionResult,
+  type DapSessionSnapshot,
   type DapStackInput,
   type DapVariablesInput,
 } from "./dap-session.js";
 import type { DapSessionFiles } from "./dap-session-files.js";
 import {
-  DapToolParametersSchema,
-  DapToolProviderParametersSchema,
+  DapEvaluateParametersSchema,
+  DapLaunchParametersSchema,
+  DapNoParametersSchema,
+  DapSetBreakpointsParametersSchema,
+  DapStackParametersSchema,
+  DapToolOutputSchemas,
   DapToolResultDetailsSchema,
+  DapVariablesParametersSchema,
+  DapVariablesStrictParametersSchema,
+  type DapExecutionWaitOperation,
+  type DapOperation,
   type DapPresentationDetails,
+  type DapToolOutput,
   type DapToolParameters,
   type DapToolRenderDetails,
   type DapToolResultDetails,
@@ -32,10 +48,7 @@ import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
 
-type DapToolDefinition = ToolDefinition<
-  typeof DapToolProviderParametersSchema,
-  DapToolRenderDetails
->;
+type DapToolResult = AgentToolResult<DapToolRenderDetails | undefined>;
 
 type DapToolSession = Pick<
   DapSession,
@@ -51,6 +64,7 @@ type DapToolSession = Pick<
   | "evaluate"
   | "status"
   | "stop"
+  | "snapshot"
 >;
 
 /** Session-scoped resources resolved at execution time so Pi reloads replace settings safely. */
@@ -73,6 +87,30 @@ export interface DapToolObserver {
   onToolFailure(parameters: DapToolParameters, error: Error): void;
 }
 
+/**
+ * Namespace shared by every DAP tool; codemode lists the tools under it. `instructions` exists only
+ * in Pi 1.0.0's `ToolNamespace`: there, codemode's `describeNamespace()` returns it and `tool_search`
+ * ranks with it. The object is deliberately untyped so it also type-checks against 0.99.0, whose
+ * `ToolNamespace` lacks the field and would reject it as an excess property in a typed literal.
+ */
+export const DAP_TOOL_NAMESPACE = {
+  name: "dap",
+  description:
+    "Debug one program through one configured Debug Session (Debug Adapter Protocol): breakpoints, execution control, and stopped-state inspection.",
+  instructions: [
+    "Every dap_* tool acts on the same single Debug Session of this Pi session. dap_launch fails while one is active; dap_stop ends it.",
+    "Relative paths resolve from Pi's project directory.",
+    "Desired Breakpoints set with dap_set_breakpoints apply to the active Debug Session and to every later launch.",
+    "dap_launch, dap_continue, dap_next, dap_step_in, and dap_step_out wait until the Debuggee stops, exits, or the execution timeout passes; after a timeout the state is running, so use dap_pause or dap_stop.",
+    "dap_stack, dap_variables, and dap_evaluate need a stopped Debuggee. Stack Frame ids from dap_stack feed dap_variables and dap_evaluate; a non-zero variables_reference lists child values with dap_variables.",
+    "Each successful call drains unread Debuggee output. Text results are limited to 2,000 lines or 50 KB and save the complete result as a Result Spill; script results always carry complete data.",
+    "A call that fails because of the Debug Session state returns the current state with an error field instead of throwing.",
+  ].join("\n"),
+};
+
+const DAP_PROMPT_GUIDELINE =
+  "Use the dap_* tools to set source breakpoints, launch one configured Debug Session, control the Debuggee, and inspect stopped Stack Frames and variables. Relative paths resolve from the project directory.";
+
 function piDapError(cause: unknown): Error {
   const message = cause instanceof Error ? cause.message : String(cause);
   return new Error(message.startsWith("Pi DAP:") ? message : `Pi DAP: ${message}`, { cause });
@@ -94,20 +132,25 @@ function needsTroubleshootingHint(cause: unknown): boolean {
   );
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Pi arguments are validated against the strict operation branches at ingress.
-function parseDapToolParameters(input: unknown): DapToolParameters {
-  try {
-    return Value.Parse(DapToolParametersSchema, input);
-  } catch (cause) {
-    throw piDapError(
-      `invalid tool arguments: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-  }
+/** Strict ingress parser for one tool's arguments, run before permission hooks and again at execution. */
+function dapArgumentsParser<TParameters extends TSchema>(schema: TParameters) {
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Pi arguments are validated against each tool's strict schema at ingress.
+  return (input: unknown): Static<TParameters> => {
+    if (Value.Check(schema, input)) return Value.Parse(schema, input);
+    const [first] = Value.Errors(schema, input);
+    const location = first?.instancePath ? first.instancePath : "arguments";
+    // A `false` schema is how a strict object rejects an unknown property.
+    const reason =
+      first === undefined
+        ? "arguments do not match the tool's schema"
+        : `${location} ${first.keyword === "boolean" ? "is not allowed" : first.message}`;
+    throw piDapError(`invalid tool arguments: ${reason}`);
+  };
 }
 
 function isDapExecutionWaitOperation(
-  operation: DapToolParameters["operation"],
-): operation is "launch" | "continue" | "next" | "step_in" | "step_out" {
+  operation: DapOperation,
+): operation is DapExecutionWaitOperation {
   return (
     operation === "launch" ||
     operation === "continue" ||
@@ -227,32 +270,47 @@ function dapPresentationDetails(result: DapSessionResult): DapPresentationDetail
   return evaluation;
 }
 
+/** Snake-case lifecycle fields shared by Observer UI details and script-facing results. */
+interface DapSnapshotFields {
+  state: DapSessionSnapshot["state"];
+  adapter_id?: string;
+  profile_id?: string;
+  stop_reason?: string;
+  thread_id?: number;
+  exit_code?: number;
+  termination_reason?: string;
+}
+
+function snapshotFields(snapshot: DapSessionSnapshot): DapSnapshotFields {
+  const fields: DapSnapshotFields = { state: snapshot.state };
+  if ("adapterId" in snapshot) fields.adapter_id = snapshot.adapterId;
+  if ("profileId" in snapshot) fields.profile_id = snapshot.profileId;
+  if (snapshot.state === "stopped") {
+    fields.stop_reason = snapshot.stopReason;
+    if (snapshot.threadId !== undefined) fields.thread_id = snapshot.threadId;
+  }
+  if (snapshot.state === "terminated") {
+    if (snapshot.exitCode !== undefined) fields.exit_code = snapshot.exitCode;
+    if (snapshot.terminationReason !== undefined) {
+      fields.termination_reason = snapshot.terminationReason;
+    }
+  }
+  return fields;
+}
+
 function toolResultDetails(
-  operation: DapToolParameters["operation"],
+  operation: DapOperation,
   result: DapSessionResult,
   executionWaitCancelled: boolean,
 ): DapToolResultDetails {
-  const snapshot = result.snapshot;
   const details: DapToolResultDetails = {
     operation,
-    state: snapshot.state,
+    ...snapshotFields(result.snapshot),
     output_discarded_bytes: result.discardedOutputBytes,
     output_truncated: result.discardedOutputBytes > 0,
   };
-  if ("adapterId" in snapshot) details.adapter_id = snapshot.adapterId;
-  if ("profileId" in snapshot) details.profile_id = snapshot.profileId;
-  if (snapshot.state === "stopped") details.stop_reason = snapshot.stopReason;
-  if (snapshot.state === "stopped" && snapshot.threadId !== undefined) {
-    details.thread_id = snapshot.threadId;
-  }
   if (result.stackFrames !== undefined) {
     details.stack_frame_ids = result.stackFrames.map((frame) => frame.id);
-  }
-  if (snapshot.state === "terminated" && snapshot.exitCode !== undefined) {
-    details.exit_code = snapshot.exitCode;
-  }
-  if (snapshot.state === "terminated" && snapshot.terminationReason !== undefined) {
-    details.termination_reason = snapshot.terminationReason;
   }
   const presentation =
     executionWaitCancelled && isDapExecutionWaitOperation(operation)
@@ -262,10 +320,130 @@ function toolResultDetails(
   return Value.Parse(DapToolResultDetailsSchema, details);
 }
 
-function formatDapToolResult(
-  operation: DapToolParameters["operation"],
+type DapBaseOutput = DapToolOutput<"status">;
+type DapVariableOutput = NonNullable<DapToolOutput<"variables">["variables"]>[number];
+type DapSourceOutput = Pick<
+  DapVariableOutput & { source_name?: string; source_path?: string },
+  "source_name" | "source_path"
+>;
+
+function sourceOutput(
+  source: { readonly name?: string; readonly path?: string } | undefined,
+): DapSourceOutput {
+  const fields: DapSourceOutput = {};
+  if (source?.name !== undefined) fields.source_name = source.name;
+  if (source?.path !== undefined) fields.source_path = source.path;
+  return fields;
+}
+
+function variableOutput(
+  variable: NonNullable<DapSessionResult["variables"]>[number],
+): DapVariableOutput {
+  const row: DapVariableOutput = {
+    name: variable.name,
+    value: variable.value,
+    variables_reference: variable.variablesReference,
+  };
+  if (variable.type !== undefined) row.type = variable.type;
+  if (variable.evaluateName !== undefined) row.evaluate_name = variable.evaluateName;
+  return row;
+}
+
+/** Fields every script-facing result carries: state, drained Debuggee output, Desired Breakpoints. */
+function baseOutput(result: DapSessionResult): DapBaseOutput {
+  return {
+    ...snapshotFields(result.snapshot),
+    output: result.output,
+    output_discarded_bytes: result.discardedOutputBytes,
+    desired_breakpoints: result.desiredBreakpoints.map((file) => ({
+      file_path: file.filePath,
+      breakpoints: file.breakpoints.map((breakpoint) =>
+        breakpoint.condition === undefined
+          ? { line: breakpoint.line }
+          : { line: breakpoint.line, condition: breakpoint.condition },
+      ),
+    })),
+  };
+}
+
+/**
+ * Complete script-facing result of one operation: every row, full values, and all drained Debuggee
+ * output. It carries only the fields the operation's output schema declares.
+ */
+function toolOutput(
+  operation: DapOperation,
   result: DapSessionResult,
-): string {
+  executionWaitCancelled: boolean,
+): DapToolOutput {
+  const base = baseOutput(result);
+  switch (operation) {
+    case "launch":
+    case "continue":
+    case "next":
+    case "step_in":
+    case "step_out":
+      return executionWaitCancelled ? { ...base, execution_wait_cancelled: true } : base;
+    case "set_breakpoints":
+      return result.breakpoints === undefined
+        ? base
+        : {
+            ...base,
+            breakpoints: result.breakpoints.map((breakpoint) => {
+              const row: NonNullable<DapToolOutput<"set_breakpoints">["breakpoints"]>[number] = {
+                verified: breakpoint.verified,
+                ...sourceOutput(breakpoint.source),
+              };
+              if (breakpoint.id !== undefined) row.id = breakpoint.id;
+              if (breakpoint.message !== undefined) row.message = breakpoint.message;
+              if (breakpoint.line !== undefined) row.line = breakpoint.line;
+              if (breakpoint.column !== undefined) row.column = breakpoint.column;
+              return row;
+            }),
+          };
+    case "stack":
+      return result.stackFrames === undefined
+        ? base
+        : {
+            ...base,
+            stack_frames: result.stackFrames.map((frame) => ({
+              id: frame.id,
+              name: frame.name,
+              line: frame.line,
+              column: frame.column,
+              ...sourceOutput(frame.source),
+            })),
+            total_frames: result.totalFrames ?? result.stackFrames.length,
+          };
+    case "variables": {
+      const output: DapToolOutput<"variables"> = { ...base };
+      if (result.variableGroups !== undefined) {
+        output.scopes = result.variableGroups.map((group) => ({
+          name: group.scope.name,
+          variables_reference: group.scope.variablesReference,
+          expensive: group.scope.expensive,
+          variables: group.variables.map(variableOutput),
+        }));
+      }
+      if (result.variables !== undefined) output.variables = result.variables.map(variableOutput);
+      return output;
+    }
+    case "evaluate": {
+      if (result.evaluation === undefined) return base;
+      const evaluation: NonNullable<DapToolOutput<"evaluate">["evaluation"]> = {
+        result: result.evaluation.result,
+        variables_reference: result.evaluation.variablesReference,
+      };
+      if (result.evaluation.type !== undefined) evaluation.type = result.evaluation.type;
+      return { ...base, evaluation };
+    }
+    case "pause":
+    case "status":
+    case "stop":
+      return base;
+  }
+}
+
+function formatDapToolResult(operation: DapOperation, result: DapSessionResult): string {
   const { output, ...summary } = result;
   const heading = `DAP ${operation}: ${JSON.stringify(summary)}`;
   if (output.length === 0) return heading;
@@ -277,18 +455,21 @@ function formatDapToolResult(
 }
 
 async function createDapToolOutput(
-  operation: DapToolParameters["operation"],
+  operation: DapOperation,
   result: DapSessionResult,
   sessionFiles: DapSessionFiles,
   executionWaitCancelled: boolean,
-): Promise<AgentToolResult<DapToolResultDetails>> {
+): Promise<DapToolResult> {
   const text = formatDapToolResult(operation, result);
   const details = toolResultDetails(operation, result, executionWaitCancelled);
+  const structuredContent = toolOutput(operation, result, executionWaitCancelled);
   const truncation = truncateHead(text, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  if (!truncation.truncated) return { content: [{ type: "text", text }], details };
+  if (!truncation.truncated) {
+    return { content: [{ type: "text", text }], details, structuredContent };
+  }
 
   const spillPath = await sessionFiles.writeResultSpill(text);
   const normalizedDetails = Value.Parse(DapToolResultDetailsSchema, {
@@ -304,6 +485,18 @@ async function createDapToolOutput(
       },
     ],
     details: normalizedDetails,
+    structuredContent,
+  };
+}
+
+/** A Debug Session state failure still reports the current state, without draining output. */
+function stateFailureResult(error: Error, snapshot: DapSessionSnapshot): DapToolResult {
+  const state = snapshotFields(snapshot);
+  return {
+    content: [{ type: "text", text: `${error.message}\nDebug Session: ${JSON.stringify(state)}` }],
+    details: undefined,
+    structuredContent: { ...state, error: error.message },
+    isError: true,
   };
 }
 
@@ -376,74 +569,294 @@ function notifyDapToolObserver(operation: () => void): void {
   }
 }
 
-/** Create the single strict Pi DAP ToolDefinition bound to current session resources. */
-export function createDapToolDefinition(
-  getRuntime: () => DapToolRuntime | undefined,
-): DapToolDefinition {
-  return {
-    name: "dap",
-    label: "DAP",
-    description: [
-      "Launch and inspect one configured Debug Session through the Debug Adapter Protocol. Paths are relative to Pi's project directory. Output is limited to 2,000 lines or 50 KB; complete truncated output is saved as a Result Spill.",
-      "Only supply the fields listed for the selected operation:",
-      "launch: optional profile, program, args, cwd; profile may be omitted only when exactly one valid Launch Profile exists.",
-      "set_breakpoints: required file_path and breakpoints; lines are one-based, and [] clears the file's breakpoints.",
-      "stack: optional thread_id, start, count.",
-      "variables: exactly one of frame_id or variables_reference is required (never both); optional start, count.",
-      "evaluate: required expression; optional frame_id.",
-      "continue, next, step_in, step_out, pause, status, stop: operation only.",
-    ].join("\n"),
-    promptSnippet: "Debug a program through one configured Debug Session",
-    promptGuidelines: [
-      "Use dap to set source breakpoints, launch a configured Debug Session, control the Debuggee, and inspect stopped Stack Frames and variables.",
-    ],
-    parameters: DapToolProviderParametersSchema,
-    prepareArguments: parseDapToolParameters,
-    renderCall: (argumentsValue, theme, context) =>
-      renderDapToolCall(argumentsValue, theme, context.expanded, context.cwd),
-    renderResult: (result, options, theme, context) =>
-      renderDapToolResult(result, options, theme, context.isError, context.cwd),
-    async execute(_toolCallId, input, signal, onUpdate, context) {
-      const parameters = parseDapToolParameters(input);
-      const runtime = getRuntime();
-      if (runtime === undefined) throw piDapError("Pi conversation session is not active");
-      notifyDapToolObserver(() => runtime.observer?.onToolStart(parameters));
-      const startedAt = Date.now();
-      const updateProgress = () => {
-        if (!isDapExecutionWaitOperation(parameters.operation)) return;
-        onUpdate?.({
-          content: [{ type: "text", text: `${parameters.operation} waiting` }],
-          details: {
-            kind: "progress",
-            operation: parameters.operation,
-            elapsed_ms: Date.now() - startedAt,
-          },
-        });
-      };
-      updateProgress();
-      const progressInterval = isDapExecutionWaitOperation(parameters.operation)
-        ? setInterval(updateProgress, 1_000)
-        : undefined;
-      progressInterval?.unref?.();
-      try {
-        const result = await dispatchDapOperation(parameters, runtime.session, context.cwd, signal);
-        const output = await createDapToolOutput(
-          parameters.operation,
-          result,
-          runtime.sessionFiles,
-          isDapExecutionWaitOperation(parameters.operation) && signal?.aborted === true,
-        );
-        notifyDapToolObserver(() => runtime.observer?.onToolSuccess(parameters, result));
-        return output;
-      } catch (cause) {
-        const error = piDapError(cause);
-        notifyDapToolObserver(() => runtime.observer?.onToolFailure(parameters, error));
-        throw needsTroubleshootingHint(cause)
-          ? new Error(`${error.message}\n\n${TROUBLESHOOTING_HINT}`, { cause })
-          : error;
-      } finally {
-        if (progressInterval !== undefined) clearInterval(progressInterval);
-      }
-    },
+async function executeDapOperation(
+  parameters: DapToolParameters,
+  runtime: DapToolRuntime | undefined,
+  cwd: string,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback<DapToolRenderDetails | undefined> | undefined,
+): Promise<DapToolResult> {
+  if (runtime === undefined) throw piDapError("Pi conversation session is not active");
+  notifyDapToolObserver(() => runtime.observer?.onToolStart(parameters));
+  const operation = parameters.operation;
+  const waits = isDapExecutionWaitOperation(operation);
+  const startedAt = Date.now();
+  const updateProgress = () => {
+    if (!isDapExecutionWaitOperation(operation)) return;
+    onUpdate?.({
+      content: [{ type: "text", text: `${operation} waiting` }],
+      details: { kind: "progress", operation, elapsed_ms: Date.now() - startedAt },
+    });
   };
+  updateProgress();
+  const progressInterval = waits ? setInterval(updateProgress, 1_000) : undefined;
+  progressInterval?.unref?.();
+  try {
+    const result = await dispatchDapOperation(parameters, runtime.session, cwd, signal);
+    const output = await createDapToolOutput(
+      operation,
+      result,
+      runtime.sessionFiles,
+      waits && signal?.aborted === true,
+    );
+    notifyDapToolObserver(() => runtime.observer?.onToolSuccess(parameters, result));
+    return output;
+  } catch (cause) {
+    const error = piDapError(cause);
+    notifyDapToolObserver(() => runtime.observer?.onToolFailure(parameters, error));
+    if (cause instanceof DapSessionError && cause.kind === "state") {
+      return stateFailureResult(error, runtime.session.snapshot());
+    }
+    throw needsTroubleshootingHint(cause)
+      ? new Error(`${error.message}\n\n${TROUBLESHOOTING_HINT}`, { cause })
+      : error;
+  } finally {
+    if (progressInterval !== undefined) clearInterval(progressInterval);
+  }
+}
+
+type DapToolDefinition<TParameters extends TSchema> = ToolDefinition<
+  TParameters,
+  DapToolRenderDetails | undefined
+>;
+
+/** Fields every DAP tool shares: naming, namespace, typed script result, ordering, and rendering. */
+function dapToolCommon(operation: DapOperation, label: string) {
+  return {
+    name: `dap_${operation}`,
+    label,
+    promptGuidelines: [DAP_PROMPT_GUIDELINE],
+    outputSchema: DapToolOutputSchemas[operation],
+    namespace: DAP_TOOL_NAMESPACE,
+    // Every tool acts on the one Debug Session, so batched calls must keep their order.
+    executionMode: "sequential" as const,
+    renderResult: (
+      result: DapToolResult,
+      options: ToolRenderResultOptions,
+      theme: Theme,
+      context: { readonly isError: boolean; readonly cwd: string },
+    ) => renderDapToolResult(result, options, theme, context.isError, context.cwd),
+  };
+}
+
+const READ_ONLY: ToolAnnotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+/** Runs Debuggee code, whose side effects reach beyond Pi DAP: launching, resuming, or evaluating. */
+const RUNS_DEBUGGEE_CODE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+const EXECUTION_WAIT =
+  "and wait until the Debuggee stops, exits, or the execution timeout passes (then it is still running).";
+const STATE_FAILURE =
+  "A call the Debug Session state does not allow returns an error result with the current `state`.";
+
+type DapNoParametersOperation = Extract<
+  DapToolParameters,
+  { readonly operation: "continue" | "next" | "step_in" | "step_out" | "pause" | "status" | "stop" }
+>["operation"];
+
+const parseNoParameters = dapArgumentsParser(DapNoParametersSchema);
+const parseLaunchParameters = dapArgumentsParser(DapLaunchParametersSchema);
+const parseSetBreakpointsParameters = dapArgumentsParser(DapSetBreakpointsParametersSchema);
+const parseStackParameters = dapArgumentsParser(DapStackParametersSchema);
+const parseVariablesParameters = dapArgumentsParser(DapVariablesStrictParametersSchema);
+const parseEvaluateParameters = dapArgumentsParser(DapEvaluateParametersSchema);
+
+function createNoParametersTool(
+  operation: DapNoParametersOperation,
+  label: string,
+  description: string,
+  annotations: ToolAnnotations,
+  getRuntime: () => DapToolRuntime | undefined,
+): DapToolDefinition<typeof DapNoParametersSchema> {
+  return defineTool<typeof DapNoParametersSchema, DapToolRenderDetails | undefined>({
+    ...dapToolCommon(operation, label),
+    description,
+    exposure: "direct",
+    annotations,
+    parameters: DapNoParametersSchema,
+    prepareArguments: parseNoParameters,
+    renderCall: (_arguments, theme, context) =>
+      renderDapToolCall({ operation }, theme, context.expanded, context.cwd),
+    execute: async (_toolCallId, input, signal, onUpdate, context) =>
+      executeDapOperation(
+        { operation, ...parseNoParameters(input) },
+        getRuntime(),
+        context.cwd,
+        signal,
+        onUpdate,
+      ),
+  });
+}
+
+/**
+ * Create one strict Pi tool per DAP operation, each bound to current session resources. Every
+ * tool is `direct` (ADR-0002).
+ */
+export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | undefined) {
+  return [
+    defineTool<typeof DapLaunchParametersSchema, DapToolRenderDetails | undefined>({
+      ...dapToolCommon("launch", "DAP launch"),
+      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments. Fails while a Debug Session is active. ${STATE_FAILURE}`,
+      promptSnippet: "Debug a program through one configured Debug Session",
+      exposure: "direct",
+      annotations: RUNS_DEBUGGEE_CODE,
+      parameters: DapLaunchParametersSchema,
+      prepareArguments: parseLaunchParameters,
+      renderCall: (input, theme, context) =>
+        renderDapToolCall({ ...input, operation: "launch" }, theme, context.expanded, context.cwd),
+      execute: async (_toolCallId, input, signal, onUpdate, context) =>
+        executeDapOperation(
+          { operation: "launch", ...parseLaunchParameters(input) },
+          getRuntime(),
+          context.cwd,
+          signal,
+          onUpdate,
+        ),
+    }),
+    defineTool<typeof DapSetBreakpointsParametersSchema, DapToolRenderDetails | undefined>({
+      ...dapToolCommon("set_breakpoints", "DAP set breakpoints"),
+      description:
+        "Replace the Desired Breakpoints of one source file; lines are one-based and [] clears the file. They apply to the active Debug Session and to every later launch. A breakpoint condition runs as Debuggee code.",
+      exposure: "direct",
+      annotations: { ...RUNS_DEBUGGEE_CODE, idempotentHint: true },
+      parameters: DapSetBreakpointsParametersSchema,
+      prepareArguments: parseSetBreakpointsParameters,
+      renderCall: (input, theme, context) =>
+        renderDapToolCall(
+          { ...input, operation: "set_breakpoints" },
+          theme,
+          context.expanded,
+          context.cwd,
+        ),
+      execute: async (_toolCallId, input, signal, onUpdate, context) =>
+        executeDapOperation(
+          { operation: "set_breakpoints", ...parseSetBreakpointsParameters(input) },
+          getRuntime(),
+          context.cwd,
+          signal,
+          onUpdate,
+        ),
+    }),
+    createNoParametersTool(
+      "continue",
+      "DAP continue",
+      `Resume the stopped Debuggee ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
+      getRuntime,
+    ),
+    createNoParametersTool(
+      "next",
+      "DAP step over",
+      `Step the stopped Debuggee over the current line ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
+      getRuntime,
+    ),
+    createNoParametersTool(
+      "step_in",
+      "DAP step in",
+      `Step the stopped Debuggee into the call on the current line ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
+      getRuntime,
+    ),
+    createNoParametersTool(
+      "step_out",
+      "DAP step out",
+      `Run the stopped Debuggee until the current function returns ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
+      getRuntime,
+    ),
+    createNoParametersTool(
+      "pause",
+      "DAP pause",
+      `Pause the running Debuggee, for example after an execution wait timed out, and wait for it to stop. ${STATE_FAILURE}`,
+      { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      getRuntime,
+    ),
+    defineTool<typeof DapStackParametersSchema, DapToolRenderDetails | undefined>({
+      ...dapToolCommon("stack", "DAP stack"),
+      description: `List Stack Frames of the stopped Debuggee. Defaults to the stopped thread, start 0, and count 20. ${STATE_FAILURE}`,
+      exposure: "direct",
+      annotations: READ_ONLY,
+      parameters: DapStackParametersSchema,
+      prepareArguments: parseStackParameters,
+      renderCall: (input, theme, context) =>
+        renderDapToolCall({ ...input, operation: "stack" }, theme, context.expanded, context.cwd),
+      execute: async (_toolCallId, input, signal, onUpdate, context) =>
+        executeDapOperation(
+          { operation: "stack", ...parseStackParameters(input) },
+          getRuntime(),
+          context.cwd,
+          signal,
+          onUpdate,
+        ),
+    }),
+    defineTool<typeof DapVariablesParametersSchema, DapToolRenderDetails | undefined>({
+      ...dapToolCommon("variables", "DAP variables"),
+      description: `List variables of the stopped Debuggee. Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both; start and count (default 100) page each list. ${STATE_FAILURE}`,
+      exposure: "direct",
+      annotations: READ_ONLY,
+      parameters: DapVariablesParametersSchema,
+      prepareArguments: parseVariablesParameters,
+      renderCall: (input, theme, context) =>
+        renderDapToolCall(
+          { ...input, operation: "variables" },
+          theme,
+          context.expanded,
+          context.cwd,
+        ),
+      execute: async (_toolCallId, input, signal, onUpdate, context) =>
+        executeDapOperation(
+          { operation: "variables", ...parseVariablesParameters(input) },
+          getRuntime(),
+          context.cwd,
+          signal,
+          onUpdate,
+        ),
+    }),
+    defineTool<typeof DapEvaluateParametersSchema, DapToolRenderDetails | undefined>({
+      ...dapToolCommon("evaluate", "DAP evaluate"),
+      description: `Evaluate an expression in the stopped Debuggee, in frame_id or the top Stack Frame. The expression runs as Debuggee code and can change its state. ${STATE_FAILURE}`,
+      exposure: "direct",
+      annotations: RUNS_DEBUGGEE_CODE,
+      parameters: DapEvaluateParametersSchema,
+      prepareArguments: parseEvaluateParameters,
+      renderCall: (input, theme, context) =>
+        renderDapToolCall(
+          { ...input, operation: "evaluate" },
+          theme,
+          context.expanded,
+          context.cwd,
+        ),
+      execute: async (_toolCallId, input, signal, onUpdate, context) =>
+        executeDapOperation(
+          { operation: "evaluate", ...parseEvaluateParameters(input) },
+          getRuntime(),
+          context.cwd,
+          signal,
+          onUpdate,
+        ),
+    }),
+    createNoParametersTool(
+      "status",
+      "DAP status",
+      "Report the Debug Session state and drain unread Debuggee output without changing the Debuggee.",
+      READ_ONLY,
+      getRuntime,
+    ),
+    createNoParametersTool(
+      "stop",
+      "DAP stop",
+      "End the Debug Session and terminate its Debuggee. Desired Breakpoints remain for the next launch. Safe to repeat.",
+      { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      getRuntime,
+    ),
+  ];
 }

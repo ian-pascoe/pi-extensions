@@ -113,12 +113,18 @@ function handleRequest(request) {
       }
       desiredBreakpoints.set(sourcePath, requested);
       respond(request, {
-        breakpoints: requested.map((breakpoint, index) => ({
-          id: index + 1,
-          verified: true,
-          line: breakpoint.line,
-          source: { path: sourcePath },
-        })),
+        breakpoints: requested.map((breakpoint, index) => {
+          const verified = {
+            id: index + 1,
+            verified: true,
+            line: breakpoint.line,
+            source: { path: sourcePath },
+          };
+          if (launchArguments.breakpointColumn !== undefined) {
+            verified.column = launchArguments.breakpointColumn;
+          }
+          return verified;
+        }),
       });
       return;
     }
@@ -145,7 +151,10 @@ function handleRequest(request) {
           name: "main",
           line: 4,
           column: 1,
-          source: { name: "program.ts", path: launchArguments.program ?? "program.ts" },
+          source: {
+            name: "program.ts",
+            path: launchArguments.program ?? "program.ts",
+          },
         },
         { id: 11, name: "caller", line: 1, column: 1 },
       ];
@@ -165,7 +174,12 @@ function handleRequest(request) {
     case "variables":
       respond(request, {
         variables: [
-          { name: "answer", value: "42", variablesReference: 0, type: "number" },
+          {
+            name: "answer",
+            value: "42",
+            variablesReference: 0,
+            type: "number",
+          },
           { name: "nested", value: "Object", variablesReference: 21 },
         ].slice(
           request.arguments?.start ?? 0,

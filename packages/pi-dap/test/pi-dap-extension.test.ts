@@ -1,3 +1,4 @@
+import { expectDapToolOutput } from "./dap-tool-output.js";
 import { toToolContext } from "./tool-context.js";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,10 +15,12 @@ import {
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { DAP_OPERATIONS } from "../src/dap-tool-contract.js";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";
 import type { DapSettingsDocumentInput } from "../src/pi-dap-settings.js";
 
 const temporaryDirectories: string[] = [];
+const DAP_TOOL_NAMES = DAP_OPERATIONS.map((operation) => `dap_${operation}`);
 const agentSessions: AgentSession[] = [];
 
 interface ExtensionHarness {
@@ -164,32 +167,40 @@ describe("Pi DAP extension lifecycle", () => {
         noSession ? "" : harness.sessionDirectory,
       );
       const status = async () => {
-        const tool = harness.session.getToolDefinition("dap");
-        if (tool === undefined) throw new Error("Expected DAP tool");
-        return tool.execute(
+        const tool = harness.session.getToolDefinition("dap_status");
+        if (tool === undefined) throw new Error("Expected DAP status tool");
+        const result = await tool.execute(
           "status",
-          { operation: "status" },
+          {},
           undefined,
           undefined,
           toToolContext(harness.runner.createContext()),
         );
+        expectDapToolOutput("status", result);
+        return result;
       };
       expect(await status()).toMatchObject({ details: { operation: "status", state: "idle" } });
       const firstDirectories = await piDapSessionDirectories(harness.sessionDirectory);
       expect(firstDirectories).toHaveLength(1);
 
-      let definitionDuringTranscriptRebuild: unknown;
+      let definitionsDuringTranscriptRebuild: unknown[] = [];
       await harness.session.reload({
         beforeSessionStart: () => {
-          definitionDuringTranscriptRebuild = harness.session.getToolDefinition("dap");
+          definitionsDuringTranscriptRebuild = DAP_TOOL_NAMES.map((name) =>
+            harness.session.getToolDefinition(name),
+          );
         },
       });
 
-      expect(definitionDuringTranscriptRebuild).toMatchObject({
-        name: "dap",
-        renderCall: expect.any(Function),
-        renderResult: expect.any(Function),
-      });
+      expect(definitionsDuringTranscriptRebuild).toEqual(
+        DAP_TOOL_NAMES.map((name) =>
+          expect.objectContaining({
+            name,
+            renderCall: expect.any(Function),
+            renderResult: expect.any(Function),
+          }),
+        ),
+      );
       expect(errors).toEqual([]);
       expect(await status()).toMatchObject({ details: { operation: "status", state: "idle" } });
       const reloadedDirectories = await piDapSessionDirectories(harness.sessionDirectory);
@@ -206,18 +217,23 @@ describe("Pi DAP extension lifecycle", () => {
     });
 
     expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
-      ["dap"],
+      DAP_TOOL_NAMES,
     );
     expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
 
     await startExtension(harness, "startup");
     expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
-      ["dap"],
+      DAP_TOOL_NAMES,
     );
-    expect(harness.runner.getToolDefinition("dap")).toMatchObject({
-      renderCall: expect.any(Function),
-      renderResult: expect.any(Function),
-    });
+    for (const name of DAP_TOOL_NAMES) {
+      expect(harness.runner.getToolDefinition(name)).toMatchObject({
+        renderCall: expect.any(Function),
+        renderResult: expect.any(Function),
+      });
+    }
+    expect(harness.session.getActiveToolNames().filter((name) => name.startsWith("dap_"))).toEqual(
+      DAP_TOOL_NAMES,
+    );
     expect(harness.notifications).toEqual([
       expect.stringContaining("global dap.unknownGlobalField"),
     ]);
@@ -225,15 +241,16 @@ describe("Pi DAP extension lifecycle", () => {
     const firstDirectories = await piDapSessionDirectories(harness.sessionDirectory);
     expect(firstDirectories).toHaveLength(1);
 
-    const tool = harness.runner.getToolDefinition("dap");
-    if (tool === undefined) throw new Error("Expected registered DAP tool");
+    const tool = harness.runner.getToolDefinition("dap_status");
+    if (tool === undefined) throw new Error("Expected registered DAP status tool");
     const status = await tool.execute(
       "status",
-      { operation: "status" },
+      {},
       undefined,
       undefined,
       toToolContext(harness.runner.createContext()),
     );
+    expectDapToolOutput("status", status);
     expect(status.details).toMatchObject({ operation: "status", state: "idle" });
 
     harness.notifications.length = 0;
@@ -243,7 +260,7 @@ describe("Pi DAP extension lifecycle", () => {
     const reloadedDirectories = await piDapSessionDirectories(harness.sessionDirectory);
     expect(reloadedDirectories).toHaveLength(1);
     expect(reloadedDirectories).not.toEqual(firstDirectories);
-    expect(harness.runner.getAllRegisteredTools()).toHaveLength(1);
+    expect(harness.runner.getAllRegisteredTools()).toHaveLength(DAP_TOOL_NAMES.length);
 
     await Promise.all([shutdownExtension(harness), shutdownExtension(harness)]);
     expect(await piDapSessionDirectories(harness.sessionDirectory)).toEqual([]);
@@ -271,14 +288,17 @@ describe("Pi DAP extension lifecycle", () => {
       "tui",
     );
     await startExtension(harness, "startup");
-    const tool = harness.runner.getToolDefinition("dap");
-    if (tool === undefined) throw new Error("Expected registered DAP tool");
-    await tool.execute(
+    const tool = harness.runner.getToolDefinition("dap_launch");
+    if (tool === undefined) throw new Error("Expected registered DAP launch tool");
+    expectDapToolOutput(
       "launch",
-      { operation: "launch" },
-      undefined,
-      undefined,
-      toToolContext(harness.runner.createContext()),
+      await tool.execute(
+        "launch",
+        {},
+        undefined,
+        undefined,
+        toToolContext(harness.runner.createContext()),
+      ),
     );
     expect(harness.widgetCalls).toContainEqual({ key: "pi-dap", content: expect.any(Function) });
 
@@ -288,12 +308,12 @@ describe("Pi DAP extension lifecycle", () => {
 
     const rpc = await createExtensionHarness(false, {});
     await startExtension(rpc, "startup");
-    const rpcTool = rpc.runner.getToolDefinition("dap");
-    if (rpcTool === undefined) throw new Error("Expected registered DAP tool");
+    const rpcTool = rpc.runner.getToolDefinition("dap_launch");
+    if (rpcTool === undefined) throw new Error("Expected registered DAP launch tool");
     await expect(
       rpcTool.execute(
         "launch",
-        { operation: "launch" },
+        {},
         undefined,
         undefined,
         toToolContext(rpc.runner.createContext()),

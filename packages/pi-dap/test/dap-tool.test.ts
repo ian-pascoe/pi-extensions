@@ -5,6 +5,8 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   truncateHead,
+  type AgentToolResult,
+  type AgentToolUpdateCallback,
   type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
@@ -13,23 +15,62 @@ import type {
   DapEvaluateInput,
   DapLaunchInput,
   DapSessionResult,
+  DapSessionSnapshot,
   DapSetBreakpointsInput,
   DapStackInput,
   DapVariablesInput,
 } from "../src/dap-session.js";
 import { DapProtocolClientError } from "../src/dap-protocol-client.js";
 import { DapSessionError } from "../src/dap-session.js";
+import { expectDapToolOutput } from "./dap-tool-output.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
 import {
-  DapToolParametersSchema,
   DapToolResultDetailsSchema,
-  type DapToolParameters,
-  type DapToolProviderParameters,
+  type DapOperation,
+  type DapToolCallArguments,
+  type DapToolRenderDetails,
 } from "../src/dap-tool-contract.js";
-import { createDapToolDefinition, type DapToolRuntime } from "../src/dap-tool.js";
+import { createDapToolDefinitions, type DapToolRuntime } from "../src/dap-tool.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 
 const temporaryDirectories: string[] = [];
+
+/** Arguments of any one DAP tool, as a model or hook may supply them. */
+type DapToolInput = Omit<DapToolCallArguments, "operation">;
+
+/** The execution surface every `dap_<operation>` tool shares. */
+interface ExecutableDapTool {
+  readonly name: string;
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Mirrors Pi's raw-argument hook, which the tool parses.
+  readonly prepareArguments?: (input: unknown) => DapToolInput;
+  execute(
+    toolCallId: string,
+    input: DapToolInput,
+    signal: AbortSignal | undefined,
+    onUpdate: AgentToolUpdateCallback<DapToolRenderDetails | undefined> | undefined,
+    context: ExtensionToolContext,
+  ): Promise<AgentToolResult<DapToolRenderDetails | undefined>>;
+}
+
+function dapTool(
+  getRuntime: () => DapToolRuntime | undefined,
+  operation: DapOperation,
+): ExecutableDapTool {
+  const tool: ExecutableDapTool | undefined = createDapToolDefinitions(getRuntime).find(
+    ({ name }) => name === `dap_${operation}`,
+  );
+  if (tool === undefined) throw new Error(`Missing dap_${operation}`);
+  // Every executed result, including state failures and cancelled waits, must satisfy the
+  // tool's declared outputSchema, because codemode hands scripts exactly that value.
+  return {
+    ...tool,
+    async execute(toolCallId, input, signal, onUpdate, context) {
+      const result = await tool.execute(toolCallId, input, signal, onUpdate, context);
+      expectDapToolOutput(operation, result);
+      return result;
+    },
+  };
+}
 
 type RecordedDapInput =
   | DapEvaluateInput
@@ -112,6 +153,10 @@ class RecordingDapSession {
     return this.result;
   }
 
+  snapshot(): DapSessionSnapshot {
+    return this.result.snapshot;
+  }
+
   stop(): Promise<DapSessionResult> {
     return this.record("stop");
   }
@@ -141,24 +186,169 @@ afterEach(async () => {
   );
 });
 
-describe("DAP tool contract", () => {
-  test("declares text output so codemode scripts receive complete results", () => {
-    const tool = createDapToolDefinition(() => undefined);
-
-    // Details are bounded presentation rows; an outputSchema would hand scripts only them.
-    expect(Object.hasOwn(tool, "outputSchema")).toBe(false);
-  });
-
-  test("preserves exact ordinary, Debuggee output, and Result Spill text", async () => {
+describe("DAP tools", () => {
+  test("return complete script-facing results beside bounded Observer UI details", async () => {
     const fixture = await createToolFixture();
-    const tool = createDapToolDefinition(() => fixture.runtime);
-    const ordinary = await tool.execute(
-      "ordinary",
-      { operation: "status" },
+    const longValue = "x".repeat(1_000);
+    const output = "line\n".repeat(20_000);
+    fixture.session.result = {
+      snapshot: {
+        state: "stopped",
+        adapterId: "node",
+        profileId: "node",
+        stopReason: "breakpoint",
+        threadId: 3,
+      },
+      output,
+      discardedOutputBytes: 4,
+      desiredBreakpoints: [
+        { filePath: "/workspace/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
+      ],
+      variableGroups: [
+        {
+          scope: { name: "Locals", variablesReference: 5, expensive: false },
+          variables: Array.from({ length: 25 }, (_, index) => ({
+            name: `value-${index}`,
+            value: longValue,
+            type: "string",
+            evaluateName: `value${index}`,
+            variablesReference: 0,
+          })),
+        },
+      ],
+    };
+    const result = await dapTool(() => fixture.runtime, "variables").execute(
+      "variables",
+      { frame_id: 1 },
       undefined,
       undefined,
       fixture.context,
     );
+    expect(result.structuredContent).toEqual({
+      state: "stopped",
+      adapter_id: "node",
+      profile_id: "node",
+      stop_reason: "breakpoint",
+      thread_id: 3,
+      output,
+      output_discarded_bytes: 4,
+      desired_breakpoints: [
+        { file_path: "/workspace/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
+      ],
+      scopes: [
+        {
+          name: "Locals",
+          variables_reference: 5,
+          expensive: false,
+          variables: Array.from({ length: 25 }, (_, index) => ({
+            name: `value-${index}`,
+            value: longValue,
+            type: "string",
+            evaluate_name: `value${index}`,
+            variables_reference: 0,
+          })),
+        },
+      ],
+    });
+    // The model-facing text is truncated and the Observer UI rows are bounded; scripts lose nothing.
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Result Spill") });
+    expect(result.details).toMatchObject({
+      output_truncated: true,
+      presentation: { omitted_count: 6 },
+    });
+  });
+
+  test("project every operation-specific result into its typed output", async () => {
+    const fixture = await createToolFixture();
+    const base = {
+      snapshot: { state: "stopped", adapterId: "a", profileId: "p", stopReason: "step" },
+      output: "",
+      discardedOutputBytes: 0,
+      desiredBreakpoints: [],
+    } satisfies DapSessionResult;
+    const cases: readonly [DapOperation, DapToolInput, DapSessionResult, object][] = [
+      [
+        "set_breakpoints",
+        { file_path: "app.ts", breakpoints: [{ line: 4 }] },
+        {
+          ...base,
+          breakpoints: [
+            {
+              id: 1,
+              verified: true,
+              line: 4,
+              column: 2,
+              source: { name: "app.ts", path: "/w/app.ts" },
+            },
+            { verified: false, message: "not loaded" },
+          ],
+        },
+        {
+          breakpoints: [
+            {
+              id: 1,
+              verified: true,
+              line: 4,
+              column: 2,
+              source_name: "app.ts",
+              source_path: "/w/app.ts",
+            },
+            { verified: false, message: "not loaded" },
+          ],
+        },
+      ],
+      [
+        "stack",
+        {},
+        {
+          ...base,
+          stackFrames: [{ id: 7, name: "main", line: 3, column: 1, source: { path: "/w/app.ts" } }],
+          totalFrames: 9,
+        },
+        {
+          stack_frames: [{ id: 7, name: "main", line: 3, column: 1, source_path: "/w/app.ts" }],
+          total_frames: 9,
+        },
+      ],
+      [
+        "variables",
+        { variables_reference: 4 },
+        { ...base, variables: [{ name: "a", value: "1", variablesReference: 0 }] },
+        { variables: [{ name: "a", value: "1", variables_reference: 0 }] },
+      ],
+      [
+        "evaluate",
+        { expression: "a + 1" },
+        { ...base, evaluation: { result: "2", type: "number", variablesReference: 0 } },
+        { evaluation: { result: "2", type: "number", variables_reference: 0 } },
+      ],
+    ];
+    for (const [operation, input, sessionResult, expected] of cases) {
+      fixture.session.result = sessionResult;
+      const result = await dapTool(() => fixture.runtime, operation).execute(
+        operation,
+        input,
+        undefined,
+        undefined,
+        fixture.context,
+      );
+      expect(result.structuredContent).toEqual({
+        state: "stopped",
+        adapter_id: "a",
+        profile_id: "p",
+        stop_reason: "step",
+        output: "",
+        output_discarded_bytes: 0,
+        desired_breakpoints: [],
+        ...expected,
+      });
+    }
+  });
+
+  test("preserves exact ordinary, Debuggee output, and Result Spill text", async () => {
+    const fixture = await createToolFixture();
+    const tool = dapTool(() => fixture.runtime, "status");
+    const ordinary = await tool.execute("ordinary", {}, undefined, undefined, fixture.context);
     expect(ordinary.content).toEqual([
       {
         type: "text",
@@ -172,13 +362,7 @@ describe("DAP tool contract", () => {
       discardedOutputBytes: 7,
       desiredBreakpoints: [],
     };
-    const withOutput = await tool.execute(
-      "output",
-      { operation: "status" },
-      undefined,
-      undefined,
-      fixture.context,
-    );
+    const withOutput = await tool.execute("output", {}, undefined, undefined, fixture.context);
     expect(withOutput.content).toEqual([
       {
         type: "text",
@@ -198,14 +382,10 @@ describe("DAP tool contract", () => {
       maxBytes: DEFAULT_MAX_BYTES,
       maxLines: DEFAULT_MAX_LINES,
     });
-    const spilled = await tool.execute(
-      "spilled",
-      { operation: "status" },
-      undefined,
-      undefined,
-      fixture.context,
-    );
-    if ("kind" in spilled.details) throw new Error("Expected final DAP result details");
+    const spilled = await tool.execute("spilled", {}, undefined, undefined, fixture.context);
+    if (spilled.details === undefined || "kind" in spilled.details) {
+      throw new Error("Expected final DAP result details");
+    }
     expect(spilled.content).toEqual([
       {
         type: "text",
@@ -221,11 +401,10 @@ describe("DAP tool contract", () => {
     fixture.session.wait = new Promise<void>((resolveWait) => {
       release = resolveWait;
     });
-    const tool = createDapToolDefinition(() => fixture.runtime);
     const onUpdate = vi.fn();
-    const execution = tool.execute(
+    const execution = dapTool(() => fixture.runtime, "continue").execute(
       "continue",
-      { operation: "continue" },
+      {},
       undefined,
       onUpdate,
       fixture.context,
@@ -233,8 +412,10 @@ describe("DAP tool contract", () => {
     expect(onUpdate).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(2_000);
     expect(onUpdate).toHaveBeenCalledTimes(3);
-    expect(onUpdate.mock.calls.map(([update]) => update.details.elapsed_ms)).toEqual([
-      0, 1_000, 2_000,
+    expect(onUpdate.mock.calls.map(([update]) => update.details)).toEqual([
+      { kind: "progress", operation: "continue", elapsed_ms: 0 },
+      { kind: "progress", operation: "continue", elapsed_ms: 1_000 },
+      { kind: "progress", operation: "continue", elapsed_ms: 2_000 },
     ]);
     release();
     await execution;
@@ -243,7 +424,13 @@ describe("DAP tool contract", () => {
 
     fixture.session.wait = undefined;
     onUpdate.mockClear();
-    await tool.execute("status", { operation: "status" }, undefined, onUpdate, fixture.context);
+    await dapTool(() => fixture.runtime, "status").execute(
+      "status",
+      {},
+      undefined,
+      onUpdate,
+      fixture.context,
+    );
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
@@ -257,9 +444,9 @@ describe("DAP tool contract", () => {
     };
     const controller = new AbortController();
     controller.abort();
-    const result = await createDapToolDefinition(() => fixture.runtime).execute(
+    const result = await dapTool(() => fixture.runtime, "continue").execute(
       "cancelled",
-      { operation: "continue" },
+      {},
       controller.signal,
       undefined,
       fixture.context,
@@ -272,6 +459,10 @@ describe("DAP tool contract", () => {
     ]);
     expect(result.details).toMatchObject({
       presentation: { kind: "execution_wait", operation: "continue", cancelled: true },
+    });
+    expect(result.structuredContent).toMatchObject({
+      state: "running",
+      execution_wait_cancelled: true,
     });
   });
 
@@ -294,9 +485,9 @@ describe("DAP tool contract", () => {
         variablesReference: 0,
       })),
     };
-    const result = await createDapToolDefinition(() => fixture.runtime).execute(
+    const result = await dapTool(() => fixture.runtime, "variables").execute(
       "variables",
-      { operation: "variables", variables_reference: 1 },
+      { variables_reference: 1 },
       undefined,
       undefined,
       fixture.context,
@@ -309,31 +500,14 @@ describe("DAP tool contract", () => {
         omitted_count: 5,
       },
     });
-    if ("kind" in result.details || result.details.presentation?.kind !== "variables") {
+    if (
+      result.details === undefined ||
+      "kind" in result.details ||
+      result.details.presentation?.kind !== "variables"
+    ) {
       throw new Error("Expected variables presentation details");
     }
     expect(result.details.presentation.rows).toHaveLength(20);
-  });
-
-  test("rejects unknown fields and invalid branch-specific arguments", () => {
-    expect(Value.Check(DapToolParametersSchema, { operation: "attach" })).toBe(false);
-    expect(Value.Check(DapToolParametersSchema, { operation: "continue", thread_id: 1 })).toBe(
-      false,
-    );
-    expect(
-      Value.Check(DapToolParametersSchema, {
-        operation: "variables",
-        frame_id: 1,
-        variables_reference: 2,
-      }),
-    ).toBe(false);
-    expect(
-      Value.Check(DapToolParametersSchema, {
-        operation: "set_breakpoints",
-        file_path: "src/app.ts",
-        breakpoints: [{ line: 0 }],
-      }),
-    ).toBe(false);
   });
 
   test("rejects invalid arguments during preparation and execution before runtime or observers", async () => {
@@ -344,25 +518,26 @@ describe("DAP tool contract", () => {
       onToolFailure: vi.fn(),
     };
     const getRuntime = vi.fn(() => ({ ...fixture.runtime, observer }));
-    const tool = createDapToolDefinition(getRuntime);
-    expect(tool.prepareArguments).toBeTypeOf("function");
-    for (const input of [
-      { operation: "set_breakpoints", file_path: "a.ts" },
-      { operation: "set_breakpoints", breakpoints: [] },
-      { operation: "set_breakpoints", file_path: "a.ts", breakpoints: [{ line: 0 }] },
-      { operation: "evaluate" },
-      { operation: "variables" },
-      { operation: "variables", frame_id: 0, variables_reference: 1 },
-      { operation: "variables", frame_id: -1 },
-      { operation: "stack", count: 0 },
-      { operation: "status", unknown: true },
-      { operation: "continue", thread_id: 0 },
-    ]) {
+    const cases: readonly [DapOperation, DapToolInput][] = [
+      ["set_breakpoints", { file_path: "a.ts" }],
+      ["set_breakpoints", { breakpoints: [] }],
+      ["set_breakpoints", { file_path: "a.ts", breakpoints: [{ line: 0 }] }],
+      ["evaluate", {}],
+      ["variables", {}],
+      ["variables", { frame_id: 0, variables_reference: 1 }],
+      ["variables", { frame_id: -1 }],
+      ["stack", { count: 0 }],
+      // Fields of another operation are unknown to this tool.
+      ["status", { expression: "x" }],
+      ["continue", { thread_id: 0 }],
+      ["launch", { file_path: "a.ts" }],
+    ];
+    for (const [operation, input] of cases) {
+      const tool = dapTool(getRuntime, operation);
+      expect(tool.prepareArguments).toBeTypeOf("function");
       expect(() => tool.prepareArguments?.(input)).toThrow("Pi DAP: invalid tool arguments");
-      // SAFETY: Deliberately invalid model or hook input must be reparsed before any effects.
-      const invalid = input as DapToolProviderParameters;
       await expect(
-        tool.execute("invalid", invalid, undefined, undefined, fixture.context),
+        tool.execute("invalid", input, undefined, undefined, fixture.context),
       ).rejects.toThrow("Pi DAP: invalid tool arguments");
     }
     expect(getRuntime).not.toHaveBeenCalled();
@@ -372,39 +547,136 @@ describe("DAP tool contract", () => {
     expect(fixture.session.calls).toEqual([]);
   });
 
+  test("names what is wrong with invalid arguments instead of a bare parse failure", async () => {
+    const fixture = await createToolFixture();
+    const cases: readonly [DapOperation, DapToolInput, RegExp][] = [
+      // Both selectors given: the strict ingress contract rejects it and says which field.
+      [
+        "variables",
+        { frame_id: 0, variables_reference: 1 },
+        /\/variables_reference is not allowed$/u,
+      ],
+      ["variables", {}, /arguments must have required properties frame_id$/u],
+      ["evaluate", {}, /arguments must have required properties expression$/u],
+      ["stack", { count: 0 }, /\/count must be >= 1$/u],
+      ["status", { expression: "x" }, /\/expression is not allowed$/u],
+    ];
+    for (const [operation, input, reason] of cases) {
+      const tool = dapTool(() => fixture.runtime, operation);
+      expect(() => tool.prepareArguments?.(input), `${operation} ${JSON.stringify(input)}`).toThrow(
+        reason,
+      );
+    }
+  });
+
+  test("never emits a field outside the tool's output schema", async () => {
+    const fixture = await createToolFixture();
+    // A session result carrying every optional field, as a misbehaving or newer Debug Session might.
+    fixture.session.result = {
+      snapshot: {
+        state: "stopped",
+        adapterId: "a",
+        profileId: "p",
+        stopReason: "step",
+        threadId: 1,
+      },
+      output: "out",
+      discardedOutputBytes: 1,
+      desiredBreakpoints: [{ filePath: "/w/a.ts", breakpoints: [{ line: 1 }] }],
+      breakpoints: [{ verified: true }],
+      stackFrames: [{ id: 1, name: "main", line: 1, column: 1 }],
+      totalFrames: 1,
+      variableGroups: [
+        {
+          scope: { name: "Local", variablesReference: 2, expensive: false },
+          variables: [{ name: "a", value: "1", variablesReference: 0 }],
+        },
+      ],
+      variables: [{ name: "a", value: "1", variablesReference: 0 }],
+      evaluation: { result: "1", variablesReference: 0 },
+    };
+    const inputs: readonly [DapOperation, DapToolInput][] = [
+      ["launch", {}],
+      ["set_breakpoints", { file_path: "a.ts", breakpoints: [] }],
+      ["continue", {}],
+      ["next", {}],
+      ["step_in", {}],
+      ["step_out", {}],
+      ["pause", {}],
+      ["stack", {}],
+      ["variables", { frame_id: 1 }],
+      ["evaluate", { expression: "a" }],
+      ["status", {}],
+      ["stop", {}],
+    ];
+    const expectedData = (operation: DapOperation): string[] => {
+      switch (operation) {
+        case "set_breakpoints":
+          return ["breakpoints"];
+        case "stack":
+          return ["stack_frames", "total_frames"];
+        case "variables":
+          return ["scopes", "variables"];
+        case "evaluate":
+          return ["evaluation"];
+        default:
+          return [];
+      }
+    };
+    for (const [operation, input] of inputs) {
+      // dapTool asserts the output schema; here also check which data fields each tool keeps.
+      const result = await dapTool(() => fixture.runtime, operation).execute(
+        operation,
+        input,
+        undefined,
+        undefined,
+        fixture.context,
+      );
+      const data = Object.keys(result.structuredContent ?? {}).filter((key) =>
+        [
+          "breakpoints",
+          "stack_frames",
+          "total_frames",
+          "scopes",
+          "variables",
+          "evaluation",
+        ].includes(key),
+      );
+      expect(data, operation).toEqual(expectedData(operation));
+    }
+  });
+
   test("dispatches all operations, maps paths, forwards cancellation, and validates details", async () => {
     const fixture = await createToolFixture();
-    const tool = createDapToolDefinition(() => fixture.runtime);
     const controller = new AbortController();
-    const inputs: readonly DapToolParameters[] = [
-      {
-        operation: "launch",
-        profile: "node",
-        program: "src/app.ts",
-        args: ["one"],
-        cwd: "runtime",
-      },
-      {
-        operation: "set_breakpoints",
-        file_path: "src/app.ts",
-        breakpoints: [{ line: 2, condition: "ready" }],
-      },
-      { operation: "continue" },
-      { operation: "next" },
-      { operation: "step_in" },
-      { operation: "step_out" },
-      { operation: "pause" },
-      { operation: "stack", thread_id: 7, start: 1, count: 2 },
-      { operation: "variables", frame_id: 9, start: 2, count: 3 },
-      { operation: "variables", variables_reference: 11 },
-      { operation: "evaluate", expression: "answer", frame_id: 9 },
-      { operation: "status" },
-      { operation: "stop" },
+    const observer = {
+      onToolStart: vi.fn(),
+      onToolSuccess: vi.fn(),
+      onToolFailure: vi.fn(),
+    };
+    const runtime = { ...fixture.runtime, observer };
+    const inputs: readonly [DapOperation, DapToolInput][] = [
+      ["launch", { profile: "node", program: "src/app.ts", args: ["one"], cwd: "runtime" }],
+      [
+        "set_breakpoints",
+        { file_path: "src/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
+      ],
+      ["continue", {}],
+      ["next", {}],
+      ["step_in", {}],
+      ["step_out", {}],
+      ["pause", {}],
+      ["stack", { thread_id: 7, start: 1, count: 2 }],
+      ["variables", { frame_id: 9, start: 2, count: 3 }],
+      ["variables", { variables_reference: 11 }],
+      ["evaluate", { expression: "answer", frame_id: 9 }],
+      ["status", {}],
+      ["stop", {}],
     ];
 
-    for (const input of inputs) {
+    for (const [operation, input] of inputs) {
+      const tool = dapTool(() => runtime, operation);
       expect(tool.prepareArguments?.(input)).toEqual(input);
-      expect(Value.Check(tool.parameters, input)).toBe(true);
       const result = await tool.execute(
         "dap-call",
         input,
@@ -413,7 +685,13 @@ describe("DAP tool contract", () => {
         fixture.context,
       );
       expect(Value.Check(DapToolResultDetailsSchema, result.details)).toBe(true);
+      expect(result.details).toMatchObject({ operation });
     }
+    // The Observer UI still keys on the operation each tool performs.
+    expect(observer.onToolStart.mock.calls.map(([parameters]) => parameters)).toEqual(
+      inputs.map(([operation, input]) => ({ operation, ...input })),
+    );
+    expect(observer.onToolSuccess).toHaveBeenCalledTimes(inputs.length);
 
     expect(fixture.session.calls.map(({ name, input }) => ({ name, input }))).toEqual([
       {
@@ -453,31 +731,34 @@ describe("DAP tool contract", () => {
 
   test("omits absent dispatch fields without dropping zero IDs, offsets, or empty arguments", async () => {
     const fixture = await createToolFixture();
-    const tool = createDapToolDefinition(() => fixture.runtime);
-    const cases: [DapToolParameters, RecordedDapInput, string[]][] = [
-      [{ operation: "launch" }, {}, ["profile", "program", "args", "cwd"]],
-      [{ operation: "launch", args: [] }, { args: [] }, ["profile", "program", "cwd"]],
-      [{ operation: "stack" }, {}, ["threadId", "start", "count"]],
-      [{ operation: "stack", thread_id: 0, start: 0 }, { threadId: 0, start: 0 }, ["count"]],
+    const cases: [DapOperation, DapToolInput, RecordedDapInput, string[]][] = [
+      ["launch", {}, {}, ["profile", "program", "args", "cwd"]],
+      ["launch", { args: [] }, { args: [] }, ["profile", "program", "cwd"]],
+      ["stack", {}, {}, ["threadId", "start", "count"]],
+      ["stack", { thread_id: 0, start: 0 }, { threadId: 0, start: 0 }, ["count"]],
       [
-        { operation: "variables", variables_reference: 0 },
+        "variables",
+        { variables_reference: 0 },
         { variablesReference: 0 },
         ["frameId", "start", "count"],
       ],
       [
-        { operation: "variables", frame_id: 0, start: 0 },
+        "variables",
+        { frame_id: 0, start: 0 },
         { frameId: 0, start: 0 },
         ["variablesReference", "count"],
       ],
-      [{ operation: "evaluate", expression: "x" }, { expression: "x" }, ["frameId"]],
-      [
-        { operation: "evaluate", expression: "x", frame_id: 0 },
-        { expression: "x", frameId: 0 },
-        [],
-      ],
+      ["evaluate", { expression: "x" }, { expression: "x" }, ["frameId"]],
+      ["evaluate", { expression: "x", frame_id: 0 }, { expression: "x", frameId: 0 }, []],
     ];
-    for (const [parameters, expected, absentFields] of cases) {
-      await tool.execute("optional-fields", parameters, undefined, undefined, fixture.context);
+    for (const [operation, parameters, expected, absentFields] of cases) {
+      await dapTool(() => fixture.runtime, operation).execute(
+        "optional-fields",
+        parameters,
+        undefined,
+        undefined,
+        fixture.context,
+      );
       const input = fixture.session.calls.at(-1)?.input;
       if (input === undefined) throw new Error("Expected recorded dispatch input");
       expect(input).toStrictEqual(expected);
@@ -487,7 +768,7 @@ describe("DAP tool contract", () => {
 
   test("points the model at the troubleshooting Skill only for failures it diagnoses", async () => {
     const fixture = await createToolFixture();
-    const tool = createDapToolDefinition(() => fixture.runtime);
+    const tool = dapTool(() => fixture.runtime, "launch");
     const adapterFailure = new DapSessionError("adapter", "launch failed: spawn ENOENT");
     const protocolCancelled = new DapProtocolClientError(
       "cancelled",
@@ -500,7 +781,6 @@ describe("DAP tool contract", () => {
       [new DapSessionError("configuration", "launch requires a valid Launch Profile"), true],
       [new DapProtocolClientError("exit", "node", "/tmp/stderr.log", "adapter exited"), true],
       [new DapProtocolClientError("timeout", "node", "/tmp/stderr.log", "timed out"), true],
-      [new DapSessionError("state", "continue requires a stopped Debuggee"), false],
       [
         new DapProtocolClientError("request", "node", "/tmp/stderr.log", "evaluate request failed"),
         false,
@@ -515,12 +795,10 @@ describe("DAP tool contract", () => {
     ];
     for (const [failure, hinted] of failures) {
       vi.spyOn(fixture.session, "launch").mockRejectedValueOnce(failure);
-      const error = await tool
-        .execute("failure", { operation: "launch" }, undefined, undefined, fixture.context)
-        .then(
-          () => undefined,
-          (cause: unknown) => cause,
-        );
+      const error = await tool.execute("failure", {}, undefined, undefined, fixture.context).then(
+        () => undefined,
+        (cause: unknown) => cause,
+      );
       if (!(error instanceof Error)) throw new Error("Expected launch to fail");
       expect(error.message.startsWith("Pi DAP: ")).toBe(true);
       expect(error.message.includes(TROUBLESHOOTING_HINT)).toBe(hinted);
@@ -528,13 +806,75 @@ describe("DAP tool contract", () => {
     }
   });
 
+  test("reports a Debug Session state failure as an error result that keeps the current state", async () => {
+    const fixture = await createToolFixture();
+    const observer = {
+      onToolStart: vi.fn(),
+      onToolSuccess: vi.fn(),
+      onToolFailure: vi.fn(),
+    };
+    fixture.session.result = {
+      snapshot: {
+        state: "terminated",
+        adapterId: "node",
+        profileId: "node",
+        exitCode: 3,
+        terminationReason: "exited",
+      },
+      output: "unread",
+      discardedOutputBytes: 0,
+      desiredBreakpoints: [],
+    };
+    vi.spyOn(fixture.session, "stack").mockRejectedValueOnce(
+      new DapSessionError("state", "stack requires a stopped Debuggee"),
+    );
+    const result = await dapTool(() => ({ ...fixture.runtime, observer }), "stack").execute(
+      "state",
+      {},
+      undefined,
+      undefined,
+      fixture.context,
+    );
+    const state = {
+      state: "terminated",
+      adapter_id: "node",
+      profile_id: "node",
+      exit_code: 3,
+      termination_reason: "exited",
+    };
+    expect(result).toEqual({
+      content: [
+        {
+          type: "text",
+          text: `Pi DAP: DAP Session: stack requires a stopped Debuggee\nDebug Session: ${JSON.stringify(state)}`,
+        },
+      ],
+      details: undefined,
+      structuredContent: {
+        ...state,
+        error: "Pi DAP: DAP Session: stack requires a stopped Debuggee",
+      },
+      isError: true,
+    });
+    expect(result.content[0]).not.toMatchObject({
+      text: expect.stringContaining(TROUBLESHOOTING_HINT),
+    });
+    expect(observer.onToolFailure).toHaveBeenCalledOnce();
+    expect(observer.onToolSuccess).not.toHaveBeenCalled();
+    // The state comes from the snapshot: a failed call does not drain unread Debuggee output.
+    expect(fixture.session.calls.map(({ name }) => name)).not.toContain("status");
+  });
+
   test("reparses hook-mutated input before effects and spills complete oversized output", async () => {
     const fixture = await createToolFixture();
-    const tool = createDapToolDefinition(() => fixture.runtime);
-    // SAFETY: Simulates a framework hook adding an invalid field after argument preparation; execute must reparse this runtime value.
-    const hookMutatedInput = { operation: "continue", thread_id: 1 } as DapToolParameters;
     await expect(
-      tool.execute("invalid", hookMutatedInput, undefined, undefined, fixture.context),
+      dapTool(() => fixture.runtime, "continue").execute(
+        "invalid",
+        { thread_id: 1 },
+        undefined,
+        undefined,
+        fixture.context,
+      ),
     ).rejects.toThrow("Pi DAP: invalid tool arguments");
     expect(fixture.session.calls).toEqual([]);
 
@@ -551,15 +891,15 @@ describe("DAP tool contract", () => {
       desiredBreakpoints: [],
       stackFrames: [{ id: 42, name: "main", line: 0, column: 0 }],
     };
-    const result = await tool.execute(
+    const result = await dapTool(() => fixture.runtime, "stack").execute(
       "spilled",
-      { operation: "status" },
+      {},
       undefined,
       undefined,
       fixture.context,
     );
     expect(result.details).toMatchObject({
-      operation: "status",
+      operation: "stack",
       state: "stopped",
       adapter_id: "node",
       profile_id: "node",
@@ -570,7 +910,9 @@ describe("DAP tool contract", () => {
       output_truncated: true,
       spill_path: expect.any(String),
     });
-    if ("kind" in result.details) throw new Error("Expected final DAP result details");
+    if (result.details === undefined || "kind" in result.details) {
+      throw new Error("Expected final DAP result details");
+    }
     if (result.details.spill_path === undefined) throw new Error("Expected Result Spill path");
     expect(await readFile(result.details.spill_path, "utf8")).toContain("x".repeat(60 * 1024));
     expect(result.content[0]).toMatchObject({

@@ -3,12 +3,32 @@ import { type Static, Type } from "typebox";
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
 const DapIdSchema = Type.Integer({ minimum: 0 });
 const DapPresentationStringSchema = Type.String({ maxLength: 500 });
-const EmptyOperationSchema = <TOperation extends string>(operation: TOperation) =>
-  Type.Object({ operation: Type.Literal(operation) }, { additionalProperties: false });
 
-const LaunchParametersSchema = Type.Object(
+/** Every DAP operation, in registration order; each is one `dap_<operation>` Pi tool. */
+export const DAP_OPERATIONS = [
+  "launch",
+  "set_breakpoints",
+  "continue",
+  "next",
+  "step_in",
+  "step_out",
+  "pause",
+  "stack",
+  "variables",
+  "evaluate",
+  "status",
+  "stop",
+] as const;
+
+/** One DAP operation acting on the single model-facing Debug Session. */
+export type DapOperation = (typeof DAP_OPERATIONS)[number];
+
+/** Arguments of operations that take none. */
+export const DapNoParametersSchema = Type.Object({}, { additionalProperties: false });
+
+/** `dap_launch` arguments. */
+export const DapLaunchParametersSchema = Type.Object(
   {
-    operation: Type.Literal("launch"),
     profile: Type.Optional(NonEmptyStringSchema),
     program: Type.Optional(NonEmptyStringSchema),
     args: Type.Optional(Type.Array(Type.String())),
@@ -16,9 +36,10 @@ const LaunchParametersSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const SetBreakpointsParametersSchema = Type.Object(
+
+/** `dap_set_breakpoints` arguments. */
+export const DapSetBreakpointsParametersSchema = Type.Object(
   {
-    operation: Type.Literal("set_breakpoints"),
     file_path: NonEmptyStringSchema,
     breakpoints: Type.Array(
       Type.Object(
@@ -29,93 +50,90 @@ const SetBreakpointsParametersSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const StackParametersSchema = Type.Object(
+
+/** `dap_stack` arguments. */
+export const DapStackParametersSchema = Type.Object(
   {
-    operation: Type.Literal("stack"),
     thread_id: Type.Optional(DapIdSchema),
     start: Type.Optional(Type.Integer({ minimum: 0 })),
     count: Type.Optional(Type.Integer({ minimum: 1 })),
   },
   { additionalProperties: false },
 );
-const VariablesPageSchema = {
+
+const VariablesPageFields = {
   start: Type.Optional(Type.Integer({ minimum: 0 })),
   count: Type.Optional(Type.Integer({ minimum: 1 })),
 };
-const VariablesParametersSchema = Type.Union([
+
+/**
+ * Provider-facing `dap_variables` arguments. Strict function-calling providers reject a top-level
+ * union, so the exclusive selector is enforced by {@link DapVariablesStrictParametersSchema}.
+ */
+export const DapVariablesParametersSchema = Type.Object(
+  {
+    frame_id: Type.Optional(DapIdSchema),
+    variables_reference: Type.Optional(DapIdSchema),
+    ...VariablesPageFields,
+  },
+  { additionalProperties: false },
+);
+
+/** Strict `dap_variables` ingress contract: exactly one of `frame_id` or `variables_reference`. */
+export const DapVariablesStrictParametersSchema = Type.Union([
+  Type.Object({ frame_id: DapIdSchema, ...VariablesPageFields }, { additionalProperties: false }),
   Type.Object(
-    { operation: Type.Literal("variables"), frame_id: DapIdSchema, ...VariablesPageSchema },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      operation: Type.Literal("variables"),
-      variables_reference: DapIdSchema,
-      ...VariablesPageSchema,
-    },
+    { variables_reference: DapIdSchema, ...VariablesPageFields },
     { additionalProperties: false },
   ),
 ]);
-const EvaluateParametersSchema = Type.Object(
+
+/** `dap_evaluate` arguments. */
+export const DapEvaluateParametersSchema = Type.Object(
   {
-    operation: Type.Literal("evaluate"),
     expression: NonEmptyStringSchema,
     frame_id: Type.Optional(DapIdSchema),
   },
   { additionalProperties: false },
 );
 
-/** Strict ingress contract for the package's twelve DAP operations. */
-export const DapToolParametersSchema = Type.Union([
-  LaunchParametersSchema,
-  SetBreakpointsParametersSchema,
-  EmptyOperationSchema("continue"),
-  EmptyOperationSchema("next"),
-  EmptyOperationSchema("step_in"),
-  EmptyOperationSchema("step_out"),
-  EmptyOperationSchema("pause"),
-  StackParametersSchema,
-  VariablesParametersSchema,
-  EvaluateParametersSchema,
-  EmptyOperationSchema("status"),
-  EmptyOperationSchema("stop"),
-]);
+/** Validated arguments of each operation. */
+interface DapOperationArguments {
+  readonly launch: Static<typeof DapLaunchParametersSchema>;
+  readonly set_breakpoints: Static<typeof DapSetBreakpointsParametersSchema>;
+  readonly continue: Static<typeof DapNoParametersSchema>;
+  readonly next: Static<typeof DapNoParametersSchema>;
+  readonly step_in: Static<typeof DapNoParametersSchema>;
+  readonly step_out: Static<typeof DapNoParametersSchema>;
+  readonly pause: Static<typeof DapNoParametersSchema>;
+  readonly stack: Static<typeof DapStackParametersSchema>;
+  readonly variables: Static<typeof DapVariablesStrictParametersSchema>;
+  readonly evaluate: Static<typeof DapEvaluateParametersSchema>;
+  readonly status: Static<typeof DapNoParametersSchema>;
+  readonly stop: Static<typeof DapNoParametersSchema>;
+}
 
-/** Provider-facing object schema; the strict union still validates every call at ingress. */
-export const DapToolProviderParametersSchema = Type.Object(
-  {
-    operation: Type.Unsafe<DapToolParameters["operation"]>({
-      type: "string",
-      enum: [
-        ...new Set(
-          DapToolParametersSchema.anyOf.flatMap((branch) =>
-            "anyOf" in branch
-              ? branch.anyOf.map((variant) => variant.properties.operation.const)
-              : [branch.properties.operation.const],
-          ),
-        ),
-      ],
-    }),
-    profile: LaunchParametersSchema.properties.profile,
-    program: LaunchParametersSchema.properties.program,
-    args: LaunchParametersSchema.properties.args,
-    cwd: LaunchParametersSchema.properties.cwd,
-    file_path: Type.Optional(SetBreakpointsParametersSchema.properties.file_path),
-    breakpoints: Type.Optional(SetBreakpointsParametersSchema.properties.breakpoints),
-    thread_id: StackParametersSchema.properties.thread_id,
-    ...VariablesPageSchema,
-    frame_id: EvaluateParametersSchema.properties.frame_id,
-    variables_reference: Type.Optional(DapIdSchema),
-    expression: Type.Optional(EvaluateParametersSchema.properties.expression),
-  },
-  { additionalProperties: false },
-);
+/** One validated tool call, tagged with the operation its tool performs. */
+export type DapToolParameters = {
+  [Operation in DapOperation]: { readonly operation: Operation } & DapOperationArguments[Operation];
+}[DapOperation];
 
-/** Unvalidated provider-facing arguments used by Pi's call renderer. */
-export type DapToolProviderParameters = Static<typeof DapToolProviderParametersSchema>;
-
-/** Parsed input for one invocation of the strict `dap` tool. */
-export type DapToolParameters = Static<typeof DapToolParametersSchema>;
+/** Unvalidated, possibly incomplete call arguments used by Pi's call renderer. */
+export interface DapToolCallArguments {
+  readonly operation: DapOperation;
+  readonly profile?: string;
+  readonly program?: string;
+  readonly args?: readonly string[];
+  readonly cwd?: string;
+  readonly file_path?: string;
+  readonly breakpoints?: readonly { readonly line: number; readonly condition?: string }[];
+  readonly thread_id?: number;
+  readonly start?: number;
+  readonly count?: number;
+  readonly frame_id?: number;
+  readonly variables_reference?: number;
+  readonly expression?: string;
+}
 
 const DapStateSchema = Type.Union([
   Type.Literal("idle"),
@@ -138,7 +156,7 @@ const DapOperationSchema = Type.Union([
   Type.Literal("status"),
   Type.Literal("stop"),
 ]);
-const DapSourceFields = {
+const DapPresentationSourceFields = {
   source_name: Type.Optional(DapPresentationStringSchema),
   source_path: Type.Optional(DapPresentationStringSchema),
 };
@@ -152,7 +170,7 @@ const BreakpointsPresentationSchema = Type.Object(
           verified: Type.Boolean(),
           message: Type.Optional(DapPresentationStringSchema),
           line: Type.Optional(Type.Integer()),
-          ...DapSourceFields,
+          ...DapPresentationSourceFields,
         },
         { additionalProperties: false },
       ),
@@ -172,7 +190,7 @@ const StackPresentationSchema = Type.Object(
           name: DapPresentationStringSchema,
           line: Type.Integer(),
           column: Type.Integer(),
-          ...DapSourceFields,
+          ...DapPresentationSourceFields,
         },
         { additionalProperties: false },
       ),
@@ -229,6 +247,10 @@ const DapExecutionWaitOperationSchema = Type.Union([
   Type.Literal("step_in"),
   Type.Literal("step_out"),
 ]);
+
+/** Operations that wait for the Debuggee to stop, exit, or time out. */
+export type DapExecutionWaitOperation = Static<typeof DapExecutionWaitOperationSchema>;
+
 const ExecutionWaitPresentationSchema = Type.Object(
   {
     kind: Type.Literal("execution_wait"),
@@ -250,7 +272,10 @@ export const DapPresentationDetailsSchema = Type.Union([
 /** Bounded operation-specific data used only by the Observer UI. */
 export type DapPresentationDetails = Static<typeof DapPresentationDetailsSchema>;
 
-/** Structured, runtime-validated details returned with every successful DAP operation. */
+/**
+ * Bounded, runtime-validated details stored with every successful DAP result for the Observer UI.
+ * They are not the script-facing result: see {@link DapToolOutputSchemas}.
+ */
 export const DapToolResultDetailsSchema = Type.Object(
   {
     operation: DapOperationSchema,
@@ -294,3 +319,148 @@ export const DapToolRenderDetailsSchema = Type.Union([
 
 /** Final or partial details accepted by the DAP transcript renderer. */
 export type DapToolRenderDetails = Static<typeof DapToolRenderDetailsSchema>;
+
+const DapSourceFields = {
+  source_name: Type.Optional(Type.String()),
+  source_path: Type.Optional(Type.String()),
+};
+const DapBreakpointSchema = Type.Object(
+  {
+    id: Type.Optional(DapIdSchema),
+    verified: Type.Boolean(),
+    message: Type.Optional(Type.String()),
+    line: Type.Optional(Type.Integer()),
+    column: Type.Optional(Type.Integer()),
+    ...DapSourceFields,
+  },
+  { additionalProperties: false },
+);
+const DapStackFrameSchema = Type.Object(
+  {
+    id: DapIdSchema,
+    name: Type.String(),
+    line: Type.Integer(),
+    column: Type.Integer(),
+    ...DapSourceFields,
+  },
+  { additionalProperties: false },
+);
+const DapVariableSchema = Type.Object(
+  {
+    name: Type.String(),
+    value: Type.String(),
+    type: Type.Optional(Type.String()),
+    variables_reference: Type.Integer({
+      minimum: 0,
+      description: "Pass to dap_variables to list children; 0 has none.",
+    }),
+    evaluate_name: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+const DapScopeSchema = Type.Object(
+  {
+    name: Type.String(),
+    variables_reference: DapIdSchema,
+    expensive: Type.Boolean(),
+    variables: Type.Array(DapVariableSchema),
+  },
+  { additionalProperties: false },
+);
+const DapEvaluationSchema = Type.Object(
+  {
+    result: Type.String(),
+    type: Type.Optional(Type.String()),
+    variables_reference: DapIdSchema,
+  },
+  { additionalProperties: false },
+);
+const DapDesiredBreakpointFileSchema = Type.Object(
+  {
+    file_path: Type.String(),
+    breakpoints: Type.Array(
+      Type.Object(
+        { line: Type.Integer({ minimum: 1 }), condition: Type.Optional(Type.String()) },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/** Fields of every script-facing result, successful or failed. */
+const DapOutputBaseFields = {
+  state: DapStateSchema,
+  adapter_id: Type.Optional(Type.String()),
+  profile_id: Type.Optional(Type.String()),
+  stop_reason: Type.Optional(Type.String()),
+  thread_id: Type.Optional(DapIdSchema),
+  exit_code: Type.Optional(Type.Integer()),
+  termination_reason: Type.Optional(Type.String()),
+  output: Type.Optional(
+    Type.String({ description: "Complete unread Debuggee output this call drained." }),
+  ),
+  output_discarded_bytes: Type.Optional(Type.Integer({ minimum: 0 })),
+  desired_breakpoints: Type.Optional(Type.Array(DapDesiredBreakpointFileSchema)),
+  error: Type.Optional(
+    Type.String({
+      description:
+        "Set when the Debug Session state did not allow the call; the other fields are the current state.",
+    }),
+  ),
+};
+const DapExecutionOutputFields = {
+  execution_wait_cancelled: Type.Optional(Type.Boolean()),
+};
+
+const DapBaseOutputSchema = Type.Object(DapOutputBaseFields, { additionalProperties: false });
+const DapExecutionOutputSchema = Type.Object(
+  { ...DapOutputBaseFields, ...DapExecutionOutputFields },
+  { additionalProperties: false },
+);
+
+/**
+ * Complete script-facing result of each tool, returned as `structuredContent`. Unlike the bounded
+ * Observer UI details, it carries every row, full values, and all drained Debuggee output.
+ */
+export const DapToolOutputSchemas = {
+  launch: DapExecutionOutputSchema,
+  set_breakpoints: Type.Object(
+    { ...DapOutputBaseFields, breakpoints: Type.Optional(Type.Array(DapBreakpointSchema)) },
+    { additionalProperties: false },
+  ),
+  continue: DapExecutionOutputSchema,
+  next: DapExecutionOutputSchema,
+  step_in: DapExecutionOutputSchema,
+  step_out: DapExecutionOutputSchema,
+  pause: DapBaseOutputSchema,
+  stack: Type.Object(
+    {
+      ...DapOutputBaseFields,
+      stack_frames: Type.Optional(Type.Array(DapStackFrameSchema)),
+      total_frames: Type.Optional(Type.Integer({ minimum: 0 })),
+    },
+    { additionalProperties: false },
+  ),
+  variables: Type.Object(
+    {
+      ...DapOutputBaseFields,
+      scopes: Type.Optional(Type.Array(DapScopeSchema, { description: "Set for frame_id." })),
+      variables: Type.Optional(
+        Type.Array(DapVariableSchema, { description: "Set for variables_reference." }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+  evaluate: Type.Object(
+    { ...DapOutputBaseFields, evaluation: Type.Optional(DapEvaluationSchema) },
+    { additionalProperties: false },
+  ),
+  status: DapBaseOutputSchema,
+  stop: DapBaseOutputSchema,
+} as const;
+
+/** Script-facing result of one operation, exactly as its {@link DapToolOutputSchemas} entry allows. */
+export type DapToolOutput<TOperation extends DapOperation = DapOperation> = {
+  [Operation in TOperation]: Static<(typeof DapToolOutputSchemas)[Operation]>;
+}[TOperation];
