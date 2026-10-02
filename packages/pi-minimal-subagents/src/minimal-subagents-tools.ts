@@ -164,6 +164,12 @@ export function createCoordinatorToolDefinitions(
     promptSnippet: "Spawn a persistent child with a prefix-free root-child ID",
     promptGuidelines: modelRolePromptGuidelines,
     parameters: options.schemas.subagent,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
     async execute(_toolCallId, parameters, _signal, _onUpdate, context) {
       return runCoordinatorToolActivity(options, async () => {
         const result = await options.coordinator.spawn(
@@ -191,6 +197,12 @@ export function createCoordinatorToolDefinitions(
       "Send one mid-turn coordination message to a direct parent, direct sibling, or direct child. The result says whether it was delivered through an active wait, queued for the recipient, or failed.",
     promptSnippet: "Coordinate required mid-turn action with one adjacent agent",
     parameters: options.schemas.agent_message,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     async execute(toolCallId, parameters) {
       return runCoordinatorToolActivity(options, async () => {
         const result = await options.coordinator.sendAgentMessage(
@@ -214,6 +226,12 @@ export function createCoordinatorToolDefinitions(
       "Wait for one direct child's oldest observable turn, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. An already settled turn returns event=turn once with queued messages in messages. Timeout returns event=timeout with detailed child status and never cancels the child.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
     async execute(_toolCallId, parameters, signal, onUpdate) {
       const startedAt = Date.now();
       const updateWaitingResult = () =>
@@ -262,6 +280,12 @@ export function createCoordinatorToolDefinitions(
       "List direct children when agent_id is omitted, or inspect one direct child's launch contract, result, usage, dependencies, and bounded recent activity including message text and reasoning.",
     promptSnippet: "Inspect direct child state",
     parameters: options.schemas.subagent_status,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async execute(_toolCallId, parameters) {
       return runCoordinatorToolActivity(options, () =>
         structuredToolResult(options.coordinator.status(options.callerId, parameters.agent_id)),
@@ -277,6 +301,12 @@ export function createCoordinatorToolDefinitions(
       "Abort active work for one direct child while preserving sessions for later continuation. Recursive cancellation includes its subtree and defaults to true.",
     promptSnippet: "Cancel active subagent turns without deleting sessions",
     parameters: options.schemas.subagent_cancel,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async execute(_toolCallId, parameters) {
       return runCoordinatorToolActivity(options, async () =>
         structuredToolResult(
@@ -298,6 +328,12 @@ export function createCoordinatorToolDefinitions(
       "Delete one direct child's persistent session and retain durable ID tombstones. Recursive deletion includes its subtree and defaults to true.",
     promptSnippet: "Delete subagent sessions and tombstone their IDs",
     parameters: options.schemas.subagent_delete,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
     async execute(_toolCallId, parameters) {
       return runCoordinatorToolActivity(options, async () => {
         const result = await options.coordinator.delete(
