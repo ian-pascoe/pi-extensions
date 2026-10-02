@@ -56,15 +56,15 @@ interface FixtureOptions {
   readonly tools?: readonly string[];
   readonly codemode?: boolean;
   readonly toolSearch?: boolean;
+  /** Extra extensions, loaded after Pi DAP, such as hooks that observe tool calls. */
+  readonly extraExtensions?: readonly InlineExtension[];
 }
 
 type InlineExtension = NonNullable<
   ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"]
 >[number];
 
-const DIRECT_DAP_TOOLS = DAP_OPERATIONS.filter((operation) => operation !== "pause").map(
-  (operation) => `dap_${operation}`,
-);
+const DAP_TOOLS = DAP_OPERATIONS.map((operation) => `dap_${operation}`);
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
 
@@ -122,6 +122,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     name: "pi-dap-cache-prefix-test",
     factory: createPiDapExtension(() => agentDir),
   });
+  factories.push(...(options.extraExtensions ?? []));
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
@@ -247,13 +248,7 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
     await fixture.session.reload();
     await fixture.session.prompt("After reload");
     expectStablePrefix(fixture.turns, 5);
-    expect(toolNamesOf(fixture.turns[0])).toEqual([
-      "read",
-      "bash",
-      "edit",
-      "write",
-      ...DIRECT_DAP_TOOLS,
-    ]);
+    expect(toolNamesOf(fixture.turns[0])).toEqual(["read", "bash", "edit", "write", ...DAP_TOOLS]);
     expect(fixture.turns[0]?.systemPrompt).toContain(
       "- dap_launch: Debug a program through one configured Debug Session",
     );
@@ -265,12 +260,17 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
     );
   });
 
-  test("with codemode: dap_pause is listed for scripts and declarations stay stable", async () => {
+  test("with codemode: scripts reach every tool and declarations stay stable", async () => {
     const fixture = await createFixture({ codemode: true });
     fixture.responses.push(
       fauxAssistantMessage("One."),
       toolCallTurn("codemode", {
-        code: "const status = await tools.dap_status({});\nconst paused = await tools.dap_pause({});\nreturn { state: status.state, output: status.output, pausedState: paused.state, pausedError: paused.error };",
+        code: [
+          "const status = await tools.dap_status({});",
+          "const paused = await tools.dap_pause({});",
+          "const namespace = await describeNamespace('dap');",
+          "return { state: status.state, output: status.output, pausedState: paused.state, pausedError: paused.error, namespace, stackType: await describeTool('dap_stack') };",
+        ].join("\n"),
       }),
       fauxAssistantMessage("Done."),
       fauxAssistantMessage("After reload."),
@@ -282,16 +282,17 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
     expectStablePrefix(fixture.turns, 4);
 
     const [first] = fixture.turns;
-    expect(toolNamesOf(first)).not.toContain("dap_pause");
+    expect(toolNamesOf(first)).toEqual(expect.arrayContaining(DAP_TOOLS));
+    // Declared tools are not repeated in the codemode listing; each says how scripts call it.
     const codemode = first?.tools.find(({ name }) => name === "codemode");
-    expect(codemode?.description).toContain("## dap\nDebug one program through one configured");
-    expect(codemode?.description).toContain("### `dap_pause`");
-    // Declared tools are not repeated in the codemode listing.
-    expect(codemode?.description).not.toContain("### `dap_stack`");
-    const stack = first?.tools.find(({ name }) => name === "dap_stack");
-    expect(stack?.description).toMatch(
-      /Codemode: `tools\.dap_stack\(args\)` resolves to `\{ state, [^`]*\bstack_frames\?, total_frames\? \}`\.$/u,
-    );
+    expect(codemode?.description).not.toContain("### `dap_");
+    for (const name of DAP_TOOLS) {
+      const declared = first?.tools.find((tool) => tool.name === name);
+      expect(declared?.description, name).toContain(
+        `Codemode: \`tools.${name}(args)\` resolves to \`{ state, `,
+      );
+      expect(declared?.description, name).toMatch(/\berror\?[,\s]/u);
+    }
 
     // Scripts receive the structured result, including state for a state failure.
     const scriptResult = lastToolResultText(fixture.turns[2]);
@@ -299,42 +300,57 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
     expect(scriptResult).toContain('"output":""');
     expect(scriptResult).toContain('"pausedState":"idle"');
     expect(scriptResult).toContain("pause requires a running Debuggee");
+    // The namespace keeps its grouping: codemode reports its description, instructions, and tools.
+    for (const name of DAP_TOOLS) expect(scriptResult).toContain(name);
+    expect(scriptResult).toContain("same single Debug Session");
+    // The `error` field's meaning reaches scripts through the rendered declaration.
+    expect(scriptResult).toContain("// Set when the Debug Session state did not allow the call");
   });
 
-  test("dap_pause is declared when activated by name", async () => {
-    for (const options of [
-      { defaultTools: ["read", "+dap_pause"] },
-      { tools: ["read", ...DIRECT_DAP_TOOLS, "dap_pause"] },
-    ] satisfies FixtureOptions[]) {
-      const fixture = await createFixture(options);
-      fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
-      await fixture.session.prompt("First");
-      await fixture.session.prompt("Second");
-      expectStablePrefix(fixture.turns, 2);
-      expect(toolNamesOf(fixture.turns[0])).toContain("dap_pause");
-      expect(toolNamesOf(fixture.turns[0])).toEqual(
-        expect.arrayContaining(["read", ...DIRECT_DAP_TOOLS, "dap_pause"]),
-      );
-    }
-  });
-
-  test("tool_search loads dap_pause by appending to the transcript", async () => {
-    const fixture = await createFixture({ toolSearch: true });
+  test("nested script calls to the tools never overlap on the one Debug Session", async () => {
+    const events: string[] = [];
+    const fixture = await createFixture({
+      codemode: true,
+      extraExtensions: [
+        {
+          name: "dap-call-recorder",
+          factory: (pi) => {
+            pi.on("tool_call", async (event) => {
+              if (!event.toolName.startsWith("dap_")) return;
+              events.push(`start ${event.toolName}`);
+              // Overlapping calls would both start before either finishes.
+              await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+            });
+            pi.on("tool_result", (event) => {
+              if (event.toolName.startsWith("dap_")) events.push(`end ${event.toolName}`);
+            });
+          },
+        },
+      ],
+    });
     fixture.responses.push(
-      toolCallTurn("tool_search", { query: "pause running debuggee" }),
-      fauxAssistantMessage("Loaded."),
+      toolCallTurn("codemode", {
+        code: "await Promise.all([tools.dap_set_breakpoints({ file_path: 'a.ts', breakpoints: [] }), tools.dap_status({}), tools.dap_stop({})]);",
+      }),
+      fauxAssistantMessage("Done."),
     );
-    await fixture.session.prompt("Find a way to pause the Debuggee");
-    const [before, after] = fixture.turns;
-    if (before === undefined || after === undefined) throw new Error("expected two turns");
-    expect(toolNamesOf(before)).not.toContain("dap_pause");
-    expect(toolNamesOf(after)).toContain("dap_pause");
-    // Loading appends a tool change; it never rewrites the cached transcript prefix.
-    expect(JSON.stringify(after.messages.slice(0, before.messages.length))).toBe(
-      JSON.stringify(before.messages),
-    );
-    expect(JSON.stringify(after.tools.slice(0, before.tools.length))).toBe(
-      JSON.stringify(before.tools),
-    );
+    await fixture.session.prompt("Run three calls at once");
+    expect(events).toEqual([
+      "start dap_set_breakpoints",
+      "end dap_set_breakpoints",
+      "start dap_status",
+      "end dap_status",
+      "start dap_stop",
+      "end dap_stop",
+    ]);
+  });
+
+  test("an allowlist can select a subset of the tools without disturbing the prefix", async () => {
+    const fixture = await createFixture({ tools: ["read", "dap_status", "dap_pause"] });
+    fixture.responses.push(fauxAssistantMessage("One."), fauxAssistantMessage("Two."));
+    await fixture.session.prompt("First");
+    await fixture.session.prompt("Second");
+    expectStablePrefix(fixture.turns, 2);
+    expect(toolNamesOf(fixture.turns[0])).toEqual(["read", "dap_status", "dap_pause"]);
   });
 });

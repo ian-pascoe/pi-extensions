@@ -60,6 +60,7 @@ const DapBreakpointSchema = Type.Object(
     verified: Type.Boolean(),
     message: Type.Optional(Type.String()),
     line: Type.Optional(Type.Integer()),
+    column: Type.Optional(Type.Integer()),
     source: Type.Optional(DapSourceSchema),
   },
   { additionalProperties: true },

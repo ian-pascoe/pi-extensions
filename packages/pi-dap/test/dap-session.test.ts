@@ -186,6 +186,22 @@ describe("DapSession", () => {
     });
   });
 
+  test("validates the breakpoint column an adapter reports", async () => {
+    const valid = await createSession({ stopOnEntry: true, breakpointColumn: 7 });
+    await valid.session.launch({ program: "program.ts" });
+    const set = await valid.session.setBreakpoints({
+      filePath: "program.ts",
+      breakpoints: [{ line: 4 }],
+    });
+    expect(set.breakpoints).toEqual([expect.objectContaining({ line: 4, column: 7 })]);
+
+    const invalid = await createSession({ stopOnEntry: true, breakpointColumn: "7" });
+    await invalid.session.launch({ program: "program.ts" });
+    await expect(
+      invalid.session.setBreakpoints({ filePath: "program.ts", breakpoints: [{ line: 4 }] }),
+    ).rejects.toThrow("setBreakpoints");
+  });
+
   test("publishes observed launch transitions and clears stop-specific context on resume", async () => {
     const snapshots: DapSessionSnapshot[] = [];
     const { session } = await createSession({ stopOnEntry: true }, 200, {

@@ -403,7 +403,10 @@ const DapOutputBaseFields = {
   output_discarded_bytes: Type.Optional(Type.Integer({ minimum: 0 })),
   desired_breakpoints: Type.Optional(Type.Array(DapDesiredBreakpointFileSchema)),
   error: Type.Optional(
-    Type.String({ description: "Set when the call failed; the other fields are current state." }),
+    Type.String({
+      description:
+        "Set when the Debug Session state did not allow the call; the other fields are the current state.",
+    }),
   ),
 };
 const DapExecutionOutputFields = {
@@ -457,9 +460,7 @@ export const DapToolOutputSchemas = {
   stop: DapBaseOutputSchema,
 } as const;
 
-/** Every field a script-facing DAP result can carry. */
-export type DapToolOutput = Static<typeof DapExecutionOutputSchema> &
-  Static<(typeof DapToolOutputSchemas)["set_breakpoints"]> &
-  Static<(typeof DapToolOutputSchemas)["stack"]> &
-  Static<(typeof DapToolOutputSchemas)["variables"]> &
-  Static<(typeof DapToolOutputSchemas)["evaluate"]>;
+/** Script-facing result of one operation, exactly as its {@link DapToolOutputSchemas} entry allows. */
+export type DapToolOutput<TOperation extends DapOperation = DapOperation> = {
+  [Operation in TOperation]: Static<(typeof DapToolOutputSchemas)[Operation]>;
+}[TOperation];

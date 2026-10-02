@@ -14,6 +14,4 @@ disable-model-invocation: true
 5. For a requested change, edit one settings layer, validate JSON, and reload Pi.
 6. With approval, run one representative launch. Finish when it reaches the expected Debug Session state or one exact adapter or protocol failure remains.
 
-If the model cannot call `dap_pause`, it is not declared by default: enable Pi's `codemode` or `tool_search`, or add `"+dap_pause"` to `defaultTools` (README, Tools).
-
 Ask before starting, pausing, stopping, or otherwise changing a Debuggee. An execution timeout may leave it running, so inspect `dap_status` first.

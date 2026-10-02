@@ -87,27 +87,24 @@ no compatibility promise.
 Pi DAP registers one tool per operation, all acting on the same single Debug
 Session and grouped under the `dap` namespace:
 
-| Tool                  | Arguments                                                      | Exposure   |
-| --------------------- | -------------------------------------------------------------- | ---------- |
-| `dap_launch`          | optional `profile`, `program`, `args`, `cwd`                   | `direct`   |
-| `dap_set_breakpoints` | `file_path`, `breakpoints`                                     | `direct`   |
-| `dap_continue`        | none                                                           | `direct`   |
-| `dap_next`            | none                                                           | `direct`   |
-| `dap_step_in`         | none                                                           | `direct`   |
-| `dap_step_out`        | none                                                           | `direct`   |
-| `dap_pause`           | none                                                           | `codemode` |
-| `dap_stack`           | optional `thread_id`, `start`, `count`                         | `direct`   |
-| `dap_variables`       | `frame_id` or `variables_reference`; optional `start`, `count` | `direct`   |
-| `dap_evaluate`        | `expression`; optional `frame_id`                              | `direct`   |
-| `dap_status`          | none                                                           | `direct`   |
-| `dap_stop`            | none                                                           | `direct`   |
+| Tool                  | Arguments                                                      |
+| --------------------- | -------------------------------------------------------------- |
+| `dap_launch`          | optional `profile`, `program`, `args`, `cwd`                   |
+| `dap_set_breakpoints` | `file_path`, `breakpoints`                                     |
+| `dap_continue`        | none                                                           |
+| `dap_next`            | none                                                           |
+| `dap_step_in`         | none                                                           |
+| `dap_step_out`        | none                                                           |
+| `dap_pause`           | none                                                           |
+| `dap_stack`           | optional `thread_id`, `start`, `count`                         |
+| `dap_variables`       | `frame_id` or `variables_reference`; optional `start`, `count` |
+| `dap_evaluate`        | `expression`; optional `frame_id`                              |
+| `dap_status`          | none                                                           |
+| `dap_stop`            | none                                                           |
 
-`direct` tools are declared to the model. `dap_pause` is only needed after an
-execution wait times out, so it is not declared by default: Pi's `codemode`
-scripts can always call it and list it with its type, and `tool_search` can
-load it. Without either, activate it by name with
-`"defaultTools": ["+dap_pause"]` in Pi settings or `--tools` (which replaces
-the whole selection). `dap_stop` also ends a runaway Debuggee.
+Every tool is declared to the model (`direct` exposure). Use `dap_stop` to end
+a runaway Debuggee and `dap_pause` to interrupt one whose execution wait timed
+out.
 
 `dap_launch` selects a profile (it may be omitted only when exactly one valid
 profile exists). `program`, `args`, and `cwd` replace the same profile
@@ -123,8 +120,12 @@ Execution and inspection require a stopped Debuggee: `dap_continue`,
 `dap_stop` are idempotent. `dap_stack` defaults to the stopped thread, offset
 `0`, and count `20`; `dap_variables` takes exactly one `frame_id` or
 `variables_reference` and defaults its count to `100`; `dap_evaluate` defaults
-to the top Stack Frame. Calls run sequentially, in the order the model issued
-them.
+to the top Stack Frame. Pi runs a batch of tool calls that includes a DAP tool
+sequentially, in the order the model issued them. Calls that a codemode script
+starts together, for example with `Promise.all`, are queued the same way by
+Pi 1.0.0 and later, so they never overlap on the Debug Session. A script cannot
+use one call to interrupt another's execution wait: a `dap_pause` started with
+`dap_continue` runs only after the wait ends.
 
 Execution waits end on a stop, exit, cancellation, or `executionMs`; an
 execution timeout reports `running`. Request, startup, and shutdown timeouts
@@ -142,11 +143,20 @@ remain in the transcript and render with Pi's default tool rendering.
 ### Annotations and script results
 
 Each tool carries MCP-style annotations that permission extensions can use:
-`dap_stack`, `dap_variables`, and `dap_status` are read-only; `dap_launch` and
-`dap_evaluate` run arbitrary code (destructive, open world); `dap_stop` is
-destructive and idempotent; `dap_set_breakpoints` and `dap_pause` are
-idempotent; stepping and continuing only advance the program approved at
-launch.
+
+| Tools                                                                                   | Read-only | Destructive | Idempotent | Open world |
+| --------------------------------------------------------------------------------------- | --------- | ----------- | ---------- | ---------- |
+| `dap_stack`, `dap_variables`, `dap_status`                                              | yes       | no          | yes        | no         |
+| `dap_launch`, `dap_continue`, `dap_next`, `dap_step_in`, `dap_step_out`, `dap_evaluate` | no        | yes         | no         | yes        |
+| `dap_set_breakpoints`                                                                   | no        | yes         | yes        | yes        |
+| `dap_pause`                                                                             | no        | no          | yes        | no         |
+| `dap_stop`                                                                              | no        | yes         | yes        | no         |
+
+Launching, resuming, stepping, and evaluating run the Debuggee's code, so they
+can do anything the program does. `dap_set_breakpoints` is annotated the same
+way because a breakpoint `condition` is also evaluated as Debuggee code.
+Replacing a file's breakpoints with the same list changes nothing more, so it is
+idempotent.
 
 Each tool declares an output schema. Codemode scripts receive a structured
 result: the Debug Session state, all drained Debuggee output, Desired

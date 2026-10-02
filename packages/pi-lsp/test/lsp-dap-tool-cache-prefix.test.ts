@@ -238,7 +238,7 @@ afterEach(async () => {
   );
 });
 
-/** Tools each extension declares: one `lsp` tool, and the direct per-operation DAP tools. */
+/** Tools each extension declares: one `lsp` tool, and the twelve direct per-operation DAP tools. */
 const DECLARED_TOOLS = {
   lsp: ["lsp"],
   dap: [
@@ -248,6 +248,7 @@ const DECLARED_TOOLS = {
     "dap_next",
     "dap_step_in",
     "dap_step_out",
+    "dap_pause",
     "dap_stack",
     "dap_variables",
     "dap_evaluate",

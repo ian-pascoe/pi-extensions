@@ -22,9 +22,9 @@ import type {
 } from "../src/dap-session.js";
 import { DapProtocolClientError } from "../src/dap-protocol-client.js";
 import { DapSessionError } from "../src/dap-session.js";
+import { expectDapToolOutput } from "./dap-tool-output.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
 import {
-  DapToolOutputSchemas,
   DapToolResultDetailsSchema,
   type DapOperation,
   type DapToolCallArguments,
@@ -60,7 +60,16 @@ function dapTool(
     ({ name }) => name === `dap_${operation}`,
   );
   if (tool === undefined) throw new Error(`Missing dap_${operation}`);
-  return tool;
+  // Every executed result, including state failures and cancelled waits, must satisfy the
+  // tool's declared outputSchema, because codemode hands scripts exactly that value.
+  return {
+    ...tool,
+    async execute(toolCallId, input, signal, onUpdate, context) {
+      const result = await tool.execute(toolCallId, input, signal, onUpdate, context);
+      expectDapToolOutput(operation, result);
+      return result;
+    },
+  };
 }
 
 type RecordedDapInput =
@@ -215,7 +224,6 @@ describe("DAP tools", () => {
       undefined,
       fixture.context,
     );
-    expect(Value.Check(DapToolOutputSchemas.variables, result.structuredContent)).toBe(true);
     expect(result.structuredContent).toEqual({
       state: "stopped",
       adapter_id: "node",
@@ -324,7 +332,6 @@ describe("DAP tools", () => {
         undefined,
         fixture.context,
       );
-      expect(Value.Check(DapToolOutputSchemas[operation], result.structuredContent)).toBe(true);
       expect(result.structuredContent).toEqual({
         state: "stopped",
         adapter_id: "a",
@@ -540,6 +547,105 @@ describe("DAP tools", () => {
     expect(fixture.session.calls).toEqual([]);
   });
 
+  test("names what is wrong with invalid arguments instead of a bare parse failure", async () => {
+    const fixture = await createToolFixture();
+    const cases: readonly [DapOperation, DapToolInput, RegExp][] = [
+      // Both selectors given: the strict ingress contract rejects it and says which field.
+      [
+        "variables",
+        { frame_id: 0, variables_reference: 1 },
+        /\/variables_reference is not allowed$/u,
+      ],
+      ["variables", {}, /arguments must have required properties frame_id$/u],
+      ["evaluate", {}, /arguments must have required properties expression$/u],
+      ["stack", { count: 0 }, /\/count must be >= 1$/u],
+      ["status", { expression: "x" }, /\/expression is not allowed$/u],
+    ];
+    for (const [operation, input, reason] of cases) {
+      const tool = dapTool(() => fixture.runtime, operation);
+      expect(() => tool.prepareArguments?.(input), `${operation} ${JSON.stringify(input)}`).toThrow(
+        reason,
+      );
+    }
+  });
+
+  test("never emits a field outside the tool's output schema", async () => {
+    const fixture = await createToolFixture();
+    // A session result carrying every optional field, as a misbehaving or newer Debug Session might.
+    fixture.session.result = {
+      snapshot: {
+        state: "stopped",
+        adapterId: "a",
+        profileId: "p",
+        stopReason: "step",
+        threadId: 1,
+      },
+      output: "out",
+      discardedOutputBytes: 1,
+      desiredBreakpoints: [{ filePath: "/w/a.ts", breakpoints: [{ line: 1 }] }],
+      breakpoints: [{ verified: true }],
+      stackFrames: [{ id: 1, name: "main", line: 1, column: 1 }],
+      totalFrames: 1,
+      variableGroups: [
+        {
+          scope: { name: "Local", variablesReference: 2, expensive: false },
+          variables: [{ name: "a", value: "1", variablesReference: 0 }],
+        },
+      ],
+      variables: [{ name: "a", value: "1", variablesReference: 0 }],
+      evaluation: { result: "1", variablesReference: 0 },
+    };
+    const inputs: readonly [DapOperation, DapToolInput][] = [
+      ["launch", {}],
+      ["set_breakpoints", { file_path: "a.ts", breakpoints: [] }],
+      ["continue", {}],
+      ["next", {}],
+      ["step_in", {}],
+      ["step_out", {}],
+      ["pause", {}],
+      ["stack", {}],
+      ["variables", { frame_id: 1 }],
+      ["evaluate", { expression: "a" }],
+      ["status", {}],
+      ["stop", {}],
+    ];
+    const expectedData = (operation: DapOperation): string[] => {
+      switch (operation) {
+        case "set_breakpoints":
+          return ["breakpoints"];
+        case "stack":
+          return ["stack_frames", "total_frames"];
+        case "variables":
+          return ["scopes", "variables"];
+        case "evaluate":
+          return ["evaluation"];
+        default:
+          return [];
+      }
+    };
+    for (const [operation, input] of inputs) {
+      // dapTool asserts the output schema; here also check which data fields each tool keeps.
+      const result = await dapTool(() => fixture.runtime, operation).execute(
+        operation,
+        input,
+        undefined,
+        undefined,
+        fixture.context,
+      );
+      const data = Object.keys(result.structuredContent ?? {}).filter((key) =>
+        [
+          "breakpoints",
+          "stack_frames",
+          "total_frames",
+          "scopes",
+          "variables",
+          "evaluation",
+        ].includes(key),
+      );
+      expect(data, operation).toEqual(expectedData(operation));
+    }
+  });
+
   test("dispatches all operations, maps paths, forwards cancellation, and validates details", async () => {
     const fixture = await createToolFixture();
     const controller = new AbortController();
@@ -580,7 +686,6 @@ describe("DAP tools", () => {
       );
       expect(Value.Check(DapToolResultDetailsSchema, result.details)).toBe(true);
       expect(result.details).toMatchObject({ operation });
-      expect(Value.Check(DapToolOutputSchemas[operation], result.structuredContent)).toBe(true);
     }
     // The Observer UI still keys on the operation each tool performs.
     expect(observer.onToolStart.mock.calls.map(([parameters]) => parameters)).toEqual(
@@ -751,7 +856,6 @@ describe("DAP tools", () => {
       },
       isError: true,
     });
-    expect(Value.Check(DapToolOutputSchemas.stack, result.structuredContent)).toBe(true);
     expect(result.content[0]).not.toMatchObject({
       text: expect.stringContaining(TROUBLESHOOTING_HINT),
     });
@@ -787,7 +891,7 @@ describe("DAP tools", () => {
       desiredBreakpoints: [],
       stackFrames: [{ id: 42, name: "main", line: 0, column: 0 }],
     };
-    const result = await dapTool(() => fixture.runtime, "status").execute(
+    const result = await dapTool(() => fixture.runtime, "stack").execute(
       "spilled",
       {},
       undefined,
@@ -795,7 +899,7 @@ describe("DAP tools", () => {
       fixture.context,
     );
     expect(result.details).toMatchObject({
-      operation: "status",
+      operation: "stack",
       state: "stopped",
       adapter_id: "node",
       profile_id: "node",

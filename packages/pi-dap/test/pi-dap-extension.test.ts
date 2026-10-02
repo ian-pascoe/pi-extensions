@@ -1,3 +1,4 @@
+import { expectDapToolOutput } from "./dap-tool-output.js";
 import { toToolContext } from "./tool-context.js";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -168,13 +169,15 @@ describe("Pi DAP extension lifecycle", () => {
       const status = async () => {
         const tool = harness.session.getToolDefinition("dap_status");
         if (tool === undefined) throw new Error("Expected DAP status tool");
-        return tool.execute(
+        const result = await tool.execute(
           "status",
           {},
           undefined,
           undefined,
           toToolContext(harness.runner.createContext()),
         );
+        expectDapToolOutput("status", result);
+        return result;
       };
       expect(await status()).toMatchObject({ details: { operation: "status", state: "idle" } });
       const firstDirectories = await piDapSessionDirectories(harness.sessionDirectory);
@@ -228,9 +231,8 @@ describe("Pi DAP extension lifecycle", () => {
         renderResult: expect.any(Function),
       });
     }
-    // The interactive core is declared; dap_pause is reachable only from scripts or tool search.
     expect(harness.session.getActiveToolNames().filter((name) => name.startsWith("dap_"))).toEqual(
-      DAP_TOOL_NAMES.filter((name) => name !== "dap_pause"),
+      DAP_TOOL_NAMES,
     );
     expect(harness.notifications).toEqual([
       expect.stringContaining("global dap.unknownGlobalField"),
@@ -248,6 +250,7 @@ describe("Pi DAP extension lifecycle", () => {
       undefined,
       toToolContext(harness.runner.createContext()),
     );
+    expectDapToolOutput("status", status);
     expect(status.details).toMatchObject({ operation: "status", state: "idle" });
 
     harness.notifications.length = 0;
@@ -287,12 +290,15 @@ describe("Pi DAP extension lifecycle", () => {
     await startExtension(harness, "startup");
     const tool = harness.runner.getToolDefinition("dap_launch");
     if (tool === undefined) throw new Error("Expected registered DAP launch tool");
-    await tool.execute(
+    expectDapToolOutput(
       "launch",
-      {},
-      undefined,
-      undefined,
-      toToolContext(harness.runner.createContext()),
+      await tool.execute(
+        "launch",
+        {},
+        undefined,
+        undefined,
+        toToolContext(harness.runner.createContext()),
+      ),
     );
     expect(harness.widgetCalls).toContainEqual({ key: "pi-dap", content: expect.any(Function) });
 

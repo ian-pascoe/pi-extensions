@@ -9,7 +9,6 @@ import {
   type Theme,
   type ToolAnnotations,
   type ToolDefinition,
-  type ToolNamespace,
   type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
@@ -88,8 +87,13 @@ export interface DapToolObserver {
   onToolFailure(parameters: DapToolParameters, error: Error): void;
 }
 
-/** Namespace shared by every DAP tool; codemode lists the tools under it. */
-export const DAP_TOOL_NAMESPACE: ToolNamespace = {
+/**
+ * Namespace shared by every DAP tool; codemode lists the tools under it. `instructions` exists only
+ * in Pi 1.0.0's `ToolNamespace`: there, codemode's `describeNamespace()` returns it and `tool_search`
+ * ranks with it. The object is deliberately untyped so it also type-checks against 0.99.0, whose
+ * `ToolNamespace` lacks the field and would reject it as an excess property in a typed literal.
+ */
+export const DAP_TOOL_NAMESPACE = {
   name: "dap",
   description:
     "Debug one program through one configured Debug Session (Debug Adapter Protocol): breakpoints, execution control, and stopped-state inspection.",
@@ -132,13 +136,15 @@ function needsTroubleshootingHint(cause: unknown): boolean {
 function dapArgumentsParser<TParameters extends TSchema>(schema: TParameters) {
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Pi arguments are validated against each tool's strict schema at ingress.
   return (input: unknown): Static<TParameters> => {
-    try {
-      return Value.Parse(schema, input);
-    } catch (cause) {
-      throw piDapError(
-        `invalid tool arguments: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-    }
+    if (Value.Check(schema, input)) return Value.Parse(schema, input);
+    const [first] = Value.Errors(schema, input);
+    const location = first?.instancePath ? first.instancePath : "arguments";
+    // A `false` schema is how a strict object rejects an unknown property.
+    const reason =
+      first === undefined
+        ? "arguments do not match the tool's schema"
+        : `${location} ${first.keyword === "boolean" ? "is not allowed" : first.message}`;
+    throw piDapError(`invalid tool arguments: ${reason}`);
   };
 }
 
@@ -314,12 +320,17 @@ function toolResultDetails(
   return Value.Parse(DapToolResultDetailsSchema, details);
 }
 
-type DapSourceOutput = Pick<NonNullable<DapToolOutput["stack_frames"]>[number], "source_name">;
+type DapBaseOutput = DapToolOutput<"status">;
+type DapVariableOutput = NonNullable<DapToolOutput<"variables">["variables"]>[number];
+type DapSourceOutput = Pick<
+  DapVariableOutput & { source_name?: string; source_path?: string },
+  "source_name" | "source_path"
+>;
 
 function sourceOutput(
   source: { readonly name?: string; readonly path?: string } | undefined,
-): DapSourceOutput & { source_path?: string } {
-  const fields: DapSourceOutput & { source_path?: string } = {};
+): DapSourceOutput {
+  const fields: DapSourceOutput = {};
   if (source?.name !== undefined) fields.source_name = source.name;
   if (source?.path !== undefined) fields.source_path = source.path;
   return fields;
@@ -327,8 +338,8 @@ function sourceOutput(
 
 function variableOutput(
   variable: NonNullable<DapSessionResult["variables"]>[number],
-): NonNullable<DapToolOutput["variables"]>[number] {
-  const row: NonNullable<DapToolOutput["variables"]>[number] = {
+): DapVariableOutput {
+  const row: DapVariableOutput = {
     name: variable.name,
     value: variable.value,
     variables_reference: variable.variablesReference,
@@ -338,9 +349,9 @@ function variableOutput(
   return row;
 }
 
-/** Complete script-facing result: every row, full values, and all drained Debuggee output. */
-function toolOutput(result: DapSessionResult, executionWaitCancelled: boolean): DapToolOutput {
-  const output: DapToolOutput = {
+/** Fields every script-facing result carries: state, drained Debuggee output, Desired Breakpoints. */
+function baseOutput(result: DapSessionResult): DapBaseOutput {
+  return {
     ...snapshotFields(result.snapshot),
     output: result.output,
     output_discarded_bytes: result.discardedOutputBytes,
@@ -353,47 +364,83 @@ function toolOutput(result: DapSessionResult, executionWaitCancelled: boolean): 
       ),
     })),
   };
-  if (executionWaitCancelled) output.execution_wait_cancelled = true;
-  if (result.breakpoints !== undefined) {
-    output.breakpoints = result.breakpoints.map((breakpoint) => {
-      const row: NonNullable<DapToolOutput["breakpoints"]>[number] = {
-        verified: breakpoint.verified,
-        ...sourceOutput(breakpoint.source),
+}
+
+/**
+ * Complete script-facing result of one operation: every row, full values, and all drained Debuggee
+ * output. It carries only the fields the operation's output schema declares.
+ */
+function toolOutput(
+  operation: DapOperation,
+  result: DapSessionResult,
+  executionWaitCancelled: boolean,
+): DapToolOutput {
+  const base = baseOutput(result);
+  switch (operation) {
+    case "launch":
+    case "continue":
+    case "next":
+    case "step_in":
+    case "step_out":
+      return executionWaitCancelled ? { ...base, execution_wait_cancelled: true } : base;
+    case "set_breakpoints":
+      return result.breakpoints === undefined
+        ? base
+        : {
+            ...base,
+            breakpoints: result.breakpoints.map((breakpoint) => {
+              const row: NonNullable<DapToolOutput<"set_breakpoints">["breakpoints"]>[number] = {
+                verified: breakpoint.verified,
+                ...sourceOutput(breakpoint.source),
+              };
+              if (breakpoint.id !== undefined) row.id = breakpoint.id;
+              if (breakpoint.message !== undefined) row.message = breakpoint.message;
+              if (breakpoint.line !== undefined) row.line = breakpoint.line;
+              if (breakpoint.column !== undefined) row.column = breakpoint.column;
+              return row;
+            }),
+          };
+    case "stack":
+      return result.stackFrames === undefined
+        ? base
+        : {
+            ...base,
+            stack_frames: result.stackFrames.map((frame) => ({
+              id: frame.id,
+              name: frame.name,
+              line: frame.line,
+              column: frame.column,
+              ...sourceOutput(frame.source),
+            })),
+            total_frames: result.totalFrames ?? result.stackFrames.length,
+          };
+    case "variables": {
+      const output: DapToolOutput<"variables"> = { ...base };
+      if (result.variableGroups !== undefined) {
+        output.scopes = result.variableGroups.map((group) => ({
+          name: group.scope.name,
+          variables_reference: group.scope.variablesReference,
+          expensive: group.scope.expensive,
+          variables: group.variables.map(variableOutput),
+        }));
+      }
+      if (result.variables !== undefined) output.variables = result.variables.map(variableOutput);
+      return output;
+    }
+    case "evaluate": {
+      if (result.evaluation === undefined) return base;
+      const evaluation: NonNullable<DapToolOutput<"evaluate">["evaluation"]> = {
+        result: result.evaluation.result,
+        variables_reference: result.evaluation.variablesReference,
       };
-      if (breakpoint.id !== undefined) row.id = breakpoint.id;
-      if (breakpoint.message !== undefined) row.message = breakpoint.message;
-      if (breakpoint.line !== undefined) row.line = breakpoint.line;
-      if (breakpoint.column !== undefined) row.column = breakpoint.column;
-      return row;
-    });
+      if (result.evaluation.type !== undefined) evaluation.type = result.evaluation.type;
+      return { ...base, evaluation };
+    }
+    case "pause":
+    case "status":
+    case "stop":
+      return base;
   }
-  if (result.stackFrames !== undefined) {
-    output.stack_frames = result.stackFrames.map((frame) => ({
-      id: frame.id,
-      name: frame.name,
-      line: frame.line,
-      column: frame.column,
-      ...sourceOutput(frame.source),
-    }));
-    output.total_frames = result.totalFrames ?? result.stackFrames.length;
-  }
-  if (result.variableGroups !== undefined) {
-    output.scopes = result.variableGroups.map((group) => ({
-      name: group.scope.name,
-      variables_reference: group.scope.variablesReference,
-      expensive: group.scope.expensive,
-      variables: group.variables.map(variableOutput),
-    }));
-  }
-  if (result.variables !== undefined) output.variables = result.variables.map(variableOutput);
-  if (result.evaluation !== undefined) {
-    output.evaluation = {
-      result: result.evaluation.result,
-      variables_reference: result.evaluation.variablesReference,
-    };
-    if (result.evaluation.type !== undefined) output.evaluation.type = result.evaluation.type;
-  }
-  return output;
 }
 
 function formatDapToolResult(operation: DapOperation, result: DapSessionResult): string {
@@ -415,7 +462,7 @@ async function createDapToolOutput(
 ): Promise<DapToolResult> {
   const text = formatDapToolResult(operation, result);
   const details = toolResultDetails(operation, result, executionWaitCancelled);
-  const structuredContent = toolOutput(result, executionWaitCancelled);
+  const structuredContent = toolOutput(operation, result, executionWaitCancelled);
   const truncation = truncateHead(text, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
@@ -598,22 +645,17 @@ const READ_ONLY: ToolAnnotations = {
   idempotentHint: true,
   openWorldHint: false,
 };
-/** Advances the program approved at launch; it neither deletes data nor reaches beyond it. */
-const EXECUTION: ToolAnnotations = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: false,
-};
-/** Runs arbitrary code with Pi's permissions. */
-const ARBITRARY_CODE: ToolAnnotations = {
+/** Runs Debuggee code, whose side effects reach beyond Pi DAP: launching, resuming, or evaluating. */
+const RUNS_DEBUGGEE_CODE: ToolAnnotations = {
   readOnlyHint: false,
   destructiveHint: true,
   idempotentHint: false,
   openWorldHint: true,
 };
 const EXECUTION_WAIT =
-  "and wait until it stops again, exits, or the execution timeout passes (then it is still running).";
+  "and wait until the Debuggee stops, exits, or the execution timeout passes (then it is still running).";
+const STATE_FAILURE =
+  "A call the Debug Session state does not allow returns an error result with the current `state`.";
 
 type DapNoParametersOperation = Extract<
   DapToolParameters,
@@ -631,14 +673,13 @@ function createNoParametersTool(
   operation: DapNoParametersOperation,
   label: string,
   description: string,
-  exposure: "direct" | "codemode",
   annotations: ToolAnnotations,
   getRuntime: () => DapToolRuntime | undefined,
 ): DapToolDefinition<typeof DapNoParametersSchema> {
   return defineTool<typeof DapNoParametersSchema, DapToolRenderDetails | undefined>({
     ...dapToolCommon(operation, label),
     description,
-    exposure,
+    exposure: "direct",
     annotations,
     parameters: DapNoParametersSchema,
     prepareArguments: parseNoParameters,
@@ -656,21 +697,21 @@ function createNoParametersTool(
 }
 
 /**
- * Create one strict Pi tool per DAP operation, each bound to current session resources. The
- * interactive core is `direct`; the long tail is `codemode` (ADR-0002).
+ * Create one strict Pi tool per DAP operation, each bound to current session resources. Every
+ * tool is `direct` (ADR-0002).
  */
 export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | undefined) {
   return [
     defineTool<typeof DapLaunchParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("launch", "DAP launch"),
-      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments. Fails while a Debug Session is active.`,
+      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments. Fails while a Debug Session is active. ${STATE_FAILURE}`,
       promptSnippet: "Debug a program through one configured Debug Session",
       exposure: "direct",
-      annotations: ARBITRARY_CODE,
+      annotations: RUNS_DEBUGGEE_CODE,
       parameters: DapLaunchParametersSchema,
       prepareArguments: parseLaunchParameters,
       renderCall: (input, theme, context) =>
-        renderDapToolCall({ operation: "launch", ...input }, theme, context.expanded, context.cwd),
+        renderDapToolCall({ ...input, operation: "launch" }, theme, context.expanded, context.cwd),
       execute: async (_toolCallId, input, signal, onUpdate, context) =>
         executeDapOperation(
           { operation: "launch", ...parseLaunchParameters(input) },
@@ -683,14 +724,14 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
     defineTool<typeof DapSetBreakpointsParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("set_breakpoints", "DAP set breakpoints"),
       description:
-        "Replace the Desired Breakpoints of one source file; lines are one-based and [] clears the file. They apply to the active Debug Session and to every later launch.",
+        "Replace the Desired Breakpoints of one source file; lines are one-based and [] clears the file. They apply to the active Debug Session and to every later launch. A breakpoint condition runs as Debuggee code.",
       exposure: "direct",
-      annotations: { ...EXECUTION, idempotentHint: true },
+      annotations: { ...RUNS_DEBUGGEE_CODE, idempotentHint: true },
       parameters: DapSetBreakpointsParametersSchema,
       prepareArguments: parseSetBreakpointsParameters,
       renderCall: (input, theme, context) =>
         renderDapToolCall(
-          { operation: "set_breakpoints", ...input },
+          { ...input, operation: "set_breakpoints" },
           theme,
           context.expanded,
           context.cwd,
@@ -707,53 +748,47 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
     createNoParametersTool(
       "continue",
       "DAP continue",
-      `Resume the stopped Debuggee ${EXECUTION_WAIT}`,
-      "direct",
-      EXECUTION,
+      `Resume the stopped Debuggee ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
       getRuntime,
     ),
     createNoParametersTool(
       "next",
       "DAP step over",
-      `Step the stopped Debuggee over the current line ${EXECUTION_WAIT}`,
-      "direct",
-      EXECUTION,
+      `Step the stopped Debuggee over the current line ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
       getRuntime,
     ),
     createNoParametersTool(
       "step_in",
       "DAP step in",
-      `Step the stopped Debuggee into the call on the current line ${EXECUTION_WAIT}`,
-      "direct",
-      EXECUTION,
+      `Step the stopped Debuggee into the call on the current line ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
       getRuntime,
     ),
     createNoParametersTool(
       "step_out",
       "DAP step out",
-      `Run the stopped Debuggee until the current function returns ${EXECUTION_WAIT}`,
-      "direct",
-      EXECUTION,
+      `Run the stopped Debuggee until the current function returns ${EXECUTION_WAIT} ${STATE_FAILURE}`,
+      RUNS_DEBUGGEE_CODE,
       getRuntime,
     ),
     createNoParametersTool(
       "pause",
       "DAP pause",
-      "Pause the running Debuggee, for example after an execution wait timed out, and wait for it to stop.",
-      "codemode",
-      { ...EXECUTION, idempotentHint: true },
+      `Pause the running Debuggee, for example after an execution wait timed out, and wait for it to stop. ${STATE_FAILURE}`,
+      { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       getRuntime,
     ),
     defineTool<typeof DapStackParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("stack", "DAP stack"),
-      description:
-        "List Stack Frames of the stopped Debuggee. Defaults to the stopped thread, start 0, and count 20.",
+      description: `List Stack Frames of the stopped Debuggee. Defaults to the stopped thread, start 0, and count 20. ${STATE_FAILURE}`,
       exposure: "direct",
       annotations: READ_ONLY,
       parameters: DapStackParametersSchema,
       prepareArguments: parseStackParameters,
       renderCall: (input, theme, context) =>
-        renderDapToolCall({ operation: "stack", ...input }, theme, context.expanded, context.cwd),
+        renderDapToolCall({ ...input, operation: "stack" }, theme, context.expanded, context.cwd),
       execute: async (_toolCallId, input, signal, onUpdate, context) =>
         executeDapOperation(
           { operation: "stack", ...parseStackParameters(input) },
@@ -765,15 +800,14 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
     }),
     defineTool<typeof DapVariablesParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("variables", "DAP variables"),
-      description:
-        "List variables of the stopped Debuggee. Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both; start and count (default 100) page each list.",
+      description: `List variables of the stopped Debuggee. Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both; start and count (default 100) page each list. ${STATE_FAILURE}`,
       exposure: "direct",
       annotations: READ_ONLY,
       parameters: DapVariablesParametersSchema,
       prepareArguments: parseVariablesParameters,
       renderCall: (input, theme, context) =>
         renderDapToolCall(
-          { operation: "variables", ...input },
+          { ...input, operation: "variables" },
           theme,
           context.expanded,
           context.cwd,
@@ -789,15 +823,14 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
     }),
     defineTool<typeof DapEvaluateParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("evaluate", "DAP evaluate"),
-      description:
-        "Evaluate an expression in the stopped Debuggee, in frame_id or the top Stack Frame. The expression runs as Debuggee code and can change its state.",
+      description: `Evaluate an expression in the stopped Debuggee, in frame_id or the top Stack Frame. The expression runs as Debuggee code and can change its state. ${STATE_FAILURE}`,
       exposure: "direct",
-      annotations: ARBITRARY_CODE,
+      annotations: RUNS_DEBUGGEE_CODE,
       parameters: DapEvaluateParametersSchema,
       prepareArguments: parseEvaluateParameters,
       renderCall: (input, theme, context) =>
         renderDapToolCall(
-          { operation: "evaluate", ...input },
+          { ...input, operation: "evaluate" },
           theme,
           context.expanded,
           context.cwd,
@@ -815,7 +848,6 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
       "status",
       "DAP status",
       "Report the Debug Session state and drain unread Debuggee output without changing the Debuggee.",
-      "direct",
       READ_ONLY,
       getRuntime,
     ),
@@ -823,7 +855,6 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
       "stop",
       "DAP stop",
       "End the Debug Session and terminate its Debuggee. Desired Breakpoints remain for the next launch. Safe to repeat.",
-      "direct",
       { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
       getRuntime,
     ),
