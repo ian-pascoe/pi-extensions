@@ -299,7 +299,9 @@ export default function contextManagement(pi: ExtensionAPI): void {
     name: "context_rollover",
     label: "Context Rollover",
     description:
-      "Save an agent-written Handoff and request an immediate native Context Checkpoint after this tool batch. Must be a standalone direct tool call; never call it from a codemode script.",
+      "Save an agent-written Handoff and request an immediate native Context Checkpoint after this tool batch. Must be a standalone direct tool call.",
+    // Pi never exposes model-only tools to codemode scripts or ctx.executeTool callers.
+    exposure: "model-only",
     parameters: RolloverParameters,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>

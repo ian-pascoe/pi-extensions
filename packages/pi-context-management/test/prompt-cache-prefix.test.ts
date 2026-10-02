@@ -9,7 +9,11 @@ import {
   type StreamFunction,
   type StreamOptions,
 } from "@earendil-works/pi-ai";
-import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import {
+  createCodemodeExtension,
+  SettingsManager,
+  type ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import contextManagement from "../src/context-management-extension.js";
 import { createSdkHarness, overflow, reply, toolCall } from "./sdk-harness.js";
@@ -94,6 +98,49 @@ async function expectWrittenPrefix(
   expect(withoutCacheAnnotations(blocks(after).slice(0, endpoint + 1))).toEqual(
     withoutCacheAnnotations(oldBlocks.slice(0, endpoint + 1)),
   );
+}
+
+for (const mode of ["on", "only"] as const) {
+  it(`keeps ordered tool definitions and system prompt stable around model-only Rollover under codemode ${mode}`, async () => {
+    const f = await createSdkHarness([contextManagement, createCodemodeExtension()], {
+      settings: SettingsManager.inMemory({
+        codemode: { mode },
+        compaction: { enabled: true, keepRecentTokens: 500, reserveTokens: 512 },
+        retry: { enabled: false },
+      }),
+    });
+    f.session.setActiveToolsByName([...f.session.getActiveToolNames(), "codemode"]);
+    f.responses.push(reply("Before."));
+    await f.session.prompt("Start " + "history ".repeat(400));
+    f.responses.push(
+      toolCall("codemode", {
+        code: 'try { await tools.context_rollover({ handoff: "x" }); } catch (error) { return String(error.message); }',
+      }),
+      reply("Script refused."),
+    );
+    await f.session.prompt("Try a script");
+    f.responses.push(
+      toolCall("context_rollover", { handoff: "Continue." }),
+      reply("Checkpointed."),
+    );
+    await f.session.prompt("Roll over");
+    f.responses.push(reply("After."));
+    await f.session.prompt("Continue");
+    expect(f.manager.getBranch().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+    const first = f.requests[0]!;
+    expect(first.tools).toContain("context_rollover");
+    for (const request of f.requests) {
+      expect(request.tools).toEqual(first.tools);
+      expect(request.toolDefinitions).toEqual(first.toolDefinitions);
+      expect(request.systemPrompt).toBe(first.systemPrompt);
+    }
+    // The installed provider serializer sends identical system and tool prefixes.
+    const before = await serialize(first);
+    const after = await serialize(f.requests.at(-1)!);
+    expect(after.system).toEqual(before.system);
+    expect(after.tools).toEqual(before.tools);
+    expect(f.providerRequests).toEqual([]);
+  }, 30_000);
 }
 
 it("aborts the installed Anthropic SDK before fetch when a Todo journal anchor is missing", async () => {
