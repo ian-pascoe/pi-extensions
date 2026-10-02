@@ -29,7 +29,7 @@ Unset means inherit, not disabled. Prompt overrides replace the whole value rath
 
 Use native Pi settings files and native session entries, not a separate configuration store. Session overrides follow the selected branch, survive resume, and inherit through forks; abandoned branch state is excluded.
 
-Provide commands for on/off/inherit, scoped configuration, and status. Use Pi's native editor for prompt editing rather than a custom dashboard. Status shows effective settings and their sources, review state, backlog, usage/cost, and the last error. Unknown cost must not be presented as zero.
+Provide commands for on/off/inherit, scoped configuration, and status. Use Pi's native editor for prompt editing rather than a custom dashboard. Status shows effective settings and their sources, review state, backlog, usage/cost, and the last error. Unknown cost must not be presented as zero. Status entries render as a compact summary that expands to the full settings table; an enabled Advisor also shows its state and backlog in the footer. Rendering is UI-only and never changes model-visible Intervention content.
 
 Changes affect the current watched hierarchy immediately when its effective configuration changes. Other Pi processes pick up persisted global/project changes on startup or reload; there is no cross-process remote-control mechanism.
 

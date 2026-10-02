@@ -29,6 +29,10 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 
 Argument autocomplete suggests command names, settings keys, and valid trailing scope flags.
 
+Each command records a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the change it applied. While enabled, the footer shows `advisor`, `advisor: reviewing · backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused.
+
+Interventions render with their severity and Advisor attribution. Long Nits collapse until expanded; Concerns and Blockers always show in full.
+
 ## On-demand consultations
 
 When Advisor is enabled, the main agent can call `advisor_ask({ message })` for analysis or a second opinion. The call waits for the current Review, then returns plain Markdown before any further Review Backlog is processed. Follow-up calls continue the same private Advisor Session.

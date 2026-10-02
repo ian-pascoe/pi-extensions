@@ -16,6 +16,8 @@ import {
 /** Delivery authority supplied by the native session owner. */
 export type AdvisorMode = "interactive" | "headless-root" | "owned-child";
 export type AdvisorSeverity = "nit" | "concern" | "blocker";
+/** Observer lifecycle state reported by `status`. */
+export type AdvisorObserverState = "disabled" | "paused" | "consulting" | "reviewing" | "armed";
 /** Owner-supplied recreation inputs and native UI/delivery surfaces. */
 export interface AdvisorObserverOptions {
   resourceInputs?: AdvisorResourceInputs;
@@ -24,6 +26,8 @@ export interface AdvisorObserverOptions {
     message: string;
   }) => void | Promise<void>;
   onError?: (message: string) => void;
+  /** Called after `status` state or backlog may have changed. */
+  onStateChange?: () => void;
 }
 const severitySchema = Type.Union([
   Type.Literal("nit"),
@@ -252,6 +256,7 @@ export class AdvisorObserver {
         this.unsafeEnding = true;
       this.completed++;
       this.start();
+      this.changed();
       if (this.config.catchUpThreshold !== "off")
         await this.wait(this.config.catchUpThreshold, signal);
       // Selection/branch changes may occur during that awaited barrier.
@@ -276,16 +281,17 @@ export class AdvisorObserver {
         (rate) => rate.input > 0 || rate.output > 0 || rate.cacheRead > 0 || rate.cacheWrite > 0,
       );
     const knownCost = stats && (stats.cost > 0 || (stats.tokens.total > 0 && priced));
+    const state: AdvisorObserverState = !this.config.enabled
+      ? "disabled"
+      : this.error
+        ? "paused"
+        : this.consulting
+          ? "consulting"
+          : this.running
+            ? "reviewing"
+            : "armed";
     return {
-      state: !this.config.enabled
-        ? "disabled"
-        : this.error
-          ? "paused"
-          : this.consulting
-            ? "consulting"
-            : this.running
-              ? "reviewing"
-              : "armed",
+      state,
       backlog: this.completed - this.reviewed,
       effectiveModel,
       effectiveThinkingLevel:
@@ -303,8 +309,17 @@ export class AdvisorObserver {
     };
   }
 
+  /** Status observers are UI; their failures must not disturb review work. */
+  private changed(): void {
+    try {
+      this.options.onStateChange?.();
+    } catch {
+      // A stale UI cannot be updated; `/advisor status` remains authoritative.
+    }
+  }
   private fail(message: string): void {
     this.error = message;
+    this.changed();
     try {
       this.options.onError?.(message);
     } catch (cause) {
@@ -400,8 +415,10 @@ export class AdvisorObserver {
         this.active = undefined;
         if (!this.error) this.start();
         this.scheduleCorrection();
+        this.changed();
       });
     this.running = operation;
+    this.changed();
   }
 
   private async review(review: Review): Promise<void> {
@@ -651,6 +668,7 @@ export class AdvisorObserver {
     };
     this.active = consultation;
     this.consulting = true;
+    this.changed();
     let callerCancelled = false;
     const cancelFromCaller = () => {
       callerCancelled = true;
@@ -697,6 +715,7 @@ export class AdvisorObserver {
       }
       if (this.active === consultation) this.active = undefined;
       this.consulting = false;
+      this.changed();
     }
   }
 
@@ -906,6 +925,7 @@ export class AdvisorObserver {
       this.runtime = undefined;
       this.closeRuntime(runtime);
     }
+    this.changed();
   }
   /** Owner cancellation invalidates private work without touching observed execution. */
   async abort(): Promise<void> {
