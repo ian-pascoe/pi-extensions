@@ -60,16 +60,16 @@ importers:
   packages/pi-advisor:
     dependencies:
       '@earendil-works/pi-agent-core':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-ai':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.3.0
@@ -81,16 +81,16 @@ importers:
   packages/pi-bible-verses:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
 
   packages/pi-command-deck:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.3.0
@@ -99,16 +99,16 @@ importers:
   packages/pi-context-management:
     dependencies:
       '@earendil-works/pi-agent-core':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-ai':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.3.0
@@ -120,10 +120,10 @@ importers:
   packages/pi-dap:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       typebox:
         specifier: '*'
@@ -136,7 +136,7 @@ importers:
   packages/pi-formatter:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       typebox:
         specifier: '*'
@@ -145,7 +145,7 @@ importers:
   packages/pi-git-checkpoints:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       typebox:
         specifier: '*'
@@ -154,10 +154,10 @@ importers:
   packages/pi-lsp:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.3.0
@@ -179,16 +179,16 @@ importers:
   packages/pi-minimal-subagents:
     dependencies:
       '@earendil-works/pi-agent-core':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-ai':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.3.0
@@ -203,19 +203,19 @@ importers:
   packages/pi-skills-selector:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
 
   packages/pi-termctrl:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       '@kitlangton/terminal-control':
         specifier: ^1.2.1
@@ -227,13 +227,13 @@ importers:
   packages/pi-todo:
     dependencies:
       '@earendil-works/pi-ai':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       typebox:
         specifier: '*'
@@ -242,7 +242,7 @@ importers:
   packages/pi-tps-tracker:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ian-pascoe/pi-utils':
         specifier: ^0.3.0
@@ -255,7 +255,7 @@ importers:
   packages/pi-utils:
     dependencies:
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       proper-lockfile:
         specifier: ^4.1.2
@@ -268,13 +268,13 @@ importers:
   packages/pi-web-tools:
     dependencies:
       '@earendil-works/pi-ai':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(undici@8.10.2)(ws@8.22.0)
       '@earendil-works/pi-coding-agent':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@earendil-works/pi-tui':
-        specifier: '*'
+        specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
         specifier: ^0.3.0

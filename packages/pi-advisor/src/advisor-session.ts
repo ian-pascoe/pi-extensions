@@ -19,7 +19,6 @@ import type {
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { AdvisorConfig } from "./advisor-settings.js";
-import { advisorRuntimeWarning, isCallable } from "./advisor-runtime.js";
 
 /** Explicit file-selection recipe supplied by the resource owner, never inferred from opaque loaders. */
 export interface AdvisorResourceInputs {
@@ -149,8 +148,6 @@ export async function createAdvisorSession(
   observed: AgentSession,
   options: AdvisorSessionOptions,
 ): Promise<AgentSessionRuntime> {
-  const unsupported = advisorRuntimeWarning();
-  if (unsupported) throw new Error(unsupported);
   options.signal?.throwIfAborted();
   const cancelled = Promise.withResolvers<never>();
   const abort = () =>
@@ -225,10 +222,6 @@ async function buildAdvisorSession(
     const factoryExport = builtinFactories.get(name);
     if (builtin && factoryExport) {
       const create = piSdk[factoryExport];
-      if (!isCallable(create))
-        throw new Error(
-          `Unsupported Advisor resources: this Pi runtime does not export ${factoryExport} to recreate ${extension.path}`,
-        );
       recreated.add(index);
       const codemodeModels = options.resourceInputs?.codemodeModels;
       builtins.push({
@@ -244,10 +237,6 @@ async function buildAdvisorSession(
     }
     // Pi ships a fresh file-backed llama.cpp factory but does not export it.
     if (builtin && name === "llama.cpp") {
-      if (!isCallable(piSdk.getPackageDir))
-        throw new Error(
-          "Unsupported Advisor resources: this Pi runtime does not export getPackageDir to locate llama.cpp",
-        );
       const path = join(piSdk.getPackageDir(), "dist", "extensions", "llama", "index.js");
       if (!existsSync(path))
         throw new Error(

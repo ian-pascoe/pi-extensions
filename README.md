@@ -121,11 +121,11 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
   not packed or installed with `@ian-pascoe/pi-dap`.
 - Pi Web Tools needs outbound network access. `EXA_API_KEY` and
   `PARALLEL_API_KEY` are optional provider credentials.
-- Pi Context Management requires exactly Pi `0.85.1` because its native-checkpoint adapter is version-guarded.
+- Pi Context Management's native-checkpoint adapter checks the private runtime members it needs and fails closed when they are missing.
 - Pi Termctrl Terminals need the `termctrl` binary that `@kitlangton/terminal-control`
   installs for macOS and GNU/Linux on arm64 or x64. Elsewhere only the `bash`
   replacement and Background jobs work.
-- Pi Advisor is disabled by default and targets Pi `0.85.1`. Loaded Context Management requires all three private context-tool grants; incompatible tool exposure pauses review rather than expanding permissions.
+- Pi Advisor is disabled by default. Loaded Context Management requires all three private context-tool grants; incompatible tool exposure pauses review rather than expanding permissions.
 
 See package READMEs for configuration. The repository MIT license covers
 package code; Bible Verses documents separate embedded-text rights and
@@ -135,7 +135,7 @@ provenance.
 
 Node `22.19.0` and pnpm `11.21.0` are required.
 
-Published packages support Node `>=22.19.0` and Pi `>=0.84.1`, except Pi Context Management and Pi Advisor, which target Pi `0.85.1`, Pi Skills Selector, which requires Pi `>=0.85.1` for stacked autocomplete, and Pi Command Deck, which targets Pi `0.99.2` and falls back to Pi's plain editor elsewhere.
+Published packages support Node `>=22.19.0` and Pi `>=0.99.0`, the first release with the tool exposure, output schema, and built-in extension APIs they use. The repository develops and tests against Pi `1.0.0`. Pi Command Deck reaches private editor fields and falls back to Pi's plain editor where they differ.
 
 ```bash
 pnpm install

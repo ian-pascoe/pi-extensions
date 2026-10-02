@@ -18,7 +18,6 @@ import {
 import { completeAdvisorCommandArguments, parseAdvisorCommand } from "./advisor-command.js";
 import { AdvisorObserver } from "./advisor-observer.js";
 import { isAdvisorSession, type AdvisorResourceInputs } from "./advisor-session.js";
-import { advisorRuntimeWarning } from "./advisor-runtime.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 interface WatchedChild {
@@ -46,8 +45,6 @@ const childRequestSchema = Type.Object({
 
 /** Review an observed session without changing its tools or standing instructions. */
 export default function advisor(pi: ExtensionAPI): void {
-  // Capability checks, not version pins: an unmet requirement warns and leaves the Advisor unavailable.
-  const unsupported = advisorRuntimeWarning();
   let warn: (message: string) => void = () => {};
   let observed: AgentSession | undefined;
   let error: string | undefined;
@@ -147,12 +144,6 @@ export default function advisor(pi: ExtensionAPI): void {
         // A replaced session's UI is stale; the native status entry remains the durable record.
       }
     };
-    if (unsupported) {
-      error = unsupported;
-      setAskToolAvailable(false);
-      warn(unsupported);
-      return;
-    }
     const found = discoverPiAgentSession(pi, piSdk.AgentSession);
     if (found.ok) {
       observed = found.session;
@@ -215,7 +206,6 @@ export default function advisor(pi: ExtensionAPI): void {
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: The native owner bus is a boundary; validate identity, SDK instance, and exact resource metadata before attachment.
   function attachChild(payload: unknown): void {
     if (
-      unsupported ||
       !Value.Check(childRequestSchema, payload) ||
       !(payload.session instanceof piSdk.AgentSession)
     )
