@@ -171,16 +171,18 @@ describe("Advisor status", () => {
     expect(text).toMatch(/\u21b3 scout\s+\u25cf reviewing\s+backlog 3/);
   });
 
-  it("leads with the configuration change that produced it", () => {
+  it("leads with the configuration changes that produced it", () => {
     expect(
       status({
         ...snapshot,
-        change: { scope: "session", key: "model", options: { model: "openai/gpt" } },
+        changes: [
+          { scope: "session", key: "model", options: { model: "openai/gpt" } },
+          { scope: "project", key: "enabled", options: {} },
+        ],
       }),
-    ).toMatch(/^\u2713 model \u2192 openai\/gpt \[session\]\n.*Advisor/);
-    expect(
-      status({ ...snapshot, change: { scope: "project", key: "enabled", options: {} } }),
-    ).toMatch(/^\u2713 enabled \u2192 inherit \[project\]/);
+    ).toMatch(
+      /^\u2713 model \u2192 openai\/gpt \[session\]\n\u2713 enabled \u2192 inherit \[project\]\n.*Advisor/,
+    );
   });
 
   it("renders recognised fields from older or minimal entries", () => {

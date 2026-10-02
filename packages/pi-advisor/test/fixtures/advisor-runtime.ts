@@ -62,8 +62,15 @@ export function response(
 export async function fixture({
   enabled = true,
   interactive = false,
+  mode = "rpc",
   ui = {},
-}: { enabled?: boolean; interactive?: boolean; ui?: Partial<ExtensionUIContext> } = {}) {
+}: {
+  enabled?: boolean;
+  interactive?: boolean;
+  /** Host mode for an interactive runtime; `tui` enables full-screen UI paths. */
+  mode?: "rpc" | "tui";
+  ui?: Partial<ExtensionUIContext>;
+} = {}) {
   const directory = await mkdtemp(join(tmpdir(), "advisor-runtime-"));
   const cleanupGates: Array<() => void> = [];
   globalThis.advisorReviewRegression = {};
@@ -116,7 +123,7 @@ export async function fixture({
   const session = runtime.session;
   await session.bindExtensions(
     interactive
-      ? { mode: "rpc", uiContext: { ...session.extensionRunner!.getUIContext(), ...ui } }
+      ? { mode, uiContext: { ...session.extensionRunner!.getUIContext(), ...ui } }
       : { mode: "print" },
   );
   return { session, cleanupGates };

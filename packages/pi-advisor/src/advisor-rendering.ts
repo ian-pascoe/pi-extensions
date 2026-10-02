@@ -41,7 +41,7 @@ const minimalStatusSchema = Type.Object({
 });
 const statusSchema = Type.Object({
   state: advisorStateSchema,
-  change: Type.Optional(advisorAppliedChangeSchema),
+  changes: Type.Optional(Type.Array(advisorAppliedChangeSchema)),
   settings: Type.Optional(advisorOptionsSchema),
   sources: Type.Optional(Type.Record(Type.String(), advisorSettingSourceSchema)),
   backlog: Type.Optional(Type.Number()),
@@ -62,7 +62,8 @@ const statusSchema = Type.Object({
   error: Type.Optional(nullableString),
   lastError: Type.Optional(nullableString),
 });
-type StatusEntry = Static<typeof statusSchema>;
+/** Data recorded in a `pi-advisor-status` entry. */
+export type AdvisorStatusEntry = Static<typeof statusSchema>;
 const stateBadge = {
   disabled: { symbol: "○", color: "dim" },
   private: { symbol: "○", color: "dim" },
@@ -194,7 +195,7 @@ function formatCost(cost: number | null | undefined): string {
 }
 
 /** Human-readable option value; an absent value inherits. */
-function formatOption(options: AdvisorOptions, key: keyof AdvisorOptions): string {
+export function formatAdvisorOption(options: AdvisorOptions, key: keyof AdvisorOptions): string {
   switch (key) {
     case "prompt": {
       if (options.prompt === undefined) return "inherit";
@@ -227,28 +228,38 @@ function joinDefined(parts: ReadonlyArray<string | undefined>, separator: string
   return parts.filter((part) => part !== undefined).join(separator);
 }
 
-function summaryLines(entry: StatusEntry, theme: AdvisorRenderTheme): string[] {
+function stateLine(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): string {
+  const inherited = entry.settings && entry.settings.model === undefined;
+  return joinDefined(
+    [
+      `${theme.bold("Advisor")} ${badge(entry.state, theme)}`,
+      entry.effectiveModel
+        ? `${entry.effectiveModel}${inherited ? theme.fg("dim", " (inherited)") : ""}`
+        : undefined,
+      entry.effectiveThinkingLevel ?? undefined,
+      entry.backlog ? `backlog ${entry.backlog}` : undefined,
+    ],
+    theme.fg("dim", " · "),
+  );
+}
+
+/** Live state line plus any error, as shown at the top of the settings menu. */
+export function advisorStatusHeadline(
+  entry: AdvisorStatusEntry,
+  theme: AdvisorRenderTheme,
+): string[] {
+  const error = entry.error ?? entry.lastError;
+  return [stateLine(entry, theme), ...(error ? [theme.fg("error", `✖ ${error}`)] : [])];
+}
+
+function summaryLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): string[] {
   const lines: string[] = [];
-  if (entry.change) {
-    const { scope, key, options } = entry.change;
+  for (const { scope, key, options } of entry.changes ?? []) {
     lines.push(
-      `${theme.fg("success", "✓")} ${key} → ${formatOption(options, key)} ${theme.fg("dim", `[${scope}]`)}`,
+      `${theme.fg("success", "✓")} ${key} → ${formatAdvisorOption(options, key)} ${theme.fg("dim", `[${scope}]`)}`,
     );
   }
-  const inherited = entry.settings && entry.settings.model === undefined;
-  lines.push(
-    joinDefined(
-      [
-        `${theme.bold("Advisor")} ${badge(entry.state, theme)}`,
-        entry.effectiveModel
-          ? `${entry.effectiveModel}${inherited ? theme.fg("dim", " (inherited)") : ""}`
-          : undefined,
-        entry.effectiveThinkingLevel ?? undefined,
-        entry.backlog ? `backlog ${entry.backlog}` : undefined,
-      ],
-      theme.fg("dim", " · "),
-    ),
-  );
+  lines.push(stateLine(entry, theme));
   const children = entry.children?.length ?? 0;
   const activity = joinDefined(
     [
@@ -266,7 +277,7 @@ function summaryLines(entry: StatusEntry, theme: AdvisorRenderTheme): string[] {
   return lines;
 }
 
-function detailLines(entry: StatusEntry, theme: AdvisorRenderTheme): string[] {
+function detailLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): string[] {
   const lines: string[] = [];
   if (entry.settings) {
     const settings = entry.settings;
@@ -275,7 +286,7 @@ function detailLines(entry: StatusEntry, theme: AdvisorRenderTheme): string[] {
     for (const key of advisorOptionKeys) {
       const source = entry.sources?.[key] ?? "default";
       lines.push(
-        `  ${key.padEnd(width)}  ${formatOption(settings, key)}  ${theme.fg(source === "default" ? "dim" : "accent", `[${source}]`)}`,
+        `  ${key.padEnd(width)}  ${formatAdvisorOption(settings, key)}  ${theme.fg(source === "default" ? "dim" : "accent", `[${source}]`)}`,
       );
     }
   }
@@ -295,7 +306,7 @@ function detailLines(entry: StatusEntry, theme: AdvisorRenderTheme): string[] {
 }
 
 /** Drop top-level fields that no longer match, so older entries keep what they can show. */
-function salvageStatus(data: Static<typeof minimalStatusSchema>): StatusEntry {
+function salvageStatus(data: Static<typeof minimalStatusSchema>): AdvisorStatusEntry {
   // Runtime copy keeps every recorded field; only mismatching ones are removed below.
   const candidate = structuredClone(data);
   for (const issue of Value.Errors(statusSchema, candidate)) {

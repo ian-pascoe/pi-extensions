@@ -1,6 +1,19 @@
 import { stripVTControlCharacters } from "node:util";
-import { beforeAll, describe, expect, it } from "vitest";
-import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  initTheme,
+  type ExtensionUIContext,
+  type KeybindingsManager,
+  type Theme,
+} from "@earendil-works/pi-coding-agent";
+import {
+  KeybindingsManager as TuiKeybindingsManager,
+  TUI_KEYBINDINGS,
+  TuiMainScreen,
+  type Component,
+  type Terminal,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import type { Context } from "@earendil-works/pi-ai";
 import { createSdkHarness, reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
 import advisor from "../src/index.js";
@@ -19,30 +32,28 @@ describe("Advisor status entries", () => {
     const { session } = await createSdkHarness([advisor]);
     await session.prompt("/advisor on");
     expect(lastStatus(session)).toMatchObject({
-      data: { change: { scope: "session", key: "enabled", options: { enabled: true } } },
+      data: { changes: [{ scope: "session", key: "enabled", options: { enabled: true } }] },
     });
     await session.prompt('/advisor set model "anthropic/claude-sonnet-4-5"');
     expect(lastStatus(session)).toMatchObject({
       data: {
-        change: {
-          scope: "session",
-          key: "model",
-          options: { model: "anthropic/claude-sonnet-4-5" },
-        },
+        changes: [
+          { scope: "session", key: "model", options: { model: "anthropic/claude-sonnet-4-5" } },
+        ],
       },
     });
     await session.prompt("/advisor inherit model");
     expect(lastStatus(session)).toMatchObject({
-      data: { change: { scope: "session", key: "model", options: {} } },
+      data: { changes: [{ scope: "session", key: "model", options: {} }] },
     });
     await session.prompt("/advisor status");
-    expect(lastStatus(session)).not.toHaveProperty("data.change");
+    expect(lastStatus(session)).not.toHaveProperty("data.changes");
   });
 
   it("omit a change that failed", async () => {
     const { session } = await createSdkHarness([advisor]);
     await session.prompt("/advisor set catchUpThreshold 0");
-    expect(lastStatus(session)).not.toHaveProperty("data.change");
+    expect(lastStatus(session)).not.toHaveProperty("data.changes");
   });
 
   it("render through the registered entry renderer instead of JSON", async () => {
@@ -190,5 +201,216 @@ describe("advisor_ask", () => {
     const definition = session.extensionRunner?.getToolDefinition("advisor_ask");
     expect(definition?.renderCall).toBeTypeOf("function");
     expect(definition?.renderResult).toBeTypeOf("function");
+  });
+});
+
+class QuietTerminal implements Terminal {
+  start(): void {}
+  stop(): void {}
+  async drainInput(): Promise<void> {}
+  write(): void {}
+  get columns(): number {
+    return 100;
+  }
+  get rows(): number {
+    return 40;
+  }
+  get kittyProtocolActive(): boolean {
+    return false;
+  }
+  moveBy(): void {}
+  hideCursor(): void {}
+  showCursor(): void {}
+  clearLine(): void {}
+  clearFromCursor(): void {}
+  clearScreen(): void {}
+  setTitle(): void {}
+  setProgress(): void {}
+}
+
+/** What the stub TUI host is currently showing. */
+interface ShownMenu {
+  component: Component | undefined;
+  opened: number;
+  theme: Theme | undefined;
+}
+
+/** A TUI host whose `custom` shows the component to the test instead of a terminal. */
+function menuUi() {
+  const tui = new TuiMainScreen(new QuietTerminal());
+  vi.spyOn(tui, "requestRender").mockImplementation(() => {});
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Pi exports its KeybindingsManager as a type only; the menu's editor calls only matches(), which this pi-tui manager implements.
+  const keybindings = new TuiKeybindingsManager(TUI_KEYBINDINGS) as unknown as KeybindingsManager;
+  const shown: ShownMenu = {
+    component: undefined,
+    opened: 0,
+    theme: undefined,
+  };
+  const ui: Partial<ExtensionUIContext> = {
+    custom<T>(
+      factory: (
+        tui: TUI,
+        theme: Theme,
+        keybindings: KeybindingsManager,
+        done: (result: T) => void,
+      ) => Component | Promise<Component>,
+    ): Promise<T> {
+      shown.opened++;
+      return new Promise<T>((resolve) => {
+        const finish = (result: T) => {
+          shown.component = undefined;
+          resolve(result);
+        };
+        void Promise.resolve(factory(tui, themeOf(shown.theme), keybindings, finish)).then(
+          (component) => {
+            shown.component = component;
+          },
+        );
+      });
+    },
+  };
+  const screen = () =>
+    (shown.component?.render(100) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+  const press = (...inputs: string[]) => {
+    for (const input of inputs) shown.component?.handleInput?.(input);
+  };
+  const goTo = (label: string) => {
+    for (let step = 0; step < 20; step++) {
+      const selected = screen()
+        .split("\n")
+        .find((line) => line.trimStart().startsWith("→"));
+      if (selected?.replace("→", "").trimStart().startsWith(label)) return;
+      press("\x1b[B");
+    }
+    throw new Error(`No menu row ${label}`);
+  };
+  return { ui, shown, screen, press, goTo };
+}
+
+/** The bound UI context's theme is Pi's initialized global theme. */
+function themeOf(theme: Theme | undefined): Theme {
+  if (!theme) throw new Error("Expected the bound UI theme");
+  return theme;
+}
+
+describe("/advisor settings menu", () => {
+  it("opens instead of recording status in the TUI, and records one entry for its changes", async () => {
+    const host = menuUi();
+    const { session } = await fixture({ interactive: true, mode: "tui", ui: host.ui });
+    host.shown.theme = session.extensionRunner?.getUIContext().theme;
+    const before = session.sessionManager.getBranch().length;
+    const command = session.prompt("/advisor");
+    await vi.waitFor(() => expect(host.shown.component).toBeDefined());
+    expect(host.screen()).toContain("Advisor settings");
+    expect(host.screen()).toMatch(/enabled \[global\]\s+on/);
+    host.goTo("includeSubagents");
+    host.press("\r");
+    await vi.waitFor(() => expect(host.screen()).toMatch(/includeSubagents \[session\]\s+on/));
+    host.goTo("maxToolCalls");
+    host.press("\r", "5", "\r");
+    await vi.waitFor(() => expect(host.screen()).toMatch(/maxToolCalls \[session\]\s+5/));
+    host.press("\x1b");
+    await command;
+    const added = session.sessionManager.getBranch().slice(before);
+    expect(
+      added.filter((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status"),
+    ).toHaveLength(1);
+    expect(lastStatus(session)).toMatchObject({
+      data: {
+        changes: [
+          { scope: "session", key: "includeSubagents", options: { includeSubagents: true } },
+          { scope: "session", key: "maxToolCalls", options: { maxToolCalls: 5 } },
+        ],
+        settings: { includeSubagents: true, maxToolCalls: 5 },
+      },
+    });
+  });
+
+  it("records nothing when closed without changes", async () => {
+    const host = menuUi();
+    const { session } = await fixture({ interactive: true, mode: "tui", ui: host.ui });
+    host.shown.theme = session.extensionRunner?.getUIContext().theme;
+    const before = session.sessionManager.getBranch().length;
+    const command = session.prompt("/advisor");
+    await vi.waitFor(() => expect(host.shown.component).toBeDefined());
+    host.press("\x1b");
+    await command;
+    expect(session.sessionManager.getBranch().slice(before)).toEqual([]);
+  });
+
+  it("closes without a status entry when the branch changes", async () => {
+    const host = menuUi();
+    const { session } = await fixture({ interactive: true, mode: "tui", ui: host.ui });
+    host.shown.theme = session.extensionRunner?.getUIContext().theme;
+    globalThis.advisorObserverTest = {
+      stream: (model, _context, options) => response(model, reply("Done"), options),
+    };
+    await session.prompt("First task");
+    const target = session.sessionManager.getLeafId();
+    await session.prompt("Second task");
+    const command = session.prompt("/advisor");
+    await vi.waitFor(() => expect(host.shown.component).toBeDefined());
+    host.goTo("maxToolCalls");
+    host.press("\r", "5", "\r");
+    await vi.waitFor(() => expect(host.screen()).toMatch(/maxToolCalls \[session\]\s+5/));
+    if (!target) throw new Error("Expected a branch target");
+    await session.navigateTree(target, { summarize: false });
+    await command;
+    expect(host.shown.component).toBeUndefined();
+    expect(
+      session.sessionManager
+        .getBranch()
+        .some((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status"),
+    ).toBe(false);
+  });
+
+  it("refreshes its headline when the Advisor starts reviewing", async () => {
+    const host = menuUi();
+    const releaseReview = Promise.withResolvers<void>();
+    const { session, cleanupGates } = await fixture({
+      interactive: true,
+      mode: "tui",
+      ui: host.ui,
+    });
+    host.shown.theme = session.extensionRunner?.getUIContext().theme;
+    cleanupGates.push(releaseReview.resolve);
+    globalThis.advisorObserverTest = {
+      stream(model, context, options) {
+        if (context.tools?.some((tool) => tool.name === "advisor_report"))
+          return response(
+            model,
+            toolCall("advisor_report", { findings: [] }),
+            options,
+            releaseReview.promise,
+          );
+        return response(model, reply("Done"), options);
+      },
+    };
+    const command = session.prompt("/advisor");
+    await vi.waitFor(() => expect(host.shown.component).toBeDefined());
+    expect(host.screen()).toContain("Advisor ● armed");
+    // The menu has focus in a real TUI; drive a turn directly to start a Review.
+    await session.agent.prompt({ role: "user", content: "Task", timestamp: Date.now() });
+    await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● reviewing"));
+    releaseReview.resolve();
+    await vi.waitFor(() => expect(host.screen()).toContain("Advisor ● armed"));
+    host.press("\x1b");
+    await command;
+  });
+
+  it("keeps /advisor status as the transcript status in the TUI", async () => {
+    const host = menuUi();
+    const { session } = await fixture({ interactive: true, mode: "tui", ui: host.ui });
+    await session.prompt("/advisor status");
+    expect(host.shown.opened).toBe(0);
+    expect(lastStatus(session)).toMatchObject({ data: { state: "armed" } });
+  });
+
+  it("falls back to the transcript status without the TUI", async () => {
+    const host = menuUi();
+    const { session } = await fixture({ interactive: true, mode: "rpc", ui: host.ui });
+    await session.prompt("/advisor");
+    expect(host.shown.opened).toBe(0);
+    expect(lastStatus(session)).toMatchObject({ data: { state: "armed" } });
   });
 });

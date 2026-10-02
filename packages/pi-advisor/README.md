@@ -17,6 +17,7 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 ## Commands
 
 ```text
+/advisor
 /advisor status
 /advisor on|off [--global|--project]
 /advisor inherit [key] [--global|--project]
@@ -29,7 +30,9 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 
 Argument autocomplete suggests command names, settings keys, and valid trailing scope flags.
 
-Each command records a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the change it applied. While enabled, the footer shows `advisor` when idle, `advisor: reviewing`/`consulting` with any `backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused. `advisor_ask` renders its question and a Markdown answer preview, and Child Agent findings carry a `↳ <agentId>` label.
+In the interactive TUI, `/advisor` alone opens a settings menu built from Pi's native settings list, like `/settings`. A Scope row chooses where edits are written (session, trusted project, or global), and each setting shows its effective value with any non-default source. Booleans and thinking level cycle in place; model, tools, numbers, and the prompt open submenus, and the prompt uses Pi's own editor component. Every edit is validated and applied immediately; a paused Advisor shows its reason and a Resume row. Closing the menu records one status entry listing the changes it applied, or nothing if none were. Without the TUI, `/advisor` records the status entry instead.
+
+`/advisor status` and the other subcommands each record a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the changes it applied. While enabled, the footer shows `advisor` when idle, `advisor: reviewing`/`consulting` with any `backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused. `advisor_ask` renders its question and a Markdown answer preview, and Child Agent findings carry a `↳ <agentId>` label.
 
 Interventions render with their severity and Advisor attribution. Long Nits collapse until expanded; Concerns and Blockers always show in full.
 

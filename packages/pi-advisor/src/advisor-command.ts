@@ -15,7 +15,7 @@ export function completeAdvisorCommandArguments(prefix: string): AutocompleteIte
   if (scopePrefix) {
     try {
       const command = parseAdvisorCommand(scopePrefix);
-      if (command.action !== "status" && command.scope === "session")
+      if ("scope" in command && command.scope === "session")
         candidates.push(`${scopePrefix}--global`, `${scopePrefix}--project`);
     } catch {
       // Incomplete commands and JSON values cannot accept a scope yet.
@@ -27,7 +27,7 @@ export function completeAdvisorCommandArguments(prefix: string): AutocompleteIte
 }
 
 const usage =
-  "Usage: /advisor [on|off|status|prompt|inherit [key]|set <key> <JSON>] [--global|--project]";
+  "Usage: /advisor [on|off|status|prompt|inherit [key]|set <key> <JSON>] [--global|--project]; /advisor alone opens settings";
 
 /** Parse one configuration change; validated patches cannot invent option keys. */
 export function parseAdvisorCommand(input: string) {
@@ -38,10 +38,10 @@ export function parseAdvisorCommand(input: string) {
       : flag?.[1] === "project"
         ? ("project" as const)
         : ("session" as const);
-  const text = (flag ? input.trim().slice(0, flag.index) : input.trim()) || "status";
-  if (text === "status") {
+  const text = flag ? input.trim().slice(0, flag.index) : input.trim();
+  if (text === "" || text === "status") {
     if (flag) throw new Error(usage);
-    return { action: "status" as const };
+    return text === "" ? { action: "menu" as const } : { action: "status" as const };
   }
   if (text === "prompt") return { action: "prompt" as const, scope };
   if (text === "on" || text === "off") {
