@@ -148,6 +148,10 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
       );
       expect(started.details.state).toBe("running");
       const firstTop = ticks(started.details.screen)[0] ?? 1;
+      // Ticks keep arriving while the result is read; none still on its screen counts as scrolled off.
+      expect(ticks(started.details.scrolled_off)).toEqual(
+        Array.from({ length: firstTop - 1 }, (_, index) => index + 1),
+      );
       const polled = await tools.send.execute(
         "send",
         { id: "t1", wait_for_text: "finished", wait_ms: 10_000 },

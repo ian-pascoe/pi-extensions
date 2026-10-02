@@ -285,6 +285,38 @@ describe("terminal_send", () => {
     expect(second.value.details.full_output_path).toBeUndefined();
   });
 
+  test("leaves lines on the result's screen unread when output arrives before the log is read", async () => {
+    // Each read of the log finds one line the captured screen did not show yet.
+    const output = (self: FakeTerminal) => {
+      self.logLines.push(String(self.logLines.length + 1));
+    };
+    const { result, terminal } = await startTerminal((self) => {
+      self.logLines = ["1", "2"];
+      self.screen = "1\n2";
+      self.onLogs = output;
+    });
+    // Nothing has scrolled off the screen the agent was shown.
+    expect(result.structuredContent).toMatchObject({ screen: "1\n2", scrolled_off: "" });
+    terminal.onInput = (self) => {
+      self.logLines = ["1", "2", "3", "4", "5"];
+      self.screen = "4\n5";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ screen: "4\n5", scrolled_off: "1\n2\n3" });
+    terminal.onLogs = undefined;
+    terminal.onInput = (self) => {
+      self.logLines.push("7");
+      self.screen = "6\n7";
+    };
+    const last = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(last.value.structuredContent).toMatchObject({ scrolled_off: "4\n5" });
+    expect(last.value.structuredContent).not.toHaveProperty("output_missing");
+  });
+
   test("reports a line rewritten after the agent saw it in its final form", async () => {
     const { result, terminal } = await startTerminal((self) => {
       self.logLines = ["Building..."];

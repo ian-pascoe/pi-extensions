@@ -370,11 +370,31 @@ function locateCursor(
 }
 
 /**
+ * Find where the result's screen starts in termctrl's log. The screen is read before the log, in a
+ * separate termctrl request, so output in between can already have pushed the screen's top lines
+ * above the log's last screenful. Output only adds lines to the end of the log, so the screen is at
+ * the end or higher up, no higher than the log cursor. The screen is matched by every line except
+ * its last, which the program may still be writing. When nothing matches, as when the screen was
+ * redrawn in between, the log's last screenful is taken as the screen.
+ */
+function locateScreen(lines: readonly string[], screen: readonly string[], floor: number): number {
+  const end = Math.max(0, lines.length - screen.length);
+  for (let start = end; start >= floor; start--) {
+    let matches = true;
+    for (let row = 0; row < screen.length - 1 && matches; row++) {
+      matches = lines[start + row] === screen[row];
+    }
+    if (matches) return start;
+  }
+  return end;
+}
+
+/**
  * Lines that left the screen since the previous result, advancing the Terminal's log cursor.
- * Lines still on the screen stay unread, so a line rewritten after the agent saw it, such as a
- * progress line, is reported in its final form once it scrolls off. When the cursor cannot be found
- * again, because termctrl dropped lines the agent never received or the screen was cleared, every
- * line termctrl still holds is reported and the result says that earlier output is missing.
+ * Lines still on the result's screen stay unread, so a line rewritten after the agent saw it, such
+ * as a progress line, is reported in its final form once it scrolls off. When the cursor cannot be
+ * found again, because termctrl dropped lines the agent never received or the screen was cleared,
+ * every line termctrl still holds is reported and the result says that earlier output is missing.
  */
 async function takeScrolledOff(entry: TerminalEntry, screen: string): Promise<ScrolledOff> {
   let logs: string;
@@ -385,8 +405,8 @@ async function takeScrolledOff(entry: TerminalEntry, screen: string): Promise<Sc
   }
   const lines = logs === "" ? [] : logs.split("\n");
   const located = locateCursor(lines, entry.logCursor, entry.logAnchor);
-  const screenLines = screen === "" ? 0 : screen.split("\n").length;
-  const boundary = Math.max(0, lines.length - screenLines);
+  const screenLines = screen === "" ? [] : screen.split("\n");
+  const boundary = locateScreen(lines, screenLines, located ?? 0);
   const scrolled = lines.slice(Math.min(located ?? 0, boundary), boundary);
   entry.logCursor = boundary;
   entry.logAnchor =
