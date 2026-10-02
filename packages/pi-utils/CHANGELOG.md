@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-utils
 
+## 0.3.1
+
+### Patch Changes
+
+- 0ea1e75: Declare Pi `>=0.99.0` as the peer range for `@earendil-works/pi-coding-agent`, `pi-ai`, `pi-agent-core`, and `pi-tui`, replacing `*`. Installing against an older Pi now warns at install time instead of failing when a package uses an API that Pi release lacks. Pi Utils keeps its Pi peer optional.
+
 ## 0.3.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-minimal-subagents",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": false,
   "description": "Persistent nested subagents with bounded delegation for Pi",
   "keywords": [
@@ -35,7 +35,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.3.0",
+    "@ian-pascoe/pi-utils": "^0.3.1",
     "minimatch": "^10.2.6"
   },
   "peerDependencies": {

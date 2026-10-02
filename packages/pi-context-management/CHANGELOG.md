@@ -1,5 +1,22 @@
 # @ian-pascoe/pi-context-management
 
+## 0.3.0
+
+### Minor Changes
+
+- bf36a67: `context_history`, `context_notes`, and `context_rollover` now declare MCP-style tool `annotations`, all closed-world. `context_history` is read-only; `context_notes` and `context_rollover` are not read-only but are non-destructive and not idempotent, because they append to the session journal and earlier values stay readable through History. Pi reports the hints through `pi.getAllTools()` for permission extensions. Annotations are not sent to model providers, so tool declarations, the system prompt, and the prompt cache prefix are unchanged.
+- 0ea1e75: These packages now require Pi `>=0.99.0`, raised from an undeclared (`*`) peer range and a documented floor of `0.84.1` or `0.85.1`. Pi 0.99.0 is the first release that provides the tool exposure, output schema, and built-in extension APIs the repository uses, so the packages no longer carry fallbacks for older hosts.
+
+  Advisor no longer probes the Pi SDK for missing exports and methods at load. It no longer pauses with "this Pi runtime lacks ..." diagnostics, because the peer range guarantees those members. Minimal Subagents always gives Child Agents Pi's built-in `codemode`, `tool-search`, and `mcp` extensions instead of skipping any the host lacked. Termctrl's `bash` replacement now requires Pi's `bash` to declare an object `outputSchema`, which Pi provides from 0.99.0, instead of silently falling back to an empty schema.
+
+- d13aaf1: Register `context_rollover` with Pi's `model-only` tool exposure, so Pi itself keeps `codemode` scripts and `ctx.executeTool()` callers from running it instead of relying on description prose and a runtime check. The tool stays declared to the model under both `codemode.mode` values; in `only` mode it was previously hidden behind the `codemode` listing, where scripts could not use it, and is now declared directly. Its description no longer says "never call it from a codemode script" and, under `codemode.mode: "on"`, loses the `Codemode: tools.context_rollover(args)` suffix Pi would append, so the model-facing tool definition changes once on upgrade. Ordering of the other tool definitions is unchanged. The sole-direct-call batch check stays.
+- 98b14ae: `context_notes` and `context_history` now declare an `outputSchema` and return `structuredContent` built from the same serialization as their JSON text. A Pi `codemode` script receives the parsed object with snake_case fields (for example `read.total_characters` or `windows.next_offset`) instead of a JSON string it had to parse. The model-facing JSON text (camelCase), persisted session `details`, and error behavior are unchanged, and `context_rollover` is untouched because it cannot run inside a script. Scripts that called `JSON.parse` on these results must use the object directly and its snake_case field names. Pi appends a one-line result summary to each tool's description once.
+
+### Patch Changes
+
+- Updated dependencies [0ea1e75]
+  - @ian-pascoe/pi-utils@0.3.1
+
 ## 0.2.6
 
 ### Patch Changes

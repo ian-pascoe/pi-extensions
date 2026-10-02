@@ -1,5 +1,16 @@
 # @ian-pascoe/pi-todo
 
+## 0.2.0
+
+### Minor Changes
+
+- 0ea1e75: These packages now require Pi `>=0.99.0`, raised from an undeclared (`*`) peer range and a documented floor of `0.84.1` or `0.85.1`. Pi 0.99.0 is the first release that provides the tool exposure, output schema, and built-in extension APIs the repository uses, so the packages no longer carry fallbacks for older hosts.
+
+  Advisor no longer probes the Pi SDK for missing exports and methods at load. It no longer pauses with "this Pi runtime lacks ..." diagnostics, because the peer range guarantees those members. Minimal Subagents always gives Child Agents Pi's built-in `codemode`, `tool-search`, and `mcp` extensions instead of skipping any the host lacked. Termctrl's `bash` replacement now requires Pi's `bash` to declare an object `outputSchema`, which Pi provides from 0.99.0, instead of silently falling back to an empty schema.
+
+- bf36a67: The `todo` tool now declares MCP-style tool `annotations`: not read-only, non-destructive (it only appends to the session's own journal), not idempotent, and closed-world. Pi reports them through `pi.getAllTools()`, so permission extensions can tell that it never touches the environment beyond the session. Annotations are not sent to model providers, so tool declarations, the system prompt, and the prompt cache prefix are unchanged.
+- 98b14ae: The `todo` tool now declares an `outputSchema` and returns matching `structuredContent`, so a Pi `codemode` script gets an object instead of the text. `list` returns `{ action, tasks }`. `add` and `update` return the resulting `task`, so a script can read the new Task's ID. `remove` returns the removed `id`, and `clear` returns the number of Tasks `cleared`. Field names are single words, so they already match the snake_case convention of Pi's `bash` and `pi-termctrl`. The text the model reads, the hidden Todo List context, and error behavior are unchanged. Scripts that parsed the old text result, such as `Added Task #3`, must read the object instead. Pi appends a one-line result summary to the tool's description once.
+
 ## 0.1.4
 
 ### Patch Changes

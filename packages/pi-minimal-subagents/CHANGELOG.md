@@ -1,5 +1,22 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.12.0
+
+### Minor Changes
+
+- 0ea1e75: These packages now require Pi `>=0.99.0`, raised from an undeclared (`*`) peer range and a documented floor of `0.84.1` or `0.85.1`. Pi 0.99.0 is the first release that provides the tool exposure, output schema, and built-in extension APIs the repository uses, so the packages no longer carry fallbacks for older hosts.
+
+  Advisor no longer probes the Pi SDK for missing exports and methods at load. It no longer pauses with "this Pi runtime lacks ..." diagnostics, because the peer range guarantees those members. Minimal Subagents always gives Child Agents Pi's built-in `codemode`, `tool-search`, and `mcp` extensions instead of skipping any the host lacked. Termctrl's `bash` replacement now requires Pi's `bash` to declare an object `outputSchema`, which Pi provides from 0.99.0, instead of silently falling back to an empty schema.
+
+- 89de8d5: A partially failed `subagent_delete` and a failed `agent_message` delivery now return an error result that keeps the tool's declared structured output, instead of throwing (`subagent_delete`) or reporting success (`agent_message`). The model still sees an error, and the troubleshooting Skill pointer stays in the error text. Codemode scripts now receive the `deleted_agent_ids`, `trashed_session_files`, and `failures` of a partial deletion, or the `disposition` and `error` of a failed delivery, where a thrown error used to reject the call with no data. The transcript renderer shows the partial deletion's details, including its failures, rather than falling back to plain error text.
+- bf36a67: The coordinator tools now declare MCP-style tool `annotations`, reported through `pi.getAllTools()` for permission extensions. `subagent` is destructive and open-world because a Child Agent can use any tool it is granted; `agent_message` is non-destructive and closed-world; `subagent_status` and `subagent_wait` are read-only; `subagent_cancel` is non-destructive and idempotent; `subagent_delete` is destructive and idempotent. Annotations are not sent to model providers, so tool declarations, the system prompt, and the prompt cache prefix are unchanged.
+
+### Patch Changes
+
+- 3e882f3: Update the toolset example for Pi DAP's per-operation tools: grant them with the `dap_*` pattern.
+- Updated dependencies [0ea1e75]
+  - @ian-pascoe/pi-utils@0.3.1
+
 ## 0.11.0
 
 ### Minor Changes

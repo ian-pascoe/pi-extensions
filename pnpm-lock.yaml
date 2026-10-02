@@ -72,7 +72,7 @@ importers:
         specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.3.0
+        specifier: ^0.3.1
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -93,7 +93,7 @@ importers:
         specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.3.0
+        specifier: ^0.3.1
         version: link:../pi-utils
 
   packages/pi-context-management:
@@ -111,7 +111,7 @@ importers:
         specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.3.0
+        specifier: ^0.3.1
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -160,7 +160,7 @@ importers:
         specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.3.0
+        specifier: ^0.3.1
         version: link:../pi-utils
       cross-spawn:
         specifier: ^7.0.6
@@ -191,7 +191,7 @@ importers:
         specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.3.0
+        specifier: ^0.3.1
         version: link:../pi-utils
       minimatch:
         specifier: ^10.2.6
@@ -245,7 +245,7 @@ importers:
         specifier: '>=0.99.0'
         version: 1.0.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ian-pascoe/pi-utils':
-        specifier: ^0.3.0
+        specifier: ^0.3.1
         version: link:../pi-utils
     optionalDependencies:
       tiktoken:
@@ -277,7 +277,7 @@ importers:
         specifier: '>=0.99.0'
         version: 1.0.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.3.0
+        specifier: ^0.3.1
         version: link:../pi-utils
       htmlparser2:
         specifier: 12.0.0
