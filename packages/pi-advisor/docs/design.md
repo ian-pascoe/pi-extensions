@@ -159,7 +159,7 @@ An Advisor must not restart a child through a detached prompt after Minimal Suba
 
 Use Pi's native retry behavior rather than adding another retry subsystem. If a Review still fails, times out, or cannot resolve its model, pause the Advisor, explain why, and leave the observed agent running. Do not silently switch models.
 
-Explicit re-enablement or corrected configuration retries the Advisor. Pausing does not rewrite enabled settings. Preserve native journal integrity and Context Management's fail-closed handling of checkpoint/storage failures; do not weaken them to conceal an Advisor error.
+Explicit re-enablement, corrected configuration, or the settings menu's Resume row retries the Advisor. Pausing does not rewrite enabled settings. Preserve native journal integrity and Context Management's fail-closed handling of checkpoint/storage failures; do not weaken them to conceal an Advisor error.
 
 ## Verification and compatibility
 

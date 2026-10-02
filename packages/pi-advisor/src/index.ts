@@ -96,8 +96,8 @@ export default function advisor(pi: ExtensionAPI): void {
     renderAdvisorIntervention(message.details, options, theme),
   );
 
-  /** Footer summary for the root Advisor and its watched Child Agents. */
-  function updateFooter(): void {
+  /** Show the current Advisor state in the open settings menu and the footer. */
+  function publishState(): void {
     activeMenu?.refresh();
     if (!footer) return;
     const root: AdvisorActivity | undefined =
@@ -234,7 +234,7 @@ export default function advisor(pi: ExtensionAPI): void {
     ]);
     observer = undefined;
     children.clear();
-    updateFooter();
+    publishState();
     footer = undefined;
   });
 
@@ -257,7 +257,7 @@ export default function advisor(pi: ExtensionAPI): void {
           });
           warn(`Advisor for ${child.agentId} paused: ${message}`);
         },
-        onStateChange: updateFooter,
+        onStateChange: publishState,
         onIntervention: (finding) => {
           if (children.get(session) === child)
             pi.appendEntry("pi-advisor-child", { agentId: child.agentId, ...finding });
@@ -311,7 +311,7 @@ export default function advisor(pi: ExtensionAPI): void {
       error = cause instanceof Error ? cause.message : String(cause);
     }
     // A new child observer reports no state change until it reviews; show it now.
-    updateFooter();
+    publishState();
     payload.attach({
       beginTurn: () => child.observer?.beforeTask(),
       finishTurn: async () => {
@@ -342,7 +342,7 @@ export default function advisor(pi: ExtensionAPI): void {
               pi.appendEntry("pi-advisor-status", { state: "paused", error: message });
               warn(`Advisor paused: ${message}`);
             },
-            onStateChange: updateFooter,
+            onStateChange: publishState,
           },
         );
       for (const [session, child] of children) configureChild(session, child, settings);
@@ -357,7 +357,7 @@ export default function advisor(pi: ExtensionAPI): void {
       observer = undefined;
       for (const child of children.values()) child.observer = undefined;
     }
-    updateFooter();
+    publishState();
   }
 
   /** Current effective settings and live Advisor state, as recorded in status entries. */
@@ -471,8 +471,9 @@ export default function advisor(pi: ExtensionAPI): void {
   async function openMenu(ctx: ExtensionContext, subject: AgentSession): Promise<void> {
     const applied: AdvisorAppliedChange[] = [];
     let discarded = false;
+    let menu: AdvisorSettingsMenu | undefined;
     await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
-      const menu = new AdvisorSettingsMenu(
+      const opened = new AdvisorSettingsMenu(
         menuHost(ctx, subject, theme, applied),
         {
           tui,
@@ -482,9 +483,10 @@ export default function advisor(pi: ExtensionAPI): void {
         },
         () => done(),
       );
+      menu = opened;
       activeMenu = {
         refresh: () => {
-          menu.refresh();
+          opened.refresh();
           tui.requestRender();
         },
         close: () => {
@@ -493,9 +495,11 @@ export default function advisor(pi: ExtensionAPI): void {
           done();
         },
       };
-      return menu;
+      return opened;
     });
     activeMenu = undefined;
+    // Edits started before closing are still recorded once they settle.
+    await menu?.settled();
     if (!discarded && observed === subject && applied.length) status(ctx, applied);
   }
 

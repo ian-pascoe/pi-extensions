@@ -1,12 +1,5 @@
-import { stripVTControlCharacters } from "node:util";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { initTheme, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
-import {
-  KeybindingsManager as TuiKeybindingsManager,
-  TUI_KEYBINDINGS,
-  TuiMainScreen,
-  type Terminal,
-} from "@earendil-works/pi-tui";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import {
   AdvisorSettingsMenu,
   type AdvisorMenuHost,
@@ -14,44 +7,13 @@ import {
   type AdvisorScopedOptions,
 } from "../src/advisor-menu.js";
 import type { AdvisorRenderTheme } from "../src/advisor-rendering.js";
+import { createMenuTui, keys, menuDriver } from "./fixtures/menu-ui.js";
 import type {
   AdvisorChange,
   AdvisorOptions,
   AdvisorSettingScope,
   AdvisorSettingSource,
 } from "../src/advisor-settings.js";
-
-const keys = {
-  up: "\x1b[A",
-  down: "\x1b[B",
-  enter: "\r",
-  escape: "\x1b",
-  backspace: "\x7f",
-};
-
-class QuietTerminal implements Terminal {
-  start(): void {}
-  stop(): void {}
-  async drainInput(): Promise<void> {}
-  write(): void {}
-  get columns(): number {
-    return 100;
-  }
-  get rows(): number {
-    return 40;
-  }
-  get kittyProtocolActive(): boolean {
-    return false;
-  }
-  moveBy(): void {}
-  hideCursor(): void {}
-  showCursor(): void {}
-  clearLine(): void {}
-  clearFromCursor(): void {}
-  clearScreen(): void {}
-  setTitle(): void {}
-  setProgress(): void {}
-}
 
 const defaults = {
   enabled: false,
@@ -109,36 +71,11 @@ function createHost({ paused = false, failWith }: { paused?: boolean; failWith?:
 
 function createMenu(options: Parameters<typeof createHost>[0] = {}) {
   const fixture = createHost(options);
-  const tui = new TuiMainScreen(new QuietTerminal());
-  vi.spyOn(tui, "requestRender").mockImplementation(() => {});
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Pi exports its KeybindingsManager as a type only; the editor calls only matches(), which this pi-tui manager implements.
-  const keybindings = new TuiKeybindingsManager(TUI_KEYBINDINGS) as unknown as KeybindingsManager;
+  const { tui, keybindings } = createMenuTui();
   const done = vi.fn();
   const menu = new AdvisorSettingsMenu(fixture.host, { tui, keybindings, theme: plainTheme }, done);
-  const screen = () =>
-    menu
-      .render(100)
-      .map((line) => stripVTControlCharacters(line).trimEnd())
-      .join("\n");
-  const selected = () =>
-    menu
-      .render(100)
-      .map((line) => stripVTControlCharacters(line))
-      .find((line) => line.trimStart().startsWith("→"));
-  const press = (...inputs: string[]) => {
-    for (const input of inputs) menu.handleInput(input);
-  };
-  const type = (text: string) => press(...text.split(""));
-  /** Move the cursor to the row whose label starts with `label`. */
-  const goTo = (label: string) => {
-    for (let step = 0; step < 20; step++) {
-      if (selected()?.replace("→", "").trimStart().startsWith(label)) return;
-      press(keys.down);
-    }
-    throw new Error(`No menu row ${label}`);
-  };
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-  return { ...fixture, menu, done, screen, selected, press, type, goTo, settle };
+  return { ...fixture, menu, done, settle, ...menuDriver(() => menu) };
 }
 
 const plainTheme: AdvisorRenderTheme = {
@@ -336,6 +273,91 @@ describe("Advisor settings menu", () => {
     await settle();
     expect(screen()).toContain("Advisor project settings require a trusted project");
     expect(done).not.toHaveBeenCalled();
+  });
+
+  it("keeps an open submenu when the Advisor pauses, then offers Resume", async () => {
+    const { goTo, press, type, applied, state, menu, screen, settle } = createMenu();
+    goTo("maxToolCalls");
+    press(keys.enter);
+    state.paused = true;
+    menu.refresh();
+    expect(screen()).toContain("a number, or inherit");
+    type("5");
+    press(keys.enter);
+    await settle();
+    expect(applied.map(({ change }) => change)).toEqual([
+      { action: "set", key: "maxToolCalls", patch: { maxToolCalls: 5 } },
+    ]);
+    expect(screen()).toContain("Resume");
+  });
+
+  it("applies quick successive tool toggles in order, each on the previous result", async () => {
+    const { goTo, press, applied, host, screen } = createMenu();
+    const apply = host.apply.bind(host);
+    host.apply = async (scope, change) => {
+      // A real write resolves later; the second toggle must not read stale settings.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await apply(scope, change);
+    };
+    goTo("allowedTools");
+    press(keys.enter);
+    const toRow = (name: string) => {
+      for (let step = 0; step < 10; step++) {
+        if (
+          screen()
+            .split("\n")
+            .some((line) => new RegExp(`→\\s*${name}\\b`).test(line))
+        )
+          return;
+        press(keys.down);
+      }
+    };
+    toRow("find");
+    press(keys.enter);
+    toRow("lsp_diagnostics");
+    press(keys.enter);
+    await vi.waitFor(() => expect(applied).toHaveLength(2));
+    expect(applied.map(({ change }) => change)).toEqual([
+      { action: "set", key: "allowedTools", patch: { allowedTools: ["read", "grep", "find"] } },
+      {
+        action: "set",
+        key: "allowedTools",
+        patch: { allowedTools: ["read", "grep", "find", "lsp_diagnostics"] },
+      },
+    ]);
+  });
+
+  it("keeps the prompt editor open with an inline error for an empty prompt", async () => {
+    const { goTo, press, applied, screen, settle } = createMenu();
+    goTo("prompt");
+    press(keys.enter, keys.enter);
+    for (let index = 0; index < "Default review prompt.".length; index++) press(keys.backspace);
+    press(keys.enter);
+    await settle();
+    expect(applied).toEqual([]);
+    expect(screen()).toContain("Advisor Prompt");
+    expect(screen()).toMatch(/✖ .*prompt/i);
+  });
+
+  it("settles only after every started edit has been applied", async () => {
+    const release = Promise.withResolvers<void>();
+    const { goTo, press, applied, host, menu } = createMenu();
+    const apply = host.apply.bind(host);
+    host.apply = async (scope, change) => {
+      await release.promise;
+      await apply(scope, change);
+    };
+    goTo("enabled");
+    press(keys.enter);
+    let settled = false;
+    void menu.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release.resolve();
+    await menu.settled();
+    expect(applied).toHaveLength(1);
   });
 
   it("closes on Escape", () => {

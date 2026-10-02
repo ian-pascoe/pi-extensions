@@ -15,10 +15,13 @@ import {
   type SelectItem,
   type SettingItem,
   type TUI,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
 import { formatAdvisorOption, type AdvisorRenderTheme } from "./advisor-rendering.js";
 import {
+  advisorOptionKey,
   advisorOptionKeys,
   advisorSettingScopeSchema,
   parseAdvisorOptions,
@@ -69,17 +72,24 @@ const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max
 const descriptions = {
   enabled: "Review this session's work",
   includeSubagents: "Also review Minimal Subagents Child Agents",
-  prompt: "Review instructions; replaces the whole prompt",
+  prompt: "Advisor Prompt; replaces the whole prompt",
   model: "Advisor model; inherit follows the observed agent",
   thinkingLevel: "Advisor thinking level; inherit follows the observed agent",
   allowedTools: "Tools the Advisor may call (Tool Grant)",
-  catchUpThreshold: "Backlog that pauses the observed agent; a positive integer or off",
+  catchUpThreshold: "Review Backlog that starts a Catch-up Wait; a positive integer or off",
   reviewTimeoutMs: "Deadline for each Review, in seconds",
   maxToolCalls: "Investigative tool calls per Review",
   maxCorrectiveTurns: "Automatic Corrective Turns per request",
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
+const inputHints = {
+  catchUpThreshold: "a positive integer, off, or inherit",
+  reviewTimeoutMs: "seconds, or inherit",
+  maxToolCalls: "a number, or inherit",
+  maxCorrectiveTurns: "a number, or inherit",
+  maxFindingsPerReview: "a number from 1 to 32, or inherit",
+} as const;
 const listActions = [
   "tui.select.up",
   "tui.select.down",
@@ -88,7 +98,7 @@ const listActions = [
 ] as const;
 
 /** Convert one typed or selected menu value into a validated change. */
-export function parseAdvisorMenuValue(
+function parseAdvisorMenuValue(
   key: keyof AdvisorOptions,
   text: string,
   scope: AdvisorSettingScope,
@@ -208,7 +218,9 @@ class ModelPicker implements Component {
 class PromptChooser implements Component {
   private readonly list: SelectList;
   private editor: ExtensionEditorComponent | undefined;
+  private error: string | undefined;
 
+  /** `submit` throws a user-facing message for an invalid prompt; the editor stays open. */
   constructor(
     ui: AdvisorMenuUi,
     prompt: string,
@@ -235,7 +247,13 @@ class PromptChooser implements Component {
         ui.keybindings,
         "Advisor Prompt",
         prompt,
-        submit,
+        (text) => {
+          try {
+            submit(text);
+          } catch (cause) {
+            this.error = ui.theme.fg("error", `✖ ${errorText(cause)}`);
+          }
+        },
         cancel,
         undefined,
         ui.externalEditorCommand,
@@ -244,15 +262,20 @@ class PromptChooser implements Component {
     };
   }
   handleInput(data: string): void {
+    this.error = undefined;
     (this.editor ?? this.list).handleInput(data);
   }
   render(width: number): string[] {
-    return (this.editor ?? this.list).render(width);
+    const lines = (this.editor ?? this.list).render(width);
+    return this.error ? [...lines, this.error] : lines;
   }
   invalidate(): void {
     (this.editor ?? this.list).invalidate();
   }
 }
+
+/** Menu row ids that are not Advisor options. */
+const actionRows = { resume: "resume", scope: "scope" } as const;
 
 /** `/advisor` settings menu built from Pi's native settings list. */
 export class AdvisorSettingsMenu implements Component {
@@ -261,7 +284,11 @@ export class AdvisorSettingsMenu implements Component {
   private rows: SettingItem[] = [];
   private list: SettingsList;
   private error: string | undefined;
-  private lastRow = "enabled";
+  private lastRow: string = actionRows.scope;
+  /** Edits run one at a time so each reads the result of the previous one. */
+  private pending: Promise<void> = Promise.resolve();
+  private submenuOpen = false;
+  private rebuildPending = false;
   private readonly border: DynamicBorder;
 
   constructor(
@@ -272,6 +299,11 @@ export class AdvisorSettingsMenu implements Component {
     this.view = host.view();
     this.border = new DynamicBorder((text) => ui.theme.fg("border", text));
     this.list = this.createList();
+  }
+
+  /** Resolves once every edit started so far has been applied or rejected. */
+  settled(): Promise<void> {
+    return this.pending;
   }
 
   /** Re-read the host after external state changes, such as a Review starting. */
@@ -285,18 +317,27 @@ export class AdvisorSettingsMenu implements Component {
       return;
     }
     if (!this.view.scopes.includes(this.scope)) this.scope = "session";
-    if (paused !== this.view.paused) {
-      this.list = this.createList();
-      this.list.selectItem(this.view.paused ? "resume" : this.lastRow);
-      return;
-    }
     for (const row of this.rows) Object.assign(row, this.createRow(row.id));
+    // Adding or removing Resume rebuilds the list; never discard an open submenu to do it.
+    if (paused !== this.view.paused) {
+      if (this.submenuOpen) this.rebuildPending = true;
+      else this.rebuild();
+    }
+  }
+
+  private rebuild(): void {
+    this.rebuildPending = false;
+    this.list = this.createList();
+    this.list.selectItem(this.view.paused ? actionRows.resume : this.lastRow);
   }
 
   private createList(): SettingsList {
-    this.rows = [...(this.view.paused ? ["resume"] : []), "scope", ...advisorOptionKeys].map((id) =>
-      this.createRow(id),
-    );
+    const ids = [
+      ...(this.view.paused ? [actionRows.resume] : []),
+      actionRows.scope,
+      ...advisorOptionKeys,
+    ];
+    this.rows = ids.map((id) => this.createRow(id));
     return new SettingsList(
       this.rows,
       this.rows.length,
@@ -307,15 +348,15 @@ export class AdvisorSettingsMenu implements Component {
   }
 
   private createRow(id: string): SettingItem {
-    if (id === "resume")
+    if (id === actionRows.resume)
       return {
         id,
         label: "Resume",
         currentValue: "retry",
         values: ["retry"],
-        description: "Retry the paused Advisor with its current settings",
+        description: "Retry the Paused Advisor with its current settings",
       };
-    if (id === "scope")
+    if (id === actionRows.scope)
       return {
         id,
         label: "Scope",
@@ -323,7 +364,23 @@ export class AdvisorSettingsMenu implements Component {
         values: [...this.view.scopes],
         description: "Where edits are written",
       };
-    return this.optionRow(advisorOptionKeys.find((key) => key === id) ?? "enabled");
+    return this.optionRow(advisorOptionKey(id));
+  }
+
+  /** Track an open submenu so a rebuild waits for it to close. */
+  private submenu(
+    id: string,
+    open: (close: () => void) => Component,
+  ): NonNullable<SettingItem["submenu"]> {
+    return (_value, done) => {
+      this.submenuOpen = true;
+      this.lastRow = id;
+      return open(() => {
+        this.submenuOpen = false;
+        done();
+        if (this.rebuildPending) this.rebuild();
+      });
+    };
   }
 
   private optionRow(key: keyof AdvisorOptions): SettingItem {
@@ -352,64 +409,71 @@ export class AdvisorSettingsMenu implements Component {
         return {
           ...row,
           currentValue: settings.model ?? "inherit",
-          submenu: (_value, done) =>
-            new ModelPicker(
-              this.view.models,
-              (value) => {
-                this.apply(parseAdvisorMenuValue("model", value, this.scope));
-                done();
-              },
-              () => done(),
-            ),
+          submenu: this.submenu(
+            key,
+            (close) =>
+              new ModelPicker(
+                this.view.models,
+                (value) => {
+                  this.apply(parseAdvisorMenuValue(key, value, this.scope));
+                  close();
+                },
+                close,
+              ),
+          ),
         };
       case "allowedTools":
         return {
           ...row,
           currentValue: formatAdvisorOption(settings, key),
-          submenu: (_value, done) => this.toolChecklist(() => done()),
+          submenu: this.submenu(key, (close) => this.toolChecklist(close)),
         };
       case "prompt":
         return {
           ...row,
           currentValue: formatAdvisorOption(settings, key),
-          submenu: (_value, done) =>
-            new PromptChooser(
-              this.ui,
-              settings.prompt ?? "",
-              (text) => {
-                this.applyParsed(() => ({
-                  action: "set",
-                  key,
-                  patch: parseAdvisorOptions({ prompt: text }, this.scope),
-                }));
-                done();
-              },
-              () => {
-                this.apply({ action: "inherit", key });
-                done();
-              },
-              () => done(),
-            ),
+          submenu: this.submenu(
+            key,
+            (close) =>
+              new PromptChooser(
+                this.ui,
+                settings.prompt ?? "",
+                (text) => {
+                  // Throws for an invalid prompt, keeping the editor open.
+                  this.apply({
+                    action: "set",
+                    key,
+                    patch: parseAdvisorOptions({ prompt: text }, this.scope),
+                  });
+                  close();
+                },
+                () => {
+                  this.apply({ action: "inherit", key });
+                  close();
+                },
+                close,
+              ),
+          ),
         };
       default:
         return {
           ...row,
           currentValue: formatAdvisorOption(settings, key),
-          submenu: (_value, done) =>
-            new ValueInput(
-              key,
-              key === "catchUpThreshold"
-                ? "a positive integer, off, or inherit"
-                : key === "reviewTimeoutMs"
-                  ? "seconds, or inherit"
-                  : "a number, or inherit",
-              this.ui.theme,
-              (text) => {
-                this.apply(parseAdvisorMenuValue(key, text, this.scope));
-                done();
-              },
-              () => done(),
-            ),
+          submenu: this.submenu(
+            key,
+            (close) =>
+              new ValueInput(
+                key,
+                inputHints[key],
+                this.ui.theme,
+                (text) => {
+                  // Throws for invalid input, keeping the field open with the message.
+                  this.apply(parseAdvisorMenuValue(key, text, this.scope));
+                  close();
+                },
+                close,
+              ),
+          ),
         };
     }
   }
@@ -439,12 +503,20 @@ export class AdvisorSettingsMenu implements Component {
           close();
           return;
         }
-        const current = this.host.view().settings.allowedTools ?? [];
-        const allowedTools =
-          value === "on"
-            ? [...current.filter((name) => name !== id), id]
-            : current.filter((name) => name !== id);
-        this.apply({ action: "set", key: "allowedTools", patch: { allowedTools } });
+        const scope = this.scope;
+        // Read the grant when this edit runs, after any earlier toggle has been applied.
+        this.run(() => {
+          const current = this.host.view().settings.allowedTools ?? [];
+          const allowedTools =
+            value === "on"
+              ? [...current.filter((name) => name !== id), id]
+              : current.filter((name) => name !== id);
+          return this.host.apply(scope, {
+            action: "set",
+            key: "allowedTools",
+            patch: parseAdvisorOptions({ allowedTools }, scope),
+          });
+        });
       },
       close,
       { enableSearch: rows.length > 12 },
@@ -452,35 +524,25 @@ export class AdvisorSettingsMenu implements Component {
   }
 
   private change(id: string, value: string): void {
-    if (id === "resume") {
+    if (id === actionRows.resume) {
       this.run(() => this.host.resume());
       return;
     }
-    if (id === "scope") {
+    if (id === actionRows.scope) {
       if (Value.Check(advisorSettingScopeSchema, value)) this.scope = value;
+      this.lastRow = id;
       this.refresh();
       return;
     }
     this.lastRow = id;
-    const key = advisorOptionKeys.find((option) => option === id);
-    if (!key) return;
+    const key = advisorOptionKey(id);
     const row = this.rows.find((item) => item.id === id);
     // Inheriting is a no-op when this scope has no value; step to the next real value.
     const skip = value === "inherit" && this.view.authored[this.scope]?.[key] === undefined;
     const next = skip ? (row?.values?.[0] ?? value) : value;
-    this.applyParsed(() => parseAdvisorMenuValue(key, next, this.scope));
-  }
-
-  /** Apply now (Pi settings semantics); the list refreshes when the host settles. */
-  private apply(change: AdvisorChange): void {
-    this.run(() => this.host.apply(this.scope, change));
-  }
-
-  /** Report a parse failure inline instead of applying. */
-  private applyParsed(parse: () => AdvisorChange): void {
     let change: AdvisorChange;
     try {
-      change = parse();
+      change = parseAdvisorMenuValue(key, next, this.scope);
     } catch (cause) {
       this.error = errorText(cause);
       this.refresh();
@@ -489,9 +551,16 @@ export class AdvisorSettingsMenu implements Component {
     this.apply(change);
   }
 
+  /** Apply at the current scope (Pi settings semantics); the list refreshes once it settles. */
+  private apply(change: AdvisorChange): void {
+    const scope = this.scope;
+    this.run(() => this.host.apply(scope, change));
+  }
+
   private run(task: () => Promise<void>): void {
     this.error = undefined;
-    void task()
+    this.pending = this.pending
+      .then(task)
       .catch((cause: unknown) => {
         this.error = errorText(cause);
       })
@@ -503,6 +572,10 @@ export class AdvisorSettingsMenu implements Component {
 
   handleInput(data: string): void {
     this.list.handleInput(data);
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    return this.list.handleMouse(event);
   }
 
   render(width: number): string[] {

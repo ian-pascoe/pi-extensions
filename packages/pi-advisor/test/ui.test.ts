@@ -6,18 +6,12 @@ import {
   type KeybindingsManager,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import {
-  KeybindingsManager as TuiKeybindingsManager,
-  TUI_KEYBINDINGS,
-  TuiMainScreen,
-  type Component,
-  type Terminal,
-  type TUI,
-} from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Context } from "@earendil-works/pi-ai";
 import { createSdkHarness, reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
 import advisor from "../src/index.js";
 import { fixture, response } from "./fixtures/advisor-runtime.js";
+import { createMenuTui, menuDriver } from "./fixtures/menu-ui.js";
 
 beforeAll(() => initTheme("dark"));
 
@@ -204,30 +198,6 @@ describe("advisor_ask", () => {
   });
 });
 
-class QuietTerminal implements Terminal {
-  start(): void {}
-  stop(): void {}
-  async drainInput(): Promise<void> {}
-  write(): void {}
-  get columns(): number {
-    return 100;
-  }
-  get rows(): number {
-    return 40;
-  }
-  get kittyProtocolActive(): boolean {
-    return false;
-  }
-  moveBy(): void {}
-  hideCursor(): void {}
-  showCursor(): void {}
-  clearLine(): void {}
-  clearFromCursor(): void {}
-  clearScreen(): void {}
-  setTitle(): void {}
-  setProgress(): void {}
-}
-
 /** What the stub TUI host is currently showing. */
 interface ShownMenu {
   component: Component | undefined;
@@ -237,15 +207,8 @@ interface ShownMenu {
 
 /** A TUI host whose `custom` shows the component to the test instead of a terminal. */
 function menuUi() {
-  const tui = new TuiMainScreen(new QuietTerminal());
-  vi.spyOn(tui, "requestRender").mockImplementation(() => {});
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Pi exports its KeybindingsManager as a type only; the menu's editor calls only matches(), which this pi-tui manager implements.
-  const keybindings = new TuiKeybindingsManager(TUI_KEYBINDINGS) as unknown as KeybindingsManager;
-  const shown: ShownMenu = {
-    component: undefined,
-    opened: 0,
-    theme: undefined,
-  };
+  const { tui, keybindings } = createMenuTui();
+  const shown: ShownMenu = { component: undefined, opened: 0, theme: undefined };
   const ui: Partial<ExtensionUIContext> = {
     custom<T>(
       factory: (
@@ -269,22 +232,7 @@ function menuUi() {
       });
     },
   };
-  const screen = () =>
-    (shown.component?.render(100) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
-  const press = (...inputs: string[]) => {
-    for (const input of inputs) shown.component?.handleInput?.(input);
-  };
-  const goTo = (label: string) => {
-    for (let step = 0; step < 20; step++) {
-      const selected = screen()
-        .split("\n")
-        .find((line) => line.trimStart().startsWith("→"));
-      if (selected?.replace("→", "").trimStart().startsWith(label)) return;
-      press("\x1b[B");
-    }
-    throw new Error(`No menu row ${label}`);
-  };
-  return { ui, shown, screen, press, goTo };
+  return { ui, shown, ...menuDriver(() => shown.component) };
 }
 
 /** The bound UI context's theme is Pi's initialized global theme. */
