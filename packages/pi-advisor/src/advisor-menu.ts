@@ -69,6 +69,24 @@ export interface AdvisorMenuUi {
 }
 
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+/** Options edited by cycling the selected scope's own value; `inherit` removes it. */
+const cycleValues = {
+  enabled: ["inherit", "on", "off"],
+  includeSubagents: ["inherit", "on", "off"],
+  thinkingLevel: ["inherit", ...thinkingLevels],
+} as const satisfies Record<string, readonly string[]>;
+type CycleKey = keyof typeof cycleValues;
+
+function isCycleKey(key: keyof AdvisorOptions): key is CycleKey {
+  return key === "enabled" || key === "includeSubagents" || key === "thinkingLevel";
+}
+
+/** A cycled option's value as shown and cycled; undefined when absent. */
+function cycleValue(key: CycleKey, options: AdvisorOptions): string | undefined {
+  if (key === "thinkingLevel") return options.thinkingLevel;
+  const value = options[key];
+  return value === undefined ? undefined : value ? "on" : "off";
+}
 const descriptions = {
   enabled: "Review this session's work",
   includeSubagents: "Also review Minimal Subagents Child Agents",
@@ -394,16 +412,13 @@ export class AdvisorSettingsMenu implements Component {
     switch (key) {
       case "enabled":
       case "includeSubagents":
-        return {
-          ...row,
-          currentValue: settings[key] ? "on" : "off",
-          values: ["on", "off", "inherit"],
-        };
       case "thinkingLevel":
+        // The row shows and cycles this scope's own value, so every state is reachable.
         return {
           ...row,
-          currentValue: settings.thinkingLevel ?? "inherit",
-          values: [...thinkingLevels, "inherit"],
+          label: key,
+          currentValue: this.cycleDisplay(key),
+          values: [...cycleValues[key]],
         };
       case "model":
         return {
@@ -523,6 +538,16 @@ export class AdvisorSettingsMenu implements Component {
     );
   }
 
+  /** This scope's own value, or what it inherits; notes when another scope overrides it. */
+  private cycleDisplay(key: CycleKey): string {
+    const own = cycleValue(key, this.view.authored[this.scope] ?? {});
+    const effective = cycleValue(key, this.view.settings);
+    const source = this.view.sources[key] ?? "default";
+    const inEffect = effective === undefined ? "observed agent" : `${effective} · ${source}`;
+    if (own === undefined) return `inherit (${inEffect})`;
+    return source === this.scope ? own : `${own} (overridden: ${inEffect})`;
+  }
+
   private change(id: string, value: string): void {
     if (id === actionRows.resume) {
       this.run(() => this.host.resume());
@@ -536,10 +561,12 @@ export class AdvisorSettingsMenu implements Component {
     }
     this.lastRow = id;
     const key = advisorOptionKey(id);
-    const row = this.rows.find((item) => item.id === id);
-    // Inheriting is a no-op when this scope has no value; step to the next real value.
-    const skip = value === "inherit" && this.view.authored[this.scope]?.[key] === undefined;
-    const next = skip ? (row?.values?.[0] ?? value) : value;
+    if (!isCycleKey(key)) return;
+    // Cycle from this scope's own value; the list's suggested value follows the display text.
+    const values = cycleValues[key];
+    const own = cycleValue(key, this.view.authored[this.scope] ?? {}) ?? "inherit";
+    const next =
+      values[(values.findIndex((option) => option === own) + 1) % values.length] ?? "inherit";
     let change: AdvisorChange;
     try {
       change = parseAdvisorMenuValue(key, next, this.scope);

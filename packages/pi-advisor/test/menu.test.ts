@@ -92,46 +92,94 @@ describe("Advisor settings menu", () => {
     const text = screen();
     expect(text).toContain("Advisor armed");
     expect(text).toMatch(/Scope\s+session/);
-    expect(text).toMatch(/enabled\s+off/);
+    expect(text).toMatch(/enabled\s+inherit \(off · default\)/);
+    expect(text).toMatch(/thinkingLevel\s+inherit \(observed agent\)/);
     expect(text).toMatch(/model\s+inherit/);
     expect(text).toMatch(/allowedTools\s+read, grep/);
     expect(text).toMatch(/reviewTimeoutMs\s+120s/);
     expect(text).not.toContain("Resume");
   });
 
-  it("cycles a boolean at the selected scope and shows its source", async () => {
-    const { goTo, press, applied, screen, settle } = createMenu();
+  it("cycles the selected scope's own value through inherit, on, and off", async () => {
+    const { goTo, press, applied, screen, menu } = createMenu();
+    const row = () =>
+      screen()
+        .split("\n")
+        .find((line) => line.includes("enabled"))
+        ?.trim()
+        .replace(/\s+/g, " ");
     goTo("enabled");
-    press(keys.enter);
-    await settle();
+    const seen = [row()];
+    for (let step = 0; step < 4; step++) {
+      press(keys.enter);
+      await menu.settled();
+      seen.push(row());
+    }
+    expect(seen).toEqual([
+      "→ enabled inherit (off · default)",
+      "→ enabled on",
+      "→ enabled off",
+      "→ enabled inherit (off · default)",
+      "→ enabled on",
+    ]);
     expect(applied).toEqual([
       { scope: "session", change: { action: "set", key: "enabled", patch: { enabled: true } } },
+      { scope: "session", change: { action: "set", key: "enabled", patch: { enabled: false } } },
+      { scope: "session", change: { action: "inherit", key: "enabled" } },
+      { scope: "session", change: { action: "set", key: "enabled", patch: { enabled: true } } },
     ]);
-    expect(screen()).toMatch(/enabled \[session\]\s+on/);
   });
 
-  it("offers inherit only when the selected scope has its own value", async () => {
-    const { goTo, press, applied, settle } = createMenu();
+  it("reaches every session value when another scope sets the option", async () => {
+    const { goTo, press, authored, screen, menu } = createMenu();
+    authored.project.enabled = true;
+    menu.refresh();
+    const row = () =>
+      screen()
+        .split("\n")
+        .find((line) => line.includes("enabled"))
+        ?.trim()
+        .replace(/\s+/g, " ");
     goTo("enabled");
-    press(keys.enter);
-    await settle();
-    press(keys.enter);
-    await settle();
-    press(keys.enter);
-    await settle();
-    expect(applied.map(({ change }) => change)).toEqual([
-      { action: "set", key: "enabled", patch: { enabled: true } },
-      { action: "set", key: "enabled", patch: { enabled: false } },
-      { action: "inherit", key: "enabled" },
+    const seen = [row()];
+    for (let step = 0; step < 3; step++) {
+      press(keys.enter);
+      await menu.settled();
+      seen.push(row());
+    }
+    expect(seen).toEqual([
+      "→ enabled inherit (on · project)",
+      "→ enabled on",
+      "→ enabled off",
+      "→ enabled inherit (on · project)",
     ]);
-    // Nothing is authored now, so the next step skips the no-op inherit.
-    press(keys.enter);
-    await settle();
-    expect(applied.at(-1)?.change).toEqual({
-      action: "set",
-      key: "enabled",
-      patch: { enabled: true },
-    });
+  });
+
+  it("shows when a higher-precedence scope overrides the edited value", async () => {
+    const { goTo, press, authored, screen, menu } = createMenu();
+    authored.global.enabled = true;
+    authored.session.enabled = false;
+    menu.refresh();
+    goTo("Scope");
+    press(keys.enter, keys.enter);
+    expect(screen()).toMatch(/enabled\s+on \(overridden: off · session\)/);
+  });
+
+  it("cycles thinking level from inherit through every level", async () => {
+    const { goTo, press, applied, menu } = createMenu();
+    goTo("thinkingLevel");
+    for (let step = 0; step < 8; step++) {
+      press(keys.enter);
+      await menu.settled();
+    }
+    expect(applied.map(({ change }) => change)).toEqual([
+      ...["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((thinkingLevel) => ({
+        action: "set",
+        key: "thinkingLevel",
+        patch: { thinkingLevel },
+      })),
+      { action: "inherit", key: "thinkingLevel" },
+    ]);
   });
 
   it("writes edits to the scope chosen in the Scope row", async () => {

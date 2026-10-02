@@ -250,10 +250,10 @@ describe("/advisor settings menu", () => {
     const command = session.prompt("/advisor");
     await vi.waitFor(() => expect(host.shown.component).toBeDefined());
     expect(host.screen()).toContain("Advisor settings");
-    expect(host.screen()).toMatch(/enabled \[global\]\s+on/);
+    expect(host.screen()).toMatch(/enabled\s+inherit \(on · global\)/);
     host.goTo("includeSubagents");
     host.press("\r");
-    await vi.waitFor(() => expect(host.screen()).toMatch(/includeSubagents \[session\]\s+on/));
+    await vi.waitFor(() => expect(host.screen()).toMatch(/includeSubagents\s+on$/m));
     host.goTo("maxToolCalls");
     host.press("\r", "5", "\r");
     await vi.waitFor(() => expect(host.screen()).toMatch(/maxToolCalls \[session\]\s+5/));
