@@ -30,6 +30,8 @@ Each changed Todo List is projected from its immutable session state entry as a 
 
 After compaction, a fixed baseline immediately after the summary restores the state from before the retained Tail. Retained and newer mutations follow chronologically. This preserves previously written conversation cache prefixes between checkpoints; it does not guarantee provider cache hits.
 
+`todo` declares MCP-style `annotations`: not read-only, but non-destructive (it only appends to the session's own journal), not idempotent, and closed-world. Pi reports them through `pi.getAllTools()` for permission extensions and does not send them to model providers.
+
 ## UI and persistence
 
 In interactive mode, a compact widget above the editor shows status counts and up to five Tasks. Tool calls and results use custom transcript rendering. `/todo clear` confirms before manually clearing the list.
