@@ -63,7 +63,7 @@ The Advisor is **read-only by default, not by invariant**. An explicit tool-name
 
 Loaded extensions remain privileged code. Their hooks can have effects outside model tool calls; `allowedTools` is not a sandbox for extension behavior.
 
-Ignore configured tool names that are unavailable, and report those names in status. This permits one configuration across different installed extension sets without hiding misspellings. A loaded extension requiring tools excluded by the grant is a separate compatibility issue, not the same as an absent optional extension.
+A grant is Pi's tool ceiling, not a declaration: tools with `codemode` or `deferred` exposure stay callable by scripts but are not declared to the Advisor model unless a granted tool (such as `tool_search`) declares them, matching Minimal Subagents Child Agents. Ignore configured tool names that are unavailable, and report those names in status; status is a point-in-time view, so tools that register after connecting (such as MCP tools) are reported until they register. This permits one configuration across different installed extension sets without hiding misspellings. A loaded extension requiring tools excluded by the grant is a separate compatibility issue, not the same as an absent optional extension.
 
 The Advisor retains its own prompt and session state. Supply the observed agent's standing instructions deliberately as review context rather than transplanting its assembled operating context or private state. Preserve inherited extensions' normal session-local hooks and instructions.
 

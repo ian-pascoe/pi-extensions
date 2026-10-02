@@ -447,6 +447,18 @@ async function buildAdvisorSession(
     };
     if (sessionStartEvent) sessionOptions.sessionStartEvent = sessionStartEvent;
     const created = await piSdk.createAgentSessionFromServices(sessionOptions);
+    // Pi's `tools` option is the ceiling and also activates (declares) every named tool. Keep
+    // `codemode` and `deferred` grants callable but undeclared, as Pi's own defaults do;
+    // later registrations follow the same rule, and extensions can still declare them.
+    const scriptOnly = new Set(
+      created.session
+        .getAllTools()
+        .filter(({ exposure }) => exposure === "codemode" || exposure === "deferred")
+        .map(({ name }) => name),
+    );
+    created.session.setActiveToolsByName(
+      created.session.getActiveToolNames().filter((name) => !scriptOnly.has(name)),
+    );
     return { ...created, services, diagnostics: services.diagnostics };
   };
   const runtime = await piSdk.createAgentSessionRuntime(factory, {
