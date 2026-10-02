@@ -23,6 +23,11 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
+import { LSP_TOOL_GUIDELINE } from "../src/lsp-tool.js";
+import {
+  LSP_OPERATION_NAMES,
+  type LspWorkspaceEditPreviewRecord,
+} from "../src/lsp-tool-contract.js";
 import type { LspSettingsDocumentInput } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
@@ -229,11 +234,11 @@ describe("Pi LSP extension lifecycle", () => {
     });
     const disabledLeaf = harness.sessionManager.getLeafId();
     const status = async () => {
-      const tool = harness.runner.getToolDefinition("lsp");
-      if (tool === undefined) throw new Error("Expected LSP tool");
+      const tool = harness.runner.getToolDefinition("lsp_status");
+      if (tool === undefined) throw new Error("Expected LSP status tool");
       return tool.execute(
         "status",
-        { operation: "status" },
+        {},
         undefined,
         undefined,
         toToolContext(harness.runner.createContext()),
@@ -364,12 +369,14 @@ describe("Pi LSP extension lifecycle", () => {
     }
     await startExtension(harness);
     const command = harness.runner.getCommand("lsp");
-    const tool = harness.runner.getToolDefinition("lsp");
-    if (command === undefined || tool === undefined) throw new Error("Expected /lsp and lsp");
+    const tool = harness.runner.getToolDefinition("lsp_capabilities");
+    const statusTool = harness.runner.getToolDefinition("lsp_status");
+    if (command === undefined || tool === undefined || statusTool === undefined)
+      throw new Error("Expected /lsp, lsp_capabilities, and lsp_status");
     for (const root of [firstRoot, secondRoot]) {
       await tool.execute(
         "start",
-        { operation: "capabilities", server_id: "fake", file_path: resolve(root, "source.ts") },
+        { server_id: "fake", file_path: resolve(root, "source.ts") },
         undefined,
         undefined,
         toToolContext(harness.runner.createContext()),
@@ -391,9 +398,9 @@ describe("Pi LSP extension lifecycle", () => {
       `stop fake ${JSON.stringify(firstRoot)}`,
       harness.runner.createCommandContext(),
     );
-    const result = await tool.execute(
+    const result = await statusTool.execute(
       "status",
-      { operation: "status" },
+      {},
       undefined,
       undefined,
       toToolContext(harness.runner.createContext()),
@@ -402,14 +409,14 @@ describe("Pi LSP extension lifecycle", () => {
     if (text?.type !== "text") throw new Error("Expected status text");
     expect(JSON.parse(text.text)).toMatchObject({
       servers: [
-        { rootPath: firstRoot, state: "stopped" },
-        { rootPath: secondRoot, state: "running" },
+        { root_path: firstRoot, state: "stopped" },
+        { root_path: secondRoot, state: "running" },
       ],
     });
     expect(harness.sessionManager.getBranch()).toEqual([]);
     await tool.execute(
       "lazy-restart",
-      { operation: "capabilities", server_id: "fake", file_path: resolve(firstRoot, "source.ts") },
+      { server_id: "fake", file_path: resolve(firstRoot, "source.ts") },
       undefined,
       undefined,
       toToolContext(harness.runner.createContext()),
@@ -544,17 +551,22 @@ describe("Pi LSP extension lifecycle", () => {
         noSession ? "" : harness.sessionDirectory,
       );
       const status = async () => {
-        const tool = session.getToolDefinition("lsp");
-        if (tool === undefined) throw new Error("Expected LSP tool");
+        const tool = session.getToolDefinition("lsp_status");
+        if (tool === undefined) throw new Error("Expected LSP status tool");
         return tool.execute(
           "status",
-          { operation: "status" },
+          {},
           undefined,
           undefined,
           toToolContext(session.extensionRunner.createContext()),
         );
       };
       expect(await status()).toMatchObject({ details: { operation: "status" } });
+      // Ten declared LSP tools share one deduplicated system-prompt guideline.
+      expect(session.getActiveToolNames().filter((name) => name.startsWith("lsp_"))).toHaveLength(
+        10,
+      );
+      expect(session.systemPrompt.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
       const firstDirectories = await piLspSessionDirectories(harness.sessionDirectory);
       expect(firstDirectories).toHaveLength(1);
 
@@ -563,7 +575,7 @@ describe("Pi LSP extension lifecycle", () => {
       let renderResultAvailableBeforeSessionStart = false;
       await session.reload({
         beforeSessionStart: () => {
-          const definition = session.getToolDefinition("lsp");
+          const definition = session.getToolDefinition("lsp_status");
           definitionAvailableBeforeSessionStart = definition !== undefined;
           renderCallAvailableBeforeSessionStart = definition?.renderCall !== undefined;
           renderResultAvailableBeforeSessionStart = definition?.renderResult !== undefined;
@@ -585,7 +597,7 @@ describe("Pi LSP extension lifecycle", () => {
     },
   );
 
-  test("starts runtime lazily, replays only the active branch, augments writes, and shuts down idempotently", async () => {
+  test("starts runtime lazily, replays legacy and current previews on the active branch, augments writes, and shuts down idempotently", async () => {
     const harness = await createExtensionHarness(false);
     const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
     await writeFile(filePath, "before\n");
@@ -596,7 +608,14 @@ describe("Pi LSP extension lifecycle", () => {
     });
     const previews = new LspWorkspaceEditStore({
       createPreviewId: (() => {
-        const ids = ["off-branch-preview", "active-preview", "applied-preview"];
+        const ids = [
+          "off-branch-preview",
+          "active-preview",
+          "applied-preview",
+          "current-preview",
+          "current-applied-preview",
+          "foreign-preview",
+        ];
         return () => ids.shift() ?? "unexpected-preview";
       })(),
     });
@@ -692,9 +711,59 @@ describe("Pi LSP extension lifecycle", () => {
       isError: false,
       timestamp: Date.now(),
     });
+    // Current per-operation tools: a preview from lsp_rename, and one applied by lsp_apply.
+    const previewMessage = (toolName: string, preview: LspWorkspaceEditPreviewRecord) => ({
+      role: "toolResult" as const,
+      toolCallId: `${preview.preview_id}-call`,
+      toolName,
+      content: [{ type: "text" as const, text: `Workspace Edit Preview ${preview.preview_id}` }],
+      details: {
+        kind: "workspace_edit_preview",
+        preview_id: preview.preview_id,
+        operation: "rename",
+        summary: preview.summary,
+        mutation_manifest: [{ operation: "modify", path: filePath }],
+        preview_record: preview,
+        state: "available",
+      },
+      isError: false,
+      timestamp: Date.now(),
+    });
+    const currentPreview = await previews.createPreview({
+      edit: workspaceEdit,
+      serverId: "typescript",
+    });
+    harness.sessionManager.appendMessage(previewMessage("lsp_rename", currentPreview));
+    const currentAppliedPreview = await previews.createPreview({
+      edit: workspaceEdit,
+      serverId: "typescript",
+    });
+    harness.sessionManager.appendMessage(previewMessage("lsp_rename", currentAppliedPreview));
+    harness.sessionManager.appendMessage({
+      role: "toolResult",
+      toolCallId: "current-apply-call",
+      toolName: "lsp_apply",
+      content: [{ type: "text", text: "applied" }],
+      details: {
+        kind: "workspace_edit_apply",
+        preview_id: currentAppliedPreview.preview_id,
+        mutation_manifest: [{ operation: "modify", path: filePath }],
+        changed_paths: [filePath],
+        state: "applied",
+      },
+      isError: false,
+      timestamp: Date.now(),
+    });
+    // Another extension's result with the same details shape is not a Pi LSP preview.
+    const foreignPreview = await previews.createPreview({
+      edit: workspaceEdit,
+      serverId: "typescript",
+    });
+    harness.sessionManager.appendMessage(previewMessage("not_lsp", foreignPreview));
 
+    const toolNames = LSP_OPERATION_NAMES.map((operation) => `lsp_${operation}`);
     expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
-      ["lsp"],
+      toolNames,
     );
     expect(await piLspSessionDirectories(harness.sessionDirectory)).toEqual([]);
     await startExtension(harness);
@@ -702,23 +771,38 @@ describe("Pi LSP extension lifecycle", () => {
     expect(harness.notifications).toEqual([]);
     expect(harness.runner.hasHandlers("tool_result")).toBe(true);
     expect(harness.runner.getAllRegisteredTools().map(({ definition }) => definition.name)).toEqual(
-      ["lsp"],
+      toolNames,
     );
-    const prepareArguments = harness.runner.getToolDefinition("lsp")?.prepareArguments;
-    if (prepareArguments === undefined) throw new Error("Expected LSP argument preparation");
-    expect(
-      prepareArguments({ operation: "apply", preview_id: activePreview.preview_id }),
-    ).toMatchObject({
-      operation: "apply",
-      preview_id: activePreview.preview_id,
+    const applyTool = harness.runner.getToolDefinition("lsp_apply");
+    const prepareArguments = applyTool?.prepareArguments;
+    if (applyTool === undefined || prepareArguments === undefined)
+      throw new Error("Expected lsp_apply argument preparation");
+    expect(prepareArguments({ preview_id: currentPreview.preview_id })).toEqual({
+      preview_id: currentPreview.preview_id,
       mutation_manifest: [{ operation: "modify", path: filePath }],
     });
-    expect(() =>
-      prepareArguments({ operation: "apply", preview_id: offBranchPreview.preview_id }),
-    ).toThrow("Workspace Edit Preview not found");
-    expect(() =>
-      prepareArguments({ operation: "apply", preview_id: appliedPreview.preview_id }),
-    ).toThrow("already applied");
+    for (const preview of [offBranchPreview, foreignPreview]) {
+      expect(() => prepareArguments({ preview_id: preview.preview_id })).toThrow(
+        "Workspace Edit Preview not found",
+      );
+    }
+    for (const preview of [appliedPreview, currentAppliedPreview]) {
+      expect(() => prepareArguments({ preview_id: preview.preview_id })).toThrow("already applied");
+    }
+    // A resumed session applies a preview recorded by the removed `lsp` tool through lsp_apply.
+    const legacyApply = await applyTool.execute(
+      "legacy-preview-apply",
+      prepareArguments({ preview_id: activePreview.preview_id }),
+      undefined,
+      undefined,
+      toToolContext(harness.runner.createContext()),
+    );
+    expect(legacyApply.details).toMatchObject({
+      kind: "workspace_edit_apply",
+      preview_id: activePreview.preview_id,
+      state: "applied",
+    });
+    expect(await readFile(filePath, "utf8")).toBe("after\n");
 
     const originalDetails = { bytesWritten: 7 };
     const augmented = await harness.runner.emitToolResult({
@@ -737,12 +821,11 @@ describe("Pi LSP extension lifecycle", () => {
     expect(augmented?.details).toBe(originalDetails);
     expect(augmented?.isError).toBe(false);
 
-    const partialApply = await harness.runner.emitToolResult({
+    const partialApplyEvent = {
       type: "tool_result",
       toolCallId: "partial-apply-call",
-      toolName: "lsp",
+      toolName: "lsp_apply",
       input: {
-        operation: "apply",
         preview_id: "partial-preview",
         mutation_manifest: [{ operation: "modify", path: filePath }],
       },
@@ -754,11 +837,30 @@ describe("Pi LSP extension lifecycle", () => {
         changed_paths: [filePath],
         state: "partial_failure",
       },
-      isError: false,
-    } satisfies ToolResultEvent);
+      structuredContent: { preview_id: "partial-preview", state: "partial_failure" },
+      isError: true,
+    } satisfies ToolResultEvent;
+    const partialApply = await harness.runner.emitToolResult(partialApplyEvent);
+    // lsp_apply reports its partial failure at the source; diagnostics keep the error state and data.
     expect(partialApply?.isError).toBe(true);
+    expect(partialApply?.structuredContent).toEqual(partialApplyEvent.structuredContent);
     expect(partialApply?.content?.at(-1)).toMatchObject({
       type: "text",
+      text: expect.stringContaining("no configured server"),
+    });
+    // Post-edit Diagnostics never flips the error state: a false input stays false.
+    const nonErrorPartialApply = await harness.runner.emitToolResult({
+      ...partialApplyEvent,
+      isError: false,
+    });
+    expect(nonErrorPartialApply?.isError).toBe(false);
+    const { structuredContent: _structuredContent, ...currentApplyEvent } = partialApplyEvent;
+    const legacyApplyResult = await harness.runner.emitToolResult({
+      ...currentApplyEvent,
+      toolName: "lsp",
+      input: { operation: "apply", ...partialApplyEvent.input },
+    });
+    expect(legacyApplyResult?.content?.at(-1)).toMatchObject({
       text: expect.stringContaining("no configured server"),
     });
 

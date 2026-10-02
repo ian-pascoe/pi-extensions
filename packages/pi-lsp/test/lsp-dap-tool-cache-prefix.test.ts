@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
+  fauxToolCall,
   InMemoryCredentialStore,
   InMemoryModelsStore,
   type AssistantMessage,
@@ -18,17 +19,22 @@ import {
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   createAgentSession,
+  createCodemodeExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type CreateAgentSessionOptions,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, expect, test } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
+import { LSP_OPERATION_NAMES } from "../src/lsp-tool-contract.js";
+import { lspToolExposure } from "../src/lsp-tool.js";
 
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
@@ -59,15 +65,35 @@ function deepSeekModel() {
   return model;
 }
 
+type ExtensionName = "lsp" | "dap";
+/** Pi's built-in tool orchestrators, which list or load the LSP tools that are not declared. */
+type BuiltinName = "codemode" | "tool_search";
+
+interface ToolCacheOptions {
+  readonly builtins?: readonly BuiltinName[];
+  /** Entries for Pi's `defaultTools` setting; omitted, built-in tools are disabled. */
+  readonly defaultTools?: readonly string[];
+  /** Keep Pi's default system prompt, whose "Available tools" list shows prompt snippets. */
+  readonly defaultSystemPrompt?: boolean;
+}
+
 /** Real Pi collaborators; the only scripted collaborator is the external model stream. */
 async function createToolCacheFixture(
-  toolNames: readonly ("lsp" | "dap")[],
+  toolNames: readonly ExtensionName[],
+  options: ToolCacheOptions = {},
 ): Promise<ToolCacheFixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-lsp-dap-cache-prefix-"));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
   await mkdir(agentDir);
-  const settings = SettingsManager.inMemory({ retry: { enabled: false } });
+  const builtins = options.builtins ?? [];
+  const defaultTools = options.defaultTools ?? (builtins.length === 0 ? undefined : [...builtins]);
+  const settingsData: NonNullable<Parameters<typeof SettingsManager.inMemory>[0]> = {
+    retry: { enabled: false },
+    codemode: { mode: "on" },
+  };
+  if (defaultTools !== undefined) settingsData.defaultTools = [...defaultTools];
+  const settings = SettingsManager.inMemory(settingsData);
   const projectModel = deepSeekModel();
   const providerRequests: string[] = [];
   // Load the sibling extension without widening this package's TypeScript rootDir.
@@ -76,16 +102,22 @@ async function createToolCacheFixture(
   }: {
     createPiDapExtension: (getAgentDirectory: () => string) => ExtensionFactory;
   } = await import(new URL("../../pi-dap/src/pi-dap-extension.js", import.meta.url).href);
-  const loader = new DefaultResourceLoader({
+  const loaderOptions: ConstructorParameters<typeof DefaultResourceLoader>[0] = {
     cwd,
     agentDir,
     settingsManager: settings,
-    noExtensions: true,
+    noExtensions: builtins.length === 0,
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [
+      ...builtins.map((name) => ({
+        name: name === "codemode" ? "codemode" : "tool-search",
+        factory: name === "codemode" ? createCodemodeExtension() : createToolSearchExtension(),
+        builtin: true,
+        replaceable: true,
+      })),
       ...toolNames.map((name) => ({
         name: `pi-${name}-cache-prefix-test`,
         factory:
@@ -103,8 +135,12 @@ async function createToolCacheFixture(
           },
         }),
     ],
-    systemPromptOverride: () => "Standing instructions: answer with the shortest correct turn.",
-  });
+  };
+  if (options.defaultSystemPrompt !== true) {
+    loaderOptions.systemPromptOverride = () =>
+      "Standing instructions: answer with the shortest correct turn.";
+  }
+  const loader = new DefaultResourceLoader(loaderOptions);
   await loader.reload();
   expect(loader.getExtensions().errors).toEqual([]);
 
@@ -115,7 +151,7 @@ async function createToolCacheFixture(
     allowModelNetwork: false,
   });
   await modelRuntime.setRuntimeApiKey("deepseek", "TEST-NOT-A-REAL-KEY");
-  const { session } = await createAgentSession({
+  const sessionOptions: CreateAgentSessionOptions = {
     cwd,
     agentDir,
     model: projectModel,
@@ -123,8 +159,10 @@ async function createToolCacheFixture(
     resourceLoader: loader,
     sessionManager: SessionManager.create(cwd, cwd),
     settingsManager: settings,
-    noTools: "builtin",
-  });
+  };
+  // Without `defaultTools`, disable built-in tools so only the extensions' tools are declared.
+  if (defaultTools === undefined) sessionOptions.noTools = "builtin";
+  const { session } = await createAgentSession(sessionOptions);
   sessions.push(session);
 
   const turns: TurnContext[] = [];
@@ -238,61 +276,115 @@ afterEach(async () => {
   );
 });
 
-/** Tools each extension declares: one `lsp` tool, and the twelve direct per-operation DAP tools. */
-const DECLARED_TOOLS = {
-  lsp: ["lsp"],
-  dap: [
-    "dap_launch",
-    "dap_set_breakpoints",
-    "dap_continue",
-    "dap_next",
-    "dap_step_in",
-    "dap_step_out",
-    "dap_pause",
-    "dap_stack",
-    "dap_variables",
-    "dap_evaluate",
-    "dap_status",
-    "dap_stop",
-  ],
-} as const;
+/** The LSP tools Pi declares to the model by default (ADR-0003), in registration order. */
+const DIRECT_LSP_TOOLS = LSP_OPERATION_NAMES.filter(
+  (operation) => lspToolExposure(operation) === "direct",
+).map((operation) => `lsp_${operation}`);
+
+/** The twelve per-operation DAP tools, all declared directly (pi-dap ADR-0002). */
+const DAP_TOOLS = [
+  "dap_launch",
+  "dap_set_breakpoints",
+  "dap_continue",
+  "dap_next",
+  "dap_step_in",
+  "dap_step_out",
+  "dap_pause",
+  "dap_stack",
+  "dap_variables",
+  "dap_evaluate",
+  "dap_status",
+  "dap_stop",
+];
+
+test("declares lsp_status directly for the troubleshooting Skill", () => {
+  expect(DIRECT_LSP_TOOLS).toEqual([
+    "lsp_status",
+    "lsp_diagnostics",
+    "lsp_hover",
+    "lsp_goto_definition",
+    "lsp_find_references",
+    "lsp_document_symbols",
+    "lsp_workspace_symbols",
+    "lsp_rename",
+    "lsp_code_actions",
+    "lsp_apply",
+  ]);
+});
+
+function declaredToolNames(toolNames: readonly ExtensionName[]): string[] {
+  return toolNames.flatMap((name) => (name === "lsp" ? DIRECT_LSP_TOOLS : DAP_TOOLS));
+}
+
+function systemMessageCount(messages: readonly Message[]): number {
+  return messages.filter((message) => message.role === "system").length;
+}
+
+/**
+ * Prove the cache prefix is stable: every turn, including after `/reload`, hands the provider
+ * byte-identical ordered tool definitions (names, descriptions, parameters) and system prompt, and
+ * each transcript is an append-only extension of the previous one with no mid-conversation system
+ * message that would add, remove, or patch tools.
+ */
+function expectStablePrefix(turns: readonly TurnContext[]): void {
+  const [first] = turns;
+  if (first === undefined) throw new Error("Tool cache test: no captured turns");
+  expect(systemMessageCount(first.messages)).toBe(1);
+  for (const [index, turn] of turns.entries()) {
+    const previous = turns[index - 1];
+    if (previous === undefined) continue;
+    expect(JSON.stringify(turn.tools), `tools of turn ${index}`).toBe(JSON.stringify(first.tools));
+    expect(turn.systemPrompt, `system prompt of turn ${index}`).toBe(first.systemPrompt);
+    expect(
+      JSON.stringify(turn.messages.slice(0, previous.messages.length)),
+      `transcript prefix of turn ${index}`,
+    ).toBe(JSON.stringify(previous.messages));
+    expect(systemMessageCount(turn.messages), `system messages in turn ${index}`).toBe(1);
+  }
+}
+
+/** Two turns, `/reload`, and a third turn. */
+async function runTurnsAcrossReload(fixture: ToolCacheFixture): Promise<readonly TurnContext[]> {
+  fixture.responses.push(
+    fauxAssistantMessage("Ready."),
+    fauxAssistantMessage("Still ready."),
+    fauxAssistantMessage("Reloaded."),
+  );
+  await fixture.session.prompt("Start");
+  await fixture.session.prompt("Continue");
+  await fixture.session.reload();
+  await fixture.session.prompt("After reload");
+  expect(fixture.turns, "expected three real turns").toHaveLength(3);
+  return fixture.turns;
+}
 
 /**
  * Issues #125 and #126: top-level unions made strict providers reject unrelated turns.
  * Test each extension alone and both together: schemas stay object-shaped, argument guidance
- * reaches the provider, and the ordered tool/system/history prefix stays stable across turns.
+ * reaches the provider, and the ordered tool/system/history prefix stays stable across turns and
+ * `/reload`.
  */
 test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", "dap"] }] as const)(
   "serializes object-shaped $toolNames parameters and a stable prefix",
   async ({ toolNames }) => {
     const fixture = await createToolCacheFixture(toolNames);
-    const declared = toolNames.flatMap((name) => DECLARED_TOOLS[name]);
+    const declared = declaredToolNames(toolNames);
     for (const name of declared) expect(fixture.session.getToolDefinition(name)).toBeDefined();
-
-    fixture.responses.push(fauxAssistantMessage("Ready."));
-    await fixture.session.prompt("Start");
-    fixture.responses.push(fauxAssistantMessage("Still ready."));
-    await fixture.session.prompt("Continue");
-    expect(fixture.turns, "expected two consecutive real turns").toHaveLength(2);
-    const [first, second] = fixture.turns;
-    if (first === undefined || second === undefined) {
-      throw new Error("Tool cache test: expected two captured turns");
+    const turns = await runTurnsAcrossReload(fixture);
+    const [first, second, third] = turns;
+    if (first === undefined || second === undefined || third === undefined) {
+      throw new Error("Tool cache test: expected three captured turns");
     }
 
     const before = await serializeTurn(first);
     const after = await serializeTurn(second);
+    const reloaded = await serializeTurn(third);
 
-    // (a) Every registered tool reaches the provider as a root object, never a top-level union.
+    // (a) Only the direct LSP and DAP tools are declared, each as a root object with its own fields.
     expect(before.tools.map((tool) => tool.function.name)).toEqual(declared);
     for (const { function: tool } of before.tools) {
       expect(tool.description).toBe(fixture.session.getToolDefinition(tool.name)?.description);
-      if (tool.name === "lsp") {
-        expect(tool.description).toContain("format_document: file_path, tab_size, insert_spaces");
-        expect(tool.description).toContain(
-          "capabilities, restart, workspace_diagnostics: server_id, file_path",
-        );
-        expect(tool.parameters.required).toEqual(["operation"]);
-      } else if (tool.name === "dap_variables") {
+      if (tool.name === "dap_variables") {
         expect(tool.description).toContain(
           "Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both",
         );
@@ -309,19 +401,107 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
       ).toBe(false);
       expect(parameters.additionalProperties).toBe(false);
     }
+    const hover = before.tools.find(({ function: tool }) => tool.name === "lsp_hover");
+    if (hover !== undefined) {
+      expect(hover.function.parameters.required).toEqual(["file_path", "line", "character"]);
+    }
 
-    // (b) Prefix stability: the ordered tool definitions and the system prompt are identical across
-    // the two consecutive turns, so the fix does not reshuffle or destabilise the prompt prefix.
+    // (b) Prefix stability across turns and reload: identical ordered tool definitions, system
+    // prompt, and append-only history, both as Pi hands them over and as the provider serializes.
+    expectStablePrefix(turns);
     expect(after.tools).toEqual(before.tools);
-    expect(after.tools.map((tool) => tool.function.name)).toEqual(
-      before.tools.map((tool) => tool.function.name),
-    );
+    expect(reloaded.tools).toEqual(before.tools);
     expect(after.messages[0]).toEqual(before.messages[0]);
-    expect(second.systemPrompt).toBe(first.systemPrompt);
+    expect(reloaded.messages[0]).toEqual(before.messages[0]);
     expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages);
+    expect(reloaded.messages.slice(0, after.messages.length)).toEqual(after.messages);
 
-    // (c) Both turns were serialized offline: no transport was attempted and no direct provider
+    // (c) Every turn was serialized offline: no transport was attempted and no direct provider
     // request escaped (the scripted stream is the only model collaborator).
     expect(fixture.providerRequests).toEqual([]);
   },
 );
+
+/**
+ * With Pi's codemode and tool_search active, the long-tail LSP tools are listed once in the
+ * codemode description under the `lsp` namespace, and the declared LSP tools say what scripts
+ * receive. Neither listing changes across turns or `/reload`.
+ */
+test.each([
+  { toolNames: ["lsp"], builtins: ["codemode"] },
+  { toolNames: ["lsp", "dap"], builtins: ["codemode", "tool_search"] },
+] as const)(
+  "keeps $toolNames with $builtins byte-stable across turns and reload",
+  async ({ toolNames, builtins }) => {
+    const fixture = await createToolCacheFixture(toolNames, { builtins });
+    const turns = await runTurnsAcrossReload(fixture);
+    expectStablePrefix(turns);
+    const tools = turns[0]?.tools ?? [];
+    expect(tools.map(({ name }) => name)).toEqual([...builtins, ...declaredToolNames(toolNames)]);
+
+    const codemode = tools.find(({ name }) => name === "codemode")?.description ?? "";
+    expect(codemode).toContain("## lsp");
+    expect(codemode).toContain("Language-server navigation, diagnostics, and previewed edits");
+    // Long-tail tools are listed; declared ones, including lsp_status, are not repeated.
+    expect(codemode).toContain("lsp_capabilities");
+    expect(codemode).not.toContain("lsp_status");
+    expect(codemode).not.toContain("lsp_hover(");
+    const hover = tools.find(({ name }) => name === "lsp_hover")?.description ?? "";
+    expect(hover).toContain(
+      "Codemode: `tools.lsp_hover(args)` resolves to `{ results, warnings, truncated, structured_truncated, spill_path?, server_preview_ids? }`.",
+    );
+    expect(fixture.providerRequests).toEqual([]);
+  },
+);
+
+test("lists the lsp_* family once in the default system prompt and keeps it stable", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });
+  const turns = await runTurnsAcrossReload(fixture);
+  expectStablePrefix(turns);
+  const prompt = turns[0]?.systemPrompt ?? "";
+  // One snippet: a single line in "Available tools" names the family; the other tools have none.
+  expect(prompt).toContain(
+    "- lsp_diagnostics: Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits",
+  );
+  expect(prompt.match(/^- lsp_\w+:/gmu)).toEqual(["- lsp_diagnostics:"]);
+});
+
+test("activates a codemode-exposure LSP tool by name through defaultTools", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], {
+    defaultTools: ["+lsp_workspace_diagnostics"],
+  });
+  const turns = await runTurnsAcrossReload(fixture);
+  expectStablePrefix(turns);
+  expect(turns[0]?.tools.map(({ name }) => name)).toEqual([
+    "read",
+    "bash",
+    "edit",
+    "write",
+    // Named tools activate in `defaultTools` order, then direct tools in registration order.
+    "lsp_workspace_diagnostics",
+    ...DIRECT_LSP_TOOLS,
+  ]);
+});
+
+test("a codemode script receives the structured result of an LSP tool", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { builtins: ["codemode"] });
+  fixture.responses.push(
+    fauxAssistantMessage(
+      fauxToolCall("codemode", {
+        code: "const status = await tools.lsp_status({});\nreturn { servers: status.servers.length, truncated: status.truncated, kind: typeof status };",
+      }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("Done."),
+  );
+  await fixture.session.prompt("Check the language servers from a script");
+  const result = fixture.turns[1]?.messages.findLast(
+    (message) => message.role === "toolResult" && message.toolName === "codemode",
+  );
+  if (result?.role !== "toolResult") throw new Error("Expected a codemode result");
+  const text = result.content.map((item) => (item.type === "text" ? item.text : "")).join("");
+  expect(text).toContain("Script completed");
+  expect(text).toContain('"servers":0');
+  expect(text).toContain('"truncated":false');
+  expect(text).toContain('"kind":"object"');
+});

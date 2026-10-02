@@ -6,6 +6,7 @@ import {
   SettingsManager,
   type ExtensionFactory,
   type ToolResultEvent,
+  type ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -69,6 +70,11 @@ const WorkspaceEditApplyDetailsSchema = Type.Object(
   { additionalProperties: true },
 );
 const MAX_FORMATTER_STDERR_CHARACTERS = 50_000;
+/**
+ * Pi LSP tools that apply a Workspace Edit Preview: `lsp_apply`, and the removed single `lsp` tool,
+ * whose apply results remain in session history.
+ */
+const LSP_APPLY_TOOL_NAMES: ReadonlySet<string> = new Set(["lsp_apply", "lsp"]);
 
 type FormatterCommandFailure =
   | { readonly kind: "spawn_error"; readonly message: string }
@@ -104,8 +110,7 @@ function extractFormatterMutationPaths(event: ToolResultEvent): readonly string[
       .sort((left, right) => left.localeCompare(right));
   }
   if (
-    event.toolName !== "lsp" ||
-    event.input.operation !== "apply" ||
+    !LSP_APPLY_TOOL_NAMES.has(event.toolName) ||
     !Value.Check(MutationManifestSchema, event.input.mutation_manifest) ||
     !Value.Check(WorkspaceEditApplyDetailsSchema, event.details)
   ) {
@@ -341,12 +346,15 @@ export function createPiFormatterExtension(
       if (paths === undefined || paths.length === 0 || settings === undefined) return undefined;
       const warnings = await formatMutationPaths(paths, context.cwd, settings, context.signal);
       if (warnings.length === 0) return undefined;
-      return {
+      const result: ToolResultEventResult = {
         content: [
           ...event.content,
           { type: "text", text: `${warnings.join("\n")}\n\n${TROUBLESHOOTING_HINT}` },
         ],
       };
+      // Pi drops structured content whose content was replaced unless the handler returns it.
+      if (event.structuredContent !== undefined) result.structuredContent = event.structuredContent;
+      return result;
     });
   };
 }

@@ -20,7 +20,6 @@ function renderLines(component: { render(width: number): string[] }): string {
 describe("Pi LSP tool rendering", () => {
   test("uses a compact call and reveals complete operation output only when expanded", () => {
     const parameters = {
-      operation: "hover" as const,
       file_path: "packages/pi-lsp/src/lsp-tool.ts",
       line: 12,
       character: 4,
@@ -34,12 +33,13 @@ describe("Pi LSP tool rendering", () => {
       },
     };
 
-    expect(renderLines(renderLspToolCall(parameters, plainTheme, false, "/workspace"))).toBe(
-      "LSP  Hover  packages/pi-lsp/src/lsp-tool.ts:12:4",
-    );
+    expect(
+      renderLines(renderLspToolCall("hover", parameters, plainTheme, false, "/workspace")),
+    ).toBe("LSP  Hover  packages/pi-lsp/src/lsp-tool.ts:12:4");
     expect(
       renderLines(
         renderLspToolCall(
+          "hover",
           { ...parameters, file_path: "@/workspace/packages/pi-lsp/src/lsp-tool.ts" },
           plainTheme,
           false,
@@ -112,6 +112,33 @@ describe("Pi LSP tool rendering", () => {
       ),
     );
     expect(applied).toContain("Applied");
+    expect(
+      renderLines(renderLspToolCall("apply", { preview_id: "preview-1" }, plainTheme, false, "/")),
+    ).toBe("LSP  Apply  preview-1");
+    expect(renderLines(renderLspToolCall("status", "not an object", plainTheme, false, "/"))).toBe(
+      "LSP  Status",
+    );
+
+    // An apply partial failure is an error result that still summarizes the changed files.
+    const partial = renderLines(
+      renderLspToolResult(
+        {
+          content: [{ type: "text", text: "Workspace Edit rollback failed for: /workspace/a.ts" }],
+          details: {
+            kind: "workspace_edit_apply",
+            preview_id: "preview-1",
+            mutation_manifest: [{ operation: "modify", path: "/workspace/a.ts" }],
+            changed_paths: ["/workspace/a.ts"],
+            state: "partial_failure",
+          },
+        },
+        { expanded: false, isPartial: false },
+        plainTheme,
+        true,
+      ),
+    );
+    expect(partial).toContain("Partial failure");
+    expect(partial).toContain("1 file");
 
     expect(
       renderLines(

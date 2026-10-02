@@ -1,6 +1,7 @@
-import { type Static, Type } from "typebox";
+import { type Static, type TSchema, Type } from "typebox";
 
-const LSP_OPERATION_NAMES = [
+/** Every LSP operation in registration order; each is registered as the Pi tool `lsp_<operation>`. */
+export const LSP_OPERATION_NAMES = [
   "status",
   "capabilities",
   "restart",
@@ -38,6 +39,14 @@ const LSP_OPERATION_NAMES = [
   "apply",
 ] as const;
 
+/** One LSP operation, each registered as the Pi tool `lsp_<operation>`. */
+export type LspOperationName = (typeof LSP_OPERATION_NAMES)[number];
+
+const LspOperationNameSchema = Type.Unsafe<LspOperationName>({
+  type: "string",
+  enum: [...LSP_OPERATION_NAMES],
+});
+
 const MutationPreviewOperationNames = [
   "format_document",
   "format_range",
@@ -46,10 +55,6 @@ const MutationPreviewOperationNames = [
   "code_actions",
 ] as const;
 
-const LspOperationNameSchema = Type.Unsafe<(typeof LSP_OPERATION_NAMES)[number]>({
-  type: "string",
-  enum: [...LSP_OPERATION_NAMES],
-});
 const MutationPreviewOperationNameSchema = Type.Unsafe<
   (typeof MutationPreviewOperationNames)[number]
 >({
@@ -57,11 +62,12 @@ const MutationPreviewOperationNameSchema = Type.Unsafe<
   enum: [...MutationPreviewOperationNames],
 });
 
+/** One-based coordinates; described on the field so they reach the model with any system prompt. */
+const LineSchema = Type.Integer({ minimum: 1, description: "1-based" });
+const CharacterSchema = Type.Integer({ minimum: 1, description: "1-based Unicode code point" });
+
 const OneBasedPositionSchema = Type.Object(
-  {
-    line: Type.Integer({ minimum: 1 }),
-    character: Type.Integer({ minimum: 1 }),
-  },
+  { line: LineSchema, character: CharacterSchema },
   { additionalProperties: false },
 );
 
@@ -74,6 +80,11 @@ const OneBasedRangeSchema = Type.Object(
 );
 
 const FilePathSchema = Type.String({ minLength: 1 });
+/** A file that selects the Server Instance (and so the workspace root) for a workspace-wide call. */
+const RootAnchorPathSchema = Type.String({
+  minLength: 1,
+  description: "Any file in the workspace; selects the server and its root",
+});
 const ServerIdSchema = Type.String({ minLength: 1 });
 const OptionalServerIdSchema = Type.Optional(ServerIdSchema);
 const FormattingOptionsSchema = {
@@ -121,134 +132,109 @@ export const MutationManifestEntrySchema = Type.Union([
   ),
 ]);
 
-/** Canonical absolute-path file operations prepared before an LSP `apply` call. */
+/** Canonical absolute-path file operations prepared before an `lsp_apply` call. */
 export const MutationManifestSchema = Type.Array(MutationManifestEntrySchema);
 
-function fileOperationSchema<const TOperation extends (typeof LSP_OPERATION_NAMES)[number]>(
-  operation: TOperation,
-) {
+function fileParametersSchema() {
+  return Type.Object(
+    { file_path: FilePathSchema, server_id: OptionalServerIdSchema },
+    { additionalProperties: false },
+  );
+}
+
+function positionParametersSchema() {
   return Type.Object(
     {
-      operation: Type.Literal(operation),
       file_path: FilePathSchema,
+      line: LineSchema,
+      character: CharacterSchema,
       server_id: OptionalServerIdSchema,
     },
     { additionalProperties: false },
   );
 }
 
-function positionOperationSchema<const TOperation extends (typeof LSP_OPERATION_NAMES)[number]>(
-  operation: TOperation,
-) {
+function serverParametersSchema() {
   return Type.Object(
-    {
-      operation: Type.Literal(operation),
-      file_path: FilePathSchema,
-      line: Type.Integer({ minimum: 1 }),
-      character: Type.Integer({ minimum: 1 }),
-      server_id: OptionalServerIdSchema,
-    },
+    { server_id: ServerIdSchema, file_path: RootAnchorPathSchema },
     { additionalProperties: false },
   );
 }
 
-/** Strict arguments accepted by the single Pi `lsp` tool. Coordinates are one-based Unicode code points. */
-export const LspToolParametersSchema = Type.Union([
-  Type.Object({ operation: Type.Literal("status") }, { additionalProperties: false }),
-  Type.Object(
+/**
+ * Strict parameters of each `lsp_<operation>` tool, in registration order. Each tool's provider
+ * schema is exactly its own object, so no per-operation requirement table is needed.
+ * Coordinates are one-based Unicode code points.
+ */
+export const LspOperationParametersSchemas = {
+  status: Type.Object({}, { additionalProperties: false }),
+  capabilities: serverParametersSchema(),
+  restart: serverParametersSchema(),
+  diagnostics: fileParametersSchema(),
+  workspace_diagnostics: serverParametersSchema(),
+  completion: positionParametersSchema(),
+  hover: positionParametersSchema(),
+  signature_help: positionParametersSchema(),
+  declaration: positionParametersSchema(),
+  goto_definition: positionParametersSchema(),
+  goto_type_definition: positionParametersSchema(),
+  goto_implementation: positionParametersSchema(),
+  find_references: Type.Object(
     {
-      operation: Type.Literal("capabilities"),
-      server_id: ServerIdSchema,
       file_path: FilePathSchema,
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      operation: Type.Literal("restart"),
-      server_id: ServerIdSchema,
-      file_path: FilePathSchema,
-    },
-    { additionalProperties: false },
-  ),
-  fileOperationSchema("diagnostics"),
-  Type.Object(
-    {
-      operation: Type.Literal("workspace_diagnostics"),
-      server_id: ServerIdSchema,
-      file_path: FilePathSchema,
-    },
-    { additionalProperties: false },
-  ),
-  positionOperationSchema("completion"),
-  positionOperationSchema("hover"),
-  positionOperationSchema("signature_help"),
-  positionOperationSchema("declaration"),
-  positionOperationSchema("goto_definition"),
-  positionOperationSchema("goto_type_definition"),
-  positionOperationSchema("goto_implementation"),
-  Type.Object(
-    {
-      operation: Type.Literal("find_references"),
-      file_path: FilePathSchema,
-      line: Type.Integer({ minimum: 1 }),
-      character: Type.Integer({ minimum: 1 }),
+      line: LineSchema,
+      character: CharacterSchema,
       include_declaration: Type.Optional(Type.Boolean()),
       server_id: OptionalServerIdSchema,
     },
     { additionalProperties: false },
   ),
-  positionOperationSchema("document_highlights"),
-  fileOperationSchema("document_symbols"),
-  Type.Object(
+  document_highlights: positionParametersSchema(),
+  document_symbols: fileParametersSchema(),
+  workspace_symbols: Type.Object(
     {
-      operation: Type.Literal("workspace_symbols"),
       query: Type.String(),
-      file_path: FilePathSchema,
+      file_path: RootAnchorPathSchema,
       server_id: OptionalServerIdSchema,
     },
     { additionalProperties: false },
   ),
-  fileOperationSchema("document_links"),
-  positionOperationSchema("call_hierarchy"),
-  positionOperationSchema("incoming_calls"),
-  positionOperationSchema("outgoing_calls"),
-  positionOperationSchema("type_hierarchy"),
-  positionOperationSchema("supertypes"),
-  positionOperationSchema("subtypes"),
-  Type.Object(
+  document_links: fileParametersSchema(),
+  call_hierarchy: positionParametersSchema(),
+  incoming_calls: positionParametersSchema(),
+  outgoing_calls: positionParametersSchema(),
+  type_hierarchy: positionParametersSchema(),
+  supertypes: positionParametersSchema(),
+  subtypes: positionParametersSchema(),
+  selection_ranges: Type.Object(
     {
-      operation: Type.Literal("selection_ranges"),
       file_path: FilePathSchema,
       positions: Type.Array(OneBasedPositionSchema, { minItems: 1 }),
       server_id: OptionalServerIdSchema,
     },
     { additionalProperties: false },
   ),
-  fileOperationSchema("folding_ranges"),
-  fileOperationSchema("code_lenses"),
-  Type.Object(
+  folding_ranges: fileParametersSchema(),
+  code_lenses: fileParametersSchema(),
+  inlay_hints: Type.Object(
     {
-      operation: Type.Literal("inlay_hints"),
       file_path: FilePathSchema,
       range: OneBasedRangeSchema,
       server_id: OptionalServerIdSchema,
     },
     { additionalProperties: false },
   ),
-  fileOperationSchema("document_colors"),
-  Type.Object(
+  document_colors: fileParametersSchema(),
+  format_document: Type.Object(
     {
-      operation: Type.Literal("format_document"),
       file_path: FilePathSchema,
       server_id: OptionalServerIdSchema,
       ...FormattingOptionsSchema,
     },
     { additionalProperties: false },
   ),
-  Type.Object(
+  format_range: Type.Object(
     {
-      operation: Type.Literal("format_range"),
       file_path: FilePathSchema,
       range: OneBasedRangeSchema,
       server_id: OptionalServerIdSchema,
@@ -256,33 +242,30 @@ export const LspToolParametersSchema = Type.Union([
     },
     { additionalProperties: false },
   ),
-  Type.Object(
+  format_on_type: Type.Object(
     {
-      operation: Type.Literal("format_on_type"),
       file_path: FilePathSchema,
-      line: Type.Integer({ minimum: 1 }),
-      character: Type.Integer({ minimum: 1 }),
+      line: LineSchema,
+      character: CharacterSchema,
       trigger_character: Type.String({ minLength: 1 }),
       server_id: OptionalServerIdSchema,
       ...FormattingOptionsSchema,
     },
     { additionalProperties: false },
   ),
-  positionOperationSchema("prepare_rename"),
-  Type.Object(
+  prepare_rename: positionParametersSchema(),
+  rename: Type.Object(
     {
-      operation: Type.Literal("rename"),
       file_path: FilePathSchema,
-      line: Type.Integer({ minimum: 1 }),
-      character: Type.Integer({ minimum: 1 }),
+      line: LineSchema,
+      character: CharacterSchema,
       new_name: Type.String({ minLength: 1 }),
       server_id: OptionalServerIdSchema,
     },
     { additionalProperties: false },
   ),
-  Type.Object(
+  code_actions: Type.Object(
     {
-      operation: Type.Literal("code_actions"),
       file_path: FilePathSchema,
       range: OneBasedRangeSchema,
       only_kinds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
@@ -290,79 +273,55 @@ export const LspToolParametersSchema = Type.Union([
     },
     { additionalProperties: false },
   ),
-  Type.Object(
+  apply: Type.Object(
     {
-      operation: Type.Literal("apply"),
       preview_id: Type.String({ minLength: 1 }),
-      mutation_manifest: Type.Optional(MutationManifestSchema),
+      mutation_manifest: Type.Optional(
+        Type.Array(MutationManifestEntrySchema, {
+          description: "Set from the preview before the call runs; a supplied value is replaced",
+        }),
+      ),
     },
     { additionalProperties: false },
   ),
+} as const satisfies Record<LspOperationName, TSchema>;
+
+/** Arguments of one `lsp_<operation>` tool after TypeBox validation. */
+export type LspOperationParameters<TOperation extends LspOperationName> = Static<
+  (typeof LspOperationParametersSchemas)[TOperation]
+>;
+
+/** One operation call: the operation name plus that tool's validated arguments. */
+export type LspToolParameters = {
+  [TOperation in LspOperationName]: {
+    readonly operation: TOperation;
+  } & LspOperationParameters<TOperation>;
+}[LspOperationName];
+
+/** The Pi tool name registered for one LSP operation. */
+export function lspToolName(operation: LspOperationName): string {
+  return `lsp_${operation}`;
+}
+
+/** The removed single tool whose results remain in session history (ADR-0003). */
+export const LEGACY_LSP_TOOL_NAME = "lsp";
+
+/** Tool names whose results Pi LSP recognizes in session history: the legacy tool and every current tool. */
+export const LSP_RESULT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  LEGACY_LSP_TOOL_NAME,
+  ...LSP_OPERATION_NAMES.map(lspToolName),
 ]);
 
-/** Model-visible required fields, derived from the strict branches rather than a second operation map. */
-export const LspToolOperationRequirements = [
-  ...Map.groupBy(LspToolParametersSchema.anyOf, (branch) =>
-    branch.required.filter((field) => field !== "operation").join(", "),
-  ),
-]
-  .map(
-    ([fields, branches]) =>
-      `${branches.map((branch) => branch.properties.operation.const).join(", ")}: ${fields || "none"}`,
-  )
-  .join("\n");
-
-/**
- * Provider-facing arguments for the single Pi `lsp` tool.
- *
- * Function-calling providers require a tool's `parameters` to be a JSON Schema of
- * `type: "object"`. A top-level union serialises to `anyOf` with no `type`, and providers that
- * validate strictly reject **every** request while such a tool is registered (DeepSeek returns
- * `400 invalid_request_error` before generating, including for turns that never use the tool).
- *
- * This flat object is therefore what Pi registers and what the model sees. Strictness is
- * unchanged: `LspToolParametersSchema` stays the per-operation validator applied to the
- * arguments at the tool ingress, so an incomplete or contradictory combination is still
- * rejected with the existing `Pi LSP: invalid tool arguments` failure.
- */
-export const LspToolProviderParametersSchema = Type.Object(
-  {
-    operation: LspOperationNameSchema,
-    file_path: Type.Optional(FilePathSchema),
-    server_id: OptionalServerIdSchema,
-    line: Type.Optional(Type.Integer({ minimum: 1 })),
-    character: Type.Optional(Type.Integer({ minimum: 1 })),
-    include_declaration: Type.Optional(Type.Boolean()),
-    query: Type.Optional(Type.String()),
-    positions: Type.Optional(Type.Array(OneBasedPositionSchema, { minItems: 1 })),
-    range: Type.Optional(OneBasedRangeSchema),
-    trigger_character: Type.Optional(Type.String({ minLength: 1 })),
-    new_name: Type.Optional(Type.String({ minLength: 1 })),
-    only_kinds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
-    preview_id: Type.Optional(Type.String({ minLength: 1 })),
-    mutation_manifest: Type.Optional(MutationManifestSchema),
-    // Formatting options used by the formatting branches. They are optional here because this flat
-    // object serves every operation; the strict per-operation branch still decides which of them a
-    // given call must supply, so the ingress validator rejects an incomplete combination.
-    tab_size: Type.Optional(FormattingOptionsSchema.tab_size),
-    insert_spaces: Type.Optional(FormattingOptionsSchema.insert_spaces),
-    trim_trailing_whitespace: FormattingOptionsSchema.trim_trailing_whitespace,
-    insert_final_newline: FormattingOptionsSchema.insert_final_newline,
-    trim_final_newlines: FormattingOptionsSchema.trim_final_newlines,
-  },
-  { additionalProperties: false },
-);
-
-/** One valid input branch for the Pi LSP tool after TypeBox validation. */
-export type LspToolParameters = Static<typeof LspToolParametersSchema>;
-
-/** Provider-facing arguments Pi registers for the `lsp` tool, rebuilt into one strict branch at the tool ingress. */
-export type LspToolProviderParameters = Static<typeof LspToolProviderParametersSchema>;
+/** Tool names whose results report a guarded Workspace Edit application. */
+export const LSP_APPLY_RESULT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  LEGACY_LSP_TOOL_NAME,
+  lspToolName("apply"),
+]);
 
 /** One canonical Mutation Manifest operation exposed to pre-execution permission hooks. */
 export type MutationManifestEntry = Static<typeof MutationManifestEntrySchema>;
 
-/** The canonical absolute-path Mutation Manifest prepared for an LSP `apply` call. */
+/** The canonical absolute-path Mutation Manifest prepared for an `lsp_apply` call. */
 export type MutationManifest = Static<typeof MutationManifestSchema>;
 
 const ServerOperationOutcomeSchema = Type.Object(
@@ -518,3 +477,110 @@ export type LspWorkspaceEditPreviewRecord = Static<typeof LspWorkspaceEditPrevie
 
 /** A normalized per-server outcome used when rendering an LSP read operation. */
 export type ServerOperationOutcome = Static<typeof ServerOperationOutcomeSchema>;
+
+/**
+ * Fields every structured LSP result carries. Pi keeps the structured result out of model context
+ * and session history, so the model-facing output limit does not apply; it has its own 1 MiB cap,
+ * beyond which the result is bounded. `truncated` reports that the model-visible text was cut or
+ * the structured result was bounded, `structured_truncated` reports that the structured data itself is incomplete, not just the
+ * model-visible text, and `spill_path` names the Result Spill holding the complete output (the complete
+ * structured data when it was bounded, otherwise the complete text).
+ */
+const StructuredResultEnvelope = {
+  truncated: Type.Boolean(),
+  structured_truncated: Type.Boolean(),
+  spill_path: Type.Optional(Type.String()),
+  server_preview_ids: Type.Optional(Type.Array(Type.String())),
+};
+
+/** Compact output shape of a Mutation Manifest entry; the strict input schema is a union. */
+const MutationManifestOutputSchema = Type.Array(
+  Type.Object({
+    operation: Type.Union([
+      Type.Literal("create"),
+      Type.Literal("modify"),
+      Type.Literal("delete"),
+      Type.Literal("rename"),
+    ]),
+    path: Type.String(),
+    destination_path: Type.Optional(Type.String()),
+  }),
+);
+
+/** Structured result of every read query: each answering server's normalized protocol value. */
+export const LspReadOutputSchema = Type.Object({
+  results: Type.Array(
+    Type.Object({ server_id: Type.String(), root_path: Type.String(), value: Type.Unknown() }),
+  ),
+  warnings: Type.Array(Type.String()),
+  ...StructuredResultEnvelope,
+});
+
+/** Structured result of `lsp_status`. */
+export const LspStatusOutputSchema = Type.Object({
+  servers: Type.Array(
+    Type.Object({
+      server_id: Type.String(),
+      state: Type.Union([
+        Type.Literal("configured"),
+        Type.Literal("disabled"),
+        Type.Literal("running"),
+        Type.Literal("starting"),
+        Type.Literal("stopped"),
+        Type.Literal("unavailable"),
+      ]),
+      root_path: Type.Optional(Type.String()),
+      error: Type.Optional(Type.String()),
+    }),
+  ),
+  warnings: Type.Array(Type.String()),
+  ...StructuredResultEnvelope,
+});
+
+/** Structured result of `lsp_capabilities` and `lsp_restart`. */
+export const LspServerOutputSchema = Type.Object({
+  server_id: Type.String(),
+  root_path: Type.String(),
+  capabilities: Type.Unknown(),
+  ...StructuredResultEnvelope,
+});
+
+/** Structured result of a tool that creates one Workspace Edit Preview. */
+export const LspPreviewOutputSchema = Type.Object({
+  preview_id: Type.String(),
+  server_id: Type.String(),
+  summary: Type.String(),
+  mutation_manifest: MutationManifestOutputSchema,
+  ...StructuredResultEnvelope,
+});
+
+/** Structured result of `lsp_code_actions`; edit-bearing actions carry a preview. */
+export const LspCodeActionsOutputSchema = Type.Object({
+  server_id: Type.String(),
+  actions: Type.Array(
+    Type.Object({
+      title: Type.Optional(Type.String()),
+      kind: Type.Optional(Type.String()),
+      applicable: Type.Boolean(),
+      preview_id: Type.Optional(Type.String()),
+      summary: Type.Optional(Type.String()),
+      mutation_manifest: Type.Optional(MutationManifestOutputSchema),
+      command: Type.Optional(Type.Unknown()),
+    }),
+  ),
+  ...StructuredResultEnvelope,
+});
+
+/** Structured result of `lsp_apply`, including a partial failure reported with `isError`. */
+export const LspApplyOutputSchema = Type.Object({
+  preview_id: Type.String(),
+  state: Type.Union([Type.Literal("applied"), Type.Literal("partial_failure")]),
+  changed_paths: Type.Array(Type.String()),
+  mutation_manifest: MutationManifestOutputSchema,
+  changed_files: Type.Optional(Type.Array(Type.String())),
+  created_files: Type.Optional(Type.Array(Type.String())),
+  deleted_files: Type.Optional(Type.Array(Type.String())),
+  moved_files: Type.Optional(Type.Array(Type.Object({ from: Type.String(), to: Type.String() }))),
+  message: Type.Optional(Type.String()),
+  ...StructuredResultEnvelope,
+});

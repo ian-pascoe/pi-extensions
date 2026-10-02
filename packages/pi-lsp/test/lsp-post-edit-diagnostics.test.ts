@@ -61,36 +61,99 @@ test("preserves an unknown Codex result and reports its adapter boundary", () =>
   });
 });
 
-test("uses verified lsp apply manifests and actual changed result paths", () => {
+const verifiedManifest = [
+  { operation: "modify", path: "/work/a.ts" },
+  { operation: "rename", path: "/work/before.ts", destination_path: "/work/after.ts" },
+  { operation: "delete", path: "/work/removed.ts" },
+];
+const partialApplyDetails = {
+  kind: "workspace_edit_apply",
+  preview_id: "preview-1",
+  mutation_manifest: [],
+  changed_paths: ["/work/a.ts", "/work/after.ts"],
+  state: "partial_failure",
+};
+
+test.each([
+  ["lsp_apply", { preview_id: "preview-1", mutation_manifest: verifiedManifest }],
+  ["lsp", { operation: "apply", preview_id: "preview-1", mutation_manifest: verifiedManifest }],
+])("uses verified %s manifests and actual changed result paths", (toolName, input) => {
   expect(
     extractPostEditDiagnosticPaths(
-      mutationEvent({
-        toolName: "lsp",
-        input: {
-          operation: "apply",
-          mutation_manifest: [
-            { operation: "modify", path: "/work/a.ts" },
-            {
-              operation: "rename",
-              path: "/work/before.ts",
-              destination_path: "/work/after.ts",
-            },
-            { operation: "delete", path: "/work/removed.ts" },
-          ],
-        },
-        details: {
-          kind: "workspace_edit_apply",
-          preview_id: "preview-1",
-          mutation_manifest: [],
-          changed_paths: ["/work/a.ts", "/work/after.ts"],
-          state: "partial_failure",
-        },
-      }),
+      mutationEvent({ toolName, input, isError: true, details: partialApplyDetails }),
     ),
   ).toEqual({
     paths: [{ path: "/work/a.ts" }, { path: "/work/after.ts" }],
     warnings: [],
   });
+});
+
+test.each(["lsp_rename", "lsp_code_actions", "not_lsp"])(
+  "ignores %s results even with a valid manifest and apply details",
+  (toolName) => {
+    // Only the tool name distinguishes this from a real lsp_apply result.
+    expect(
+      extractPostEditDiagnosticPaths(
+        mutationEvent({
+          toolName,
+          input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+          details: { ...partialApplyDetails, state: "applied" },
+        }),
+      ),
+    ).toBeUndefined();
+  },
+);
+
+test("ignores an lsp_apply result without Workspace Edit application details", () => {
+  expect(
+    extractPostEditDiagnosticPaths(
+      mutationEvent({
+        toolName: "lsp_apply",
+        input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+        details: undefined,
+      }),
+    ),
+  ).toBeUndefined();
+  expect(
+    extractPostEditDiagnosticPaths(
+      mutationEvent({
+        toolName: "lsp_apply",
+        input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+        details: { kind: "workspace_edit_preview", preview_id: "preview-1" },
+      }),
+    ),
+  ).toBeUndefined();
+});
+
+test.each([false, true])(
+  "keeps isError %s on a partial lsp_apply failure it augments",
+  async (isError) => {
+    const result = await appendPostEditDiagnostics(
+      mutationEvent({
+        toolName: "lsp_apply",
+        input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+        details: partialApplyDetails,
+        isError,
+      }),
+      async () => [{ kind: "no_diagnostics", path: "/work/a.ts" }],
+    );
+    // A false input stays false: Post-edit Diagnostics never flips the error state.
+    expect(result?.isError).toBe(isError);
+  },
+);
+
+test("keeps the structured result of an lsp_apply call it augments", async () => {
+  const structuredContent = { preview_id: "preview-1", state: "applied", truncated: false };
+  const result = await appendPostEditDiagnostics(
+    mutationEvent({
+      toolName: "lsp_apply",
+      input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+      details: { ...partialApplyDetails, state: "applied" },
+      structuredContent,
+    }),
+    async () => [{ kind: "no_diagnostics", path: "/work/a.ts" }],
+  );
+  expect(result?.structuredContent).toBe(structuredContent);
 });
 
 test("appends diagnostics after a partial mutation without changing mutation fields", async () => {

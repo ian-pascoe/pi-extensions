@@ -9,7 +9,8 @@
 - **Supported Mutation Tool** — a file-modifying Pi tool whose affected paths the extension can identify exactly. Native `edit`, native `write`, Codex-style `apply_patch`, and LSP preview application are the initial Supported Mutation Tools.
 - **Workspace Edit Preview** — a proposed set of language-server changes with the source versions needed to reject a stale application.
 - **Validated Workspace Edit** — a Workspace Edit Preview whose source versions and paths still match at application time. It is applied as one guarded batch with rollback on failure, not as a crash-atomic filesystem transaction.
-- **Result Spill** — the complete LSP operation output referenced when the model-visible result reaches Pi's standard output limit.
+- **Result Spill** — the complete LSP operation output referenced when the model-visible result reaches Pi's standard output limit (it holds the complete text), or when a structured result exceeds its 1 MiB cap and is bounded (it holds the complete structured data as JSON).
+- **Structured Result** — the JSON `structuredContent` of an LSP tool result, which programmatic callers such as codemode scripts receive. It is kept out of model context, is capped at 1 MiB like Pi's built-in `bash` tool, and is bounded deterministically (longest strings and array tails cut, identifying fields kept, `structured_truncated: true`) when larger. `truncated` also covers a cut of only the model-visible text.
 - **Server Definition** — a configured language-server command, language mapping, workspace-root policy, Activation Gate, and protocol settings identified by a stable server ID. A project Server Definition replaces a global definition with the same ID; an invalid project replacement shadows the global definition and is quarantined.
 - **Server Instance** — one running language-server process for a Server Definition and a detected workspace root.
 - **Stop** — ending a Server Instance without preventing a later lazy start for its Server Definition.
@@ -20,7 +21,7 @@
 
 ## Behavior boundary
 
-The extension provides agent-useful language-server operations through one Pi tool. Mutating operations produce a Workspace Edit Preview and require a separate apply operation. Apply requires a Validated Workspace Edit and may include file creation, deletion, or renaming.
+The extension provides agent-useful language-server operations through one Pi tool per operation. Mutating operations produce a Workspace Edit Preview and require a separate apply tool call. Apply requires a Validated Workspace Edit and may include file creation, deletion, or renaming.
 
 Language-server requests to apply edits are also converted into Workspace Edit Previews; servers never bypass explicit application. The extension imposes no workspace path boundary on a Validated Workspace Edit. Before application, its verified Mutation Manifest is visible to other extensions, which may block the tool call.
 
@@ -37,4 +38,4 @@ When several Server Instances handle a read, successful results remain useful ev
 
 The extension does not own language-server installation, a built-in server catalog, formatting outside LSP, static parsing, or debugging. Those capabilities belong in separate additions only after demonstrated need.
 
-Post-edit Diagnostics apply whenever a Supported Mutation Tool reports affected files, including partial failures. Only Server Instances that advertise document diagnostics participate. A successful mutation remains successful when Post-edit Diagnostics are unavailable. Pi's standard output limit never discards LSP output; excess output remains available as a Result Spill.
+Post-edit Diagnostics apply whenever a Supported Mutation Tool reports affected files, including partial failures. Only Server Instances that advertise document diagnostics participate. A successful mutation remains successful when Post-edit Diagnostics are unavailable. Neither Pi's standard output limit nor the Structured Result cap discards LSP output; excess output remains available as a Result Spill.

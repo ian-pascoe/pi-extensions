@@ -263,10 +263,19 @@ describe("Pi Formatter extension lifecycle", () => {
   });
 
   test.each([
-    ["edit", (path: string) => ({ input: { path }, details: undefined })],
-    ["write", (path: string) => ({ input: { path }, details: undefined })],
+    ["edit", "edit", (path: string) => ({ input: { path }, details: undefined })],
+    ["write", "write", (path: string) => ({ input: { path }, details: undefined })],
     [
-      "lsp apply",
+      "lsp_apply",
+      "lsp_apply",
+      (path: string) => ({
+        input: { preview_id: "preview-1", mutation_manifest: [{ operation: "modify", path }] },
+        details: { kind: "workspace_edit_apply", state: "applied", changed_paths: [path] },
+      }),
+    ],
+    [
+      "legacy lsp apply",
+      "lsp",
       (path: string) => ({
         input: {
           operation: "apply",
@@ -275,7 +284,7 @@ describe("Pi Formatter extension lifecycle", () => {
         details: { kind: "workspace_edit_apply", state: "applied", changed_paths: [path] },
       }),
     ],
-  ])("formats successful %s mutations", async (name, eventForPath) => {
+  ])("formats successful %s mutations", async (name, toolName, eventForPath) => {
     const script =
       "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').toUpperCase())";
     const harness = await createFormatterHarness({
@@ -285,11 +294,82 @@ describe("Pi Formatter extension lifecycle", () => {
     await writeFile(filePath, "format me");
     const event = eventForPath(filePath);
 
-    await harness.runner.emitToolResult(
-      toolResultEvent(name === "lsp apply" ? "lsp" : name, event),
-    );
+    await harness.runner.emitToolResult(toolResultEvent(toolName, event));
 
     expect(await readFile(filePath, "utf8")).toBe("FORMAT ME");
+  });
+
+  test.each(["lsp_rename", "lsp_code_actions", "not_lsp"])(
+    "ignores %s results even with a valid manifest and apply details",
+    async (toolName) => {
+      const script = "require('node:fs').writeFileSync(process.argv[1],'formatted')";
+      const harness = await createFormatterHarness({
+        formatter: { formatters: { overwrite: formatterDefinition(["-e", script, "$FILE"]) } },
+      });
+      const filePath = resolve(harness.cwd, "preview.txt");
+      await writeFile(filePath, "original");
+
+      // Only the tool name distinguishes this from a real lsp_apply result.
+      await harness.runner.emitToolResult(
+        toolResultEvent(toolName, {
+          input: {
+            preview_id: "preview-1",
+            mutation_manifest: [{ operation: "modify", path: filePath }],
+          },
+          details: { kind: "workspace_edit_apply", state: "applied", changed_paths: [filePath] },
+        }),
+      );
+
+      expect(await readFile(filePath, "utf8")).toBe("original");
+    },
+  );
+
+  test("ignores an lsp_apply result without Workspace Edit application details", async () => {
+    const script = "require('node:fs').writeFileSync(process.argv[1],'formatted')";
+    const harness = await createFormatterHarness({
+      formatter: { formatters: { overwrite: formatterDefinition(["-e", script, "$FILE"]) } },
+    });
+    const filePath = resolve(harness.cwd, "preview.txt");
+    await writeFile(filePath, "original");
+
+    await harness.runner.emitToolResult(
+      toolResultEvent("lsp_apply", {
+        input: {
+          preview_id: "preview-1",
+          mutation_manifest: [{ operation: "modify", path: filePath }],
+        },
+        details: { kind: "workspace_edit_preview", state: "available" },
+      }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe("original");
+  });
+
+  test("keeps the lsp_apply structured result when appending formatter warnings", async () => {
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: { broken: formatterDefinition(["-e", "process.exit(3)", "$FILE"]) },
+      },
+    });
+    const filePath = resolve(harness.cwd, "structured.txt");
+    await writeFile(filePath, "original");
+    const structuredContent = { preview_id: "preview-1", state: "applied", truncated: false };
+
+    const result = await harness.runner.emitToolResult({
+      ...toolResultEvent("lsp_apply", {
+        input: {
+          preview_id: "preview-1",
+          mutation_manifest: [{ operation: "modify", path: filePath }],
+        },
+        details: { kind: "workspace_edit_apply", state: "applied", changed_paths: [filePath] },
+      }),
+      structuredContent,
+    });
+
+    expect(result?.content?.at(-1)).toMatchObject({
+      text: expect.stringContaining("Pi Formatter: broken failed"),
+    });
+    expect(result?.structuredContent).toEqual(structuredContent);
   });
 
   test("warns without changing mutation success and continues after a formatter fails", async () => {
