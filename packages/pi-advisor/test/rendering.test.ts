@@ -195,6 +195,23 @@ describe("Advisor status", () => {
     );
   });
 
+  it("keeps every recognisable field when one field no longer matches", () => {
+    const text = status(
+      {
+        ...snapshot,
+        settings: { ...settings, retiredOption: true },
+        children: "not a list",
+      },
+      true,
+    );
+    expect(text).toContain("Advisor \u25cf reviewing");
+    expect(text).toContain("anthropic/claude-sonnet");
+    expect(text).toContain("tokens 41.2k \u00b7 cost $0.18");
+    expect(text).toContain("\u26a0 unavailable tools: lsp_diagnostics");
+    expect(text).not.toContain("retiredOption");
+    expect(text).not.toContain("children");
+  });
+
   it("falls back to the raw record when even the state is missing", () => {
     expect(status({ unexpected: 1 })).toContain('"unexpected": 1');
   });
@@ -297,6 +314,7 @@ describe("Advisor footer", () => {
 
   it("stays quiet while armed and reports review progress", () => {
     expect(advisorFooterText({ state: "armed", backlog: 0 }, [], plainTheme)).toBe("advisor");
+    expect(advisorFooterText({ state: "armed", backlog: 1 }, [], plainTheme)).toBe("advisor");
     expect(advisorFooterText({ state: "reviewing", backlog: 2 }, [], plainTheme)).toBe(
       "advisor: reviewing · backlog 2",
     );
@@ -318,6 +336,7 @@ describe("Advisor footer", () => {
         [
           { state: "armed", backlog: 0 },
           { state: "disabled", backlog: 0 },
+          { state: "consulting", backlog: 0 },
         ],
         plainTheme,
       ),

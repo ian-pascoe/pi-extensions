@@ -10,7 +10,6 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
 import {
-  advisorOptionKey,
   parseAdvisorOptions,
   readAdvisorLayers,
   readAdvisorOverrides,
@@ -18,8 +17,8 @@ import {
   writeAdvisorSettings,
   type AdvisorLayers,
   type AdvisorChange,
+  type AdvisorAppliedChange,
   type AdvisorConfig,
-  type AdvisorOptions,
 } from "./advisor-settings.js";
 import {
   advisorFooterText,
@@ -35,12 +34,6 @@ import { AdvisorObserver } from "./advisor-observer.js";
 import { isAdvisorSession, type AdvisorResourceInputs } from "./advisor-session.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
-/** The applied configuration change a status entry confirms. */
-interface AppliedChange {
-  scope: "session" | "global" | "project";
-  key: keyof AdvisorOptions;
-  options: AdvisorOptions;
-}
 interface WatchedChild {
   agentId: string;
   resourceInputs: AdvisorResourceInputs;
@@ -302,6 +295,8 @@ export default function advisor(pi: ExtensionAPI): void {
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
+    // A new child observer reports no state change until it reviews; show it now.
+    updateFooter();
     payload.attach({
       beginTurn: () => child.observer?.beforeTask(),
       finishTurn: async () => {
@@ -350,7 +345,7 @@ export default function advisor(pi: ExtensionAPI): void {
     updateFooter();
   }
 
-  function status(ctx: ExtensionContext, change?: AppliedChange): void {
+  function status(ctx: ExtensionContext, change?: AdvisorAppliedChange): void {
     try {
       if (!observed) throw new Error(error ?? "Advisor session is unavailable");
       const resolved = readAdvisorSettings(observed, layers);
@@ -389,7 +384,7 @@ export default function advisor(pi: ExtensionAPI): void {
       const subject = observed;
       let stamp = generation;
       const isCurrent = () => generation === stamp && observed === subject;
-      let applied: AppliedChange | undefined;
+      let applied: AdvisorAppliedChange | undefined;
       try {
         if (!subject) throw new Error(error ?? "Advisor session is unavailable");
         const command = parseAdvisorCommand(args);
@@ -406,6 +401,7 @@ export default function advisor(pi: ExtensionAPI): void {
             if (!isCurrent() || edited === undefined) return;
             change = {
               action: "set",
+              key: "prompt",
               patch: parseAdvisorOptions({ prompt: edited }, command.scope),
             };
           } else change = command;
@@ -426,10 +422,7 @@ export default function advisor(pi: ExtensionAPI): void {
           }
           applied = {
             scope: command.scope,
-            key:
-              change.action === "inherit"
-                ? change.key
-                : advisorOptionKey(Object.keys(change.patch)[0] ?? ""),
+            key: change.key,
             options: change.action === "inherit" ? {} : change.patch,
           };
           error = undefined;

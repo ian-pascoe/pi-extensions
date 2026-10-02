@@ -3,8 +3,14 @@ import * as piAi from "@earendil-works/pi-ai";
 import type { Context, ImageContent } from "@earendil-works/pi-ai";
 import * as piSdk from "@earendil-works/pi-coding-agent";
 import type { AgentSession, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
+import {
+  advisorFindingSchema,
+  type AdvisorFinding,
+  type AdvisorObserverState,
+  type AdvisorSeverity,
+} from "./advisor-contract.js";
 import type { AdvisorConfig } from "./advisor-settings.js";
 import {
   createAdvisorSession,
@@ -15,33 +21,14 @@ import {
 
 /** Delivery authority supplied by the native session owner. */
 export type AdvisorMode = "interactive" | "headless-root" | "owned-child";
-export type AdvisorSeverity = "nit" | "concern" | "blocker";
-/** Observer lifecycle state reported by `status`. */
-export type AdvisorObserverState = "disabled" | "paused" | "consulting" | "reviewing" | "armed";
 /** Owner-supplied recreation inputs and native UI/delivery surfaces. */
 export interface AdvisorObserverOptions {
   resourceInputs?: AdvisorResourceInputs;
-  onIntervention?: (finding: {
-    severity: AdvisorSeverity;
-    message: string;
-  }) => void | Promise<void>;
+  onIntervention?: (finding: AdvisorFinding) => void | Promise<void>;
   onError?: (message: string) => void;
   /** Called after `status` state or backlog may have changed. */
   onStateChange?: () => void;
 }
-const severitySchema = Type.Union([
-  Type.Literal("nit"),
-  Type.Literal("concern"),
-  Type.Literal("blocker"),
-]);
-const findingSchema = Type.Object(
-  {
-    severity: severitySchema,
-    message: Type.String({ minLength: 1, maxLength: 4000 }),
-  },
-  { additionalProperties: false },
-);
-type Finding = Static<typeof findingSchema>;
 const legacyReportSchema = Type.Object(
   {
     severity: Type.Union([Type.Literal("none"), Type.Literal("concern"), Type.Literal("blocker")]),
@@ -52,7 +39,7 @@ const legacyReportSchema = Type.Object(
 const adviceMessageSchema = Type.Object({
   role: Type.Literal("custom"),
   customType: Type.Literal("pi-advisor"),
-  details: findingSchema,
+  details: advisorFindingSchema,
 });
 const pendingQueuesSchema = Type.Object({
   agent: Type.Object({ steeringQueue: Type.Object({ messages: Type.Array(Type.Unknown()) }) }),
@@ -60,7 +47,7 @@ const pendingQueuesSchema = Type.Object({
 });
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Pi has no selective queue-removal API. Validate its native queue data and remove only exact owned finding identities, never unrelated messages or journal entries.
-function retractFindings(session: unknown, findings: ReadonlySet<Finding>): void {
+function retractFindings(session: unknown, findings: ReadonlySet<AdvisorFinding>): void {
   if (!findings.size) return;
   if (!Value.Check(pendingQueuesSchema, session))
     throw new Error("Unsupported Advisor SDK: native pending-message queues are unavailable");
@@ -90,7 +77,7 @@ interface OperationBase {
 }
 interface Review extends OperationBase {
   kind: "review";
-  findings?: Finding[];
+  findings?: AdvisorFinding[];
 }
 interface Consultation extends OperationBase {
   kind: "consultation";
@@ -118,8 +105,8 @@ const severityRank = { nit: 1, concern: 2, blocker: 3 } as const satisfies Recor
 >;
 
 /** Keep report order while replacing same-message findings with their highest severity. */
-function selectFindings(findings: readonly Finding[], limit: number): Finding[] {
-  const distinct = new Map<string, Finding>();
+function selectFindings(findings: readonly AdvisorFinding[], limit: number): AdvisorFinding[] {
+  const distinct = new Map<string, AdvisorFinding>();
   for (const finding of findings) {
     const key = normalized(finding.message);
     const previous = distinct.get(key);
@@ -172,7 +159,7 @@ export class AdvisorObserver {
   private snapshot: Context | undefined;
   private supplied: Context | undefined;
   private suppliedBoundary: ReturnType<typeof observationBoundary> | undefined;
-  private readonly pendingFindings = new Map<Finding, Review>();
+  private readonly pendingFindings = new Map<AdvisorFinding, Review>();
   private completed = 0;
   private reviewed = 0;
   private running: Promise<void> | undefined;
@@ -185,7 +172,7 @@ export class AdvisorObserver {
   private error: string | undefined;
   private closed = false;
   private disposing: Promise<void> | undefined;
-  private deferred: Finding[] = [];
+  private deferred: AdvisorFinding[] = [];
   private readonly delivered = new Map<string, number>();
   private lastConcern = -3;
   private unsafeEnding = false;
@@ -339,7 +326,7 @@ export class AdvisorObserver {
       if (
         entry.type === "custom_message" &&
         entry.customType === "pi-advisor" &&
-        Value.Check(findingSchema, entry.details)
+        Value.Check(advisorFindingSchema, entry.details)
       ) {
         const key = normalized(entry.details.message);
         this.delivered.set(
@@ -354,7 +341,7 @@ export class AdvisorObserver {
     this.lastConcern = this.completed - (turnsSinceConcern ?? 3);
   }
   private retractInvalidFindings(): void {
-    const stale = new Set<Finding>();
+    const stale = new Set<AdvisorFinding>();
     for (const [finding, review] of this.pendingFindings) {
       if (!this.current(review)) {
         stale.add(finding);
@@ -471,7 +458,7 @@ export class AdvisorObserver {
       const runtimeEpoch = operation.epoch;
       const reportSchema = Type.Object(
         {
-          findings: Type.Array(findingSchema, {
+          findings: Type.Array(advisorFindingSchema, {
             maxItems: 32,
             description: `Up to ${this.config.maxFindingsPerReview} distinct findings in priority order; use an empty array when there are none`,
           }),
@@ -756,7 +743,7 @@ export class AdvisorObserver {
     }
   }
 
-  private async deliver(findings: readonly Finding[], review: Review): Promise<void> {
+  private async deliver(findings: readonly AdvisorFinding[], review: Review): Promise<void> {
     const fresh = findings.filter((finding) => {
       const deliveredRank = this.delivered.get(normalized(finding.message)) ?? 0;
       return severityRank[finding.severity] > deliveredRank;

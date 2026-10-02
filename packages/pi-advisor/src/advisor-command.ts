@@ -45,7 +45,12 @@ export function parseAdvisorCommand(input: string) {
   }
   if (text === "prompt") return { action: "prompt" as const, scope };
   if (text === "on" || text === "off") {
-    return { action: "set" as const, scope, patch: { enabled: text === "on" } };
+    return {
+      action: "set" as const,
+      scope,
+      key: "enabled" as const,
+      patch: { enabled: text === "on" },
+    };
   }
   const inherit = /^inherit(?:\s+(\S+))?$/.exec(text);
   if (inherit) {
@@ -53,6 +58,7 @@ export function parseAdvisorCommand(input: string) {
   }
   const set = /^set\s+(\S+)\s+([\s\S]+)$/.exec(text);
   if (!set?.[1] || !set[2]) throw new Error(usage);
-  const patch: AdvisorOptions = parseAdvisorOptions({ [set[1]]: JSON.parse(set[2]) }, scope);
-  return { action: "set" as const, scope, patch };
+  const key = advisorOptionKey(set[1]);
+  const patch: AdvisorOptions = parseAdvisorOptions({ [key]: JSON.parse(set[2]) }, scope);
+  return { action: "set" as const, scope, key, patch };
 }

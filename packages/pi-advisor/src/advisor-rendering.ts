@@ -9,61 +9,41 @@ import { Box, Container, Markdown, Text, type Component } from "@earendil-works/
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
-  advisorOptionKey,
+  advisorFindingSchema,
+  advisorSeveritySchema,
+  advisorStateSchema,
+  type AdvisorSeverity,
+  type AdvisorState,
+} from "./advisor-contract.js";
+import {
+  advisorAppliedChangeSchema,
   advisorOptionKeys,
   advisorOptionsSchema,
+  advisorSettingSourceSchema,
   type AdvisorOptions,
 } from "./advisor-settings.js";
 
 /** Theme operations used by Advisor transcript and footer renderers. */
 export type AdvisorRenderTheme = Pick<Theme, "fg" | "bg" | "bold">;
 
-const severitySchema = Type.Union([
-  Type.Literal("nit"),
-  Type.Literal("concern"),
-  Type.Literal("blocker"),
-]);
-const findingSchema = Type.Object({ severity: severitySchema, message: Type.String() });
 const severityStyle = {
   nit: { symbol: "·", color: "muted" },
   concern: { symbol: "▲", color: "warning" },
   blocker: { symbol: "✖", color: "error" },
-} as const satisfies Record<Static<typeof severitySchema>, { symbol: string; color: ThemeColor }>;
+} as const satisfies Record<AdvisorSeverity, { symbol: string; color: ThemeColor }>;
 const collapsedNitLines = 4;
 
-const stateSchema = Type.Union([
-  Type.Literal("disabled"),
-  Type.Literal("armed"),
-  Type.Literal("reviewing"),
-  Type.Literal("consulting"),
-  Type.Literal("paused"),
-  Type.Literal("private"),
-]);
-/** Advisor state shown in status entries and the footer. */
-export type AdvisorState = Static<typeof stateSchema>;
 const nullableString = Type.Union([Type.String(), Type.Null()]);
-const sourceSchema = Type.Union([
-  Type.Literal("default"),
-  Type.Literal("global"),
-  Type.Literal("project"),
-  Type.Literal("session"),
-]);
 /** The minimum every historical status entry recorded. */
 const minimalStatusSchema = Type.Object({
-  state: stateSchema,
+  state: advisorStateSchema,
   error: Type.Optional(nullableString),
 });
 const statusSchema = Type.Object({
-  state: stateSchema,
-  change: Type.Optional(
-    Type.Object({
-      scope: Type.Union([Type.Literal("session"), Type.Literal("global"), Type.Literal("project")]),
-      key: Type.KeyOf(advisorOptionsSchema),
-      options: advisorOptionsSchema,
-    }),
-  ),
+  state: advisorStateSchema,
+  change: Type.Optional(advisorAppliedChangeSchema),
   settings: Type.Optional(advisorOptionsSchema),
-  sources: Type.Optional(Type.Record(Type.String(), sourceSchema)),
+  sources: Type.Optional(Type.Record(Type.String(), advisorSettingSourceSchema)),
   backlog: Type.Optional(Type.Number()),
   effectiveModel: Type.Optional(nullableString),
   effectiveThinkingLevel: Type.Optional(nullableString),
@@ -74,7 +54,7 @@ const statusSchema = Type.Object({
     Type.Array(
       Type.Object({
         agentId: Type.String(),
-        state: Type.Optional(stateSchema),
+        state: Type.Optional(advisorStateSchema),
         backlog: Type.Optional(Type.Number()),
       }),
     ),
@@ -121,7 +101,7 @@ export function renderAdvisorIntervention(
   theme: AdvisorRenderTheme,
   agentId?: string,
 ): Component | undefined {
-  if (!Value.Check(findingSchema, details)) return undefined;
+  if (!Value.Check(advisorFindingSchema, details)) return undefined;
   const style = severityStyle[details.severity];
   const heading = joinDefined(
     [
@@ -145,13 +125,13 @@ export function renderAdvisorIntervention(
 
 const childFindingSchema = Type.Object({
   agentId: Type.String(),
-  severity: severitySchema,
+  severity: advisorSeveritySchema,
   message: Type.String(),
 });
-const childPauseSchema = Type.Object({
+const childStateSchema = Type.Object({
   agentId: Type.String(),
-  state: Type.Literal("paused"),
-  error: Type.String(),
+  state: advisorStateSchema,
+  error: Type.Optional(Type.String()),
 });
 
 /** A Child Agent's Intervention or pause, attributed to that child. */
@@ -171,8 +151,10 @@ export function renderAdvisorChildEntry(
     );
     if (rendered) return rendered;
   }
-  if (Value.Check(childPauseSchema, data))
-    return new Text(theme.fg("error", `✖ Advisor ↳ ${data.agentId} paused: ${data.error}`), 0, 0);
+  if (Value.Check(childStateSchema, data)) {
+    const line = `Advisor ↳ ${data.agentId} ${data.state}${data.error ? `: ${data.error}` : ""}`;
+    return new Text(data.error ? theme.fg("error", `✖ ${line}`) : theme.fg("dim", line), 0, 0);
+  }
   return new Text(`Advisor for Child Agent\n${JSON.stringify(data, null, 2)}`, 0, 0);
 }
 
@@ -288,10 +270,9 @@ function detailLines(entry: StatusEntry, theme: AdvisorRenderTheme): string[] {
   const lines: string[] = [];
   if (entry.settings) {
     const settings = entry.settings;
-    const keys = advisorOptionKeys.map(advisorOptionKey);
-    const width = Math.max(...keys.map((key) => key.length));
+    const width = Math.max(...advisorOptionKeys.map((key) => key.length));
     lines.push("");
-    for (const key of keys) {
+    for (const key of advisorOptionKeys) {
       const source = entry.sources?.[key] ?? "default";
       lines.push(
         `  ${key.padEnd(width)}  ${formatOption(settings, key)}  ${theme.fg(source === "default" ? "dim" : "accent", `[${source}]`)}`,
@@ -313,6 +294,19 @@ function detailLines(entry: StatusEntry, theme: AdvisorRenderTheme): string[] {
   return lines;
 }
 
+/** Drop top-level fields that no longer match, so older entries keep what they can show. */
+function salvageStatus(data: Static<typeof minimalStatusSchema>): StatusEntry {
+  // Runtime copy keeps every recorded field; only mismatching ones are removed below.
+  const candidate = structuredClone(data);
+  for (const issue of Value.Errors(statusSchema, candidate)) {
+    const field = issue.instancePath.split("/")[1];
+    if (field && field !== "state") Reflect.deleteProperty(candidate, field);
+  }
+  return Value.Check(statusSchema, candidate)
+    ? candidate
+    : { state: data.state, error: data.error ?? null };
+}
+
 /** Status snapshot: a compact summary, with every setting and child when expanded. */
 export function renderAdvisorStatus(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled entry data is validated below; older shapes keep their state and error, anything else renders raw.
@@ -320,12 +314,9 @@ export function renderAdvisorStatus(
   expanded: boolean,
   theme: AdvisorRenderTheme,
 ): Component {
-  const entry: StatusEntry | undefined = Value.Check(statusSchema, data)
-    ? data
-    : Value.Check(minimalStatusSchema, data)
-      ? { state: data.state, error: data.error ?? null }
-      : undefined;
-  if (!entry) return new Text(`Advisor\n${JSON.stringify(data, null, 2)}`, 0, 0);
+  if (!Value.Check(minimalStatusSchema, data))
+    return new Text(`Advisor\n${JSON.stringify(data, null, 2)}`, 0, 0);
+  const entry = salvageStatus(data);
   const lines = summaryLines(entry, theme);
   const details = detailLines(entry, theme);
   if (expanded) lines.push(...details);
@@ -352,11 +343,12 @@ export function advisorFooterText(
   if (!root || root.state === "disabled" || root.state === "private") return undefined;
   if (root.state === "paused") return theme.fg("error", "advisor: paused");
   const parts: string[] = [];
-  if (root.state === "reviewing" || root.state === "consulting") parts.push(root.state);
-  if (root.backlog > 0) parts.push(`backlog ${root.backlog}`);
-  const busy = children.filter(
-    (child) => child.state === "reviewing" || child.state === "consulting",
-  ).length;
+  if (root.state === "reviewing" || root.state === "consulting") {
+    parts.push(root.state);
+    if (root.backlog > 0) parts.push(`backlog ${root.backlog}`);
+  }
+  // Consultations come only from the main agent, so a child segment shows Reviews and pauses.
+  const busy = children.filter((child) => child.state === "reviewing").length;
   const paused = children.filter((child) => child.state === "paused").length;
   if (busy) parts.push(count(busy, "reviewing"));
   if (paused) parts.push(theme.fg("error", count(paused, "paused")));

@@ -106,8 +106,8 @@ describe("Advisor footer", () => {
 });
 
 describe("Interventions", () => {
-  it("keep their model-visible content while rendering through the Advisor renderer", async () => {
-    const mainRequests: Context["messages"][] = [];
+  it("keep the observed request prefix stable while rendering through the Advisor renderer", async () => {
+    const mainRequests: Context[] = [];
     let reviews = 0;
     const { session } = await fixture({ interactive: true });
     globalThis.advisorObserverTest = {
@@ -125,7 +125,7 @@ describe("Interventions", () => {
             options,
           );
         }
-        mainRequests.push(structuredClone(context.messages));
+        mainRequests.push(structuredClone(context));
         return response(model, reply("Done"), options);
       },
     };
@@ -138,13 +138,28 @@ describe("Interventions", () => {
       )
       .toBe(true);
     await session.prompt("Second task");
-    const delivered = mainRequests
-      .at(-1)
-      ?.find(
-        (message) => message.role === "user" && JSON.stringify(message.content).includes("Re-run"),
-      );
-    expect(delivered?.content).toEqual([
-      { type: "text", text: "Advisor concern: Re-run the failing test" },
+    const [first, second] = mainRequests;
+    if (!first || !second) throw new Error("Expected two observed requests");
+    expect(mainRequests).toHaveLength(2);
+    // Cache proof: the second request extends the first byte-for-byte.
+    expect(second.systemPrompt).toEqual(first.systemPrompt);
+    expect(second.tools).toEqual(first.tools);
+    expect(first.tools?.find((tool) => tool.name === "advisor_ask")?.description).toBe(
+      "Ask the enabled Advisor for analysis or a second opinion. Waits for its answer; does not delegate implementation.",
+    );
+    expect(second.messages.slice(0, first.messages.length)).toEqual(first.messages);
+    expect(
+      second.messages.slice(first.messages.length).map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+    ).toMatchObject([
+      { role: "assistant", content: [{ type: "text", text: "Done" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Advisor concern: Re-run the failing test" }],
+      },
+      { role: "user", content: [{ type: "text", text: "Second task" }] },
     ]);
     const entry = session.sessionManager
       .getBranch()

@@ -37,15 +37,26 @@ export const advisorOptionsSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const advisorOptionKeys = Object.keys(advisorOptionsSchema.properties);
+export const advisorOptionKeys = Object.keys(advisorOptionsSchema.properties).map(advisorOptionKey);
 
 /** Authored options; absent values inherit rather than disabling their setting. */
 export type AdvisorOptions = Static<typeof advisorOptionsSchema>;
 /** Fully defaulted options; absent model/thinking follows the Observed Agent. */
 export type AdvisorConfig = Required<Omit<AdvisorOptions, "model" | "thinkingLevel">> &
   Pick<AdvisorOptions, "model" | "thinkingLevel">;
+/** Native settings/session layer an authored change is written to. */
+export const advisorSettingScopeSchema = Type.Union([
+  Type.Literal("session"),
+  Type.Literal("global"),
+  Type.Literal("project"),
+]);
+export type AdvisorSettingScope = Static<typeof advisorSettingScopeSchema>;
 /** Native settings/session layer supplying an effective option. */
-export type AdvisorSettingSource = "default" | "global" | "project" | "session";
+export const advisorSettingSourceSchema = Type.Union([
+  Type.Literal("default"),
+  advisorSettingScopeSchema,
+]);
+export type AdvisorSettingSource = Static<typeof advisorSettingSourceSchema>;
 
 const defaults = {
   enabled: false,
@@ -101,8 +112,15 @@ export function readAdvisorOverrides(manager: Pick<SessionManager, "getBranch">)
 export type AdvisorLayers = { global: AdvisorOptions | Error; project: AdvisorOptions | Error };
 /** A validated authored mutation, independent of its persistence scope. */
 export type AdvisorChange =
-  | { action: "set"; patch: AdvisorOptions }
+  | { action: "set"; key: keyof AdvisorOptions; patch: AdvisorOptions }
   | { action: "inherit"; key: keyof AdvisorOptions };
+/** An applied change as recorded for confirmation; `options` is empty when the key inherits. */
+export const advisorAppliedChangeSchema = Type.Object({
+  scope: advisorSettingScopeSchema,
+  key: Type.KeyOf(advisorOptionsSchema),
+  options: advisorOptionsSchema,
+});
+export type AdvisorAppliedChange = Static<typeof advisorAppliedChangeSchema>;
 
 /** Read Pi's stored layers, preserving configuration failures until corrected. */
 export function readAdvisorLayers(manager: SettingsManager): AdvisorLayers {
@@ -143,10 +161,7 @@ export function readAdvisorSettings(
   ];
   const settings: AdvisorConfig = structuredClone(defaults);
   const sources: Record<string, AdvisorSettingSource> = Object.fromEntries(
-    Object.keys(advisorOptionsSchema.properties).map((key): [string, AdvisorSettingSource] => [
-      key,
-      "default",
-    ]),
+    advisorOptionKeys.map((key): [string, AdvisorSettingSource] => [key, "default"]),
   );
   for (const [source, layer] of layers) {
     Object.assign(settings, layer);
