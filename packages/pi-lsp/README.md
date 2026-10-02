@@ -188,20 +188,24 @@ without an alias:
 Each tool carries MCP-style annotations that permission extensions can read from
 `pi.getAllTools()`. Pi does not send them to model providers.
 
-| Tools                                                        | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
-| ------------------------------------------------------------ | -------------- | ----------------- | ---------------- | --------------- |
-| Queries, `lsp_status`, `lsp_capabilities`, and preview tools | `true`         | `false`           | `true`           | `false`         |
-| `lsp_restart`                                                | `false`        | `false`           | `true`           | `false`         |
-| `lsp_apply`                                                  | `false`        | `true`            | `false`          | `false`         |
+| Tools                                         | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+| --------------------------------------------- | -------------- | ----------------- | ---------------- | --------------- |
+| Queries, `lsp_status`, and `lsp_capabilities` | `true`         | `false`           | `true`           | `false`         |
+| Preview tools                                 | `true`         | `false`           | `false`          | `false`         |
+| `lsp_restart`                                 | `false`        | `false`           | `true`           | `false`         |
+| `lsp_apply`                                   | `false`        | `true`            | `false`          | `false`         |
 
 `lsp_rename`, `lsp_code_actions`, and the `lsp_format_*` tools are read-only: they only record a
-session-local Workspace Edit Preview. Files change only through `lsp_apply`.
+session-local Workspace Edit Preview, and files change only through `lsp_apply`. They are not
+idempotent, because every call creates a new `preview_id`. `lsp_capabilities` is read-only even
+though it can start a server. `lsp_restart` is idempotent: restarting twice leaves one running
+server. No tool is open-world, because all of them talk only to configured local language servers.
 
 ### Structured results
 
 Every tool declares an output schema and returns matching `structuredContent`, which codemode
 scripts receive instead of the text. Reads resolve to
-`{ results: { server_id, root_path, value }[], warnings, truncated, spill_path? }`, where `value` is
+`{ results: { server_id, root_path, value }[], warnings, truncated, structured_truncated, spill_path? }`, where `value` is
 the server's response with one-based positions and file paths instead of `file:` URIs.
 `lsp_status`, `lsp_capabilities`/`lsp_restart`, the preview tools, `lsp_code_actions`, and
 `lsp_apply` have their own shapes; `describeTool(name)` shows each declaration.
@@ -210,12 +214,20 @@ Pi keeps structured results out of model context and session history, so the mod
 limit does not cut them. They have their own cap of 1 MiB, like Pi's built-in `bash` tool. A larger
 result is bounded deterministically: the longest strings are shortened (ending in
 `…[n characters truncated]`) and the longest arrays lose their tails, with limits that tighten
-step by step until the result fits, so it still matches the output schema. `server_preview_ids` is
-never cut. A bounded result sets `truncated: true`, adds a warning to `warnings` where the tool has
-one, and keeps `spill_path` pointing to the Result Spill with the complete output. `truncated` is
-also `true` when only the model-visible text was cut at 2,000 lines or 50 KB; `spill_path` then
-names the Result Spill with the complete text. Server-initiated previews reported with a result
-appear in `server_preview_ids`.
+step by step until the result fits, so it still matches the output schema. Identifying and enum
+fields (`state`, `operation`, kinds, ids, paths, `server_preview_ids`) are never cut.
+
+Two flags tell a script what it received:
+
+- `structured_truncated: true` means the structured data is incomplete because it exceeded the cap.
+  The result adds a warning to `warnings` where the tool has one.
+- `truncated: true` means either the structured data or only the model-visible text was cut (at
+  2,000 lines or 50 KB). When `structured_truncated` is `false`, the structured data is complete.
+
+`spill_path` names the Result Spill. After a structured cut it holds the complete structured data
+as JSON, including everything the bounded result lost (such as `mutation_manifest` and
+`changed_paths`); after a text-only cut it holds the complete text. Server-initiated previews
+reported with a result appear in `server_preview_ids`.
 
 Workspace diagnostics use protocol workspace pull when available and cached push diagnostics
 otherwise. They never crawl the project to open files. Non-file result URIs such as `jar:` remain

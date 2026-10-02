@@ -299,7 +299,32 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(await readFile(filePath, "utf8")).toBe("FORMAT ME");
   });
 
-  test("ignores LSP results that are not a Workspace Edit application", async () => {
+  test.each(["lsp_rename", "lsp_code_actions", "not_lsp"])(
+    "ignores %s results even with a valid manifest and apply details",
+    async (toolName) => {
+      const script = "require('node:fs').writeFileSync(process.argv[1],'formatted')";
+      const harness = await createFormatterHarness({
+        formatter: { formatters: { overwrite: formatterDefinition(["-e", script, "$FILE"]) } },
+      });
+      const filePath = resolve(harness.cwd, "preview.txt");
+      await writeFile(filePath, "original");
+
+      // Only the tool name distinguishes this from a real lsp_apply result.
+      await harness.runner.emitToolResult(
+        toolResultEvent(toolName, {
+          input: {
+            preview_id: "preview-1",
+            mutation_manifest: [{ operation: "modify", path: filePath }],
+          },
+          details: { kind: "workspace_edit_apply", state: "applied", changed_paths: [filePath] },
+        }),
+      );
+
+      expect(await readFile(filePath, "utf8")).toBe("original");
+    },
+  );
+
+  test("ignores an lsp_apply result without Workspace Edit application details", async () => {
     const script = "require('node:fs').writeFileSync(process.argv[1],'formatted')";
     const harness = await createFormatterHarness({
       formatter: { formatters: { overwrite: formatterDefinition(["-e", script, "$FILE"]) } },
@@ -308,9 +333,12 @@ describe("Pi Formatter extension lifecycle", () => {
     await writeFile(filePath, "original");
 
     await harness.runner.emitToolResult(
-      toolResultEvent("lsp_rename", {
-        input: { file_path: filePath, line: 1, character: 1, new_name: "renamed" },
-        details: { kind: "workspace_edit_preview", state: "available", changed_paths: [filePath] },
+      toolResultEvent("lsp_apply", {
+        input: {
+          preview_id: "preview-1",
+          mutation_manifest: [{ operation: "modify", path: filePath }],
+        },
+        details: { kind: "workspace_edit_preview", state: "available" },
       }),
     );
 

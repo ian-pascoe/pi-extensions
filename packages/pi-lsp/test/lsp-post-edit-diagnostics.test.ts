@@ -88,16 +88,23 @@ test.each([
   });
 });
 
-test("ignores LSP results that are not a Workspace Edit application", () => {
-  expect(
-    extractPostEditDiagnosticPaths(
-      mutationEvent({
-        toolName: "lsp_rename",
-        input: { file_path: "/work/a.ts", line: 1, character: 1, new_name: "renamed" },
-        details: { kind: "workspace_edit_preview", preview_id: "preview-1" },
-      }),
-    ),
-  ).toBeUndefined();
+test.each(["lsp_rename", "lsp_code_actions", "not_lsp"])(
+  "ignores %s results even with a valid manifest and apply details",
+  (toolName) => {
+    // Only the tool name distinguishes this from a real lsp_apply result.
+    expect(
+      extractPostEditDiagnosticPaths(
+        mutationEvent({
+          toolName,
+          input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+          details: { ...partialApplyDetails, state: "applied" },
+        }),
+      ),
+    ).toBeUndefined();
+  },
+);
+
+test("ignores an lsp_apply result without Workspace Edit application details", () => {
   expect(
     extractPostEditDiagnosticPaths(
       mutationEvent({
@@ -107,7 +114,33 @@ test("ignores LSP results that are not a Workspace Edit application", () => {
       }),
     ),
   ).toBeUndefined();
+  expect(
+    extractPostEditDiagnosticPaths(
+      mutationEvent({
+        toolName: "lsp_apply",
+        input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+        details: { kind: "workspace_edit_preview", preview_id: "preview-1" },
+      }),
+    ),
+  ).toBeUndefined();
 });
+
+test.each([false, true])(
+  "keeps isError %s on a partial lsp_apply failure it augments",
+  async (isError) => {
+    const result = await appendPostEditDiagnostics(
+      mutationEvent({
+        toolName: "lsp_apply",
+        input: { preview_id: "preview-1", mutation_manifest: verifiedManifest },
+        details: partialApplyDetails,
+        isError,
+      }),
+      async () => [{ kind: "no_diagnostics", path: "/work/a.ts" }],
+    );
+    // A false input stays false: Post-edit Diagnostics never flips the error state.
+    expect(result?.isError).toBe(isError);
+  },
+);
 
 test("keeps the structured result of an lsp_apply call it augments", async () => {
   const structuredContent = { preview_id: "preview-1", state: "applied", truncated: false };

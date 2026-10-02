@@ -53,13 +53,13 @@ Model and thinking overrides are independent. Do not silently select another pro
 
 Load the observed/main session's extensions in the Advisor Session, using fresh session-bound factory instances rather than copying parent-bound handlers or tools. Inheriting `pi-advisor` must not recursively create another Advisor. This supersedes the earlier Context-Management-only extension allowlist.
 
-Configure a tool-name allowlist, `allowedTools`, defaulting to `read`, `grep`, `find`, and `ls`. It replaces the separate investigation enable/disable option. Users can add extension tools such as `lsp`, `context_notes`, `context_history`, and `context_rollover`. The Advisor's constrained advice-output mechanism remains intrinsic rather than requiring an entry in this list.
+Configure a tool-name allowlist, `allowedTools`, defaulting to `read`, `grep`, `find`, and `ls`. It replaces the separate investigation enable/disable option. Users can add extension tools such as `lsp_diagnostics`, `context_notes`, `context_history`, and `context_rollover`. The Advisor's constrained advice-output mechanism remains intrinsic rather than requiring an entry in this list.
 
 Tool permission and extension loading are distinct: loading an extension does not automatically grant its tools. Sibling extensions are optional; their absence must not make `pi-advisor` a missing-dependency error.
 
 The standard implementations of the default tool names are read-only, but **not a filesystem sandbox**: they may read paths outside the project that Pi's OS account can access. Inherited extensions can replace those implementations. No bespoke confinement layer is requested, and the default list grants no shell-command tool name.
 
-The Advisor is **read-only by default, not by invariant**. An explicit tool-name grant permits that tool's full interface, subject to the tool's native policies; for example, granting `lsp` includes its mutation operations. Do not add per-operation permission filters or silently expand the configured grant through aliases or replacement tool bundles.
+The Advisor is **read-only by default, not by invariant**. An explicit tool-name grant permits that tool's full interface, subject to the tool's native policies; for example, granting `lsp_apply` permits applying Workspace Edit Previews. Do not add per-operation permission filters or silently expand the configured grant through aliases or replacement tool bundles.
 
 Loaded extensions remain privileged code. Their hooks can have effects outside model tool calls; `allowedTools` is not a sandbox for extension behavior.
 

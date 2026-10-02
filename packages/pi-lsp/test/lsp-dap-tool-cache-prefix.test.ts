@@ -73,6 +73,8 @@ interface ToolCacheOptions {
   readonly builtins?: readonly BuiltinName[];
   /** Entries for Pi's `defaultTools` setting; omitted, built-in tools are disabled. */
   readonly defaultTools?: readonly string[];
+  /** Keep Pi's default system prompt, whose "Available tools" list shows prompt snippets. */
+  readonly defaultSystemPrompt?: boolean;
 }
 
 /** Real Pi collaborators; the only scripted collaborator is the external model stream. */
@@ -100,7 +102,7 @@ async function createToolCacheFixture(
   }: {
     createPiDapExtension: (getAgentDirectory: () => string) => ExtensionFactory;
   } = await import(new URL("../../pi-dap/src/pi-dap-extension.js", import.meta.url).href);
-  const loader = new DefaultResourceLoader({
+  const loaderOptions: ConstructorParameters<typeof DefaultResourceLoader>[0] = {
     cwd,
     agentDir,
     settingsManager: settings,
@@ -133,8 +135,12 @@ async function createToolCacheFixture(
           },
         }),
     ],
-    systemPromptOverride: () => "Standing instructions: answer with the shortest correct turn.",
-  });
+  };
+  if (options.defaultSystemPrompt !== true) {
+    loaderOptions.systemPromptOverride = () =>
+      "Standing instructions: answer with the shortest correct turn.";
+  }
+  const loader = new DefaultResourceLoader(loaderOptions);
   await loader.reload();
   expect(loader.getExtensions().errors).toEqual([]);
 
@@ -442,11 +448,23 @@ test.each([
     expect(codemode).not.toContain("lsp_hover(");
     const hover = tools.find(({ name }) => name === "lsp_hover")?.description ?? "";
     expect(hover).toContain(
-      "Codemode: `tools.lsp_hover(args)` resolves to `{ results, warnings, truncated, spill_path?, server_preview_ids? }`.",
+      "Codemode: `tools.lsp_hover(args)` resolves to `{ results, warnings, truncated, structured_truncated, spill_path?, server_preview_ids? }`.",
     );
     expect(fixture.providerRequests).toEqual([]);
   },
 );
+
+test("lists the lsp_* family once in the default system prompt and keeps it stable", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });
+  const turns = await runTurnsAcrossReload(fixture);
+  expectStablePrefix(turns);
+  const prompt = turns[0]?.systemPrompt ?? "";
+  // One snippet: a single line in "Available tools" names the family; the other tools have none.
+  expect(prompt).toContain(
+    "- lsp_diagnostics: Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits",
+  );
+  expect(prompt.match(/^- lsp_\w+:/gmu)).toEqual(["- lsp_diagnostics:"]);
+});
 
 test("activates a codemode-exposure LSP tool by name through defaultTools", async () => {
   const fixture = await createToolCacheFixture(["lsp"], {

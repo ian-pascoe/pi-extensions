@@ -848,6 +848,12 @@ describe("Pi LSP extension lifecycle", () => {
       type: "text",
       text: expect.stringContaining("no configured server"),
     });
+    // Post-edit Diagnostics never flips the error state: a false input stays false.
+    const nonErrorPartialApply = await harness.runner.emitToolResult({
+      ...partialApplyEvent,
+      isError: false,
+    });
+    expect(nonErrorPartialApply?.isError).toBe(false);
     const { structuredContent: _structuredContent, ...currentApplyEvent } = partialApplyEvent;
     const legacyApplyResult = await harness.runner.emitToolResult({
       ...currentApplyEvent,

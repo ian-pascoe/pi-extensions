@@ -7,7 +7,6 @@ import type {
   ToolAnnotations,
   ToolDefinition,
   ToolExposure,
-  ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -1292,12 +1291,21 @@ const LSP_TOOL_RULES = [
   'lsp_apply resolves to state "partial_failure" with an error result when rollback leaves files changed; changed_paths lists them.',
 ];
 
-/** The `lsp` tool namespace: a short listing description and the shared rules for scripts. */
-export const LSP_TOOL_NAMESPACE: ToolNamespace = {
+/**
+ * The `lsp` tool namespace: a short listing description and the shared rules for scripts. It is
+ * built without a `ToolNamespace` annotation because Pi 0.99's type has no `instructions` field
+ * and would reject it as an excess property; Pi 1.0+ reads it, and 0.99 ignores it.
+ */
+export const LSP_TOOL_NAMESPACE = {
   name: "lsp",
   description: "Language-server navigation, diagnostics, and previewed edits",
   instructions: LSP_TOOL_RULES.map((rule) => `- ${rule}`).join("\n"),
 };
+
+/** One snippet puts a single line naming the lsp_* family in the system prompt's tool list. */
+const LSP_PROMPT_SNIPPET_TOOL: LspOperationName = "diagnostics";
+const LSP_PROMPT_SNIPPET =
+  "Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits";
 
 /** One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. */
 export const LSP_TOOL_GUIDELINE =
@@ -1362,7 +1370,10 @@ const LSP_TOOL_DESCRIPTIONS = {
     "Apply a Workspace Edit Preview by preview_id. Nothing changes if its files changed since the preview.",
 } as const satisfies Record<LspOperationName, string>;
 
-/** Queries and Workspace Edit Preview producers: no file changes, local servers only. */
+/**
+ * Queries and `lsp_capabilities`: no file changes. `openWorldHint` is false for every tool because
+ * the tools talk only to configured local language servers (ADR-0003).
+ */
 const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
@@ -1370,7 +1381,20 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
   openWorldHint: false,
 };
 
+/** Tools that record a Workspace Edit Preview; every call creates a new `preview_id`. */
+const PREVIEW_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
+  "format_document",
+  "format_range",
+  "format_on_type",
+  "rename",
+  "code_actions",
+]);
+
 function lspToolAnnotations(operation: LspOperationName): ToolAnnotations {
+  if (PREVIEW_OPERATIONS.has(operation)) {
+    // Read-only: files change only through lsp_apply. Not idempotent: each call creates a new preview_id.
+    return { ...READ_ONLY_ANNOTATIONS, idempotentHint: false };
+  }
   if (operation === "apply") {
     return {
       readOnlyHint: false,
@@ -1380,6 +1404,7 @@ function lspToolAnnotations(operation: LspOperationName): ToolAnnotations {
     };
   }
   if (operation === "restart") {
+    // Restarting twice leaves the same running server, and no data changes.
     return {
       readOnlyHint: false,
       destructiveHint: false,
@@ -1434,12 +1459,11 @@ function prepareApplyArguments(
   });
 }
 
-/** Create the strict `lsp_<operation>` ToolDefinition backed by the current session's runtime owners. */
-export function createLspToolDefinition<TOperation extends LspOperationName>(
+function buildLspToolDefinition<TOperation extends LspOperationName>(
   operation: TOperation,
   getDependencies: () => LspToolDependencies,
 ): LspToolDefinition<TOperation> {
-  return {
+  const definition: LspToolDefinition<TOperation> = {
     name: lspToolName(operation),
     label: `LSP ${humanizeLspOperation(operation)}`,
     description: LSP_TOOL_DESCRIPTIONS[operation],
@@ -1458,6 +1482,20 @@ export function createLspToolDefinition<TOperation extends LspOperationName>(
       return executeLspOperation(getDependencies(), parameters, context, signal);
     },
   };
+  if (operation === LSP_PROMPT_SNIPPET_TOOL) definition.promptSnippet = LSP_PROMPT_SNIPPET;
+  return definition;
+}
+
+/**
+ * Create the strict `lsp_<operation>` ToolDefinition backed by the current session's runtime
+ * owners. `lsp_apply` is excluded because it needs `prepareArguments`; use
+ * `createLspApplyToolDefinition`.
+ */
+export function createLspToolDefinition<TOperation extends Exclude<LspOperationName, "apply">>(
+  operation: TOperation,
+  getDependencies: () => LspToolDependencies,
+): LspToolDefinition<TOperation> {
+  return buildLspToolDefinition(operation, getDependencies);
 }
 
 /** Create `lsp_apply`, whose prepared arguments carry the canonical Mutation Manifest. */
@@ -1465,7 +1503,7 @@ export function createLspApplyToolDefinition(
   getDependencies: () => LspToolDependencies,
 ): LspToolDefinition<"apply"> {
   return {
-    ...createLspToolDefinition("apply", getDependencies),
+    ...buildLspToolDefinition("apply", getDependencies),
     // Permission hooks see the canonical Mutation Manifest before execution (ADR-0002).
     prepareArguments: (argumentsValue) => prepareApplyArguments(getDependencies, argumentsValue),
   };

@@ -124,6 +124,7 @@ interface RegisteredLspTool {
   readonly namespace: ToolNamespace | undefined;
   readonly annotations: ToolAnnotations | undefined;
   readonly promptGuidelines: readonly string[] | undefined;
+  readonly promptSnippet: string | undefined;
   readonly hasPrepareArguments: boolean;
 }
 
@@ -140,6 +141,7 @@ class RecordingLspToolRegistrar implements LspToolRegistrar {
       namespace: tool.namespace,
       annotations: tool.annotations,
       promptGuidelines: tool.promptGuidelines,
+      promptSnippet: tool.promptSnippet,
       hasPrepareArguments: tool.prepareArguments !== undefined,
     });
   }
@@ -221,6 +223,16 @@ async function executeTool(
   call: LspToolParameters,
   dependencies: LspToolDependencies = fixture.dependencies,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
+  if (call.operation === "apply") {
+    const { operation: _operation, ...applyInput } = call;
+    return createLspApplyToolDefinition(() => dependencies).execute(
+      "tool-call",
+      applyInput,
+      undefined,
+      undefined,
+      fixture.context,
+    );
+  }
   const { operation, ...input } = call;
   const tool = createLspToolDefinition(operation, () => dependencies);
   return tool.execute("tool-call", input, undefined, undefined, fixture.context);
@@ -307,9 +319,19 @@ describe("registered LSP tool", () => {
     };
     for (const name of ["lsp_hover", "lsp_status", "lsp_capabilities", "lsp_workspace_diagnostics"])
       expect(annotationsOf(name), name).toEqual(readOnly);
-    // Preview producers only create a session-local Workspace Edit Preview.
-    for (const name of ["lsp_rename", "lsp_code_actions", "lsp_format_document"])
-      expect(annotationsOf(name), name).toEqual(readOnly);
+    // Preview producers change no file, but every call creates a new preview_id.
+    for (const name of [
+      "lsp_rename",
+      "lsp_code_actions",
+      "lsp_format_document",
+      "lsp_format_range",
+      "lsp_format_on_type",
+    ])
+      expect(annotationsOf(name), name).toEqual({ ...readOnly, idempotentHint: false });
+    // One snippet names the lsp_* family in the system prompt's tool list.
+    expect(
+      registrar.tools.filter((tool) => tool.promptSnippet !== undefined).map(({ name }) => name),
+    ).toEqual(["lsp_diagnostics"]);
     expect(annotationsOf("lsp_restart")).toEqual({
       readOnlyHint: false,
       destructiveHint: false,
@@ -619,6 +641,7 @@ describe("registered LSP tool", () => {
     });
     expect(references.structuredContent).toEqual({
       ...JSON.parse(resultText(references)),
+      structured_truncated: false,
       truncated: false,
     });
     expect(references.structuredContent).toMatchObject({
@@ -640,6 +663,7 @@ describe("registered LSP tool", () => {
     expect(status.structuredContent).toEqual({
       servers: [{ server_id: "typescript", root_path: fixture.context.cwd, state: "running" }],
       warnings: [],
+      structured_truncated: false,
       truncated: false,
     });
     expect(JSON.parse(resultText(status))).toEqual({
@@ -660,6 +684,7 @@ describe("registered LSP tool", () => {
       server_id: "typescript",
       summary: rename.details.summary,
       mutation_manifest: [{ operation: "modify", path: fixture.filePath }],
+      structured_truncated: false,
       truncated: false,
     });
 
@@ -671,6 +696,7 @@ describe("registered LSP tool", () => {
     expect(actions.structuredContent).toEqual({
       server_id: "typescript",
       actions: JSON.parse(resultText(actions)),
+      structured_truncated: false,
       truncated: false,
     });
     expect(actions.structuredContent).toMatchObject({
@@ -692,6 +718,7 @@ describe("registered LSP tool", () => {
       created_files: [],
       deleted_files: [],
       moved_files: [],
+      structured_truncated: false,
       truncated: false,
     });
     await fixture.close();
@@ -901,6 +928,7 @@ describe("registered LSP tool", () => {
         { operation: "modify", path: fixture.filePath },
       ],
       message: `Pi LSP: Workspace Edit rollback failed for: ${fixture.filePath}`,
+      structured_truncated: false,
       truncated: false,
       // The directly created preview was never reported, like a server-initiated one.
       server_preview_ids: [preview.preview_id],
@@ -1015,6 +1043,7 @@ describe("registered LSP tool", () => {
         },
       ],
       warnings: [],
+      structured_truncated: false,
       truncated: true,
       spill_path: spillResult.details.spill_path,
       // The directly created preview was never reported, like a server-initiated one.
@@ -1041,6 +1070,7 @@ describe("registered LSP tool", () => {
     const structured = Value.Parse(LspReadOutputSchema, result.structuredContent);
     expect(Buffer.byteLength(JSON.stringify(structured), "utf8")).toBeLessThanOrEqual(1024 * 1024);
     expect(structured).toMatchObject({
+      structured_truncated: true,
       truncated: true,
       spill_path: result.details.spill_path,
     });
