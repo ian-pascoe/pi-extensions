@@ -10,6 +10,7 @@ import {
   createTerminalSendTool,
   createTerminalStartTool,
   createTerminalStopTool,
+  parseWaitPattern,
   type TerminalToolRuntime,
 } from "../src/terminal-tools.js";
 
@@ -45,6 +46,36 @@ function createTools() {
   };
 }
 
+type Tools = ReturnType<typeof createTools>;
+
+/**
+ * Wait, as an agent would, for a program to draw `pattern` (`wait_for_text` syntax). `terminal_start`
+ * settles after 250 ms of quiet, which a program that is slow to start, as under load, can spend
+ * still blank. The result is returned as is when its screen already shows the text; otherwise
+ * `terminal_send` polls the Terminal for it.
+ */
+async function untilScreenShows(
+  tools: Tools,
+  context: ExtensionToolContext,
+  result: { readonly details: { readonly id: string; readonly screen: string } },
+  pattern: string,
+) {
+  if (parseWaitPattern(pattern)(result.details.screen)) return result;
+  const polled = await tools.send.execute(
+    "send",
+    { id: result.details.id, wait_for_text: pattern, wait_ms: 10_000 },
+    undefined,
+    undefined,
+    context,
+  );
+  return polled;
+}
+
+/** Create the file a test program is waiting for before it continues. */
+function release(gate: string): Promise<void> {
+  return writeFile(gate, "");
+}
+
 beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), "pi-termctrl-real-"));
 });
@@ -73,7 +104,8 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
       undefined,
       context,
     );
-    expect(started.details.screen).toContain(">");
+    const prompt = await untilScreenShows(tools, context, started, ">");
+    expect(prompt.details.screen).toContain(">");
     const answer = await tools.send.execute(
       "send",
       { id: "t1", text: "6 * 7\n", wait_for_text: "42", wait_ms: 10_000 },
@@ -108,14 +140,17 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
       undefined,
       context,
     );
-    expect(started.details.screen).toContain("line 1");
+    const first = await untilScreenShows(tools, context, started, "line 1");
+    expect(first.details.screen).toContain("line 1");
     const paged = await tools.send.execute(
       "send",
-      { id: "t1", keys: ["PageDown"], wait_ms: 5_000 },
+      // less may not have handled the key by the time the screen has been quiet for 250 ms.
+      { id: "t1", keys: ["PageDown"], wait_for_text: "/^line 12$/m", wait_ms: 10_000 },
       undefined,
       undefined,
       context,
     );
+    expect(paged.details.screen).toContain("line 12");
     expect(paged.details.screen).not.toContain("line 1\n");
     expect(paged.details.changed).toBe(true);
     const quit = await tools.send.execute(
@@ -179,17 +214,21 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     async () => {
       const tools = createTools();
       const context = toolContext();
+      // The program waits for each gate file instead of sleeping, so no load can reorder its output.
+      const failed = join(directory, "rewrite-failed.gate");
+      const cleared = join(directory, "rewrite-clear.gate");
       const started = await tools.start.execute(
         "start",
         {
-          command:
-            "printf 'Building... '; sleep 1; printf 'FAILED\\n'; seq 1 20; sleep 1; clear; seq 101 130; echo finished; sleep 30",
+          command: `printf 'Building... '; while [ ! -e ${failed} ]; do sleep 0.05; done; printf 'FAILED\\n'; seq 1 20; while [ ! -e ${cleared} ]; do sleep 0.05; done; clear; seq 101 130; echo finished; sleep 30`,
         },
         undefined,
         undefined,
         context,
       );
-      expect(started.details.screen).toBe("Building...");
+      const building = await untilScreenShows(tools, context, started, "Building...");
+      expect(building.details.screen).toBe("Building...");
+      await release(failed);
       const built = await tools.send.execute(
         "send",
         { id: "t1", wait_for_text: "/^20$/m", wait_ms: 10_000 },
@@ -198,15 +237,16 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
         context,
       );
       expect(built.details.scrolled_off.split("\n")[0]).toBe("Building... FAILED");
-      const cleared = await tools.send.execute(
+      await release(cleared);
+      const finished = await tools.send.execute(
         "send",
         { id: "t1", wait_for_text: "finished", wait_ms: 10_000 },
         undefined,
         undefined,
         context,
       );
-      expect(cleared.details.scrolled_off.split("\n")[0]).toBe("101");
-      expect(cleared.details.output_missing).toBe(true);
+      expect(finished.details.scrolled_off.split("\n")[0]).toBe("101");
+      expect(finished.details.output_missing).toBe(true);
     },
   );
 
@@ -216,13 +256,14 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     async () => {
       const tools = createTools();
       const context = toolContext();
-      await tools.start.execute(
+      const started = await tools.start.execute(
         "start",
         { command: "bash --norc --noprofile -i", wait_ms: 10_000 },
         undefined,
         undefined,
         context,
       );
+      await untilScreenShows(tools, context, started, "/\\$$/m");
       const run = (text: string, waitFor: string) =>
         tools.send.execute(
           "send",
@@ -249,13 +290,15 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     const tools = createTools();
     const context = toolContext();
     const pidFile = join(directory, "stubborn.pid");
-    await tools.start.execute(
+    const started = await tools.start.execute(
       "start",
-      { command: `trap '' INT TERM HUP; echo stubborn; echo $$ > ${pidFile}; sleep 1000` },
+      { command: `trap '' INT TERM HUP; echo $$ > ${pidFile}; echo stubborn; sleep 1000` },
       undefined,
       undefined,
       context,
     );
+    // The program prints after writing its pid file, so the file is complete once the text shows.
+    await untilScreenShows(tools, context, started, "/^stubborn$/m");
     const pid = Number(await readFile(pidFile, "utf8"));
     expect(() => process.kill(pid, 0)).not.toThrow();
     const stopped = await tools.stop.execute("stop", { id: "t1" }, undefined, undefined, context);
@@ -271,10 +314,16 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     try {
       const handle = await driver.launch({
         id: "escalation",
-        command: ["/bin/sh", "-c", "trap '' INT TERM HUP; sleep 1000"],
+        command: ["/bin/sh", "-c", "trap '' INT TERM HUP; echo ready; sleep 1000"],
         cwd: directory,
         viewport: { cols: 40, rows: 5 },
       });
+      // Signals sent before the trap is installed would end the shell without needing SIGKILL.
+      const readyDeadline = Date.now() + 10_000;
+      while (!(await handle.snapshot()).screen.includes("ready")) {
+        if (Date.now() > readyDeadline) throw new Error("the shell never installed its traps");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       handle.kill();
       const deadline = Date.now() + 5_000;
       let snapshot = await handle.snapshot();
