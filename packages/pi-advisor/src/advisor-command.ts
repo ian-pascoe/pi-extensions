@@ -15,7 +15,7 @@ export function completeAdvisorCommandArguments(prefix: string): AutocompleteIte
   if (scopePrefix) {
     try {
       const command = parseAdvisorCommand(scopePrefix);
-      if (command.action !== "status" && command.scope === "session")
+      if ("scope" in command && command.scope === "session")
         candidates.push(`${scopePrefix}--global`, `${scopePrefix}--project`);
     } catch {
       // Incomplete commands and JSON values cannot accept a scope yet.
@@ -27,7 +27,7 @@ export function completeAdvisorCommandArguments(prefix: string): AutocompleteIte
 }
 
 const usage =
-  "Usage: /advisor [on|off|status|prompt|inherit [key]|set <key> <JSON>] [--global|--project]";
+  "Usage: /advisor [on|off|status|prompt|inherit [key]|set <key> <JSON>] [--global|--project]; /advisor alone opens settings";
 
 /** Parse one configuration change; validated patches cannot invent option keys. */
 export function parseAdvisorCommand(input: string) {
@@ -38,14 +38,19 @@ export function parseAdvisorCommand(input: string) {
       : flag?.[1] === "project"
         ? ("project" as const)
         : ("session" as const);
-  const text = (flag ? input.trim().slice(0, flag.index) : input.trim()) || "status";
-  if (text === "status") {
+  const text = flag ? input.trim().slice(0, flag.index) : input.trim();
+  if (text === "" || text === "status") {
     if (flag) throw new Error(usage);
-    return { action: "status" as const };
+    return text === "" ? { action: "menu" as const } : { action: "status" as const };
   }
   if (text === "prompt") return { action: "prompt" as const, scope };
   if (text === "on" || text === "off") {
-    return { action: "set" as const, scope, patch: { enabled: text === "on" } };
+    return {
+      action: "set" as const,
+      scope,
+      key: "enabled" as const,
+      patch: { enabled: text === "on" },
+    };
   }
   const inherit = /^inherit(?:\s+(\S+))?$/.exec(text);
   if (inherit) {
@@ -53,6 +58,7 @@ export function parseAdvisorCommand(input: string) {
   }
   const set = /^set\s+(\S+)\s+([\s\S]+)$/.exec(text);
   if (!set?.[1] || !set[2]) throw new Error(usage);
-  const patch: AdvisorOptions = parseAdvisorOptions({ [set[1]]: JSON.parse(set[2]) }, scope);
-  return { action: "set" as const, scope, patch };
+  const key = advisorOptionKey(set[1]);
+  const patch: AdvisorOptions = parseAdvisorOptions({ [key]: JSON.parse(set[2]) }, scope);
+  return { action: "set" as const, scope, key, patch };
 }

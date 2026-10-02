@@ -75,7 +75,7 @@
   ],
   "advisor": {
     "enabled": false,
-    "model": "openai-codex/gpt-6-astra",
+    "model": "anthropic/claude-fable-5-1",
     "thinkingLevel": "high",
     "allowedTools": [
       "read",

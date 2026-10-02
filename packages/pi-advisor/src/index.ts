@@ -1,7 +1,11 @@
 import * as piSdk from "@earendil-works/pi-coding-agent";
-import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSession,
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import { isDeepStrictEqual } from "node:util";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
@@ -13,8 +17,27 @@ import {
   writeAdvisorSettings,
   type AdvisorLayers,
   type AdvisorChange,
+  type AdvisorAppliedChange,
   type AdvisorConfig,
+  type AdvisorSettingScope,
 } from "./advisor-settings.js";
+import {
+  AdvisorSettingsMenu,
+  type AdvisorMenuHost,
+  type AdvisorScopedOptions,
+} from "./advisor-menu.js";
+import {
+  advisorFooterText,
+  advisorStatusHeadline,
+  renderAdvisorAskCall,
+  renderAdvisorAskResult,
+  renderAdvisorChildEntry,
+  renderAdvisorIntervention,
+  renderAdvisorStatus,
+  type AdvisorActivity,
+  type AdvisorRenderTheme,
+  type AdvisorStatusEntry,
+} from "./advisor-rendering.js";
 import { completeAdvisorCommandArguments, parseAdvisorCommand } from "./advisor-command.js";
 import { AdvisorObserver } from "./advisor-observer.js";
 import { isAdvisorSession, type AdvisorResourceInputs } from "./advisor-session.js";
@@ -46,6 +69,9 @@ const childRequestSchema = Type.Object({
 /** Review an observed session without changing its tools or standing instructions. */
 export default function advisor(pi: ExtensionAPI): void {
   let warn: (message: string) => void = () => {};
+  let footer: ExtensionUIContext | undefined;
+  /** The open settings menu, refreshed on state changes and closed on session changes. */
+  let activeMenu: { refresh: () => void; close: () => void } | undefined;
   let observed: AgentSession | undefined;
   let error: string | undefined;
   let layers: AdvisorLayers = { global: {}, project: {} };
@@ -60,10 +86,31 @@ export default function advisor(pi: ExtensionAPI): void {
     attachChild,
   );
 
-  pi.registerEntryRenderer(
-    "pi-advisor-child",
-    (entry) => new Text(`Advisor for Child Agent\n${JSON.stringify(entry.data, null, 2)}`, 0, 0),
+  pi.registerEntryRenderer("pi-advisor-child", (entry, { expanded }, theme) =>
+    renderAdvisorChildEntry(entry.data, expanded, theme),
   );
+  pi.registerEntryRenderer("pi-advisor-status", (entry, { expanded }, theme) =>
+    renderAdvisorStatus(entry.data, expanded, theme),
+  );
+  pi.registerMessageRenderer("pi-advisor", (message, options, theme) =>
+    renderAdvisorIntervention(message.details, options, theme),
+  );
+
+  /** Show the current Advisor state in the open settings menu and the footer. */
+  function publishState(): void {
+    activeMenu?.refresh();
+    if (!footer) return;
+    const root: AdvisorActivity | undefined =
+      observer?.status ?? (observed && error ? { state: "paused", backlog: 0 } : undefined);
+    const watched = [...children.values()].flatMap((child) =>
+      child.observer ? [child.observer.status] : [],
+    );
+    try {
+      footer.setStatus("advisor", advisorFooterText(root, watched, footer.theme));
+    } catch {
+      // A replaced session's UI is stale; status entries remain authoritative.
+    }
+  }
 
   function setAskToolAvailable(available: boolean): void {
     if (available && !askToolRegistered) {
@@ -80,6 +127,13 @@ export default function advisor(pi: ExtensionAPI): void {
           openWorldHint: false,
         },
         executionMode: "sequential",
+        renderCall: (args, theme, context) => renderAdvisorAskCall(args, context.expanded, theme),
+        renderResult: (result, options, theme, context) =>
+          renderAdvisorAskResult(
+            result.content.map((item) => (item.type === "text" ? item.text : "")).join(""),
+            { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError },
+            theme,
+          ),
         execute: async (_id, { message }, signal) => {
           try {
             const current = observer;
@@ -108,12 +162,8 @@ export default function advisor(pi: ExtensionAPI): void {
     );
   }
 
-  pi.registerEntryRenderer(
-    "pi-advisor-status",
-    (entry) => new Text(`Advisor\n${JSON.stringify(entry.data, null, 2)}`, 0, 0),
-  );
-
   pi.on("session_start", async (_event, ctx) => {
+    activeMenu?.close();
     const stamp = ++generation;
     const previous = observer;
     observer = undefined;
@@ -143,6 +193,7 @@ export default function advisor(pi: ExtensionAPI): void {
       return;
     }
     const { ui } = ctx;
+    footer = ctx.hasUI ? ui : undefined;
     warn = (message) => {
       try {
         ui.notify(message, "warning");
@@ -161,6 +212,7 @@ export default function advisor(pi: ExtensionAPI): void {
     }
   });
   pi.on("session_tree", async (_event, ctx) => {
+    activeMenu?.close();
     generation++;
     observer?.reset();
     for (const child of children.values()) child.observer?.reset();
@@ -171,6 +223,7 @@ export default function advisor(pi: ExtensionAPI): void {
   pi.on("before_agent_start", () => observer?.beforeTask());
   pi.on("agent_settled", () => observer?.settled());
   pi.on("session_shutdown", async () => {
+    activeMenu?.close();
     generation++;
     observed = undefined;
     unsubscribe?.();
@@ -181,6 +234,8 @@ export default function advisor(pi: ExtensionAPI): void {
     ]);
     observer = undefined;
     children.clear();
+    publishState();
+    footer = undefined;
   });
 
   function configureChild(
@@ -202,6 +257,7 @@ export default function advisor(pi: ExtensionAPI): void {
           });
           warn(`Advisor for ${child.agentId} paused: ${message}`);
         },
+        onStateChange: publishState,
         onIntervention: (finding) => {
           if (children.get(session) === child)
             pi.appendEntry("pi-advisor-child", { agentId: child.agentId, ...finding });
@@ -254,6 +310,8 @@ export default function advisor(pi: ExtensionAPI): void {
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
+    // A new child observer reports no state change until it reviews; show it now.
+    publishState();
     payload.attach({
       beginTurn: () => child.observer?.beforeTask(),
       finishTurn: async () => {
@@ -284,6 +342,7 @@ export default function advisor(pi: ExtensionAPI): void {
               pi.appendEntry("pi-advisor-status", { state: "paused", error: message });
               warn(`Advisor paused: ${message}`);
             },
+            onStateChange: publishState,
           },
         );
       for (const [session, child] of children) configureChild(session, child, settings);
@@ -298,25 +357,37 @@ export default function advisor(pi: ExtensionAPI): void {
       observer = undefined;
       for (const child of children.values()) child.observer = undefined;
     }
+    publishState();
   }
 
-  function status(ctx: ExtensionContext): void {
+  /** Current effective settings and live Advisor state, as recorded in status entries. */
+  function statusData(subject: AgentSession): AdvisorStatusEntry {
+    const resolved = readAdvisorSettings(subject, layers);
+    const live = observer?.status;
+    return {
+      state: live?.state ?? (resolved.settings.enabled ? "armed" : "disabled"),
+      ...resolved,
+      backlog: live?.backlog ?? 0,
+      effectiveModel: live?.effectiveModel ?? null,
+      effectiveThinkingLevel: live?.effectiveThinkingLevel ?? null,
+      usage: live?.usage ?? null,
+      cost: live?.cost ?? null,
+      unavailableTools: live?.unavailableTools ?? null,
+      children: [...children.values()].map((child) => ({
+        agentId: child.agentId,
+        ...child.observer?.status,
+      })),
+      lastError: live?.lastError ?? null,
+      error: error ?? live?.lastError ?? null,
+    };
+  }
+
+  function status(ctx: ExtensionContext, changes: readonly AdvisorAppliedChange[] = []): void {
     try {
       if (!observed) throw new Error(error ?? "Advisor session is unavailable");
-      const resolved = readAdvisorSettings(observed, layers);
-      pi.appendEntry("pi-advisor-status", {
-        state: resolved.settings.enabled ? "armed" : "disabled",
-        ...resolved,
-        backlog: 0,
-        usage: null,
-        cost: null,
-        ...observer?.status,
-        children: [...children.values()].map((child) => ({
-          agentId: child.agentId,
-          ...child.observer?.status,
-        })),
-        error: error ?? observer?.status.lastError ?? null,
-      });
+      const entry = statusData(observed);
+      if (changes.length) entry.changes = [...changes];
+      pi.appendEntry("pi-advisor-status", entry);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
       pi.appendEntry("pi-advisor-status", { state: "paused", error, usage: null, cost: null });
@@ -324,8 +395,116 @@ export default function advisor(pi: ExtensionAPI): void {
     if (error) ctx.ui.notify(`Advisor: ${error}`, "error");
   }
 
+  /** Persist one validated change at its scope and reconfigure; undefined if superseded. */
+  async function applyChange(
+    ctx: ExtensionContext,
+    subject: AgentSession,
+    scope: AdvisorSettingScope,
+    change: AdvisorChange,
+    isCurrent: () => boolean,
+  ): Promise<AdvisorAppliedChange | undefined> {
+    if (scope === "session") {
+      const overrides = readAdvisorOverrides(subject.sessionManager);
+      if (change.action === "inherit") delete overrides[change.key];
+      else Object.assign(overrides, change.patch);
+      pi.appendEntry("pi-advisor-settings", { version: 1, overrides });
+    } else {
+      const updated = await writeAdvisorSettings(subject.settingsManager, scope, change, isCurrent);
+      if (!isCurrent() || !updated) return undefined;
+      layers[scope] = updated;
+    }
+    error = undefined;
+    await refresh(ctx);
+    return { scope, key: change.key, options: change.action === "inherit" ? {} : change.patch };
+  }
+
+  /** The settings menu's view of this extension's settings authority. */
+  function menuHost(
+    ctx: ExtensionContext,
+    subject: AgentSession,
+    theme: AdvisorRenderTheme,
+    applied: AdvisorAppliedChange[],
+  ): AdvisorMenuHost {
+    return {
+      view() {
+        const data = statusData(subject);
+        const authored: Partial<AdvisorScopedOptions> = {
+          session: readAdvisorOverrides(subject.sessionManager),
+        };
+        if (!(layers.project instanceof Error)) authored.project = layers.project;
+        if (!(layers.global instanceof Error)) authored.global = layers.global;
+        return {
+          headline: advisorStatusHeadline(data, theme),
+          paused: data.state === "paused",
+          scopes: subject.settingsManager.isProjectTrusted()
+            ? ["session", "project", "global"]
+            : ["session", "global"],
+          settings: data.settings ?? {},
+          sources: data.sources ?? {},
+          authored,
+          models: ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`),
+          tools: pi
+            .getAllTools()
+            .map((tool) => tool.name)
+            .filter((name) => name !== askToolName),
+        };
+      },
+      async apply(scope, change) {
+        const stamp = ++generation;
+        const result = await applyChange(
+          ctx,
+          subject,
+          scope,
+          change,
+          () => generation === stamp && observed === subject,
+        );
+        if (result) applied.push(result);
+      },
+      async resume() {
+        error = undefined;
+        await refresh(ctx);
+      },
+    };
+  }
+
+  /** Native settings list in the editor area, as `/settings` does; one status entry on close. */
+  async function openMenu(ctx: ExtensionContext, subject: AgentSession): Promise<void> {
+    const applied: AdvisorAppliedChange[] = [];
+    let discarded = false;
+    let menu: AdvisorSettingsMenu | undefined;
+    await ctx.ui.custom<void>((tui, theme, keybindings, done) => {
+      const opened = new AdvisorSettingsMenu(
+        menuHost(ctx, subject, theme, applied),
+        {
+          tui,
+          keybindings,
+          theme,
+          externalEditorCommand: subject.settingsManager.getExternalEditorCommand(),
+        },
+        () => done(),
+      );
+      menu = opened;
+      activeMenu = {
+        refresh: () => {
+          opened.refresh();
+          tui.requestRender();
+        },
+        close: () => {
+          discarded = true;
+          activeMenu = undefined;
+          done();
+        },
+      };
+      return opened;
+    });
+    activeMenu = undefined;
+    // Edits started before closing are still recorded once they settle.
+    await menu?.settled();
+    if (!discarded && observed === subject && applied.length) status(ctx, applied);
+  }
+
   pi.registerCommand("advisor", {
-    description: "Advisor on, off, inherit, scoped settings, prompt editor, or status",
+    description: "Advisor settings menu, or on, off, inherit, set, prompt, and status",
     getArgumentCompletions: completeAdvisorCommandArguments,
     async handler(args, ctx) {
       if (privateSession) {
@@ -338,10 +517,17 @@ export default function advisor(pi: ExtensionAPI): void {
       const subject = observed;
       let stamp = generation;
       const isCurrent = () => generation === stamp && observed === subject;
+      let applied: AdvisorAppliedChange | undefined;
       try {
         if (!subject) throw new Error(error ?? "Advisor session is unavailable");
         const command = parseAdvisorCommand(args);
-        if (command.action !== "status") {
+        if (command.action === "menu" && ctx.mode === "tui") {
+          // Opening fails closed to the status entry when settings cannot be read.
+          statusData(subject);
+          await openMenu(ctx, subject);
+          return;
+        }
+        if (command.action !== "status" && command.action !== "menu") {
           stamp = ++generation;
           let change: AdvisorChange;
           if (command.action === "prompt") {
@@ -354,32 +540,17 @@ export default function advisor(pi: ExtensionAPI): void {
             if (!isCurrent() || edited === undefined) return;
             change = {
               action: "set",
+              key: "prompt",
               patch: parseAdvisorOptions({ prompt: edited }, command.scope),
             };
           } else change = command;
-          if (command.scope === "session") {
-            const overrides = readAdvisorOverrides(subject.sessionManager);
-            if (change.action === "inherit") delete overrides[change.key];
-            else Object.assign(overrides, change.patch);
-            pi.appendEntry("pi-advisor-settings", { version: 1, overrides });
-          } else {
-            const updated = await writeAdvisorSettings(
-              subject.settingsManager,
-              command.scope,
-              change,
-              isCurrent,
-            );
-            if (!isCurrent() || !updated) return;
-            layers[command.scope] = updated;
-          }
-          error = undefined;
-          await refresh(ctx);
+          applied = await applyChange(ctx, subject, command.scope, change, isCurrent);
         }
       } catch (cause) {
         if (!isCurrent()) return;
         error = cause instanceof Error ? cause.message : String(cause);
       }
-      if (isCurrent()) status(ctx);
+      if (isCurrent()) status(ctx, applied ? [applied] : []);
     },
   });
 }
