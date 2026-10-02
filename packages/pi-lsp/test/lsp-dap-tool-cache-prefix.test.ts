@@ -238,6 +238,24 @@ afterEach(async () => {
   );
 });
 
+/** Tools each extension declares: one `lsp` tool, and the direct per-operation DAP tools. */
+const DECLARED_TOOLS = {
+  lsp: ["lsp"],
+  dap: [
+    "dap_launch",
+    "dap_set_breakpoints",
+    "dap_continue",
+    "dap_next",
+    "dap_step_in",
+    "dap_step_out",
+    "dap_stack",
+    "dap_variables",
+    "dap_evaluate",
+    "dap_status",
+    "dap_stop",
+  ],
+} as const;
+
 /**
  * Issues #125 and #126: top-level unions made strict providers reject unrelated turns.
  * Test each extension alone and both together: schemas stay object-shaped, argument guidance
@@ -247,7 +265,8 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
   "serializes object-shaped $toolNames parameters and a stable prefix",
   async ({ toolNames }) => {
     const fixture = await createToolCacheFixture(toolNames);
-    for (const name of toolNames) expect(fixture.session.getToolDefinition(name)).toBeDefined();
+    const declared = toolNames.flatMap((name) => DECLARED_TOOLS[name]);
+    for (const name of declared) expect(fixture.session.getToolDefinition(name)).toBeDefined();
 
     fixture.responses.push(fauxAssistantMessage("Ready."));
     await fixture.session.prompt("Start");
@@ -263,7 +282,7 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
     const after = await serializeTurn(second);
 
     // (a) Every registered tool reaches the provider as a root object, never a top-level union.
-    expect(before.tools.map((tool) => tool.function.name)).toEqual(toolNames);
+    expect(before.tools.map((tool) => tool.function.name)).toEqual(declared);
     for (const { function: tool } of before.tools) {
       expect(tool.description).toBe(fixture.session.getToolDefinition(tool.name)?.description);
       if (tool.name === "lsp") {
@@ -271,9 +290,10 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
         expect(tool.description).toContain(
           "capabilities, restart, workspace_diagnostics: server_id, file_path",
         );
-      } else {
+        expect(tool.parameters.required).toEqual(["operation"]);
+      } else if (tool.name === "dap_variables") {
         expect(tool.description).toContain(
-          "variables: exactly one of frame_id or variables_reference is required (never both)",
+          "Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both",
         );
       }
       const parameters = tool.parameters;
@@ -286,7 +306,6 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
         Object.hasOwn(parameters, "anyOf"),
         `registered ${tool.name} parameters must not carry a top-level anyOf; got ${observedSchema}`,
       ).toBe(false);
-      expect(parameters.required).toEqual(["operation"]);
       expect(parameters.additionalProperties).toBe(false);
     }
 

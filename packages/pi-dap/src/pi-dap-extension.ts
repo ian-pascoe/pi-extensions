@@ -8,7 +8,7 @@ import {
 import { DapSession } from "./dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "./dap-session-files.js";
 import { DapObserverUiController } from "./dap-observer-ui.js";
-import { createDapToolDefinition, type DapToolRuntime } from "./dap-tool.js";
+import { createDapToolDefinitions, type DapToolRuntime } from "./dap-tool.js";
 import { resolveDapSettings } from "./pi-dap-settings.js";
 
 interface ActivePiDapSession extends DapToolRuntime {
@@ -17,7 +17,7 @@ interface ActivePiDapSession extends DapToolRuntime {
   readonly sessionFiles: DapSessionFiles;
 }
 
-/** Own settings, one Debug Session, one registered tool, and cleanup for a Pi conversation session. */
+/** Own settings, one Debug Session, its per-operation tools, and cleanup for a Pi conversation session. */
 export class PiDapLifecycleController {
   private activeSession: ActivePiDapSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
@@ -28,9 +28,11 @@ export class PiDapLifecycleController {
     private readonly getAgentDirectory: () => string = getAgentDir,
   ) {}
 
-  /** Register the stable tool definition and Pi conversation session lifecycle handlers. */
+  /** Register the stable tool definitions and Pi conversation session lifecycle handlers. */
   register(): void {
-    this.pi.registerTool(createDapToolDefinition(() => this.activeSession));
+    for (const tool of createDapToolDefinitions(() => this.activeSession)) {
+      this.pi.registerTool(tool);
+    }
     this.pi.on("session_start", (_event, context) => this.startSession(context));
     this.pi.on("session_shutdown", () => this.shutdownSession());
   }

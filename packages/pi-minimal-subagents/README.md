@@ -164,7 +164,7 @@ example:
   "minimalSubagents": {
     "baseToolset": ["context_*"],
     "readToolset": ["read", "grep", "find", "ls"],
-    "modifyToolset": ["bash", "edit", "write", "lsp", "dap"]
+    "modifyToolset": ["bash", "edit", "write", "lsp", "dap_*"]
   }
 }
 ```
@@ -203,8 +203,8 @@ Pattern expansion happens when a Child Agent is created. `/reload` applies
 settings to future launches without changing existing Launch Contracts. If a tool
 in an existing contract later disappears, normal restoration dependency checks
 still apply; the saved grant is not silently rewritten. Toolsets configure names,
-not tool operations: granting `lsp`, `dap`, or another multifunction tool grants
-that tool's available operations, regardless of preset name.
+not tool operations: granting `lsp` or another multifunction tool grants that
+tool's available operations, regardless of preset name.
 
 Child Agents load Pi's built-in `llama.cpp`, `codemode`, `tool-search`, and `mcp`
 extensions unless settings disable them (`-builtin:<name>`); each child connects

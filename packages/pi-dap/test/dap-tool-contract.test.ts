@@ -1,58 +1,133 @@
-import { type TObject, Type } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, test } from "vitest";
-import {
-  DapToolParametersSchema,
-  DapToolProviderParametersSchema,
-} from "../src/dap-tool-contract.js";
-import { createDapToolDefinition } from "../src/dap-tool.js";
+import { DAP_OPERATIONS, DapToolOutputSchemas } from "../src/dap-tool-contract.js";
+import { createDapToolDefinitions, DAP_TOOL_NAMESPACE } from "../src/dap-tool.js";
 
-const branches = DapToolParametersSchema.anyOf.flatMap<TObject>((branch) =>
-  "anyOf" in branch ? branch.anyOf : [branch],
-);
-const OperationSchema = Type.Object({ const: Type.String() });
+const tools = createDapToolDefinitions(() => undefined);
 
-describe("DAP provider parameters", () => {
-  test("registers a plain object and documents operation-specific requirements", () => {
-    const tool = createDapToolDefinition(() => undefined);
-    expect(tool.parameters).toBe(DapToolProviderParametersSchema);
-    expect(tool.parameters.type).toBe("object");
-    expect(Object.hasOwn(tool.parameters, "anyOf")).toBe(false);
-    expect(tool.parameters).toMatchObject({ additionalProperties: false });
-    expect(tool.parameters.required).toEqual(["operation"]);
-    expect(tool.description).toContain("set_breakpoints: required file_path and breakpoints");
-    expect(tool.description).toContain("evaluate: required expression; optional frame_id");
-    expect(tool.description).toContain(
-      "variables: exactly one of frame_id or variables_reference is required (never both)",
+function tool(name: string) {
+  const found = tools.find((candidate) => candidate.name === name);
+  if (found === undefined) throw new Error(`Missing ${name}`);
+  return found;
+}
+
+describe("DAP tool family", () => {
+  test("registers one dap_<operation> tool per operation in one namespace", () => {
+    expect(tools.map(({ name }) => name)).toEqual(
+      DAP_OPERATIONS.map((operation) => `dap_${operation}`),
+    );
+    for (const [index, definition] of tools.entries()) {
+      const operation = DAP_OPERATIONS[index];
+      if (operation === undefined) throw new Error("Missing operation");
+      expect(definition.namespace).toBe(DAP_TOOL_NAMESPACE);
+      expect(definition.outputSchema).toBe(DapToolOutputSchemas[operation]);
+      expect(definition.executionMode).toBe("sequential");
+      expect(definition.promptGuidelines).toEqual(tools[0]?.promptGuidelines);
+    }
+    expect(DAP_TOOL_NAMESPACE).toMatchObject({ name: "dap" });
+    expect(DAP_TOOL_NAMESPACE.instructions).toContain("same single Debug Session");
+    // One snippet keeps the system prompt's tool list to one DAP line.
+    expect(tools.filter((definition) => definition.promptSnippet !== undefined)).toEqual([
+      tool("dap_launch"),
+    ]);
+  });
+
+  test("declares the interactive core directly and leaves pause to codemode", () => {
+    expect(
+      Object.fromEntries(tools.map(({ name, exposure }) => [name, exposure ?? "direct"])),
+    ).toEqual({
+      dap_launch: "direct",
+      dap_set_breakpoints: "direct",
+      dap_continue: "direct",
+      dap_next: "direct",
+      dap_step_in: "direct",
+      dap_step_out: "direct",
+      dap_pause: "codemode",
+      dap_stack: "direct",
+      dap_variables: "direct",
+      dap_evaluate: "direct",
+      dap_status: "direct",
+      dap_stop: "direct",
+    });
+  });
+
+  test("annotates what each operation can do", () => {
+    const readOnly = {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    };
+    const execution = {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    };
+    const arbitraryCode = {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    };
+    expect(Object.fromEntries(tools.map(({ name, annotations }) => [name, annotations]))).toEqual({
+      dap_launch: arbitraryCode,
+      dap_set_breakpoints: { ...execution, idempotentHint: true },
+      dap_continue: execution,
+      dap_next: execution,
+      dap_step_in: execution,
+      dap_step_out: execution,
+      dap_pause: { ...execution, idempotentHint: true },
+      dap_stack: readOnly,
+      dap_variables: readOnly,
+      dap_evaluate: arbitraryCode,
+      dap_status: readOnly,
+      dap_stop: { ...readOnly, readOnlyHint: false, destructiveHint: true },
+    });
+  });
+
+  test("registers plain object parameters holding only each operation's fields", () => {
+    const fields = Object.fromEntries(
+      tools.map(({ name, parameters }) => {
+        expect(parameters.type).toBe("object");
+        expect(Object.hasOwn(parameters, "anyOf")).toBe(false);
+        expect(parameters).toMatchObject({ additionalProperties: false });
+        return [name, [Object.keys(parameters.properties), parameters.required ?? []]];
+      }),
+    );
+    expect(fields).toEqual({
+      dap_launch: [["profile", "program", "args", "cwd"], []],
+      dap_set_breakpoints: [
+        ["file_path", "breakpoints"],
+        ["file_path", "breakpoints"],
+      ],
+      dap_continue: [[], []],
+      dap_next: [[], []],
+      dap_step_in: [[], []],
+      dap_step_out: [[], []],
+      dap_pause: [[], []],
+      dap_stack: [["thread_id", "start", "count"], []],
+      dap_variables: [["frame_id", "variables_reference", "start", "count"], []],
+      dap_evaluate: [["expression", "frame_id"], ["expression"]],
+      dap_status: [[], []],
+      dap_stop: [[], []],
+    });
+    expect(tool("dap_variables").description).toContain(
+      "Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both",
     );
   });
 
-  test("covers every strict operation and reuses every branch field schema", () => {
-    const operations = new Set<string>();
-    const fields = new Map<string, string>();
-    for (const branch of branches) {
-      const operation = branch.properties.operation;
-      if (!Value.Check(OperationSchema, operation)) throw new Error("Missing operation literal");
-      operations.add(operation.const);
-      for (const [name, schema] of Object.entries(branch.properties)) {
-        if (name === "operation") continue;
-        const serialized = JSON.stringify(schema);
-        if (fields.has(name))
-          expect(serialized, `branches disagree on ${name}`).toBe(fields.get(name));
-        fields.set(name, serialized);
-      }
-    }
-    expect(branches).toHaveLength(13); // Includes both exclusive variables branches.
-    expect(DapToolProviderParametersSchema.properties.operation).toMatchObject({
-      type: "string",
-      enum: [...operations],
-    });
-    expect(Object.keys(DapToolProviderParametersSchema.properties).sort()).toEqual(
-      ["operation", ...fields.keys()].sort(),
+  test("keeps variables selector exclusivity inside the tool", () => {
+    const variables = tool("dap_variables");
+    // The provider-facing object admits both selectors; the strict ingress parser does not.
+    expect(Value.Check(variables.parameters, { frame_id: 1, variables_reference: 2 })).toBe(true);
+    expect(() => variables.prepareArguments?.({ frame_id: 1, variables_reference: 2 })).toThrow(
+      "Pi DAP: invalid tool arguments",
     );
-    const providerFields = new Map(Object.entries(DapToolProviderParametersSchema.properties));
-    for (const [name, schema] of fields) {
-      expect(JSON.stringify(providerFields.get(name)), `provider ${name} drifted`).toBe(schema);
-    }
+    expect(() => variables.prepareArguments?.({})).toThrow("Pi DAP: invalid tool arguments");
+    expect(variables.prepareArguments?.({ frame_id: 0, count: 2 })).toEqual({
+      frame_id: 0,
+      count: 2,
+    });
   });
 });

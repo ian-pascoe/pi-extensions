@@ -82,39 +82,82 @@ arguments at `dapDebugServer.js` followed by `$PORT`, as above. Other
 standards-based adapters are Experimental: they may work through DAP but have
 no compatibility promise.
 
-## `dap` tool
+## Tools
 
-Pi DAP registers one strict `dap` tool with exactly these operations:
+Pi DAP registers one tool per operation, all acting on the same single Debug
+Session and grouped under the `dap` namespace:
 
-```text
-launch            set_breakpoints   continue          next
-step_in           step_out          pause             stack
-variables         evaluate          status            stop
-```
+| Tool                  | Arguments                                                      | Exposure   |
+| --------------------- | -------------------------------------------------------------- | ---------- |
+| `dap_launch`          | optional `profile`, `program`, `args`, `cwd`                   | `direct`   |
+| `dap_set_breakpoints` | `file_path`, `breakpoints`                                     | `direct`   |
+| `dap_continue`        | none                                                           | `direct`   |
+| `dap_next`            | none                                                           | `direct`   |
+| `dap_step_in`         | none                                                           | `direct`   |
+| `dap_step_out`        | none                                                           | `direct`   |
+| `dap_pause`           | none                                                           | `codemode` |
+| `dap_stack`           | optional `thread_id`, `start`, `count`                         | `direct`   |
+| `dap_variables`       | `frame_id` or `variables_reference`; optional `start`, `count` | `direct`   |
+| `dap_evaluate`        | `expression`; optional `frame_id`                              | `direct`   |
+| `dap_status`          | none                                                           | `direct`   |
+| `dap_stop`            | none                                                           | `direct`   |
 
-`launch` selects a profile (it may be omitted only when exactly one valid
+`direct` tools are declared to the model. `dap_pause` is only needed after an
+execution wait times out, so it is not declared by default: Pi's `codemode`
+scripts can always call it and list it with its type, and `tool_search` can
+load it. Without either, activate it by name with
+`"defaultTools": ["+dap_pause"]` in Pi settings or `--tools` (which replaces
+the whole selection). `dap_stop` also ends a runaway Debuggee.
+
+`dap_launch` selects a profile (it may be omitted only when exactly one valid
 profile exists). `program`, `args`, and `cwd` replace the same profile
 arguments; relative `program` and `cwd` paths resolve from Pi's project working
 directory. A Debug Session is single-active: launching while one is active
-fails. Desired Breakpoints are complete per-file lists and survive `stop` and
-later launches in the same Pi conversation session; `[]` clears a file.
+fails. Desired Breakpoints are complete per-file lists and survive `dap_stop`
+and later launches in the same Pi conversation session; `[]` clears a file.
 Relative breakpoint paths also resolve from Pi's project working directory.
 
-Execution and inspection require a stopped Debuggee: `continue`, `next`,
-`step_in`, `step_out`, `stack`, `variables`, and `evaluate`. `pause` requires a
-running Debuggee. `status` and `stop` are idempotent. `stack` defaults to the
-stopped thread, offset `0`, and count `20`; `variables` takes exactly one
-`frame_id` or `variables_reference` and defaults its count to `100`; `evaluate`
-defaults to the top Stack Frame.
+Execution and inspection require a stopped Debuggee: `dap_continue`,
+`dap_next`, `dap_step_in`, `dap_step_out`, `dap_stack`, `dap_variables`, and
+`dap_evaluate`. `dap_pause` requires a running Debuggee. `dap_status` and
+`dap_stop` are idempotent. `dap_stack` defaults to the stopped thread, offset
+`0`, and count `20`; `dap_variables` takes exactly one `frame_id` or
+`variables_reference` and defaults its count to `100`; `dap_evaluate` defaults
+to the top Stack Frame. Calls run sequentially, in the order the model issued
+them.
 
 Execution waits end on a stop, exit, cancellation, or `executionMs`; an
 execution timeout reports `running`. Request, startup, and shutdown timeouts
-are errors. A natural exit leaves a terminal snapshot available from `status`
-until the next launch.
+are errors. A natural exit leaves a terminal snapshot available from
+`dap_status` until the next launch. A call rejected because of the Debug
+Session state, such as `dap_stack` after the Debuggee exited, is an error
+result that still reports the current state.
+
+Versions before 0.4.0 registered one `dap` tool with an `operation` argument.
+It has no alias: replace `dap` in `--tools`, `defaultTools`, tool grants such as
+Minimal Subagents toolsets, and permission rules with the `dap_*` names (or a
+`dap_*` pattern where patterns are accepted). Past `dap` calls in older sessions
+remain in the transcript and render with Pi's default tool rendering.
+
+### Annotations and script results
+
+Each tool carries MCP-style annotations that permission extensions can use:
+`dap_stack`, `dap_variables`, and `dap_status` are read-only; `dap_launch` and
+`dap_evaluate` run arbitrary code (destructive, open world); `dap_stop` is
+destructive and idempotent; `dap_set_breakpoints` and `dap_pause` are
+idempotent; stepping and continuing only advance the program approved at
+launch.
+
+Each tool declares an output schema. Codemode scripts receive a structured
+result: the Debug Session state, all drained Debuggee output, Desired
+Breakpoints, and the operation's complete data (`breakpoints`, `stack_frames`
+and `total_frames`, `scopes` or `variables`, or `evaluation`). These results are
+not truncated to the transcript limits. A state failure resolves to the
+current state with an `error` field instead of rejecting.
 
 ## Output and lifecycle
 
-Each successful operation drains currently unread Debuggee output. Pi DAP
+Each successful tool call drains currently unread Debuggee output. Pi DAP
 retains at most 1 MiB of unread output, reporting discarded older bytes. Tool
 text follows Pi's 2,000-line/50-KB visible limit; when truncated, the retained
 complete result is written to a Result Spill and its path appears in the
@@ -125,7 +168,7 @@ directory instead. Normal session teardown removes it; forced termination may
 leave temporary files behind.
 
 Adapters start lazily at `launch`, use the project working directory, and are
-owned by one Pi conversation session. `stop`, launch cancellation, adapter
+owned by one Pi conversation session. `dap_stop`, launch cancellation, adapter
 failure, and session shutdown attempt DAP termination and disconnect before
 terminating owned Linux process groups. Session shutdown removes session files.
 Cancelling an execution wait only ends that wait; the live Debug Session remains

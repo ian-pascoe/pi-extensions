@@ -20,8 +20,8 @@ import {
   DapToolProgressDetailsSchema,
   DapToolResultDetailsSchema,
   type DapPresentationDetails,
-  type DapToolParameters,
-  type DapToolProviderParameters,
+  type DapOperation,
+  type DapToolCallArguments,
   type DapToolProgressDetails,
   type DapToolRenderDetails,
   type DapToolResultDetails,
@@ -35,7 +35,7 @@ interface DapResultSummary {
   readonly text: string;
 }
 
-function humanizeDapOperation(operation: DapToolParameters["operation"]): string {
+function humanizeDapOperation(operation: DapOperation): string {
   const labels = {
     launch: "Launch",
     set_breakpoints: "Set breakpoints",
@@ -53,7 +53,7 @@ function humanizeDapOperation(operation: DapToolParameters["operation"]): string
   return labels[operation];
 }
 
-function progressingDapOperation(operation: DapToolParameters["operation"]): string {
+function progressingDapOperation(operation: DapOperation): string {
   switch (operation) {
     case "launch":
       return "Launching";
@@ -101,7 +101,7 @@ function boundedDapPreview(text: string, width = 160): string {
   return `${sliceByColumn(singleLine, 0, width - 1, true).trimEnd()}…`;
 }
 
-function dapCallTarget(parameters: DapToolProviderParameters, cwd: string): string | undefined {
+function dapCallTarget(parameters: DapToolCallArguments, cwd: string): string | undefined {
   switch (parameters.operation) {
     case "launch":
       return [
@@ -149,7 +149,7 @@ function appendField(
 
 function appendExpandedCall(
   container: Container,
-  parameters: DapToolProviderParameters,
+  parameters: DapToolCallArguments,
   theme: DapRenderTheme,
   cwd: string,
 ): void {
@@ -217,7 +217,7 @@ function appendExpandedCall(
 
 /** Render one DAP call with only the arguments explicitly supplied to the tool. */
 export function renderDapToolCall(
-  parameters: DapToolProviderParameters,
+  parameters: DapToolCallArguments,
   theme: DapRenderTheme,
   expanded: boolean,
   cwd: string,
