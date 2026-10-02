@@ -51,6 +51,8 @@ Fetches exactly one absolute HTTP or HTTPS URL. HTTP is preserved, native fetch 
 
 Only textual MIME types are returned: an absent type, `text/*`, JSON, XML, JavaScript, and structured `+json`/`+xml` types. SVG is accepted as XML. Other images and files are rejected. HTML converts to Markdown or plain text when requested; scripts and other active embedded content are not executed. A Cloudflare `403` challenge gets one retry with the `pi-web-tools` user agent inside the original timeout budget.
 
+Both tools declare MCP-style `annotations`: read-only, non-destructive, idempotent, and open-world. Pi reports them through `pi.getAllTools()` so permission extensions can decide which calls to confirm; Pi does not send them to model providers.
+
 ## Limits and security
 
 Web Search response bodies stop at 256 KiB. Web Fetch response bodies stop at 5 MiB. Both tools apply Pi's 50 KiB or 2,000-line model-output limit after parsing or conversion. When output is truncated, the complete text is written to a unique private temporary directory and the returned result includes its path and exact counts. The operating system owns later temporary-file cleanup.

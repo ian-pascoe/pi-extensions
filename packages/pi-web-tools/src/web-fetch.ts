@@ -235,6 +235,12 @@ export function createWebFetchTool(
     label: "Web Fetch",
     description: WEB_FETCH_DESCRIPTION,
     promptSnippet: "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
     parameters: WEB_FETCH_PARAMETERS,
     renderCall: (parameters, theme, context) =>
       renderWebFetchToolCall(parameters, theme, context.expanded),
