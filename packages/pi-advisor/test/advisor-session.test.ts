@@ -340,13 +340,13 @@ describe("private Advisor native sessions", () => {
       return runtime.session.getToolDefinition("codemode")?.description;
     };
 
-    expect(await codemodeDescription(resourceInputs)).toContain("Model API");
+    expect(await codemodeDescription(resourceInputs)).toContain("- `models`:");
     const ownerDescription = await codemodeDescription({
       ...resourceInputs,
       codemodeModels: false,
     });
     expect(ownerDescription).toContain("tools");
-    expect(ownerDescription).not.toContain("Model API");
+    expect(ownerDescription).not.toContain("- `models`:");
   });
 
   it("keeps the advice tool active under built-in codemode only mode without widening the grant", async () => {

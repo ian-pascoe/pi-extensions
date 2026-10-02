@@ -104,8 +104,8 @@ describe("Background jobs through Pi", () => {
     const firstTurnTools = fixture.turns[0]?.tools ?? [];
     const codemode = firstTurnTools.find((tool) => tool.name === "codemode");
     const declared = `${codemode?.description ?? ""}\n${firstTurnTools.find((tool) => tool.name === "bash")?.description ?? ""}`;
-    expect(declared).toContain("background?:");
-    expect(declared).toMatch(/exit_code\?: number/u);
+    // Scripts get the typed background result: `exit_code` optional, `background` added.
+    expect(declared).toMatch(/resolves to `\{ [^`]*\bexit_code\?, [^`]*\bbackground\? \}`/u);
 
     const text = toolResultText(fixture.turns[1]?.messages ?? [], "codemode");
     expect(text).toContain('"id":"b1"');
