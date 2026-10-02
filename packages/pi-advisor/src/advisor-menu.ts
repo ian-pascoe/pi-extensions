@@ -562,7 +562,8 @@ export class AdvisorSettingsMenu implements Component {
     this.lastRow = id;
     const key = advisorOptionKey(id);
     if (!isCycleKey(key)) return;
-    // Cycle from this scope's own value; the list's suggested value follows the display text.
+    // Cycle from this scope's own value. The list proposes values[0] because its display
+    // text is not one of the values, so ignore its suggestion.
     const values = cycleValues[key];
     const own = cycleValue(key, this.view.authored[this.scope] ?? {}) ?? "inherit";
     const next =
@@ -576,6 +577,10 @@ export class AdvisorSettingsMenu implements Component {
       return;
     }
     this.apply(change);
+    // The list already overwrote the row with its proposal; show the current value until
+    // the write settles and refresh() shows the new one.
+    const row = this.rows.find((item) => item.id === id);
+    if (row) row.currentValue = this.cycleDisplay(key);
   }
 
   /** Apply at the current scope (Pi settings semantics); the list refreshes once it settles. */

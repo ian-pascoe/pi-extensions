@@ -130,6 +130,30 @@ describe("Advisor settings menu", () => {
     ]);
   });
 
+  it("never shows a bare inherit while a cycled edit is still being written", async () => {
+    const release = Promise.withResolvers<void>();
+    const { goTo, press, authored, host, screen, menu } = createMenu();
+    authored.project.enabled = true;
+    menu.refresh();
+    const apply = host.apply.bind(host);
+    host.apply = async (scope, change) => {
+      await release.promise;
+      await apply(scope, change);
+    };
+    const row = () =>
+      screen()
+        .split("\n")
+        .find((line) => line.includes("enabled"))
+        ?.trim()
+        .replace(/\s+/g, " ");
+    goTo("enabled");
+    press(keys.enter);
+    expect(row()).toBe("→ enabled inherit (on · project)");
+    release.resolve();
+    await menu.settled();
+    expect(row()).toBe("→ enabled on");
+  });
+
   it("reaches every session value when another scope sets the option", async () => {
     const { goTo, press, authored, screen, menu } = createMenu();
     authored.project.enabled = true;
