@@ -130,13 +130,31 @@ function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
   };
 }
 
-function failedStructuredOperation(prefix: string, result: DeleteResult): never {
-  const json = JSON.stringify(result);
-  const truncated = truncateHead(json, {
-    maxBytes: DEFAULT_MAX_BYTES,
-    maxLines: DEFAULT_MAX_LINES,
-  });
-  throw new Error(withTroubleshootingHint(`${prefix}: ${truncated.content}`));
+/**
+ * Report a failed operation that still carries declared output: the model sees an error and
+ * codemode scripts receive `structuredContent` instead of a data-less rejection.
+ */
+function failedStructuredToolResult<TDetails extends CoordinatorToolResultDetails>(
+  prefix: string,
+  result: TDetails,
+  options: { troubleshootingHint: boolean },
+): AgentToolResult<TDetails> & { isError: true } {
+  const success = structuredToolResult(result);
+  const text = `${prefix}:\n${textOf(success)}`;
+  return {
+    ...success,
+    content: [
+      {
+        type: "text" as const,
+        text: options.troubleshootingHint ? withTroubleshootingHint(text) : text,
+      },
+    ],
+    isError: true,
+  };
+}
+
+function textOf(result: AgentToolResult<unknown>): string {
+  return result.content.map((part) => (part.type === "text" ? part.text : "")).join("\n");
 }
 
 function callerSourceTurnId(
@@ -201,7 +219,12 @@ export function createCoordinatorToolDefinitions(
           },
           callerSourceTurnId(options.coordinator, options.callerId, toolCallId),
         );
-        return structuredToolResult(result);
+        return result.disposition === "failed"
+          ? failedStructuredToolResult("Minimal subagents message delivery failed", result, {
+              // The coordinator already appends the hint to `error`.
+              troubleshootingHint: false,
+            })
+          : structuredToolResult(result);
       });
     },
     ...createCoordinatorToolRendering("agent_message"),
@@ -309,7 +332,9 @@ export function createCoordinatorToolDefinitions(
           options.onAttention?.(
             `Minimal subagents deletion partially failed for ${parameters.agent_id}`,
           );
-          failedStructuredOperation("Minimal subagents deletion partially failed", result);
+          return failedStructuredToolResult("Minimal subagents deletion partially failed", result, {
+            troubleshootingHint: true,
+          });
         }
         return structuredToolResult(result);
       });

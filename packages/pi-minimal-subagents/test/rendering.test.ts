@@ -190,6 +190,32 @@ describe("minimal subagents rendering", () => {
     }
   });
 
+  it("renders a partially failed deletion from its structured details", () => {
+    const lines = renderLines(
+      renderCoordinatorToolResult(
+        "subagent_delete",
+        {
+          content: [{ type: "text", text: "Minimal subagents deletion partially failed" }],
+          details: {
+            agent_id: "child",
+            recursive: true,
+            deleted_agent_ids: ["child.leaf"],
+            trashed_session_files: [],
+            failures: [{ agent_id: "child", error: "disk full" }],
+          },
+        },
+        { expanded: true, isPartial: false },
+        plainTheme,
+        { agent_id: "child" },
+        true,
+      ),
+    );
+
+    expect(lines).toContain("1 failed");
+    expect(lines).toContain("child.leaf");
+    expect(lines).toContain("disk full");
+  });
+
   it("renders legacy details and falls back to historical text for malformed partial errors", () => {
     const legacy = renderCoordinatorToolResult(
       "agent_message",

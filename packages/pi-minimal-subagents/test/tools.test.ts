@@ -8,6 +8,7 @@ import {
   ModelRuntime,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { Value } from "typebox/value";
 import { describe, expect, it, vi } from "vitest";
 import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
 import { CoordinatorToolOutputSchemas } from "../src/minimal-subagents-render-contract.js";
@@ -141,33 +142,101 @@ describe("minimal subagents coordinator tools", () => {
     expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
   });
 
-  it("points partial deletion failures at the troubleshooting Skill", async () => {
+  it("returns partial deletion failures as an error result that keeps the declared output", async () => {
+    const options = toolOptions("root", true);
+    const deletion = {
+      agent_id: "child",
+      recursive: true,
+      deleted_agent_ids: ["child.leaf"],
+      trashed_session_files: [],
+      failures: [{ agent_id: "child", error: "disk full" }],
+    };
+    vi.mocked(options.coordinator.delete).mockResolvedValue(deletion);
+    const onAttention = vi.fn<(message: string) => void>();
+    options.onAttention = onAttention;
+
+    const result = await requireTool(options, "subagent_delete").execute(
+      "delete-call",
+      { agent_id: "child" },
+      undefined,
+      undefined,
+      await createToolExecutionContext(),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      details: deletion,
+      structuredContent: deletion,
+    });
+    expect(
+      Value.Check(CoordinatorToolOutputSchemas.subagent_delete, result.structuredContent),
+    ).toBe(true);
+    const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+    expect(text).toContain("Minimal subagents deletion partially failed");
+    expect(text).toContain("disk full");
+    // The model-facing text points at the troubleshooting Skill; structured data stays clean.
+    expect(text).toContain(TROUBLESHOOTING_HINT);
+    expect(JSON.stringify(result.structuredContent)).not.toContain(TROUBLESHOOTING_HINT);
+    expect(onAttention).toHaveBeenCalledWith(
+      "Minimal subagents deletion partially failed for child",
+    );
+  });
+
+  it("returns complete deletion as a successful result", async () => {
     const options = toolOptions("root", true);
     vi.mocked(options.coordinator.delete).mockResolvedValue({
       agent_id: "child",
       recursive: true,
-      deleted_agent_ids: [],
+      deleted_agent_ids: ["child"],
       trashed_session_files: [],
-      failures: [{ agent_id: "child", error: "disk full" }],
+      failures: [],
     });
 
-    await expect(
-      requireTool(options, "subagent_delete").execute(
-        "delete-call",
-        { agent_id: "child" },
-        undefined,
-        undefined,
-        await createToolExecutionContext(),
-      ),
-    ).rejects.toThrow(`Minimal subagents deletion partially failed: {`);
-    await expect(
-      requireTool(options, "subagent_delete").execute(
-        "delete-call",
-        { agent_id: "child" },
-        undefined,
-        undefined,
-        await createToolExecutionContext(),
-      ),
-    ).rejects.toThrow(TROUBLESHOOTING_HINT);
+    const result = await requireTool(options, "subagent_delete").execute(
+      "delete-call",
+      { agent_id: "child" },
+      undefined,
+      undefined,
+      await createToolExecutionContext(),
+    );
+
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("returns failed message delivery as an error result that keeps the declared output", async () => {
+    const options = toolOptions("root", true);
+    const delivery = {
+      agent_id: "child",
+      message_id: "message-1",
+      disposition: "failed" as const,
+      error: "delivery failed",
+    };
+    vi.mocked(options.coordinator.sendAgentMessage).mockResolvedValue(delivery);
+
+    const failed = await requireTool(options, "agent_message").execute(
+      "message-call",
+      { agent_id: "child", message: "hello" },
+      undefined,
+      undefined,
+      await createToolExecutionContext(),
+    );
+    expect(failed).toMatchObject({
+      isError: true,
+      details: delivery,
+      structuredContent: delivery,
+    });
+
+    vi.mocked(options.coordinator.sendAgentMessage).mockResolvedValue({
+      ...delivery,
+      disposition: "queued",
+    });
+    const queued = await requireTool(options, "agent_message").execute(
+      "message-call",
+      { agent_id: "child", message: "hello" },
+      undefined,
+      undefined,
+      await createToolExecutionContext(),
+    );
+    expect(queued.isError).toBeUndefined();
   });
 });
