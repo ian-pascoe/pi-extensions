@@ -195,6 +195,12 @@ interface CreateWorkspaceEditPreviewInput {
   readonly edit: unknown;
   readonly serverId: string;
   readonly positionEncoding?: PositionEncodingKind;
+  /**
+   * Whether the creating tool call reports the preview in its own result. Otherwise the preview
+   * is held, like a server-initiated one, until a result takes it with
+   * `takeUnreportedPreviewRecords`.
+   */
+  readonly reported?: boolean;
 }
 
 interface DecodedUtf8Document {
@@ -633,13 +639,8 @@ export class LspWorkspaceEditStore {
       operations: changingOperations,
     };
     this.previews.set(preview.preview_id, preview);
-    this.unreportedPreviews.set(preview.preview_id, preview);
+    if (input.reported !== true) this.unreportedPreviews.set(preview.preview_id, preview);
     return structuredClone(preview);
-  }
-
-  /** Mark a tool-created preview as already included in its originating LSP result. */
-  markPreviewReported(previewId: string): void {
-    this.unreportedPreviews.delete(previewId);
   }
 
   /** Forget a preview that no result names, so it can never be applied. */
@@ -655,6 +656,17 @@ export class LspWorkspaceEditStore {
     );
     this.unreportedPreviews.clear();
     return records;
+  }
+
+  /**
+   * Hold previews again that `takeUnreportedPreviewRecords` took for a result that was never
+   * returned, so the next result reports them. A discarded preview stays discarded.
+   */
+  restoreUnreportedPreviewRecords(records: readonly { readonly preview_id: string }[]): void {
+    for (const { preview_id: previewId } of records) {
+      const preview = this.previews.get(previewId);
+      if (preview !== undefined) this.unreportedPreviews.set(previewId, preview);
+    }
   }
 
   /** Return the canonical Mutation Manifest prepared before Pi's `tool_call` hooks run. */

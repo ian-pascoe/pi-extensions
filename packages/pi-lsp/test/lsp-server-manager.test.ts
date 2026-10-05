@@ -1181,6 +1181,91 @@ describe("session-scoped LSP server manager", () => {
     await manager.shutdown();
   });
 
+  test("waits for every server operation to settle before rejecting a read", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+    const inputError = new LspInputError("line 9 is past the end of the document");
+    const lateError = new LspInputError("a later input error");
+    const settled: string[] = [];
+
+    const read = manager.runRead(filePath, undefined, anyCapability, async (_client, route) => {
+      if (route.serverId === "lint") throw inputError;
+      // Still running when the other server has already rejected.
+      await new Promise((done) => setTimeout(done, 20));
+      settled.push(route.serverId);
+      throw lateError;
+    });
+
+    // The first rejection in time is the one that propagates, once every operation has settled.
+    await expect(read).rejects.toBe(inputError);
+    expect(settled).toEqual(["typescript"]);
+    await manager.shutdown();
+  });
+
+  test("waits for the other servers before rejecting a read with a cancellation", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+    const cancelled = new LspServerClientError(
+      "cancelled",
+      "lint",
+      "/tmp/lint.stderr",
+      "request cancelled",
+    );
+    const settled: string[] = [];
+
+    const read = manager.runRead(filePath, undefined, anyCapability, async (_client, route) => {
+      if (route.serverId === "lint") throw cancelled;
+      await new Promise((done) => setTimeout(done, 20));
+      settled.push(route.serverId);
+      return "late value";
+    });
+
+    await expect(read).rejects.toBe(cancelled);
+    expect(settled).toEqual(["typescript"]);
+    await manager.shutdown();
+  });
+
+  test("rejects a read without waiting for a server that is still starting", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    let releaseStart: () => void = () => undefined;
+    const startGate = new Promise<void>((release) => {
+      releaseStart = release;
+    });
+    const factory = createRecordingClientFactory(async ({ definition }) => {
+      if (definition.id === "typescript") await startGate;
+      return new RecordingLspClient();
+    });
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: factory.start,
+    });
+    const started: string[] = [];
+    const inputError = new LspInputError("line 9 is past the end of the document");
+
+    // The typescript server never finishes starting while the read runs.
+    await expect(
+      manager.runRead(filePath, undefined, anyCapability, async (_client, route) => {
+        started.push(route.serverId);
+        throw inputError;
+      }),
+    ).rejects.toBe(inputError);
+
+    releaseStart();
+    await new Promise((done) => setTimeout(done, 10));
+    // Once ready, the late server does not run an operation for the rejected read.
+    expect(started).toEqual(["lint"]);
+    await manager.shutdown();
+  });
+
   test("reports an explicitly selected incapable read server", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory(async () => new RecordingLspClient(false));

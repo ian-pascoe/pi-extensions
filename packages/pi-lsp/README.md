@@ -365,7 +365,10 @@ tool-output expansion controls.
 `lsp_rename`, the `lsp_format_*` tools, and edit-bearing code actions return a persisted Workspace
 Edit Preview. They never write immediately. Command-bearing code actions remain visible but cannot
 be applied. Server-initiated `workspace/applyEdit` requests are rejected with `applied: false` and
-exposed as a preview in the active tool result.
+exposed as a preview in the active tool result. A preview is applicable only if the result the tool
+returns names it: when a call fails, or a server's listing fails, the previews that call created
+are discarded. Server-initiated previews are not discarded; they are held until a result reports
+them, including after a failed call.
 
 Apply a preview with `lsp_apply` and `{ "preview_id": "..." }`. `lsp_apply` is always declared, so
 every preview can be applied, including previews recorded by the removed `lsp` tool in a resumed
