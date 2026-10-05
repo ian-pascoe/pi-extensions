@@ -62,6 +62,7 @@ import {
   isLspLocationOperation,
   lspDisplayPath,
 } from "./lsp-location-text.js";
+import { formatLspStructureReadText, isLspStructureOperation } from "./lsp-structure-text.js";
 import {
   convertLspCodePointPosition,
   convertLspProtocolPosition,
@@ -380,24 +381,37 @@ async function createLspToolOutput(
   );
 }
 
+/** What a read's readable model-visible text needs beyond the servers' responses. */
+interface ReadTextContext {
+  readonly cwd: string;
+  /** Absolute path of the queried document or, for workspace reads, the root anchor. */
+  readonly documentPath: string;
+  /** Requested selection-range positions. */
+  readonly positions?: readonly { readonly line: number; readonly character: number }[];
+}
+
+function readTextContext(filePath: string, context: ExtensionContext): ReadTextContext {
+  return { cwd: context.cwd, documentPath: absoluteLspFilePath(filePath, context) };
+}
+
 /**
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
- * response; location reads derive readable model-visible text from the same data (ADR-0003), and
- * other reads show that JSON. References also name each searched workspace root and warn when
+ * response; location, symbol, hierarchy, and range reads derive readable model-visible text from
+ * the same data (ADR-0003), and other reads show that JSON. References also name each searched workspace root and warn when
  * other roots of the same Server Definition exist.
  */
 async function readOutput(
   operation: LspToolParameters["operation"],
   result: Promise<LspServerReadResult<unknown>>,
   dependencies: LspToolDependencies,
-  location?: { readonly cwd: string; readonly documentPath: string },
+  location: ReadTextContext,
 ) {
   const resolved = await result;
   requireReadSuccess(resolved);
   const results = readOperationValue(resolved);
   const failureWarnings = resolved.failures.map(({ message }) => message);
   const scopes =
-    operation === "find_references" && location !== undefined
+    operation === "find_references"
       ? await Promise.all(
           resolved.successes.map(({ serverId, rootPath }) =>
             serverInstanceScope(dependencies, serverId, rootPath, location.cwd),
@@ -407,17 +421,28 @@ async function readOutput(
   const warnings = [...serverInstanceScopeWarnings(scopes), ...failureWarnings];
   const json = formatLspToolValue({ results, warnings });
   const details = operationDetails(operation, readOperationOutcomes(resolved));
-  if (location === undefined || !isLspLocationOperation(operation)) {
+  let text: string;
+  if (isLspLocationOperation(operation)) {
+    text = await formatLspLocationReadText({
+      operation,
+      cwd: location.cwd,
+      documentPath: location.documentPath,
+      reads: results,
+      warnings: failureWarnings,
+      scope: serverInstanceScopeLines(scopes),
+    });
+  } else if (isLspStructureOperation(operation)) {
+    text = await formatLspStructureReadText({
+      operation,
+      cwd: location.cwd,
+      documentPath: location.documentPath,
+      reads: results,
+      warnings: failureWarnings,
+      positions: location.positions,
+    });
+  } else {
     return createLspToolOutput(json, details, lspStructuredFields(json), dependencies);
   }
-  const text = await formatLspLocationReadText({
-    operation,
-    cwd: location.cwd,
-    documentPath: location.documentPath,
-    reads: results,
-    warnings: failureWarnings,
-    scope: serverInstanceScopeLines(scopes),
-  });
   const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   return createLspToolOutput(
     text,
@@ -1510,10 +1535,7 @@ async function executeLspOperation(
         parameters.operation,
         executePositionRead(dependencies, parameters, context, signal),
         dependencies,
-        {
-          cwd: context.cwd,
-          documentPath: absoluteLspFilePath(parameters.file_path, context),
-        },
+        readTextContext(parameters.file_path, context),
       );
     case "diagnostics":
     case "document_symbols":
@@ -1525,6 +1547,7 @@ async function executeLspOperation(
         parameters.operation,
         executeFileRead(dependencies, parameters, context, signal),
         dependencies,
+        readTextContext(parameters.file_path, context),
       );
     case "workspace_diagnostics":
     case "workspace_symbols":
@@ -1532,18 +1555,21 @@ async function executeLspOperation(
         parameters.operation,
         executeWorkspaceRead(dependencies, parameters, context, signal),
         dependencies,
+        readTextContext(parameters.file_path, context),
       );
     case "selection_ranges":
       return readOutput(
         parameters.operation,
         executeSelectionRanges(dependencies, parameters, context, signal),
         dependencies,
+        { ...readTextContext(parameters.file_path, context), positions: parameters.positions },
       );
     case "inlay_hints":
       return readOutput(
         parameters.operation,
         executeInlayHints(dependencies, parameters, context, signal),
         dependencies,
+        readTextContext(parameters.file_path, context),
       );
     case "format_document":
     case "format_range":

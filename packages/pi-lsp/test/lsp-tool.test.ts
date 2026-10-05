@@ -855,6 +855,64 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     await fixture.close();
   });
 
+  test("renders document symbols as an outline over unchanged structured data", async () => {
+    const fixture = await createToolFixture();
+    const protocolRange = (start: number, end: number) => ({
+      start: { line: 0, character: start },
+      end: { line: 0, character: end },
+    });
+    fixture.client.responseByMethod.set("textDocument/documentSymbol", [
+      {
+        name: "emoji",
+        kind: 14,
+        range: protocolRange(0, 14),
+        selectionRange: protocolRange(6, 11),
+        children: [],
+      },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "document_symbols",
+      file_path: "source.ts",
+    });
+
+    expect(resultText(result)).toBe("emoji (constant) source.ts:1:7");
+    const oneBasedRange = (start: number, end: number) => ({
+      end: { character: end, line: 1 },
+      start: { character: start, line: 1 },
+    });
+    // Byte-identical to the compact JSON these reads returned as text before.
+    expect(JSON.stringify(result.structuredContent)).toBe(
+      JSON.stringify({
+        results: [
+          {
+            root_path: fixture.context.cwd,
+            server_id: "typescript",
+            value: [
+              {
+                children: [],
+                kind: 14,
+                name: "emoji",
+                range: oneBasedRange(1, 15),
+                selectionRange: oneBasedRange(7, 12),
+              },
+            ],
+          },
+        ],
+        warnings: [],
+        truncated: false,
+        structured_truncated: false,
+      }),
+    );
+    expect(result.details).toEqual({
+      kind: "operation",
+      operation: "document_symbols",
+      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
+      result_count: 1,
+    });
+    await fixture.close();
+  });
+
   test("names the searched workspace root and warns that other roots exist for references", async () => {
     const fixture = await createToolFixture();
     const cwd = fixture.context.cwd;
@@ -1492,8 +1550,17 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       line: 1,
       character: 1,
     });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(JSON.parse(text)).toMatchObject({
+    expect(resultText(result)).toBe(
+      [
+        "caller (function) long-caller.ts:1:17",
+        "  long-caller.ts:1:37  export function aLongCallerName() { callee(); }",
+        "caller (function) unicode-caller.ts:1:1",
+        "  unicode-caller.ts:1:11  const 😀 = callee();",
+        "caller (function) source.ts:1:1",
+        "  source.ts:1:17  const emoji = '😀';",
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
       results: [
         {
           value: [
@@ -1556,7 +1623,8 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       operation: "folding_ranges",
       file_path: fixture.filePath,
     });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(resultText(result)).toBe("1-1  const emoji = '😀';");
+    const text = JSON.stringify(result.structuredContent);
     expect(text).toContain('"startCharacter":16');
     expect(text).toContain('"endCharacter":17');
     expect(text).toContain('"startLine":1');
