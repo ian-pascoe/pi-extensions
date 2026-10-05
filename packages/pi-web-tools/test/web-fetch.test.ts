@@ -155,7 +155,7 @@ describe("Web Fetch", () => {
     expect(markdown.content).toEqual([
       { type: "text", text: "# Hello\n\nworld **wide**\n\nhidden" },
     ]);
-    expect(text.content).toEqual([{ type: "text", text: "Helloworld wide" }]);
+    expect(text.content).toEqual([{ type: "text", text: "Hello\n\nworld wide" }]);
     expect(raw.content).toEqual([{ type: "text", text: html }]);
     expect(server.requests[0]?.headers.accept).toContain("text/markdown;q=1.0");
     expect(server.requests[1]?.headers.accept).toContain("text/plain;q=1.0");
@@ -717,6 +717,46 @@ describe("Web Fetch main content", () => {
       "markdown",
     );
     expect(output).toBe("# Solo\n\nOnly main.");
+  });
+
+  test("text format puts block elements on their own lines and collapses blank runs", async () => {
+    const html = `<html><head><title>Layout</title></head><body><main>
+      <h1>Heading</h1>
+
+
+      <p>First   paragraph,
+         wrapped.</p><p>Second <em>inline</em> one.<br>After break</p>
+      <ul><li>one</li><li>two</li></ul>
+      <div>Block<div>Nested</div></div>
+      <table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>
+      <pre>  keep
+    indent</pre>
+    </main></body></html>`;
+
+    expect(await fetchHtmlPage(html, "text")).toBe(
+      [
+        "Layout",
+        "",
+        "Heading",
+        "",
+        "First paragraph, wrapped.",
+        "",
+        "Second inline one.",
+        "After break",
+        "",
+        "one",
+        "two",
+        "",
+        "Block",
+        "Nested",
+        "",
+        "a b",
+        "c d",
+        "",
+        "  keep",
+        "    indent",
+      ].join("\n"),
+    );
   });
 
   test("returns html format unchanged", async () => {

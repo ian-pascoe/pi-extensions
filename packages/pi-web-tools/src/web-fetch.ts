@@ -203,24 +203,104 @@ function isTextualMime(mime: string): boolean {
   );
 }
 
+/** Block elements that end the current line and separate a following block with a blank line. */
+const PARAGRAPH_ELEMENTS = new Set([
+  "p",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "blockquote",
+  "pre",
+  "ul",
+  "ol",
+  "dl",
+  "table",
+  "figure",
+  "form",
+  "hr",
+]);
+
+/** Block elements that only start a new line. */
+const LINE_ELEMENTS = new Set([
+  "div",
+  "section",
+  "article",
+  "main",
+  "header",
+  "footer",
+  "nav",
+  "aside",
+  "li",
+  "dt",
+  "dd",
+  "tr",
+  "caption",
+  "thead",
+  "tbody",
+  "tfoot",
+  "figcaption",
+  "fieldset",
+  "address",
+  "details",
+  "summary",
+  "body",
+  "html",
+]);
+
+const CELL_ELEMENTS = new Set(["td", "th"]);
+
 function extractTextFromHtml(html: string): string {
   let text = "";
   let skipDepth = 0;
+  let preDepth = 0;
   const omittedElements = new Set(["script", "style", "noscript", "iframe", "object", "embed"]);
+  // Ensure the text ends with at least `newlines` line breaks, without adding to existing ones.
+  const breakLine = (newlines: number): void => {
+    if (text.length === 0) return;
+    text = text.replace(/[ \t]+$/, "");
+    const existing = text.length - text.trimEnd().length;
+    text += "\n".repeat(Math.max(0, newlines - existing));
+  };
   const parser = new Parser({
     onopentag(name) {
-      if (skipDepth > 0 || omittedElements.has(name)) skipDepth++;
+      if (skipDepth > 0 || omittedElements.has(name)) {
+        skipDepth++;
+        return;
+      }
+      if (name === "br") text += "\n";
+      else if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
+      else if (LINE_ELEMENTS.has(name)) breakLine(1);
+      if (name === "pre") preDepth++;
     },
     ontext(value) {
-      if (skipDepth === 0) text += value;
+      if (skipDepth > 0) return;
+      if (preDepth > 0) {
+        text += value;
+        return;
+      }
+      const collapsed = value.replace(/\s+/g, " ");
+      text += text.length === 0 || text.endsWith("\n") ? collapsed.trimStart() : collapsed;
     },
-    onclosetag() {
-      if (skipDepth > 0) skipDepth--;
+    onclosetag(name) {
+      if (skipDepth > 0) {
+        skipDepth--;
+        return;
+      }
+      if (name === "pre") preDepth = Math.max(0, preDepth - 1);
+      if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
+      else if (LINE_ELEMENTS.has(name)) breakLine(1);
+      else if (CELL_ELEMENTS.has(name) && !text.endsWith("\n")) text += " ";
     },
   });
   parser.write(html);
   parser.end();
-  return text.trim();
+  return text
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function convertHtmlToMarkdown(html: string): string {
