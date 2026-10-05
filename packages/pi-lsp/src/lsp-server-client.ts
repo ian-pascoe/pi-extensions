@@ -732,9 +732,12 @@ export class LspServerClient {
         diagnosticsByUri: new Map(
           [...this.pushDiagnostics]
             .filter(([uri, state]) => {
-              const version = this.openDocuments.get(uri)?.version;
+              // Only documents open in this session are covered; a server's clear for a closed
+              // or evicted document must not read as a checked, clean file.
+              const open = this.openDocuments.get(uri);
               return (
-                state.version === undefined || (version !== undefined && state.version === version)
+                open !== undefined &&
+                (state.version === undefined || state.version === open.version)
               );
             })
             .map(([uri, state]) => [uri, state.diagnostics]),

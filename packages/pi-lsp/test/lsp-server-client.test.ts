@@ -375,6 +375,38 @@ describe("LspServerClient", () => {
     });
   });
 
+  test("omits unversioned cached pushes for documents that are not open", async () => {
+    const directory = await createTemporaryDirectory();
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_NO_PULL: "1" },
+    });
+
+    await client.request("fake/publishDiagnostics", { uri: "file:///not-synchronized.ts" });
+    await expect(client.workspaceDiagnostics()).resolves.toMatchObject({
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: new Map(),
+    });
+  });
+
+  test("omits a push that arrives after its document was closed", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "closed.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_NO_PULL: "1", FAKE_PUSH: "none" },
+    });
+
+    const document = await client.synchronizeDocument(filePath, "typescript");
+    await client.closeDocument(filePath);
+    await client.request("fake/publishDiagnostics", { uri: document.uri });
+    await expect(client.workspaceDiagnostics()).resolves.toMatchObject({
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: new Map(),
+    });
+  });
+
   test("reports no workspace diagnostics from a server that only answers document pulls", async () => {
     const directory = await createTemporaryDirectory();
     const filePath = resolve(directory, "document-pull.ts");

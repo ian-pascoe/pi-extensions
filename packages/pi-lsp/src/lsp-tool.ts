@@ -1346,13 +1346,24 @@ async function executeWorkspaceDiagnostics(
         };
       }
       return normalizeProtocolResult(
-        result,
+        result.status === "fresh" && result.source === "push_cache"
+          ? { ...result, message: pushCacheCoverageMessage(route.serverId, result) }
+          : result,
         undefined,
         undefined,
         normalizeLspPositionEncoding(client.positionEncoding),
       );
     },
   );
+}
+
+/** Say which files a push-cache result covers, so an empty or partial one is not read as a clean workspace. */
+function pushCacheCoverageMessage(
+  serverId: string,
+  result: { readonly diagnosticsByUri: ReadonlyMap<string, readonly Diagnostic[]> },
+): string {
+  const count = result.diagnosticsByUri.size;
+  return `Server ${serverId} publishes no workspace diagnostics; these are the diagnostics it pushed for ${count} file${count === 1 ? "" : "s"} opened in this session. Use lsp_diagnostics for other files.`;
 }
 
 /** Request workspace symbols up to the call's limit, in the server's order; only those are resolved. */

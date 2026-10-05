@@ -2022,6 +2022,79 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("says an empty push cache covers only the files opened in this session", async () => {
+    const fixture = await createToolFixture();
+
+    const result = await executeTool(fixture, {
+      operation: "workspace_diagnostics",
+      server_id: "typescript",
+      file_path: fixture.filePath,
+    });
+
+    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
+    expect(answer?.value).toEqual({
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: [],
+      message:
+        "Server typescript publishes no workspace diagnostics; these are the diagnostics it pushed for 0 files opened in this session. Use lsp_diagnostics for other files.",
+    });
+    await fixture.close();
+  });
+
+  test("counts every file a push cache covers, including files without diagnostics", async () => {
+    const fixture = await createToolFixture();
+    const diagnostic: Diagnostic = {
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+      message: "problem",
+    };
+    fixture.client.workspaceDiagnosticsResult = {
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: new Map([
+        [pathToFileURL(fixture.filePath).href, [diagnostic]],
+        [pathToFileURL(`${fixture.filePath}.clean.ts`).href, []],
+      ]),
+    };
+
+    const result = await executeTool(fixture, {
+      operation: "workspace_diagnostics",
+      server_id: "typescript",
+      file_path: fixture.filePath,
+    });
+
+    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
+    expect(answer?.value).toMatchObject({
+      source: "push_cache",
+      message: expect.stringContaining("pushed for 2 files opened in this session"),
+    });
+    expect(resultText(result)).toContain("Use lsp_diagnostics for other files.");
+    await fixture.close();
+  });
+
+  test("leaves a workspace pull result without a coverage message", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.workspaceDiagnosticsResult = {
+      status: "fresh",
+      source: "workspace_pull",
+      diagnosticsByUri: new Map(),
+    };
+
+    const result = await executeTool(fixture, {
+      operation: "workspace_diagnostics",
+      server_id: "typescript",
+      file_path: fixture.filePath,
+    });
+
+    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
+    expect(answer?.value).toEqual({
+      status: "fresh",
+      source: "workspace_pull",
+      diagnosticsByUri: [],
+    });
+    await fixture.close();
+  });
+
   test("reports workspace diagnostics under plain paths", async () => {
     const fixture = await createToolFixture();
     const diagnostic: Diagnostic = {
