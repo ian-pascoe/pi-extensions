@@ -70,6 +70,7 @@ import {
 } from "./lsp-location-text.js";
 import {
   lspApproximatePositionsWarning,
+  lspStalePositionsWarning,
   LspProtocolResultNormalizer,
   lspProtocolUriPath,
   normalizeLspProtocolResult,
@@ -437,14 +438,19 @@ function queriedPositionText(
   };
 }
 
-/** Warn, per server, that positions in files whose text could not be read are approximate. */
-function approximatePositionsWarnings(
+/**
+ * Warn, per server, that positions in files whose text could not be read are approximate and that
+ * positions in files changed since the server read them may be wrong.
+ */
+function resultPositionWarnings(
   result: LspServerReadResult<LspNormalizedProtocolResult>,
   cwd: string,
 ): string[] {
   return result.successes.flatMap(({ serverId, value }) => {
-    const warning = lspApproximatePositionsWarning(serverId, value.approximateFiles, cwd);
-    return warning === undefined ? [] : [warning];
+    return [
+      lspApproximatePositionsWarning(serverId, value.approximateFiles, cwd),
+      lspStalePositionsWarning(serverId, value.staleFiles, cwd),
+    ].filter((warning) => warning !== undefined);
   });
 }
 
@@ -474,7 +480,7 @@ async function readOutput(
   };
   const results = readOperationValue(resolved);
   const failureWarnings = [
-    ...approximatePositionsWarnings(normalized, textContext.cwd),
+    ...resultPositionWarnings(normalized, textContext.cwd),
     ...resolved.failures.map(({ message }) => message),
   ];
   const scopes =
@@ -589,7 +595,7 @@ async function itemListOutput(
     prefix: value.prefix,
   }));
   const warnings = [
-    ...approximatePositionsWarnings(resolved, textContext.cwd),
+    ...resultPositionWarnings(resolved, textContext.cwd),
     ...resolved.failures.map(({ message }) => message),
   ];
   const json = formatLspToolValue({ results, warnings });
@@ -772,7 +778,11 @@ async function normalizeOutgoingCalls(
       return itemCalls;
     }),
   );
-  return { value: normalized.flat(), approximateFiles: normalizer.approximateFiles };
+  return {
+    value: normalized.flat(),
+    approximateFiles: normalizer.approximateFiles,
+    staleFiles: normalizer.staleFiles,
+  };
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Capability values may be booleans or provider objects; only resolveProvider is inspected.
@@ -1213,6 +1223,7 @@ async function executeWorkspaceDiagnostics(
             message: `Server ${route.serverId} publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.`,
           },
           approximateFiles: [],
+          staleFiles: [],
         };
       }
       return normalizeLspProtocolResult(

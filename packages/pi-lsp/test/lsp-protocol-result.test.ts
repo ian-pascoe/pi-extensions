@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   lspApproximatePositionsWarning,
+  lspStalePositionsWarning,
   normalizeLspProtocolResult,
 } from "../src/lsp-protocol-result.js";
 
@@ -48,6 +49,7 @@ describe("normalizeLspProtocolResult", () => {
         { from: { selectionRange: span(1, 2, 2) }, fromRanges: [span(1, 2, 8)] },
       ],
       approximateFiles: [],
+      staleFiles: [],
     });
   });
 
@@ -64,6 +66,7 @@ describe("normalizeLspProtocolResult", () => {
     expect(result).toEqual({
       value: [{ uri: "jdt://contents/A.class", range: span(1, 4, 5) }],
       approximateFiles: ["jdt://contents/A.class"],
+      staleFiles: [],
     });
   });
 
@@ -75,7 +78,7 @@ describe("normalizeLspProtocolResult", () => {
       readText: async () => undefined,
     });
 
-    expect(result).toEqual({ value, approximateFiles: [] });
+    expect(result).toEqual({ value, approximateFiles: [], staleFiles: [] });
   });
 
   test("adds 1 without a warning when the negotiated encoding counts code points", async () => {
@@ -87,7 +90,60 @@ describe("normalizeLspProtocolResult", () => {
     expect(result).toEqual({
       value: [{ uri: "jdt://contents/A.class", range: span(1, 4, 5) }],
       approximateFiles: [],
+      staleFiles: [],
     });
+  });
+
+  test("clamps, keeps, and names stale files without failing the other positions", async () => {
+    const texts = new Map([
+      ["file:///short.ts", "ab\n😀\n"],
+      ["file:///ok.ts", "abcdef\n"],
+    ]);
+
+    const result = await normalizeLspProtocolResult(
+      [
+        { uri: "file:///short.ts", range: span(0, 1, 50) },
+        { uri: "file:///short.ts", range: span(9, 1, 2) },
+        { uri: "file:///short.ts", range: span(1, 1, 2) },
+        { uri: "file:///ok.ts", range: span(0, 1, 3) },
+      ],
+      { encoding: "utf-16", readText: async (uri) => texts.get(uri) },
+    );
+
+    expect(result).toEqual({
+      value: [
+        { uri: "/short.ts", range: span(1, 2, 3) },
+        { uri: "/short.ts", range: span(10, 2, 3) },
+        { uri: "/short.ts", range: span(2, 1, 2) },
+        { uri: "/ok.ts", range: span(1, 2, 4) },
+      ],
+      approximateFiles: [],
+      staleFiles: ["/short.ts"],
+    });
+  });
+
+  test("clamps an end-of-line sentinel character without naming the file", async () => {
+    const result = await normalizeLspProtocolResult(
+      [{ uri: "file:///a.ts", range: span(0, 0, 2147483647) }],
+      { encoding: "utf-16", readText: async () => "ab\n" },
+    );
+
+    expect(result).toMatchObject({
+      value: [{ range: span(1, 1, 3) }],
+      staleFiles: [],
+    });
+  });
+});
+
+describe("lspStalePositionsWarning", () => {
+  test("names files relative to the working directory and reports nothing when none are stale", () => {
+    expect(lspStalePositionsWarning("typescript", [], "/repo")).toBeUndefined();
+    expect(lspStalePositionsWarning("typescript", ["/repo/src/a.ts"], "/repo")).toBe(
+      "typescript: positions in src/a.ts may be wrong because the file changed since the server read it or the server sent an invalid position.",
+    );
+    expect(lspStalePositionsWarning("typescript", ["/repo/a.ts", "/repo/b.ts"], "/repo")).toBe(
+      "typescript: positions in a.ts, b.ts may be wrong because the files changed since the server read them or the server sent invalid positions.",
+    );
   });
 });
 
