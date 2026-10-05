@@ -268,8 +268,12 @@ describe("Web Tools through Pi codemode", () => {
     const value: unknown = JSON.parse(output.slice(output.indexOf("{")));
     expect(value).toEqual({
       outcomes: {
-        type: expect.stringMatching(/must NOT have additional properties|type/),
-        livecrawl: expect.stringMatching(/must NOT have additional properties|livecrawl/),
+        type: expect.stringMatching(
+          /Validation failed for tool "web_search"[\s\S]*- type: schema is false[\s\S]*must not have additional properties/,
+        ),
+        livecrawl: expect.stringMatching(
+          /Validation failed for tool "web_search"[\s\S]*- livecrawl: schema is false[\s\S]*must not have additional properties/,
+        ),
       },
       content: `${SEARCH_TEXT.slice(0, 10)}\n\n[Search results cut at 10 characters]`,
     });
@@ -281,6 +285,7 @@ describe("Web Tools through Pi codemode", () => {
       const fixture = await createFixture(sessionId);
       fixture.responses.push(fauxAssistantMessage("Done."));
       await fixture.session.prompt("Hello");
+      expect(fixture.session.sessionId).toBe(sessionId);
       const [turn] = fixture.turns;
       if (turn === undefined) throw new Error("Expected one model turn");
       // The prompt names the per-fixture temporary working directory, which is not provider state.
@@ -292,6 +297,8 @@ describe("Web Tools through Pi codemode", () => {
     expect([exa.provider, parallel.provider]).toEqual(["exa", "parallel"]);
     expect(exa.turn.tools.map(({ name }) => name)).toContain("web_search");
     expect(parallel.turn.tools).toEqual(exa.turn.tools);
+    // Order-sensitive: the same tools in the same order with the same schema key order.
+    expect(JSON.stringify(parallel.turn.tools)).toBe(JSON.stringify(exa.turn.tools));
     expect(parallel.systemPrompt).toBe(exa.systemPrompt);
   });
 });

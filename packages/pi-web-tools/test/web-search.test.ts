@@ -1,4 +1,5 @@
 import { toToolContext } from "./tool-context.js";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -261,6 +262,39 @@ describe("Web Search", () => {
     expect(result.content).toEqual([
       { type: "text", text: "No search results found. Please try a different query." },
     ]);
+  });
+
+  test("does not cut the no-results notice at contextMaxCharacters", async () => {
+    const server = await startServer(() => ({
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "image", data: "ignored" }] },
+      }),
+    }));
+    for (const provider of ["exa", "parallel"] as const) {
+      const result = await executeSearch(
+        provider,
+        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "nothing", contextMaxCharacters: 5 },
+      );
+      const notice = "No search results found. Please try a different query.";
+      expect(result.content).toEqual([{ type: "text", text: notice }]);
+      expect(result.structuredContent).toEqual({ provider, content: notice });
+    }
+  });
+
+  test("cuts Exa's objective to its 4096-character limit by code points", async () => {
+    const server = await startServer(() => ({ body: mcpResult("ok") }));
+    const query = `${"😀".repeat(4_095)}ab${"c".repeat(100)}`;
+    await executeSearch(
+      "exa",
+      { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+      { query },
+    );
+    expect(server.requests[0]).toMatchObject({
+      body: { params: { arguments: { query, objective: `${"😀".repeat(4_095)}a` } } },
+    });
   });
 
   test("fails once without provider fallback or transport leakage", async () => {
@@ -984,6 +1018,26 @@ describe("Web Search", () => {
       if (text?.type !== "text") throw new Error("Expected text search result");
       return { result, text: text.text };
     }
+
+    // Live Parallel text, trimmed (see web-tools-research.md): the exact pretty-printed bytes with
+    // non-ASCII characters unescaped. The three-result file adds one result in the same format.
+    const fixture = (name: string) =>
+      readFileSync(resolve(import.meta.dirname, "fixtures", name), "utf8");
+    const livePayloadTwo = fixture("parallel-search-2-results.txt");
+    const livePayloadThree = fixture("parallel-search-3-results.txt");
+
+    test("re-serializes a live Parallel payload byte for byte, keeping non-ASCII unescaped", async () => {
+      expect(livePayloadThree).toContain("español");
+      expect(livePayloadThree).toContain("日本語");
+      const { text } = await search("parallel", livePayloadThree, { query: "q", numResults: 2 });
+      expect(text).toBe(livePayloadTwo);
+      expect(text).toContain("español");
+      expect(text).not.toContain("\\u");
+      // Within the limit the live text is returned untouched.
+      expect((await search("parallel", livePayloadTwo, { query: "q", numResults: 2 })).text).toBe(
+        livePayloadTwo,
+      );
+    });
 
     function resultCount(text: string): number {
       const parsed: unknown = JSON.parse(text);

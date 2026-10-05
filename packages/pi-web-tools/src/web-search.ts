@@ -18,6 +18,8 @@ import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-
 const DEFAULT_EXA_URL = "https://mcp.exa.ai/mcp";
 const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
 const DEFAULT_NUM_RESULTS = 8;
+/** Longest `objective` Exa's `web_search_exa` schema accepts, in characters. */
+const EXA_OBJECTIVE_MAX_CHARACTERS = 4096;
 const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
 const NO_SEARCH_RESULTS = "No search results found. Please try a different query.";
 const MAX_PROVIDER_MESSAGE_CHARACTERS = 500;
@@ -79,14 +81,17 @@ export type WebSearchDetails = Static<typeof WebSearchDetailsSchema>;
 
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
- * `content` is the Search Provider's text answer after `numResults` and `contextMaxCharacters` (at most 256 KiB), which is free-form
- * rather than a result list; `full_output_path` is present when the model saw it truncated.
+ * `content` is the Search Provider's text answer (at most 256 KiB), which is free-form rather than
+ * a result list. For Parallel it is the JSON result object trimmed to `numResults`. `contextMaxCharacters`
+ * can cut it (and mark the cut), which can leave Parallel's JSON unparseable. `full_output_path` is
+ * present when the model saw it truncated, and names a file with that same trimmed and cut text.
  */
 export const WebSearchOutputSchema = Type.Object(
   {
     provider: SearchProviderSchema,
     content: Type.String({
-      description: "Search Provider's text answer, after numResults and contextMaxCharacters",
+      description:
+        "Search Provider's text answer, trimmed to numResults (Parallel) and cut at contextMaxCharacters",
     }),
     full_output_path: Type.Optional(
       Type.String({ description: "Private file with the full text" }),
@@ -105,9 +110,8 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
       Type.Integer({
         minimum: 1,
         maximum: 20,
-        default: 8,
-        description:
-          "Maximum number of results (default: 8, maximum: 20). Exa applies it; for Parallel, Pi trims the returned result list to this count.",
+        default: DEFAULT_NUM_RESULTS,
+        description: `Maximum number of results (default: ${DEFAULT_NUM_RESULTS}, maximum: 20). Exa applies it; for Parallel, Pi trims the returned result list to this count.`,
       }),
     ),
     contextMaxCharacters: Type.Optional(
@@ -115,7 +119,7 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
         minimum: 1,
         maximum: 50_000,
         description:
-          "Maximum characters of Search Provider text returned (1–50,000). No default: all text is returned, up to a 256 KiB response limit. Longer text is cut and marked.",
+          "Maximum characters of Search Provider text returned (1–50,000). No default: all text is returned, up to a 256 KiB response limit. Longer text is cut at that many code points, then marked.",
       }),
     ),
   },
@@ -340,13 +344,13 @@ async function callSearchProvider(
   parameters: WebSearchParameters,
   options: WebSearchToolOptions,
   signal: AbortSignal,
-): Promise<string> {
+): Promise<string | undefined> {
   let request: SearchProviderRequest;
   if (provider === "exa") {
     // Exa's current `web_search_exa` schema requires `objective` next to `query`.
     const arguments_: ExaSearchArguments = {
       query: parameters.query,
-      objective: parameters.query,
+      objective: truncateCodePoints(parameters.query, EXA_OBJECTIVE_MAX_CHARACTERS),
       numResults: parameters.numResults ?? DEFAULT_NUM_RESULTS,
     };
     request = {
@@ -401,9 +405,7 @@ async function callSearchProvider(
 
   const body = await readBoundedResponseBody(response, MAX_SEARCH_RESPONSE_BYTES, signal);
   try {
-    return (
-      parseMcpResponse(new TextDecoder().decode(body), provider, sanitize) ?? NO_SEARCH_RESULTS
-    );
+    return parseMcpResponse(new TextDecoder().decode(body), provider, sanitize);
   } catch (error) {
     if (error instanceof SearchProviderError) throw error;
     throw new SearchProviderError(`${providerName(provider)} returned an unrecognized response`);
@@ -510,14 +512,18 @@ function limitResultCount(
   return JSON.stringify({ ...parsed, results: parsed.results.slice(0, limit) }, null, 2);
 }
 
-/** Cut provider text to `contextMaxCharacters` code points and say so. */
+/** The first `limit` Unicode code points of `text`. */
+function truncateCodePoints(text: string, limit: number): string {
+  // UTF-16 length never undercounts code points, so shorter text is certainly within the limit.
+  return text.length <= limit ? text : Array.from(text).slice(0, limit).join("");
+}
+
+/** Cut provider text at `contextMaxCharacters` code points, then mark the cut. */
 function limitSearchText(text: string, parameters: WebSearchParameters): string {
   const limit = parameters.contextMaxCharacters;
-  // UTF-16 length never undercounts code points, so shorter text is certainly within the limit.
-  if (limit === undefined || text.length <= limit) return text;
-  const characters = Array.from(text);
-  if (characters.length <= limit) return text;
-  return `${characters.slice(0, limit).join("")}\n\n[Search results cut at ${limit} characters]`;
+  if (limit === undefined) return text;
+  const kept = truncateCodePoints(text, limit);
+  return kept === text ? text : `${kept}\n\n[Search results cut at ${limit} characters]`;
 }
 
 function unableToSearch(query: string | undefined, failure: WebFailure): Error {
@@ -579,7 +585,7 @@ export function createWebSearchTool(
         );
       }
       const sessionId = context.sessionManager.getSessionId();
-      let search: string;
+      let search: string | undefined;
       try {
         search = await callSearchProvider(
           provider,
@@ -597,7 +603,11 @@ export function createWebSearchTool(
         throw unableToSearch(input.query, failure);
       }
       // Spilling the full output is local work; its failures are not Web Search request failures.
-      const text = limitSearchText(limitResultCount(provider, search, input), input);
+      // Only real provider text is trimmed and cut; the no-results notice always reads in full.
+      const text =
+        search === undefined
+          ? NO_SEARCH_RESULTS
+          : limitSearchText(limitResultCount(provider, search, input), input);
       const output = await createWebToolOutput(text);
       const structuredContent: WebSearchOutput = { provider, content: text };
       if (output.truncation !== undefined) {
