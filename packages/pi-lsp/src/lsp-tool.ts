@@ -96,12 +96,14 @@ import type {
 import {
   normalizeLspFilePath,
   type LspCapabilityRequirement,
+  type LspOtherWorkspaceRoots,
   type LspServerFailure,
   type LspServerFailureCode,
   type LspServerLanguage,
   type LspServerManager,
   type LspServerReadResult,
   type LspServerRoute,
+  type LspUnloadedWorkspacePackages,
 } from "./lsp-server-manager.js";
 import {
   describeLspQueryPosition,
@@ -216,6 +218,8 @@ export interface LspToolServerClient {
   hasCapability(method: string): boolean;
   /** Open or update one UTF-8 document before a document request. */
   synchronizeDocument(filePath: string, languageId: string): Promise<LspSynchronizedDocument>;
+  /** Absolute paths of the documents tracked as synchronized, oldest first. */
+  synchronizedDocumentPaths(): readonly string[];
   /** Send one cancellable protocol request. */
   // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- The dynamic protocol transport establishes no payload fields; dispatch validates fields only where consumed.
   request(method: string, parameters: unknown, signal?: AbortSignal): Promise<unknown>;
@@ -297,24 +301,69 @@ function piLspFailureError(failures: readonly LspServerFailure[]): Error {
 interface ServerInstanceScope {
   /** Names the searched root. */
   readonly line: string;
-  /** Present when other workspace roots of the same Server Definition exist. */
-  readonly warning?: string;
+  /** Why files may be missing: other roots exist, or packages of the root are not loaded. */
+  readonly warnings: readonly string[];
 }
+
+/** Most unloaded packages one warning names. */
+const UNLOADED_PACKAGE_NAME_LIMIT = 5;
 
 /**
  * Disclose the single workspace root a references or rename request searched. Each root of a
- * Server Definition gets its own Server Instance, so files under other roots may be missing.
+ * Server Definition gets its own Server Instance, so files under other roots may be missing. In a
+ * workspace root, a language server searches only the packages whose files it has loaded, so
+ * packages where the instance has synchronized no document are named too.
  */
 async function serverInstanceScope(
   dependencies: LspToolDependencies,
   serverId: string,
   rootPath: string,
   cwd: string,
+  queriedFilePath: string,
 ): Promise<ServerInstanceScope> {
   const root = lspDisplayPath(cwd, rootPath);
-  const line = `Searched ${serverId} workspace root: ${root}`;
-  const others = await dependencies.manager.findOtherWorkspaceRoots(serverId, rootPath);
-  if (others.rootPaths.length === 0 && !others.hasMore) return { line };
+  const scope = await dependencies.manager.findWorkspaceScope(serverId, rootPath, {
+    queriedFilePath,
+    synchronizedFilePaths: (client) => client.synchronizedDocumentPaths(),
+  });
+  return {
+    line: `Searched ${serverId} workspace root: ${root}`,
+    warnings: [
+      otherWorkspaceRootsWarning(serverId, root, scope.otherRoots, cwd),
+      scope.unloadedPackages === undefined
+        ? undefined
+        : unloadedWorkspacePackagesWarning(serverId, root, scope.unloadedPackages, cwd),
+    ].filter((warning): warning is string => warning !== undefined),
+  };
+}
+
+function unloadedWorkspacePackagesWarning(
+  serverId: string,
+  root: string,
+  { packageRoots, hasMore }: LspUnloadedWorkspacePackages,
+  cwd: string,
+): string | undefined {
+  if (packageRoots.length === 0) {
+    return hasMore
+      ? `${serverId} may not have loaded every package under ${root} (discovery stopped early); references in unloaded packages may be missing.`
+      : undefined;
+  }
+  const named = packageRoots
+    .slice(0, UNLOADED_PACKAGE_NAME_LIMIT)
+    .map((path) => lspDisplayPath(cwd, path));
+  const more = packageRoots.length - named.length;
+  const packages = [...named, ...(more > 0 ? [`and ${more} more`] : [])].join(", ");
+  const stoppedEarly = hasMore ? " (discovery stopped early; others may exist)" : "";
+  return `${serverId} has not loaded files from ${packages} under ${root}${stoppedEarly}; their references may be missing. Run any LSP tool on a file there (for example lsp_document_symbols), then retry.`;
+}
+
+function otherWorkspaceRootsWarning(
+  serverId: string,
+  root: string,
+  others: LspOtherWorkspaceRoots,
+  cwd: string,
+): string | undefined {
+  if (others.rootPaths.length === 0 && !others.hasMore) return undefined;
   const otherRoots =
     others.rootPaths.length === 0
       ? `other ${serverId} workspace roots may exist in directories that were not checked`
@@ -322,20 +371,18 @@ async function serverInstanceScope(
           ...others.rootPaths.map((path) => lspDisplayPath(cwd, path)),
           ...(others.hasMore ? ["and more"] : []),
         ].join(", ")}`;
-  return {
-    line,
-    warning: `${serverId} searched only its workspace root ${root}, but ${otherRoots}. Files outside ${root} may not have been considered; query a file under each other root or search for importers before relying on this result.`,
-  };
+  return `${serverId} searched only its workspace root ${root}, but ${otherRoots}. Files outside ${root} may not have been considered; query a file under each other root or search for importers before relying on this result.`;
 }
 
 function serverInstanceScopeLines(scopes: readonly ServerInstanceScope[]): string[] {
-  return scopes.flatMap(({ line, warning }) =>
-    warning === undefined ? [line] : [line, `Warning: ${warning}`],
-  );
+  return scopes.flatMap(({ line, warnings }) => [
+    line,
+    ...warnings.map((warning) => `Warning: ${warning}`),
+  ]);
 }
 
 function serverInstanceScopeWarnings(scopes: readonly ServerInstanceScope[]): string[] {
-  return scopes.flatMap(({ warning }) => (warning === undefined ? [] : [warning]));
+  return scopes.flatMap(({ warnings }) => warnings);
 }
 
 /** Require the protocol method an operation sends, naming it in unsupported-operation failures. */
@@ -469,7 +516,8 @@ function readTextContext(filePath: string, context: ExtensionContext): ReadTextC
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
  * response; location, symbol, hierarchy, and range reads derive readable model-visible text from
  * the same data (ADR-0003), and other reads show that JSON. References also name each searched
- * workspace root and warn when other roots of the same Server Definition exist. A position-based
+ * workspace root and warn when other roots of the same Server Definition exist or, in a workspace
+ * root, when packages there have no document synchronized with the server. A position-based
  * query also reports its queried position: in the Structured Result, as the opening line of a result
  * that found something, and in the line stating that a server found nothing there.
  */
@@ -494,7 +542,13 @@ async function readOutput(
     operation === "find_references"
       ? await Promise.all(
           resolved.successes.map(({ serverId, rootPath }) =>
-            serverInstanceScope(dependencies, serverId, rootPath, textContext.cwd),
+            serverInstanceScope(
+              dependencies,
+              serverId,
+              rootPath,
+              textContext.cwd,
+              textContext.documentPath,
+            ),
           ),
         )
       : [];
@@ -1405,7 +1459,7 @@ async function executeRenamePreview(
     route,
     edit,
     client.positionEncoding,
-    await serverInstanceScope(dependencies, route.serverId, route.rootPath, context.cwd),
+    await serverInstanceScope(dependencies, route.serverId, route.rootPath, context.cwd, filePath),
   );
 }
 

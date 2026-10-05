@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import spawn from "cross-spawn";
 import { Type } from "typebox";
@@ -618,6 +618,15 @@ export class LspServerClient {
     this.openDocuments.set(uri, next);
     await this.evictOldDocuments();
     return next;
+  }
+
+  /**
+   * Absolute paths of the documents this client tracks as synchronized, most recently synchronized
+   * last. Documents evicted from the 100-document LRU or closed are not included. A server with
+   * `TextDocumentSyncKind.None` is never sent these documents, but they are still listed.
+   */
+  synchronizedDocumentPaths(): readonly string[] {
+    return [...this.openDocuments.keys()].map((uri) => fileURLToPath(uri));
   }
 
   /** Close an open document if this client currently owns it. */
