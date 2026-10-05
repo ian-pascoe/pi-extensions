@@ -88,7 +88,7 @@ function childRuntime(
 function coordinatorFixture(
   runtime = childRuntime(),
   automaticDeliveryGraceMs = 0,
-  options: Pick<CoordinatorDependencies, "toolsets"> = {},
+  options: Pick<CoordinatorDependencies, "toolsets" | "modelRoles"> = {},
 ) {
   const registryEvents: RegistryEventV2[] = [];
   const sessions = {
@@ -176,7 +176,105 @@ const caller: CallerSnapshot = {
   spawnEntryId: "entry",
 };
 
+const modelRoles = [
+  { name: "explore", model: "provider/fast", thinkingLevel: "low" as const },
+  { name: "plain", model: "provider/plain" },
+];
+
 describe("minimal subagents coordinator", () => {
+  it("resolves a role to its model and thinking level and records the role in the Launch Contract", async () => {
+    const { coordinator, sessions, registryEvents } = coordinatorFixture(childRuntime(), 0, {
+      modelRoles,
+    });
+
+    const result = await coordinator.spawn(
+      "root",
+      { task: "Look around", agent_id: "scout", role: "explore" },
+      caller,
+    );
+
+    expect(result).toMatchObject({ model: "provider/fast", thinking_level: "low" });
+    expect(sessions.resolveThinkingLevel).toHaveBeenCalledWith("provider/fast", "low");
+    const created = registryEvents.find((event) => event.event === "agent-created");
+    expect(created).toMatchObject({
+      agent: {
+        launch_contract: { role: "explore", model: "provider/fast", thinking_level: "low" },
+      },
+    });
+  });
+
+  it("falls back to the caller's thinking level for an unsuffixed role", async () => {
+    const { coordinator } = coordinatorFixture(childRuntime(), 0, { modelRoles });
+
+    await expect(
+      coordinator.spawn("root", { task: "Go", agent_id: "scout", role: "plain" }, caller),
+    ).resolves.toMatchObject({ model: "provider/plain", thinking_level: "medium" });
+  });
+
+  it("lets explicit model and thinking_level override the role while still recording it", async () => {
+    const { coordinator, registryEvents } = coordinatorFixture(childRuntime(), 0, { modelRoles });
+
+    await expect(
+      coordinator.spawn(
+        "root",
+        {
+          task: "Go",
+          agent_id: "scout",
+          role: "explore",
+          model: "provider/other",
+          thinking_level: "high",
+        },
+        caller,
+      ),
+    ).resolves.toMatchObject({ model: "provider/other", thinking_level: "high" });
+    await expect(
+      coordinator.spawn(
+        "root",
+        { task: "Go", agent_id: "thinker", role: "explore", thinking_level: "xhigh" },
+        caller,
+      ),
+    ).resolves.toMatchObject({ model: "provider/fast", thinking_level: "xhigh" });
+    expect(
+      registryEvents.flatMap((event) =>
+        event.event === "agent-created" ? [event.agent.launch_contract.role] : [],
+      ),
+    ).toEqual(["explore", "explore"]);
+  });
+
+  it("rejects an unknown role with the configured role names before creating anything", async () => {
+    const { coordinator, sessions, registryEvents } = coordinatorFixture(childRuntime(), 0, {
+      modelRoles,
+    });
+
+    await expect(
+      coordinator.spawn("root", { task: "Go", agent_id: "scout", role: "missing" }, caller),
+    ).rejects.toThrow(
+      'Minimal subagents spawn validation: unknown role "missing"; configured roles: explore, plain',
+    );
+    expect(sessions.createIdentity).not.toHaveBeenCalled();
+    expect(registryEvents).toEqual([]);
+
+    const unconfigured = coordinatorFixture();
+    await expect(
+      unconfigured.coordinator.spawn(
+        "root",
+        { task: "Go", agent_id: "scout", role: "explore" },
+        caller,
+      ),
+    ).rejects.toThrow('unknown role "explore"; no model roles are configured');
+  });
+
+  it("leaves the Launch Contract without a role when none is named", async () => {
+    const { coordinator, registryEvents } = coordinatorFixture(childRuntime(), 0, { modelRoles });
+
+    await coordinator.spawn("root", { task: "Go", agent_id: "scout" }, caller);
+
+    const created = registryEvents.find((event) => event.event === "agent-created");
+    expect(created?.event === "agent-created" && "role" in created.agent.launch_contract).toBe(
+      false,
+    );
+  });
+
   it("launches cumulative configured toolsets with concrete deduplicated extension tools", async () => {
     const { coordinator } = coordinatorFixture(childRuntime(), 0, {
       toolsets: {

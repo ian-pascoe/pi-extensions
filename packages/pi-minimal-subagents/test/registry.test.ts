@@ -410,6 +410,57 @@ describe("minimal subagents registry", () => {
     }
   });
 
+  it("round-trips a Launch Contract role and loads contracts persisted without one", () => {
+    const withRole = persistedAgent("scout");
+    withRole.launch_contract.role = "explore";
+    const legacy = persistedAgent("legacy");
+    const diagnostics: RegistryReplayDiagnostic[] = [];
+    const events = [
+      createRegistryEvent("root", "agent-created", { agent: withRole }),
+      createRegistryEvent("root", "agent-created", { agent: legacy }),
+    ];
+    // A V1 record and a V2 record written before `role` existed carry no such field.
+    const wireLegacy = JSON.parse(JSON.stringify(events[1]));
+    const v1Legacy = { ...wireLegacy, version: 1 };
+    delete v1Legacy.agent.launch_contract.role;
+
+    const replayed = replayRegistryEntries(
+      [
+        events[0],
+        wireLegacy,
+        { ...v1Legacy, agent: { ...v1Legacy.agent, agent_id: "old", friendly_id: "old" } },
+      ].map(customEntry),
+      "root",
+      (items) => diagnostics.push(...items),
+    );
+
+    expect(diagnostics).toEqual([]);
+    expect(replayed.agents.find((agent) => agent.agent_id === "scout")?.launch_contract.role).toBe(
+      "explore",
+    );
+    for (const id of ["legacy", "old"]) {
+      const contract = replayed.agents.find((agent) => agent.agent_id === id)?.launch_contract;
+      expect(contract).toBeDefined();
+      expect(contract && "role" in contract).toBe(false);
+    }
+    const checkpoint = createRegistryEvent("root", "checkpoint", { snapshot: replayed });
+    expect(replayRegistryEntries([customEntry(checkpoint)], "root")).toEqual(replayed);
+  });
+
+  it("rejects malformed Launch Contract roles", () => {
+    for (const role of [42, "", " padded ", "two\nlines", "x".repeat(65)]) {
+      const event = JSON.parse(
+        JSON.stringify(
+          createRegistryEvent("root", "checkpoint", {
+            snapshot: { agents: [persistedAgent()], tombstones: [], deliveries: [] },
+          }),
+        ),
+      );
+      event.snapshot.agents[0].launch_contract.role = role;
+      expect(parseRegistryEvent(event, "root")).toBeUndefined();
+    }
+  });
+
   it("enforces persisted ordinary-tool ceilings and excludes every coordinator tool name", () => {
     const baseEvent = createRegistryEvent("root", "checkpoint", {
       snapshot: { agents: [persistedAgent()], tombstones: [], deliveries: [] },

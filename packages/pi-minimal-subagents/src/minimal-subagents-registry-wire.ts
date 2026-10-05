@@ -56,6 +56,7 @@ const ToolSelectionWireSchema = Type.Union([
 
 /** Parses persisted immutable Launch Contracts without coercion. */
 export const RegistryLaunchContractWireSchema = Type.Object({
+  role: Type.Optional(NonEmptyStringSchema),
   session_context: Type.Union([
     Type.Literal("inherit"),
     Type.Literal("compact"),

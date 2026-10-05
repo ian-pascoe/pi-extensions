@@ -445,6 +445,7 @@ function spawnCallLaunchSummary(args: SpawnCallArguments): string[] {
       ? undefined
       : `tools ${Array.isArray(args.tools) ? args.tools.join(", ") || "none" : args.tools}`;
   return [
+    args.role ? `role ${args.role}` : undefined,
     profile,
     tools,
     args.session_context && args.session_context !== "omit"
@@ -507,6 +508,7 @@ function renderSpawnResult(
     `delegation ${launchContract?.delegation ?? args.delegation ?? "none"}`,
     `session context ${launchContract?.session_context ?? args.session_context ?? "omit"}`,
     `project context ${launchContract?.project_context ?? args.project_context ?? "inherit"}`,
+    launchContract?.role ? `role ${launchContract.role}` : undefined,
     resolvedModel ? `model ${resolvedModel}` : undefined,
     resolvedThinking ? `thinking ${resolvedThinking}` : undefined,
   ].filter((value): value is string => value !== undefined);
@@ -770,6 +772,7 @@ function renderDetailedStatusAgent(
     const launchValues = [
       `session context ${launchContract.session_context ?? "inherit"}`,
       `project context ${launchContract.project_context ?? "inherit"}`,
+      ...(launchContract.role ? [`role ${launchContract.role}`] : []),
       `model ${launchContract.model ?? agent.model ?? "unknown"}`,
       `thinking ${launchContract.thinking_level ?? agent.thinking_level ?? "unknown"}`,
       `delegation ${launchContract.delegation ?? "none"}`,

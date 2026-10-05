@@ -665,6 +665,80 @@ describe("minimal subagents extension lifecycle", () => {
     }
   });
 
+  it("keeps ordered tool definitions byte-stable for the session when model role settings change", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-role-stability-");
+    const settingsPath = join(cwd, ".pi", "settings.json");
+    await mkdir(join(cwd, ".pi"));
+    const writeRoles = (modelRoles: Record<string, string>) =>
+      writeFile(settingsPath, JSON.stringify({ minimalSubagents: { modelRoles } }));
+    await writeRoles({ explore: "lifecycle-test/model:low", plain: "lifecycle-test/model" });
+    const sessionManager = await createPersistedSession(cwd, cwd);
+    const harness = await createExtensionHarness(sessionManager);
+    const orderedDefinitions = () =>
+      harness.runner.getAllRegisteredTools().map(({ definition }) => ({
+        name: definition.name,
+        description: definition.description,
+        parameters: definition.parameters,
+        promptSnippet: definition.promptSnippet,
+        promptGuidelines: definition.promptGuidelines,
+      }));
+    try {
+      await harness.runner.emit(sessionStartEvent());
+      const before = JSON.stringify(orderedDefinitions());
+      expect(before).toContain("explore → model=lifecycle-test/model, thinking_level=low");
+
+      await writeRoles({ reviewer: "lifecycle-test/model:high" });
+
+      expect(JSON.stringify(orderedDefinitions())).toBe(before);
+      const spawn = harness.runner.getToolDefinition("subagent")!;
+      const context = toToolContext(harness.runner.createContext());
+      await expect(
+        spawn.execute(
+          "unknown-role",
+          { task: "Review", role: "reviewer" },
+          undefined,
+          undefined,
+          context,
+        ),
+      ).rejects.toThrow('unknown role "reviewer"; configured roles: explore, plain');
+      const launched = await spawn.execute(
+        "known-role",
+        { task: "Look", agent_id: "scout", role: "explore" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(launched.details).toMatchObject({
+        agent: {
+          launch_contract: {
+            role: "explore",
+            model: "lifecycle-test/model",
+            thinking_level: "low",
+          },
+        },
+      });
+
+      // A reload re-reads settings. Only the role listing in the system-prompt guidelines follows
+      // them; every provider-visible tool definition stays byte-identical.
+      const providerVisible = () =>
+        JSON.stringify(
+          orderedDefinitions().map(({ name, description, parameters }) => ({
+            name,
+            description,
+            parameters,
+          })),
+        );
+      const providerVisibleBefore = providerVisible();
+      await harness.runner.emit(sessionStartEvent("reload"));
+      expect(providerVisible()).toBe(providerVisibleBefore);
+      expect(JSON.stringify(orderedDefinitions())).toContain("reviewer → model=");
+      expect(JSON.stringify(orderedDefinitions())).not.toContain("explore → model=");
+      expect(harness.extensionErrors).toEqual([]);
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+  });
+
   it("registers both renderers and all six real coordinator tools, then hands off only a confirmed fork", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-lifecycle-cwd-");
     const sessionDirectory = await createTemporaryDirectory(

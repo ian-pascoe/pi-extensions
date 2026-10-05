@@ -648,6 +648,7 @@ export class MinimalSubagentsLifecycleController {
       root: createRootConversationEndpoint(this.pi, context),
       maxSubagentDepth: minimalSubagentsConfig.maxSubagentDepth,
       toolsets: minimalSubagentsConfig.toolsets,
+      modelRoles: minimalSubagentsConfig.modelRoles,
       registry: {
         rootSessionId,
         append: (registryEvent) => this.pi.appendEntry(REGISTRY_ENTRY_TYPE, registryEvent),

@@ -1,6 +1,7 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
 
 /** Controls how much committed caller conversation enters a new child session. */
 export type SessionContextMode = "inherit" | "compact" | "omit";
@@ -35,6 +36,8 @@ export interface SpawnParameters {
   agent_id?: string;
   session_context?: SessionContextMode;
   project_context?: ProjectContextMode;
+  /** Configured model role whose model and thinking level apply unless overridden below. */
+  role?: string;
   model?: string;
   thinking_level?: ThinkingLevel;
   tools?: ToolSelection;
@@ -199,6 +202,8 @@ export interface DeleteResult {
 
 /** Persists immutable context, model, thinking, and ordinary-tool launch choices. */
 export interface LaunchContract extends RuntimeProfile {
+  /** Configured model role the caller named at launch; absent when none was used. */
+  role?: string;
   session_context: SessionContextMode;
   project_context: ProjectContextMode;
   tools: ToolSelection | undefined;
@@ -424,6 +429,7 @@ export interface CoordinatorDependencies {
   root: RootConversationEndpoint;
   maxSubagentDepth?: number;
   toolsets?: MinimalSubagentsToolsets;
+  modelRoles?: readonly MinimalSubagentsModelRole[];
   now?: () => Date;
   automaticDeliveryGraceMs?: number;
   notify?: (notification: CoordinatorNotification) => void;

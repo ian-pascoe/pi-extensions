@@ -45,6 +45,16 @@ const ModelRolesSettingSchema = Type.Union([ModelRoleEntriesSchema, Type.Null()]
 
 type ModelRoleThinkingLevel = (typeof THINKING_LEVELS)[number];
 
+/** Whether `name` is trimmed single-line text of at most 64 characters, as every role name must be. */
+export function isModelRoleName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name === name.trim() &&
+    !/[\r\n]/.test(name) &&
+    name.length <= MODEL_ROLE_NAME_MAX_LENGTH
+  );
+}
+
 /** Describes one user-authored advisory model role shown to subagent callers. */
 export interface MinimalSubagentsModelRole {
   name: string;
@@ -294,12 +304,7 @@ function parseModelRoles(
   const roles: MinimalSubagentsModelRole[] = [];
   for (const [name, entry] of entries) {
     const path = `${entry.scope} minimalSubagents.modelRoles.${name}`;
-    if (
-      name.length === 0 ||
-      name !== name.trim() ||
-      /[\r\n]/.test(name) ||
-      name.length > MODEL_ROLE_NAME_MAX_LENGTH
-    ) {
+    if (!isModelRoleName(name)) {
       warnings.push(`${path}: role name must be trimmed single-line text up to 64 characters`);
       continue;
     }

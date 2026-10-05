@@ -23,6 +23,7 @@ const RenderUsageSchema = Type.Object({
 });
 
 const RenderLaunchContractSchema = Type.Object({
+  role: Type.Optional(Type.String()),
   session_context: Type.Optional(Type.String()),
   project_context: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
@@ -87,6 +88,7 @@ const SpawnCallArgumentsSchema = Type.Object({
   agent_id: Type.Optional(Type.String()),
   session_context: Type.Optional(Type.String()),
   project_context: Type.Optional(Type.String()),
+  role: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
   thinking_level: Type.Optional(Type.String()),
   delegation: Type.Optional(Type.String()),
@@ -219,6 +221,7 @@ const CoordinatorAgentDetailOutputSchema = Type.Object({
   ...CoordinatorAgentSummaryOutputSchema.properties,
   session_file: Type.Optional(Type.String()),
   launch_contract: Type.Object({
+    role: Type.Optional(Type.String()),
     session_context: Type.String(),
     project_context: Type.String(),
     model: Type.String(),

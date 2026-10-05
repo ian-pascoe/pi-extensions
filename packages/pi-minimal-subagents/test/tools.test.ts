@@ -115,6 +115,20 @@ describe("minimal subagents coordinator tools", () => {
     expect(outputSchemas).toEqual(CoordinatorToolOutputSchemas);
   });
 
+  it("declares role as a plain string whose schema does not depend on the configured roles", () => {
+    const withRoles = createCoordinatorToolDefinitions(
+      toolOptions("root", true, [{ name: "explore", model: "provider/model" }]),
+    );
+    const withoutRoles = createCoordinatorToolDefinitions(toolOptions("root", true));
+
+    expect(JSON.stringify(withRoles.map(({ parameters }) => parameters))).toBe(
+      JSON.stringify(withoutRoles.map(({ parameters }) => parameters)),
+    );
+    const role = createCoordinatorToolSchemas(["provider/model"]).subagent.properties.role;
+    expect(role).toMatchObject({ type: "string", minLength: 1 });
+    expect(role).not.toHaveProperty("enum");
+  });
+
   it("runs a spawn sequentially so later calls in the same batch can target the new child", () => {
     const tools = createCoordinatorToolDefinitions(toolOptions("root", true));
     expect(

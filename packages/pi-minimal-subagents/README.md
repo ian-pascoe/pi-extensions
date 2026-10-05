@@ -97,10 +97,10 @@ source branch, and a new branch without an override follows settings.
 
 ## Model roles
 
-`minimalSubagents.modelRoles` gives the parent agent advisory names for
+`minimalSubagents.modelRoles` gives the parent agent named, advisory choices of
 eligible models. The extension defines no roles itself, performs no task
-classification, and does not route launches. The parent still passes the
-ordinary `model` and `thinking_level` arguments separately.
+classification, and does not route launches: the parent names the role it wants
+with the optional `role` argument of `subagent`.
 
 ```json
 {
@@ -117,8 +117,9 @@ ordinary `model` and `thinking_level` arguments separately.
 ```
 
 A recognized final suffix (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
-or `max`) is a preferred `thinking_level`, not part of the canonical model
-passed to `subagent`. Unsuffixed roles leave thinking selection independent.
+or `max`) is the role's `thinking_level`, not part of the canonical model.
+Unsuffixed roles leave thinking selection independent: the child uses the
+caller's thinking level unless `thinking_level` is passed.
 Role names and hints are trimmed, single-line text. Names may be up to 64
 characters and hints up to 500 characters. Models use canonical
 `provider/model` IDs and must be available under the effective `enabledModels`
@@ -128,6 +129,26 @@ only an otherwise-unmatched recognized final suffix is treated as a thinking
 preference. A thinking level pinned in `enabledModels` neither supplies nor
 constrains a role preference, and normal spawn-time model-capability clamping
 still applies.
+
+### Launching with a role
+
+`subagent({ task, role: "design" })` launches the child with the `design` role's
+model and, when the role has a suffix, its thinking level. An explicit `model` or
+`thinking_level` overrides the role's value independently, so
+`{ role: "design", thinking_level: "low" }` keeps the role's model with a
+different thinking level. An unknown `role` fails before any child is created
+and lists the configured role names. The Launch Contract records the resolved
+`model` and `thinking_level` together with the `role` used (`role` is absent
+when none was named), and `subagent_status` and the expanded `subagent` result
+show it. Recording the name does not tie the child to the role: later settings
+changes never alter an existing Launch Contract.
+
+Roles are read when the session starts, like the role list in the system prompt,
+so editing `modelRoles` mid-session changes neither. The `role` parameter is a
+plain string rather than an enum of the configured names, which keeps the
+`subagent` tool definition byte-identical for the session and across settings
+changes, so provider prompt caches stay valid. The configured names appear only
+in the `subagent` prompt guidelines, which are rebuilt on reload.
 
 Global and project roles merge by name in settings order. Expanded role
 objects merge by field; a project string replaces the whole global entry. A
