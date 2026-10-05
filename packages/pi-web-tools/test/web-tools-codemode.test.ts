@@ -25,6 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { createPiWebToolsExtension } from "../src/index.js";
+import { selectSearchProvider } from "../src/web-search.js";
 
 interface CapturedTurn {
   readonly systemPrompt: string;
@@ -45,8 +46,21 @@ afterEach(async () => {
 const SEARCH_TEXT = "Title: Pi\nURL: https://pi.dev\nHighlights: an agent harness";
 const LONG_PAGE = `<p>${"word ".repeat(30_000)}</p><p>FINAL MARKER</p>`;
 
+/** A fresh session, or one with a fixed id so Search Provider selection is deterministic. */
+async function openSessionManager(cwd: string, sessionId: string | undefined) {
+  const sessionDirectory = join(cwd, "sessions");
+  if (sessionId === undefined) return SessionManager.create(cwd, sessionDirectory);
+  await mkdir(sessionDirectory);
+  const sessionFile = join(sessionDirectory, "session.jsonl");
+  await writeFile(
+    sessionFile,
+    `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd })}\n`,
+  );
+  return SessionManager.open(sessionFile);
+}
+
 /** Real Pi session with built-in codemode and Web Tools; only the network and model are scripted. */
-async function createFixture() {
+async function createFixture(sessionId?: string) {
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-tools-sdk-"));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
@@ -104,7 +118,7 @@ async function createFixture() {
     model,
     modelRuntime,
     resourceLoader: loader,
-    sessionManager: SessionManager.create(cwd, join(cwd, "sessions")),
+    sessionManager: await openSessionManager(cwd, sessionId),
     settingsManager,
   });
   sessions.push(session);
@@ -143,7 +157,7 @@ async function createFixture() {
   await session.bindExtensions({ mode: "rpc" });
   // Pi's built-in codemode registers inactive; SDK sessions activate it explicitly.
   session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
-  return { session, turns, responses };
+  return { session, turns, responses, cwd };
 }
 
 function scriptResult(messages: readonly Message[]): string {
@@ -227,5 +241,45 @@ describe("Web Tools through Pi codemode", () => {
       expect(turn.systemPrompt).toBe(first?.systemPrompt);
       expect(turn.tools).toEqual(first?.tools);
     }
+  });
+
+  test("scripts see warnings only for parameters they supplied", async () => {
+    const fixture = await createFixture();
+    const provider = selectSearchProvider(fixture.session.sessionId);
+    const ignoredType = `${provider === "exa" ? "Exa" : "Parallel"} ignores: type.`;
+    const code = `
+      const plain = await tools.web_search({ query: "pi" });
+      const typed = await tools.web_search({ query: "pi", type: "fast" });
+      return { plainHasWarnings: "warnings" in plain, typedWarnings: typed.warnings };`;
+    fixture.responses.push(
+      fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("Done."),
+    );
+    await fixture.session.prompt("Search twice");
+
+    const output = scriptResult(fixture.turns[1]?.messages ?? []);
+    expect(output).toMatch(/^Script completed/);
+    const value: unknown = JSON.parse(output.slice(output.indexOf("{")));
+    expect(value).toEqual({ plainHasWarnings: false, typedWarnings: [ignoredType] });
+  });
+
+  test("declares identical tools and system prompt for Exa and Parallel sessions", async () => {
+    // session-b selects Exa and session-a selects Parallel.
+    const turnFor = async (sessionId: string) => {
+      const fixture = await createFixture(sessionId);
+      fixture.responses.push(fauxAssistantMessage("Done."));
+      await fixture.session.prompt("Hello");
+      const [turn] = fixture.turns;
+      if (turn === undefined) throw new Error("Expected one model turn");
+      // The prompt names the per-fixture temporary working directory, which is not provider state.
+      const systemPrompt = turn.systemPrompt.replaceAll(fixture.cwd, "<fixture-cwd>");
+      return { provider: selectSearchProvider(sessionId), turn, systemPrompt };
+    };
+    const exa = await turnFor("session-b");
+    const parallel = await turnFor("session-a");
+    expect([exa.provider, parallel.provider]).toEqual(["exa", "parallel"]);
+    expect(exa.turn.tools.map(({ name }) => name)).toContain("web_search");
+    expect(parallel.turn.tools).toEqual(exa.turn.tools);
+    expect(parallel.systemPrompt).toBe(exa.systemPrompt);
   });
 });

@@ -66,6 +66,10 @@ const OPTIONAL_SEARCH_PARAMETERS = [
 
 type OptionalSearchParameter = (typeof OPTIONAL_SEARCH_PARAMETERS)[number];
 
+type SearchParameterSupport = {
+  readonly [Parameter in OptionalSearchParameter]: readonly SearchProvider[];
+};
+
 /**
  * Which Search Providers honor each optional parameter. This is the single source of truth for the
  * parameter descriptions and the ignored-parameter warning; update it when a provider schema changes.
@@ -73,16 +77,12 @@ type OptionalSearchParameter = (typeof OPTIONAL_SEARCH_PARAMETERS)[number];
  * Parallel `web_search` accepts none. Pi still sends every supplied control to Exa, which ignores
  * unknown keys; removing the ignored parameters from the schema would be a breaking change.
  */
-export const SEARCH_PARAMETER_SUPPORT = {
+const SEARCH_PARAMETER_SUPPORT: SearchParameterSupport = {
   numResults: ["exa"],
   type: [],
   livecrawl: [],
   contextMaxCharacters: [],
-} as const satisfies { readonly [Parameter in OptionalSearchParameter]: readonly SearchProvider[] };
-
-function honoringProviders(parameter: OptionalSearchParameter): readonly SearchProvider[] {
-  return SEARCH_PARAMETER_SUPPORT[parameter];
-}
+};
 
 const SEARCH_PROVIDERS: readonly SearchProvider[] = ["exa", "parallel"];
 
@@ -92,7 +92,7 @@ function providerName(provider: SearchProvider): string {
 
 /** Static sentence naming the Search Providers that honor a parameter. */
 function searchParameterSupportNote(parameter: OptionalSearchParameter): string {
-  const honoring = honoringProviders(parameter);
+  const honoring = SEARCH_PARAMETER_SUPPORT[parameter];
   const ignoring = SEARCH_PROVIDERS.filter((provider) => !honoring.includes(provider));
   if (honoring.length === 0) return "Currently ignored by both Search Providers.";
   if (ignoring.length === 0) return "Honored by both Search Providers.";
@@ -106,7 +106,7 @@ function ignoredParameterWarnings(
 ): string[] {
   const ignored = OPTIONAL_SEARCH_PARAMETERS.filter(
     (parameter) =>
-      supplied[parameter] !== undefined && !honoringProviders(parameter).includes(provider),
+      supplied[parameter] !== undefined && !SEARCH_PARAMETER_SUPPORT[parameter].includes(provider),
   );
   return ignored.length === 0 ? [] : [`${providerName(provider)} ignores: ${ignored.join(", ")}.`];
 }
@@ -172,20 +172,20 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
     livecrawl: Type.Optional(
       StringEnum(["fallback", "preferred"] as const, {
         default: "fallback",
-        description: `Live crawl mode (default: fallback). ${searchParameterSupportNote("livecrawl")}`,
+        description: `Live crawl mode (sent to Exa as fallback when omitted). ${searchParameterSupportNote("livecrawl")}`,
       }),
     ),
     type: Type.Optional(
       StringEnum(["auto", "fast", "deep"] as const, {
         default: "auto",
-        description: `Search type (default: auto). ${searchParameterSupportNote("type")}`,
+        description: `Search type (sent to Exa as auto when omitted). ${searchParameterSupportNote("type")}`,
       }),
     ),
     contextMaxCharacters: Type.Optional(
       Type.Integer({
         minimum: 1,
         maximum: 50_000,
-        description: `Maximum model context characters (effective default: 10000). ${searchParameterSupportNote("contextMaxCharacters")}`,
+        description: `Maximum model context characters (sent to Exa only when supplied). ${searchParameterSupportNote("contextMaxCharacters")}`,
       }),
     ),
   },
@@ -634,7 +634,8 @@ export function createWebSearchTool(
         throw unableToSearch(input.query, failure);
       }
       // Spilling the full output is local work; its failures are not Web Search request failures.
-      const warnings = ignoredParameterWarnings(provider, parameters);
+      // Value.Parse fills no schema defaults, so an optional field is defined only when the call supplied it.
+      const warnings = ignoredParameterWarnings(provider, input);
       // The warning leads the model-visible text, so the shared output limits account for it.
       const output = await createWebToolOutput(
         warnings.length === 0 ? search : `${webToolWarningNotice(warnings)}\n\n${search}`,

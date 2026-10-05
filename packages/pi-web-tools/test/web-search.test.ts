@@ -1055,9 +1055,12 @@ describe("Web Search", () => {
       spillDirectories.push(dirname(path));
       const visible = result.content[0];
       if (visible?.type !== "text") throw new Error("Expected text search result");
-      expect(visible.text.startsWith("Warning: Parallel ignores: numResults.\n\nresult 0")).toBe(
-        true,
-      );
+      const warning = "Warning: Parallel ignores: numResults.";
+      expect(visible.text.startsWith(`${warning}\n\nresult 0`)).toBe(true);
+      // The spill holds the complete model-visible text, warning included.
+      expect(await readFile(path, "utf8")).toBe(`${warning}\n\n${complete}`);
+      // 2,100 result lines + the warning line + the blank separator.
+      expect(result.details.truncation?.totalLines).toBe(2_102);
       expect(visible.text.split("\n").length).toBeLessThanOrEqual(2_000);
       expect(Buffer.byteLength(visible.text)).toBeLessThanOrEqual(50 * 1024);
       expect(result.structuredContent).toMatchObject({ content: complete });
