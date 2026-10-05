@@ -4,7 +4,7 @@
  * request must begin with the byte-identical serialized history of the earlier one, and one tool
  * group must contribute exactly one labelled Todo List snapshot.
  */
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -34,6 +34,7 @@ import piTodoExtension from "../src/index.js";
 const SNAPSHOT_HEADER = "Todo List state from the pi-todo extension (not a user message):";
 
 interface CapturedRequest {
+  readonly isFirstRequest: boolean;
   readonly systemPrompt: string;
   readonly tools: string;
   readonly messages: Message[];
@@ -59,17 +60,12 @@ async function createFixture(): Promise<Fixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-todo-sdk-"));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
-  await mkdir(agentDir);
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify({
-      retry: { enabled: false },
-      compaction: { enabled: false },
-      codemode: { mode: "on" },
-      defaultTools: ["read", "bash", "edit", "write", "codemode"],
-    }),
-  );
-  const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+  const settingsManager = SettingsManager.inMemory({
+    retry: { enabled: false },
+    compaction: { enabled: false },
+    codemode: { mode: "on" },
+    defaultTools: ["read", "bash", "edit", "write", "codemode"],
+  });
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
@@ -110,6 +106,7 @@ async function createFixture(): Promise<Fixture> {
   session.agent.streamFunction = (currentModel, context, requestOptions) => {
     requestOptions?.signal?.throwIfAborted();
     requests.push({
+      isFirstRequest: requests.length === 0,
       systemPrompt: getCurrentSystemPrompt(context.messages),
       tools: JSON.stringify(getCurrentTools(context.messages)),
       messages: structuredClone(context.messages),
@@ -133,8 +130,6 @@ async function createFixture(): Promise<Fixture> {
     return stream;
   };
   await session.bindExtensions({ mode: "rpc" });
-  // Pi's built-in codemode registers inactive; SDK sessions activate it explicitly.
-  session.setActiveToolsByName([...session.getActiveToolNames(), "codemode"]);
   return { session, requests, responses };
 }
 
@@ -156,14 +151,17 @@ function snapshotIndexes(messages: readonly Message[]): number[] {
 }
 
 /**
- * The earlier request's ordered messages begin the later request. Pi serializes the leading system
- * message again from its own state (same value, different key order on the first request), so it
- * is compared structurally; every conversation message after it is compared byte for byte.
+ * The earlier request's ordered messages begin the later request, byte for byte. The one exception
+ * is the leading system message when `earlier` is the session's first request: Pi serializes it
+ * again afterwards with the same value but a different key order, so that pair is compared
+ * structurally.
  */
 function expectByteIdenticalPrefix(earlier: CapturedRequest, later: CapturedRequest): void {
-  expect(later.messages[0]).toEqual(earlier.messages[0]);
-  expect(JSON.stringify(later.messages.slice(1, earlier.messages.length))).toBe(
-    JSON.stringify(earlier.messages.slice(1)),
+  const first = earlier.messages[0];
+  const comparedFrom = first !== undefined && earlier.isFirstRequest ? 1 : 0;
+  if (comparedFrom === 1) expect(later.messages[0]).toEqual(first);
+  expect(JSON.stringify(later.messages.slice(comparedFrom, earlier.messages.length))).toBe(
+    JSON.stringify(earlier.messages.slice(comparedFrom)),
   );
   expect(later.systemPrompt).toBe(earlier.systemPrompt);
   expect(later.tools).toBe(earlier.tools);
