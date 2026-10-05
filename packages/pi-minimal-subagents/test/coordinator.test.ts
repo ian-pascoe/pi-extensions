@@ -1,7 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
+import { findDeliveryEvidence } from "../src/minimal-subagents-sessions.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
   REGISTRY_ENTRY_TYPE,
@@ -1428,6 +1430,51 @@ describe("minimal subagents coordinator", () => {
       event: "turn",
       turn_id: started.turn_id,
       output: "second done",
+    });
+  });
+
+  it("still delivers a result automatically after a wait on its turn timed out", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator, root, queuedMessages } = coordinatorFixture(runtime, 0);
+    const spawned = await coordinator.spawn("root", { task: "Slow", agent_id: "worker" }, caller);
+    const timedOut = await coordinator.wait("root", "worker", 1);
+    expect(timedOut).toMatchObject({ event: "timeout", turn_id: spawned.turn_id });
+    // The root session now holds the timeout's wait tool result, exactly as Pi appends it.
+    const entries: SessionEntry[] = [
+      {
+        type: "message",
+        id: "timeout-result",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "subagent_wait",
+          content: [{ type: "text", text: "timeout" }],
+          details: {
+            event: "timeout",
+            source_agent_id: timedOut.agent_id,
+            source_turn_id: timedOut.turn_id,
+          },
+          isError: false,
+          timestamp: 1,
+        },
+      },
+    ];
+    root.hasDeliveryEvidence.mockImplementation((agentId, turnId, deliveryId) =>
+      findDeliveryEvidence(entries, agentId, turnId, deliveryId),
+    );
+
+    finishPrompt({ status: "completed", output: "late result" });
+
+    await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
+    expect(queuedMessages[0]).toMatchObject({
+      customType: "minimal-subagents.result",
+      content: expect.stringContaining("late result"),
     });
   });
 

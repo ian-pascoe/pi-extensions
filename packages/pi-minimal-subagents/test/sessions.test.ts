@@ -1916,13 +1916,15 @@ export default function projectAdapter(pi) {
         "message:batched",
       ),
     ).toBe(true);
-    expect(
-      findDeliveryEvidence(
-        [toolResultEntry("subagent_wait", { ...details, event: "message" })],
-        "child",
-        "turn",
-      ),
-    ).toBe(false);
+    for (const event of ["message", "timeout"]) {
+      expect(
+        findDeliveryEvidence(
+          [toolResultEntry("subagent_wait", { ...details, event })],
+          "child",
+          "turn",
+        ),
+      ).toBe(false);
+    }
     expect(
       findDeliveryEvidence(
         [
