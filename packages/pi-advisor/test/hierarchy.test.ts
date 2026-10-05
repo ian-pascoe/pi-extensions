@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { onTestFinished, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,10 +24,10 @@ it.each([false, true])(
   "holds CLI-only Advisor child delivery and live hierarchy policy (CM + built-in codemode: %s)",
   async (combined) => {
     const directory = await mkdtemp(join(tmpdir(), "advisor-hierarchy-"));
+    onTestFinished(() => rm(directory, { recursive: true, force: true }));
     vi.stubEnv("PI_CODING_AGENT_DIR", directory);
-    afterEach(async () => {
+    onTestFinished(async () => {
       vi.unstubAllEnvs();
-      await rm(directory, { recursive: true, force: true });
     });
     const backend = fileURLToPath(new URL("./fixtures/hierarchy-extension.ts", import.meta.url));
     const inheritedExtensions = [
@@ -189,7 +189,7 @@ it.each([false, true])(
     const runtime = new AgentSessionRuntime(created.session, services, async () => {
       throw new Error("No replacement");
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await runtime.session.abort();
       await runtime.dispose();
     });

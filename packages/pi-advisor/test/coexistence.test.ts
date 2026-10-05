@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { onTestFinished, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,7 @@ import "./fixtures/coexistence-extension.js";
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "advisor-coexistence-"));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
   const responses: Array<AssistantMessage | Promise<AssistantMessage>> = [];
   const requests: Context[] = [];
   globalThis.advisorCoexistenceStream = (model, context) => {
@@ -113,11 +114,10 @@ async function fixture() {
       },
     }),
   });
-  afterEach(async () => {
+  onTestFinished(async () => {
     await disposeAdvisorSession(advisor);
     await observed.session.abort();
     await observed.dispose();
-    await rm(directory, { recursive: true, force: true });
   });
   return { observed: observed.session, advisor, requests, responses };
 }
@@ -195,7 +195,7 @@ it.each(["threshold", "overflow"] as const)(
     const f = await fixture();
     const final = Promise.withResolvers<AssistantMessage>();
     // Release a held external response before native shutdown even if an assertion fails.
-    afterEach(() => {
+    onTestFinished(() => {
       final.resolve(reply("Released"));
     });
     if (reason === "threshold")

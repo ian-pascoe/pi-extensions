@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { onTestFinished, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -61,17 +61,21 @@ it.each(["none", "on", "only"] as const)(
     const combined = codemodeMode !== "none";
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-09-12T12:00:00Z"));
-    afterEach(() => vi.useRealTimers());
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const directory = await mkdtemp(join(tmpdir(), "advisor-extension-"));
+    onTestFinished(() => rm(directory, { recursive: true, force: true }));
     vi.stubEnv("PI_CODING_AGENT_DIR", directory);
-    afterEach(() => vi.unstubAllEnvs());
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
     const runtimes: AgentSessionRuntime[] = [];
-    afterEach(async () => {
+    onTestFinished(async () => {
       for (const runtime of runtimes) {
         await runtime.session.abort();
         await runtime.dispose();
       }
-      await rm(directory, { recursive: true, force: true });
     });
     const mainRequests: Context[] = [];
     const reviewRequests: Context[] = [];

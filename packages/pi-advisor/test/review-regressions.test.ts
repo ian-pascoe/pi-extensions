@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { onTestFinished, expect, it } from "vitest";
 import { reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
@@ -265,7 +265,7 @@ it("retracts queued owned-child findings after a model-only change while preserv
     },
     "owned-child",
   );
-  afterEach(async () => {
+  onTestFinished(async () => {
     releaseSecond.resolve();
     await observer.dispose();
   });

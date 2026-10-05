@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { onTestFinished, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +29,7 @@ const conversation = <T extends { role: string }>(messages: T[]) =>
 
 async function activeFixture() {
   const dir = await mkdtemp(join(tmpdir(), "advisor-observer-"));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const modelRuntime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
     modelsStore: new InMemoryModelsStore(),
@@ -65,10 +66,9 @@ async function activeFixture() {
     throw new Error("No replacement");
   });
   await runtime.session.bindExtensions({ mode: "print" });
-  afterEach(async () => {
+  onTestFinished(async () => {
     await runtime.session.abort();
     await runtime.dispose();
-    await rm(dir, { recursive: true, force: true });
   });
   return runtime.session;
 }
@@ -125,7 +125,7 @@ it.each(["none", "blocker"] as const)(
       "headless-root",
     );
     globalThis.advisorObserverTest.settled = () => observer.settled();
-    afterEach(() => observer.dispose());
+    onTestFinished(() => observer.dispose());
     await session.prompt("Review this task, without changing it.");
     expect(observer.status.lastError).toBeNull();
     expect(observer.status).toMatchObject({
@@ -208,7 +208,7 @@ it("queues a streaming nit without steering the active agent", async () => {
     "interactive",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Use one tool");
   expect(mainCalls).toBe(2);
   expect(mainContexts[1]).not.toContain("Use the shorter expression.");
@@ -275,7 +275,7 @@ it("records an idle multi-finding Review in report order without waking for a ni
     },
     "headless-root",
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   const prompt = session.prompt("Complete once");
   await reviewStarted.promise;
   await prompt;
@@ -357,7 +357,7 @@ it("records every finding before starting one Corrective Turn", async () => {
     "interactive",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   const prompt = session.prompt("Complete once");
   await reviewStarted.promise;
   await prompt;
@@ -427,7 +427,7 @@ it("deduplicates a Review at its highest severity and permits later escalation",
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("First");
   await session.prompt("Second");
   expect(
@@ -489,7 +489,7 @@ it("defers every distinct Concern during one cooldown and re-evaluates the set",
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   for (let turn = 0; turn < 4; turn++) await session.prompt(`Step ${turn}`);
   expect(reviewPrompts[2]).toContain("Third concern.");
   expect(reviewPrompts[2]).toContain("Fourth concern.");
@@ -521,7 +521,7 @@ it("pauses when a Review omits its terminating report", async () => {
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Complete normally");
   expect(observer.status).toMatchObject({
     state: "paused",
@@ -567,7 +567,7 @@ it("pauses on the independent review deadline without cancelling the observed ag
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Finish normally");
   expect(observer.status.state).toBe("paused");
   expect(observer.status.lastError).toMatch(/deadline/i);
@@ -616,7 +616,7 @@ it("enforces investigative calls independently of the catch-up setting", async (
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Finish normally");
   expect(observer.status.lastError).toMatch(/tool-call limit/);
   expect(calls).toBe(2);
@@ -673,7 +673,7 @@ it("keeps configurable child correction and final reviews inside the owner await
       },
     },
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   observer.beforeTask();
   await session.prompt("Perform original child task");
   expect(mainCalls).toBe(1);
@@ -741,7 +741,7 @@ it.each([
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   for (let turn = 0; turn < reports.length; turn++) await session.prompt(`Task step ${turn}`);
   expect(
     session.messages.filter(
@@ -786,7 +786,7 @@ it("disabling an in-flight review discards its late finding", async () => {
     catchUpThreshold: "off" as const,
   };
   const observer = new AdvisorObserver(session, config, "owned-child");
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Continue");
   await started.promise;
   observer.configure({ ...config, enabled: false });
@@ -841,7 +841,7 @@ it.each(["aborted", "error"] as const)(
       { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
       "owned-child",
     );
-    afterEach(() => observer.dispose());
+    onTestFinished(() => observer.dispose());
     observer.beforeTask();
     await session.prompt("Work");
     await observer.finishOwnedTurn();
@@ -884,7 +884,7 @@ it("stops unfinished headless review work at the separate 30-second drain ceilin
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(async () => {
+  onTestFinished(async () => {
     vi.useRealTimers();
     await observer.dispose();
   });
@@ -961,7 +961,7 @@ it("coalesces backlog and releases threshold seven below seven, not only at zero
     { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 7 },
     "owned-child",
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   const prompt = session.prompt("Run eight observed turns");
   await vi.waitFor(() => expect(observer.status.backlog).toBe(7));
   expect(mainCalls).toBe(7);
@@ -980,7 +980,9 @@ it("coalesces backlog and releases threshold seven below seven, not only at zero
 
 it("preserves exact ordered model tools, system prompt and unaffected history for a silent review", async () => {
   vi.spyOn(Date, "now").mockReturnValue(1700000000000);
-  afterEach(() => vi.restoreAllMocks());
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
   const requests: Context[] = [];
   globalThis.advisorObserverTest = {
     stream(model, context) {
@@ -1031,7 +1033,7 @@ it("preserves exact ordered model tools, system prompt and unaffected history fo
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Same input");
   expect(requests).toHaveLength(2);
   expect(requests[1]?.tools).toEqual(requests[0]?.tools);
@@ -1083,7 +1085,7 @@ it("keeps observed reasoning and native image attachments without base64 text ex
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Inspect image", {
     images: [{ type: "image", mimeType: "image/png", data: image }],
   });
@@ -1137,7 +1139,7 @@ it("preserves a captured model request when review configuration changes mid-tur
   const config = { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 };
   const observer = new AdvisorObserver(session, config, "headless-root");
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   const prompt = session.prompt("Work");
   await started.promise;
   observer.configure({ ...config, prompt: "Changed reviewer priorities" });
@@ -1188,7 +1190,7 @@ it("restores the concern cooldown from the selected native branch after configur
   };
   const observer = new AdvisorObserver(session, config, "headless-root");
   globalThis.advisorObserverTest.settled = () => observer.settled();
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   const findings = () =>
     session.messages.filter(
       (message) => message.role === "custom" && message.customType === "pi-advisor",
@@ -1248,7 +1250,7 @@ it("does not finish a review on its report before native extension settlement", 
     },
     "owned-child",
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Finish task");
   await atSettlement.promise;
   expect(observer.status.backlog).toBe(1);
@@ -1304,7 +1306,7 @@ it("bounds late interactive corrections across native before_agent_start hooks",
     },
     "interactive",
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   globalThis.advisorObserverTest.beforeTask = () => observer.beforeTask();
   await session.prompt("Work");
   await vi.waitFor(() =>
@@ -1329,7 +1331,7 @@ it("disabled observation leaves the ordered native tools, prompt and conversatio
     readAdvisorSettings(session).settings,
     "headless-root",
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await observer.settled();
   expect(observer.status).toMatchObject({
     state: "disabled",
@@ -1427,7 +1429,7 @@ it("prioritizes consultation after the active Review and promptly cancels queued
     { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
     "interactive",
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
 
   await session.prompt("First completed step");
   await reviewStarted.promise;
@@ -1533,7 +1535,7 @@ it("cancels an on-demand consultation without pausing later advice", async () =>
     { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
     "interactive",
   );
-  afterEach(() => observer.dispose());
+  onTestFinished(() => observer.dispose());
   await session.prompt("Seed context");
   await expect.poll(() => observer.status.backlog).toBe(0);
 

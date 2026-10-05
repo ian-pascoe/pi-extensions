@@ -1,4 +1,4 @@
-import { afterEach } from "vitest";
+import { onTestFinished } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -72,6 +72,7 @@ export async function fixture({
   ui?: Partial<ExtensionUIContext>;
 } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "advisor-runtime-"));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
   const cleanupGates: Array<() => void> = [];
   globalThis.advisorReviewRegression = {};
   const models = await ModelRuntime.create({
@@ -114,11 +115,10 @@ export async function fixture({
   const runtime = new AgentSessionRuntime(created.session, services, async () => {
     throw new Error("Fixture does not replace sessions");
   });
-  afterEach(async () => {
+  onTestFinished(async () => {
     for (const release of cleanupGates) release();
     await runtime.session.abort();
     await runtime.dispose();
-    await rm(directory, { recursive: true, force: true });
   });
   const session = runtime.session;
   await session.bindExtensions(
