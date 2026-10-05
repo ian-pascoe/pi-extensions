@@ -556,6 +556,31 @@ export const LspReadOutputSchema = Type.Object({
   ...StructuredResultEnvelope,
 });
 
+/**
+ * Structured result of a position-based query: a read result plus what the requested position
+ * held in the text sent to the servers.
+ */
+export const LspPositionReadOutputSchema = Type.Object({
+  position: Type.Object(
+    {
+      path: Type.String(),
+      line: Type.Integer({ minimum: 1 }),
+      character: Type.Integer({ minimum: 1 }),
+      token: Type.Optional(
+        Type.String({
+          description:
+            "Identifier or punctuation run at the position; absent on whitespace or past the line end",
+        }),
+      ),
+      line_text: Type.String({ description: "Trimmed line holding the position" }),
+    },
+    { description: "The requested position and the token it resolved to" },
+  ),
+  results: LspReadOutputSchema.properties.results,
+  warnings: LspReadOutputSchema.properties.warnings,
+  ...StructuredResultEnvelope,
+});
+
 /** Structured result of `lsp_status`. */
 export const LspStatusOutputSchema = Type.Object({
   servers: Type.Array(

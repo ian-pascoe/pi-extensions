@@ -189,6 +189,10 @@ export interface LspItemListTextInput {
   readonly documentPath: string;
   readonly reads: readonly LspItemListRead[];
   readonly warnings: readonly string[];
+  /** Lines shown before the items, such as the queried position. */
+  readonly scope?: readonly string[];
+  /** The described queried position, which an empty completion result names. */
+  readonly position?: string | undefined;
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- A response may be an item array, a completion list, or null; its items stay opaque.
@@ -198,11 +202,12 @@ function completionItems(value: unknown): readonly unknown[] {
   return [];
 }
 
-function completionLines(read: LspItemListRead): string[] {
+function completionLines(read: LspItemListRead, position: string | undefined): string[] {
   const items = completionItems(read.value);
   const prefix = read.prefix ?? "";
   if (items.length === 0) {
-    return [prefix === "" ? "No completions." : `No completions start with "${prefix}".`];
+    const empty = prefix === "" ? "No completions" : `No completions start with "${prefix}"`;
+    return [position === undefined ? `${empty}.` : `${empty} at ${position}.`];
   }
   const header = prefix === "" ? [] : [`Completions starting with "${prefix}":`];
   const incomplete =
@@ -219,7 +224,10 @@ function omittedLines(read: LspItemListRead, refinement: "prefix" | "query"): st
 
 async function serverBlocks(input: LspItemListTextInput): Promise<readonly LspReadTextBlock[]> {
   if (input.operation === "completion") {
-    return input.reads.map((read) => ({ server_id: read.server_id, lines: completionLines(read) }));
+    return input.reads.map((read) => ({
+      server_id: read.server_id,
+      lines: completionLines(read, input.position),
+    }));
   }
   // Workspace symbols read like every other symbol result; only the omitted count is added.
   const blocks = await formatLspStructureReadBlocks({ ...input, operation: "workspace_symbols" });
@@ -239,5 +247,9 @@ async function serverBlocks(input: LspItemListTextInput): Promise<readonly LspRe
  * by server only when more than one server answered, and server failures follow as warnings.
  */
 export async function formatLspItemListText(input: LspItemListTextInput): Promise<string> {
-  return assembleLspReadText({ blocks: await serverBlocks(input), warnings: input.warnings });
+  return assembleLspReadText({
+    blocks: await serverBlocks(input),
+    warnings: input.warnings,
+    scope: input.scope ?? [],
+  });
 }
