@@ -420,7 +420,7 @@ describe("session-scoped LSP server manager", () => {
     for (const request of [
       manager.getCapabilities("typescript", filePath),
       manager.restartServer("typescript", filePath),
-      manager.resolveMutationClient(filePath, "typescript", anyCapability),
+      manager.runMutation(filePath, "typescript", anyCapability, async () => undefined),
     ]) {
       await expect(request).resolves.toMatchObject({
         kind: "failure",
@@ -453,7 +453,12 @@ describe("session-scoped LSP server manager", () => {
     const mixedRead = await manager.runRead(filePath, undefined, anyCapability, async () => "ok");
     expect(mixedRead.successes.map(({ serverId }) => serverId)).toEqual(["typescript"]);
     expect(mixedRead.failures).toEqual([]);
-    const mixedMutation = await manager.resolveMutationClient(filePath, undefined, anyCapability);
+    const mixedMutation = await manager.runMutation(
+      filePath,
+      undefined,
+      anyCapability,
+      async () => undefined,
+    );
     expect(mixedMutation).toMatchObject({
       kind: "success",
       instance: { route: { serverId: "typescript" } },
@@ -472,7 +477,7 @@ describe("session-scoped LSP server manager", () => {
       manager.runRead(filePath, undefined, anyCapability, async () => "ok"),
     ).resolves.toEqual({ failures: [failure], successes: [] });
     await expect(
-      manager.resolveMutationClient(filePath, undefined, anyCapability),
+      manager.runMutation(filePath, undefined, anyCapability, async () => undefined),
     ).resolves.toEqual({ kind: "failure", failure });
     // A file no Server Definition handles still reports that no configured server matches it.
     const unmatched = resolve(cwd, "notes.md");
@@ -971,6 +976,64 @@ describe("session-scoped LSP server manager", () => {
     await manager.shutdown();
   });
 
+  test("labels a preview request's server failure and propagates input errors and cancellations", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: factory.start,
+    });
+    const timeout = new LspServerClientError(
+      "timeout",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "textDocument/rename timed out",
+    );
+
+    await expect(
+      manager.runMutation(filePath, undefined, anyCapability, async () => "edit"),
+    ).resolves.toMatchObject({
+      kind: "success",
+      instance: { route: { rootPath: resolve(cwd, "packages/example"), serverId: "typescript" } },
+      value: "edit",
+    });
+    await expect(
+      manager.runMutation(filePath, undefined, anyCapability, async () => {
+        throw timeout;
+      }),
+    ).resolves.toEqual({
+      kind: "failure",
+      failure: {
+        code: "request-timeout",
+        message: `Pi LSP: server typescript request failed: ${timeout.message}`,
+        serverId: "typescript",
+      },
+    });
+    await expect(
+      manager.runMutation(filePath, undefined, anyCapability, async () => {
+        throw new LspInputError("line 9 is past the end of the document");
+      }),
+    ).rejects.toBeInstanceOf(LspInputError);
+    const cancelled = new LspServerClientError(
+      "cancelled",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "request cancelled",
+    );
+    await expect(
+      manager.runMutation(filePath, undefined, anyCapability, async () => {
+        throw cancelled;
+      }),
+    ).rejects.toBe(cancelled);
+    await expect(
+      manager.runRead(filePath, undefined, anyCapability, async () => {
+        throw cancelled;
+      }),
+    ).rejects.toBe(cancelled);
+    await manager.shutdown();
+  });
+
   test("omits incapable servers from automatic reads", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory(
@@ -1040,7 +1103,7 @@ describe("session-scoped LSP server manager", () => {
     });
 
     await expect(
-      manager.resolveMutationClient(filePath, undefined, hoverCapability),
+      manager.runMutation(filePath, undefined, hoverCapability, async () => undefined),
     ).resolves.toEqual({
       kind: "failure",
       failure: {
@@ -1051,7 +1114,7 @@ describe("session-scoped LSP server manager", () => {
       },
     });
     await expect(
-      manager.resolveMutationClient(filePath, "second", hoverCapability),
+      manager.runMutation(filePath, "second", hoverCapability, async () => undefined),
     ).resolves.toEqual({
       kind: "failure",
       failure: {
@@ -1183,13 +1246,23 @@ describe("session-scoped LSP server manager", () => {
       startClient: factory.start,
     });
 
-    const ambiguous = await manager.resolveMutationClient(filePath, undefined, hoverCapability);
+    const ambiguous = await manager.runMutation(
+      filePath,
+      undefined,
+      hoverCapability,
+      async () => undefined,
+    );
     expect(ambiguous).toMatchObject({
       failure: { code: "ambiguous-server" },
       kind: "failure",
     });
 
-    const selected = await manager.resolveMutationClient(filePath, "second", hoverCapability);
+    const selected = await manager.runMutation(
+      filePath,
+      "second",
+      hoverCapability,
+      async () => undefined,
+    );
     expect(selected).toMatchObject({
       instance: { route: { serverId: "second" } },
       kind: "success",

@@ -148,6 +148,15 @@ export type LspServerResolution<TClient extends LspManagedServerClient> =
   | { readonly kind: "failure"; readonly failure: LspServerFailure }
   | { readonly kind: "success"; readonly instance: LspResolvedServerClient<TClient> };
 
+/** Returns one instance's preview-request value and the instance that produced it, or why not. */
+export type LspServerMutationResult<TClient extends LspManagedServerClient, T> =
+  | { readonly kind: "failure"; readonly failure: LspServerFailure }
+  | {
+      readonly kind: "success";
+      readonly instance: LspResolvedServerClient<TClient>;
+      readonly value: T;
+    };
+
 /** Returns the routes a request may use, or why none applies. */
 type LspRouteSelection =
   | { readonly kind: "failure"; readonly failure: LspServerFailure }
@@ -434,6 +443,35 @@ function unavailableFailure(route: LspServerRoute, error: string): LspServerFail
   };
 }
 
+/**
+ * Run one operation on a ready instance, labeling a server failure with its server. A client
+ * timeout becomes `request-timeout`. An `LspInputError` is the caller's to fix and a cancellation
+ * is the caller's abort, so both propagate unlabeled.
+ */
+async function runServerOperation<TClient extends LspManagedServerClient, T>(
+  { client, route }: LspResolvedServerClient<TClient>,
+  operation: (client: TClient, route: LspServerRoute) => Promise<T>,
+): Promise<LspServerSuccess<T> | LspServerFailure> {
+  try {
+    return {
+      rootPath: route.rootPath,
+      serverId: route.serverId,
+      value: await operation(client, route),
+    };
+  } catch (error) {
+    if (error instanceof LspInputError) throw error;
+    if (error instanceof LspServerClientError && error.kind === "cancelled") throw error;
+    return {
+      code:
+        error instanceof LspServerClientError && error.kind === "timeout"
+          ? "request-timeout"
+          : "request-failed",
+      message: `Pi LSP: server ${route.serverId} request failed: ${describeLspError(error)}`,
+      serverId: route.serverId,
+    };
+  }
+}
+
 /** Own lazy Server Instance creation, routing, failure state, restart, and session shutdown. */
 export class LspServerManager<TClient extends LspManagedServerClient = LspManagedServerClient> {
   private readonly clients = new Map<string, TClient>();
@@ -603,8 +641,8 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
 
   /**
    * Query matching capable instances while retaining independent operational failures. An
-   * `LspInputError` from `operation` rejects the whole read: it is the caller's to fix, not a
-   * server failure.
+   * `LspInputError` or a cancellation from `operation` rejects the whole read: it is the
+   * caller's input or abort, not a server failure.
    */
   async runRead<T>(
     filePath: string,
@@ -624,23 +662,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
           if (serverId === undefined) return undefined;
           return incapableServerFailure(route.serverId, capability);
         }
-        try {
-          return {
-            rootPath: route.rootPath,
-            serverId: route.serverId,
-            value: await operation(resolution.instance.client, route),
-          };
-        } catch (error) {
-          if (error instanceof LspInputError) throw error;
-          return {
-            code:
-              error instanceof LspServerClientError && error.kind === "timeout"
-                ? "request-timeout"
-                : "request-failed",
-            message: `Pi LSP: server ${route.serverId} request failed: ${describeLspError(error)}`,
-            serverId: route.serverId,
-          };
-        }
+        return runServerOperation(resolution.instance, operation);
       }),
     );
 
@@ -661,7 +683,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   }
 
   /** Resolve exactly one capable matching instance before a preview-producing mutation request. */
-  async resolveMutationClient(
+  private async resolveMutationClient(
     filePath: string,
     serverId: string | undefined,
     capability: LspCapabilityRequirement<TClient>,
@@ -705,6 +727,25 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
             )
           : incapableServerFailure(serverId, capability),
     };
+  }
+
+  /**
+   * Run one preview-producing request on exactly one capable matching instance. Like `runRead`,
+   * an operation failure becomes a labeled `request-failed` or `request-timeout` failure, while an
+   * `LspInputError` or a cancellation rejects.
+   */
+  async runMutation<T>(
+    filePath: string,
+    serverId: string | undefined,
+    capability: LspCapabilityRequirement<TClient>,
+    operation: (client: TClient, route: LspServerRoute) => Promise<T>,
+  ): Promise<LspServerMutationResult<TClient, T>> {
+    const resolution = await this.resolveMutationClient(filePath, serverId, capability);
+    if (resolution.kind === "failure") return resolution;
+    const { instance } = resolution;
+    const outcome = await runServerOperation(instance, operation);
+    if ("code" in outcome) return { kind: "failure", failure: outcome };
+    return { kind: "success", instance, value: outcome.value };
   }
 
   /** Start one exact Server Instance and return its negotiated capabilities. */

@@ -68,6 +68,7 @@ class RecordingLspClient implements LspToolServerClient {
   responderByMethod = new Map<string, (parameters: unknown) => unknown>();
   currentDiagnostics: Diagnostic[] = [];
   currentDiagnosticsFailure: Error | undefined;
+  synchronizationFailure: Error | undefined;
   workspaceDiagnosticsResult: LspWorkspaceDiagnosticResult = {
     status: "fresh",
     source: "push_cache",
@@ -85,6 +86,7 @@ class RecordingLspClient implements LspToolServerClient {
     filePath: string,
     _languageId: string,
   ): Promise<LspSynchronizedDocument> {
+    if (this.synchronizationFailure !== undefined) throw this.synchronizationFailure;
     const text = await readFile(filePath, "utf8");
     return {
       uri: pathToFileURL(filePath).href,
@@ -2626,6 +2628,116 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("lets a cancelled request escape unlabeled and without the troubleshooting hint", async () => {
+    const fixture = await createToolFixture();
+    const cancelled = new LspServerClientError(
+      "cancelled",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "request cancelled",
+    );
+    fixture.client.failureByMethod.set("textDocument/rename", cancelled);
+    fixture.client.failureByMethod.set("textDocument/hover", cancelled);
+    for (const call of [
+      {
+        operation: "rename",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 7,
+        new_name: "smile",
+      },
+      { operation: "hover", file_path: fixture.filePath, line: 1, character: 1 },
+    ] satisfies LspToolParameters[]) {
+      const error = await executeTool(fixture, call).catch((cause: unknown) => cause);
+      expect(error, call.operation).toBe(cancelled);
+    }
+    await fixture.close();
+  });
+
+  test("labels preview-tool timeouts and crashes by server and points to the troubleshooting Skill", async () => {
+    const fixture = await createToolFixture();
+    const timeout = new LspServerClientError(
+      "timeout",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "request expired",
+    );
+    const crash = new LspServerClientError(
+      "exit",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "process exited unexpectedly with code 1",
+    );
+    const previews = [
+      {
+        call: {
+          operation: "rename",
+          file_path: fixture.filePath,
+          line: 1,
+          character: 7,
+          new_name: "smile",
+        },
+        method: "textDocument/rename",
+      },
+      {
+        call: {
+          operation: "format_document",
+          file_path: fixture.filePath,
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        method: "textDocument/formatting",
+      },
+      {
+        call: {
+          operation: "format_range",
+          file_path: fixture.filePath,
+          range: range(),
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        method: "textDocument/rangeFormatting",
+      },
+      {
+        call: {
+          operation: "format_on_type",
+          file_path: fixture.filePath,
+          line: 1,
+          character: 1,
+          trigger_character: ";",
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        method: "textDocument/onTypeFormatting",
+      },
+      {
+        call: { operation: "code_actions", file_path: fixture.filePath, range: range() },
+        method: "textDocument/codeAction",
+      },
+    ] satisfies { call: LspToolParameters; method: string }[];
+    for (const { call, method } of previews) {
+      for (const [failure, during] of [
+        [timeout, "request"],
+        [crash, "request"],
+        [timeout, "synchronization"],
+        [crash, "synchronization"],
+      ] as const) {
+        fixture.client.failureByMethod.clear();
+        fixture.client.synchronizationFailure = undefined;
+        if (during === "request") fixture.client.failureByMethod.set(method, failure);
+        else fixture.client.synchronizationFailure = failure;
+        const label = `${call.operation} ${failure.kind} during ${during}`;
+        const error = await executeTool(fixture, call).catch((cause: unknown) => cause);
+        expect(error, label).toEqual(
+          new Error(
+            `Pi LSP: server typescript request failed: ${failure.message}\n\n${TROUBLESHOOTING_HINT}`,
+          ),
+        );
+      }
+    }
+    await fixture.close();
+  });
+
   test("reports a missing file as an input error before asking any server", async () => {
     const fixture = await createToolFixture();
     const missing = resolve(fixture.context.cwd, "missing.ts");
@@ -2664,6 +2776,38 @@ describe("registered LSP tool", () => {
           operation: "code_actions",
           file_path: fixture.filePath,
           range: { start: { line: 1, character: 1 }, end: { line: 3, character: 1 } },
+        },
+        "Pi LSP: line 3 is past the end of the document, which has 2 lines (line must be at most 2)",
+      ],
+      [
+        {
+          operation: "rename",
+          file_path: fixture.filePath,
+          line: 4,
+          character: 1,
+          new_name: "smile",
+        },
+        "Pi LSP: line 4 is past the end of the document, which has 2 lines (line must be at most 2)",
+      ],
+      [
+        {
+          operation: "format_range",
+          file_path: fixture.filePath,
+          range: { start: { line: 1, character: 1 }, end: { line: 1, character: 40 } },
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        "Pi LSP: character 40 is past the end of line 1, which has 18 characters (character must be at most 19)",
+      ],
+      [
+        {
+          operation: "format_on_type",
+          file_path: fixture.filePath,
+          line: 3,
+          character: 1,
+          trigger_character: ";",
+          tab_size: 2,
+          insert_spaces: true,
         },
         "Pi LSP: line 3 is past the end of the document, which has 2 lines (line must be at most 2)",
       ],
