@@ -991,16 +991,17 @@ describe("other workspace roots of a Server Definition", () => {
 
   test("reports that more roots may exist when discovery stops at its directory limit", async () => {
     const { cwd } = await createRoutedFileFixture();
-    // More directories than one discovery lists, none holding a root marker.
+    // More directories than the lowered discovery limit, none holding a root marker.
     await Promise.all(
-      Array.from({ length: 4100 }, (_, index) =>
-        mkdir(resolve(cwd, `wide/${String(index).padStart(4, "0")}`), { recursive: true }),
+      ["wide/0", "wide/1", "wide/2", "wide/3"].map((directory) =>
+        mkdir(resolve(cwd, directory), { recursive: true }),
       ),
     );
     const manager = new LspServerManager({
       cwd,
       settings: resolvedSettings(["typescript"]),
       startClient: createRecordingClientFactory().start,
+      rootDiscoveryDirectoryLimit: 3,
     });
 
     expect(

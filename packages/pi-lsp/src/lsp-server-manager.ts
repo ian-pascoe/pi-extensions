@@ -161,7 +161,7 @@ export interface LspOtherWorkspaceRoots {
 /** Most other workspace roots one discovery reports. */
 export const LSP_OTHER_WORKSPACE_ROOT_LIMIT = 5;
 
-/** Most directories one root-marker discovery lists, bounding its cost in large trees. */
+/** Default for the most directories one root-marker discovery lists, bounding its cost. */
 export const LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT = 4096;
 
 /** Directories root-marker discovery never descends into: installed dependencies. */
@@ -177,6 +177,8 @@ export interface LspServerManagerInput<TClient extends LspManagedServerClient> {
   readonly startClient: StartLspServerClient<TClient>;
   /** Lists one directory's entry names for root-marker routing; defaults to the filesystem. */
   readonly readDirectory?: (directoryPath: string) => Promise<readonly string[]>;
+  /** Most directories one root-marker discovery lists; defaults to `LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT`. */
+  readonly rootDiscoveryDirectoryLimit?: number;
 }
 
 /** Removes Pi's optional leading path sigil before file routing. */
@@ -253,20 +255,21 @@ export function routeLspServersForFile(
 /**
  * List directories under `baseDirectory` (itself included) that contain a root marker, breadth
  * first in name order, skipping hidden and dependency directories and symbolic links. Discovery
- * stops once `maxRoots` roots other than `excludedRoot` are found or the directory limit is
- * reached; `complete` reports whether every directory was checked.
+ * stops once `maxRoots` roots other than `excludedRoot` are found or `directoryLimit` directories
+ * were listed; `complete` reports whether every directory was checked.
  */
 async function discoverLspMarkerRoots(
   baseDirectory: string,
   rootMarkers: readonly string[],
   excludedRoot: string,
   maxRoots: number,
+  directoryLimit: number,
 ): Promise<{ readonly roots: readonly string[]; readonly complete: boolean }> {
   const roots: string[] = [];
   const queue = [baseDirectory];
   let listed = 0;
   while (queue.length > 0 && roots.length < maxRoots) {
-    if (listed === LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT) return { roots, complete: false };
+    if (listed === directoryLimit) return { roots, complete: false };
     const directory = queue.shift();
     if (directory === undefined) break;
     listed++;
@@ -442,7 +445,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
    * Instances, and directories under the working directory that contain one of its root markers.
    * Files under those roots route to other Server Instances, so a request to the instance at
    * `rootPath` may not consider them. Hidden and `node_modules` directories are not searched, and
-   * discovery lists at most `LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT` directories.
+   * discovery lists at most `rootDiscoveryDirectoryLimit` directories.
    */
   async findOtherWorkspaceRoots(
     serverId: string,
@@ -463,6 +466,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         rootMarkers,
         searchedRoot,
         maxRoots,
+        this.input.rootDiscoveryDirectoryLimit ?? LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT,
       );
       for (const root of discovery.roots) roots.add(root);
       complete = discovery.complete;
