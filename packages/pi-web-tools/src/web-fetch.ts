@@ -4,7 +4,15 @@ import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { cancelResponse, readBoundedResponseBody, requestSignal } from "./web-response.js";
+import {
+  cancelResponse,
+  describeWebFailure,
+  readBoundedResponseBody,
+  requestSignal,
+  WebHttpStatusError,
+  WebInputError,
+  type WebFailure,
+} from "./web-response.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 import { renderWebFetchToolCall, renderWebFetchToolResult } from "./web-tool-rendering.js";
 import {
@@ -109,9 +117,16 @@ const WEB_FETCH_DESCRIPTION =
   "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML is converted when requested. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
 function parseHttpUrl(input: string): URL {
-  const url = new URL(input);
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    throw new WebInputError("invalid URL (expected an absolute HTTP or HTTPS URL)");
+  }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Web Fetch requires an HTTP or HTTPS URL");
+    throw new WebInputError(
+      `unsupported URL scheme ${url.protocol} (Web Fetch requires an HTTP or HTTPS URL)`,
+    );
   }
   return url;
 }
@@ -149,15 +164,20 @@ async function fetchOnce(
   });
 }
 
-/** A page the server answered with an HTTP client error; the URL, not the setup, is at fault. */
-class WebFetchClientError extends Error {}
-
 function isCloudflareChallenge(response: Response): boolean {
   return response.status === 403 && response.headers.get("cf-mitigated") === "challenge";
 }
 
 function normalizedMime(contentType: string): string {
   return contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+const MAX_MIME_MESSAGE_LENGTH = 100;
+
+function truncatedMime(mime: string): string {
+  return mime.length > MAX_MIME_MESSAGE_LENGTH
+    ? `${mime.slice(0, MAX_MIME_MESSAGE_LENGTH)}…`
+    : mime;
 }
 
 function isTextualMime(mime: string): boolean {
@@ -224,17 +244,16 @@ async function fetchText(
   }
   if (!response.ok) {
     await cancelResponse(response);
-    const message = `Web Fetch returned HTTP ${response.status}`;
-    throw response.status >= 400 && response.status < 500
-      ? new WebFetchClientError(message)
-      : new Error(message);
+    throw new WebHttpStatusError(response.status);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
   const mime = normalizedMime(contentType);
   if (!isTextualMime(mime)) {
     await cancelResponse(response);
-    throw new Error(`Web Fetch returned unsupported content type ${contentType}`);
+    throw new WebInputError(
+      `unsupported content type ${truncatedMime(mime)} (Web Fetch returns text only; for a document such as a PDF, download it and convert it to text locally)`,
+    );
   }
 
   const body = await readBoundedResponseBody(response, WEB_FETCH_MAX_RESPONSE_BYTES, signal);
@@ -245,12 +264,9 @@ async function fetchText(
   };
 }
 
-function unableToFetch(safeUrl: string, diagnosable = false): Error {
-  return new Error(
-    diagnosable
-      ? `Unable to fetch ${safeUrl}\n\n${TROUBLESHOOTING_HINT}`
-      : `Unable to fetch ${safeUrl}`,
-  );
+function unableToFetch(safeUrl: string, failure: WebFailure): Error {
+  const message = `Unable to fetch ${safeUrl}: ${failure.cause}`;
+  return new Error(failure.diagnosable ? `${message}\n\n${TROUBLESHOOTING_HINT}` : message);
 }
 
 /** Create the model-invoked Web Fetch definition. */
@@ -285,59 +301,63 @@ export function createWebFetchTool(
       try {
         input = Value.Parse(WEB_FETCH_PARAMETERS, parameters);
       } catch {
-        throw unableToFetch("requested URL");
+        throw unableToFetch(
+          "requested URL",
+          describeWebFailure(
+            new WebInputError(
+              "invalid parameters (expected a url string with optional format and timeout)",
+            ),
+          ),
+        );
       }
       const safeUrl = redactWebUrlUserinfo(input.url);
       let parsedUrl: URL;
       try {
         parsedUrl = parseHttpUrl(input.url);
-      } catch {
-        throw unableToFetch(safeUrl);
+      } catch (error) {
+        throw unableToFetch(safeUrl, describeWebFailure(error));
       }
       const format = input.format ?? "markdown";
-      const signal = requestSignal(
-        callerSignal,
-        Math.ceil((input.timeout ?? WEB_FETCH_DEFAULT_TIMEOUT_SECONDS) * 1000),
-      );
+      const timeoutMs = Math.ceil((input.timeout ?? WEB_FETCH_DEFAULT_TIMEOUT_SECONDS) * 1000);
+      const signal = requestSignal(callerSignal, timeoutMs);
       onUpdate?.({ content: [], details: { url: safeUrl, contentType: "", format } });
+      let fetched: FetchedText;
       try {
-        const fetched = await fetchText(parsedUrl, format, signal, options);
-        const output = await createWebToolOutput(fetched.content);
-        const structured = boundWebToolStructuredText(fetched.content);
-        const structuredContent: WebFetchOutput = {
-          url: fetched.finalUrl,
-          content_type: fetched.contentType,
-          format,
-          content: structured.content,
-          truncated: structured.truncated,
-        };
-        if (output.truncation !== undefined) {
-          structuredContent.full_output_path = output.truncation.fullOutputPath;
-        }
-        return {
-          content: [{ type: "text", text: output.content }],
-          details:
-            output.truncation === undefined
-              ? {
-                  url: fetched.finalUrl,
-                  contentType: fetched.contentType,
-                  format,
-                }
-              : {
-                  url: fetched.finalUrl,
-                  contentType: fetched.contentType,
-                  format,
-                  truncation: output.truncation,
-                },
-          structuredContent,
-        };
+        fetched = await fetchText(parsedUrl, format, signal, options);
       } catch (error) {
-        // Dead links, blocked pages, and user cancellation are not failures the Skill diagnoses.
-        throw unableToFetch(
-          safeUrl,
-          !(error instanceof WebFetchClientError) && callerSignal?.aborted !== true,
-        );
+        // Dead links, blocked pages, bad input, and user cancellation are not failures the Skill diagnoses.
+        throw unableToFetch(safeUrl, describeWebFailure(error, { callerSignal, timeoutMs }));
       }
+      // Spilling the full output is local work; its failures are not Web Fetch transport failures.
+      const output = await createWebToolOutput(fetched.content);
+      const structured = boundWebToolStructuredText(fetched.content);
+      const structuredContent: WebFetchOutput = {
+        url: fetched.finalUrl,
+        content_type: fetched.contentType,
+        format,
+        content: structured.content,
+        truncated: structured.truncated,
+      };
+      if (output.truncation !== undefined) {
+        structuredContent.full_output_path = output.truncation.fullOutputPath;
+      }
+      return {
+        content: [{ type: "text", text: output.content }],
+        details:
+          output.truncation === undefined
+            ? {
+                url: fetched.finalUrl,
+                contentType: fetched.contentType,
+                format,
+              }
+            : {
+                url: fetched.finalUrl,
+                contentType: fetched.contentType,
+                format,
+                truncation: output.truncation,
+              },
+        structuredContent,
+      };
     },
   });
 }

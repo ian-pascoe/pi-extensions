@@ -1,7 +1,8 @@
 import { toToolContext } from "./tool-context.js";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
@@ -131,7 +132,9 @@ describe("Web Fetch", () => {
     const invalid = await executeFetch({ fetch }, { url: "file:///etc/passwd" }).catch(
       (cause: unknown) => cause,
     );
-    expect(String(invalid)).toContain("Unable to fetch file:///etc/passwd");
+    expect(String(invalid)).toContain(
+      "Unable to fetch file:///etc/passwd: unsupported URL scheme file: (Web Fetch requires an HTTP or HTTPS URL)",
+    );
     expect(String(invalid)).not.toContain(TROUBLESHOOTING_HINT);
     expect(calls).toHaveLength(1);
   });
@@ -186,15 +189,56 @@ describe("Web Fetch", () => {
   });
 
   test.each(["image/png", "application/pdf", "application/octet-stream"])(
-    "rejects unsupported MIME %s",
+    "rejects unsupported MIME %s with a local-conversion suggestion and no hint",
     async (contentType) => {
       const fetch: typeof globalThis.fetch = async () =>
-        new Response("binary", { headers: { "content-type": contentType } });
-      await expect(
-        executeFetch({ fetch }, { url: "https://example.com/file", format: "html" }),
-      ).rejects.toThrow(`Unable to fetch https://example.com/file\n\n${TROUBLESHOOTING_HINT}`);
+        new Response("binary", { headers: { "content-type": `${contentType}; charset=binary` } });
+      expect(
+        await failureMessage(
+          executeFetch({ fetch }, { url: "https://example.com/file", format: "html" }),
+        ),
+      ).toBe(
+        `Unable to fetch https://example.com/file: unsupported content type ${contentType} (Web Fetch returns text only; for a document such as a PDF, download it and convert it to text locally)`,
+      );
     },
   );
+
+  test("uses the standard HTTP phrase, not server-supplied text, and bounds the content type", async () => {
+    const hostile = "x".repeat(5_000);
+    const statusFetch: typeof globalThis.fetch = async () =>
+      new Response("no", { status: 404, statusText: hostile });
+    expect(
+      await failureMessage(executeFetch({ fetch: statusFetch }, { url: "https://example.com/a" })),
+    ).toBe("Unable to fetch https://example.com/a: HTTP 404 Not Found");
+
+    const typeFetch: typeof globalThis.fetch = async () =>
+      new Response("x", { headers: { "content-type": `application/${hostile}` } });
+    const message = await failureMessage(
+      executeFetch({ fetch: typeFetch }, { url: "https://example.com/b" }),
+    );
+    expect(message).toContain(`application/${"x".repeat(100 - "application/".length)}…`);
+    expect(message.length).toBeLessThan(400);
+  });
+
+  test("rejects an unparseable URL with a reason and no hint", async () => {
+    const fetch: typeof globalThis.fetch = async () => {
+      throw new Error("transport must not run");
+    };
+    expect(await failureMessage(executeFetch({ fetch }, { url: "not a url" }))).toBe(
+      "Unable to fetch not a url: invalid URL (expected an absolute HTTP or HTTPS URL)",
+    );
+  });
+
+  test("rejects invalid parameters with a reason and no hint", async () => {
+    const fetch: typeof globalThis.fetch = async () => {
+      throw new Error("transport must not run");
+    };
+    expect(
+      await failureMessage(executeFetch({ fetch }, { url: "https://example.com", timeout: -1 })),
+    ).toBe(
+      "Unable to fetch requested URL: invalid parameters (expected a url string with optional format and timeout)",
+    );
+  });
 
   test("rejects declared and streamed bodies above 5 MiB and cancels overflow", async () => {
     let cancelled = false;
@@ -207,7 +251,9 @@ describe("Web Fetch", () => {
       });
     await expect(
       executeFetch({ fetch: declaredFetch }, { url: "https://example.com/declared" }),
-    ).rejects.toThrow("Unable to fetch https://example.com/declared");
+    ).rejects.toThrow(
+      "Unable to fetch https://example.com/declared: response body exceeds the 5 MiB limit",
+    );
 
     const streamedFetch: typeof globalThis.fetch = async () =>
       new Response(
@@ -223,7 +269,9 @@ describe("Web Fetch", () => {
       );
     await expect(
       executeFetch({ fetch: streamedFetch }, { url: "https://example.com/streamed" }),
-    ).rejects.toThrow("Unable to fetch https://example.com/streamed");
+    ).rejects.toThrow(
+      "Unable to fetch https://example.com/streamed: response body exceeds the 5 MiB limit",
+    );
     expect(cancelled).toBe(true);
   });
 
@@ -253,28 +301,120 @@ describe("Web Fetch", () => {
       calls++;
       return new Response("forbidden", { status: 403 });
     };
-    await expect(
+    const message = await failureMessage(
       executeFetch({ fetch }, { url: "https://user:password@example.com/private" }),
-    ).rejects.toThrow("Unable to fetch https://example.com/private");
+    );
+    expect(message).toBe("Unable to fetch https://example.com/private: HTTP 403 Forbidden");
     expect(calls).toBe(1);
   });
 
-  test.each([
-    [400, false],
-    [403, false],
-    [404, false],
-    [410, false],
-    [429, false],
-    [500, true],
-    [503, true],
-  ])("points to the troubleshooting Skill for HTTP %i: %s", async (status, hinted) => {
-    const fetch: typeof globalThis.fetch = async () => new Response("failure", { status });
-    expect(await failureMessage(executeFetch({ fetch }, { url: "https://example.com/page" }))).toBe(
-      hinted
-        ? `Unable to fetch https://example.com/page\n\n${TROUBLESHOOTING_HINT}`
-        : "Unable to fetch https://example.com/page",
+  test.each<[string, typeof globalThis.fetch]>([
+    ["an HTTP error", async () => new Response("no", { status: 502 })],
+    [
+      "a network error",
+      async () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("getaddrinfo user:password@example.com"), {
+            code: "ENOTFOUND",
+          }),
+        });
+      },
+    ],
+    [
+      "an unsupported type",
+      async () => new Response("x", { headers: { "content-type": "application/pdf" } }),
+    ],
+    ["a size limit", async () => new Response("x", { headers: { "content-length": "9999999" } })],
+    [
+      "a timeout",
+      async (_input, init) =>
+        new Promise<Response>((_resolve, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+        ),
+    ],
+  ])("never leaks URL userinfo through %s", async (_name, respond) => {
+    const message = await failureMessage(
+      executeFetch(
+        { fetch: respond },
+        { url: "https://user:password@example.com/private", timeout: 0.01 },
+      ),
+    );
+    expect(message).toContain("Unable to fetch https://example.com/private: ");
+    expect(message).not.toContain("password");
+    expect(message).not.toContain("user:");
+  });
+
+  test("names the network error class of a refused connection and points to the Skill", async () => {
+    // Reserve a free port by listening on it, then close the listener so nothing accepts there.
+    // Another process could claim the port in the gap; that is unlikely enough for a local test.
+    const server = await startServer(() => undefined);
+    const closed = server.baseUrl;
+    await Promise.all(
+      servers.splice(0).map(
+        (listening) =>
+          new Promise<void>((resolveClose) => {
+            listening.close(() => resolveClose());
+          }),
+      ),
+    );
+    expect(await failureMessage(executeFetch({}, { url: `${closed}/refused` }))).toBe(
+      `Unable to fetch ${closed}/refused: network error ECONNREFUSED\n\n${TROUBLESHOOTING_HINT}`,
     );
   });
+
+  test("names an unresolved host from the transport's cause code", async () => {
+    const fetch: typeof globalThis.fetch = async () => {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("getaddrinfo ENOTFOUND missing.invalid"), {
+          code: "ENOTFOUND",
+        }),
+      });
+    };
+    expect(
+      await failureMessage(executeFetch({ fetch }, { url: "https://missing.invalid/page" })),
+    ).toBe(
+      `Unable to fetch https://missing.invalid/page: network error ENOTFOUND\n\n${TROUBLESHOOTING_HINT}`,
+    );
+  });
+
+  test("reports a stream that fails mid-body as a network error", async () => {
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new Error("socket hang up"));
+          },
+        }),
+        { headers: { "content-type": "text/plain" } },
+      );
+    expect(await failureMessage(executeFetch({ fetch }, { url: "https://example.com/cut" }))).toBe(
+      `Unable to fetch https://example.com/cut: network error while reading the response body\n\n${TROUBLESHOOTING_HINT}`,
+    );
+  });
+
+  test.each([
+    [400, "Bad Request", false],
+    [403, "Forbidden", false],
+    [404, "Not Found", false],
+    [410, "Gone", false],
+    [429, "Too Many Requests", false],
+    [500, "Internal Server Error", true],
+    [503, "Service Unavailable", true],
+  ])(
+    "reports HTTP %i and points to the Skill only when diagnosable: %s",
+    async (status, statusText, hinted) => {
+      const fetch: typeof globalThis.fetch = async () =>
+        new Response("failure", { status, statusText });
+      const cause = `HTTP ${status} ${statusText}`;
+      expect(
+        await failureMessage(executeFetch({ fetch }, { url: "https://example.com/page" })),
+      ).toBe(
+        hinted
+          ? `Unable to fetch https://example.com/page: ${cause}\n\n${TROUBLESHOOTING_HINT}`
+          : `Unable to fetch https://example.com/page: ${cause}`,
+      );
+    },
+  );
 
   test("honors caller cancellation and custom timeouts", async () => {
     const server = await startServer(() => undefined);
@@ -287,13 +427,17 @@ describe("Web Fetch", () => {
     while (server.requests.length === 0)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
     controller.abort();
-    expect(await failureMessage(cancelled)).toBe(`Unable to fetch ${server.baseUrl}/cancel`);
+    expect(await failureMessage(cancelled)).toBe(
+      `Unable to fetch ${server.baseUrl}/cancel: request cancelled`,
+    );
 
     expect(
       await failureMessage(
         executeFetch({}, { url: `${server.baseUrl}/timeout`, format: "text", timeout: 0.01 }),
       ),
-    ).toBe(`Unable to fetch ${server.baseUrl}/timeout\n\n${TROUBLESHOOTING_HINT}`);
+    ).toBe(
+      `Unable to fetch ${server.baseUrl}/timeout: timed out after 0.01 seconds\n\n${TROUBLESHOOTING_HINT}`,
+    );
     expect(WEB_FETCH_DEFAULT_TIMEOUT_SECONDS).toBe(30);
   });
 
@@ -302,9 +446,10 @@ describe("Web Fetch", () => {
     const fetch: typeof globalThis.fetch = async () =>
       new Response(deeplyNestedHtml, { headers: { "content-type": "text/html" } });
 
-    await expect(
+    const message = await failureMessage(
       executeFetch({ fetch }, { url: "https://example.com/deep", format: "markdown" }),
-    ).rejects.toThrow("Unable to fetch https://example.com/deep");
+    );
+    expect(message).toBe("Unable to fetch https://example.com/deep: unexpected RangeError");
   }, 15000);
 
   test("extracts text from deeply nested HTML", async () => {
@@ -319,6 +464,26 @@ describe("Web Fetch", () => {
 
     expect(result.content[0]).toMatchObject({ type: "text", text: "content" });
   }, 15000);
+
+  test("reports a failed output spill as itself, not as a network error", async () => {
+    const originalTmpdir = process.env["TMPDIR"];
+    const missing = join(tmpdir(), `pi-web-tools-missing-${process.pid}`, "nested");
+    process.env["TMPDIR"] = missing;
+    try {
+      const fetch: typeof globalThis.fetch = async () =>
+        new Response("x".repeat(60 * 1024), { headers: { "content-type": "text/plain" } });
+      const message = await failureMessage(
+        executeFetch({ fetch }, { url: "https://example.com/spill", format: "text" }),
+      );
+      expect(message).toContain("ENOENT");
+      expect(message).not.toContain("network error");
+      expect(message).not.toContain("Unable to fetch");
+      expect(message).not.toContain(TROUBLESHOOTING_HINT);
+    } finally {
+      if (originalTmpdir === undefined) delete process.env["TMPDIR"];
+      else process.env["TMPDIR"] = originalTmpdir;
+    }
+  });
 
   test("truncates complete converted output to a private spill", async () => {
     const paragraphs = Array.from(
