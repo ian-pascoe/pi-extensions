@@ -171,6 +171,12 @@ trimmed source line. Document highlights name their kind (`read`, `write`, or `t
 position. Results are grouped under each server ID only when more than one server answered, and
 server failures follow as `Warning:` lines.
 
+Each result position is converted against the text of the file it lies in; the queried file uses
+the text the server was synced with. A non-`file:` URI such as `jdt://` or `deno:` is shown as is.
+Positions in a file without readable text (a non-`file:` URI, a failed read, or invalid UTF-8) are
+approximated by adding 1 to the line and character, and a warning names those files: their lines
+are exact, but columns may be off after non-ASCII text.
+
 Symbol, hierarchy, and range results use the same paths and positions, with symbol kinds named
 (`class`, `function`, `variable`, …) instead of numbered:
 

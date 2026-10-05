@@ -138,8 +138,8 @@ export interface LspStructureReadTextInput {
   /** Requested selection-range positions, which head each list when there are several. */
   readonly positions?: readonly LspCodePointPosition[] | undefined;
   /**
-   * The file of an outgoing call's sites: the prepared item it was requested for. Without one, the
-   * sites are placed in the queried document.
+   * The file of an outgoing call's sites: the prepared item it was requested for, as a path or a
+   * non-`file:` URI. Without one, the sites are placed in the queried document.
    */
   readonly outgoingCallSitePath?: (call: LspTextOutgoingCall) => string | undefined;
   /** Lines shown before the items, such as the queried position. */

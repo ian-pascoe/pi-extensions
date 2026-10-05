@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -2462,6 +2462,263 @@ describe("registered LSP tool", () => {
       ],
     });
     await fixture.close();
+  });
+
+  describe("positions whose file text is unavailable", () => {
+    const position = (line: number, character: number) => ({ line, character });
+    const span = (line: number, start: number, end: number) => ({
+      start: position(line, start),
+      end: position(line, end),
+    });
+    const item = (name: string, uri: string, line: number, character: number) => ({
+      name,
+      kind: 12,
+      uri,
+      range: span(line, 0, character),
+      selectionRange: span(line, character, character),
+    });
+    const approximation = (files: string) =>
+      `typescript: positions in ${files} are approximate because their text could not be read; lines are exact, but columns may be off after non-ASCII text.`;
+
+    test("approximates location and LocationLink positions instead of converting them against the queried file", async () => {
+      const fixture = await createToolFixture();
+      const binaryPath = resolve(fixture.context.cwd, "binary.ts");
+      await writeFile(binaryPath, Buffer.from([0xff, 0xfe, 0x0a]));
+      const classUri = "jdt://contents/rt.jar/java.lang/String.class";
+      const denoUri = "deno:/https/deno.land/x/mod.ts";
+      fixture.client.responseByMethod.set("textDocument/definition", [
+        // Past the end of the queried file's lines, which converting against it rejected.
+        { uri: classUri, range: span(120, 40, 46) },
+        { uri: pathToFileURL(binaryPath).href, range: span(0, 30, 31) },
+        {
+          originSelectionRange: span(0, 17, 17),
+          targetUri: denoUri,
+          targetRange: span(4, 2, 9),
+          targetSelectionRange: span(4, 2, 9),
+        },
+        { uri: pathToFileURL(fixture.filePath).href, range: span(0, 17, 17) },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "goto_definition",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      });
+
+      const warning = approximation(`binary.ts, ${denoUri}, ${classUri}`);
+      expect(resultText(result)).toBe(
+        [
+          'Query position: source.ts:1:1 ("const")',
+          "",
+          `${classUri}:121:41`,
+          "binary.ts:1:31",
+          `${denoUri}:5:3`,
+          "source.ts:1:17  const emoji = '😀';",
+          "",
+          `Warning: ${warning}`,
+        ].join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            value: [
+              { uri: classUri, range: span(121, 41, 47) },
+              { uri: binaryPath, range: span(1, 31, 32) },
+              {
+                // The origin lies in the queried file, whose text converts it exactly.
+                originSelectionRange: span(1, 17, 17),
+                targetUri: denoUri,
+                targetRange: span(5, 3, 10),
+                targetSelectionRange: span(5, 3, 10),
+              },
+              { uri: fixture.filePath, range: span(1, 17, 17) },
+            ],
+          },
+        ],
+        warnings: [warning],
+      });
+      await fixture.close();
+    });
+
+    test("approximates an incoming caller's positions when its URI is not a file", async () => {
+      const fixture = await createToolFixture();
+      const callerUri = "deno:/https/deno.land/x/mod.ts";
+      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+        item("emoji", pathToFileURL(fixture.filePath).href, 0, 6),
+      ]);
+      fixture.client.responseByMethod.set("callHierarchy/incomingCalls", [
+        { from: item("caller", callerUri, 9, 30), fromRanges: [span(9, 40, 45)] },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "incoming_calls",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 7,
+      });
+
+      expect(resultText(result)).toBe(
+        [
+          'Query position: source.ts:1:7 ("emoji")',
+          "",
+          `caller (function) ${callerUri}:10:31`,
+          `  ${callerUri}:10:41`,
+          "",
+          `Warning: ${approximation(callerUri)}`,
+        ].join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            value: [
+              {
+                from: { uri: callerUri, selectionRange: span(10, 31, 31) },
+                fromRanges: [span(10, 41, 46)],
+              },
+            ],
+          },
+        ],
+        warnings: [approximation(callerUri)],
+      });
+      await fixture.close();
+    });
+
+    test("places and approximates outgoing call sites of a prepared item whose URI is not a file", async () => {
+      const fixture = await createToolFixture();
+      const runPath = resolve(fixture.context.cwd, "run.ts");
+      await writeFile(runPath, "export function run() {}\n");
+      const classUri = "jdt://contents/app.jar/app/Helper.class";
+      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+        item("helper", classUri, 4, 9),
+      ]);
+      fixture.client.responseByMethod.set("callHierarchy/outgoingCalls", [
+        { to: item("run", pathToFileURL(runPath).href, 0, 16), fromRanges: [span(4, 30, 33)] },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "outgoing_calls",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      });
+
+      expect(resultText(result)).toBe(
+        [
+          'Query position: source.ts:1:1 ("const")',
+          "",
+          "run (function) run.ts:1:17",
+          `  ${classUri}:5:31`,
+          "",
+          `Warning: ${approximation(classUri)}`,
+        ].join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        results: [{ value: [{ fromRanges: [span(5, 31, 34)] }] }],
+        warnings: [approximation(classUri)],
+      });
+      await fixture.close();
+    });
+
+    test("lists workspace symbols in a non-file URI readably with approximate positions", async () => {
+      const fixture = await createToolFixture();
+      const classUri = "jdt://contents/app.jar/app/Helper.class";
+      fixture.client.responseByMethod.set("workspace/symbol", [
+        { name: "Helper", kind: 5, location: { uri: classUri, range: span(2, 13, 19) } },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "workspace_symbols",
+        query: "Helper",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe(
+        [`Helper (class) ${classUri}:3:14`, "", `Warning: ${approximation(classUri)}`].join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        results: [{ value: [{ location: { uri: classUri, range: span(3, 14, 20) } }] }],
+        warnings: [approximation(classUri)],
+      });
+      await fixture.close();
+    });
+
+    test("leaves positions outside any file, such as workspace symbol data, unchanged", async () => {
+      const fixture = await createToolFixture();
+      const data = { pos: position(0, 3) };
+      fixture.client.responseByMethod.set("workspace/symbol", [
+        { name: "Helper", kind: 5, location: { uri: "jdt://contents/Helper.class" }, data },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "workspace_symbols",
+        query: "Helper",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe("Helper (class) jdt://contents/Helper.class");
+      expect(result.structuredContent).toMatchObject({
+        results: [{ value: [{ location: { uri: "jdt://contents/Helper.class" }, data }] }],
+        warnings: [],
+      });
+      await fixture.close();
+    });
+
+    test("names at most five files and approximates workspace diagnostics of unreadable files", async () => {
+      const fixture = await createToolFixture();
+      const uris = Array.from({ length: 7 }, (_, index) => `deno:/remote/mod${index}.ts`);
+      fixture.client.workspaceDiagnosticsResult = {
+        status: "fresh",
+        source: "workspace_pull",
+        diagnosticsByUri: new Map(
+          uris.map((uri) => [uri, [{ range: span(0, 3, 4), message: "remote" }]]),
+        ),
+      };
+
+      const result = await executeTool(fixture, {
+        operation: "workspace_diagnostics",
+        server_id: "typescript",
+        file_path: fixture.filePath,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            value: {
+              diagnosticsByUri: uris.map((uri) => ({
+                uri,
+                value: [{ range: span(1, 4, 5) }],
+              })),
+            },
+          },
+        ],
+        warnings: [approximation(`${uris.slice(0, 5).join(", ")}, and 2 more`)],
+      });
+      await fixture.close();
+    });
+
+    test("converts positions in the queried document against the text the server was synced with", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      fixture.client.responderByMethod.set("textDocument/definition", () => {
+        // The file changes on disk after the server received its text.
+        writeFileSync(fixture.filePath, "x\n");
+        return { uri, range: span(0, 17, 17) };
+      });
+
+      const result = await executeTool(fixture, {
+        operation: "goto_definition",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        results: [{ value: { uri: fixture.filePath, range: span(1, 17, 17) } }],
+        warnings: [],
+      });
+      await fixture.close();
+    });
   });
 
   test("preserves opaque completion metadata without treating lookalike fields as positions", async () => {

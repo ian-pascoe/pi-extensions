@@ -125,7 +125,19 @@ export function convertLspProtocolPosition(
   position: LspProtocolPosition,
   encoding: LspPositionEncoding,
 ): LspCodePointPosition {
-  const line = requireProtocolLine(documentLines(documentText), position);
+  return convertLspProtocolLinePosition(documentLines(documentText), position, encoding);
+}
+
+/**
+ * Convert a zero-based negotiated LSP position to one-based Unicode code-point coordinates against
+ * a document already split by `documentLines`.
+ */
+export function convertLspProtocolLinePosition(
+  lines: readonly string[],
+  position: LspProtocolPosition,
+  encoding: LspPositionEncoding,
+): LspCodePointPosition {
+  const line = requireProtocolLine(lines, position);
   const characters = Array.from(line);
   let encodedOffset = 0;
   for (let codePointOffset = 0; codePointOffset <= characters.length; codePointOffset++) {

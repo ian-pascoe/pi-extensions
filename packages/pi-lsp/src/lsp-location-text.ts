@@ -28,7 +28,8 @@ export function isLspLocationOperation(
   return LOCATION_OPERATION_SET.has(operation);
 }
 
-const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+/** Decodes strict UTF-8, rejecting invalid bytes, without stripping a byte-order mark. */
+export const LSP_UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /** Longest source line shown after a location before it is shortened. */
 const SOURCE_LINE_MAX_CHARACTERS = 200;
@@ -112,7 +113,7 @@ export function compactLspText(text: string): string {
 async function readSourceLines(path: string): Promise<readonly string[] | undefined> {
   if (!isAbsolute(path)) return undefined;
   try {
-    return documentLines(UTF8_DECODER.decode(await readFile(path)));
+    return documentLines(LSP_UTF8_DECODER.decode(await readFile(path)));
   } catch {
     return undefined;
   }

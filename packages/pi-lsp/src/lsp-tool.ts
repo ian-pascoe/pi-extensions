@@ -1,6 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type {
   AgentToolResult,
   ExtensionContext,
@@ -69,10 +68,20 @@ import {
   isLspLocationOperation,
   lspDisplayPath,
 } from "./lsp-location-text.js";
+import {
+  lspApproximatePositionsWarning,
+  LspProtocolResultNormalizer,
+  lspProtocolUriPath,
+  normalizeLspProtocolResult,
+  protocolRecord,
+  ProtocolStringSchema,
+  protocolString,
+  type LspNormalizedProtocolResult,
+  type LspProtocolResultOptions,
+} from "./lsp-protocol-result.js";
 import { formatLspStructureReadText, isLspStructureOperation } from "./lsp-structure-text.js";
 import {
   convertLspCodePointPosition,
-  convertLspProtocolPosition,
   normalizeLspPositionEncoding,
   type LspCodePointPosition,
   type LspPositionEncoding,
@@ -142,18 +151,6 @@ import {
   type LspWorkspaceEditStore,
 } from "./lsp-workspace-edit.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
-
-const ProtocolRecordSchema = Type.Record(Type.String(), Type.Unknown());
-const ProtocolStringSchema = Type.String();
-const ProtocolFoldingRangeSchema = Type.Object(
-  {
-    startLine: Type.Integer({ minimum: 0 }),
-    startCharacter: Type.Optional(Type.Integer({ minimum: 0 })),
-    endLine: Type.Integer({ minimum: 0 }),
-    endCharacter: Type.Optional(Type.Integer({ minimum: 0 })),
-  },
-  { additionalProperties: true },
-);
 
 /** The `lsp_workspace_diagnostics` value of a server that publishes no workspace diagnostics. */
 const UnpublishedWorkspaceDiagnosticsSchema = Type.Object({
@@ -440,6 +437,17 @@ function queriedPositionText(
   };
 }
 
+/** Warn, per server, that positions in files whose text could not be read are approximate. */
+function approximatePositionsWarnings(
+  result: LspServerReadResult<LspNormalizedProtocolResult>,
+  cwd: string,
+): string[] {
+  return result.successes.flatMap(({ serverId, value }) => {
+    const warning = lspApproximatePositionsWarning(serverId, value.approximateFiles, cwd);
+    return warning === undefined ? [] : [warning];
+  });
+}
+
 function readTextContext(filePath: string, context: ExtensionContext): ReadTextContext {
   return { cwd: context.cwd, documentPath: absoluteLspFilePath(filePath, context) };
 }
@@ -454,14 +462,21 @@ function readTextContext(filePath: string, context: ExtensionContext): ReadTextC
  */
 async function readOutput(
   operation: LspToolParameters["operation"],
-  result: Promise<LspServerReadResult<unknown>>,
+  result: Promise<LspServerReadResult<LspNormalizedProtocolResult>>,
   dependencies: LspToolDependencies,
   textContext: ReadTextContext,
 ) {
-  const resolved = await result;
-  requireReadSuccess(resolved);
+  const normalized = await result;
+  requireReadSuccess(normalized);
+  const resolved = {
+    failures: normalized.failures,
+    successes: normalized.successes.map((success) => ({ ...success, value: success.value.value })),
+  };
   const results = readOperationValue(resolved);
-  const failureWarnings = resolved.failures.map(({ message }) => message);
+  const failureWarnings = [
+    ...approximatePositionsWarnings(normalized, textContext.cwd),
+    ...resolved.failures.map(({ message }) => message),
+  ];
   const scopes =
     operation === "find_references"
       ? await Promise.all(
@@ -516,9 +531,7 @@ async function readOutput(
 }
 
 /** One server's answer to a position-based query. */
-interface PositionReadValue {
-  // oxlint-disable-next-line anti-slop/no-unknown-property-types -- Normalized server responses stay opaque until rendering checks recognized shapes.
-  readonly response: unknown;
+interface PositionReadValue extends LspNormalizedProtocolResult {
   /** What the queried position held in the text sent to this server. */
   readonly query: LspQueryPosition;
   /** Whether a hierarchy follow-up found no item at the position to follow. */
@@ -548,14 +561,10 @@ async function positionReadOutput(
               .map(({ serverId }) => serverId),
           ),
         };
-  const reads = {
-    failures: resolved.failures,
-    successes: resolved.successes.map((success) => ({
-      ...success,
-      value: success.value.response,
-    })),
-  };
-  return readOutput(operation, Promise.resolve(reads), dependencies, { ...textContext, queried });
+  return readOutput(operation, Promise.resolve(resolved), dependencies, {
+    ...textContext,
+    queried,
+  });
 }
 
 /**
@@ -579,7 +588,10 @@ async function itemListOutput(
     // Undefined fields are dropped from the serialized result, so symbols carry no prefix.
     prefix: value.prefix,
   }));
-  const warnings = resolved.failures.map(({ message }) => message);
+  const warnings = [
+    ...approximatePositionsWarnings(resolved, textContext.cwd),
+    ...resolved.failures.map(({ message }) => message),
+  ];
   const json = formatLspToolValue({ results, warnings });
   const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   const query = resolved.successes[0]?.value.query;
@@ -718,156 +730,18 @@ function readOperationOutcomes<T>(result: LspServerReadResult<T>): ServerOperati
   ];
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type -- Protocol records retain unknown fields; consumers validate each inspected value rather than promising a complete response type.
-function protocolRecord(value: unknown): Record<string, unknown> | undefined {
-  return Value.Check(ProtocolRecordSchema, value) ? value : undefined;
+/** The requested document and position encoding a server's result converts against. */
+function protocolResultOptions(prepared: PreparedDocument): LspProtocolResultOptions {
+  return { encoding: prepared.positionEncoding, document: prepared.document };
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Only validated, exact position objects are rewritten during protocol output normalization.
-function protocolPositionValue(value: unknown): Position | undefined {
-  if (
-    !Position.is(value) ||
-    !Number.isSafeInteger(value.line) ||
-    !Number.isSafeInteger(value.character) ||
-    Object.keys(value).some((key) => key !== "line" && key !== "character")
-  ) {
-    return undefined;
-  }
-  return { line: value.line, character: value.character };
-}
-
-function normalizeProtocolFoldingRange(
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The folding-range schema validates every coordinate consumed by this normalizer.
+/** Normalize one server's response, whose top-level positions lie in the requested document. */
+function normalizeProtocolResult(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Protocol responses stay opaque; normalization validates each position it rewrites.
   value: unknown,
-  text: string,
-  encoding: LspPositionEncoding,
-) {
-  if (!Value.Check(ProtocolFoldingRangeSchema, value)) return undefined;
-  const start = convertLspProtocolPosition(
-    text,
-    { line: value.startLine, character: value.startCharacter ?? 0 },
-    encoding,
-  );
-  const end = convertLspProtocolPosition(
-    text,
-    { line: value.endLine, character: value.endCharacter ?? 0 },
-    encoding,
-  );
-  const normalized = {
-    ...value,
-    startLine: start.line,
-    endLine: end.line,
-  };
-  if (value.startCharacter !== undefined && value.endCharacter !== undefined) {
-    return { ...normalized, startCharacter: start.character, endCharacter: end.character };
-  }
-  if (value.startCharacter !== undefined) {
-    return { ...normalized, startCharacter: start.character };
-  }
-  if (value.endCharacter !== undefined) return { ...normalized, endCharacter: end.character };
-  return normalized;
-}
-
-async function textForProtocolUri(uri: string): Promise<string | undefined> {
-  if (!uri.startsWith("file:")) return undefined;
-  try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-      await readFile(fileURLToPath(uri)),
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-async function normalizeProtocolResult(
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Recursive protocol values are opaque except for locally validated positions, ranges, and URI fields.
-  value: unknown,
-  prepared: PreparedDocument | undefined,
-  inheritedText?: string,
-  inheritedEncoding?: LspPositionEncoding,
-  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Normalization preserves dynamic payloads without claiming a method-specific result type.
-): Promise<unknown> {
-  if (Array.isArray(value)) {
-    return Promise.all(
-      value.map((entry) =>
-        normalizeProtocolResult(entry, prepared, inheritedText, inheritedEncoding),
-      ),
-    );
-  }
-  if (value instanceof Map) {
-    const entries: [unknown, unknown][] = [...value.entries()];
-    return Promise.all(
-      entries
-        .sort(([left], [right]) => String(left).localeCompare(String(right)))
-        .map(async ([key, entryValue]) => ({
-          uri:
-            Value.Check(ProtocolStringSchema, key) && key.startsWith("file:")
-              ? fileURLToPath(key)
-              : key,
-          value: await normalizeProtocolResult(
-            entryValue,
-            prepared,
-            Value.Check(ProtocolStringSchema, key) ? await textForProtocolUri(key) : undefined,
-            inheritedEncoding,
-          ),
-        })),
-    );
-  }
-
-  const position = protocolPositionValue(value);
-  const text = inheritedText ?? prepared?.document.text;
-  const positionEncoding = inheritedEncoding ?? prepared?.positionEncoding;
-  if (position !== undefined && text !== undefined && positionEncoding !== undefined) {
-    return convertLspProtocolPosition(text, position, positionEncoding);
-  }
-  if (text !== undefined && positionEncoding !== undefined) {
-    const foldingRange = normalizeProtocolFoldingRange(value, text, positionEncoding);
-    if (foldingRange !== undefined) return foldingRange;
-  }
-
-  const record = protocolRecord(value);
-  if (record === undefined) return value;
-  const uriValue = Value.Check(ProtocolStringSchema, record.uri) ? record.uri : undefined;
-  const targetUriValue = Value.Check(ProtocolStringSchema, record.targetUri)
-    ? record.targetUri
-    : undefined;
-  const sourceText = inheritedText ?? prepared?.document.text;
-  const uriText = uriValue === undefined ? undefined : await textForProtocolUri(uriValue);
-  const targetText =
-    targetUriValue === undefined ? undefined : await textForProtocolUri(targetUriValue);
-  const localText = uriText ?? targetText ?? sourceText;
-  // An incoming call's fromRanges sit in its caller's file, which its `from` item names.
-  const callerUriValue =
-    record.fromRanges === undefined ? undefined : protocolString(protocolRecord(record.from)?.uri);
-  const callerText =
-    callerUriValue === undefined ? undefined : await textForProtocolUri(callerUriValue);
-  const entries = await Promise.all(
-    Object.entries(record).map(async ([key, entryValue]) => {
-      if ((key === "uri" || key === "targetUri") && Value.Check(ProtocolStringSchema, entryValue)) {
-        return [
-          key,
-          entryValue.startsWith("file:") ? fileURLToPath(entryValue) : entryValue,
-        ] as const;
-      }
-      return [
-        key,
-        await normalizeProtocolResult(
-          entryValue,
-          prepared,
-          key === "fromRanges" && callerText !== undefined
-            ? callerText
-            : targetUriValue !== undefined && key === "originSelectionRange"
-              ? sourceText
-              : targetUriValue !== undefined &&
-                  (key === "targetRange" || key === "targetSelectionRange")
-                ? targetText
-                : localText,
-          positionEncoding,
-        ),
-      ] as const;
-    }),
-  );
-  return Object.fromEntries(entries);
+  prepared: PreparedDocument,
+): Promise<LspNormalizedProtocolResult> {
+  return normalizeLspProtocolResult(value, protocolResultOptions(prepared));
 }
 
 /**
@@ -877,33 +751,28 @@ async function normalizeProtocolResult(
  */
 const OUTGOING_CALL_SITE_PATHS = new WeakMap<object, string>();
 
-/** Normalize one prepared item's outgoing calls, converting call sites against that item's file. */
+/**
+ * Normalize every prepared item's outgoing calls, converting each item's call sites against that
+ * item's file and reading each file at most once.
+ */
 async function normalizeOutgoingCalls(
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Outgoing-call responses stay opaque; normalization validates each position it rewrites.
-  calls: unknown,
-  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The prepared item is opaque except for its checked uri.
-  item: unknown,
+  preparedCalls: readonly { readonly item: unknown; readonly calls: unknown }[],
   prepared: PreparedDocument,
-  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Normalization preserves dynamic payloads without claiming a method-specific result type.
-): Promise<unknown> {
-  const itemUri = protocolString(protocolRecord(item)?.uri);
-  const itemText =
-    itemUri === undefined || itemUri === prepared.document.uri
-      ? undefined
-      : await textForProtocolUri(itemUri);
-  const normalized = await normalizeProtocolResult(calls, prepared, itemText);
-  if (itemUri !== undefined && itemUri.startsWith("file:") && Array.isArray(normalized)) {
-    const sitePath = fileURLToPath(itemUri);
-    for (const call of normalized) {
-      if (protocolRecord(call) !== undefined) OUTGOING_CALL_SITE_PATHS.set(call, sitePath);
-    }
-  }
-  return normalized;
-}
-
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Protocol fields such as titles are opaque until checked here.
-function protocolString(value: unknown): string | undefined {
-  return Value.Check(ProtocolStringSchema, value) ? value : undefined;
+): Promise<LspNormalizedProtocolResult> {
+  const normalizer = new LspProtocolResultNormalizer(protocolResultOptions(prepared));
+  const normalized = await Promise.all(
+    preparedCalls.map(async ({ item, calls }) => {
+      const itemUri = protocolString(protocolRecord(item)?.uri);
+      const itemCalls = await normalizer.normalizeInFile(calls, itemUri ?? prepared.document.uri);
+      if (itemUri === undefined || !Array.isArray(itemCalls)) return itemCalls;
+      const sitePath = lspProtocolUriPath(itemUri);
+      for (const call of itemCalls) {
+        if (protocolRecord(call) !== undefined) OUTGOING_CALL_SITE_PATHS.set(call, sitePath);
+      }
+      return itemCalls;
+    }),
+  );
+  return { value: normalized.flat(), approximateFiles: normalizer.approximateFiles };
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Capability values may be booleans or provider objects; only resolveProvider is inspected.
@@ -1128,16 +997,14 @@ async function executePositionRead(
       if (parameters.operation === "outgoing_calls") {
         const preparedItems = Array.isArray(value) ? value : [];
         const noHierarchyItem = preparedItems.length === 0;
-        const calls = await Promise.all(
-          preparedItems.map(async (item) =>
-            normalizeOutgoingCalls(
-              await client.request(CallHierarchyOutgoingCallsRequest.method, { item }, signal),
-              item,
-              prepared,
-            ),
-          ),
+        const preparedCalls = await Promise.all(
+          preparedItems.map(async (item) => ({
+            item,
+            calls: await client.request(CallHierarchyOutgoingCallsRequest.method, { item }, signal),
+          })),
         );
-        return { response: calls.flat(), query, noHierarchyItem };
+        const normalized = await normalizeOutgoingCalls(preparedCalls, prepared);
+        return { ...normalized, query, noHierarchyItem };
       }
       let noHierarchyItem = false;
       if (
@@ -1160,13 +1027,13 @@ async function executePositionRead(
         ).flat();
       }
 
-      return { response: await normalizeProtocolResult(value, prepared), query, noHierarchyItem };
+      return { ...(await normalizeProtocolResult(value, prepared)), query, noHierarchyItem };
     },
   );
 }
 
 /** One server's completions or workspace symbols, cut to the call's prefix and limit. */
-interface BoundedServerItems extends LspBoundedItems {
+interface BoundedServerItems extends LspBoundedItems, LspNormalizedProtocolResult {
   /** The prefix completions were filtered by. */
   readonly prefix?: string;
   /** What a completion's queried position held in the text sent to this server. */
@@ -1205,7 +1072,7 @@ async function executeCompletion(
         value = await resolveProtocolItems(client, value, CompletionResolveRequest.method, signal);
       }
       return {
-        value: await normalizeProtocolResult(value, prepared),
+        ...(await normalizeProtocolResult(value, prepared)),
         omitted: bounded.omitted,
         prefix,
         query: lspQueryPosition(filePath, prepared.document.text, parameters),
@@ -1219,7 +1086,7 @@ async function executeFileRead(
   parameters: FileReadParameters,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<unknown>> {
+): Promise<LspServerReadResult<LspNormalizedProtocolResult>> {
   const filePath = await documentFilePath(parameters.file_path, context);
   const methodByOperation = {
     diagnostics: "diagnostics",
@@ -1273,7 +1140,7 @@ async function executeInlayHints(
   parameters: Extract<LspToolParameters, { operation: "inlay_hints" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<unknown>> {
+): Promise<LspServerReadResult<LspNormalizedProtocolResult>> {
   const filePath = await documentFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
@@ -1305,7 +1172,7 @@ async function executeSelectionRanges(
   parameters: Extract<LspToolParameters, { operation: "selection_ranges" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<unknown>> {
+): Promise<LspServerReadResult<LspNormalizedProtocolResult>> {
   const filePath = await documentFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
@@ -1331,7 +1198,7 @@ async function executeWorkspaceDiagnostics(
   parameters: Extract<LspToolParameters, { operation: "workspace_diagnostics" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<unknown>> {
+): Promise<LspServerReadResult<LspNormalizedProtocolResult>> {
   const filePath = absoluteLspFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
@@ -1341,17 +1208,18 @@ async function executeWorkspaceDiagnostics(
       const result = await client.workspaceDiagnostics(signal);
       if (result.status === "unsupported") {
         return {
-          status: result.status,
-          message: `Server ${route.serverId} publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.`,
+          value: {
+            status: result.status,
+            message: `Server ${route.serverId} publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.`,
+          },
+          approximateFiles: [],
         };
       }
-      return normalizeProtocolResult(
+      return normalizeLspProtocolResult(
         result.status === "fresh" && result.source === "push_cache"
           ? { ...result, message: pushCacheCoverageMessage(route.serverId, result) }
           : result,
-        undefined,
-        undefined,
-        normalizeLspPositionEncoding(client.positionEncoding),
+        { encoding: normalizeLspPositionEncoding(client.positionEncoding) },
       );
     },
   );
@@ -1393,12 +1261,9 @@ async function executeWorkspaceSymbols(
         );
       }
       return {
-        value: await normalizeProtocolResult(
-          value,
-          undefined,
-          undefined,
-          normalizeLspPositionEncoding(client.positionEncoding),
-        ),
+        ...(await normalizeLspProtocolResult(value, {
+          encoding: normalizeLspPositionEncoding(client.positionEncoding),
+        })),
         omitted: bounded.omitted,
       };
     },
