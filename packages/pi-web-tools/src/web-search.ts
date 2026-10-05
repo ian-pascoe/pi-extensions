@@ -1,4 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
+import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
@@ -20,6 +21,7 @@ const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
 const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
 const NO_SEARCH_RESULTS = "No search results found. Please try a different query.";
 const MAX_PROVIDER_MESSAGE_CHARACTERS = 500;
+const MAX_ERROR_BODY_BYTES = 4 * 1024;
 const EXA_RATE_LIMITED_META = "ai.exa/rateLimited";
 
 /** Total Web Search request budget, including response reading. */
@@ -129,6 +131,8 @@ export type WebSearchParameters = Static<typeof WEB_SEARCH_PARAMETERS>;
 
 const MCP_RESPONSE_SCHEMA = Type.Object(
   {
+    id: Type.Optional(Type.Union([Type.Number(), Type.String(), Type.Null()])),
+    method: Type.Optional(Type.String()),
     result: Type.Optional(
       Type.Object(
         {
@@ -228,63 +232,107 @@ function providerName(provider: SearchProvider): string {
   return provider === "exa" ? "Exa" : "Parallel";
 }
 
-/** Collapse whitespace and cap a provider message so it stays one short line. */
-function boundProviderMessage(message: string): string {
-  const collapsed = message.replace(/\s+/g, " ").trim();
-  return collapsed.length > MAX_PROVIDER_MESSAGE_CHARACTERS
-    ? `${collapsed.slice(0, MAX_PROVIDER_MESSAGE_CHARACTERS)}…`
-    : collapsed;
-}
+/** Turns provider-controlled text into one short, key-free, control-free line. */
+type SanitizeProviderText = (text: string) => string;
+
+/** Request id Web Search sends, which a Search Provider echoes on its response. */
+const REQUEST_ID = 1;
 
 function firstText(content: readonly { type: string; text?: string | undefined }[] | undefined) {
   return content?.find(({ type, text }) => type === "text" && text !== undefined && text.length > 0)
     ?.text;
 }
 
-/** Return provider text, throw a provider failure, or return undefined when a payload has neither. */
-function parseMcpPayload(payload: string, provider: SearchProvider): string | undefined {
-  const trimmed = payload.trim();
-  if (!trimmed.startsWith("{")) return undefined;
-  const parsed: unknown = JSON.parse(trimmed);
-  const response = Value.Parse(MCP_RESPONSE_SCHEMA, parsed);
-  const name = providerName(provider);
-  if (response.error !== undefined) {
-    const code = response.error.code === undefined ? "" : ` ${response.error.code}`;
-    const detail = boundProviderMessage(response.error.message ?? "");
-    throw new SearchProviderError(
-      `${name} returned error${code}${detail === "" ? "" : `: ${detail}`}`,
-    );
-  }
-  if (response.result === undefined) {
-    throw new SearchProviderError(`${name} returned an unrecognized response`);
-  }
-  const text = firstText(response.result.content);
-  if (response.result._meta?.[EXA_RATE_LIMITED_META] === true) {
-    // An API key lifts the free-tier limit, so the troubleshooting Skill can help.
-    throw new SearchProviderError(
-      `${name} rate limit reached${text === undefined ? "" : `: ${boundProviderMessage(text)}`}`,
-      true,
-    );
-  }
-  if (response.result.isError === true) {
-    throw new SearchProviderError(
-      `${name} reported an error${text === undefined ? "" : `: ${boundProviderMessage(text)}`}`,
-    );
-  }
-  return text;
+function withDetail(summary: string, detail: string): string {
+  return detail === "" ? summary : `${summary}: ${detail}`;
 }
 
-function parseMcpResponse(body: string, provider: SearchProvider): string | undefined {
+function describeJsonRpcError(
+  provider: SearchProvider,
+  error: { readonly code?: number | undefined; readonly message?: string | undefined },
+  sanitize: SanitizeProviderText,
+): string {
+  const code = error.code === undefined ? "" : ` ${error.code}`;
+  return withDetail(
+    `${providerName(provider)} returned error${code}`,
+    sanitize(error.message ?? ""),
+  );
+}
+
+/** The outcome of one JSON-RPC payload that is not a Search Provider failure. */
+type McpPayload =
+  | { readonly kind: "skipped" }
+  | { readonly kind: "result"; readonly text: string | undefined };
+
+/** Return provider text, throw a provider failure, or skip a payload that answers nothing. */
+function parseMcpPayload(
+  payload: string,
+  provider: SearchProvider,
+  sanitize: SanitizeProviderText,
+): McpPayload {
+  const trimmed = payload.trim();
+  if (!trimmed.startsWith("{")) return { kind: "skipped" };
+  const response = Value.Parse(MCP_RESPONSE_SCHEMA, JSON.parse(trimmed));
+  // Notifications carry a method but no result or error; responses to other requests are not ours.
+  if (response.result === undefined && response.error === undefined) return { kind: "skipped" };
+  if (response.id !== undefined && response.id !== null && response.id !== REQUEST_ID) {
+    return { kind: "skipped" };
+  }
+  const name = providerName(provider);
+  if (response.error !== undefined) {
+    throw new SearchProviderError(describeJsonRpcError(provider, response.error, sanitize));
+  }
+  const result = response.result;
+  if (result === undefined) return { kind: "skipped" };
+  const text = firstText(result.content);
+  const detail = text === undefined ? "" : sanitize(text);
+  if (provider === "exa" && result._meta?.[EXA_RATE_LIMITED_META] === true) {
+    // An API key lifts the free-tier limit, so the troubleshooting Skill can help.
+    throw new SearchProviderError(withDetail(`${name} rate limit reached`, detail), true);
+  }
+  if (result.isError === true) {
+    throw new SearchProviderError(withDetail(`${name} reported an error`, detail));
+  }
+  return { kind: "result", text };
+}
+
+/** Split a Server-Sent Events body into events, joining each event's `data:` lines with newlines. */
+function sseEventPayloads(body: string): string[] {
+  const events: string[] = [];
+  let data: string[] = [];
+  const flush = () => {
+    if (data.length > 0) events.push(data.join("\n"));
+    data = [];
+  };
+  for (const line of body.split(/\r\n|\n|\r/)) {
+    if (line === "") flush();
+    else if (line.startsWith("data:")) data.push(line.slice(line.startsWith("data: ") ? 6 : 5));
+  }
+  flush();
+  return events;
+}
+
+/**
+ * Read the answer to Web Search's request from a JSON or SSE body. The first payload carrying text
+ * or a failure decides the outcome, so a later error never replaces an earlier answer. Returns
+ * undefined for a valid result without text and throws for anything that is not JSON-RPC.
+ */
+function parseMcpResponse(
+  body: string,
+  provider: SearchProvider,
+  sanitize: SanitizeProviderText,
+): string | undefined {
   const trimmed = body.trim();
-  const payloads = trimmed.startsWith("{")
-    ? [trimmed]
-    : body
-        .split("\n")
-        .filter((line) => line.startsWith("data: "))
-        .map((line) => line.slice(6));
+  const payloads = trimmed.startsWith("{") ? [trimmed] : sseEventPayloads(body);
+  let sawResult = false;
   for (const payload of payloads) {
-    const text = parseMcpPayload(payload, provider);
-    if (text !== undefined) return text;
+    const parsed = parseMcpPayload(payload, provider, sanitize);
+    if (parsed.kind === "skipped") continue;
+    sawResult = true;
+    if (parsed.text !== undefined) return parsed.text;
+  }
+  if (!sawResult) {
+    throw new SearchProviderError(`${providerName(provider)} returned an unrecognized response`);
   }
   return undefined;
 }
@@ -361,33 +409,90 @@ async function callSearchProvider(
     body: JSON.stringify(request.body),
     signal,
   });
-  if (!response.ok) {
-    await cancelResponse(response);
-    throw new WebHttpStatusError(response.status);
-  }
+  const sanitize = providerTextSanitizer(options);
+  if (!response.ok) throw await httpFailure(response, provider, sanitize, signal);
 
   const body = await readBoundedResponseBody(response, MAX_SEARCH_RESPONSE_BYTES, signal);
   try {
-    return parseMcpResponse(new TextDecoder().decode(body), provider) ?? NO_SEARCH_RESULTS;
+    return (
+      parseMcpResponse(new TextDecoder().decode(body), provider, sanitize) ?? NO_SEARCH_RESULTS
+    );
   } catch (error) {
-    if (error instanceof SearchProviderError) {
-      throw new SearchProviderError(redactApiKeys(error.message, options), error.diagnosable);
-    }
+    if (error instanceof SearchProviderError) throw error;
     throw new SearchProviderError(`${providerName(provider)} returned an unrecognized response`);
   }
 }
 
-/** Remove configured API keys, raw or URL-encoded, from text a Search Provider echoed back. */
+/** Key or rate-limit rejections that the troubleshooting Skill can fix, besides server errors. */
+function isDiagnosableStatus(status: number): boolean {
+  return status >= 500 || status === 401 || status === 403 || status === 429;
+}
+
+/** Name the HTTP status and, for a small JSON body, the JSON-RPC error the provider explained it with. */
+async function httpFailure(
+  response: Response,
+  provider: SearchProvider,
+  sanitize: SanitizeProviderText,
+  signal: AbortSignal,
+): Promise<SearchProviderError> {
+  const { cause } = describeWebFailure(new WebHttpStatusError(response.status));
+  let detail = "";
+  if ((response.headers.get("content-type") ?? "").toLowerCase().includes("json")) {
+    try {
+      const body = await readBoundedResponseBody(response, MAX_ERROR_BODY_BYTES, signal);
+      const parsed = Value.Parse(MCP_RESPONSE_SCHEMA, JSON.parse(new TextDecoder().decode(body)));
+      if (parsed.error !== undefined)
+        detail = describeJsonRpcError(provider, parsed.error, sanitize);
+    } catch {
+      // An oversized, unreadable, or non-JSON-RPC error body leaves only the status.
+    }
+  } else {
+    await cancelResponse(response);
+  }
+  return new SearchProviderError(withDetail(cause, detail), isDiagnosableStatus(response.status));
+}
+
+function secretVariants(secret: string): Set<string> {
+  return new Set([
+    secret,
+    encodeURIComponent(secret),
+    new URLSearchParams({ k: secret }).toString().slice(2),
+  ]);
+}
+
+/** Remove configured API keys, in every encoding a URL might carry, from echoed text. */
 function redactApiKeys(message: string, options: WebSearchToolOptions): string {
   let redacted = message;
   for (const key of [options.exaApiKey, options.parallelApiKey]) {
     const secret = key?.reveal();
     if (secret === undefined || secret === "") continue;
-    for (const variant of new Set([secret, encodeURIComponent(secret)])) {
+    for (const variant of secretVariants(secret)) {
       redacted = redacted.replaceAll(variant, "[REDACTED]");
     }
   }
   return redacted;
+}
+
+// Terminal escape sequences start with ESC; they are removed from provider text.
+const TERMINAL_SEQUENCE =
+  // oxlint-disable-next-line eslint/no-control-regex -- SAFETY: Matching ESC and BEL is the purpose of this expression.
+  /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g;
+
+/**
+ * Build the sanitizer for text a Search Provider controls. Keys are redacted before anything is cut
+ * and again after control characters are removed, so no key fragment survives truncation.
+ */
+function providerTextSanitizer(options: WebSearchToolOptions): SanitizeProviderText {
+  return (text) => {
+    const stripped = stripControlCharacters(
+      redactApiKeys(text, options).replace(TERMINAL_SEQUENCE, ""),
+    ).replace(/\p{Cf}/gu, "");
+    const collapsed = redactApiKeys(stripped, options).replace(/\s+/g, " ").trim();
+    const characters = Array.from(collapsed);
+    return characters.length > MAX_PROVIDER_MESSAGE_CHARACTERS
+      ? `${characters.slice(0, MAX_PROVIDER_MESSAGE_CHARACTERS).join("")}…`
+      : collapsed;
+  };
 }
 
 function unableToSearch(query: string | undefined, failure: WebFailure): Error {

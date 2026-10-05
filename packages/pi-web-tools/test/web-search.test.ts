@@ -200,7 +200,7 @@ describe("Web Search", () => {
 
   test("calls Parallel with its session, bearer credential, and SSE response", async () => {
     const server = await startServer(() => ({
-      body: `data: [DONE]\nevent: message\ndata: ${mcpResult("parallel results")}\n\n`,
+      body: `data: [DONE]\n\nevent: message\ndata: ${mcpResult("parallel results")}\n\n`,
       headers: { "content-type": "text/event-stream" },
     }));
     const secret = "parallel-secret";
@@ -310,7 +310,7 @@ describe("Web Search", () => {
   });
 
   describe("provider failures", () => {
-    const exaSecret = "exa-secret-key";
+    const exaSecret = "exa secret/key+1";
     const parallelSecret = "parallel-secret-key";
 
     function sse(payload: ProviderMessage): TestResponse {
@@ -350,7 +350,7 @@ describe("Web Search", () => {
         sse({
           result: { content: [{ type: "text", text }], isError: true },
           jsonrpc: "2.0",
-          id: 3,
+          id: 1,
         }),
       );
       expect(failure.requests).toBe(1);
@@ -364,7 +364,7 @@ describe("Web Search", () => {
       const failure = await failureOf("parallel", {
         body: JSON.stringify({
           jsonrpc: "2.0",
-          id: 3,
+          id: 1,
           result: {
             content: [
               {
@@ -384,7 +384,7 @@ describe("Web Search", () => {
 
     test("reports isError without text", async () => {
       const failure = await failureOf("parallel", {
-        body: JSON.stringify({ jsonrpc: "2.0", id: 3, result: { content: [], isError: true } }),
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [], isError: true } }),
       });
       expect(failure.message).toBe(
         "Unable to search the web for failing query: Parallel reported an error",
@@ -416,7 +416,7 @@ describe("Web Search", () => {
         sse({
           result: { _meta: { "ai.exa/rateLimited": true }, content: [{ type: "text", text }] },
           jsonrpc: "2.0",
-          id: 3,
+          id: 1,
         }),
       );
       expect(failure.message).toBe(
@@ -479,6 +479,180 @@ describe("Web Search", () => {
       expect(parallel.message).toContain("Unauthorized: Bearer [REDACTED]");
     });
 
+    test("redacts a key before truncation so no fragment survives the cut", async () => {
+      const key = exaSecret;
+      const text = `${"a".repeat(495)}${key} trailing`;
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: { content: [{ type: "text", text }], isError: true },
+        }),
+      });
+      expect(failure.message).toContain(`${"a".repeat(495)}[REDA…`);
+      for (let length = 3; length <= key.length; length++) {
+        expect(failure.message).not.toContain(key.slice(0, length));
+      }
+    });
+
+    test("redacts the form-encoded key and a key split by invisible characters", async () => {
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: `form ${new URLSearchParams({ k: exaSecret }).toString().slice(2)} split ${exaSecret.slice(0, 4)}\u200b${exaSecret.slice(4)}`,
+              },
+            ],
+            isError: true,
+          },
+        }),
+      });
+      expect(failure.message).not.toContain("exa+secret");
+      expect(failure.message).not.toContain("exa%20secret");
+      expect(failure.message).not.toContain(exaSecret);
+      expect(failure.message).not.toContain(exaSecret.slice(0, 4));
+    });
+
+    test("strips terminal and invisible control characters from provider messages", async () => {
+      const failure = await failureOf("parallel", {
+        body: JSON.stringify({
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: "bad\u001b[31m red\u001b]0;title\u0007 nul\u0000 bidi\u202Eevil\u200B zero\u0085 end",
+              },
+            ],
+            isError: true,
+          },
+        }),
+      });
+      expect(failure.message).toBe(
+        "Unable to search the web for failing query: Parallel reported an error: bad red nul bidievil zero end",
+      );
+    });
+
+    test("never splits a surrogate pair when bounding", async () => {
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: { content: [{ type: "text", text: "😀".repeat(600) }], isError: true },
+        }),
+      });
+      const bounded = failure.message.split("reported an error: ")[1] ?? "";
+      expect(bounded).toBe(`${"😀".repeat(500)}…`);
+    });
+
+    test("drops the separator when the provider text is blank", async () => {
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: { content: [{ type: "text", text: " \n\t " }], isError: true },
+        }),
+      });
+      expect(failure.message).toBe(
+        "Unable to search the web for failing query: Exa reported an error",
+      );
+    });
+
+    test("honors the Exa rate-limit meta only for Exa", async () => {
+      const body = JSON.stringify({
+        id: 1,
+        result: {
+          _meta: { "ai.exa/rateLimited": true },
+          content: [{ type: "text", text: "found" }],
+        },
+      });
+      const server = await startServer(() => ({ body }));
+      const result = await executeSearch(
+        "parallel",
+        { parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "not exa" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "found" }]);
+    });
+
+    test("keeps the no-results fallback for a valid result without text", async () => {
+      const server = await startServer(() => ({
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } }),
+      }));
+      const result = await executeSearch(
+        "parallel",
+        { parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "nothing" },
+      );
+      expect(result.content).toEqual([
+        { type: "text", text: "No search results found. Please try a different query." },
+      ]);
+    });
+
+    test("skips notifications and other requests' responses on the SSE stream", async () => {
+      const notification = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/message",
+        params: { level: "info" },
+      });
+      const other = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { content: [], isError: true },
+      });
+      const server = await startServer(() => ({
+        body: `data:${notification}\n\ndata: ${other}\n\ndata:${mcpResult("the answer")}\n\n`,
+        headers: { "content-type": "text/event-stream" },
+      }));
+      const result = await executeSearch(
+        "exa",
+        { exaUrl: `${server.baseUrl}/exa` },
+        { query: "streamed" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "the answer" }]);
+    });
+
+    test("joins multi-line data fields of one SSE event before parsing", async () => {
+      const [head, tail] = [
+        '{"jsonrpc":"2.0","id":1,',
+        '"result":{"content":[{"type":"text","text":"joined"}]}}',
+      ];
+      const server = await startServer(() => ({
+        body: `data: ${head}\ndata: ${tail}\n\n`,
+        headers: { "content-type": "text/event-stream" },
+      }));
+      const result = await executeSearch(
+        "parallel",
+        { parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "multi-line" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "joined" }]);
+    });
+
+    test("orders an answer and a later error deterministically: the first decisive event wins", async () => {
+      const answer = mcpResult("first answer");
+      const failure = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "late failure" }], isError: true },
+      });
+      const empty = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } });
+      const answered = await startServer(() => ({
+        body: `data: ${answer}\n\ndata: ${failure}\n\n`,
+      }));
+      const result = await executeSearch(
+        "exa",
+        { exaUrl: `${answered.baseUrl}/exa` },
+        { query: "ordered" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "first answer" }]);
+
+      const failed = await failureOf("exa", { body: `data: ${empty}\n\ndata: ${failure}\n\n` });
+      expect(failed.message).toBe(
+        "Unable to search the web for failing query: Exa reported an error: late failure",
+      );
+    });
+
     test("reports an unrecognized response for malformed provider bodies", async () => {
       for (const provider of ["exa", "parallel"] as const) {
         const failure = await failureOf(provider, { body: "{}" });
@@ -487,23 +661,84 @@ describe("Web Search", () => {
         );
         const broken = await failureOf(provider, { body: "data: {not json\n" });
         expect(broken.message).toContain("returned an unrecognized response");
+        for (const body of [
+          "",
+          "   ",
+          "<html><body>Bad gateway</body></html>",
+          "data: [DONE]\n\n",
+        ]) {
+          const failure = await failureOf(provider, { body });
+          expect(failure.message).toBe(
+            `Unable to search the web for failing query: ${provider === "exa" ? "Exa" : "Parallel"} returned an unrecognized response`,
+          );
+        }
       }
     });
 
-    test("names the HTTP status and hints only for server errors", async () => {
+    test("names the HTTP status and hints for server errors and key problems", async () => {
       for (const provider of ["exa", "parallel"] as const) {
         const unavailable = await failureOf(provider, { body: "unavailable", status: 503 });
         expect(unavailable.message).toBe(
           `Unable to search the web for failing query: HTTP 503 Service Unavailable\n\n${TROUBLESHOOTING_HINT}`,
         );
-        const badRequest = await failureOf(provider, {
-          body: JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" } }),
-          status: 400,
-        });
+        const badRequest = await failureOf(provider, { body: "no", status: 400 });
         expect(badRequest.message).toBe(
           "Unable to search the web for failing query: HTTP 400 Bad Request",
         );
         expect(badRequest.requests).toBe(1);
+        for (const [status, phrase] of [
+          [401, "Unauthorized"],
+          [403, "Forbidden"],
+          [429, "Too Many Requests"],
+        ] as const) {
+          const keyProblem = await failureOf(provider, { body: "denied", status });
+          expect(keyProblem.message).toBe(
+            `Unable to search the web for failing query: HTTP ${status} ${phrase}\n\n${TROUBLESHOOTING_HINT}`,
+          );
+        }
+      }
+    });
+
+    test("appends the JSON-RPC error a provider explains an HTTP error with", async () => {
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32700, message: "Parse error" },
+        id: null,
+      });
+      for (const provider of ["exa", "parallel"] as const) {
+        const name = provider === "exa" ? "Exa" : "Parallel";
+        const badRequest = await failureOf(provider, {
+          body,
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+        expect(badRequest.message).toBe(
+          `Unable to search the web for failing query: HTTP 400 Bad Request: ${name} returned error -32700: Parse error`,
+        );
+        const keyed = await failureOf(provider, {
+          body: JSON.stringify({ error: { code: -32001, message: `bad ${exaSecret}` } }),
+          status: 401,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+        expect(keyed.message).toBe(
+          `Unable to search the web for failing query: HTTP 401 Unauthorized: ${name} returned error -32001: bad [REDACTED]\n\n${TROUBLESHOOTING_HINT}`,
+        );
+        const oversized = await failureOf(provider, {
+          body: JSON.stringify({ error: { code: 1, message: "x".repeat(10_000) } }),
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+        expect(oversized.message).toBe(
+          `Unable to search the web for failing query: HTTP 502 Bad Gateway\n\n${TROUBLESHOOTING_HINT}`,
+        );
+        const notJsonRpc = await failureOf(provider, {
+          body: "<html>",
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+        expect(notJsonRpc.message).toBe(
+          "Unable to search the web for failing query: HTTP 400 Bad Request",
+        );
       }
     });
 
