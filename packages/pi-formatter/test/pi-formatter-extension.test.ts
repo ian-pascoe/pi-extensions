@@ -441,14 +441,14 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(result).toBeUndefined();
   });
 
-  test("reports the span from the first to the last changed line of the formatted file, once per formatter", async () => {
+  test("reports one line per file naming every formatter, with the span measured against the original content", async () => {
     const rewrite =
       "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').replace(process.argv[2],process.argv[3]))";
     const harness = await createFormatterHarness({
       formatter: {
         formatters: {
-          first: formatterDefinition(["-e", rewrite, "$FILE", "b\n", "B\n"]),
-          second: formatterDefinition(["-e", rewrite, "$FILE", "d\n", "D\nextra\n"]),
+          first: formatterDefinition(["-e", rewrite, "$FILE", "d\n", "D\n"]),
+          second: formatterDefinition(["-e", rewrite, "$FILE", "a\n", "a\nnew1\nnew2\n"]),
           third: formatterDefinition(["-e", rewrite, "$FILE", "missing", "never"]),
         },
       },
@@ -460,94 +460,143 @@ describe("Pi Formatter extension lifecycle", () => {
       toolResultEvent("write", { input: { path: filePath }, details: undefined }),
     );
 
-    expect(await readFile(filePath, "utf8")).toBe("a\nB\nc\nD\nextra\ne\n");
-    // `first` changed line 2. `second` changed lines 4-5 of the content it left behind.
+    expect(await readFile(filePath, "utf8")).toBe("a\nnew1\nnew2\nb\nc\nD\ne\n");
+    // `first` changed line 4, then `second` inserted lines above it. Only the final span is valid.
     expect(result?.content?.at(-1)).toEqual({
       type: "text",
-      text: "Formatted by first: line 2 changed\nFormatted by second: lines 4–5 changed",
+      text: "Formatted by first, second: lines 2–6 changed",
     });
   });
 
-  test("does not report workspace formatters or formatters that failed", async () => {
+  test("reports a Workspace Formatter that changed a file, and fixes by a formatter that exits non-zero", async () => {
     const harness = await createFormatterHarness({
       formatter: {
         formatters: {
           workspace: formatterDefinition([
             "-e",
-            "require('node:fs').writeFileSync('quiet.txt','changed')",
+            "require('node:fs').writeFileSync('quiet.txt','changed\\nmore\\n')",
           ]),
           failing: formatterDefinition([
             "-e",
-            "require('node:fs').writeFileSync(process.argv[1],'half');process.exit(5)",
+            "const fs=require('node:fs');fs.appendFileSync(process.argv[1],'fixed\\n');process.exit(5)",
             "$FILE",
           ]),
         },
       },
     });
     const filePath = resolve(harness.cwd, "quiet.txt");
+    await writeFile(filePath, "original\n");
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe("changed\nmore\nfixed\n");
+    const text = lastText(result);
+    expect(text).toContain("Pi Formatter: failing failed");
+    expect(text).toContain("\nFormatted by workspace, failing: lines 1–3 changed");
+  });
+
+  test("reports changes made by a formatter that timed out", async () => {
+    const harness = await createFormatterHarness({
+      formatter: {
+        timeoutMs: 200,
+        formatters: {
+          slow: formatterDefinition([
+            "-e",
+            "require('node:fs').writeFileSync(process.argv[1],'partial');setInterval(() => {}, 1000)",
+            "$FILE",
+          ]),
+        },
+      },
+    });
+    const filePath = resolve(harness.cwd, "slow.txt");
     await writeFile(filePath, "original");
 
     const result = await harness.runner.emitToolResult(
       toolResultEvent("write", { input: { path: filePath }, details: undefined }),
     );
 
-    const text = lastText(result);
-    expect(text).not.toContain("Formatted by");
-    expect(text).toContain("Pi Formatter: failing failed");
+    expect(lastText(result)).toContain("timeout after 200ms");
+    expect(lastText(result)).toContain("Formatted by slow: line 1 changed");
   });
 
-  test("keeps the troubleshooting hint off formatter syntax errors only", async () => {
-    const failWith = (stderr: string) =>
-      formatterDefinition([
-        "-e",
-        `console.error(${JSON.stringify(stderr)});process.exit(2)`,
-        "$FILE",
-      ]);
-    const filePath = async (harness: FormatterHarness) => {
-      const path = resolve(harness.cwd, "input.txt");
-      await writeFile(path, "original");
-      return path;
-    };
-    const syntax = await createFormatterHarness({
-      formatter: { formatters: { oxfmt: failWith("  x Unexpected token\n   ,-[a.ts:1:11]") } },
-    });
-    const syntaxResult = await syntax.runner.emitToolResult(
-      toolResultEvent("write", { input: { path: await filePath(syntax) }, details: undefined }),
-    );
-    const configuration = await createFormatterHarness({
-      formatter: { formatters: { oxfmt: failWith("`--bogus` is not expected in this context") } },
-    });
-    const configurationResult = await configuration.runner.emitToolResult(
-      toolResultEvent("write", {
-        input: { path: await filePath(configuration) },
-        details: undefined,
-      }),
-    );
-    const timeout = await createFormatterHarness({
+  test.each([
+    {
+      name: "a syntax error naming the formatted file",
+      stderr: (file: string) => `  x Unexpected token\n   ,-[${file}:1:11]`,
+      hint: false,
+    },
+    {
+      name: "a syntax error that does not name the formatted file",
+      stderr: () => "SyntaxError: Unexpected token (1:11)",
+      hint: true,
+    },
+    {
+      name: "ruff's bad configuration error",
+      stderr: () =>
+        "ruff failed\n  Cause: Failed to parse /x/pyproject.toml\n  Cause: TOML parse error at line 1, column 1",
+      hint: true,
+    },
+    {
+      name: "stylua's bad configuration error that names the formatted file",
+      stderr: (file: string) =>
+        `error: could not format ${file}: Config file not in correct format: TOML parse error`,
+      hint: true,
+    },
+    {
+      name: "an unknown option",
+      stderr: () => "`--bogus` is not expected in this context",
+      hint: true,
+    },
+  ])("handles the troubleshooting hint for $name", async ({ stderr, hint }) => {
+    const harness = await createFormatterHarness({
       formatter: {
+        formatters: {
+          oxfmt: formatterDefinition([
+            "-e",
+            "console.error(process.argv[2]);process.exit(2)",
+            "$FILE",
+            stderr("input.txt"),
+          ]),
+        },
+      },
+    });
+    const filePath = resolve(harness.cwd, "input.txt");
+    await writeFile(filePath, "original");
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+
+    expect(lastText(result)).toContain("Pi Formatter: oxfmt failed");
+    expect(lastText(result).includes(TROUBLESHOOTING_HINT)).toBe(hint);
+  });
+
+  test.each([
+    {
+      name: "a timeout",
+      settings: {
         timeoutMs: 25,
         formatters: {
           hanging: formatterDefinition(["-e", "setInterval(() => {}, 1000)", "$FILE"]),
         },
       },
-    });
-    const timeoutResult = await timeout.runner.emitToolResult(
-      toolResultEvent("write", { input: { path: await filePath(timeout) }, details: undefined }),
-    );
-    const spawn = await createFormatterHarness({
-      formatter: { formatters: { missing: { ...formatterDefinition(["$FILE"]), command: "\0" } } },
-    });
-    const spawnResult = await spawn.runner.emitToolResult(
-      toolResultEvent("write", { input: { path: await filePath(spawn) }, details: undefined }),
+    },
+    {
+      name: "a spawn error",
+      settings: { formatters: { missing: { ...formatterDefinition(["$FILE"]), command: "\0" } } },
+    },
+  ])("keeps the troubleshooting hint on $name", async ({ settings }) => {
+    const harness = await createFormatterHarness({ formatter: settings });
+    const filePath = resolve(harness.cwd, "input.txt");
+    await writeFile(filePath, "original");
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
     );
 
-    const textOf = lastText;
-    expect(textOf(syntaxResult)).toContain("Pi Formatter: oxfmt failed");
-    expect(textOf(syntaxResult)).toContain("Unexpected token");
-    expect(textOf(syntaxResult)).not.toContain(TROUBLESHOOTING_HINT);
-    expect(textOf(configurationResult)).toContain(TROUBLESHOOTING_HINT);
-    expect(textOf(timeoutResult)).toContain(TROUBLESHOOTING_HINT);
-    expect(textOf(spawnResult)).toContain(TROUBLESHOOTING_HINT);
+    expect(lastText(result)).toContain(TROUBLESHOOTING_HINT);
   });
 
   test("keeps the hint when a syntax error and another failure are reported together", async () => {

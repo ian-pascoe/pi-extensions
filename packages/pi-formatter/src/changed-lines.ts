@@ -16,6 +16,7 @@ export function describeChangedLines(before: string, after: string): string | un
   if (before === after) return undefined;
   const beforeLines = splitLines(before);
   const afterLines = splitLines(after);
+  if (afterLines.length === 0) return "all lines removed";
   const shared = Math.min(beforeLines.length, afterLines.length);
   let prefix = 0;
   while (prefix < shared && beforeLines[prefix] === afterLines[prefix]) prefix++;
@@ -28,7 +29,6 @@ export function describeChangedLines(before: string, after: string): string | un
   }
   const first = prefix + 1;
   const last = afterLines.length - suffix;
-  if (afterLines.length === 0) return "all lines removed";
   if (last < first)
     return prefix === 0 ? "lines removed before line 1" : `lines removed after line ${prefix}`;
   return first === last ? `line ${first} changed` : `lines ${first}–${last} changed`;

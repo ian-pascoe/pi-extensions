@@ -88,11 +88,12 @@ type FormatterCommandFailure =
     };
 
 /**
- * Formatter stderr that names a syntax error in the file being formatted. Formatters share no
- * exit-code convention for it, so this matches the wording of common formatters.
+ * Formatter stderr wording for a syntax error. Formatters share no exit-code convention for it, so
+ * `isInputFailure` also requires the formatted file's name and no mention of configuration.
  */
 const SYNTAX_ERROR_PATTERN =
   /syntax ?error|parse error|parsing error|failed to parse|unexpected token|unexpected end of|unexpected character/i;
+const CONFIGURATION_PATTERN = /config/i;
 
 interface ExistingFormatterPaths {
   readonly paths: readonly string[];
@@ -268,9 +269,19 @@ function runFormatterCommand(
   });
 }
 
-/** A syntax error in the changed file is an input outcome that Post-edit Diagnostics report. */
-function isInputFailure(failure: FormatterCommandFailure): boolean {
-  return failure.kind === "exit_error" && SYNTAX_ERROR_PATTERN.test(failure.stderr);
+/**
+ * A syntax error in the changed file is an input outcome that Post-edit Diagnostics report. A bad
+ * configuration file produces similar wording, so the stderr must name the formatted file and
+ * must not mention configuration.
+ */
+function isInputFailure(failure: FormatterCommandFailure, path: string | undefined): boolean {
+  return (
+    failure.kind === "exit_error" &&
+    path !== undefined &&
+    SYNTAX_ERROR_PATTERN.test(failure.stderr) &&
+    failure.stderr.includes(basename(path)) &&
+    !CONFIGURATION_PATTERN.test(failure.stderr)
+  );
 }
 
 async function readTextFile(path: string): Promise<string | undefined> {
@@ -307,6 +318,28 @@ async function formatMutationPaths(
 ): Promise<readonly FormatterNote[]> {
   const existing = await existingFormatterPaths(cwd, paths);
   const notes: FormatterNote[] = existing.warnings.map((text) => ({ text, diagnosable: true }));
+  const original = new Map<string, string | undefined>();
+  const current = new Map<string, string | undefined>();
+  const changedBy = new Map<string, string[]>();
+  for (const path of existing.paths) {
+    const content = await readTextFile(path);
+    original.set(path, content);
+    current.set(path, content);
+  }
+  /** Record which formatters changed each path, comparing against the content the last run left. */
+  const recordChanges = async (
+    definition: FormatterDefinition,
+    changedPaths: readonly string[],
+  ): Promise<void> => {
+    for (const path of changedPaths) {
+      const content = await readTextFile(path);
+      if (content === current.get(path)) continue;
+      current.set(path, content);
+      const formatters = changedBy.get(path) ?? [];
+      if (!formatters.includes(definition.id)) formatters.push(definition.id);
+      changedBy.set(path, formatters);
+    }
+  };
   for (const definition of settings.formatters.values()) {
     const matchingPaths = existing.paths.filter((path) => formatterMatchesPath(definition, path));
     if (matchingPaths.length === 0) continue;
@@ -335,7 +368,6 @@ async function formatMutationPaths(
       const args = definition.args.map((argument) =>
         path === undefined ? argument : argument.replaceAll("$FILE", path),
       );
-      const before = path === undefined ? undefined : await readTextFile(path);
       const failure = await runFormatterCommand(definition, args, root, settings.timeoutMs, signal);
       if (failure !== undefined) {
         notes.push({
@@ -344,20 +376,24 @@ async function formatMutationPaths(
             path ?? `workspace ${root} triggered by ${matchingPaths.join(", ")}`,
             failure,
           ),
-          diagnosable: !isInputFailure(failure),
+          diagnosable: !isInputFailure(failure, path),
         });
-      } else if (path !== undefined && before !== undefined) {
-        const after = await readTextFile(path);
-        const changedLines = after === undefined ? undefined : describeChangedLines(before, after);
-        if (changedLines !== undefined) {
-          const file = existing.paths.length > 1 ? `${relative(cwd, path)}: ` : "";
-          notes.push({
-            text: `Formatted by ${definition.id}: ${file}${changedLines}`,
-            diagnosable: false,
-          });
-        }
       }
+      // Formatters such as `eslint --fix` exit non-zero after writing fixes, so compare regardless.
+      await recordChanges(definition, path === undefined ? matchingPaths : [path]);
     }
+  }
+  for (const [path, formatters] of changedBy) {
+    const before = original.get(path);
+    const after = current.get(path);
+    const changedLines =
+      before === undefined || after === undefined ? undefined : describeChangedLines(before, after);
+    if (changedLines === undefined) continue;
+    const file = existing.paths.length > 1 ? `${relative(cwd, path)}: ` : "";
+    notes.push({
+      text: `Formatted by ${formatters.join(", ")}: ${file}${changedLines}`,
+      diagnosable: false,
+    });
   }
   return notes;
 }

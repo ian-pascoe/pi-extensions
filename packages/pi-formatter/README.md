@@ -52,19 +52,24 @@ directory is the fallback. Set `requireRootMarker` to `true` to skip the formatt
 marker exists above the changed file; it defaults to `false`. A required empty `rootMarkers` list is
 invalid. Formatters run sequentially in configuration order.
 
-When a File Formatter changes a file, one line is appended to the original tool result so the
-agent knows its view of the file is stale, for example `Formatted by oxfmt: lines 4–7 changed`.
-Line numbers describe the formatted file: the span runs from the first line that differs from the
-pre-format content to the last one, and it includes unchanged lines between them. A formatter that
-only removes lines reports `lines removed after line N`. The line names the file, relative to
-Pi's working directory, when the mutation changed more than one file. Nothing is added when the
-content is unchanged, and Workspace Formatters are not reported.
+When formatters change a file, one line per changed file is appended to the original tool result
+so the agent knows its view of the file is stale, for example
+`Formatted by ruff-fix, ruff-format: lines 3–13 changed`. It names every File Formatter and
+Workspace Formatter that changed the file, in run order. Line numbers describe the formatted
+file: the span runs from the first line that differs from the content before any formatter ran to
+the last one, and it includes unchanged lines between them. When formatting only removed lines,
+the line says `lines removed after line N`, `lines removed before line 1`, or `all lines removed`.
+It starts with the file path, relative to Pi's working directory, when the mutation changed more
+than one file. Nothing is added when the final content equals the original. A formatter that exits
+non-zero or times out after writing changes is reported too, next to its warning.
 
 A timeout, spawn error, or non-zero exit appends a warning to the original tool result without
 changing that result's success state; later formatters still run. The warning ends with a pointer
 to the package's troubleshooting Skill, except when the formatter's stderr reports a syntax error
-(for example `SyntaxError`, `parse error`, or `Unexpected token`). That is an input outcome Pi LSP's
-Post-edit Diagnostics report, not a formatter failure to diagnose.
+in the changed file: it matches wording such as `SyntaxError`, `parse error`, or `Unexpected
+token`, names the file, and does not mention configuration. That is an input outcome that Pi
+LSP's Post-edit Diagnostics report when Pi LSP is installed, not a formatter failure to diagnose.
+Bad-configuration errors and Workspace Formatter failures keep the pointer.
 
 Global and project `timeoutMs` values override by scope. A project formatter replaces the complete
 global definition with the same ID; set it to `null` to disable it. Invalid definitions and fields
