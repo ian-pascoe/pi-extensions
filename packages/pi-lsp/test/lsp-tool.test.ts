@@ -20,10 +20,11 @@ import {
   type ServerCapabilities,
   type WorkspaceEdit,
 } from "vscode-languageserver-protocol/node";
-import type {
-  LspDocumentDiagnosticResult,
-  LspSynchronizedDocument,
-  LspWorkspaceDiagnosticResult,
+import {
+  LspServerClientError,
+  type LspDocumentDiagnosticResult,
+  type LspSynchronizedDocument,
+  type LspWorkspaceDiagnosticResult,
 } from "../src/lsp-server-client.js";
 import { LspServerManager } from "../src/lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "../src/lsp-session-files.js";
@@ -67,6 +68,7 @@ class RecordingLspClient implements LspToolServerClient {
   responderByMethod = new Map<string, (parameters: unknown) => unknown>();
   currentDiagnostics: Diagnostic[] = [];
   currentDiagnosticsFailure: Error | undefined;
+  synchronizationFailure: Error | undefined;
   workspaceDiagnosticsResult: LspWorkspaceDiagnosticResult = {
     status: "fresh",
     source: "push_cache",
@@ -84,6 +86,7 @@ class RecordingLspClient implements LspToolServerClient {
     filePath: string,
     _languageId: string,
   ): Promise<LspSynchronizedDocument> {
+    if (this.synchronizationFailure !== undefined) throw this.synchronizationFailure;
     const text = await readFile(filePath, "utf8");
     return {
       uri: pathToFileURL(filePath).href,
@@ -2111,6 +2114,52 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("reports a request timeout by its failure code and keeps the troubleshooting hint", async () => {
+    const fixture = await createToolFixture(["good", "slow", "wordy"]);
+    const good = new RecordingLspClient();
+    const slow = new RecordingLspClient();
+    const wordy = new RecordingLspClient();
+    slow.failureByMethod.set(
+      "textDocument/hover",
+      new LspServerClientError("timeout", "slow", "/tmp/slow.stderr", "hover expired"),
+    );
+    wordy.failureByMethod.set("textDocument/hover", new Error("indexing timed out upstream"));
+    const clients = new Map([
+      ["good", good],
+      ["slow", slow],
+      ["wordy", wordy],
+    ]);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd: fixture.context.cwd,
+      settings: resolvedSettings(["good", "slow", "wordy"]),
+      startClient: async ({ definition }) => clients.get(definition.id) ?? good,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+    const call = {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    } satisfies LspToolParameters;
+
+    const result = await executeTool(fixture, call, dependencies);
+    expect(result.details).toMatchObject({
+      server_outcomes: [
+        { server_id: "good", outcome: "success" },
+        { server_id: "slow", outcome: "timeout" },
+        { server_id: "wordy", outcome: "error" },
+      ],
+    });
+
+    const timedOut = await executeTool(fixture, { ...call, server_id: "slow" }, dependencies).catch(
+      (cause: unknown) => cause,
+    );
+    expect(String(timedOut)).toContain("server slow request failed: Pi LSP: hover expired");
+    expect(String(timedOut)).toContain(TROUBLESHOOTING_HINT);
+    await manager.shutdown();
+    await fixture.close();
+  });
+
   test("converts LocationLink source and target ranges against their own Unicode text", async () => {
     const fixture = await createToolFixture();
     const targetPath = resolve(fixture.context.cwd, "target.ts");
@@ -2531,6 +2580,164 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("names disabled matching servers for reads and previews instead of no configured server", async () => {
+    const fixture = await createToolFixture(["typescript", "eslint"]);
+    const { manager } = fixture.dependencies;
+    const hover = {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    } satisfies LspToolParameters;
+    const rename = {
+      operation: "rename",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 7,
+      new_name: "smile",
+    } satisfies LspToolParameters;
+    fixture.client.responseByMethod.set("textDocument/rename", { changes: {} });
+
+    await manager.setEnablement(new Map(), new Map([["eslint", false]]));
+    const mixedRead = await executeTool(fixture, hover);
+    expect(mixedRead.details).toMatchObject({
+      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
+    });
+    expect(await executeTool(fixture, rename)).toMatchObject({
+      structuredContent: { server_id: "typescript" },
+    });
+
+    await manager.setEnablement(
+      new Map(),
+      new Map([
+        ["typescript", false],
+        ["eslint", false],
+      ]),
+    );
+    const requestsBefore = fixture.client.requests.length;
+    for (const call of [hover, rename]) {
+      const failure = await executeTool(fixture, call).catch((cause: unknown) => cause);
+      expect(String(failure), call.operation).toContain(
+        `Pi LSP: all servers matching ${fixture.filePath} are disabled: typescript, eslint; enable one with /lsp enable <id>`,
+      );
+      expect(String(failure)).not.toContain("no configured server");
+      // Disabling every matching server is a configuration problem the Skill covers.
+      expect(String(failure)).toContain(TROUBLESHOOTING_HINT);
+    }
+    expect(fixture.client.requests).toHaveLength(requestsBefore);
+    await fixture.close();
+  });
+
+  test("lets a cancelled request escape unlabeled and without the troubleshooting hint", async () => {
+    const fixture = await createToolFixture();
+    const cancelled = new LspServerClientError(
+      "cancelled",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "request cancelled",
+    );
+    fixture.client.failureByMethod.set("textDocument/rename", cancelled);
+    fixture.client.failureByMethod.set("textDocument/hover", cancelled);
+    for (const call of [
+      {
+        operation: "rename",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 7,
+        new_name: "smile",
+      },
+      { operation: "hover", file_path: fixture.filePath, line: 1, character: 1 },
+    ] satisfies LspToolParameters[]) {
+      const error = await executeTool(fixture, call).catch((cause: unknown) => cause);
+      expect(error, call.operation).toBe(cancelled);
+    }
+    await fixture.close();
+  });
+
+  test("labels preview-tool timeouts and crashes by server and points to the troubleshooting Skill", async () => {
+    const fixture = await createToolFixture();
+    const timeout = new LspServerClientError(
+      "timeout",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "request expired",
+    );
+    const crash = new LspServerClientError(
+      "exit",
+      "typescript",
+      "/tmp/typescript.stderr",
+      "process exited unexpectedly with code 1",
+    );
+    const previews = [
+      {
+        call: {
+          operation: "rename",
+          file_path: fixture.filePath,
+          line: 1,
+          character: 7,
+          new_name: "smile",
+        },
+        method: "textDocument/rename",
+      },
+      {
+        call: {
+          operation: "format_document",
+          file_path: fixture.filePath,
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        method: "textDocument/formatting",
+      },
+      {
+        call: {
+          operation: "format_range",
+          file_path: fixture.filePath,
+          range: range(),
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        method: "textDocument/rangeFormatting",
+      },
+      {
+        call: {
+          operation: "format_on_type",
+          file_path: fixture.filePath,
+          line: 1,
+          character: 1,
+          trigger_character: ";",
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        method: "textDocument/onTypeFormatting",
+      },
+      {
+        call: { operation: "code_actions", file_path: fixture.filePath, range: range() },
+        method: "textDocument/codeAction",
+      },
+    ] satisfies { call: LspToolParameters; method: string }[];
+    for (const { call, method } of previews) {
+      for (const [failure, during] of [
+        [timeout, "request"],
+        [crash, "request"],
+        [timeout, "synchronization"],
+        [crash, "synchronization"],
+      ] as const) {
+        fixture.client.failureByMethod.clear();
+        fixture.client.synchronizationFailure = undefined;
+        if (during === "request") fixture.client.failureByMethod.set(method, failure);
+        else fixture.client.synchronizationFailure = failure;
+        const label = `${call.operation} ${failure.kind} during ${during}`;
+        const error = await executeTool(fixture, call).catch((cause: unknown) => cause);
+        expect(error, label).toEqual(
+          new Error(
+            `Pi LSP: server typescript request failed: ${failure.message}\n\n${TROUBLESHOOTING_HINT}`,
+          ),
+        );
+      }
+    }
+    await fixture.close();
+  });
+
   test("reports a missing file as an input error before asking any server", async () => {
     const fixture = await createToolFixture();
     const missing = resolve(fixture.context.cwd, "missing.ts");
@@ -2569,6 +2776,38 @@ describe("registered LSP tool", () => {
           operation: "code_actions",
           file_path: fixture.filePath,
           range: { start: { line: 1, character: 1 }, end: { line: 3, character: 1 } },
+        },
+        "Pi LSP: line 3 is past the end of the document, which has 2 lines (line must be at most 2)",
+      ],
+      [
+        {
+          operation: "rename",
+          file_path: fixture.filePath,
+          line: 4,
+          character: 1,
+          new_name: "smile",
+        },
+        "Pi LSP: line 4 is past the end of the document, which has 2 lines (line must be at most 2)",
+      ],
+      [
+        {
+          operation: "format_range",
+          file_path: fixture.filePath,
+          range: { start: { line: 1, character: 1 }, end: { line: 1, character: 40 } },
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        "Pi LSP: character 40 is past the end of line 1, which has 18 characters (character must be at most 19)",
+      ],
+      [
+        {
+          operation: "format_on_type",
+          file_path: fixture.filePath,
+          line: 3,
+          character: 1,
+          trigger_character: ";",
+          tab_size: 2,
+          insert_spaces: true,
         },
         "Pi LSP: line 3 is past the end of the document, which has 2 lines (line must be at most 2)",
       ],

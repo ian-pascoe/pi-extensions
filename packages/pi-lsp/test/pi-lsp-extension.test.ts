@@ -20,7 +20,7 @@ import {
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createPiLspExtension } from "../src/pi-lsp-extension.js";
+import { createPiLspExtension, failureDiagnosticOutcome } from "../src/pi-lsp-extension.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 import { LSP_TOOL_GUIDELINE } from "../src/lsp-tool.js";
@@ -995,6 +995,54 @@ describe("Pi LSP extension lifecycle", () => {
     expect(harness.runner.getEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE)).toBeTypeOf(
       "function",
     );
+    await shutdownExtension(harness);
+  });
+
+  test("classifies Post-edit Diagnostics server failures by failure code, not message text", () => {
+    expect(
+      failureDiagnosticOutcome("/workspace/a.ts", {
+        code: "request-timeout",
+        message: "Pi LSP: server typescript request failed: diagnostics expired",
+        serverId: "typescript",
+      }),
+    ).toEqual({ kind: "timeout", path: "/workspace/a.ts", serverId: "typescript" });
+    expect(
+      failureDiagnosticOutcome("/workspace/a.ts", {
+        code: "request-failed",
+        message: "Pi LSP: server typescript request failed: project load timed out",
+        serverId: "typescript",
+      }),
+    ).toEqual({ kind: "unavailable_server", path: "/workspace/a.ts", serverId: "typescript" });
+    // A startup timeout leaves the Server Instance unavailable until restarted, not timed out.
+    expect(
+      failureDiagnosticOutcome("/workspace/a.ts", {
+        code: "server-unavailable",
+        message:
+          "Pi LSP: server typescript is unavailable for /workspace: Pi LSP: initialize timed out (server typescript; stderr /tmp/typescript.stderr)",
+        serverId: "typescript",
+      }),
+    ).toEqual({ kind: "unavailable_server", path: "/workspace/a.ts", serverId: "typescript" });
+  });
+
+  test("keeps Post-edit Diagnostics silent when every matching server is disabled", async () => {
+    const harness = await createExtensionHarness(false, {
+      lsp: { ...typescriptSettings.lsp, enablement: { typescript: false } },
+    });
+    await startExtension(harness);
+    const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
+    await writeFile(filePath, "const value = 1;\n");
+
+    await expect(
+      harness.runner.emitToolResult({
+        type: "tool_result",
+        toolCallId: "disabled-write",
+        toolName: "write",
+        input: { path: filePath, content: "const value = 1;\n" },
+        content: [{ type: "text", text: "Wrote source.ts" }],
+        details: { bytesWritten: 17 },
+        isError: false,
+      } satisfies ToolResultEvent),
+    ).resolves.toBeUndefined();
     await shutdownExtension(harness);
   });
 

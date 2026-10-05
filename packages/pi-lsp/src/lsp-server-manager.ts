@@ -11,6 +11,7 @@ import {
   sep,
 } from "node:path";
 import { LspInputError } from "./lsp-input-error.js";
+import { LspServerClientError } from "./lsp-server-client.js";
 import type {
   LspServerDefinition,
   LspServerEnablement,
@@ -99,6 +100,7 @@ export type LspServerFailureCode =
   | "no-capable-server"
   | "no-matching-server"
   | "request-failed"
+  | "request-timeout"
   | "root-marker-not-found"
   | "server-disabled"
   | "server-unavailable";
@@ -145,6 +147,20 @@ export interface LspResolvedServerClient<TClient extends LspManagedServerClient>
 export type LspServerResolution<TClient extends LspManagedServerClient> =
   | { readonly kind: "failure"; readonly failure: LspServerFailure }
   | { readonly kind: "success"; readonly instance: LspResolvedServerClient<TClient> };
+
+/** Returns one instance's preview-request value and the instance that produced it, or why not. */
+export type LspServerMutationResult<TClient extends LspManagedServerClient, T> =
+  | { readonly kind: "failure"; readonly failure: LspServerFailure }
+  | {
+      readonly kind: "success";
+      readonly instance: LspResolvedServerClient<TClient>;
+      readonly value: T;
+    };
+
+/** Returns the routes a request may use, or why none applies. */
+type LspRouteSelection =
+  | { readonly kind: "failure"; readonly failure: LspServerFailure }
+  | { readonly kind: "routes"; readonly routes: readonly [LspServerRoute, ...LspServerRoute[]] };
 
 /** Describes one configured or previously resolved Server Instance without starting it. */
 export interface LspServerStatusEntry {
@@ -427,6 +443,35 @@ function unavailableFailure(route: LspServerRoute, error: string): LspServerFail
   };
 }
 
+/**
+ * Run one operation on a ready instance, labeling a server failure with its server. A client
+ * timeout becomes `request-timeout`. An `LspInputError` is the caller's to fix and a cancellation
+ * is the caller's abort, so both propagate unlabeled.
+ */
+async function runServerOperation<TClient extends LspManagedServerClient, T>(
+  { client, route }: LspResolvedServerClient<TClient>,
+  operation: (client: TClient, route: LspServerRoute) => Promise<T>,
+): Promise<LspServerSuccess<T> | LspServerFailure> {
+  try {
+    return {
+      rootPath: route.rootPath,
+      serverId: route.serverId,
+      value: await operation(client, route),
+    };
+  } catch (error) {
+    if (error instanceof LspInputError) throw error;
+    if (error instanceof LspServerClientError && error.kind === "cancelled") throw error;
+    return {
+      code:
+        error instanceof LspServerClientError && error.kind === "timeout"
+          ? "request-timeout"
+          : "request-failed",
+      message: `Pi LSP: server ${route.serverId} request failed: ${describeLspError(error)}`,
+      serverId: route.serverId,
+    };
+  }
+}
+
 /** Own lazy Server Instance creation, routing, failure state, restart, and session shutdown. */
 export class LspServerManager<TClient extends LspManagedServerClient = LspManagedServerClient> {
   private readonly clients = new Map<string, TClient>();
@@ -535,10 +580,17 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
 
   /** Report whether any Server Definition accepts the file language before activation gating. */
   hasConfiguredLanguageServerForFile(filePath: string): boolean {
+    return this.languageServerIds(filePath).length > 0;
+  }
+
+  /** IDs of the Server Definitions accepting the file's language, before enablement and gating. */
+  private languageServerIds(filePath: string): readonly string[] {
     const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
-    return [...this.input.settings.servers.values()].some((definition) =>
-      definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
-    );
+    return [...this.input.settings.servers.values()]
+      .filter((definition) =>
+        definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
+      )
+      .map((definition) => definition.id);
   }
 
   /**
@@ -589,8 +641,8 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
 
   /**
    * Query matching capable instances while retaining independent operational failures. An
-   * `LspInputError` from `operation` rejects the whole read: it is the caller's to fix, not a
-   * server failure.
+   * `LspInputError` or a cancellation from `operation` rejects the whole read: it is the
+   * caller's input or abort, not a server failure.
    */
   async runRead<T>(
     filePath: string,
@@ -598,13 +650,9 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     capability: LspCapabilityRequirement<TClient>,
     operation: (client: TClient, route: LspServerRoute) => Promise<T>,
   ): Promise<LspServerReadResult<T>> {
-    const routes = await this.selectRoutes(filePath, serverId);
-    if (routes.length === 0) {
-      return {
-        failures: [this.noMatchingFailure(serverId, filePath)],
-        successes: [],
-      };
-    }
+    const selection = await this.selectRoutes(filePath, serverId);
+    if (selection.kind === "failure") return { failures: [selection.failure], successes: [] };
+    const { routes } = selection;
 
     const outcomes = await Promise.all(
       routes.map(async (route): Promise<LspServerSuccess<T> | LspServerFailure | undefined> => {
@@ -614,20 +662,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
           if (serverId === undefined) return undefined;
           return incapableServerFailure(route.serverId, capability);
         }
-        try {
-          return {
-            rootPath: route.rootPath,
-            serverId: route.serverId,
-            value: await operation(resolution.instance.client, route),
-          };
-        } catch (error) {
-          if (error instanceof LspInputError) throw error;
-          return {
-            code: "request-failed",
-            message: `Pi LSP: server ${route.serverId} request failed: ${describeLspError(error)}`,
-            serverId: route.serverId,
-          };
-        }
+        return runServerOperation(resolution.instance, operation);
       }),
     );
 
@@ -648,15 +683,14 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   }
 
   /** Resolve exactly one capable matching instance before a preview-producing mutation request. */
-  async resolveMutationClient(
+  private async resolveMutationClient(
     filePath: string,
     serverId: string | undefined,
     capability: LspCapabilityRequirement<TClient>,
   ): Promise<LspServerResolution<TClient>> {
-    const routes = await this.selectRoutes(filePath, serverId);
-    if (routes.length === 0) {
-      return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
-    }
+    const selection = await this.selectRoutes(filePath, serverId);
+    if (selection.kind === "failure") return selection;
+    const { routes } = selection;
 
     const resolutions = await Promise.all(routes.map((route) => this.ensureClient(route)));
     const capable = resolutions.filter(
@@ -695,23 +729,37 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     };
   }
 
+  /**
+   * Run one preview-producing request on exactly one capable matching instance. Like `runRead`,
+   * an operation failure becomes a labeled `request-failed` or `request-timeout` failure, while an
+   * `LspInputError` or a cancellation rejects.
+   */
+  async runMutation<T>(
+    filePath: string,
+    serverId: string | undefined,
+    capability: LspCapabilityRequirement<TClient>,
+    operation: (client: TClient, route: LspServerRoute) => Promise<T>,
+  ): Promise<LspServerMutationResult<TClient, T>> {
+    const resolution = await this.resolveMutationClient(filePath, serverId, capability);
+    if (resolution.kind === "failure") return resolution;
+    const { instance } = resolution;
+    const outcome = await runServerOperation(instance, operation);
+    if ("code" in outcome) return { kind: "failure", failure: outcome };
+    return { kind: "success", instance, value: outcome.value };
+  }
+
   /** Start one exact Server Instance and return its negotiated capabilities. */
   async getCapabilities(serverId: string, filePath: string): Promise<LspServerResolution<TClient>> {
-    const routes = await this.selectRoutes(filePath, serverId);
-    const route = routes[0];
-    if (route === undefined) {
-      return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
-    }
-    return this.ensureClient(route);
+    const selection = await this.selectRoutes(filePath, serverId);
+    if (selection.kind === "failure") return selection;
+    return this.ensureClient(selection.routes[0]);
   }
 
   /** Clear sticky failure state, stop the old process, and start the exact Server Instance again. */
   async restartServer(serverId: string, filePath: string): Promise<LspServerResolution<TClient>> {
-    const routes = await this.selectRoutes(filePath, serverId);
-    const route = routes[0];
-    if (route === undefined) {
-      return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
-    }
+    const selection = await this.selectRoutes(filePath, serverId);
+    if (selection.kind === "failure") return selection;
+    const route = selection.routes[0];
     if (!this.getEnablement(serverId).enabled) return this.ensureClient(route);
     this.knownRoutes.set(lspInstanceKey(serverId, route.rootPath), route);
     try {
@@ -763,16 +811,35 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     this.knownRoutes.clear();
   }
 
+  /**
+   * Select the routes a request may use: `serverId`'s route, or every enabled matching route.
+   * Without `serverId`, when no route applies and every Server Definition handling the file's
+   * language is disabled, the failure is `server-disabled` naming them rather than no matching
+   * server. An enabled definition excluded by its Activation Gate keeps that silent exclusion.
+   */
   private async selectRoutes(
     filePath: string,
     serverId: string | undefined,
-  ): Promise<readonly LspServerRoute[]> {
-    const routes = await this.routeFile(filePath, serverId);
-    return routes.filter((route) =>
-      serverId === undefined
-        ? this.getEnablement(route.serverId).enabled
-        : route.serverId === serverId,
-    );
+  ): Promise<LspRouteSelection> {
+    const [first, ...rest] = await this.routeFile(filePath, serverId);
+    if (first !== undefined) return { kind: "routes", routes: [first, ...rest] };
+    if (serverId === undefined) {
+      const languageServerIds = this.languageServerIds(filePath);
+      if (
+        languageServerIds.length > 0 &&
+        languageServerIds.every((id) => !this.getEnablement(id).enabled)
+      ) {
+        return {
+          kind: "failure",
+          failure: {
+            code: "server-disabled",
+            message: `Pi LSP: all servers matching ${normalizeLspFilePath(filePath)} are disabled: ${languageServerIds.join(", ")}; enable one with /lsp enable <id>`,
+            serverId: "*",
+          },
+        };
+      }
+    }
+    return { kind: "failure", failure: this.noMatchingFailure(serverId, filePath) };
   }
 
   private noMatchingFailure(serverId: string | undefined, filePath: string): LspServerFailure {

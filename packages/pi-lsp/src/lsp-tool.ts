@@ -673,7 +673,7 @@ function serverOutcomeForFailure(failure: LspServerFailure): ServerOperationOutc
   let outcome: ServerOperationOutcome["outcome"];
   if (failure.code === "server-unavailable") outcome = "unavailable";
   else if (failure.code === "no-capable-server") outcome = "unsupported";
-  else if (failure.message.toLowerCase().includes("timed out")) outcome = "timeout";
+  else if (failure.code === "request-timeout") outcome = "timeout";
   else outcome = "error";
   return { server_id: failure.serverId, outcome, message: failure.message };
 }
@@ -1410,40 +1410,44 @@ async function executeFormattingPreview(
       : parameters.operation === "format_range"
         ? DocumentRangeFormattingRequest.method
         : DocumentOnTypeFormattingRequest.method;
-  const resolution = await dependencies.manager.resolveMutationClient(
+  const result = await dependencies.manager.runMutation(
     filePath,
     parameters.server_id,
     requireMethod(method),
+    async (client, route) => {
+      const prepared = await prepareLspDocument(client, route, filePath);
+      const requestBase = {
+        textDocument: { uri: prepared.document.uri },
+        options: formattingOptions(parameters),
+      };
+      const requestParameters =
+        parameters.operation === "format_range"
+          ? {
+              ...requestBase,
+              range: {
+                start: protocolPosition(prepared, parameters.range.start),
+                end: protocolPosition(prepared, parameters.range.end),
+              },
+            }
+          : parameters.operation === "format_on_type"
+            ? {
+                ...requestBase,
+                position: protocolPosition(prepared, parameters),
+                ch: parameters.trigger_character,
+              }
+            : requestBase;
+      const edits = await client.request(method, requestParameters, signal);
+      return { edits, uri: prepared.document.uri };
+    },
   );
-  if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
-  const { client, route } = resolution.instance;
-  const prepared = await prepareLspDocument(client, route, filePath);
-  const requestBase = {
-    textDocument: { uri: prepared.document.uri },
-    options: formattingOptions(parameters),
-  };
-  const requestParameters =
-    parameters.operation === "format_range"
-      ? {
-          ...requestBase,
-          range: {
-            start: protocolPosition(prepared, parameters.range.start),
-            end: protocolPosition(prepared, parameters.range.end),
-          },
-        }
-      : parameters.operation === "format_on_type"
-        ? {
-            ...requestBase,
-            position: protocolPosition(prepared, parameters),
-            ch: parameters.trigger_character,
-          }
-        : requestBase;
-  const edits = await client.request(method, requestParameters, signal);
+  if (result.kind === "failure") throw piLspFailureError([result.failure]);
+  const { client, route } = result.instance;
+  const { edits, uri } = result.value;
   return workspacePreviewOutput(
     dependencies,
     parameters.operation,
     route,
-    workspaceEditFromTextEdits(prepared.document.uri, edits),
+    workspaceEditFromTextEdits(uri, edits),
     client.positionEncoding,
   );
 }
@@ -1455,23 +1459,26 @@ async function executeRenamePreview(
   signal: AbortSignal | undefined,
 ) {
   const filePath = await documentFilePath(parameters.file_path, context);
-  const resolution = await dependencies.manager.resolveMutationClient(
+  const result = await dependencies.manager.runMutation(
     filePath,
     parameters.server_id,
     requireMethod(RenameRequest.method),
-  );
-  if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
-  const { client, route } = resolution.instance;
-  const prepared = await prepareLspDocument(client, route, filePath);
-  const edit = await client.request(
-    RenameRequest.method,
-    {
-      textDocument: { uri: prepared.document.uri },
-      position: protocolPosition(prepared, parameters),
-      newName: parameters.new_name,
+    async (client, route) => {
+      const prepared = await prepareLspDocument(client, route, filePath);
+      return client.request(
+        RenameRequest.method,
+        {
+          textDocument: { uri: prepared.document.uri },
+          position: protocolPosition(prepared, parameters),
+          newName: parameters.new_name,
+        },
+        signal,
+      );
     },
-    signal,
   );
+  if (result.kind === "failure") throw piLspFailureError([result.failure]);
+  const { client, route } = result.instance;
+  const edit = result.value;
   if (edit === null) throw piLspError("rename returned no Workspace Edit Preview");
   return workspacePreviewOutput(
     dependencies,
