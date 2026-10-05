@@ -11,6 +11,7 @@ import {
   sep,
 } from "node:path";
 import { LspInputError } from "./lsp-input-error.js";
+import { LspServerClientError } from "./lsp-server-client.js";
 import type {
   LspServerDefinition,
   LspServerEnablement,
@@ -99,6 +100,7 @@ export type LspServerFailureCode =
   | "no-capable-server"
   | "no-matching-server"
   | "request-failed"
+  | "request-timeout"
   | "root-marker-not-found"
   | "server-disabled"
   | "server-unavailable";
@@ -623,7 +625,10 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         } catch (error) {
           if (error instanceof LspInputError) throw error;
           return {
-            code: "request-failed",
+            code:
+              error instanceof LspServerClientError && error.kind === "timeout"
+                ? "request-timeout"
+                : "request-failed",
             message: `Pi LSP: server ${route.serverId} request failed: ${describeLspError(error)}`,
             serverId: route.serverId,
           };

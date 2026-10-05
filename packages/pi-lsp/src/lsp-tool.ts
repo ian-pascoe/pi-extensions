@@ -673,7 +673,7 @@ function serverOutcomeForFailure(failure: LspServerFailure): ServerOperationOutc
   let outcome: ServerOperationOutcome["outcome"];
   if (failure.code === "server-unavailable") outcome = "unavailable";
   else if (failure.code === "no-capable-server") outcome = "unsupported";
-  else if (failure.message.toLowerCase().includes("timed out")) outcome = "timeout";
+  else if (failure.code === "request-timeout") outcome = "timeout";
   else outcome = "error";
   return { server_id: failure.serverId, outcome, message: failure.message };
 }

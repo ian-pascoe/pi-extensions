@@ -20,7 +20,7 @@ import {
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createPiLspExtension } from "../src/pi-lsp-extension.js";
+import { createPiLspExtension, failureDiagnosticOutcome } from "../src/pi-lsp-extension.js";
 import { POST_EDIT_DIAGNOSTICS_ENTRY_TYPE } from "../src/lsp-post-edit-diagnostics-rendering.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 import { LSP_TOOL_GUIDELINE } from "../src/lsp-tool.js";
@@ -996,6 +996,32 @@ describe("Pi LSP extension lifecycle", () => {
       "function",
     );
     await shutdownExtension(harness);
+  });
+
+  test("classifies Post-edit Diagnostics server failures by failure code, not message text", () => {
+    expect(
+      failureDiagnosticOutcome("/workspace/a.ts", {
+        code: "request-timeout",
+        message: "Pi LSP: server typescript request failed: diagnostics expired",
+        serverId: "typescript",
+      }),
+    ).toEqual({ kind: "timeout", path: "/workspace/a.ts", serverId: "typescript" });
+    expect(
+      failureDiagnosticOutcome("/workspace/a.ts", {
+        code: "request-failed",
+        message: "Pi LSP: server typescript request failed: project load timed out",
+        serverId: "typescript",
+      }),
+    ).toEqual({ kind: "unavailable_server", path: "/workspace/a.ts", serverId: "typescript" });
+    // A startup timeout leaves the Server Instance unavailable until restarted, not timed out.
+    expect(
+      failureDiagnosticOutcome("/workspace/a.ts", {
+        code: "server-unavailable",
+        message:
+          "Pi LSP: server typescript is unavailable for /workspace: Pi LSP: initialize timed out (server typescript; stderr /tmp/typescript.stderr)",
+        serverId: "typescript",
+      }),
+    ).toEqual({ kind: "unavailable_server", path: "/workspace/a.ts", serverId: "typescript" });
   });
 
   test("silently skips post-edit diagnostics until a required root marker exists", async () => {

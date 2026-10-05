@@ -20,10 +20,11 @@ import {
   type ServerCapabilities,
   type WorkspaceEdit,
 } from "vscode-languageserver-protocol/node";
-import type {
-  LspDocumentDiagnosticResult,
-  LspSynchronizedDocument,
-  LspWorkspaceDiagnosticResult,
+import {
+  LspServerClientError,
+  type LspDocumentDiagnosticResult,
+  type LspSynchronizedDocument,
+  type LspWorkspaceDiagnosticResult,
 } from "../src/lsp-server-client.js";
 import { LspServerManager } from "../src/lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "../src/lsp-session-files.js";
@@ -2107,6 +2108,52 @@ describe("registered LSP tool", () => {
         expect.objectContaining({ outcome: "error", server_id: "failing" }),
       ]),
     });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("reports a request timeout by its failure code and keeps the troubleshooting hint", async () => {
+    const fixture = await createToolFixture(["good", "slow", "wordy"]);
+    const good = new RecordingLspClient();
+    const slow = new RecordingLspClient();
+    const wordy = new RecordingLspClient();
+    slow.failureByMethod.set(
+      "textDocument/hover",
+      new LspServerClientError("timeout", "slow", "/tmp/slow.stderr", "hover expired"),
+    );
+    wordy.failureByMethod.set("textDocument/hover", new Error("indexing timed out upstream"));
+    const clients = new Map([
+      ["good", good],
+      ["slow", slow],
+      ["wordy", wordy],
+    ]);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd: fixture.context.cwd,
+      settings: resolvedSettings(["good", "slow", "wordy"]),
+      startClient: async ({ definition }) => clients.get(definition.id) ?? good,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+    const call = {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    } satisfies LspToolParameters;
+
+    const result = await executeTool(fixture, call, dependencies);
+    expect(result.details).toMatchObject({
+      server_outcomes: [
+        { server_id: "good", outcome: "success" },
+        { server_id: "slow", outcome: "timeout" },
+        { server_id: "wordy", outcome: "error" },
+      ],
+    });
+
+    const timedOut = await executeTool(fixture, { ...call, server_id: "slow" }, dependencies).catch(
+      (cause: unknown) => cause,
+    );
+    expect(String(timedOut)).toContain("server slow request failed: Pi LSP: hover expired");
+    expect(String(timedOut)).toContain(TROUBLESHOOTING_HINT);
     await manager.shutdown();
     await fixture.close();
   });

@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { LspServerClient } from "../src/lsp-server-client.js";
+import { LspServerClient, LspServerClientError } from "../src/lsp-server-client.js";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -837,6 +837,48 @@ describe("session-scoped LSP server manager", () => {
     expect(result.failures).toEqual([
       expect.objectContaining({ code: "request-failed", serverId: "lint" }),
     ]);
+  });
+
+  test("classifies a request timeout by the client error kind, not by message text", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: factory.start,
+    });
+
+    const result = await manager.runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async (_client, route) => {
+        if (route.serverId === "lint") {
+          throw new LspServerClientError(
+            "timeout",
+            "lint",
+            "/tmp/lint.stderr",
+            "textDocument/hover expired",
+          );
+        }
+        throw new Error("server says: the build timed out");
+      },
+    );
+
+    expect(result.failures).toEqual([
+      {
+        code: "request-timeout",
+        message:
+          "Pi LSP: server lint request failed: Pi LSP: textDocument/hover expired (server lint; stderr /tmp/lint.stderr)",
+        serverId: "lint",
+      },
+      {
+        code: "request-failed",
+        message: "Pi LSP: server typescript request failed: server says: the build timed out",
+        serverId: "typescript",
+      },
+    ]);
+    await manager.shutdown();
   });
 
   test("omits incapable servers from automatic reads", async () => {

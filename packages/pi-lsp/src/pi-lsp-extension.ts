@@ -45,7 +45,11 @@ import {
 } from "./lsp-command.js";
 import { LspServerClient } from "./lsp-server-client.js";
 import { writeLspEnablement } from "./lsp-settings-store.js";
-import { LspServerManager, normalizeLspFilePath } from "./lsp-server-manager.js";
+import {
+  LspServerManager,
+  normalizeLspFilePath,
+  type LspServerFailure,
+} from "./lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "./lsp-session-files.js";
 import {
   LSP_RESULT_TOOL_NAMES,
@@ -162,14 +166,15 @@ function normalizedDiagnosticOutcome(
   };
 }
 
-function failureDiagnosticOutcome(
+/** Classify a reportable Post-edit Diagnostics server failure by its failure code. */
+export function failureDiagnosticOutcome(
   path: string,
-  failure: { readonly code: string; readonly message: string; readonly serverId: string },
+  failure: LspServerFailure,
 ): PostEditDiagnosticOutcome {
   if (failure.code === "no-matching-server") {
     return { kind: "no_configured_server", path };
   }
-  if (failure.message.toLowerCase().includes("timed out")) {
+  if (failure.code === "request-timeout") {
     return { kind: "timeout", path, serverId: failure.serverId };
   }
   return { kind: "unavailable_server", path, serverId: failure.serverId };
