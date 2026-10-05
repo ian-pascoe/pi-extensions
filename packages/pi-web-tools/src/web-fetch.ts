@@ -4,6 +4,8 @@ import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { extractMainContent } from "./html-main-content.js";
+import { convertHtmlInChunks } from "./html-markdown.js";
 import {
   cancelResponse,
   describeWebFailure,
@@ -61,9 +63,12 @@ export type WebFetchDetails = Static<typeof WebFetchDetailsSchema>;
 
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
- * `content` is the complete fetched text up to 1 MiB; `truncated` marks a longer page cut at that
- * limit. `full_output_path` names the private file holding the complete text whenever it exceeded the
- * model-visible 50 KiB / 2,000-line limit.
+ * `content` is the fetched text up to 1 MiB. Two separate cuts are reported, as in pi-lsp:
+ * `truncated` means the model-visible output was cut at 50 KiB / 2,000 lines, and is true exactly
+ * when `full_output_path` names the private file holding the complete text; `structured_truncated`
+ * means `content` itself was cut at 1 MiB, so the page is longer than the script received. A
+ * `structured_truncated` result is always also `truncated`, and `full_output_path` then holds the
+ * text `content` lost.
  */
 export const WebFetchOutputSchema = Type.Object(
   {
@@ -71,9 +76,15 @@ export const WebFetchOutputSchema = Type.Object(
     content_type: Type.String({ description: "Response Content-Type header" }),
     format: WebFetchFormatSchema,
     content: Type.String({ description: "Fetched text in the requested format" }),
-    truncated: Type.Boolean({ description: "content was cut at 1 MiB" }),
+    truncated: Type.Boolean({
+      description:
+        "The model-visible output was cut at 50 KiB or 2,000 lines; true exactly when full_output_path is present",
+    }),
+    structured_truncated: Type.Boolean({
+      description: "content itself was cut at 1 MiB; full_output_path holds the complete text",
+    }),
     full_output_path: Type.Optional(
-      Type.String({ description: "Private file with the full text" }),
+      Type.String({ description: "Private file with the complete text when truncated" }),
     ),
   },
   { additionalProperties: false },
@@ -114,7 +125,7 @@ type FetchedText = {
 };
 
 const WEB_FETCH_DESCRIPTION =
-  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML is converted when requested. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
+  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML pages are converted to their main content, with the page title, when text or Markdown is requested; HTML format returns the page unchanged. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
 function parseHttpUrl(input: string): URL {
   let url: URL;
@@ -193,27 +204,136 @@ function isTextualMime(mime: string): boolean {
   );
 }
 
+/** Block elements that end the current line and separate a following block with a blank line. */
+const PARAGRAPH_ELEMENTS = new Set([
+  "p",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "blockquote",
+  "pre",
+  "ul",
+  "ol",
+  "dl",
+  "table",
+  "figure",
+  "form",
+  "hr",
+]);
+
+/** Block elements that only start a new line. */
+const LINE_ELEMENTS = new Set([
+  "div",
+  "section",
+  "article",
+  "main",
+  "header",
+  "footer",
+  "nav",
+  "aside",
+  "li",
+  "dt",
+  "dd",
+  "tr",
+  "caption",
+  "thead",
+  "tbody",
+  "tfoot",
+  "figcaption",
+  "fieldset",
+  "address",
+  "details",
+  "summary",
+  "body",
+  "html",
+]);
+
+const CELL_ELEMENTS = new Set(["td", "th"]);
+
 function extractTextFromHtml(html: string): string {
-  let text = "";
+  // Output is accumulated as parts and joined once; state tracks the tail so no step rescans it.
+  const parts: string[] = [];
+  let trailingNewlines = 0;
+  let pendingSpace = false;
   let skipDepth = 0;
-  const omittedElements = new Set(["script", "style", "noscript", "iframe", "object", "embed"]);
+  let preDepth = 0;
+  const omittedElements = new Set([
+    "script",
+    "style",
+    "noscript",
+    "iframe",
+    "object",
+    "embed",
+    "template",
+  ]);
+  const emit = (value: string): void => {
+    if (value.length === 0) return;
+    parts.push(value);
+    let newlines = 0;
+    while (newlines < value.length && value[value.length - 1 - newlines] === "\n") newlines++;
+    trailingNewlines = newlines === value.length ? trailingNewlines + newlines : newlines;
+  };
+  // Ensure the text ends with at least `newlines` line breaks, without adding to existing ones.
+  const breakLine = (newlines: number): void => {
+    pendingSpace = false;
+    if (parts.length === 0) return;
+    emit("\n".repeat(Math.max(0, newlines - trailingNewlines)));
+  };
   const parser = new Parser({
     onopentag(name) {
-      if (skipDepth > 0 || omittedElements.has(name)) skipDepth++;
+      if (skipDepth > 0 || omittedElements.has(name)) {
+        skipDepth++;
+        return;
+      }
+      if (name === "br") {
+        pendingSpace = false;
+        if (parts.length > 0 && (preDepth > 0 || trailingNewlines < 2)) emit("\n");
+      } else if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
+      else if (LINE_ELEMENTS.has(name)) breakLine(1);
+      if (name === "pre") preDepth++;
     },
     ontext(value) {
-      if (skipDepth === 0) text += value;
+      if (skipDepth > 0) return;
+      if (preDepth > 0) {
+        emit(value);
+        return;
+      }
+      const core = value.trim().replace(/\s+/g, " ");
+      const atLineStart = parts.length === 0 || trailingNewlines > 0;
+      const spaceBefore = pendingSpace || /^\s/.test(value);
+      if (core.length > 0) {
+        emit(spaceBefore && !atLineStart ? ` ${core}` : core);
+        pendingSpace = /\s$/.test(value);
+      } else if (!atLineStart && /\s/.test(value)) {
+        pendingSpace = true;
+      }
     },
-    onclosetag() {
-      if (skipDepth > 0) skipDepth--;
+    onclosetag(name) {
+      if (skipDepth > 0) {
+        skipDepth--;
+        return;
+      }
+      if (name === "pre") preDepth = Math.max(0, preDepth - 1);
+      if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
+      else if (LINE_ELEMENTS.has(name)) breakLine(1);
+      else if (CELL_ELEMENTS.has(name) && trailingNewlines === 0) pendingSpace = true;
     },
   });
   parser.write(html);
   parser.end();
-  return text.trim();
+  return parts.join("").replace(/^\n+/, "").trimEnd();
 }
 
-function convertHtmlToMarkdown(html: string): string {
+const CHROME_REMOVED_NOTE = "Site chrome outside the main content was removed.";
+
+function firstLine(text: string): string {
+  return text.trimStart().split("\n", 1)[0]?.trim() ?? "";
+}
+
+function newTurndown(): TurndownService {
   const turndown = new TurndownService({
     headingStyle: "atx",
     hr: "---",
@@ -222,12 +342,45 @@ function convertHtmlToMarkdown(html: string): string {
     emDelimiter: "*",
   });
   turndown.remove(["script", "style", "meta", "link"]);
-  return turndown.turndown(html);
+  return turndown;
+}
+
+function turndownInChunks(turndown: TurndownService, html: string): string {
+  return convertHtmlInChunks(html, (chunk) => turndown.turndown(chunk), extractTextFromHtml);
+}
+
+/**
+ * Convert HTML to Markdown or plain text, keeping the main content, the page title, and a note when
+ * chrome was dropped. Pages without identifiable main content convert whole.
+ */
+function convertHtmlPage(html: string, format: "markdown" | "text"): string {
+  const main = extractMainContent(html);
+  if (main === undefined) {
+    return format === "markdown"
+      ? turndownInChunks(newTurndown(), html)
+      : extractTextFromHtml(html);
+  }
+  if (format === "text") {
+    const body = extractTextFromHtml(main.html);
+    const note = main.chromeRemoved ? `[${CHROME_REMOVED_NOTE}]` : undefined;
+    const heading = firstLine(body) === main.title ? undefined : main.title;
+    return [heading, note, body].filter((part) => part !== undefined).join("\n\n");
+  }
+  const turndown = newTurndown();
+  const body = turndownInChunks(turndown, main.html);
+  // Escape the title as Turndown escapes text, so `Foo_bar` matches a `# Foo\_bar` heading.
+  const title = main.title === undefined ? undefined : turndown.escape(main.title);
+  const heading =
+    title === undefined || firstLine(body).replace(/^#+\s*/, "") === title
+      ? undefined
+      : `# ${title}`;
+  const note = main.chromeRemoved ? `*${CHROME_REMOVED_NOTE}*` : undefined;
+  return [heading, note, body].filter((part) => part !== undefined).join("\n\n");
 }
 
 function convertFetchedContent(content: string, mime: string, format: WebFetchFormat): string {
   if (mime !== "text/html" || format === "html") return content;
-  return format === "markdown" ? convertHtmlToMarkdown(content) : extractTextFromHtml(content);
+  return convertHtmlPage(content, format);
 }
 
 async function fetchText(
@@ -336,7 +489,8 @@ export function createWebFetchTool(
         content_type: fetched.contentType,
         format,
         content: structured.content,
-        truncated: structured.truncated,
+        truncated: output.truncation !== undefined,
+        structured_truncated: structured.truncated,
       };
       if (output.truncation !== undefined) {
         structuredContent.full_output_path = output.truncation.fullOutputPath;
