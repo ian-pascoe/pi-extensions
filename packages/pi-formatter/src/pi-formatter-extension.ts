@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, matchesGlob, resolve } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { basename, dirname, extname, matchesGlob, relative, resolve } from "node:path";
 import {
   getAgentDir,
   SettingsManager,
@@ -15,6 +15,7 @@ import {
   type FormatterDefinition,
   type ResolvedFormatterSettings,
 } from "./pi-formatter-settings.js";
+import { describeChangedLines } from "./changed-lines.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 const NativeMutationInputSchema = Type.Object(
@@ -86,9 +87,22 @@ type FormatterCommandFailure =
       readonly stderr: string;
     };
 
+/**
+ * Formatter stderr that names a syntax error in the file being formatted. Formatters share no
+ * exit-code convention for it, so this matches the wording of common formatters.
+ */
+const SYNTAX_ERROR_PATTERN =
+  /syntax ?error|parse error|parsing error|failed to parse|unexpected token|unexpected end of|unexpected character/i;
+
 interface ExistingFormatterPaths {
   readonly paths: readonly string[];
   readonly warnings: readonly string[];
+}
+
+/** One line appended to a mutation result; `diagnosable` lines point to the troubleshooting Skill. */
+interface FormatterNote {
+  readonly text: string;
+  readonly diagnosable: boolean;
 }
 
 function extractFormatterMutationPaths(event: ToolResultEvent): readonly string[] | undefined {
@@ -254,6 +268,19 @@ function runFormatterCommand(
   });
 }
 
+/** A syntax error in the changed file is an input outcome that Post-edit Diagnostics report. */
+function isInputFailure(failure: FormatterCommandFailure): boolean {
+  return failure.kind === "exit_error" && SYNTAX_ERROR_PATTERN.test(failure.stderr);
+}
+
+async function readTextFile(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function formatFormatterFailure(
   definition: FormatterDefinition,
   target: string,
@@ -277,9 +304,9 @@ async function formatMutationPaths(
   cwd: string,
   settings: ResolvedFormatterSettings,
   signal: AbortSignal | undefined,
-): Promise<readonly string[]> {
+): Promise<readonly FormatterNote[]> {
   const existing = await existingFormatterPaths(cwd, paths);
-  const warnings = [...existing.warnings];
+  const notes: FormatterNote[] = existing.warnings.map((text) => ({ text, diagnosable: true }));
   for (const definition of settings.formatters.values()) {
     const matchingPaths = existing.paths.filter((path) => formatterMatchesPath(definition, path));
     if (matchingPaths.length === 0) continue;
@@ -308,19 +335,31 @@ async function formatMutationPaths(
       const args = definition.args.map((argument) =>
         path === undefined ? argument : argument.replaceAll("$FILE", path),
       );
+      const before = path === undefined ? undefined : await readTextFile(path);
       const failure = await runFormatterCommand(definition, args, root, settings.timeoutMs, signal);
       if (failure !== undefined) {
-        warnings.push(
-          formatFormatterFailure(
+        notes.push({
+          text: formatFormatterFailure(
             definition,
             path ?? `workspace ${root} triggered by ${matchingPaths.join(", ")}`,
             failure,
           ),
-        );
+          diagnosable: !isInputFailure(failure),
+        });
+      } else if (path !== undefined && before !== undefined) {
+        const after = await readTextFile(path);
+        const changedLines = after === undefined ? undefined : describeChangedLines(before, after);
+        if (changedLines !== undefined) {
+          const file = existing.paths.length > 1 ? `${relative(cwd, path)}: ` : "";
+          notes.push({
+            text: `Formatted by ${definition.id}: ${file}${changedLines}`,
+            diagnosable: false,
+          });
+        }
       }
     }
   }
-  return warnings;
+  return notes;
 }
 
 /** Compose the source-TypeScript Pi Formatter extension without running commands at load time. */
@@ -344,12 +383,18 @@ export function createPiFormatterExtension(
     pi.on("tool_result", async (event, context) => {
       const paths = extractFormatterMutationPaths(event);
       if (paths === undefined || paths.length === 0 || settings === undefined) return undefined;
-      const warnings = await formatMutationPaths(paths, context.cwd, settings, context.signal);
-      if (warnings.length === 0) return undefined;
+      const notes = await formatMutationPaths(paths, context.cwd, settings, context.signal);
+      if (notes.length === 0) return undefined;
+      const text = notes.map((note) => note.text).join("\n");
       const result: ToolResultEventResult = {
         content: [
           ...event.content,
-          { type: "text", text: `${warnings.join("\n")}\n\n${TROUBLESHOOTING_HINT}` },
+          {
+            type: "text",
+            text: notes.some((note) => note.diagnosable)
+              ? `${text}\n\n${TROUBLESHOOTING_HINT}`
+              : text,
+          },
         ],
       };
       // Pi drops structured content whose content was replaced unless the handler returns it.

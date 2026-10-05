@@ -50,10 +50,21 @@ once per matching workspace root, allowing full-project formatting. `rootMarkers
 patterns; the nearest matching ancestor becomes the command working directory and Pi's working
 directory is the fallback. Set `requireRootMarker` to `true` to skip the formatter unless any root
 marker exists above the changed file; it defaults to `false`. A required empty `rootMarkers` list is
-invalid. Formatters run sequentially in configuration order. Successful output is silent. A
-timeout, spawn error, or non-zero exit appends a warning to the original tool result without
-changing that result's success state; later formatters still run.
-The warning ends with a pointer to the package's troubleshooting Skill.
+invalid. Formatters run sequentially in configuration order.
+
+When a File Formatter changes a file, one line is appended to the original tool result so the
+agent knows its view of the file is stale, for example `Formatted by oxfmt: lines 4–7 changed`.
+Line numbers describe the formatted file: the span runs from the first line that differs from the
+pre-format content to the last one, and it includes unchanged lines between them. A formatter that
+only removes lines reports `lines removed after line N`. The line names the file, relative to
+Pi's working directory, when the mutation changed more than one file. Nothing is added when the
+content is unchanged, and Workspace Formatters are not reported.
+
+A timeout, spawn error, or non-zero exit appends a warning to the original tool result without
+changing that result's success state; later formatters still run. The warning ends with a pointer
+to the package's troubleshooting Skill, except when the formatter's stderr reports a syntax error
+(for example `SyntaxError`, `parse error`, or `Unexpected token`). That is an input outcome Pi LSP's
+Post-edit Diagnostics report, not a formatter failure to diagnose.
 
 Global and project `timeoutMs` values override by scope. A project formatter replaces the complete
 global definition with the same ID; set it to `null` to disable it. Invalid definitions and fields

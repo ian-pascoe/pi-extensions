@@ -14,4 +14,4 @@ disable-model-invocation: true
 5. For a requested change, edit one settings layer, validate JSON, reload Pi, and repeat the same mutation.
 6. Finish when the same destination formats or the exact selector, activation, root, spawn, timeout, or exit boundary is evidenced.
 
-A formatter failure warns but does not fail the original mutation.
+A formatter failure warns but does not fail the original mutation. A `Formatted by <id>: lines …` line is normal output, not a failure. A formatter syntax error carries no pointer to this Skill; fix the file instead.
