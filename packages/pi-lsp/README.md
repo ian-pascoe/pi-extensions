@@ -156,6 +156,8 @@ Result positions are one-based Unicode code points too. Location results (`lsp_f
 and `lsp_document_highlights`) reach the model as one line per location:
 
 ```text
+Query position: src/a.ts:1:14 ("value")
+
 src/a.ts:1:14  export const value = 1;
 src/b.ts:3:17  console.log(value);
 ```
@@ -201,6 +203,14 @@ Scripts receive each server's bounded response with its `prefix` and the count o
 matching items.
 
 Other reads show the server's response as compact JSON, as does a response of an unexpected shape.
+
+Every position tool's result starts by naming the queried position and the token there, so an
+off-by-one position is visible: `Query position: src/a.ts:1:14 ("value")`. On whitespace or past
+the line end it shows the trimmed line instead (`(no token; line: "...")`). When no server found
+anything, the result says so for that position instead, for example
+`No call hierarchy item at src/todo.ts:61:18 ("readonly").` The hierarchy follow-ups
+(`lsp_incoming_calls`, `lsp_outgoing_calls`, `lsp_supertypes`, `lsp_subtypes`) distinguish a
+position without a hierarchy item from an item without calls or types.
 
 Pi LSP starts one server per workspace root, so `lsp_find_references` and `lsp_rename` search
 only the workspace root of the queried file. In a monorepo where every package has a
@@ -283,7 +293,9 @@ server. No tool is open-world, because all of them talk only to configured local
 Every tool declares an output schema and returns matching `structuredContent`, which codemode
 scripts receive instead of the text. Reads resolve to
 `{ results: { server_id, root_path, value }[], warnings, truncated, structured_truncated, spill_path? }`, where `value` is
-the server's response with one-based positions and file paths instead of `file:` URIs. The
+the server's response with one-based positions and file paths instead of `file:` URIs. Position
+tools add `position: { path, line, character, token?, line_text }`: the queried position, the
+identifier or punctuation run there (absent on whitespace), and its trimmed line. The
 model-visible text of a read is derived from the same data.
 `lsp_status`, `lsp_capabilities`/`lsp_restart`, the preview tools, `lsp_code_actions`, and
 `lsp_apply` have their own shapes; `describeTool(name)` shows each declaration.

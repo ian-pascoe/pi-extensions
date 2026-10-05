@@ -92,6 +92,13 @@ import {
   type LspServerReadResult,
   type LspServerRoute,
 } from "./lsp-server-manager.js";
+import {
+  describeLspQueryPosition,
+  isLspPositionReadOperation,
+  lspEmptyPositionReadMessage,
+  lspQueryPosition,
+  type LspQueryPosition,
+} from "./lsp-query-position.js";
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import {
   DEFAULT_LSP_ITEM_LIMIT,
@@ -99,6 +106,7 @@ import {
   LspApplyOutputSchema,
   LspCodeActionsOutputSchema,
   LspOperationParametersSchemas,
+  LspPositionReadOutputSchema,
   LspPreviewOutputSchema,
   LspReadOutputSchema,
   LspServerOutputSchema,
@@ -118,6 +126,7 @@ import {
   createLspToolOutput as createBaseLspToolOutput,
   formatLspToolValue,
   lspStructuredFields,
+  lspStructuredValue,
   type LspStructuredFields,
 } from "./lsp-tool-output.js";
 import {
@@ -395,6 +404,40 @@ interface ReadTextContext {
   readonly documentPath: string;
   /** Requested selection-range positions. */
   readonly positions?: readonly LspCodePointPosition[];
+  /** What a position-based query's requested position held. */
+  readonly queried?: QueriedPosition | undefined;
+}
+
+/** What a position-based query's requested position held, as its result reports it. */
+interface QueriedPosition {
+  readonly query: LspQueryPosition;
+  /** Servers whose hierarchy follow-up found no item at the position to follow. */
+  readonly noHierarchyItemServers: ReadonlySet<string>;
+}
+
+/**
+ * The parts of a read's output that name its queried position: the Structured Result field, the
+ * line that opens a result that found something, and the line stating that a server found nothing.
+ */
+function queriedPositionText(
+  operation: LspOperationName,
+  queried: QueriedPosition | undefined,
+  textContext: ReadTextContext,
+  resultCount: number,
+) {
+  if (queried === undefined || !isLspPositionReadOperation(operation)) return undefined;
+  const position = describeLspQueryPosition(textContext.cwd, queried.query);
+  return {
+    structured: { position: lspStructuredValue(formatLspToolValue(queried.query)) },
+    position,
+    headline: resultCount === 0 ? [] : [`Query position: ${position}`],
+    emptyMessage: (read: { readonly server_id: string }) =>
+      lspEmptyPositionReadMessage(
+        operation,
+        position,
+        queried.noHierarchyItemServers.has(read.server_id),
+      ),
+  };
 }
 
 function readTextContext(filePath: string, context: ExtensionContext): ReadTextContext {
@@ -405,7 +448,9 @@ function readTextContext(filePath: string, context: ExtensionContext): ReadTextC
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
  * response; location, symbol, hierarchy, and range reads derive readable model-visible text from
  * the same data (ADR-0003), and other reads show that JSON. References also name each searched
- * workspace root and warn when other roots of the same Server Definition exist.
+ * workspace root and warn when other roots of the same Server Definition exist. A position-based
+ * query also reports its queried position: in the Structured Result, as the opening line of a result
+ * that found something, and in the line stating that a server found nothing there.
  */
 async function readOutput(
   operation: LspToolParameters["operation"],
@@ -428,6 +473,9 @@ async function readOutput(
   const warnings = [...serverInstanceScopeWarnings(scopes), ...failureWarnings];
   const json = formatLspToolValue({ results, warnings });
   const details = operationDetails(operation, readOperationOutcomes(resolved));
+  const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
+  const queried = queriedPositionText(operation, textContext.queried, textContext, resultCount);
+  const structured = { ...queried?.structured, ...lspStructuredFields(json) };
   let text: string;
   if (isLspLocationOperation(operation)) {
     text = await formatLspLocationReadText({
@@ -436,7 +484,8 @@ async function readOutput(
       documentPath: textContext.documentPath,
       reads: results,
       warnings: failureWarnings,
-      scope: serverInstanceScopeLines(scopes),
+      scope: [...(queried?.headline ?? []), ...serverInstanceScopeLines(scopes)],
+      emptyMessage: queried?.emptyMessage,
     });
   } else if (isLspStructureOperation(operation)) {
     text = await formatLspStructureReadText({
@@ -447,17 +496,66 @@ async function readOutput(
       warnings: failureWarnings,
       positions: textContext.positions,
       outgoingCallSitePath: (call) => OUTGOING_CALL_SITE_PATHS.get(call),
+      scope: queried?.headline ?? [],
+      emptyMessage: queried?.emptyMessage,
     });
+  } else if (queried !== undefined) {
+    // Other position reads show their JSON under the queried position, or under what was not found.
+    const summary =
+      resultCount === 0 ? [...new Set(results.map(queried.emptyMessage))] : queried.headline;
+    text = [...summary, json].join("\n");
   } else {
-    return createLspToolOutput(json, details, lspStructuredFields(json), dependencies);
+    return createLspToolOutput(json, details, structured, dependencies);
   }
-  const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   return createLspToolOutput(
     text,
     { ...details, result_count: resultCount },
-    lspStructuredFields(json),
+    structured,
     dependencies,
   );
+}
+
+/** One server's answer to a position-based query. */
+interface PositionReadValue {
+  // oxlint-disable-next-line anti-slop/no-unknown-property-types -- Normalized server responses stay opaque until rendering checks recognized shapes.
+  readonly response: unknown;
+  /** What the queried position held in the text sent to this server. */
+  readonly query: LspQueryPosition;
+  /** Whether a hierarchy follow-up found no item at the position to follow. */
+  readonly noHierarchyItem: boolean;
+}
+
+/**
+ * Return a position-based query's result: a read whose output also names what the requested
+ * position held, so an off-by-one position is visible.
+ */
+async function positionReadOutput(
+  operation: PositionReadOperation,
+  result: Promise<LspServerReadResult<PositionReadValue>>,
+  dependencies: LspToolDependencies,
+  textContext: ReadTextContext,
+) {
+  const resolved = await result;
+  const [first] = resolved.successes;
+  const queried: QueriedPosition | undefined =
+    first === undefined
+      ? undefined
+      : {
+          query: first.value.query,
+          noHierarchyItemServers: new Set(
+            resolved.successes
+              .filter(({ value }) => value.noHierarchyItem)
+              .map(({ serverId }) => serverId),
+          ),
+        };
+  const reads = {
+    failures: resolved.failures,
+    successes: resolved.successes.map((success) => ({
+      ...success,
+      value: success.value.response,
+    })),
+  };
+  return readOutput(operation, Promise.resolve(reads), dependencies, { ...textContext, queried });
 }
 
 /**
@@ -483,18 +581,27 @@ async function itemListOutput(
   }));
   const warnings = resolved.failures.map(({ message }) => message);
   const json = formatLspToolValue({ results, warnings });
+  const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
+  const query = resolved.successes[0]?.value.query;
+  const queried = queriedPositionText(
+    operation,
+    query === undefined ? undefined : { query, noHierarchyItemServers: new Set() },
+    textContext,
+    resultCount,
+  );
   const text = await formatLspItemListText({
     operation,
     cwd: textContext.cwd,
     documentPath: textContext.documentPath,
     reads: results,
     warnings,
+    scope: queried?.headline ?? [],
+    position: queried?.position,
   });
-  const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   return createLspToolOutput(
     text,
     { ...operationDetails(operation, readOperationOutcomes(resolved)), result_count: resultCount },
-    lspStructuredFields(json),
+    { ...queried?.structured, ...lspStructuredFields(json) },
     dependencies,
   );
 }
@@ -971,7 +1078,7 @@ async function executePositionRead(
   parameters: PositionReadParameters,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<unknown>> {
+): Promise<LspServerReadResult<PositionReadValue>> {
   const filePath = await documentFilePath(parameters.file_path, context);
   const methodByOperation = {
     hover: HoverRequest.method,
@@ -997,10 +1104,9 @@ async function executePositionRead(
     requireMethod(capabilityMethod),
     async (client, route) => {
       const prepared = await prepareLspDocument(client, route, filePath);
-      const position = protocolPosition(prepared, {
-        line: parameters.line,
-        character: parameters.character,
-      });
+      const requested = { line: parameters.line, character: parameters.character };
+      const position = protocolPosition(prepared, requested);
+      const query = lspQueryPosition(filePath, prepared.document.text, requested);
       const textDocument = { uri: prepared.document.uri };
       let requestParameters: TextDocumentPositionParams | ReferenceParams = {
         textDocument,
@@ -1016,6 +1122,7 @@ async function executePositionRead(
 
       if (parameters.operation === "outgoing_calls") {
         const preparedItems = Array.isArray(value) ? value : [];
+        const noHierarchyItem = preparedItems.length === 0;
         const calls = await Promise.all(
           preparedItems.map(async (item) =>
             normalizeOutgoingCalls(
@@ -1025,8 +1132,9 @@ async function executePositionRead(
             ),
           ),
         );
-        return calls.flat();
+        return { response: calls.flat(), query, noHierarchyItem };
       }
+      let noHierarchyItem = false;
       if (
         parameters.operation === "incoming_calls" ||
         parameters.operation === "supertypes" ||
@@ -1039,6 +1147,7 @@ async function executePositionRead(
               ? TypeHierarchySupertypesRequest.method
               : TypeHierarchySubtypesRequest.method;
         const preparedItems = Array.isArray(value) ? value : [];
+        noHierarchyItem = preparedItems.length === 0;
         value = (
           await Promise.all(
             preparedItems.map((item) => client.request(followupMethod, { item }, signal)),
@@ -1046,7 +1155,7 @@ async function executePositionRead(
         ).flat();
       }
 
-      return normalizeProtocolResult(value, prepared);
+      return { response: await normalizeProtocolResult(value, prepared), query, noHierarchyItem };
     },
   );
 }
@@ -1055,6 +1164,8 @@ async function executePositionRead(
 interface BoundedServerItems extends LspBoundedItems {
   /** The prefix completions were filtered by. */
   readonly prefix?: string;
+  /** What a completion's queried position held in the text sent to this server. */
+  readonly query?: LspQueryPosition;
 }
 
 /**
@@ -1092,6 +1203,7 @@ async function executeCompletion(
         value: await normalizeProtocolResult(value, prepared),
         omitted: bounded.omitted,
         prefix,
+        query: lspQueryPosition(filePath, prepared.document.text, parameters),
       };
     },
   );
@@ -1673,7 +1785,7 @@ async function executeLspOperation(
     case "supertypes":
     case "subtypes":
     case "prepare_rename":
-      return readOutput(
+      return positionReadOutput(
         parameters.operation,
         executePositionRead(dependencies, parameters, context, signal),
         dependencies,
@@ -1894,7 +2006,9 @@ function lspToolOutputSchema(operation: LspOperationName): TSchema {
     case "apply":
       return LspApplyOutputSchema;
     default:
-      return LspReadOutputSchema;
+      return isLspPositionReadOperation(operation)
+        ? LspPositionReadOutputSchema
+        : LspReadOutputSchema;
   }
 }
 

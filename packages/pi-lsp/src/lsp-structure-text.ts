@@ -142,6 +142,10 @@ export interface LspStructureReadTextInput {
    * sites are placed in the queried document.
    */
   readonly outgoingCallSitePath?: (call: LspTextOutgoingCall) => string | undefined;
+  /** Lines shown before the items, such as the queried position. */
+  readonly scope?: readonly string[];
+  /** The line shown for a server that found nothing, replacing the operation's default. */
+  readonly emptyMessage?: ((read: LspRead) => string) | undefined;
 }
 
 /** Shared rendering state of one read. */
@@ -362,8 +366,8 @@ function emptyMessage(operation: LspStructureOperation): string {
  * - folding ranges: `startLine-endLine[ kind]  <first source line>`.
  *
  * Results are grouped by server only when more than one server answered, and server failures
- * follow as warnings. A response that does not match the operation's shape is shown as compact
- * JSON instead.
+ * follow as warnings. Scope lines, when given, precede the items. A response that does not match
+ * the operation's shape is shown as compact JSON instead.
  */
 export async function formatLspStructureReadText(
   input: LspStructureReadTextInput,
@@ -371,6 +375,7 @@ export async function formatLspStructureReadText(
   return assembleLspReadText({
     blocks: await formatLspStructureReadBlocks(input),
     warnings: input.warnings,
+    scope: input.scope ?? [],
   });
 }
 
@@ -381,12 +386,12 @@ export async function formatLspStructureReadBlocks(
   const context: RenderContext = { input, sources: new LspSourceLines() };
   return Promise.all(
     input.reads.map(async (read): Promise<LspReadTextBlock> => {
+      const empty = input.emptyMessage?.(read) ?? emptyMessage(input.operation);
       if (read.value === null || read.value === undefined) {
-        return { server_id: read.server_id, lines: [emptyMessage(input.operation)] };
+        return { server_id: read.server_id, lines: [empty] };
       }
       const items: readonly unknown[] = Array.isArray(read.value) ? read.value : [read.value];
-      const lines =
-        items.length === 0 ? [emptyMessage(input.operation)] : await itemLines(items, context);
+      const lines = items.length === 0 ? [empty] : await itemLines(items, context);
       return { server_id: read.server_id, lines: lines ?? [formatLspToolValue(read.value)] };
     }),
   );

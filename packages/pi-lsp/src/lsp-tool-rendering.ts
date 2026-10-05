@@ -88,6 +88,7 @@ export function semanticLspValueCount(value: unknown): number {
   if (record.status === "unsupported") return 0;
   if (Array.isArray(record.diagnostics)) return record.diagnostics.length;
   if (Array.isArray(record.items)) return record.items.length;
+  if (Array.isArray(record.signatures)) return record.signatures.length;
   if (Array.isArray(record.diagnosticsByUri)) {
     // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each diagnostics entry is checked as a `{ uri, value }` record or a historical tuple before its value is counted.
     return record.diagnosticsByUri.reduce((count: number, entry: unknown) => {

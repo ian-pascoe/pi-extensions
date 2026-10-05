@@ -188,8 +188,10 @@ export interface LspLocationReadTextInput {
   readonly documentPath: string;
   readonly reads: readonly LspRead[];
   readonly warnings: readonly string[];
-  /** Lines shown before the locations, such as the workspace roots that were searched. */
+  /** Lines shown before the locations, such as the queried position and searched workspace roots. */
   readonly scope?: readonly string[];
+  /** The line shown for a server that found no locations, replacing the operation's default. */
+  readonly emptyMessage?: ((read: LspRead) => string) | undefined;
 }
 
 /** The rendered lines of one server's response. */
@@ -234,8 +236,9 @@ export async function formatLspLocationReadText(input: LspLocationReadTextInput)
       const locations = parseLocations(read.value, input.documentPath);
       let lines: readonly string[];
       if (locations === undefined) lines = [formatLspToolValue(read.value)];
-      else if (locations.length === 0) lines = [emptyMessage(input.operation)];
-      else {
+      else if (locations.length === 0) {
+        lines = [input.emptyMessage?.(read) ?? emptyMessage(input.operation)];
+      } else {
         lines = await Promise.all(
           locations.map((location) => formatLspLocationLine(location, input.cwd, sources)),
         );

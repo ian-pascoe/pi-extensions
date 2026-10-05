@@ -448,7 +448,7 @@ test.each([
     expect(codemode).not.toContain("lsp_hover(");
     const hover = tools.find(({ name }) => name === "lsp_hover")?.description ?? "";
     expect(hover).toContain(
-      "Codemode: `tools.lsp_hover(args)` resolves to `{ results, warnings, truncated, structured_truncated, spill_path?, server_preview_ids? }`.",
+      "Codemode: `tools.lsp_hover(args)` resolves to `{ position, results, warnings, truncated, structured_truncated, spill_path?, server_preview_ids? }`.",
     );
     expect(fixture.providerRequests).toEqual([]);
   },

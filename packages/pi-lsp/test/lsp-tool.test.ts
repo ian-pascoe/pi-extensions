@@ -27,9 +27,11 @@ import type {
 } from "../src/lsp-server-client.js";
 import { LspServerManager } from "../src/lsp-server-manager.js";
 import { createLspSessionFiles, type LspSessionFiles } from "../src/lsp-session-files.js";
+import { formatLspToolValue } from "../src/lsp-tool-output.js";
 import {
   LSP_OPERATION_NAMES,
   LspApplyOutputSchema,
+  LspPositionReadOutputSchema,
   LspReadOutputSchema,
   type LspToolParameters,
   type LspToolResultDetails,
@@ -378,6 +380,9 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       openWorldHint: false,
     });
     expect(registrar.tools.find(({ name }) => name === "lsp_hover")?.outputSchema).toBe(
+      LspPositionReadOutputSchema,
+    );
+    expect(registrar.tools.find(({ name }) => name === "lsp_diagnostics")?.outputSchema).toBe(
       LspReadOutputSchema,
     );
     expect(registrar.tools.find(({ name }) => name === "lsp_apply")?.outputSchema).toBe(
@@ -673,6 +678,13 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       character: 7,
     });
     expect(references.structuredContent).toEqual({
+      position: {
+        path: fixture.filePath,
+        line: 1,
+        character: 7,
+        token: "emoji",
+        line_text: "const emoji = '😀';",
+      },
       results: [
         {
           root_path: fixture.context.cwd,
@@ -691,6 +703,7 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     });
     expect(resultText(references)).toBe(
       [
+        'Query position: source.ts:1:7 ("emoji")',
         `Searched typescript workspace root: ${fixture.context.cwd}`,
         "",
         "source.ts:1:7  const emoji = '😀';",
@@ -814,6 +827,7 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
 
     expect(resultText(result)).toBe(
       [
+        'Query position: source.ts:1:7 ("emoji")',
         `Searched typescript workspace root: ${cwd}`,
         "",
         "source.ts:1:7  const emoji = '😀';",
@@ -826,9 +840,16 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       end: { character: character + 5, line },
       start: { character, line },
     });
-    // Byte-identical to the compact JSON these reads returned as text before.
+    // The compact JSON these reads returned as text before, plus the queried position.
     expect(JSON.stringify(result.structuredContent)).toBe(
       JSON.stringify({
+        position: {
+          character: 7,
+          line: 1,
+          line_text: "const emoji = '😀';",
+          path: fixture.filePath,
+          token: "emoji",
+        },
         results: [
           {
             root_path: cwd,
@@ -943,6 +964,8 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
 
     expect(resultText(result)).toBe(
       [
+        'Query position: source.ts:1:10 ("emoji")',
+        "",
         'Completions starting with "emo":',
         "emoji (variable)  resolved",
         "emotion (variable)  resolved",
@@ -955,6 +978,13 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       items[0],
     ]);
     expect(result.structuredContent).toEqual({
+      position: {
+        path: fixture.filePath,
+        line: 1,
+        character: 10,
+        token: "emoji",
+        line_text: "const emoji = '😀';",
+      },
       results: [
         {
           root_path: fixture.context.cwd,
@@ -984,6 +1014,8 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       prefix: "",
     });
     expect(resultText(explicit).split("\n")).toEqual([
+      'Query position: source.ts:1:10 ("emoji")',
+      "",
       "emoji (variable)  resolved",
       "emotion (variable)  resolved",
       "Emoticon (class)  resolved",
@@ -1007,10 +1039,11 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       character: 1,
     });
     const lines = resultText(result).split("\n");
-    expect(lines).toHaveLength(51);
-    expect(lines[0]).toBe("item000");
-    expect(lines[49]).toBe("item049");
-    expect(lines[50]).toBe("70 more omitted; raise limit or refine the prefix to see them.");
+    expect(lines).toHaveLength(53);
+    expect(lines.slice(0, 2)).toEqual(['Query position: source.ts:1:1 ("const")', ""]);
+    expect(lines[2]).toBe("item000");
+    expect(lines[51]).toBe("item049");
+    expect(lines[52]).toBe("70 more omitted; raise limit or refine the prefix to see them.");
 
     fixture.client.responseByMethod.set(
       "workspace/symbol",
@@ -1106,6 +1139,7 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     const warning = `typescript searched only its workspace root ${join("packages", "a")}, but other typescript workspace roots exist: ${join("packages", "b")}. Files outside ${join("packages", "a")} may not have been considered; query a file under each other root or search for importers before relying on this result.`;
     expect(resultText(result)).toBe(
       [
+        `Query position: ${join("packages", "a", "source.ts")}:1:14 ("helper")`,
         `Searched typescript workspace root: ${join("packages", "a")}`,
         `Warning: ${warning}`,
         "",
@@ -1240,7 +1274,11 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     );
 
     expect(resultText(references)).toBe(
-      [`Searched typescript workspace root: ${cwd}`, "", "No references found."].join("\n"),
+      [
+        `Searched typescript workspace root: ${cwd}`,
+        "",
+        'No references found at source.ts:1:7 ("emoji").',
+      ].join("\n"),
     );
     expect(references.structuredContent).toMatchObject({ warnings: [] });
     if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
@@ -1282,16 +1320,148 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     const [warning] = Value.Parse(LspReadOutputSchema, result.structuredContent).warnings;
     expect(resultText(result)).toBe(
       [
+        'Query position: source.ts:1:7 ("emoji")',
+        "",
         "good:",
         "  source.ts:1:7  const emoji = '😀';",
         "empty:",
-        "  No locations found.",
+        '  No locations found at source.ts:1:7 ("emoji").',
         "",
         `Warning: ${warning}`,
       ].join("\n"),
     );
     expect(warning).toContain("expected failure");
     await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("echoes the token at the queried position in text and structured results", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.responseByMethod.set("textDocument/hover", {
+      contents: { kind: "plaintext", value: "const emoji: string" },
+    });
+
+    const hover = await executeTool(fixture, {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 9,
+    });
+
+    const position = {
+      path: fixture.filePath,
+      line: 1,
+      character: 9,
+      token: "emoji",
+      line_text: "const emoji = '😀';",
+    };
+    const results = [
+      {
+        root_path: fixture.context.cwd,
+        server_id: "typescript",
+        value: { contents: { kind: "plaintext", value: "const emoji: string" } },
+      },
+    ];
+    expect(resultText(hover)).toBe(
+      [
+        'Query position: source.ts:1:9 ("emoji")',
+        formatLspToolValue({ results, warnings: [] }),
+      ].join("\n"),
+    );
+    expect(Value.Parse(LspPositionReadOutputSchema, hover.structuredContent)).toEqual({
+      position,
+      results,
+      warnings: [],
+      structured_truncated: false,
+      truncated: false,
+    });
+    expect(hover.details).toMatchObject({ operation: "hover", result_count: 1 });
+    await fixture.close();
+  });
+
+  test("shows the trimmed line when the queried position is on whitespace", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.responseByMethod.set("textDocument/definition", {
+      uri: pathToFileURL(fixture.filePath).href,
+      range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } },
+    });
+
+    const definition = await executeTool(fixture, {
+      operation: "goto_definition",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 6,
+    });
+
+    expect(resultText(definition)).toBe(
+      [
+        `Query position: source.ts:1:6 (no token; line: "const emoji = '😀';")`,
+        "",
+        "source.ts:1:7  const emoji = '😀';",
+      ].join("\n"),
+    );
+    expect(Value.Parse(LspPositionReadOutputSchema, definition.structuredContent).position).toEqual(
+      {
+        path: fixture.filePath,
+        line: 1,
+        character: 6,
+        line_text: "const emoji = '😀';",
+      },
+    );
+    await fixture.close();
+  });
+
+  test("states that nothing was found at the queried position and what was there", async () => {
+    const fixture = await createToolFixture();
+    await writeFile(
+      fixture.filePath,
+      "class TodoContext {\n  constructor(private readonly tasks: string[]) {}\n}\n",
+    );
+    const call = { file_path: fixture.filePath, line: 2, character: 24 } as const;
+
+    const incoming = await executeTool(fixture, { operation: "incoming_calls", ...call });
+    const references = await executeTool(fixture, { operation: "find_references", ...call });
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+      {
+        name: "constructor",
+        kind: 9,
+        uri: pathToFileURL(fixture.filePath).href,
+        range: { start: { line: 1, character: 2 }, end: { line: 1, character: 49 } },
+        selectionRange: { start: { line: 1, character: 2 }, end: { line: 1, character: 13 } },
+      },
+    ]);
+    const outgoing = await executeTool(fixture, { operation: "outgoing_calls", ...call });
+    fixture.client.responseByMethod.set("textDocument/signatureHelp", { signatures: [] });
+    const signature = await executeTool(fixture, { operation: "signature_help", ...call });
+    const completion = await executeTool(fixture, { operation: "completion", ...call });
+
+    const empty = [{ root_path: fixture.context.cwd, server_id: "typescript", value: [] }];
+    expect(resultText(incoming)).toBe('No call hierarchy item at source.ts:2:24 ("readonly").');
+    expect(incoming.details).toMatchObject({ result_count: 0 });
+    expect(incoming.structuredContent).toMatchObject({
+      position: { line: 2, character: 24, token: "readonly" },
+      results: empty,
+    });
+    expect(resultText(outgoing)).toBe('No outgoing calls found at source.ts:2:24 ("readonly").');
+    expect(resultText(completion)).toBe(
+      'No completions start with "r" at source.ts:2:24 ("readonly").',
+    );
+    expect(resultText(signature)).toBe(
+      [
+        'No signature help at source.ts:2:24 ("readonly").',
+        formatLspToolValue({
+          results: [{ ...empty[0], value: { signatures: [] } }],
+          warnings: [],
+        }),
+      ].join("\n"),
+    );
+    expect(resultText(references)).toBe(
+      [
+        `Searched typescript workspace root: ${fixture.context.cwd}`,
+        "",
+        'No references found at source.ts:2:24 ("readonly").',
+      ].join("\n"),
+    );
     await fixture.close();
   });
 
@@ -1714,6 +1884,8 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     });
     expect(resultText(result)).toBe(
       [
+        'Query position: source.ts:1:1 ("const")',
+        "",
         "caller (function) long-caller.ts:1:17",
         "  long-caller.ts:1:37  export function aLongCallerName() { callee(); }",
         "caller (function) unicode-caller.ts:1:1",
@@ -1773,6 +1945,8 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
 
     expect(resultText(result)).toBe(
       [
+        'Query position: source.ts:1:1 ("const")',
+        "",
         "run (function) run.ts:1:17",
         "  helper.ts:1:31  function helper() { const 😀 = run(); }",
       ].join("\n"),
@@ -1837,6 +2011,8 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
 
     expect(resultText(result)).toBe(
       [
+        'Query position: source.ts:1:7 ("emoji")',
+        "",
         "run (function) run.ts:1:17",
         "  helper.ts:1:31  function helper() { const 😀 = run(); }",
         "run (function) run.ts:1:17",
