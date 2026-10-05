@@ -628,7 +628,11 @@ export class LspServerClient {
     this.pullDiagnostics.delete(uri);
   }
 
-  /** Synchronize a document, then wait for authoritative fresh push or pull diagnostics. */
+  /**
+   * Synchronize a document, then wait for authoritative fresh push or pull diagnostics. A push
+   * counts only when it is newer than the last cached push for the file, so a caller that just
+   * changed a file on disk never receives diagnostics for unchanged content it already saw.
+   */
   async documentDiagnostics(
     filePath: string,
     languageId: string,
@@ -641,17 +645,17 @@ export class LspServerClient {
   }
 
   /**
-   * Synchronize a document, then return LSP Diagnostics for its current version: a cached push
-   * received since that version was sent, otherwise fresh push or pull diagnostics. A timeout
-   * returns no diagnostics.
+   * Return LSP Diagnostics for a synchronized document version: a cached push received since that
+   * version was sent, otherwise fresh push or pull diagnostics. A timeout, or a version already
+   * superseded by a later synchronization, returns no diagnostics.
    */
   async currentDocumentDiagnostics(
-    filePath: string,
-    languageId: string,
+    document: LspSynchronizedDocument,
     signal?: AbortSignal,
   ): Promise<readonly Diagnostic[]> {
-    const document = await this.synchronizeDocument(filePath, languageId);
-    const synchronizedRevision = this.openDocuments.get(document.uri)?.synchronizedRevision ?? 0;
+    const open = this.openDocuments.get(document.uri);
+    if (open?.version !== document.version) return [];
+    const { synchronizedRevision } = open;
     const cached = this.currentPushDiagnostics(
       document.uri,
       document.version,

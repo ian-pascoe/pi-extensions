@@ -104,8 +104,7 @@ class RecordingLspClient implements LspToolServerClient {
   }
 
   async currentDocumentDiagnostics(
-    _filePath: string,
-    _languageId: string,
+    _document: LspSynchronizedDocument,
     _signal?: AbortSignal,
   ): Promise<readonly Diagnostic[]> {
     if (this.currentDiagnosticsFailure !== undefined) throw this.currentDiagnosticsFailure;
@@ -940,6 +939,35 @@ describe("registered LSP tool", () => {
         },
       ],
     });
+    await fixture.close();
+  });
+
+  test("sends LSP Diagnostics that only touch a code-action range endpoint", async () => {
+    const fixture = await createToolFixture();
+    await writeFile(fixture.filePath, "const value = missingName();\n");
+    const endsAtCursor: Diagnostic = {
+      range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } },
+      message: "ends at the cursor",
+    };
+    const startsAtCursor: Diagnostic = {
+      range: { start: { line: 0, character: 11 }, end: { line: 0, character: 13 } },
+      message: "starts at the cursor",
+    };
+    const beforeCursor: Diagnostic = {
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+      message: "before the cursor",
+    };
+    fixture.client.currentDiagnostics = [beforeCursor, endsAtCursor, startsAtCursor];
+
+    await executeTool(fixture, {
+      operation: "code_actions",
+      file_path: fixture.filePath,
+      range: { start: { line: 1, character: 12 }, end: { line: 1, character: 12 } },
+    });
+
+    expect(fixture.client.parametersByMethod.get("textDocument/codeAction")).toMatchObject([
+      { context: { diagnostics: [endsAtCursor, startsAtCursor] } },
+    ]);
     await fixture.close();
   });
 

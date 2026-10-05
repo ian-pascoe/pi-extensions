@@ -193,10 +193,9 @@ export interface LspToolServerClient {
     languageId: string,
     signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult>;
-  /** Synchronize and return LSP Diagnostics for the document's current version, cached when possible. */
+  /** Return LSP Diagnostics for a synchronized document version, cached when possible. */
   currentDocumentDiagnostics(
-    filePath: string,
-    languageId: string,
+    document: LspSynchronizedDocument,
     signal?: AbortSignal,
   ): Promise<readonly Diagnostic[]>;
   /** Return pull workspace diagnostics or the cached push fallback. */
@@ -1039,22 +1038,18 @@ function rangesOverlap(left: Range, right: Range): boolean {
 
 /**
  * Select the Server Instance's current LSP Diagnostics that overlap a code-action range, so
- * diagnostic-dependent quick fixes are offered. Unavailable diagnostics never block code actions.
+ * diagnostic-dependent quick fixes are offered. Any diagnostics failure except cancellation sends
+ * none: refactors and source actions still return, and a failed server surfaces on the
+ * code-action request itself.
  */
 async function codeActionDiagnostics(
-  client: LspToolServerClient,
-  route: LspServerRoute,
-  filePath: string,
+  prepared: PreparedDocument,
   range: Range,
   signal: AbortSignal | undefined,
 ): Promise<Diagnostic[]> {
   let diagnostics: readonly Diagnostic[];
   try {
-    diagnostics = await client.currentDocumentDiagnostics(
-      filePath,
-      route.language.languageId,
-      signal,
-    );
+    diagnostics = await prepared.client.currentDocumentDiagnostics(prepared.document, signal);
   } catch (cause) {
     if (signal?.aborted === true) throw cause;
     return [];
@@ -1081,7 +1076,7 @@ async function executeCodeActions(
     start: protocolPosition(prepared, parameters.range.start),
     end: protocolPosition(prepared, parameters.range.end),
   };
-  const diagnostics = await codeActionDiagnostics(client, route, filePath, range, signal);
+  const diagnostics = await codeActionDiagnostics(prepared, range, signal);
   let actions = await client.request(
     CodeActionRequest.method,
     {
