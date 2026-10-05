@@ -14,6 +14,11 @@ process.once("exit", () => rmSync(home, { recursive: true, force: true }));
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    // `pnpm verify` runs every package's tests alongside typecheck and lint through Turborepo, and
+    // on a 4-vCPU CI runner that contention stretches SDK-driven tests that take well under a
+    // second alone past Vitest's 5 s default. The timeout only guards against hangs, so give it
+    // room rather than raising it test by test.
+    testTimeout: 20_000,
     env: {
       HOME: home,
       USERPROFILE: home,
