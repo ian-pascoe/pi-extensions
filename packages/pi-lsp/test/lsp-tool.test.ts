@@ -256,7 +256,7 @@ function resultText(result: AgentToolResult<LspToolResultDetails>): string {
   return result.content[0]?.type === "text" ? result.content[0].text : "";
 }
 
-function oneBasedRange() {
+function range() {
   return {
     start: { line: 1, character: 1 },
     end: { line: 1, character: 1 },
@@ -515,7 +515,7 @@ describe("registered LSP tool", () => {
         requests: ["textDocument/codeLens"],
       },
       {
-        input: { operation: "inlay_hints", file_path: fixture.filePath, range: oneBasedRange() },
+        input: { operation: "inlay_hints", file_path: fixture.filePath, range: range() },
         requests: ["textDocument/inlayHint"],
       },
       {
@@ -535,7 +535,7 @@ describe("registered LSP tool", () => {
         input: {
           operation: "format_range",
           file_path: fixture.filePath,
-          range: oneBasedRange(),
+          range: range(),
           tab_size: 2,
           insert_spaces: true,
         },
@@ -568,7 +568,7 @@ describe("registered LSP tool", () => {
         requests: ["textDocument/rename"],
       },
       {
-        input: { operation: "code_actions", file_path: fixture.filePath, range: oneBasedRange() },
+        input: { operation: "code_actions", file_path: fixture.filePath, range: range() },
         requests: ["textDocument/codeAction", "codeAction/resolve"],
       },
     ];
@@ -702,7 +702,7 @@ describe("registered LSP tool", () => {
     const actions = await executeTool(fixture, {
       operation: "code_actions",
       file_path: fixture.filePath,
-      range: oneBasedRange(),
+      range: range(),
     });
     expect(actions.structuredContent).toEqual({
       server_id: "typescript",
@@ -955,20 +955,16 @@ describe("registered LSP tool", () => {
       character: 1,
     });
     const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    const oneBasedRange = (line: number, start: number, end: number) => ({
-      start: { line, character: start },
-      end: { line, character: end },
-    });
     expect(JSON.parse(text)).toMatchObject({
       results: [
         {
           value: [
             {
-              from: { uri: longCallerPath, selectionRange: oneBasedRange(1, 17, 17) },
-              fromRanges: [oneBasedRange(1, 37, 43)],
+              from: { uri: longCallerPath, selectionRange: range(1, 17, 17) },
+              fromRanges: [range(1, 37, 43)],
             },
-            { from: { uri: unicodeCallerPath }, fromRanges: [oneBasedRange(1, 11, 17)] },
-            { from: { uri: fixture.filePath }, fromRanges: [oneBasedRange(1, 17, 18)] },
+            { from: { uri: unicodeCallerPath }, fromRanges: [range(1, 11, 17)] },
+            { from: { uri: fixture.filePath }, fromRanges: [range(1, 17, 18)] },
           ],
         },
       ],
