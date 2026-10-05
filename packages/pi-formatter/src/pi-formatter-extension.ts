@@ -275,12 +275,19 @@ function runFormatterCommand(
  * must not mention configuration.
  */
 function isInputFailure(failure: FormatterCommandFailure, path: string | undefined): boolean {
+  if (path === undefined) return false;
+  const fileName = basename(path);
   return (
     failure.kind === "exit_error" &&
-    path !== undefined &&
     SYNTAX_ERROR_PATTERN.test(failure.stderr) &&
-    failure.stderr.includes(basename(path)) &&
-    !CONFIGURATION_PATTERN.test(failure.stderr)
+    failure.stderr.includes(fileName) &&
+    !CONFIGURATION_PATTERN.test(
+      // Paths such as `src/config/vite.config.ts` mention configuration without being one.
+      failure.stderr
+        .split(/\s+/)
+        .filter((word) => !word.includes(fileName))
+        .join(" "),
+    )
   );
 }
 
@@ -326,12 +333,12 @@ async function formatMutationPaths(
     original.set(path, content);
     current.set(path, content);
   }
-  /** Record which formatters changed each path, comparing against the content the last run left. */
-  const recordChanges = async (
-    definition: FormatterDefinition,
-    changedPaths: readonly string[],
-  ): Promise<void> => {
-    for (const path of changedPaths) {
+  /**
+   * Record which formatters changed each mutation path, comparing against the content the last run
+   * left. Every path is checked because a Workspace Formatter can rewrite files it was not run for.
+   */
+  const recordChanges = async (definition: FormatterDefinition): Promise<void> => {
+    for (const path of existing.paths) {
       const content = await readTextFile(path);
       if (content === current.get(path)) continue;
       current.set(path, content);
@@ -380,10 +387,12 @@ async function formatMutationPaths(
         });
       }
       // Formatters such as `eslint --fix` exit non-zero after writing fixes, so compare regardless.
-      await recordChanges(definition, path === undefined ? matchingPaths : [path]);
+      await recordChanges(definition);
     }
   }
-  for (const [path, formatters] of changedBy) {
+  for (const path of existing.paths) {
+    const formatters = changedBy.get(path);
+    if (formatters === undefined) continue;
     const before = original.get(path);
     const after = current.get(path);
     const changedLines =

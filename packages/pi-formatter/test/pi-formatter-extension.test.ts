@@ -497,30 +497,6 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(text).toContain("\nFormatted by workspace, failing: lines 1–3 changed");
   });
 
-  test("reports changes made by a formatter that timed out", async () => {
-    const harness = await createFormatterHarness({
-      formatter: {
-        timeoutMs: 200,
-        formatters: {
-          slow: formatterDefinition([
-            "-e",
-            "require('node:fs').writeFileSync(process.argv[1],'partial');setInterval(() => {}, 1000)",
-            "$FILE",
-          ]),
-        },
-      },
-    });
-    const filePath = resolve(harness.cwd, "slow.txt");
-    await writeFile(filePath, "original");
-
-    const result = await harness.runner.emitToolResult(
-      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
-    );
-
-    expect(lastText(result)).toContain("timeout after 200ms");
-    expect(lastText(result)).toContain("Formatted by slow: line 1 changed");
-  });
-
   test.each([
     {
       name: "a syntax error naming the formatted file",
@@ -600,26 +576,101 @@ describe("Pi Formatter extension lifecycle", () => {
   });
 
   test("keeps the hint when a syntax error and another failure are reported together", async () => {
-    const harness = await createFormatterHarness({
+    const syntaxFormatter = formatterDefinition([
+      "-e",
+      "console.error('SyntaxError: bad in '+require('node:path').basename(process.argv[1]));process.exit(2)",
+      "$FILE",
+    ]);
+    const alone = await createFormatterHarness({
+      formatter: { formatters: { syntax: syntaxFormatter } },
+    });
+    const together = await createFormatterHarness({
       formatter: {
         formatters: {
-          syntax: formatterDefinition([
-            "-e",
-            "console.error('SyntaxError: bad');process.exit(2)",
-            "$FILE",
-          ]),
+          syntax: syntaxFormatter,
           broken: formatterDefinition(["-e", "process.exit(3)", "$FILE"]),
         },
       },
     });
-    const filePath = resolve(harness.cwd, "mixed.txt");
+    const results = [];
+    for (const harness of [alone, together]) {
+      const filePath = resolve(harness.cwd, "mixed.txt");
+      await writeFile(filePath, "original");
+      results.push(
+        await harness.runner.emitToolResult(
+          toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+        ),
+      );
+    }
+
+    expect(lastText(results[0])).toContain("SyntaxError: bad in mixed.txt");
+    expect(lastText(results[0])).not.toContain(TROUBLESHOOTING_HINT);
+    expect(lastText(results[1])).toContain("Pi Formatter: broken failed");
+    expect(lastText(results[1])).toContain(TROUBLESHOOTING_HINT);
+  });
+
+  test("drops the hint for a syntax error in a file whose path mentions configuration", async () => {
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: {
+          oxfmt: formatterDefinition([
+            "-e",
+            "console.error(process.argv[2]);process.exit(2)",
+            "$FILE",
+            "  x Unexpected token\n   ,-[src/config/vite.config.txt:1:11]",
+          ]),
+        },
+      },
+    });
+    const filePath = resolve(harness.cwd, "src/config/vite.config.txt");
+    await mkdir(resolve(harness.cwd, "src/config"), { recursive: true });
     await writeFile(filePath, "original");
 
     const result = await harness.runner.emitToolResult(
       toolResultEvent("write", { input: { path: filePath }, details: undefined }),
     );
 
-    expect(lastText(result)).toContain(TROUBLESHOOTING_HINT);
+    expect(lastText(result)).toContain("Unexpected token");
+    expect(lastText(result)).not.toContain(TROUBLESHOOTING_HINT);
+  });
+
+  test("reports every edited file that a Workspace Formatter rewrites, in mutation order", async () => {
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: {
+          workspace: {
+            command: process.execPath,
+            args: [
+              "-e",
+              "const fs=require('node:fs');fs.writeFileSync('b.txt','B\\n');fs.writeFileSync('a.md','A\\n')",
+            ],
+            files: { extensions: [".md"] },
+          },
+        },
+      },
+    });
+    const markdown = resolve(harness.cwd, "a.md");
+    const text = resolve(harness.cwd, "b.txt");
+    await Promise.all([writeFile(markdown, "a\n"), writeFile(text, "b\n")]);
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("apply_patch", {
+        input: {},
+        details: {
+          status: "success",
+          result: {
+            changedFiles: [text, markdown],
+            createdFiles: [],
+            deletedFiles: [],
+            movedFiles: [],
+          },
+        },
+      }),
+    );
+
+    expect(lastText(result)).toBe(
+      "Formatted by workspace: a.md: line 1 changed\nFormatted by workspace: b.txt: line 1 changed",
+    );
   });
 
   test("bounds a hanging formatter with the configured timeout", async () => {

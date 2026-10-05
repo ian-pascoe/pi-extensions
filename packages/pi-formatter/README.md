@@ -61,13 +61,14 @@ the last one, and it includes unchanged lines between them. When formatting only
 the line says `lines removed after line N`, `lines removed before line 1`, or `all lines removed`.
 It starts with the file path, relative to Pi's working directory, when the mutation changed more
 than one file. Nothing is added when the final content equals the original. A formatter that exits
-non-zero or times out after writing changes is reported too, next to its warning.
+non-zero or times out after writing changes is reported too; the `Formatted by` lines follow
+any warnings.
 
 A timeout, spawn error, or non-zero exit appends a warning to the original tool result without
 changing that result's success state; later formatters still run. The warning ends with a pointer
 to the package's troubleshooting Skill, except when the formatter's stderr reports a syntax error
 in the changed file: it matches wording such as `SyntaxError`, `parse error`, or `Unexpected
-token`, names the file, and does not mention configuration. That is an input outcome that Pi
+token`, names the file, and does not mention configuration outside file paths. That is an input outcome that Pi
 LSP's Post-edit Diagnostics report when Pi LSP is installed, not a formatter failure to diagnose.
 Bad-configuration errors and Workspace Formatter failures keep the pointer.
 
