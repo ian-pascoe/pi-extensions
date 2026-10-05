@@ -79,6 +79,7 @@ import {
   type LspCapabilityRequirement,
   type LspServerFailure,
   type LspServerFailureCode,
+  type LspServerLanguage,
   type LspServerManager,
   type LspServerReadResult,
   type LspServerRoute,
@@ -108,7 +109,6 @@ import {
   createLspToolOutput as createBaseLspToolOutput,
   formatLspToolValue,
   lspStructuredFields,
-  lspStructuredValue,
   type LspStructuredFields,
 } from "./lsp-tool-output.js";
 import {
@@ -119,6 +119,7 @@ import {
 } from "./lsp-tool-rendering.js";
 import {
   LspWorkspaceEditError,
+  NO_CHANGES_SUMMARY,
   type LspMutationManifest,
   type LspWorkspaceEditStore,
 } from "./lsp-workspace-edit.js";
@@ -135,6 +136,12 @@ const ProtocolFoldingRangeSchema = Type.Object(
   },
   { additionalProperties: true },
 );
+
+/** The `lsp_workspace_diagnostics` value of a server that publishes no workspace diagnostics. */
+const UnpublishedWorkspaceDiagnosticsSchema = Type.Object({
+  status: Type.Literal("unsupported"),
+  message: Type.String({ minLength: 1 }),
+});
 
 const ApplyPreviewArgumentsSchema = Type.Object(
   {
@@ -326,7 +333,10 @@ const DOCUMENT_DIAGNOSTICS_CAPABILITY: LspCapabilityRequirement<LspToolServerCli
   isSupportedBy: () => true,
 };
 
-/** Every server serves workspace diagnostics, by pull request or from cached pushes. */
+/**
+ * Every server answers workspace diagnostics: by pull request, from cached pushes, or by reporting
+ * that it publishes none.
+ */
 const WORKSPACE_DIAGNOSTICS_CAPABILITY: LspCapabilityRequirement<LspToolServerClient> = {
   method: WorkspaceDiagnosticRequest.method,
   isSupportedBy: () => true,
@@ -518,10 +528,13 @@ function readOperationValue<T>(result: LspServerReadResult<T>): LspReadValue[] {
 
 function readOperationOutcomes<T>(result: LspServerReadResult<T>): ServerOperationOutcome[] {
   return [
-    ...result.successes.map(({ serverId }): ServerOperationOutcome => ({
-      server_id: serverId,
-      outcome: "success",
-    })),
+    ...result.successes.map(({ serverId, value }): ServerOperationOutcome => {
+      // A server that publishes no workspace diagnostics answered, but not with diagnostics.
+      if (Value.Check(UnpublishedWorkspaceDiagnosticsSchema, value)) {
+        return { server_id: serverId, outcome: "unsupported", message: value.message };
+      }
+      return { server_id: serverId, outcome: "success" };
+    }),
     ...result.failures.map(serverOutcomeForFailure),
   ];
 }
@@ -608,7 +621,10 @@ async function normalizeProtocolResult(
       entries
         .sort(([left], [right]) => String(left).localeCompare(String(right)))
         .map(async ([key, entryValue]) => ({
-          uri: key,
+          uri:
+            Value.Check(ProtocolStringSchema, key) && key.startsWith("file:")
+              ? fileURLToPath(key)
+              : key,
           value: await normalizeProtocolResult(
             entryValue,
             prepared,
@@ -766,6 +782,38 @@ function sameMutationManifest(left: MutationManifest, right: MutationManifest): 
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/** Map each language ID to the file extensions and exact filenames routed to it. */
+function statusLanguages(languages: readonly LspServerLanguage[]) {
+  const patterns = new Map<string, readonly string[]>();
+  for (const { languageId, extensions = [], fileNames = [] } of languages) {
+    patterns.set(languageId, [...(patterns.get(languageId) ?? []), ...extensions, ...fileNames]);
+  }
+  return Object.fromEntries(patterns);
+}
+
+/**
+ * Record a Workspace Edit Preview that the calling tool reports itself, with its canonical
+ * Mutation Manifest.
+ */
+async function recordToolPreview(
+  dependencies: LspToolDependencies,
+  serverId: string,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The preview store owns validation of raw server Workspace Edits before filesystem inspection.
+  edit: unknown,
+  positionEncoding: PositionEncodingKind,
+): Promise<{ preview: LspWorkspaceEditPreviewRecord; manifest: MutationManifest }> {
+  const preview = await dependencies.workspaceEdits.createPreview({
+    edit,
+    serverId,
+    positionEncoding,
+  });
+  dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
+  const manifest = normalizeStoreMutationManifest(
+    dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
+  );
+  return { preview, manifest };
+}
+
 async function workspacePreviewOutput(
   dependencies: LspToolDependencies,
   operation: "format_document" | "format_range" | "format_on_type" | "rename",
@@ -776,20 +824,17 @@ async function workspacePreviewOutput(
   scope?: ServerInstanceScope,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   const { serverId, rootPath } = route;
-  const preview = await dependencies.workspaceEdits.createPreview({
-    edit,
+  const { preview, manifest } = await recordToolPreview(
+    dependencies,
     serverId,
+    edit,
     positionEncoding,
-  });
+  );
   // The scope leads the summary so that output truncation cannot hide it before lsp_apply.
   const scopeLines = scope === undefined ? [] : serverInstanceScopeLines([scope]);
   const summary = [scopeLines.join("\n"), preview.summary]
     .filter((part) => part !== "")
     .join("\n\n");
-  dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
-  const manifest = normalizeStoreMutationManifest(
-    dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
-  );
   const details: Extract<LspToolResultDetails, { kind: "workspace_edit_preview" }> = {
     kind: "workspace_edit_preview",
     preview_id: preview.preview_id,
@@ -799,8 +844,12 @@ async function workspacePreviewOutput(
     preview_record: preview,
     state: "available",
   };
+  const text =
+    manifest.length === 0
+      ? `${NO_CHANGES_SUMMARY}: the edits from server ${serverId} change no file, so there is nothing to apply.`
+      : `Workspace Edit Preview ${preview.preview_id}\n${summary}`;
   return createLspToolOutput(
-    `Workspace Edit Preview ${preview.preview_id}\n${summary}`,
+    text,
     details,
     {
       preview_id: preview.preview_id,
@@ -1022,13 +1071,21 @@ async function executeWorkspaceRead(
       filePath,
       parameters.server_id,
       WORKSPACE_DIAGNOSTICS_CAPABILITY,
-      async (client) =>
-        normalizeProtocolResult(
-          await client.workspaceDiagnostics(signal),
+      async (client, route) => {
+        const result = await client.workspaceDiagnostics(signal);
+        if (result.status === "unsupported") {
+          return {
+            status: result.status,
+            message: `Server ${route.serverId} publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.`,
+          };
+        }
+        return normalizeProtocolResult(
+          result,
           undefined,
           undefined,
           normalizeLspPositionEncoding(client.positionEncoding),
-        ),
+        );
+      },
     );
   }
   return dependencies.manager.runRead(
@@ -1180,21 +1237,32 @@ async function codeActionDiagnostics(
   return diagnostics.filter((diagnostic) => rangesOverlap(diagnostic.range, range));
 }
 
-async function executeCodeActions(
+/** One listed code action, named by the server that offered it. */
+interface CodeActionResult {
+  readonly server_id: string;
+  readonly applicable: boolean;
+  readonly command?: unknown;
+  readonly kind?: string | undefined;
+  readonly title?: string | undefined;
+  readonly mutation_manifest?: MutationManifest;
+  readonly preview_id?: string;
+  readonly summary?: string;
+}
+
+/** One server's listed code actions and the Workspace Edit Previews created for them. */
+interface ServerCodeActions {
+  readonly actions: readonly CodeActionResult[];
+  readonly previewRecords: readonly LspWorkspaceEditPreviewRecord[];
+}
+
+/** Request one Server Instance's code actions and preview every edit-bearing action. */
+async function serverCodeActions(
   dependencies: LspToolDependencies,
   parameters: Extract<LspToolParameters, { operation: "code_actions" }>,
-  context: ExtensionContext,
+  prepared: PreparedDocument,
   signal: AbortSignal | undefined,
-) {
-  const filePath = await documentFilePath(parameters.file_path, context);
-  const resolution = await dependencies.manager.resolveMutationClient(
-    filePath,
-    parameters.server_id,
-    requireMethod(CodeActionRequest.method),
-  );
-  if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
-  const { client, route } = resolution.instance;
-  const prepared = await prepareLspDocument(client, route, filePath);
+): Promise<ServerCodeActions> {
+  const { client, route } = prepared;
   const range: Range = {
     start: protocolPosition(prepared, parameters.range.start),
     end: protocolPosition(prepared, parameters.range.end),
@@ -1215,21 +1283,14 @@ async function executeCodeActions(
   if (supportsResolveProvider(client.capabilities.codeActionProvider)) {
     actions = await resolveCodeActionItems(client, actions, signal);
   }
-  const results: {
-    applicable: boolean;
-    command?: unknown;
-    kind?: string | undefined;
-    title?: string | undefined;
-    mutation_manifest?: MutationManifest;
-    preview_id?: string;
-    summary?: string;
-  }[] = [];
+  const results: CodeActionResult[] = [];
   const previewRecords: LspWorkspaceEditPreviewRecord[] = [];
   for (const action of Array.isArray(actions) ? actions : []) {
     const record = protocolRecord(action);
     if (record === undefined) continue;
     if (record.command !== undefined || record.edit === undefined) {
       results.push({
+        server_id: route.serverId,
         applicable: false,
         command: record.command,
         kind: protocolString(record.kind),
@@ -1237,36 +1298,60 @@ async function executeCodeActions(
       });
       continue;
     }
-    const preview = await dependencies.workspaceEdits.createPreview({
-      edit: record.edit,
-      serverId: route.serverId,
-      positionEncoding: client.positionEncoding,
-    });
-    dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
+    const { preview, manifest } = await recordToolPreview(
+      dependencies,
+      route.serverId,
+      record.edit,
+      client.positionEncoding,
+    );
     previewRecords.push(preview);
     results.push({
+      server_id: route.serverId,
       applicable: true,
       kind: protocolString(record.kind),
-      mutation_manifest: normalizeStoreMutationManifest(
-        dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
-      ),
+      mutation_manifest: manifest,
       preview_id: preview.preview_id,
       summary: preview.summary,
       title: protocolString(record.title),
     });
   }
+  return { actions: results, previewRecords };
+}
+
+/**
+ * List the code actions of every capable Server Instance, or only `server_id`'s. Like a read, a
+ * failing server becomes a labeled warning while the others' actions remain.
+ */
+async function executeCodeActions(
+  dependencies: LspToolDependencies,
+  parameters: Extract<LspToolParameters, { operation: "code_actions" }>,
+  context: ExtensionContext,
+  signal: AbortSignal | undefined,
+) {
+  const filePath = await documentFilePath(parameters.file_path, context);
+  const result = await dependencies.manager.runRead(
+    filePath,
+    parameters.server_id,
+    requireMethod(CodeActionRequest.method),
+    async (client, route) =>
+      serverCodeActions(
+        dependencies,
+        parameters,
+        await prepareLspDocument(client, route, filePath),
+        signal,
+      ),
+  );
+  requireReadSuccess(result);
   const details = operationDetails(
     "code_actions",
-    [{ server_id: route.serverId, outcome: "success" }],
-    previewRecords,
+    readOperationOutcomes(result),
+    result.successes.flatMap(({ value }) => value.previewRecords),
   );
-  const text = formatLspToolValue(results);
-  return createLspToolOutput(
-    text,
-    details,
-    { server_id: route.serverId, actions: lspStructuredValue(text) },
-    dependencies,
-  );
+  const text = formatLspToolValue({
+    actions: result.successes.flatMap(({ value }) => value.actions),
+    warnings: result.failures.map(({ message }) => message),
+  });
+  return createLspToolOutput(text, details, lspStructuredFields(text), dependencies);
 }
 
 async function executeApplyPreview(
@@ -1369,6 +1454,7 @@ async function executeLspOperation(
       const text = formatLspToolValue({
         servers: status.servers.map((server) => ({
           error: server.error,
+          languages: statusLanguages(server.languages),
           root_path: server.rootPath,
           server_id: server.serverId,
           state: server.state,
@@ -1480,7 +1566,7 @@ async function executeLspOperation(
 const LSP_TOOL_RULES = [
   "Lines and characters, in arguments and results, are one-based and count Unicode code points. Paths may start with @.",
   "Location results list one `path:line:col  <source line>` line per location, with paths relative to the working directory (absolute outside it).",
-  "Reads query every matching server unless server_id narrows them; a tool that creates a preview needs server_id when several servers match.",
+  "Reads and lsp_code_actions query every matching server unless server_id narrows them; lsp_rename and lsp_format_* need server_id when several servers match.",
   "Model-visible output is limited to 2,000 lines or 50 KB; the complete output is saved as a Result Spill file named in the result. Structured results are capped at 1 MiB; a larger one is bounded, and truncated and spill_path then name the complete output.",
   "lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews. Nothing changes until lsp_apply applies a preview_id.",
   'lsp_apply resolves to state "partial_failure" with an error result when rollback leaves files changed; changed_paths lists them.',
@@ -1525,13 +1611,14 @@ const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
 ]);
 
 const LSP_TOOL_DESCRIPTIONS = {
-  status: "Report each configured language server's state, workspace root, and last error.",
+  status:
+    "Report each configured language server's state, workspace root, last error, and the file extensions it handles per language ID.",
   capabilities: "Start a server for a workspace and report its negotiated capabilities.",
   restart:
     "Restart a server for a workspace, clearing its unavailable state, and report its capabilities.",
   diagnostics: "Get fresh LSP Diagnostics for a file from every matching server.",
   workspace_diagnostics:
-    "Get a server's diagnostics for its whole workspace, from workspace pull or cached push diagnostics.",
+    "Get a server's diagnostics for its whole workspace, from workspace pull or cached push diagnostics. A server that publishes none reports status unsupported; use lsp_diagnostics per file.",
   completion: "List completions at a position.",
   hover: "Get type information and documentation for the symbol at a position.",
   signature_help: "Get signature help for the call at a position.",
@@ -1564,7 +1651,7 @@ const LSP_TOOL_DESCRIPTIONS = {
   rename:
     "Preview renaming the symbol at a position across the workspace. Apply the preview with lsp_apply.",
   code_actions:
-    "List code actions for a range. Each action with an edit gets a Workspace Edit Preview to apply with lsp_apply; command-only actions cannot be applied.",
+    "List code actions for a range from every matching server, each naming its server_id. Each action with an edit gets a Workspace Edit Preview to apply with lsp_apply; command-only actions cannot be applied.",
   apply:
     "Apply a Workspace Edit Preview by preview_id. Nothing changes if its files changed since the preview.",
 } as const satisfies Record<LspOperationName, string>;

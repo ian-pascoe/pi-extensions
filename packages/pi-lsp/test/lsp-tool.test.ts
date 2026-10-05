@@ -53,6 +53,8 @@ import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/trouble
 import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
+/** Several tests take about 1 s alone but approach Vitest's 5 s default under the parallel suite. */
+const HEAVY_TEST_TIMEOUT_MS = 20_000;
 
 class RecordingLspClient implements LspToolServerClient {
   readonly capabilities: ServerCapabilities = {};
@@ -64,6 +66,11 @@ class RecordingLspClient implements LspToolServerClient {
   responderByMethod = new Map<string, (parameters: unknown) => unknown>();
   currentDiagnostics: Diagnostic[] = [];
   currentDiagnosticsFailure: Error | undefined;
+  workspaceDiagnosticsResult: LspWorkspaceDiagnosticResult = {
+    status: "fresh",
+    source: "push_cache",
+    diagnosticsByUri: new Map(),
+  };
   failureByMethod = new Map<string, Error>();
   readonly unsupportedMethods = new Set<string>();
   shutdownCount = 0;
@@ -123,11 +130,7 @@ class RecordingLspClient implements LspToolServerClient {
 
   async workspaceDiagnostics(_signal?: AbortSignal): Promise<LspWorkspaceDiagnosticResult> {
     this.requests.push("workspace/diagnostic");
-    return {
-      status: "fresh",
-      source: "push_cache",
-      diagnosticsByUri: new Map(),
-    };
+    return this.workspaceDiagnosticsResult;
   }
 
   async shutdown(): Promise<void> {
@@ -295,7 +298,7 @@ afterEach(async () => {
   );
 });
 
-describe("registered LSP tool", () => {
+describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
   test("registers one namespaced tool per operation with exact exposure and annotations", async () => {
     const fixture = await createToolFixture();
     const registrar = new RecordingLspToolRegistrar();
@@ -701,16 +704,19 @@ describe("registered LSP tool", () => {
       character: 1,
     });
     const status = await executeTool(fixture, { operation: "status" });
+    const runningServer = {
+      server_id: "typescript",
+      root_path: fixture.context.cwd,
+      state: "running",
+      languages: { typescript: [".ts"] },
+    };
     expect(status.structuredContent).toEqual({
-      servers: [{ server_id: "typescript", root_path: fixture.context.cwd, state: "running" }],
+      servers: [runningServer],
       warnings: [],
       structured_truncated: false,
       truncated: false,
     });
-    expect(JSON.parse(resultText(status))).toEqual({
-      servers: [{ server_id: "typescript", root_path: fixture.context.cwd, state: "running" }],
-      warnings: [],
-    });
+    expect(JSON.parse(resultText(status))).toEqual({ servers: [runningServer], warnings: [] });
 
     const rename = await executeTool(fixture, {
       operation: "rename",
@@ -737,16 +743,28 @@ describe("registered LSP tool", () => {
       range: range(),
     });
     expect(actions.structuredContent).toEqual({
-      server_id: "typescript",
-      actions: JSON.parse(resultText(actions)),
+      ...JSON.parse(resultText(actions)),
       structured_truncated: false,
       truncated: false,
     });
     expect(actions.structuredContent).toMatchObject({
       actions: [
-        { applicable: false, title: "Run command", kind: "source", command: "example.run" },
-        { applicable: true, title: "Apply edit", kind: "quickfix", preview_id: expect.any(String) },
+        {
+          server_id: "typescript",
+          applicable: false,
+          title: "Run command",
+          kind: "source",
+          command: "example.run",
+        },
+        {
+          server_id: "typescript",
+          applicable: true,
+          title: "Apply edit",
+          kind: "quickfix",
+          preview_id: expect.any(String),
+        },
       ],
+      warnings: [],
     });
 
     const prepared = prepareApply(fixture, { preview_id: rename.details.preview_id });
@@ -1160,6 +1178,186 @@ describe("registered LSP tool", () => {
     expect(fixture.client.parametersByMethod.get("textDocument/codeAction")).toMatchObject([
       { context: { diagnostics: [endsAtCursor, startsAtCursor] } },
     ]);
+    await fixture.close();
+  });
+
+  test("lists code actions from every capable server, each naming its server", async () => {
+    const fixture = await createToolFixture(["typescript", "oxlint", "incapable", "failing"]);
+    const uri = pathToFileURL(fixture.filePath).href;
+    const typescript = new RecordingLspClient();
+    const oxlint = new RecordingLspClient();
+    const failing = new RecordingLspClient();
+    // A server without code actions is skipped, not reported, when server_id is omitted.
+    const incapable = new (class extends RecordingLspClient {
+      override hasCapability(method: string): boolean {
+        return method !== "textDocument/codeAction";
+      }
+    })();
+    typescript.responseByMethod.set("textDocument/codeAction", [
+      { title: "Organize imports", kind: "source.organizeImports", command: "organize" },
+    ]);
+    oxlint.responseByMethod.set("textDocument/codeAction", [
+      {
+        title: "Disable rule for this line",
+        kind: "quickfix",
+        edit: {
+          changes: {
+            [uri]: [
+              {
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+                newText: "// oxlint-disable-next-line\n",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    failing.failureByMethod.set("textDocument/codeAction", new Error("expected failure"));
+    const clients = new Map([
+      ["typescript", typescript],
+      ["oxlint", oxlint],
+      ["incapable", incapable],
+      ["failing", failing],
+    ]);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd: fixture.context.cwd,
+      settings: resolvedSettings(["typescript", "oxlint", "incapable", "failing"]),
+      startClient: async ({ definition }) => clients.get(definition.id) ?? typescript,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+
+    const all = await executeTool(
+      fixture,
+      { operation: "code_actions", file_path: fixture.filePath, range: range() },
+      dependencies,
+    );
+    expect(all.structuredContent).toMatchObject({
+      actions: [
+        { server_id: "typescript", applicable: false, title: "Organize imports" },
+        {
+          server_id: "oxlint",
+          applicable: true,
+          title: "Disable rule for this line",
+          preview_id: expect.any(String),
+          mutation_manifest: [{ operation: "modify", path: fixture.filePath }],
+        },
+      ],
+      warnings: [expect.stringContaining("expected failure")],
+    });
+    expect(all.details).toMatchObject({
+      server_outcomes: [
+        { server_id: "typescript", outcome: "success" },
+        { server_id: "oxlint", outcome: "success" },
+        { server_id: "failing", outcome: "error" },
+      ],
+      preview_records: [expect.objectContaining({ server_id: "oxlint" })],
+    });
+
+    const restricted = await executeTool(
+      fixture,
+      {
+        operation: "code_actions",
+        file_path: fixture.filePath,
+        range: range(),
+        server_id: "typescript",
+      },
+      dependencies,
+    );
+    expect(restricted.structuredContent).toMatchObject({
+      actions: [{ server_id: "typescript", title: "Organize imports" }],
+      warnings: [],
+    });
+    expect(oxlint.requests.filter((method) => method === "textDocument/codeAction")).toHaveLength(
+      1,
+    );
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("reports no changes for a format preview without edits", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.responseByMethod.set("textDocument/formatting", []);
+
+    const result = await executeTool(fixture, {
+      operation: "format_document",
+      file_path: fixture.filePath,
+      tab_size: 2,
+      insert_spaces: true,
+    });
+
+    expect(resultText(result)).toContain("No changes");
+    expect(result.structuredContent).toMatchObject({
+      server_id: "typescript",
+      summary: "No changes",
+      mutation_manifest: [],
+    });
+    expect(result.details).toMatchObject({ mutation_manifest: [] });
+    await fixture.close();
+  });
+
+  test("says a document-pull server publishes no workspace diagnostics", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.workspaceDiagnosticsResult = { status: "unsupported" };
+
+    const result = await executeTool(fixture, {
+      operation: "workspace_diagnostics",
+      server_id: "typescript",
+      file_path: fixture.filePath,
+    });
+
+    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
+    expect(answer?.value).toEqual({
+      status: "unsupported",
+      message: expect.stringContaining("lsp_diagnostics"),
+    });
+    expect(resultText(result)).toContain("publishes no workspace diagnostics");
+    expect(result.details).toMatchObject({
+      server_outcomes: [
+        {
+          server_id: "typescript",
+          outcome: "unsupported",
+          message: expect.stringContaining("lsp_diagnostics"),
+        },
+      ],
+    });
+    await fixture.close();
+  });
+
+  test("reports workspace diagnostics under plain paths", async () => {
+    const fixture = await createToolFixture();
+    const diagnostic: Diagnostic = {
+      range: { start: { line: 0, character: 15 }, end: { line: 0, character: 17 } },
+      message: "emoji",
+    };
+    fixture.client.workspaceDiagnosticsResult = {
+      status: "fresh",
+      source: "workspace_pull",
+      diagnosticsByUri: new Map([[pathToFileURL(fixture.filePath).href, [diagnostic]]]),
+    };
+
+    const result = await executeTool(fixture, {
+      operation: "workspace_diagnostics",
+      server_id: "typescript",
+      file_path: fixture.filePath,
+    });
+
+    const [answer] = Value.Parse(LspReadOutputSchema, result.structuredContent).results;
+    expect(answer?.value).toEqual({
+      status: "fresh",
+      source: "workspace_pull",
+      diagnosticsByUri: [
+        {
+          uri: fixture.filePath,
+          value: [
+            {
+              message: "emoji",
+              range: { start: { line: 1, character: 16 }, end: { line: 1, character: 17 } },
+            },
+          ],
+        },
+      ],
+    });
+    expect(resultText(result)).not.toContain("file:");
     await fixture.close();
   });
 

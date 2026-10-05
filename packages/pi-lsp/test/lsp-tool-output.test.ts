@@ -116,6 +116,7 @@ const BOUNDED_OUTPUT_CASES = [
         state: "unavailable",
         root_path: "/repo",
         error: big(2000),
+        languages: { typescript: [".ts", ".mts", ".cts"] },
       })),
       warnings: [big(5000)],
     },
@@ -142,8 +143,8 @@ const BOUNDED_OUTPUT_CASES = [
     name: "code actions",
     schema: LspCodeActionsOutputSchema,
     fields: {
-      server_id: "ts",
       actions: Array.from({ length: 300 }, (_, index) => ({
+        server_id: "ts",
         title: big(1000),
         kind: "quickfix",
         applicable: true,
@@ -152,6 +153,7 @@ const BOUNDED_OUTPUT_CASES = [
         mutation_manifest: manifest.slice(0, 3),
         command: { command: big(1000) },
       })),
+      warnings: [big(5000)],
     },
   },
   {

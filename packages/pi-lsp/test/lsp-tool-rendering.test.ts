@@ -18,6 +18,77 @@ function renderLines(component: { render(width: number): string[] }): string {
 }
 
 describe("Pi LSP tool rendering", () => {
+  test.each([
+    {
+      operation: "code_actions" as const,
+      text: '{"actions":[{"server_id":"a"},{"server_id":"b"}],"warnings":[]}',
+      metric: "2 actions",
+    },
+    // Results from before code actions listed several servers.
+    { operation: "code_actions" as const, text: '[{"title":"a"}]', metric: "1 action" },
+    {
+      operation: "workspace_diagnostics" as const,
+      text: '{"results":[{"value":{"diagnosticsByUri":[{"uri":"/a.ts","value":[{},{}]},{"uri":"/b.ts","value":[{}]}]}}]}',
+      metric: "3 diagnostics",
+    },
+    {
+      operation: "workspace_diagnostics" as const,
+      text: '{"results":[{"value":{"status":"unsupported","message":"use lsp_diagnostics"}}]}',
+      metric: "0 diagnostics",
+    },
+  ])("counts $operation output as $metric", ({ operation, text, metric }) => {
+    const collapsed = renderLines(
+      renderLspToolResult(
+        {
+          content: [{ type: "text", text }],
+          details: {
+            kind: "operation",
+            operation,
+            server_outcomes: [{ server_id: "a", outcome: "success" }],
+          },
+        },
+        { expanded: false, isPartial: false },
+        plainTheme,
+        false,
+      ),
+    );
+    expect(collapsed).toContain(metric);
+  });
+
+  test("labels a result whose every server is unsupported as Unsupported, not Failed", () => {
+    const colorTheme = {
+      bold: (text) => text,
+      fg: (color, text) => `[${color}:${text}]`,
+    } satisfies LspRenderTheme;
+    const collapsed = renderLines(
+      renderLspToolResult(
+        {
+          content: [
+            {
+              type: "text",
+              text: '{"results":[{"server_id":"typescript","value":{"status":"unsupported","message":"use lsp_diagnostics"}}]}',
+            },
+          ],
+          details: {
+            kind: "operation",
+            operation: "workspace_diagnostics",
+            server_outcomes: [
+              { server_id: "typescript", outcome: "unsupported", message: "use lsp_diagnostics" },
+            ],
+          },
+        },
+        { expanded: false, isPartial: false },
+        colorTheme,
+        false,
+      ),
+    );
+    expect(collapsed).toContain("[warning:Unsupported]");
+    expect(collapsed).toContain("[muted:typescript]");
+    expect(collapsed).not.toContain("Failed");
+    // No diagnostics were retrieved, so a count of zero would read as a clean workspace.
+    expect(collapsed).not.toContain("0 diagnostics");
+  });
+
   test("uses a compact call and reveals complete operation output only when expanded", () => {
     const parameters = {
       file_path: "packages/pi-lsp/src/lsp-tool.ts",

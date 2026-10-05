@@ -375,6 +375,36 @@ describe("LspServerClient", () => {
     });
   });
 
+  test("reports no workspace diagnostics from a server that only answers document pulls", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "document-pull.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_DIAGNOSTICS: "one", FAKE_NO_WORKSPACE_PULL: "1", FAKE_PUSH: "none" },
+    });
+
+    const documentDiagnostics = await client.documentDiagnostics(filePath, "typescript");
+    expect(documentDiagnostics.diagnostics).toHaveLength(1);
+    await expect(client.workspaceDiagnostics()).resolves.toEqual({ status: "unsupported" });
+  });
+
+  test("returns cached pushes from a document-pull server that also publishes", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "document-pull-push.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_DIAGNOSTICS: "one", FAKE_NO_WORKSPACE_PULL: "1" },
+    });
+
+    const document = await client.synchronizeDocument(filePath, "typescript");
+    await client.request("fake/state", {});
+    await expect(client.workspaceDiagnostics()).resolves.toMatchObject({
+      status: "fresh",
+      source: "push_cache",
+      diagnosticsByUri: new Map([[document.uri, [expect.objectContaining({ source: "fake" })]]]),
+    });
+  });
+
   test("notifies the owner exactly once after an unexpected process exit", async () => {
     const directory = await createTemporaryDirectory();
     const failures: LspServerClientError[] = [];

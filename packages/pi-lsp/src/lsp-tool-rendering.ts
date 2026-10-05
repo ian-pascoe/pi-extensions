@@ -84,13 +84,17 @@ export function semanticLspValueCount(value: unknown): number {
   if (Array.isArray(value)) return value.length;
   const record = renderRecord(value);
   if (record === undefined) return 1;
+  // A server that publishes no workspace diagnostics answers with a message, not a result.
+  if (record.status === "unsupported") return 0;
   if (Array.isArray(record.diagnostics)) return record.diagnostics.length;
   if (Array.isArray(record.items)) return record.items.length;
   if (Array.isArray(record.diagnosticsByUri)) {
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each historical diagnostics entry is checked as a tuple before its value is counted.
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each diagnostics entry is checked as a `{ uri, value }` record or a historical tuple before its value is counted.
     return record.diagnosticsByUri.reduce((count: number, entry: unknown) => {
-      if (!Array.isArray(entry)) return count;
-      return count + semanticLspValueCount(entry[1]);
+      if (Array.isArray(entry)) return count + semanticLspValueCount(entry[1]);
+      const entryRecord = renderRecord(entry);
+      if (entryRecord === undefined) return count;
+      return count + semanticLspValueCount(entryRecord.value);
     }, 0);
   }
   return 1;
@@ -131,7 +135,11 @@ function jsonOutputCount(operation: LspOperationName, output: string): number | 
   const parsed = parsedLspOutput(output);
   const record = renderRecord(parsed);
   if (operation === "status" && Array.isArray(record?.servers)) return record.servers.length;
-  if (operation === "code_actions" && Array.isArray(parsed)) return parsed.length;
+  if (operation === "code_actions") {
+    if (Array.isArray(record?.actions)) return record.actions.length;
+    // Results from before code actions listed several servers were a bare action array.
+    if (Array.isArray(parsed)) return parsed.length;
+  }
   if (!Array.isArray(record?.results)) return undefined;
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each historical server result is checked as a record before counting its opaque value.
   return record.results.reduce((total: number, result: unknown) => {
@@ -169,9 +177,19 @@ function renderOperationSummary(
   output: string,
 ): string {
   const failures = details.server_outcomes.filter(({ outcome }) => outcome !== "success");
+  const servers = details.server_outcomes.map(({ server_id }) => server_id).join(", ");
+  // Servers that answered that they do not offer the operation did not fail; no count is shown,
+  // because nothing was retrieved and zero would read as an empty result.
+  if (
+    details.server_outcomes.length > 0 &&
+    details.server_outcomes.every(({ outcome }) => outcome === "unsupported")
+  ) {
+    return [theme.fg("warning", "Unsupported"), theme.fg("muted", servers)].join(
+      theme.fg("dim", "  ·  "),
+    );
+  }
   const metric = semanticLspOperationMetric(details, output);
   if (failures.length === 0) {
-    const servers = details.server_outcomes.map(({ server_id }) => server_id).join(", ");
     return [
       theme.fg("success", "Completed"),
       metric === undefined ? undefined : theme.fg("toolOutput", metric),

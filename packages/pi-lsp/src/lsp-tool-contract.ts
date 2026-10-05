@@ -533,6 +533,10 @@ export const LspStatusOutputSchema = Type.Object({
       ]),
       root_path: Type.Optional(Type.String()),
       error: Type.Optional(Type.String()),
+      languages: Type.Record(Type.String(), Type.Array(Type.String()), {
+        description:
+          "Language ID to the file extensions and exact filenames the Server Definition handles",
+      }),
     }),
   ),
   warnings: Type.Array(Type.String()),
@@ -558,11 +562,14 @@ export const LspPreviewOutputSchema = Type.Object({
   ...StructuredResultEnvelope,
 });
 
-/** Structured result of `lsp_code_actions`; edit-bearing actions carry a preview. */
+/**
+ * Structured result of `lsp_code_actions`: the actions of every answering server, each naming its
+ * server, and labeled failures of the others. Edit-bearing actions carry a preview.
+ */
 export const LspCodeActionsOutputSchema = Type.Object({
-  server_id: Type.String(),
   actions: Type.Array(
     Type.Object({
+      server_id: Type.String(),
       title: Type.Optional(Type.String()),
       kind: Type.Optional(Type.String()),
       applicable: Type.Boolean(),
@@ -572,6 +579,7 @@ export const LspCodeActionsOutputSchema = Type.Object({
       command: Type.Optional(Type.Unknown()),
     }),
   ),
+  warnings: Type.Array(Type.String()),
   ...StructuredResultEnvelope,
 });
 
