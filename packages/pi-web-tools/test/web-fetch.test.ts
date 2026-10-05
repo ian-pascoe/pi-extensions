@@ -113,6 +113,7 @@ describe("Web Fetch", () => {
         format: "text",
         content: "redirected",
         truncated: false,
+        structured_truncated: false,
       },
     });
     expect(server.requests.map(({ path }) => path)).toEqual(["/redirect", "/target"]);
@@ -505,7 +506,8 @@ describe("Web Fetch", () => {
     // Scripts receive the complete converted text, not the 50 KiB the model sees.
     expect(result.structuredContent).toMatchObject({
       content: expect.stringContaining("paragraph 2099"),
-      truncated: false,
+      truncated: true,
+      structured_truncated: false,
       full_output_path: path,
     });
     expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
@@ -527,6 +529,7 @@ describe("Web Fetch", () => {
     expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
     const structured = Value.Parse(WebFetchOutputSchema, result.structuredContent);
     expect(structured.truncated).toBe(true);
+    expect(structured.structured_truncated).toBe(true);
     expect(structured.full_output_path).toBe(path);
     const content = structured.content;
     expect(Buffer.byteLength(content)).toBe(WEB_TOOL_STRUCTURED_MAX_BYTES - 1);
@@ -548,6 +551,175 @@ describe("Web Fetch", () => {
       format: "text",
       content: "tiny",
       truncated: false,
+      structured_truncated: false,
     });
+  });
+
+  test("truncation fields never contradict: small, over 50 KiB, and over 1 MiB pages", async () => {
+    const cases = [
+      { name: "small", body: "tiny", truncated: false, structuredTruncated: false },
+      { name: "medium", body: "word ".repeat(30_000), truncated: true, structuredTruncated: false },
+      { name: "huge", body: "word ".repeat(250_000), truncated: true, structuredTruncated: true },
+    ] as const;
+    for (const { name, body, truncated, structuredTruncated } of cases) {
+      const fetch: typeof globalThis.fetch = async () =>
+        new Response(body, { headers: { "content-type": "text/plain" } });
+      const result = await executeFetch(
+        { fetch },
+        { url: `https://example.com/${name}`, format: "text" },
+      );
+      const spill = result.details.truncation?.fullOutputPath;
+      if (spill !== undefined) spillDirectories.push(dirname(spill));
+
+      expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+      const structured = Value.Parse(WebFetchOutputSchema, result.structuredContent);
+      expect(structured.truncated).toBe(truncated);
+      expect(structured.structured_truncated).toBe(structuredTruncated);
+      // `truncated` is true exactly when a spill file is named; a cut `content` is always spilled.
+      expect(structured.full_output_path !== undefined).toBe(structured.truncated);
+      expect(structured.full_output_path).toBe(spill);
+      if (structured.structured_truncated) expect(structured.truncated).toBe(true);
+      if (spill !== undefined) expect(await readFile(spill, "utf8")).toBe(body);
+    }
+  });
+});
+
+const NAVIGATION_PAGE = `<!doctype html><html><head><title>Guide to Widgets</title><style>.x{}</style></head>
+<body>
+<header><a href="/">SiteBrand Home</a></header>
+<nav><ul><li><a href="/a">NavAlpha</a></li><li><a href="/b">NavBeta</a></li></ul></nav>
+<main><h1>Widgets</h1><p>Widgets are small <strong>useful</strong> things.</p>
+<nav><a href="#t">InPageToc</a></nav></main>
+<aside>SidebarAds</aside>
+<footer>FooterLegal</footer>
+<script>trackingBeacon()</script>
+</body></html>`;
+
+const ARTICLE_PAGE = `<html><head><title>Blog Post Title</title></head><body>
+<nav>NavAlpha</nav>
+<div class="layout"><article><h2>Post Heading</h2><p>Post body text.</p></article></div>
+<footer>FooterLegal</footer></body></html>`;
+
+const CHROME_PAGE = `<html><head><title>Plain Page</title></head><body>
+<header>SiteBrand Home</header><nav>NavAlpha</nav>
+<div><h2>Content Heading</h2><p>Content body text.</p></div>
+<section><header>Section Heading Block</header><p>Section text.</p></section>
+<aside>SidebarAds</aside><footer>FooterLegal</footer></body></html>`;
+
+const NO_CHROME_PAGE = `<html><head><title>Bare Page</title></head><body><h1>Bare</h1><p>Only content.</p></body></html>`;
+
+async function fetchHtmlPage(html: string, format: "markdown" | "text" | "html"): Promise<string> {
+  const fetch: typeof globalThis.fetch = async () =>
+    new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+  const result = await executeFetch({ fetch }, { url: "https://example.com/page", format });
+  const block = result.content[0];
+  if (block?.type !== "text") throw new Error("Expected text content");
+  return block.text;
+}
+
+describe("Web Fetch main content", () => {
+  test.each(["markdown", "text"] as const)(
+    "returns <main> without site chrome in %s format",
+    async (format) => {
+      const output = await fetchHtmlPage(NAVIGATION_PAGE, format);
+
+      for (const chrome of [
+        "SiteBrand",
+        "NavAlpha",
+        "NavBeta",
+        "SidebarAds",
+        "FooterLegal",
+        "InPageToc",
+      ]) {
+        expect(output).not.toContain(chrome);
+      }
+      expect(output).not.toContain("trackingBeacon");
+      expect(output).toContain("Guide to Widgets");
+      expect(output).toContain("Widgets are small");
+      expect(output).toContain("page chrome were removed");
+
+      expect(
+        output.startsWith(format === "markdown" ? "# Guide to Widgets" : "Guide to Widgets"),
+      ).toBe(true);
+    },
+  );
+
+  test("renders the main content as Markdown", async () => {
+    expect(await fetchHtmlPage(NAVIGATION_PAGE, "markdown")).toBe(
+      "# Guide to Widgets\n\n*Site navigation and other page chrome were removed.*\n\n# Widgets\n\nWidgets are small **useful** things.",
+    );
+  });
+
+  test("prefers [role=main] and skips a title the content already repeats", async () => {
+    const html = `<html><head><title>Widgets</title></head><body><nav>NavAlpha</nav><div role="main"><h1>Widgets</h1><p>Body.</p></div></body></html>`;
+    expect(await fetchHtmlPage(html, "markdown")).toBe(
+      "*Site navigation and other page chrome were removed.*\n\n# Widgets\n\nBody.",
+    );
+  });
+
+  test.each(["markdown", "text"] as const)(
+    "falls back to a single <article> in %s format",
+    async (format) => {
+      const output = await fetchHtmlPage(ARTICLE_PAGE, format);
+
+      expect(output).toContain("Blog Post Title");
+      expect(output).toContain("Post Heading");
+      expect(output).toContain("Post body text.");
+      expect(output).not.toContain("NavAlpha");
+      expect(output).not.toContain("FooterLegal");
+      expect(output).toContain("page chrome were removed");
+    },
+  );
+
+  test("ignores several <article> elements and strips only page-level chrome", async () => {
+    const html = `<html><head><title>Feed</title></head><body><nav>NavAlpha</nav>
+<article><header>First Heading</header><p>First body.</p></article>
+<article><header>Second Heading</header><p>Second body.</p></article><footer>FooterLegal</footer></body></html>`;
+    const output = await fetchHtmlPage(html, "text");
+
+    expect(output).toContain("First Heading");
+    expect(output).toContain("Second body.");
+    expect(output).not.toContain("NavAlpha");
+    expect(output).not.toContain("FooterLegal");
+  });
+
+  test.each(["markdown", "text"] as const)(
+    "strips nav, aside, and page-level header and footer when there is no main or article in %s format",
+    async (format) => {
+      const output = await fetchHtmlPage(CHROME_PAGE, format);
+
+      for (const chrome of ["SiteBrand", "NavAlpha", "SidebarAds", "FooterLegal"]) {
+        expect(output).not.toContain(chrome);
+      }
+      expect(output).toContain("Plain Page");
+      expect(output).toContain("Content body text.");
+      // A <header> inside a <section> is content, not site chrome.
+      expect(output).toContain("Section Heading Block");
+      expect(output).toContain("page chrome were removed");
+    },
+  );
+
+  test("converts the whole page when nothing qualifies", async () => {
+    const markdown = await fetchHtmlPage(NO_CHROME_PAGE, "markdown");
+    expect(markdown).toContain("Only content.");
+    expect(markdown).not.toContain("page chrome were removed");
+    // Page that is only chrome keeps everything instead of returning nothing.
+    const onlyNav = await fetchHtmlPage("<html><body><nav>OnlyNav</nav></body></html>", "text");
+    expect(onlyNav).toContain("OnlyNav");
+    // An unclosed <nav> never swallows the rest of the page.
+    const unclosed = await fetchHtmlPage("<body><nav>Open<p>Real content", "text");
+    expect(unclosed).toContain("Real content");
+  });
+
+  test("keeps a <main> that is the whole page without claiming chrome was removed", async () => {
+    const output = await fetchHtmlPage(
+      "<html><head><title>Solo</title></head><body><main><p>Only main.</p></main></body></html>",
+      "markdown",
+    );
+    expect(output).toBe("# Solo\n\nOnly main.");
+  });
+
+  test("returns html format unchanged", async () => {
+    expect(await fetchHtmlPage(NAVIGATION_PAGE, "html")).toBe(NAVIGATION_PAGE);
   });
 });

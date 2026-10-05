@@ -4,6 +4,7 @@ import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { extractMainContent } from "./html-main-content.js";
 import {
   cancelResponse,
   describeWebFailure,
@@ -61,9 +62,12 @@ export type WebFetchDetails = Static<typeof WebFetchDetailsSchema>;
 
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
- * `content` is the complete fetched text up to 1 MiB; `truncated` marks a longer page cut at that
- * limit. `full_output_path` names the private file holding the complete text whenever it exceeded the
- * model-visible 50 KiB / 2,000-line limit.
+ * `content` is the fetched text up to 1 MiB. Two separate cuts are reported, as in pi-lsp:
+ * `truncated` means the model-visible output was cut at 50 KiB / 2,000 lines, and is true exactly
+ * when `full_output_path` names the private file holding the complete text; `structured_truncated`
+ * means `content` itself was cut at 1 MiB, so the page is longer than the script received. A
+ * `structured_truncated` result is always also `truncated`, and `full_output_path` then holds the
+ * text `content` lost.
  */
 export const WebFetchOutputSchema = Type.Object(
   {
@@ -71,9 +75,15 @@ export const WebFetchOutputSchema = Type.Object(
     content_type: Type.String({ description: "Response Content-Type header" }),
     format: WebFetchFormatSchema,
     content: Type.String({ description: "Fetched text in the requested format" }),
-    truncated: Type.Boolean({ description: "content was cut at 1 MiB" }),
+    truncated: Type.Boolean({
+      description:
+        "The model-visible output was cut at 50 KiB or 2,000 lines; true exactly when full_output_path is present",
+    }),
+    structured_truncated: Type.Boolean({
+      description: "content itself was cut at 1 MiB; full_output_path holds the complete text",
+    }),
     full_output_path: Type.Optional(
-      Type.String({ description: "Private file with the full text" }),
+      Type.String({ description: "Private file with the complete text when truncated" }),
     ),
   },
   { additionalProperties: false },
@@ -114,7 +124,7 @@ type FetchedText = {
 };
 
 const WEB_FETCH_DESCRIPTION =
-  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML is converted when requested. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
+  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML pages are converted to their main content, with the page title, when text or Markdown is requested; HTML format returns the page unchanged. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
 function parseHttpUrl(input: string): URL {
   let url: URL;
@@ -225,9 +235,47 @@ function convertHtmlToMarkdown(html: string): string {
   return turndown.turndown(html);
 }
 
+const CHROME_REMOVED_NOTE = "Site navigation and other page chrome were removed.";
+
+function firstLine(text: string): string {
+  return (
+    text
+      .trimStart()
+      .split("\n", 1)[0]
+      ?.replace(/^#+\s*/, "")
+      .trim() ?? ""
+  );
+}
+
+function convertHtml(html: string, format: "markdown" | "text"): string {
+  return format === "markdown" ? convertHtmlToMarkdown(html) : extractTextFromHtml(html);
+}
+
+/**
+ * Convert HTML to Markdown or plain text, keeping the main content, the page title, and a note when
+ * chrome was dropped. Pages without identifiable main content convert whole.
+ */
+function convertHtmlPage(html: string, format: "markdown" | "text"): string {
+  const main = extractMainContent(html);
+  if (main === undefined) return convertHtml(html, format);
+  const body = convertHtml(main.html, format);
+  const heading =
+    main.title === undefined || firstLine(body) === main.title
+      ? undefined
+      : format === "markdown"
+        ? `# ${main.title}`
+        : main.title;
+  const note = main.chromeRemoved
+    ? format === "markdown"
+      ? `*${CHROME_REMOVED_NOTE}*`
+      : `[${CHROME_REMOVED_NOTE}]`
+    : undefined;
+  return [heading, note, body].filter((part) => part !== undefined).join("\n\n");
+}
+
 function convertFetchedContent(content: string, mime: string, format: WebFetchFormat): string {
   if (mime !== "text/html" || format === "html") return content;
-  return format === "markdown" ? convertHtmlToMarkdown(content) : extractTextFromHtml(content);
+  return convertHtmlPage(content, format);
 }
 
 async function fetchText(
@@ -336,7 +384,8 @@ export function createWebFetchTool(
         content_type: fetched.contentType,
         format,
         content: structured.content,
-        truncated: structured.truncated,
+        truncated: output.truncation !== undefined,
+        structured_truncated: structured.truncated,
       };
       if (output.truncation !== undefined) {
         structuredContent.full_output_path = output.truncation.fullOutputPath;

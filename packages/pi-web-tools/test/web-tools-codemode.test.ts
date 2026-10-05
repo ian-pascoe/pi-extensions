@@ -166,6 +166,7 @@ describe("Web Tools through Pi codemode", () => {
         content_type: page.content_type,
         format: page.format,
         truncated: page.truncated,
+        structuredTruncated: page.structured_truncated,
         hasFinalMarker: page.content.includes("FINAL MARKER"),
         spilled: typeof page.full_output_path,
       };`;
@@ -185,7 +186,8 @@ describe("Web Tools through Pi codemode", () => {
       url: "https://example.com/long",
       content_type: "text/html",
       format: "text",
-      truncated: false,
+      truncated: true,
+      structuredTruncated: false,
       hasFinalMarker: true,
       spilled: "string",
     });
@@ -219,7 +221,7 @@ describe("Web Tools through Pi codemode", () => {
       /web_search\(args\)` resolves to `\{ provider, content, full_output_path\? \}`/,
     );
     expect(text).toMatch(
-      /web_fetch\(args\)` resolves to `\{ url, content_type, format, content, truncated, full_output_path\? \}`/,
+      /web_fetch\(args\)` resolves to `\{ url, content_type, format, content, truncated, structured_truncated, full_output_path\? \}`/,
     );
     for (const turn of fixture.turns) {
       expect(turn.systemPrompt).toBe(first?.systemPrompt);

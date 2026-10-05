@@ -49,7 +49,11 @@ Fetches exactly one absolute HTTP or HTTPS URL. HTTP is preserved, native fetch 
 | `format`  | `text`, `markdown`, or `html`             | `markdown` |
 | `timeout` | number greater than 0 through 120 seconds | 30 seconds |
 
-Only textual MIME types are returned: an absent type, `text/*`, JSON, XML, JavaScript, and structured `+json`/`+xml` types. SVG is accepted as XML. Other images and files are rejected. A failure reads `Unable to fetch <url>: <cause>` with URL credentials removed. The cause is the HTTP status (`HTTP 404 Not Found`), `invalid URL`, `unsupported URL scheme`, `unsupported content type` (download the document and convert it to text locally), `timed out after 30 seconds`, `network error <CODE>` such as `ECONNREFUSED`, `response body exceeds the 5 MiB limit`, or `request cancelled`. Only server (5xx), network, and timeout failures point the model to the troubleshooting Skill. HTML converts to Markdown or plain text when requested; scripts and other active embedded content are not executed. A Cloudflare `403` challenge gets one retry with the `pi-web-tools` user agent inside the original timeout budget.
+Only textual MIME types are returned: an absent type, `text/*`, JSON, XML, JavaScript, and structured `+json`/`+xml` types. SVG is accepted as XML. Other images and files are rejected. A failure reads `Unable to fetch <url>: <cause>` with URL credentials removed. The cause is the HTTP status (`HTTP 404 Not Found`), `invalid URL`, `unsupported URL scheme`, `unsupported content type` (download the document and convert it to text locally), `timed out after 30 seconds`, `network error <CODE>` such as `ECONNREFUSED`, `response body exceeds the 5 MiB limit`, or `request cancelled`. Only server (5xx), network, and timeout failures point the model to the troubleshooting Skill. HTML converts to Markdown or plain text when requested; scripts and other active embedded content are not executed.
+
+**Main content.** For `markdown` and `text`, an HTML page is reduced to its main content instead of site chrome. Web Fetch uses the first `<main>` or `[role=main]` that holds text, else the page's only `<article>`, else the `<body>` without `<nav>`, `<aside>`, and page-level `<header>`/`<footer>` (a `<header>` inside an `<article>` or `<section>` is kept). `<nav>` elements inside the selected content are also cut. The result starts with the page `<title>` (unless the content already opens with it) and, only when text was actually dropped, a one-line note that site chrome was removed. A page where nothing qualifies converts whole, as before. `format: "html"` always returns the page unchanged.
+
+A Cloudflare `403` challenge gets one retry with the `pi-web-tools` user agent inside the original timeout budget.
 
 Both tools declare MCP-style `annotations`: read-only, non-destructive, idempotent, and open-world. Pi reports them through `pi.getAllTools()` so permission extensions can decide which calls to confirm; Pi does not send them to model providers.
 
@@ -57,12 +61,19 @@ Both tools declare MCP-style `annotations`: read-only, non-destructive, idempote
 
 Both tools declare an `outputSchema` and return matching `structuredContent`, so a Pi `codemode` script receives an object instead of the model-facing text. Field names are snake_case, like Pi's `bash` and `pi-termctrl`; the session `details` keep their existing shape. The model still reads the same text, and a failed call still throws.
 
-| Tool         | Script value                                                                       |
-| ------------ | ---------------------------------------------------------------------------------- |
-| `web_search` | `{ provider, content, full_output_path? }`                                         |
-| `web_fetch`  | `{ url, content_type, format, content, truncated, full_output_path? }` (final URL) |
+| Tool         | Script value                                                                                             |
+| ------------ | -------------------------------------------------------------------------------------------------------- |
+| `web_search` | `{ provider, content, full_output_path? }`                                                               |
+| `web_fetch`  | `{ url, content_type, format, content, truncated, structured_truncated, full_output_path? }` (final URL) |
 
-Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's complete text answer (at most 256 KiB). Web Fetch `content` is the complete converted text up to 1 MiB of UTF-8, cut on a character boundary; `truncated` is `true` only for a longer page. `full_output_path` appears whenever the model-visible text was truncated, and then names the file with the complete text.
+Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's complete text answer (at most 256 KiB). Web Fetch `content` is the converted text up to 1 MiB of UTF-8, cut on a character boundary.
+
+Web Fetch reports two separate cuts, as pi-lsp does:
+
+- `truncated` — the **model-visible** output was cut at 50 KiB or 2,000 lines. It is `true` exactly when `full_output_path` is present, and that file holds the complete text.
+- `structured_truncated` — `content` itself was cut at 1 MiB, so the page is longer than the script received. It is always accompanied by `truncated: true`; read `full_output_path` for the rest.
+
+So `truncated: true` with `structured_truncated: false` means `content` is already complete and only the model's view was shortened.
 
 Search results stay provider free text: Exa and Parallel return prose-and-snippet blobs rather than records, so the schema does not invent result fields. It adds the selected `provider` and the complete text.
 
