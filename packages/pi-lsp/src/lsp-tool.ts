@@ -1331,9 +1331,13 @@ const LSP_PROMPT_SNIPPET_TOOL: LspOperationName = "diagnostics";
 const LSP_PROMPT_SNIPPET =
   "Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits";
 
-/** One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. */
+/**
+ * One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. It is
+ * the only channel through which direct tool callers see the shared rules, so it restates the
+ * coordinate and output rules a call or its result cannot be read correctly without.
+ */
 export const LSP_TOOL_GUIDELINE =
-  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters, in arguments and results, are one-based Unicode code points, and paths may start with @. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
+  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters, in arguments and results, are one-based Unicode code points, and paths may start with @. Location results list one path:line:col line per location, with paths relative to the working directory. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
 
 /** Operations declared to the model by default; every other operation is reachable through codemode (ADR-0003). */
 const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([

@@ -308,6 +308,12 @@ describe("registered LSP tool", () => {
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("Result Spill");
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("Paths may start with @");
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("lsp_apply");
+    // Pi shows namespace instructions only to scripts, so direct callers learn the output rules
+    // from the guideline.
+    expect(LSP_TOOL_GUIDELINE).toContain("in arguments and results, are one-based");
+    expect(LSP_TOOL_GUIDELINE).toContain(
+      "path:line:col line per location, with paths relative to the working directory",
+    );
 
     const annotationsOf = (name: string) =>
       registrar.tools.find((tool) => tool.name === name)?.annotations;
