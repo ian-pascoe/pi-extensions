@@ -172,6 +172,14 @@ function normalizedMime(contentType: string): string {
   return contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
 }
 
+const MAX_MIME_MESSAGE_LENGTH = 100;
+
+function truncatedMime(mime: string): string {
+  return mime.length > MAX_MIME_MESSAGE_LENGTH
+    ? `${mime.slice(0, MAX_MIME_MESSAGE_LENGTH)}…`
+    : mime;
+}
+
 function isTextualMime(mime: string): boolean {
   return (
     mime.length === 0 ||
@@ -236,7 +244,7 @@ async function fetchText(
   }
   if (!response.ok) {
     await cancelResponse(response);
-    throw new WebHttpStatusError(response.status, response.statusText);
+    throw new WebHttpStatusError(response.status);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -244,7 +252,7 @@ async function fetchText(
   if (!isTextualMime(mime)) {
     await cancelResponse(response);
     throw new WebInputError(
-      `unsupported content type ${mime} (Web Fetch returns text only; for a document such as a PDF, download it and convert it to text locally)`,
+      `unsupported content type ${truncatedMime(mime)} (Web Fetch returns text only; for a document such as a PDF, download it and convert it to text locally)`,
     );
   }
 
@@ -313,41 +321,43 @@ export function createWebFetchTool(
       const timeoutMs = Math.ceil((input.timeout ?? WEB_FETCH_DEFAULT_TIMEOUT_SECONDS) * 1000);
       const signal = requestSignal(callerSignal, timeoutMs);
       onUpdate?.({ content: [], details: { url: safeUrl, contentType: "", format } });
+      let fetched: FetchedText;
       try {
-        const fetched = await fetchText(parsedUrl, format, signal, options);
-        const output = await createWebToolOutput(fetched.content);
-        const structured = boundWebToolStructuredText(fetched.content);
-        const structuredContent: WebFetchOutput = {
-          url: fetched.finalUrl,
-          content_type: fetched.contentType,
-          format,
-          content: structured.content,
-          truncated: structured.truncated,
-        };
-        if (output.truncation !== undefined) {
-          structuredContent.full_output_path = output.truncation.fullOutputPath;
-        }
-        return {
-          content: [{ type: "text", text: output.content }],
-          details:
-            output.truncation === undefined
-              ? {
-                  url: fetched.finalUrl,
-                  contentType: fetched.contentType,
-                  format,
-                }
-              : {
-                  url: fetched.finalUrl,
-                  contentType: fetched.contentType,
-                  format,
-                  truncation: output.truncation,
-                },
-          structuredContent,
-        };
+        fetched = await fetchText(parsedUrl, format, signal, options);
       } catch (error) {
         // Dead links, blocked pages, bad input, and user cancellation are not failures the Skill diagnoses.
         throw unableToFetch(safeUrl, describeWebFailure(error, { callerSignal, timeoutMs }));
       }
+      // Spilling the full output is local work; its failures are not Web Fetch transport failures.
+      const output = await createWebToolOutput(fetched.content);
+      const structured = boundWebToolStructuredText(fetched.content);
+      const structuredContent: WebFetchOutput = {
+        url: fetched.finalUrl,
+        content_type: fetched.contentType,
+        format,
+        content: structured.content,
+        truncated: structured.truncated,
+      };
+      if (output.truncation !== undefined) {
+        structuredContent.full_output_path = output.truncation.fullOutputPath;
+      }
+      return {
+        content: [{ type: "text", text: output.content }],
+        details:
+          output.truncation === undefined
+            ? {
+                url: fetched.finalUrl,
+                contentType: fetched.contentType,
+                format,
+              }
+            : {
+                url: fetched.finalUrl,
+                contentType: fetched.contentType,
+                format,
+                truncation: output.truncation,
+              },
+        structuredContent,
+      };
     },
   });
 }

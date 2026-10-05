@@ -104,10 +104,11 @@ describe("bounded Web response bodies", () => {
 
 describe("Web failure causes", () => {
   test.each([
-    [new WebHttpStatusError(404, "Not Found"), "HTTP 404 Not Found", false],
-    [new WebHttpStatusError(502), "HTTP 502", true],
+    [new WebHttpStatusError(404), "HTTP 404 Not Found", false],
+    [new WebHttpStatusError(502), "HTTP 502 Bad Gateway", true],
+    [new WebHttpStatusError(599), "HTTP 599", true],
     [new WebInputError("invalid URL"), "invalid URL", false],
-    [new WebResponseTooLargeError(1024), "response body exceeds the 1024 bytes limit", false],
+    [new WebResponseTooLargeError(1024), "response body exceeds the 1024-byte limit", false],
     [new WebResponseTooLargeError(2 * 1024 * 1024), "response body exceeds the 2 MiB limit", false],
     [
       new TypeError("fetch failed", {
@@ -117,6 +118,14 @@ describe("Web failure causes", () => {
       true,
     ],
     [new TypeError("fetch failed"), "network error", true],
+    [
+      new Error("ENOENT: no such file", {
+        cause: Object.assign(new Error("x"), { code: "ENOENT" }),
+      }),
+      "unexpected Error",
+      false,
+    ],
+    [Object.assign(new Error("disk"), { code: "EACCES" }), "unexpected Error", false],
     [new RangeError("secret user:pass@host"), "unexpected RangeError", false],
     ["boom", "unexpected error", false],
   ])("describes %s", (error, cause, diagnosable) => {

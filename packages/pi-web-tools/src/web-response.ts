@@ -1,3 +1,5 @@
+import { STATUS_CODES } from "node:http";
+
 async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
   if (body === null) return;
   await body.cancel().catch(() => undefined);
@@ -15,17 +17,18 @@ export function requestSignal(
 /** A response whose HTTP status was not a success. */
 export class WebHttpStatusError extends Error {
   readonly status: number;
-  readonly statusText: string;
 
-  constructor(status: number, statusText = "") {
+  constructor(status: number) {
     super(`HTTP ${status}`);
     this.name = "WebHttpStatusError";
     this.status = status;
-    this.statusText = statusText;
   }
 }
 
-/** A failure caused by the request itself, such as an invalid URL or unsupported content type. */
+/**
+ * A failure caused by the request itself, such as an invalid URL or unsupported content type. It
+ * cannot be fixed by setup, so it is never diagnosable. Its message is the cause shown to the model.
+ */
 export class WebInputError extends Error {
   constructor(message: string) {
     super(message);
@@ -87,8 +90,16 @@ function errorCode(error: unknown): string | undefined {
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{2,}$/.test(code) ? code : undefined;
 }
 
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Caught values are untyped; this classifier narrows them with instanceof.
+function isTransportFailure(error: unknown): boolean {
+  return (
+    error instanceof WebResponseReadError ||
+    (error instanceof TypeError && error.message === "fetch failed")
+  );
+}
+
 function formatByteLimit(bytes: number): string {
-  return bytes % (1024 * 1024) === 0 ? `${bytes / (1024 * 1024)} MiB` : `${bytes} bytes`;
+  return bytes % (1024 * 1024) === 0 ? `${bytes / (1024 * 1024)} MiB` : `${bytes}-byte`;
 }
 
 function formatSeconds(milliseconds: number): string {
@@ -114,7 +125,8 @@ export function describeWebFailure(error: unknown, context: WebFailureContext = 
   }
   for (const link of chain) {
     if (link instanceof WebHttpStatusError) {
-      const statusText = link.statusText === "" ? "" : ` ${link.statusText}`;
+      const phrase = STATUS_CODES[link.status];
+      const statusText = phrase === undefined ? "" : ` ${phrase}`;
       return {
         cause: `HTTP ${link.status}${statusText}`,
         diagnosable: link.status >= 500,
@@ -128,13 +140,22 @@ export function describeWebFailure(error: unknown, context: WebFailureContext = 
       };
     }
   }
-  const code = chain.map(errorCode).find((value) => value !== undefined);
-  if (code !== undefined) return { cause: `network error ${code}`, diagnosable: true };
-  if (chain.some((link) => link instanceof WebResponseReadError)) {
-    return { cause: "network error while reading the response body", diagnosable: true };
-  }
-  if (error instanceof TypeError && error.message === "fetch failed") {
-    return { cause: "network error", diagnosable: true };
+  // Only a code below a transport link names a network class; a local disk or internal error
+  // elsewhere in the chain must not be labelled as one.
+  const transportIndex = chain.findIndex(isTransportFailure);
+  if (transportIndex >= 0) {
+    const code = chain
+      .slice(transportIndex)
+      .map(errorCode)
+      .find((value) => value !== undefined);
+    if (code !== undefined) return { cause: `network error ${code}`, diagnosable: true };
+    return {
+      cause:
+        chain[transportIndex] instanceof WebResponseReadError
+          ? "network error while reading the response body"
+          : "network error",
+      diagnosable: true,
+    };
   }
   return {
     cause: error instanceof Error ? `unexpected ${error.name}` : "unexpected error",

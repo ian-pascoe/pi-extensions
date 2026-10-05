@@ -1,7 +1,8 @@
 import { toToolContext } from "./tool-context.js";
 import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
@@ -202,6 +203,23 @@ describe("Web Fetch", () => {
     },
   );
 
+  test("uses the standard HTTP phrase, not server-supplied text, and bounds the content type", async () => {
+    const hostile = "x".repeat(5_000);
+    const statusFetch: typeof globalThis.fetch = async () =>
+      new Response("no", { status: 404, statusText: hostile });
+    expect(
+      await failureMessage(executeFetch({ fetch: statusFetch }, { url: "https://example.com/a" })),
+    ).toBe("Unable to fetch https://example.com/a: HTTP 404 Not Found");
+
+    const typeFetch: typeof globalThis.fetch = async () =>
+      new Response("x", { headers: { "content-type": `application/${hostile}` } });
+    const message = await failureMessage(
+      executeFetch({ fetch: typeFetch }, { url: "https://example.com/b" }),
+    );
+    expect(message).toContain(`application/${"x".repeat(100 - "application/".length)}…`);
+    expect(message.length).toBeLessThan(400);
+  });
+
   test("rejects an unparseable URL with a reason and no hint", async () => {
     const fetch: typeof globalThis.fetch = async () => {
       throw new Error("transport must not run");
@@ -286,7 +304,7 @@ describe("Web Fetch", () => {
     const message = await failureMessage(
       executeFetch({ fetch }, { url: "https://user:password@example.com/private" }),
     );
-    expect(message).toBe("Unable to fetch https://example.com/private: HTTP 403");
+    expect(message).toBe("Unable to fetch https://example.com/private: HTTP 403 Forbidden");
     expect(calls).toBe(1);
   });
 
@@ -327,6 +345,8 @@ describe("Web Fetch", () => {
   });
 
   test("names the network error class of a refused connection and points to the Skill", async () => {
+    // Reserve a free port by listening on it, then close the listener so nothing accepts there.
+    // Another process could claim the port in the gap; that is unlikely enough for a local test.
     const server = await startServer(() => undefined);
     const closed = server.baseUrl;
     await Promise.all(
@@ -429,7 +449,7 @@ describe("Web Fetch", () => {
     const message = await failureMessage(
       executeFetch({ fetch }, { url: "https://example.com/deep", format: "markdown" }),
     );
-    expect(message).toMatch(/^Unable to fetch https:\/\/example\.com\/deep: unexpected \w+$/);
+    expect(message).toBe("Unable to fetch https://example.com/deep: unexpected RangeError");
   }, 15000);
 
   test("extracts text from deeply nested HTML", async () => {
@@ -444,6 +464,26 @@ describe("Web Fetch", () => {
 
     expect(result.content[0]).toMatchObject({ type: "text", text: "content" });
   }, 15000);
+
+  test("reports a failed output spill as itself, not as a network error", async () => {
+    const originalTmpdir = process.env["TMPDIR"];
+    const missing = join(tmpdir(), `pi-web-tools-missing-${process.pid}`, "nested");
+    process.env["TMPDIR"] = missing;
+    try {
+      const fetch: typeof globalThis.fetch = async () =>
+        new Response("x".repeat(60 * 1024), { headers: { "content-type": "text/plain" } });
+      const message = await failureMessage(
+        executeFetch({ fetch }, { url: "https://example.com/spill", format: "text" }),
+      );
+      expect(message).toContain("ENOENT");
+      expect(message).not.toContain("network error");
+      expect(message).not.toContain("Unable to fetch");
+      expect(message).not.toContain(TROUBLESHOOTING_HINT);
+    } finally {
+      if (originalTmpdir === undefined) delete process.env["TMPDIR"];
+      else process.env["TMPDIR"] = originalTmpdir;
+    }
+  });
 
   test("truncates complete converted output to a private spill", async () => {
     const paragraphs = Array.from(
