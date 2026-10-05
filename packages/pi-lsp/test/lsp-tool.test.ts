@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentToolResult,
@@ -640,18 +640,23 @@ describe("registered LSP tool", () => {
       character: 7,
     });
     expect(references.structuredContent).toEqual({
-      ...JSON.parse(resultText(references)),
+      results: [
+        {
+          root_path: fixture.context.cwd,
+          server_id: "typescript",
+          value: [
+            {
+              uri: fixture.filePath,
+              range: { start: { line: 1, character: 7 }, end: { line: 1, character: 12 } },
+            },
+          ],
+        },
+      ],
+      warnings: [],
       structured_truncated: false,
       truncated: false,
     });
-    expect(references.structuredContent).toMatchObject({
-      results: [
-        {
-          server_id: "typescript",
-          value: [{ uri: fixture.filePath, range: { start: { line: 1, character: 7 } } }],
-        },
-      ],
-    });
+    expect(resultText(references)).toBe("source.ts:1:7  const emoji = '😀';");
 
     await executeTool(fixture, {
       operation: "hover",
@@ -721,6 +726,116 @@ describe("registered LSP tool", () => {
       structured_truncated: false,
       truncated: false,
     });
+    await fixture.close();
+  });
+
+  test("renders a multi-file references result as readable text over unchanged structured data", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    const otherPath = resolve(cwd, "nested/use.ts");
+    await mkdir(resolve(cwd, "nested"), { recursive: true });
+    await writeFile(otherPath, "import { emoji } from '../source';\n\tconsole.log(emoji);\n");
+    const outsidePath = resolve(cwd, "..", `${basename(cwd)}-outside.ts`);
+    temporaryDirectories.push(outsidePath);
+    await writeFile(outsidePath, "emoji;\n");
+    const protocolRange = (line: number, character: number) => ({
+      start: { line, character },
+      end: { line, character: character + 5 },
+    });
+    fixture.client.responseByMethod.set("textDocument/references", [
+      { uri: pathToFileURL(fixture.filePath).href, range: protocolRange(0, 6) },
+      { uri: pathToFileURL(otherPath).href, range: protocolRange(0, 9) },
+      { uri: pathToFileURL(otherPath).href, range: protocolRange(1, 13) },
+      { uri: pathToFileURL(outsidePath).href, range: protocolRange(0, 0) },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "find_references",
+      file_path: "@source.ts",
+      line: 1,
+      character: 7,
+    });
+
+    expect(resultText(result)).toBe(
+      [
+        "source.ts:1:7  const emoji = '😀';",
+        "nested/use.ts:1:10  import { emoji } from '../source';",
+        "nested/use.ts:2:14  console.log(emoji);",
+        `${outsidePath}:1:1  emoji;`,
+      ].join("\n"),
+    );
+    const oneBasedRange = (line: number, character: number) => ({
+      end: { character: character + 5, line },
+      start: { character, line },
+    });
+    // Byte-identical to the compact JSON these reads returned as text before.
+    expect(JSON.stringify(result.structuredContent)).toBe(
+      JSON.stringify({
+        results: [
+          {
+            root_path: cwd,
+            server_id: "typescript",
+            value: [
+              { range: oneBasedRange(1, 7), uri: fixture.filePath },
+              { range: oneBasedRange(1, 10), uri: otherPath },
+              { range: oneBasedRange(2, 14), uri: otherPath },
+              { range: oneBasedRange(1, 1), uri: outsidePath },
+            ],
+          },
+        ],
+        warnings: [],
+        truncated: false,
+        structured_truncated: false,
+      }),
+    );
+    expect(result.details).toEqual({
+      kind: "operation",
+      operation: "find_references",
+      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
+      result_count: 4,
+    });
+    await fixture.close();
+  });
+
+  test("renders goto results by server when several servers answer", async () => {
+    const fixture = await createToolFixture(["good", "empty", "failing"]);
+    const good = new RecordingLspClient();
+    const empty = new RecordingLspClient();
+    const failing = new RecordingLspClient();
+    good.responseByMethod.set("textDocument/definition", {
+      uri: pathToFileURL(fixture.filePath).href,
+      range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } },
+    });
+    empty.responseByMethod.set("textDocument/definition", null);
+    failing.failureByMethod.set("textDocument/definition", new Error("expected failure"));
+    const clients = new Map([
+      ["good", good],
+      ["empty", empty],
+      ["failing", failing],
+    ]);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd: fixture.context.cwd,
+      settings: resolvedSettings(["good", "empty", "failing"]),
+      startClient: async ({ definition }) => clients.get(definition.id) ?? good,
+    });
+    const result = await executeTool(
+      fixture,
+      { operation: "goto_definition", file_path: fixture.filePath, line: 1, character: 7 },
+      { ...fixture.dependencies, manager },
+    );
+    const [warning] = Value.Parse(LspReadOutputSchema, result.structuredContent).warnings;
+    expect(resultText(result)).toBe(
+      [
+        "good:",
+        "  source.ts:1:7  const emoji = '😀';",
+        "empty:",
+        "  No locations found.",
+        "",
+        `Warning: ${warning}`,
+      ].join("\n"),
+    );
+    expect(warning).toContain("expected failure");
+    await manager.shutdown();
     await fixture.close();
   });
 

@@ -432,6 +432,8 @@ const LspToolOperationDetailsSchema = Type.Object(
     server_outcomes: Type.Array(ServerOperationOutcomeSchema),
     preview_records: Type.Optional(Type.Array(LspWorkspaceEditPreviewRecordSchema)),
     spill_path: Type.Optional(AbsolutePathSchema),
+    /** Item count for transcript rendering when the model-visible text is not JSON. */
+    result_count: Type.Optional(Type.Integer({ minimum: 0 })),
   },
   { additionalProperties: false },
 );
