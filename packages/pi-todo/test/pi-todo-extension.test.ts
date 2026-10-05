@@ -397,7 +397,7 @@ describe("Pi Todo extension", () => {
           role: "custom",
           customType: "pi-todo-context",
           content:
-            "Todo List:\n[ ] #2 Pending work\n[>] #4 Current work\n    Keep the cache warm.\n    Then continue.",
+            "Todo List state from the pi-todo extension (not a user message):\n[ ] #2 Pending work\n[>] #4 Current work\n    Keep the cache warm.\n    Then continue.",
           display: false,
           timestamp: Date.parse(validStateEntry.timestamp),
           details: { version: 1, stateEntryId: "state-1", checkpointId: null },

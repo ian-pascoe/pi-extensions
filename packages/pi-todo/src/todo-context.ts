@@ -14,6 +14,8 @@ import {
 } from "./todo-list.js";
 
 type Message = ContextEvent["messages"][number];
+/** Marks a snapshot as extension state so the model does not read it as user-authored. */
+const SNAPSHOT_HEADER = "Todo List state from the pi-todo extension (not a user message):";
 const ProjectionDetails = Type.Object(
   {
     version: Type.Literal(1),
@@ -50,7 +52,7 @@ function snapshotMessage(
     role: "custom",
     customType: "pi-todo-context",
     display: false,
-    content: `Todo List:\n${formatTodoList(state.tasks)}`,
+    content: `${SNAPSHOT_HEADER}\n${formatTodoList(state.tasks)}`,
     timestamp: Date.parse(entry.timestamp),
     details: { version: 1, stateEntryId: entry.id, checkpointId },
   };
@@ -110,27 +112,26 @@ export function projectTodoContext(
     }
   }
   const outstanding = new Map<string, number>();
-  let pending: Message[] = [];
+  // A tool group projects only its final state, once its last result has landed.
+  let pending: { entry: SessionEntry; state: TodoStateSnapshot } | undefined;
+  const project = (entry: SessionEntry, state: TodoStateSnapshot): void => {
+    const content = formatTodoList(state.tasks);
+    if (content !== previousContent && (previousContent !== undefined || state.tasks.length > 0))
+      insert(snapshotMessage(entry, state, null));
+    previousContent = content;
+  };
   for (const entry of branch.slice(start)) {
     if (entry === checkpoint) continue;
     const state = todoStateFromEntry(entry);
     if (state) {
-      const content = formatTodoList(state.tasks);
-      if (
-        content !== previousContent &&
-        (previousContent !== undefined || state.tasks.length > 0)
-      ) {
-        const snapshot = snapshotMessage(entry, state, null);
-        if (outstanding.size > 0) pending.push(snapshot);
-        else insert(snapshot);
-      }
-      previousContent = content;
+      if (outstanding.size > 0) pending = { entry, state };
+      else project(entry, state);
       continue;
     }
     const message = conversationMessage(entry);
     if (!message) continue;
     if (message.role === "assistant") {
-      if (outstanding.size > 0 && pending.length > 0)
+      if (outstanding.size > 0 && pending)
         throw new Error("Todo mutation has an incomplete tool group");
       outstanding.clear();
       for (const block of message.content)
@@ -142,12 +143,12 @@ export function projectTodoContext(
       else outstanding.delete(message.toolCallId);
     }
     anchor = message;
-    if (outstanding.size === 0 && pending.length > 0) {
-      for (const snapshot of pending) insert(snapshot);
-      pending = [];
+    if (outstanding.size === 0 && pending) {
+      project(pending.entry, pending.state);
+      pending = undefined;
     }
   }
-  if (pending.length > 0) throw new Error("Todo mutation has an incomplete tool group");
+  if (pending) throw new Error("Todo mutation has an incomplete tool group");
   return [
     ...(insertions.get(-1) ?? []),
     ...messages.flatMap((message, index) => [message, ...(insertions.get(index) ?? [])]),

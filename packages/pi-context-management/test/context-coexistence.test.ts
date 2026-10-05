@@ -64,7 +64,7 @@ it("publishes non-triggering Todo snapshots to automatic continuation without an
   expect(f.providerRequests).toEqual([]);
 });
 
-it("projects real Todo mutations after every sibling result without an extra request", async () => {
+it("projects real Todo mutations as one snapshot after every sibling result without an extra request", async () => {
   const sibling: ExtensionFactory = (pi) => {
     pi.registerTool({
       name: "sibling",
@@ -95,20 +95,26 @@ it("projects real Todo mutations after every sibling result without an extra req
   expect(f.requests).toHaveLength(2);
   const projected = f.requests[1]!.messages;
   const snapshotIndex = projected.findIndex(
-    (message) => message.role === "user" && JSON.stringify(message.content).includes("Todo List:"),
+    (message) =>
+      message.role === "user" &&
+      JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
   );
   expect(snapshotIndex).toBeGreaterThan(-1);
   expect(projected[snapshotIndex - 1]).toMatchObject({ role: "toolResult", toolName: "sibling" });
   expect(
     projected.slice(0, snapshotIndex).filter((message) => message.role === "toolResult"),
   ).toHaveLength(3);
+  // One snapshot per tool group: both mutations appear in the group's single final state.
   expect(JSON.stringify(projected[snapshotIndex])).toContain("Fixed journal state");
-  expect(JSON.stringify(projected[snapshotIndex])).not.toContain("Second Task");
-  expect(JSON.stringify(projected[snapshotIndex + 1])).toContain("Second Task");
+  expect(JSON.stringify(projected[snapshotIndex])).toContain("Second Task");
+  expect(
+    projected.filter((message) => JSON.stringify(message).includes("Todo List state")),
+  ).toHaveLength(1);
+  expect(snapshotIndex).toBe(projected.length - 1);
   f.responses.push(reply("Still done."));
   await f.session.prompt("Unchanged next user turn");
-  expect(f.requests[2]?.messages.slice(0, snapshotIndex + 2)).toEqual(
-    projected.slice(0, snapshotIndex + 2),
+  expect(f.requests[2]?.messages.slice(0, snapshotIndex + 1)).toEqual(
+    projected.slice(0, snapshotIndex + 1),
   );
   expect(f.requests).toHaveLength(3);
   expect(f.providerRequests).toEqual([]);
@@ -190,7 +196,8 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     expect(
       reopened.requests[0]!.messages.some(
         (message) =>
-          message.role === "user" && JSON.stringify(message.content).includes("Todo List:"),
+          message.role === "user" &&
+          JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
       ),
     ).toBe(false);
     expect(f.providerRequests).toEqual([]);
@@ -253,7 +260,8 @@ it("restores selected-branch Tasks through tree navigation, reload, resume, and 
   const snapshots = (messages: (typeof f.requests)[number]["messages"]) =>
     messages.filter(
       (message) =>
-        message.role === "user" && JSON.stringify(message.content).includes("Todo List:"),
+        message.role === "user" &&
+        JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
     );
   f.responses.push(toolCall("todo", { action: "add", title: "Selected Task" }), reply("Added."));
   await f.session.prompt("Remember the selected Task");
@@ -535,7 +543,8 @@ for (const outcome of ["success", "throw", "cancel"] as const) {
     const messages = f.requests[1]!.messages;
     const snapshotIndex = messages.findIndex(
       (message) =>
-        message.role === "user" && JSON.stringify(message.content).includes("Todo List:"),
+        message.role === "user" &&
+        JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
     );
     expect(snapshotIndex).toBeGreaterThan(-1);
     expect(messages[snapshotIndex - 1]).toMatchObject({

@@ -35,9 +35,9 @@ A Pi `codemode` script receives the result as an object (the tool declares an `o
 
 Task status is `pending`, `active`, or `completed`; `add` defaults to `pending`. Tasks are flat, duplicate titles are allowed, and multiple Tasks may be active. Set `description` to `null` during `update` to remove it.
 
-Each changed Todo List is projected from its immutable session state entry as a hidden full snapshot at a fixed conversation position. Mutations inside a tool group appear after all sibling results; later requests keep earlier snapshots in place. Clearing the list produces an explicit empty snapshot. The system prompt and tool description do not change.
+Each tool group that changes the Todo List is projected from the immutable session state entries as one hidden full **Todo List snapshot** of the group's final state, at a fixed conversation position after all of the group's sibling results. A tool group is one assistant turn's tool calls, including several `todo` calls inside one `codemode` script, so ten calls in a script add one snapshot, not ten. A group that ends in the state it began with adds none. Each snapshot starts with the header `Todo List state from the pi-todo extension (not a user message):` so it does not read like user input. Later requests keep earlier snapshots in place. Clearing the list produces an explicit empty snapshot. The system prompt and tool description do not change.
 
-After compaction, a fixed baseline immediately after the summary restores the state from before the retained Tail. Retained and newer mutations follow chronologically. This preserves previously written conversation cache prefixes between checkpoints; it does not guarantee provider cache hits.
+After compaction, a fixed baseline immediately after the summary restores the state from before the retained Tail. Retained and newer tool groups follow chronologically. This preserves previously written conversation cache prefixes between checkpoints; it does not guarantee provider cache hits.
 
 `todo` declares MCP-style `annotations`: not read-only, but non-destructive (it only appends to the session's own journal), not idempotent, and closed-world. Pi reports them through `pi.getAllTools()` for permission extensions and does not send them to model providers.
 
