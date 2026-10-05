@@ -201,6 +201,15 @@ describe("minimal subagents coordinator", () => {
         launch_contract: { role: "explore", model: "provider/fast", thinking_level: "low" },
       },
     });
+    // Live and replayed Launch Contracts serialize identically, including key order.
+    const replayed = replayRegistryEntries(
+      registryEvents.map((data) => ({ type: "custom", customType: REGISTRY_ENTRY_TYPE, data })),
+      "root-session",
+    );
+    if (created?.event !== "agent-created") throw new Error("expected an agent-created event");
+    expect(JSON.stringify(replayed.agents[0]?.launch_contract)).toBe(
+      JSON.stringify(created.agent.launch_contract),
+    );
   });
 
   it("falls back to the caller's thinking level for an unsuffixed role", async () => {
@@ -241,6 +250,18 @@ describe("minimal subagents coordinator", () => {
     ).toEqual(["explore", "explore"]);
   });
 
+  it("applies the role's thinking level to an explicit model that overrides the role's model", async () => {
+    const { coordinator } = coordinatorFixture(childRuntime(), 0, { modelRoles });
+
+    await expect(
+      coordinator.spawn(
+        "root",
+        { task: "Go", agent_id: "scout", role: "explore", model: "provider/other" },
+        caller,
+      ),
+    ).resolves.toMatchObject({ model: "provider/other", thinking_level: "low" });
+  });
+
   it("rejects an unknown role with the configured role names before creating anything", async () => {
     const { coordinator, sessions, registryEvents } = coordinatorFixture(childRuntime(), 0, {
       modelRoles,
@@ -270,9 +291,8 @@ describe("minimal subagents coordinator", () => {
     await coordinator.spawn("root", { task: "Go", agent_id: "scout" }, caller);
 
     const created = registryEvents.find((event) => event.event === "agent-created");
-    expect(created?.event === "agent-created" && "role" in created.agent.launch_contract).toBe(
-      false,
-    );
+    if (created?.event !== "agent-created") throw new Error("expected an agent-created event");
+    expect("role" in created.agent.launch_contract).toBe(false);
   });
 
   it("launches cumulative configured toolsets with concrete deduplicated extension tools", async () => {

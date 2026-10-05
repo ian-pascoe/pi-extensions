@@ -321,8 +321,8 @@ function parseRegistryLaunchContract(
     tools: value.tools === undefined ? undefined : structuredClone(value.tools),
     ordinary_tools: [...value.ordinary_tools],
   };
-  if (value.role !== undefined) launchContract.role = value.role;
   if (value.delegation !== undefined) launchContract.delegation = value.delegation;
+  if (value.role !== undefined) launchContract.role = value.role;
   return launchContract;
 }
 

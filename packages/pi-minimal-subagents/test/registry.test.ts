@@ -422,7 +422,6 @@ describe("minimal subagents registry", () => {
     // A V1 record and a V2 record written before `role` existed carry no such field.
     const wireLegacy = JSON.parse(JSON.stringify(events[1]));
     const v1Legacy = { ...wireLegacy, version: 1 };
-    delete v1Legacy.agent.launch_contract.role;
 
     const replayed = replayRegistryEntries(
       [

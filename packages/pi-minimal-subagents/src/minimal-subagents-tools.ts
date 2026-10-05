@@ -83,7 +83,7 @@ function buildModelRolePromptGuidelines(
   });
   return [
     [
-      "Configured model roles are guidance, not constraints. Pass role to launch with a role's model and thinking_level; an explicit model or thinking_level overrides it:",
+      "Configured model roles are guidance, not constraints. Pass role to launch with a role's model and thinking_level; an explicit model or thinking_level overrides the role's value:",
       ...roleLines,
     ].join("\n"),
     "Choose a role or model based on the task. A listed thinking_level is a preference, not a constraint. Callers choose thinking_level independently for roles without one.",

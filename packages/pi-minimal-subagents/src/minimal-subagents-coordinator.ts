@@ -274,6 +274,7 @@ export class MinimalSubagentsCoordinator {
       missing_dependencies: [],
       recent_messages: [],
     };
+    // Added after `delegation`, matching the key order of replayed Launch Contracts.
     if (role) agent.launch_contract.role = role.name;
     this.pendingAgentIds.add(agentId);
     let identity: ReturnType<AgentSessionFactory["createIdentity"]>;

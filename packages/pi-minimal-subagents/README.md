@@ -136,19 +136,20 @@ still applies.
 model and, when the role has a suffix, its thinking level. An explicit `model` or
 `thinking_level` overrides the role's value independently, so
 `{ role: "design", thinking_level: "low" }` keeps the role's model with a
-different thinking level. An unknown `role` fails before any child is created
+different thinking level. The role is recorded even when explicit `model` and
+`thinking_level` override all of its values. An unknown `role` fails before any child is created
 and lists the configured role names. The Launch Contract records the resolved
 `model` and `thinking_level` together with the `role` used (`role` is absent
 when none was named), and `subagent_status` and the expanded `subagent` result
 show it. Recording the name does not tie the child to the role: later settings
 changes never alter an existing Launch Contract.
 
-Roles are read when the session starts, like the role list in the system prompt,
-so editing `modelRoles` mid-session changes neither. The `role` parameter is a
-plain string rather than an enum of the configured names, which keeps the
-`subagent` tool definition byte-identical for the session and across settings
-changes, so provider prompt caches stay valid. The configured names appear only
-in the `subagent` prompt guidelines, which are rebuilt on reload.
+Roles are read when the session starts, so editing `modelRoles` mid-session
+changes nothing until a reload. The `role` parameter is a plain string rather
+than an enum of the configured names, so the tool definition stays
+byte-identical when `modelRoles` changes. Only the role list in the system
+prompt (the `subagent` prompt guidelines) changes, and only at reload. The
+`model` enum is separate: it already follows the eligible models.
 
 Global and project roles merge by name in settings order. Expanded role
 objects merge by field; a project string replaces the whole global entry. A

@@ -61,6 +61,55 @@ describe("minimal subagents collapsed previews", () => {
     );
   });
 
+  it("shows the role a spawn named in its call header, launch section, and status", () => {
+    const call = renderLines(
+      renderCoordinatorToolCall(
+        "subagent",
+        { agent_id: "worker", task: "Look", role: "explore", thinking_level: "high" },
+        plainTheme,
+      ),
+    );
+    expect(call).toContain("Subagent worker · role explore · thinking high");
+
+    const agent = {
+      agent_id: "worker",
+      state: "running",
+      availability: "available",
+      child_count: 0,
+      tools: ["read"],
+      launch_contract: {
+        role: "explore",
+        model: "provider/fast",
+        thinking_level: "low",
+        ordinary_tools: ["read"],
+      },
+    };
+    const expanded = { expanded: true, isPartial: false };
+    const spawned = renderLines(
+      renderCoordinatorToolResult(
+        "subagent",
+        {
+          content: [],
+          details: { agent_id: "worker", turn_id: "worker:turn-1", status: "running", agent },
+        },
+        expanded,
+        plainTheme,
+        { task: "Look", role: "explore" },
+      ),
+    );
+    expect(spawned).toContain("role explore · model provider/fast · thinking low");
+    const status = renderLines(
+      renderCoordinatorToolResult(
+        "subagent_status",
+        { content: [], details: { agent } },
+        expanded,
+        plainTheme,
+        { agent_id: "worker" },
+      ),
+    );
+    expect(status).toContain("role explore · model provider/fast · thinking low");
+  });
+
   it("shows a settled wait's output or error without expanding", () => {
     const completed = renderLines(
       renderCoordinatorToolResult(
