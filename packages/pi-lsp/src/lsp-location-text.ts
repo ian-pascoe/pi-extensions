@@ -174,13 +174,16 @@ export interface LspLocationReadTextInput {
   readonly documentPath: string;
   readonly reads: readonly LspLocationRead[];
   readonly warnings: readonly string[];
+  /** Lines shown before the locations, such as the workspace roots that were searched. */
+  readonly scope?: readonly string[];
 }
 
 /**
  * Render a location read as agent-friendly text: one `path:line:col  <source line>` line per
  * location, with one-based positions and paths relative to Pi's working directory. Results are
  * grouped by server only when more than one server answered, and server failures follow as
- * warnings. A response that is not location-shaped is shown as compact JSON instead.
+ * warnings. Scope lines, when given, precede the locations. A response that is not
+ * location-shaped is shown as compact JSON instead.
  */
 export async function formatLspLocationReadText(input: LspLocationReadTextInput): Promise<string> {
   const sources = new SourceLines();
@@ -196,5 +199,10 @@ export async function formatLspLocationReadText(input: LspLocationReadTextInput)
     }),
   );
   const warnings = input.warnings.map((warning) => `Warning: ${warning}`);
-  return [...blocks.flat(), ...(warnings.length === 0 ? [] : ["", ...warnings])].join("\n");
+  const scope = input.scope ?? [];
+  return [
+    ...(scope.length === 0 ? [] : [...scope, ""]),
+    ...blocks.flat(),
+    ...(warnings.length === 0 ? [] : ["", ...warnings]),
+  ].join("\n");
 }

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   AgentToolResult,
@@ -176,7 +176,10 @@ interface LspToolFixture {
   close(): Promise<void>;
 }
 
-function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
+function resolvedSettings(
+  serverIds: readonly string[],
+  rootMarkers: readonly string[] = [],
+): ResolvedLspSettings {
   return {
     enablement: new Map(),
     warnings: [],
@@ -196,7 +199,7 @@ function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
           environment: {},
           languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
           requireRootMarker: false,
-          rootMarkers: [],
+          rootMarkers: [...rootMarkers],
         },
       ]),
     ),
@@ -682,7 +685,13 @@ describe("registered LSP tool", () => {
       structured_truncated: false,
       truncated: false,
     });
-    expect(resultText(references)).toBe("source.ts:1:7  const emoji = '😀';");
+    expect(resultText(references)).toBe(
+      [
+        `Searched typescript workspace root: ${fixture.context.cwd}`,
+        "",
+        "source.ts:1:7  const emoji = '😀';",
+      ].join("\n"),
+    );
 
     await executeTool(fixture, {
       operation: "hover",
@@ -713,7 +722,9 @@ describe("registered LSP tool", () => {
     expect(rename.structuredContent).toEqual({
       preview_id: rename.details.preview_id,
       server_id: "typescript",
+      root_path: fixture.context.cwd,
       summary: rename.details.summary,
+      warnings: [],
       mutation_manifest: [{ operation: "modify", path: fixture.filePath }],
       structured_truncated: false,
       truncated: false,
@@ -784,6 +795,8 @@ describe("registered LSP tool", () => {
 
     expect(resultText(result)).toBe(
       [
+        `Searched typescript workspace root: ${cwd}`,
+        "",
         "source.ts:1:7  const emoji = '😀';",
         "nested/use.ts:1:10  import { emoji } from '../source';",
         "nested/use.ts:2:14  console.log(emoji);",
@@ -820,6 +833,184 @@ describe("registered LSP tool", () => {
       server_outcomes: [{ server_id: "typescript", outcome: "success" }],
       result_count: 4,
     });
+    await fixture.close();
+  });
+
+  test("names the searched workspace root and warns that other roots exist for references", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    const searchedRoot = resolve(cwd, "packages/a");
+    const sourcePath = resolve(searchedRoot, "source.ts");
+    await mkdir(resolve(cwd, "packages/b"), { recursive: true });
+    await mkdir(searchedRoot, { recursive: true });
+    await writeFile(resolve(searchedRoot, "package.json"), "{}\n");
+    await writeFile(resolve(cwd, "packages/b/package.json"), "{}\n");
+    await writeFile(sourcePath, "export const helper = 1;\n");
+    fixture.client.responseByMethod.set("textDocument/references", [
+      {
+        uri: pathToFileURL(sourcePath).href,
+        range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
+      },
+    ]);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+    });
+
+    const result = await executeTool(
+      fixture,
+      { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
+      { ...fixture.dependencies, manager },
+    );
+
+    const warning = `typescript searched only its workspace root ${join("packages", "a")}, but other typescript workspace roots exist: ${join("packages", "b")}. Files outside ${join("packages", "a")} may not have been considered; query a file under each other root or search for importers before relying on this result.`;
+    expect(resultText(result)).toBe(
+      [
+        `Searched typescript workspace root: ${join("packages", "a")}`,
+        `Warning: ${warning}`,
+        "",
+        `${join("packages", "a", "source.ts")}:1:14  export const helper = 1;`,
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
+      results: [{ root_path: searchedRoot, server_id: "typescript" }],
+      warnings: [warning],
+    });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("warns in the rename preview summary that other workspace roots were not searched", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    const searchedRoot = resolve(cwd, "packages/a");
+    const sourcePath = resolve(searchedRoot, "source.ts");
+    await mkdir(resolve(cwd, "packages/b"), { recursive: true });
+    await mkdir(searchedRoot, { recursive: true });
+    await writeFile(resolve(searchedRoot, "package.json"), "{}\n");
+    await writeFile(resolve(cwd, "packages/b/package.json"), "{}\n");
+    await writeFile(sourcePath, "export const helper = 1;\n");
+    fixture.client.responseByMethod.set("textDocument/rename", {
+      changes: {
+        [pathToFileURL(sourcePath).href]: [
+          {
+            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
+            newText: "renamed",
+          },
+        ],
+      },
+    });
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+    });
+
+    const rename = await executeTool(
+      fixture,
+      { operation: "rename", file_path: sourcePath, line: 1, character: 14, new_name: "renamed" },
+      { ...fixture.dependencies, manager },
+    );
+
+    if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
+    const warning = `typescript searched only its workspace root ${join("packages", "a")}, but other typescript workspace roots exist: ${join("packages", "b")}. Files outside ${join("packages", "a")} may not have been considered; query a file under each other root or search for importers before relying on this result.`;
+    const scope = `Searched typescript workspace root: ${join("packages", "a")}\nWarning: ${warning}`;
+    expect(rename.details.summary.startsWith(`${scope}\n\n`)).toBe(true);
+    expect(rename.details.summary).toContain("+export const renamed = 1;");
+    expect(resultText(rename)).toBe(
+      `Workspace Edit Preview ${rename.details.preview_id}\n${rename.details.summary}`,
+    );
+    expect(rename.structuredContent).toMatchObject({
+      root_path: searchedRoot,
+      summary: rename.details.summary,
+      warnings: [warning],
+    });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("warns that other roots may exist when root discovery stops before checking every directory", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    await writeFile(resolve(cwd, "package.json"), "{}\n");
+    // More directories than the lowered discovery limit, none holding a root marker.
+    await Promise.all(
+      ["wide/0", "wide/1", "wide/2", "wide/3"].map((directory) =>
+        mkdir(resolve(cwd, directory), { recursive: true }),
+      ),
+    );
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+      rootDiscoveryDirectoryLimit: 3,
+    });
+
+    const result = await executeTool(
+      fixture,
+      { operation: "find_references", file_path: fixture.filePath, line: 1, character: 7 },
+      { ...fixture.dependencies, manager },
+    );
+
+    expect(result.structuredContent).toMatchObject({
+      warnings: [
+        `typescript searched only its workspace root ${cwd}, but other typescript workspace roots may exist in directories that were not checked. Files outside ${cwd} may not have been considered; query a file under each other root or search for importers before relying on this result.`,
+      ],
+    });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("names the only workspace root without a warning", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    await writeFile(resolve(cwd, "package.json"), "{}\n");
+    fixture.client.responseByMethod.set("textDocument/rename", {
+      changes: {
+        [pathToFileURL(fixture.filePath).href]: [
+          {
+            range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } },
+            newText: "renamed",
+          },
+        ],
+      },
+    });
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+
+    const references = await executeTool(
+      fixture,
+      { operation: "find_references", file_path: fixture.filePath, line: 1, character: 7 },
+      dependencies,
+    );
+    const rename = await executeTool(
+      fixture,
+      {
+        operation: "rename",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 7,
+        new_name: "renamed",
+      },
+      dependencies,
+    );
+
+    expect(resultText(references)).toBe(
+      [`Searched typescript workspace root: ${cwd}`, "", "No references found."].join("\n"),
+    );
+    expect(references.structuredContent).toMatchObject({ warnings: [] });
+    if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
+    expect(
+      rename.details.summary.startsWith(`Searched typescript workspace root: ${cwd}\n\n`),
+    ).toBe(true);
+    expect(rename.details.summary).not.toContain("Warning:");
+    expect(rename.structuredContent).toMatchObject({ root_path: cwd, warnings: [] });
+    await manager.shutdown();
     await fixture.close();
   });
 

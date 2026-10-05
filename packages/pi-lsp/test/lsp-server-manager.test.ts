@@ -897,3 +897,115 @@ describe("session-scoped LSP server manager", () => {
     expect(manager.getStatus().servers).toEqual([{ serverId: "typescript", state: "configured" }]);
   });
 });
+
+describe("other workspace roots of a Server Definition", () => {
+  test("finds known Server Instance roots and root-marker directories beside the searched root", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const searchedRoot = resolve(cwd, "packages/example");
+    for (const directory of ["packages/other", "packages/example/nested"]) {
+      await mkdir(resolve(cwd, directory), { recursive: true });
+      await writeFile(resolve(cwd, directory, "package.json"), "{}\n");
+    }
+    // Dependency and hidden directories are not workspace roots.
+    for (const directory of ["node_modules/dependency", ".cache/copy"]) {
+      await mkdir(resolve(cwd, directory), { recursive: true });
+      await writeFile(resolve(cwd, directory, "package.json"), "{}\n");
+    }
+    const elsewhere = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-elsewhere-"));
+    temporaryDirectories.push(elsewhere);
+    await writeFile(resolve(elsewhere, "package.json"), "{}\n");
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript", "unrelated"]),
+      startClient: createRecordingClientFactory().start,
+    });
+    await manager.getCapabilities("typescript", filePath);
+    await manager.getCapabilities("typescript", resolve(elsewhere, "outside.ts"));
+    // Another Server Definition's root at cwd is not a typescript root.
+    await manager.getCapabilities("unrelated", resolve(cwd, "top.ts"));
+
+    expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
+      rootPaths: [
+        elsewhere,
+        resolve(cwd, "packages/example/nested"),
+        resolve(cwd, "packages/other"),
+      ].sort((left, right) => left.localeCompare(right)),
+      hasMore: false,
+    });
+    await manager.shutdown();
+  });
+
+  test("reports none when the searched root is the only root", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+    await manager.getCapabilities("typescript", filePath);
+
+    expect(
+      await manager.findOtherWorkspaceRoots("typescript", resolve(cwd, "packages/example")),
+    ).toEqual({ rootPaths: [], hasMore: false });
+    await manager.shutdown();
+  });
+
+  test("reports none for a Server Definition without root markers", async () => {
+    const { cwd } = await createRoutedFileFixture();
+    const settings = resolvedSettings(["typescript"]);
+    const manager = new LspServerManager({
+      cwd,
+      settings: {
+        ...settings,
+        servers: new Map([["typescript", { ...serverDefinition("typescript"), rootMarkers: [] }]]),
+      },
+      startClient: createRecordingClientFactory().start,
+    });
+
+    expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
+      rootPaths: [],
+      hasMore: false,
+    });
+  });
+
+  test("lists a bounded number of other roots and reports that more exist", async () => {
+    const { cwd } = await createRoutedFileFixture();
+    for (let index = 0; index < 8; index++) {
+      await mkdir(resolve(cwd, `packages/sibling-${index}`), { recursive: true });
+      await writeFile(resolve(cwd, `packages/sibling-${index}/package.json`), "{}\n");
+    }
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    const roots = await manager.findOtherWorkspaceRoots(
+      "typescript",
+      resolve(cwd, "packages/example"),
+    );
+    expect(roots.rootPaths).toHaveLength(5);
+    expect(roots.rootPaths).not.toContain(resolve(cwd, "packages/example"));
+    expect(roots.hasMore).toBe(true);
+  });
+
+  test("reports that more roots may exist when discovery stops at its directory limit", async () => {
+    const { cwd } = await createRoutedFileFixture();
+    // More directories than the lowered discovery limit, none holding a root marker.
+    await Promise.all(
+      ["wide/0", "wide/1", "wide/2", "wide/3"].map((directory) =>
+        mkdir(resolve(cwd, directory), { recursive: true }),
+      ),
+    );
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+      rootDiscoveryDirectoryLimit: 3,
+    });
+
+    expect(
+      await manager.findOtherWorkspaceRoots("typescript", resolve(cwd, "packages/example")),
+    ).toEqual({ rootPaths: [], hasMore: true });
+  });
+});

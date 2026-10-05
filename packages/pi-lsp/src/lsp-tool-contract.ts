@@ -551,7 +551,9 @@ export const LspServerOutputSchema = Type.Object({
 export const LspPreviewOutputSchema = Type.Object({
   preview_id: Type.String(),
   server_id: Type.String(),
+  root_path: Type.String(),
   summary: Type.String(),
+  warnings: Type.Array(Type.String()),
   mutation_manifest: MutationManifestOutputSchema,
   ...StructuredResultEnvelope,
 });

@@ -27,7 +27,7 @@ Language-server requests to apply edits are also converted into Workspace Edit P
 
 Language-server documents are valid UTF-8 text. Content edits follow existing symlinks and identify the canonical target in the Mutation Manifest; resource operations act on the named directory entry. Conflicting or non-file workspace edits are rejected before they become applicable previews.
 
-Server Definitions come only from the `lsp` key in Pi's global and trusted project settings. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and retain failure state until explicit recovery. Read operations may query several matching Server Instances; a mutation must identify one when several match.
+Server Definitions come only from the `lsp` key in Pi's global and trusted project settings. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and retain failure state until explicit recovery. Read operations may query several matching Server Instances; a mutation must identify one when several match. References and rename name the root of the Server Instance they searched and warn when other roots of the same Server Definition exist, because files under those roots may be missing from the result.
 
 An Activation Gate is evaluated independently for every candidate file. A Server Definition that
 does not pass its gate is excluded from automatic routing without warning. Changes to root markers
