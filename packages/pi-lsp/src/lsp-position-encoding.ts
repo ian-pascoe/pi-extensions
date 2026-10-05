@@ -128,28 +128,94 @@ export function convertLspProtocolPosition(
   return convertLspProtocolLinePosition(documentLines(documentText), position, encoding);
 }
 
+/** Where a negotiated character offset falls within one line's code points. */
+type LineOffset =
+  | { readonly kind: "exact"; readonly codePointOffset: number }
+  | { readonly kind: "splits-character"; readonly codePointOffset: number }
+  | { readonly kind: "past-line-end"; readonly codePointCount: number };
+
+function locateProtocolCharacter(
+  characters: readonly string[],
+  protocolCharacter: number,
+  encoding: LspPositionEncoding,
+): LineOffset {
+  let encodedOffset = 0;
+  for (let codePointOffset = 0; codePointOffset <= characters.length; codePointOffset++) {
+    if (encodedOffset === protocolCharacter) return { kind: "exact", codePointOffset };
+    const character = characters[codePointOffset];
+    if (character === undefined) break;
+    encodedOffset += encodedCharacterLength(character, encoding);
+    if (encodedOffset > protocolCharacter) return { kind: "splits-character", codePointOffset };
+  }
+  return { kind: "past-line-end", codePointCount: characters.length };
+}
+
 /**
  * Convert a zero-based negotiated LSP position to one-based Unicode code-point coordinates against
  * a document already split by `documentLines`.
  */
-export function convertLspProtocolLinePosition(
+function convertLspProtocolLinePosition(
   lines: readonly string[],
   position: LspProtocolPosition,
   encoding: LspPositionEncoding,
 ): LspCodePointPosition {
   const line = requireProtocolLine(lines, position);
-  const characters = Array.from(line);
-  let encodedOffset = 0;
-  for (let codePointOffset = 0; codePointOffset <= characters.length; codePointOffset++) {
-    if (encodedOffset === position.character) {
-      return { line: position.line + 1, character: codePointOffset + 1 };
-    }
-    const character = characters[codePointOffset];
-    if (character === undefined) break;
-    encodedOffset += encodedCharacterLength(character, encoding);
-    if (encodedOffset > position.character) {
+  const offset = locateProtocolCharacter(Array.from(line), position.character, encoding);
+  switch (offset.kind) {
+    case "exact":
+      return { line: position.line + 1, character: offset.codePointOffset + 1 };
+    case "splits-character":
       throw new Error("Pi LSP: protocol position splits a Unicode character");
-    }
+    case "past-line-end":
+      throw new Error("Pi LSP: protocol position character exceeds line length");
   }
-  throw new Error("Pi LSP: protocol position character exceeds line length");
+}
+
+/** A converted language-server result position and whether the document text disagreed with it. */
+export interface LspResultPosition {
+  readonly position: LspCodePointPosition;
+  /** The position is past the document end or inside a character: the text is stale or invalid. */
+  readonly stale: boolean;
+}
+
+/**
+ * Convert one position of a language-server result against the text of the file it lies in, never
+ * failing. A character beyond the line length is clamped to the line length, as the LSP
+ * specification says; that is valid (servers send an end-of-line sentinel such as 2147483647), so
+ * it is not `stale`. A character inside a Unicode character snaps to the start of that character,
+ * so a range never inverts. A line beyond the document end keeps the position as `+1` on the line
+ * and character, since its meaning is unknowable. Both are `stale`: the file changed since the
+ * server read it, or the server sent an invalid position. Tool input positions use
+ * `convertLspCodePointPosition`.
+ */
+export function convertLspResultPosition(
+  lines: readonly string[],
+  position: LspProtocolPosition,
+  encoding: LspPositionEncoding,
+): LspResultPosition {
+  const line = lines[position.line];
+  if (line === undefined) {
+    return {
+      position: { line: position.line + 1, character: position.character + 1 },
+      stale: true,
+    };
+  }
+  const offset = locateProtocolCharacter(Array.from(line), position.character, encoding);
+  switch (offset.kind) {
+    case "exact":
+      return {
+        position: { line: position.line + 1, character: offset.codePointOffset + 1 },
+        stale: false,
+      };
+    case "splits-character":
+      return {
+        position: { line: position.line + 1, character: offset.codePointOffset + 1 },
+        stale: true,
+      };
+    case "past-line-end":
+      return {
+        position: { line: position.line + 1, character: offset.codePointCount + 1 },
+        stale: false,
+      };
+  }
 }

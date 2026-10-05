@@ -5,7 +5,7 @@ import { Value } from "typebox/value";
 import { Position } from "vscode-languageserver-protocol";
 import { lspDisplayPath, LSP_UTF8_DECODER } from "./lsp-location-text.js";
 import {
-  convertLspProtocolLinePosition,
+  convertLspResultPosition,
   documentLines,
   type LspCodePointPosition,
   type LspPositionEncoding,
@@ -24,8 +24,8 @@ const ProtocolFoldingRangeSchema = Type.Object(
   { additionalProperties: true },
 );
 
-/** Most files an approximate-positions warning names before counting the rest. */
-const MAX_NAMED_APPROXIMATE_FILES = 5;
+/** Most files a position warning (approximate or stale) names before counting the rest. */
+const MAX_NAMED_WARNING_FILES = 5;
 
 /** The requested document, whose positions convert against the text the server was synced with. */
 export interface LspRequestedDocumentText {
@@ -42,6 +42,13 @@ export interface LspNormalizedProtocolResult {
    * so their positions are approximate.
    */
   readonly approximateFiles: readonly string[];
+  /**
+   * Files whose text disagreed with a position (a line past the document end, or a character
+   * inside a Unicode character), named as the result names them: the file changed since the server
+   * read it, or the server sent an invalid position. A character past its line's end is valid and
+   * is not named.
+   */
+  readonly staleFiles: readonly string[];
 }
 
 // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- Protocol records retain unknown fields; consumers validate each inspected value rather than promising a complete response type.
@@ -68,6 +75,10 @@ const PROTOCOL_FIELD_FILES: ReadonlyMap<string, FieldFile> = new Map([
   ["targetRange", targetFile],
   ["targetSelectionRange", targetFile],
 ]);
+
+function sortedFiles(files: ReadonlySet<string>): readonly string[] {
+  return [...files].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
 
 function recordFile(record: ProtocolRecord, file: string | undefined): string | undefined {
   return protocolString(record.uri) ?? protocolString(record.targetUri) ?? file;
@@ -127,13 +138,18 @@ export interface LspProtocolResultOptions {
  * unavailable (a non-`file:` URI, a failed read, or invalid UTF-8) is never converted against
  * another file's text: its line and character are approximated by adding 1, and, unless the
  * negotiated encoding counts code points (where adding 1 is exact), its file is named in
- * `approximateFiles`. A position with no file in scope, such as one in server-private `data` of a
- * workspace read, is not a document position and stays unchanged.
+ * `approximateFiles`. A position that disagrees with a readable file's text never fails the result:
+ * a character past its line's end is clamped to the line end (as the LSP specification says, and
+ * without a warning), a character inside a Unicode character snaps to its start, and a line past
+ * the document end adds 1 to the line and character; the last two name the file in `staleFiles`. A
+ * position with no file in scope, such as one in server-private `data` of a workspace read, is not
+ * a document position and stays unchanged.
  */
 export class LspProtocolResultNormalizer {
   readonly #options: LspProtocolResultOptions;
   readonly #lines = new Map<string, Promise<readonly string[] | undefined>>();
   readonly #approximateFiles = new Set<string>();
+  readonly #staleFiles = new Set<string>();
 
   constructor(options: LspProtocolResultOptions) {
     this.#options = options;
@@ -141,9 +157,12 @@ export class LspProtocolResultNormalizer {
 
   /** Files whose positions so far were approximated, as the result names them, in sorted order. */
   get approximateFiles(): readonly string[] {
-    return [...this.#approximateFiles].sort((left, right) =>
-      left < right ? -1 : left > right ? 1 : 0,
-    );
+    return sortedFiles(this.#approximateFiles);
+  }
+
+  /** Files whose text so far disagreed with a position, as the result names them, in sorted order. */
+  get staleFiles(): readonly string[] {
+    return sortedFiles(this.#staleFiles);
   }
 
   /** Normalize a response whose top-level positions lie in the requested document, if any. */
@@ -217,7 +236,9 @@ export class LspProtocolResultNormalizer {
   async #position(position: Position, file: string): Promise<LspCodePointPosition> {
     const lines = await this.#fileLines(file);
     if (lines !== undefined) {
-      return convertLspProtocolLinePosition(lines, position, this.#options.encoding);
+      const converted = convertLspResultPosition(lines, position, this.#options.encoding);
+      if (converted.stale) this.#staleFiles.add(lspProtocolUriPath(file));
+      return converted.position;
     }
     // Adding 1 is exact when characters count code points.
     if (this.#options.encoding !== "utf-32") this.#approximateFiles.add(lspProtocolUriPath(file));
@@ -255,7 +276,15 @@ export async function normalizeLspProtocolResult(
   return {
     value: await normalizer.normalize(value),
     approximateFiles: normalizer.approximateFiles,
+    staleFiles: normalizer.staleFiles,
   };
+}
+
+/** Name up to five files, counting the rest, as a warning shows them. */
+function namedFiles(files: readonly string[], cwd: string): string {
+  const named = files.slice(0, MAX_NAMED_WARNING_FILES).map((file) => lspDisplayPath(cwd, file));
+  const rest = files.length - named.length;
+  return rest === 0 ? named.join(", ") : `${named.join(", ")}, and ${rest} more`;
 }
 
 /**
@@ -268,10 +297,22 @@ export function lspApproximatePositionsWarning(
   cwd: string,
 ): string | undefined {
   if (files.length === 0) return undefined;
-  const named = files
-    .slice(0, MAX_NAMED_APPROXIMATE_FILES)
-    .map((file) => lspDisplayPath(cwd, file));
-  const rest = files.length - named.length;
-  const list = rest === 0 ? named.join(", ") : `${named.join(", ")}, and ${rest} more`;
-  return `${serverId}: positions in ${list} are approximate because their text could not be read; lines are exact, but columns may be off after non-ASCII text.`;
+  return `${serverId}: positions in ${namedFiles(files, cwd)} are approximate because their text could not be read; lines are exact, but columns may be off after non-ASCII text.`;
+}
+
+/**
+ * The model-visible warning that a server's result holds positions the files' current text
+ * disagreed with, naming up to five of them, or undefined when every position fit its file.
+ */
+export function lspStalePositionsWarning(
+  serverId: string,
+  files: readonly string[],
+  cwd: string,
+): string | undefined {
+  if (files.length === 0) return undefined;
+  const cause =
+    files.length === 1
+      ? "the file changed since the server read it or the server sent an invalid position"
+      : "the files changed since the server read them or the server sent invalid positions";
+  return `${serverId}: positions in ${namedFiles(files, cwd)} may be wrong because ${cause}.`;
 }

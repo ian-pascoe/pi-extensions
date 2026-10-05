@@ -177,6 +177,15 @@ Positions in a file without readable text (a non-`file:` URI, a failed read, or 
 approximated by adding 1 to the line and character, and a warning names those files: their lines
 are exact, but columns may be off after non-ASCII text.
 
+A character past the end of its line is clamped to the line end, as the LSP specification says,
+without a warning: servers send such a character, such as `2147483647`, to mean the end of the line.
+A file that changed on disk after the server read it can also disagree in other ways: a line past
+the end of the file keeps the server's position (adding 1 to the line and character), and a
+position inside a Unicode character snaps to the start of that character. A warning names those
+files, because their positions may be wrong (the file changed since the server read it, or the
+server sent an invalid position), and the server's other positions are unaffected. Positions that
+still fit the changed text but now point somewhere else cannot be detected.
+
 Symbol, hierarchy, and range results use the same paths and positions, with symbol kinds named
 (`class`, `function`, `variable`, …) instead of numbered:
 

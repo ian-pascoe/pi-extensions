@@ -2721,6 +2721,269 @@ describe("registered LSP tool", () => {
     });
   });
 
+  describe("positions in a file changed since the server read it", () => {
+    const position = (line: number, character: number) => ({ line, character });
+    const span = (line: number, start: number, end: number) => ({
+      start: position(line, start),
+      end: position(line, end),
+    });
+    const item = (name: string, uri: string, line: number, character: number) => ({
+      name,
+      kind: 12,
+      uri,
+      range: span(line, 0, character),
+      selectionRange: span(line, character, character),
+    });
+    const staleWarning = (files: string) =>
+      `typescript: positions in ${files} may be wrong because the file changed since the server read it or the server sent an invalid position.`;
+
+    /** A referenced file the server indexed with several long lines, truncated to one short line. */
+    async function truncatedFile(fixture: Awaited<ReturnType<typeof createToolFixture>>) {
+      const path = resolve(fixture.context.cwd, "helper.ts");
+      await writeFile(path, "x\n");
+      return { path, uri: pathToFileURL(path).href };
+    }
+
+    test("clamps a character past the line end and keeps a line past the document end, with a warning", async () => {
+      const fixture = await createToolFixture();
+      const helper = await truncatedFile(fixture);
+      fixture.client.responseByMethod.set("textDocument/definition", [
+        { uri: helper.uri, range: span(0, 30, 33) },
+        { uri: helper.uri, range: span(5, 2, 4) },
+        { uri: pathToFileURL(fixture.filePath).href, range: span(0, 17, 17) },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "goto_definition",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      });
+
+      const warning = staleWarning("helper.ts");
+      expect(resultText(result)).toBe(
+        [
+          'Query position: source.ts:1:1 ("const")',
+          "",
+          "helper.ts:1:2  x",
+          "helper.ts:6:3",
+          "source.ts:1:17  const emoji = '😀';",
+          "",
+          `Warning: ${warning}`,
+        ].join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            value: [
+              { uri: helper.path, range: span(1, 2, 2) },
+              { uri: helper.path, range: span(6, 3, 5) },
+              { uri: fixture.filePath, range: span(1, 17, 17) },
+            ],
+          },
+        ],
+        warnings: [warning],
+      });
+      await fixture.close();
+    });
+
+    test("keeps a position that splits a Unicode character instead of failing the result", async () => {
+      const fixture = await createToolFixture();
+      const helper = await truncatedFile(fixture);
+      await writeFile(helper.path, "😀\n");
+      fixture.client.responseByMethod.set("textDocument/definition", [
+        { uri: helper.uri, range: span(0, 1, 2) },
+        { uri: pathToFileURL(fixture.filePath).href, range: span(0, 17, 17) },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "goto_definition",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            value: [
+              { uri: helper.path, range: span(1, 1, 2) },
+              { uri: fixture.filePath, range: span(1, 17, 17) },
+            ],
+          },
+        ],
+        warnings: [staleWarning("helper.ts")],
+      });
+      await fixture.close();
+    });
+
+    test("converts an incoming caller in a file truncated after the server answered", async () => {
+      const fixture = await createToolFixture();
+      const helper = await truncatedFile(fixture);
+      await writeFile(helper.path, "function helper() { const x = run(); }\n");
+      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+        item("emoji", pathToFileURL(fixture.filePath).href, 0, 6),
+      ]);
+      fixture.client.responderByMethod.set("callHierarchy/incomingCalls", () => {
+        // The caller's file shrinks on disk after the server indexed it.
+        writeFileSync(helper.path, "x\n");
+        return [{ from: item("helper", helper.uri, 0, 9), fromRanges: [span(3, 30, 33)] }];
+      });
+
+      const result = await executeTool(fixture, {
+        operation: "incoming_calls",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 7,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            value: [
+              {
+                from: { uri: helper.path, selectionRange: span(1, 2, 2) },
+                fromRanges: [span(4, 31, 34)],
+              },
+            ],
+          },
+        ],
+        warnings: [staleWarning("helper.ts")],
+      });
+      expect(resultText(result)).toContain(`Warning: ${staleWarning("helper.ts")}`);
+      await fixture.close();
+    });
+
+    test("converts outgoing call sites in a prepared item's file truncated after the server answered", async () => {
+      const fixture = await createToolFixture();
+      const helper = await truncatedFile(fixture);
+      const runPath = resolve(fixture.context.cwd, "run.ts");
+      await writeFile(runPath, "export function run() {}\n");
+      fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+        item("helper", helper.uri, 4, 9),
+      ]);
+      fixture.client.responderByMethod.set("callHierarchy/outgoingCalls", () => {
+        writeFileSync(helper.path, "x\n");
+        return [
+          { to: item("run", pathToFileURL(runPath).href, 0, 16), fromRanges: [span(4, 30, 33)] },
+        ];
+      });
+
+      const result = await executeTool(fixture, {
+        operation: "outgoing_calls",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        results: [{ value: [{ fromRanges: [span(5, 31, 34)] }] }],
+        warnings: [staleWarning("helper.ts")],
+      });
+      expect(resultText(result)).toContain(`Warning: ${staleWarning("helper.ts")}`);
+      await fixture.close();
+    });
+
+    test("clamps an end-of-line sentinel character in the queried document without a warning", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      fixture.client.responseByMethod.set("textDocument/definition", [
+        { uri, range: span(0, 6, 2147483647) },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "goto_definition",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+      });
+
+      expect(result.structuredContent).toMatchObject({
+        results: [{ value: [{ uri: fixture.filePath, range: span(1, 7, 19) }] }],
+        warnings: [],
+      });
+      expect(resultText(result)).not.toContain("Warning");
+      await fixture.close();
+    });
+
+    test("orders an unreadable-file warning, then a stale-file warning, then server failures", async () => {
+      const fixture = await createToolFixture(["typescript", "failing"]);
+      const helper = await truncatedFile(fixture);
+      const classUri = "jdt://contents/rt.jar/java.lang/String.class";
+      const good = new RecordingLspClient();
+      good.responseByMethod.set("textDocument/definition", [
+        { uri: helper.uri, range: span(5, 2, 4) },
+        { uri: classUri, range: span(0, 3, 4) },
+      ]);
+      const failing = new RecordingLspClient();
+      failing.failureByMethod.set("textDocument/definition", new Error("expected failure"));
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd: fixture.context.cwd,
+        settings: resolvedSettings(["typescript", "failing"]),
+        startClient: async ({ definition }) => (definition.id === "failing" ? failing : good),
+      });
+
+      const result = await executeTool(
+        fixture,
+        { operation: "goto_definition", file_path: fixture.filePath, line: 1, character: 1 },
+        { ...fixture.dependencies, manager },
+      );
+
+      expect(result.structuredContent).toMatchObject({
+        warnings: [
+          `typescript: positions in ${classUri} are approximate because their text could not be read; lines are exact, but columns may be off after non-ASCII text.`,
+          staleWarning("helper.ts"),
+          expect.stringContaining("expected failure"),
+        ],
+      });
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("lists workspace symbols in a truncated file and keeps the other symbols", async () => {
+      const fixture = await createToolFixture();
+      const helper = await truncatedFile(fixture);
+      const runPath = resolve(fixture.context.cwd, "run.ts");
+      await writeFile(runPath, "export function run() {}\n");
+      fixture.client.responseByMethod.set("workspace/symbol", [
+        { name: "Helper", kind: 5, location: { uri: helper.uri, range: span(2, 13, 19) } },
+        {
+          name: "run",
+          kind: 12,
+          location: { uri: pathToFileURL(runPath).href, range: span(0, 16, 19) },
+        },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "workspace_symbols",
+        query: "Helper",
+        file_path: fixture.filePath,
+      });
+
+      const warning = staleWarning("helper.ts");
+      expect(resultText(result)).toBe(
+        [
+          "Helper (class) helper.ts:3:14",
+          "run (function) run.ts:1:17",
+          "",
+          `Warning: ${warning}`,
+        ].join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            value: [
+              { location: { uri: helper.path, range: span(3, 14, 20) } },
+              { location: { range: span(1, 17, 20) } },
+            ],
+          },
+        ],
+        warnings: [warning],
+      });
+      await fixture.close();
+    });
+  });
+
   test("preserves opaque completion metadata without treating lookalike fields as positions", async () => {
     const fixture = await createToolFixture();
     fixture.client.responseByMethod.set("textDocument/completion", {
