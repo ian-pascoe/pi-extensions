@@ -1,4 +1,3 @@
-import { isAbsolute, relative } from "node:path";
 import {
   keyText,
   type AgentToolResult,
@@ -15,6 +14,7 @@ import {
   type LspToolResultDetails,
   type ServerOperationOutcome,
 } from "./lsp-tool-contract.js";
+import { lspDisplayPath } from "./lsp-location-text.js";
 import { pluralizedCount } from "./lsp-post-edit-diagnostics-rendering.js";
 
 /** Theme operations used by Pi LSP tool transcript rendering. */
@@ -35,18 +35,11 @@ export function humanizeLspOperation(operation: LspOperationName): string {
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
 
-function workspaceRelativeLspPath(cwd: string, filePath: string): string {
-  const normalizedPath = filePath.startsWith("@") ? filePath.slice(1) : filePath;
-  if (!isAbsolute(normalizedPath)) return normalizedPath;
-  const relativePath = relative(cwd, normalizedPath);
-  return relativePath !== "" && !relativePath.startsWith("..") ? relativePath : normalizedPath;
-}
-
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Raw call arguments are rendered before validation; only checked display fields are read.
 function lspCallTarget(parameters: unknown, cwd: string): string | undefined {
   if (!Value.Check(LspCallTargetSchema, parameters)) return undefined;
   if (parameters.file_path !== undefined) {
-    const filePath = workspaceRelativeLspPath(cwd, parameters.file_path);
+    const filePath = lspDisplayPath(cwd, parameters.file_path);
     if (parameters.line !== undefined && parameters.character !== undefined) {
       return `${filePath}:${parameters.line}:${parameters.character}`;
     }
@@ -84,8 +77,9 @@ function renderRecord(value: unknown): Record<string, unknown> | undefined {
   return Value.Check(LspRenderRecordSchema, value) ? value : undefined;
 }
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Historical result metrics inspect container shape without claiming to parse the protocol payload.
-function semanticLspValueCount(value: unknown): number {
+/** Count the items of one server's normalized response for transcript metrics. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Result metrics inspect container shape without claiming to parse the protocol payload.
+export function semanticLspValueCount(value: unknown): number {
   if (value === null || value === undefined) return 0;
   if (Array.isArray(value)) return value.length;
   const record = renderRecord(value);
@@ -118,6 +112,8 @@ function semanticLspOperationNoun(operation: LspOperationName): string {
       return "location";
     case "find_references":
       return "reference";
+    case "document_highlights":
+      return "highlight";
     case "document_symbols":
     case "workspace_symbols":
       return "symbol";
@@ -130,27 +126,28 @@ function semanticLspOperationNoun(operation: LspOperationName): string {
   }
 }
 
-function semanticLspOperationMetric(
-  operation: LspOperationName,
-  output: string,
-): string | undefined {
+/** Count the items of JSON model-visible output, which every result rendered before readable text. */
+function jsonOutputCount(operation: LspOperationName, output: string): number | undefined {
   const parsed = parsedLspOutput(output);
   const record = renderRecord(parsed);
-  let count: number | undefined;
-  if (operation === "status" && Array.isArray(record?.servers)) {
-    count = record.servers.length;
-  } else if (operation === "code_actions" && Array.isArray(parsed)) {
-    count = parsed.length;
-  } else if (Array.isArray(record?.results)) {
-    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each historical server result is checked as a record before counting its opaque value.
-    count = record.results.reduce((total: number, result: unknown) => {
-      const resultRecord = renderRecord(result);
-      return total + semanticLspValueCount(resultRecord?.value);
-    }, 0);
-  }
+  if (operation === "status" && Array.isArray(record?.servers)) return record.servers.length;
+  if (operation === "code_actions" && Array.isArray(parsed)) return parsed.length;
+  if (!Array.isArray(record?.results)) return undefined;
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Each historical server result is checked as a record before counting its opaque value.
+  return record.results.reduce((total: number, result: unknown) => {
+    const resultRecord = renderRecord(result);
+    return total + semanticLspValueCount(resultRecord?.value);
+  }, 0);
+}
+
+function semanticLspOperationMetric(
+  details: Extract<LspToolResultDetails, { kind: "operation" }>,
+  output: string,
+): string | undefined {
+  // Readable text is not JSON, so its result carries the count.
+  const count = details.result_count ?? jsonOutputCount(details.operation, output);
   if (count === undefined) return undefined;
-  const noun = semanticLspOperationNoun(operation);
-  return pluralizedCount(count, noun);
+  return pluralizedCount(count, semanticLspOperationNoun(details.operation));
 }
 
 function outcomeColor(outcome: ServerOperationOutcome["outcome"]): ThemeColor {
@@ -172,7 +169,7 @@ function renderOperationSummary(
   output: string,
 ): string {
   const failures = details.server_outcomes.filter(({ outcome }) => outcome !== "success");
-  const metric = semanticLspOperationMetric(details.operation, output);
+  const metric = semanticLspOperationMetric(details, output);
   if (failures.length === 0) {
     const servers = details.server_outcomes.map(({ server_id }) => server_id).join(", ");
     return [

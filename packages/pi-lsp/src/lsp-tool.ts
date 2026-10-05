@@ -52,6 +52,7 @@ import {
   type ServerCapabilities,
   type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
+import { formatLspLocationReadText, isLspLocationOperation } from "./lsp-location-text.js";
 import {
   convertLspCodePointPosition,
   convertLspProtocolPosition,
@@ -103,6 +104,7 @@ import {
   humanizeLspOperation,
   renderLspToolCall,
   renderLspToolResult,
+  semanticLspValueCount,
 } from "./lsp-tool-rendering.js";
 import {
   LspWorkspaceEditError,
@@ -280,21 +282,38 @@ async function createLspToolOutput(
   );
 }
 
+/**
+ * Return one read's result. The Structured Result is the compact JSON of every server's normalized
+ * response; location reads derive readable model-visible text from the same data (ADR-0003), and
+ * other reads show that JSON.
+ */
 async function readOutput(
   operation: LspToolParameters["operation"],
   result: Promise<LspServerReadResult<unknown>>,
   dependencies: LspToolDependencies,
+  location?: { readonly cwd: string; readonly documentPath: string },
 ) {
   const resolved = await result;
   requireReadSuccess(resolved);
-  const text = formatLspToolValue({
-    results: readOperationValue(resolved),
-    warnings: resolved.failures.map(({ message }) => message),
+  const results = readOperationValue(resolved);
+  const warnings = resolved.failures.map(({ message }) => message);
+  const json = formatLspToolValue({ results, warnings });
+  const details = operationDetails(operation, readOperationOutcomes(resolved));
+  if (location === undefined || !isLspLocationOperation(operation)) {
+    return createLspToolOutput(json, details, lspStructuredFields(json), dependencies);
+  }
+  const text = await formatLspLocationReadText({
+    operation,
+    cwd: location.cwd,
+    documentPath: location.documentPath,
+    reads: results,
+    warnings,
   });
+  const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   return createLspToolOutput(
     text,
-    operationDetails(operation, readOperationOutcomes(resolved)),
-    lspStructuredFields(text),
+    { ...details, result_count: resultCount },
+    lspStructuredFields(json),
     dependencies,
   );
 }
@@ -354,7 +373,7 @@ function operationDetails(
   operation: LspToolParameters["operation"],
   outcomes: readonly ServerOperationOutcome[],
   previewRecords: readonly LspWorkspaceEditPreviewRecord[] = [],
-): LspToolResultDetails {
+): Extract<LspToolResultDetails, { kind: "operation" }> {
   const details: Extract<LspToolResultDetails, { kind: "operation" }> = {
     kind: "operation",
     operation,
@@ -1234,6 +1253,10 @@ async function executeLspOperation(
         parameters.operation,
         executePositionRead(dependencies, parameters, context, signal),
         dependencies,
+        {
+          cwd: context.cwd,
+          documentPath: absoluteLspFilePath(parameters.file_path, context),
+        },
       );
     case "diagnostics":
     case "document_symbols":
@@ -1284,7 +1307,8 @@ async function executeLspOperation(
  * guideline, which Pi adds once however many LSP tools are active.
  */
 const LSP_TOOL_RULES = [
-  "Lines and characters are one-based and count Unicode code points. Paths may start with @.",
+  "Lines and characters, in arguments and results, are one-based and count Unicode code points. Paths may start with @.",
+  "Location results list one `path:line:col  <source line>` line per location, with paths relative to the working directory (absolute outside it).",
   "Reads query every matching server unless server_id narrows them; a tool that creates a preview needs server_id when several servers match.",
   "Model-visible output is limited to 2,000 lines or 50 KB; the complete output is saved as a Result Spill file named in the result. Structured results are capped at 1 MiB; a larger one is bounded, and truncated and spill_path then name the complete output.",
   "lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews. Nothing changes until lsp_apply applies a preview_id.",
@@ -1307,9 +1331,13 @@ const LSP_PROMPT_SNIPPET_TOOL: LspOperationName = "diagnostics";
 const LSP_PROMPT_SNIPPET =
   "Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits";
 
-/** One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. */
+/**
+ * One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. It is
+ * the only channel through which direct tool callers see the shared rules, so it restates the
+ * coordinate and output rules a call or its result cannot be read correctly without.
+ */
 export const LSP_TOOL_GUIDELINE =
-  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters are one-based Unicode code points, and paths may start with @. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
+  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters, in arguments and results, are one-based Unicode code points, and paths may start with @. Location results list one path:line:col line per location, with paths relative to the working directory. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
 
 /** Operations declared to the model by default; every other operation is reachable through codemode (ADR-0003). */
 const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([

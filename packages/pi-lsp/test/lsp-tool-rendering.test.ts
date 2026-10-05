@@ -63,6 +63,26 @@ describe("Pi LSP tool rendering", () => {
     expect(expanded).toContain('{"results":[{"value":"hover text"}]}');
   });
 
+  test("counts readable location results from their details", () => {
+    const result = {
+      content: [{ type: "text" as const, text: "src/a.ts:1:7  const a = 1;\nsrc/b.ts:2:3  a;" }],
+      details: {
+        kind: "operation" as const,
+        operation: "find_references" as const,
+        server_outcomes: [{ server_id: "typescript", outcome: "success" as const }],
+        result_count: 2,
+      },
+    };
+    const collapsed = renderLines(
+      renderLspToolResult(result, { expanded: false, isPartial: false }, plainTheme, false),
+    );
+    expect(collapsed).toContain("2 references");
+    const expanded = renderLines(
+      renderLspToolResult(result, { expanded: true, isPartial: false }, plainTheme, false),
+    );
+    expect(expanded).toContain("src/b.ts:2:3  a;");
+  });
+
   test("surfaces preview, apply, partial, and error states without hardcoded styling", () => {
     const preview = renderLines(
       renderLspToolResult(

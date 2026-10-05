@@ -151,6 +151,20 @@ count Unicode code points, regardless of the server's negotiated UTF-8, UTF-16, 
 encoding. Paths may start with `@`. `lsp_selection_ranges` accepts a `positions` array.
 `lsp_find_references` accepts `include_declaration` (default `true`).
 
+Result positions are one-based Unicode code points too. Location results (`lsp_find_references`,
+`lsp_goto_definition`, `lsp_goto_type_definition`, `lsp_goto_implementation`, `lsp_declaration`,
+and `lsp_document_highlights`) reach the model as one line per location:
+
+```text
+src/a.ts:1:14  export const value = 1;
+src/b.ts:3:17  console.log(value);
+```
+
+Paths are relative to Pi's working directory, or absolute outside it, and each line ends with the
+trimmed source line. Document highlights name their kind (`read`, `write`, or `text`) after the
+position. Results are grouped under each server ID only when more than one server answered, and
+server failures follow as `Warning:` lines. Other reads show the server's response as compact JSON.
+
 `lsp_workspace_symbols` requires `query` and a root-anchor `file_path`. `lsp_workspace_diagnostics`,
 `lsp_capabilities`, and `lsp_restart` require `server_id` and a root-anchor `file_path`. Other reads
 query every matching capable server unless narrowed by `server_id`; successful responses remain
@@ -206,7 +220,8 @@ server. No tool is open-world, because all of them talk only to configured local
 Every tool declares an output schema and returns matching `structuredContent`, which codemode
 scripts receive instead of the text. Reads resolve to
 `{ results: { server_id, root_path, value }[], warnings, truncated, structured_truncated, spill_path? }`, where `value` is
-the server's response with one-based positions and file paths instead of `file:` URIs.
+the server's response with one-based positions and file paths instead of `file:` URIs. The
+model-visible text of a read is derived from the same data.
 `lsp_status`, `lsp_capabilities`/`lsp_restart`, the preview tools, `lsp_code_actions`, and
 `lsp_apply` have their own shapes; `describeTool(name)` shows each declaration.
 
