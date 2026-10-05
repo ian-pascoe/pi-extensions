@@ -1308,7 +1308,7 @@ async function executeLspOperation(
  */
 const LSP_TOOL_RULES = [
   "Lines and characters, in arguments and results, are one-based and count Unicode code points. Paths may start with @.",
-  "Location results list one `path:line:col  <source line>` line per location, with paths relative to the working directory.",
+  "Location results list one `path:line:col  <source line>` line per location, with paths relative to the working directory (absolute outside it).",
   "Reads query every matching server unless server_id narrows them; a tool that creates a preview needs server_id when several servers match.",
   "Model-visible output is limited to 2,000 lines or 50 KB; the complete output is saved as a Result Spill file named in the result. Structured results are capped at 1 MiB; a larger one is bounded, and truncated and spill_path then name the complete output.",
   "lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews. Nothing changes until lsp_apply applies a preview_id.",
