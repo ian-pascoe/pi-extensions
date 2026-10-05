@@ -26,6 +26,23 @@ afterEach(async () => {
   await TermctrlRegistry.teardownForTests();
 });
 
+describe("terminal_start", () => {
+  test("a null cwd passes Pi's argument validation and means the session's directory", async () => {
+    const drivers = new FakeDriverFactory();
+    const fixture = await createSdkFixture({ binary: available, createDriver: drivers.create });
+    fixture.responses.push(
+      fauxAssistantMessage(fauxToolCall("terminal_start", { command: "python3", cwd: null }), {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Started."),
+    );
+    await fixture.session.prompt("Start a REPL");
+    await settle(fixture.session);
+    expect(toolResultText(fixture.turns[1]?.messages ?? [], "terminal_start")).toContain("t1 ");
+    expect(drivers.terminal(0).request.cwd).toBe(fixture.cwd);
+  });
+});
+
 describe("tool registration", () => {
   test("registers all five Terminal tools and the bash replacement when the binary resolves", async () => {
     const drivers = new FakeDriverFactory();

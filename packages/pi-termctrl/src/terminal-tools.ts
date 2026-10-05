@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
@@ -137,7 +137,12 @@ const StopResultSchema = Type.Object({
       description: "Terminal only: whether the screen differs from the previous result",
     }),
   ),
-  screen: Type.Optional(Type.String({ description: "Terminal only: the final screen" })),
+  screen: Type.Optional(
+    Type.String({
+      description:
+        "Terminal only: the final screen; omitted for an exited Terminal whose screen is unchanged since your previous result",
+    }),
+  ),
   scrolled_off: Type.Optional(
     Type.String({
       description: "Terminal only: lines that scrolled off since the previous result",
@@ -607,6 +612,23 @@ function unknownId(id: string): Error {
   );
 }
 
+/** Resolve `cwd` against the session's directory and check it is a directory termctrl can start in. */
+async function resolveWorkingDirectory(base: string, cwd: string | undefined): Promise<string> {
+  const resolved = resolve(base, cwd ?? ".");
+  let isDirectory: boolean;
+  try {
+    isDirectory = (await stat(resolved)).isDirectory();
+  } catch (cause) {
+    const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new Error(`Working directory does not exist: ${resolved}`, { cause });
+    }
+    throw cause;
+  }
+  if (!isDirectory) throw new Error(`Working directory is not a directory: ${resolved}`);
+  return resolved;
+}
+
 function shellCommand(shell: TerminalShell, command: string): [string, ...string[]] {
   const script = shell.commandPrefix ? `${shell.commandPrefix}\n${command}` : command;
   return [shell.shell, ...shell.args, script];
@@ -633,10 +655,11 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
     },
     outputSchema: TerminalResultSchema,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
+      const cwd = await resolveWorkingDirectory(context.cwd, params.cwd);
       const entry = await runtime.registry.startTerminal(ownerOf(context), {
         command: shellCommand(runtime.shell(), params.command),
         displayCommand: params.command,
-        cwd: resolve(context.cwd, params.cwd ?? "."),
+        cwd,
         viewport: runtime.viewport(),
         notify: params.notify ?? true,
       });
@@ -655,6 +678,12 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
       });
     },
   });
+}
+
+function inputToExited(id: string, exit: TerminalExit | null): Error {
+  return new Error(
+    `${id} ${describeExit(exit)} and accepts no input. Poll it with terminal_send for its final screen, or remove it with terminal_stop.`,
+  );
 }
 
 /** `terminal_send`: type text and keys into a Terminal, or poll it, and wait for it to settle. */
@@ -690,18 +719,25 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
       }
       const hasInput = (params.text ?? "") !== "" || keys.length > 0;
       if (entry.state === "exited") {
-        return terminalResult(
-          runtime.registry,
-          entry,
-          undefined,
-          "exit",
-          hasInput ? "Input was not sent because the Terminal has exited." : undefined,
-        );
+        if (hasInput) {
+          // The error tells the agent about the exit, so a deferred Exit notification is redundant.
+          runtime.registry.markSeen(entry.id);
+          throw inputToExited(entry.id, entry.exit);
+        }
+        return terminalResult(runtime.registry, entry, undefined, "exit");
       }
       return driveTerminal(runtime.registry, entry, async () => {
         const matches =
           params.wait_for_text === undefined ? undefined : parseWaitPattern(params.wait_for_text);
-        const baseline = matches === undefined ? undefined : (await entry.handle.snapshot()).screen;
+        const before =
+          hasInput || matches !== undefined ? await entry.handle.snapshot() : undefined;
+        if (hasInput && before?.state === "exited") {
+          // The exit watcher has not noticed this exit yet.
+          const exit = before.exit ?? { code: null, signal: null };
+          runtime.registry.terminalExited(entry.id, exit, before.screen, true);
+          throw inputToExited(entry.id, exit);
+        }
+        const baseline = matches === undefined ? undefined : before?.screen;
         const startedAt = Date.now();
         if (params.text !== undefined && params.text !== "") await entry.handle.type(params.text);
         const validKeys = keys.filter(isKey);
@@ -747,7 +783,7 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
     name: "terminal_stop",
     label: "terminal_stop",
     description:
-      "Stop a Terminal (t1) or Background job (b1) and forget it. Running processes are killed; exited ones are removed. Returns a Terminal's final screen and scrolled-off lines, or a Background job's recent output.",
+      "Stop a Terminal (t1) or Background job (b1) and forget it. Running processes are killed; exited ones are removed. Returns a Terminal's final screen (omitted when unchanged since your previous result) and scrolled-off lines, or a Background job's recent output.",
     promptSnippet: "Stop a Terminal or Background job",
     parameters: StopParameters,
     annotations: {
@@ -779,14 +815,18 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       const parts = [header];
       if (entry.kind === "terminal") {
         const screen = entry.finalScreen ?? "";
-        const output = await fitOutput(registry, entry, screen, scrolled);
+        // An exited Terminal's screen the agent already saw is not repeated.
+        const repeated = !wasRunning && previousScreen === screen;
+        const output = await fitOutput(registry, entry, repeated ? "" : screen, scrolled);
         result.changed = previousScreen !== screen;
-        result.screen = output.screen;
-        result.scrolled_off = output.scrolledOff;
+        if (!repeated) result.screen = output.screen;
+        if (!repeated || output.scrolledOff !== "") result.scrolled_off = output.scrolledOff;
         if (output.gap) result.output_missing = true;
         if (output.fullOutputPath !== undefined) result.full_output_path = output.fullOutputPath;
         if (output.scrolledOff !== "") parts.push(`--- scrolled off ---\n${output.scrolledOff}`);
-        parts.push(`--- final screen ---\n${output.screen === "" ? "(blank)" : output.screen}`);
+        if (repeated) parts.push("Its screen is unchanged since your last result.");
+        else
+          parts.push(`--- final screen ---\n${output.screen === "" ? "(blank)" : output.screen}`);
         if (output.notice !== undefined) parts.push(`\n${output.notice}`);
       } else {
         result.output = entry.child.tail();

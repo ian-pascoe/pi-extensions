@@ -1,8 +1,10 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
@@ -17,10 +19,22 @@ import { FakeDriverFactory, type FakeTerminal } from "./fake-driver.js";
 
 /** Whether the fake session has a message queued, for `terminal_wait`. */
 let pendingMessages = false;
+/** The session's working directory; `terminal_start` checks that it exists. */
+let workDir: string;
+
+beforeAll(async () => {
+  workDir = await realpath(await mkdtemp(join(tmpdir(), "pi-termctrl-tools-")));
+});
+
+afterAll(async () => {
+  await rm(workDir, { recursive: true, force: true });
+});
 
 function toolContext(owner: string): ExtensionToolContext {
   const context = {
-    cwd: "/work",
+    get cwd() {
+      return workDir;
+    },
     sessionManager: { getSessionId: () => owner },
     hasPendingMessages: () => pendingMessages,
   };
@@ -85,13 +99,20 @@ afterEach(async () => {
   await TermctrlRegistry.teardownForTests();
 });
 
+/** Real timers, kept so a call's real file I/O can finish without moving the fake clock. */
+const realSetTimeout = globalThis.setTimeout;
+
 async function timed<T>(run: Promise<T>): Promise<{ readonly value: T; readonly elapsed: number }> {
   const startedAt = Date.now();
   let settled: { value: T } | undefined;
   void run.then((value) => {
     settled = { value };
   });
-  while (settled === undefined) await vi.advanceTimersByTimeAsync(10);
+  while (settled === undefined) {
+    // Move the fake clock only while something waits on it; otherwise the call is in real I/O.
+    if (vi.getTimerCount() > 0) await vi.advanceTimersByTimeAsync(10);
+    else await new Promise((resolve) => realSetTimeout(resolve, 1));
+  }
   return { value: settled.value, elapsed: Date.now() - startedAt };
 }
 
@@ -113,7 +134,7 @@ describe("terminal_start", () => {
     expect(terminal.request).toEqual({
       id: "t1",
       command: ["/bin/bash", "-c", "shopt -s expand_aliases\npython3"],
-      cwd: "/work",
+      cwd: workDir,
       viewport: { cols: 100, rows: 30 },
     });
     expect(result.structuredContent).toEqual({
@@ -191,6 +212,37 @@ describe("terminal_start", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(delivered).toEqual(["t1"]);
+  });
+});
+
+describe("terminal_start working directory", () => {
+  test("resolves a relative cwd against the session's directory", async () => {
+    await mkdir(join(workDir, "sub"), { recursive: true });
+    await timed(
+      harness.start.execute("call", { command: "ls", cwd: "sub" }, undefined, undefined, root),
+    );
+    expect(harness.drivers.terminal(0).request.cwd).toBe(join(workDir, "sub"));
+  });
+
+  test("a missing cwd errors with the resolved path and starts nothing", async () => {
+    await expect(
+      harness.start.execute(
+        "call",
+        { command: "ls", cwd: "nope/deeper" },
+        undefined,
+        undefined,
+        root,
+      ),
+    ).rejects.toThrow(`Working directory does not exist: ${join(workDir, "nope", "deeper")}`);
+    expect(harness.drivers.drivers.flatMap((driver) => driver.terminals)).toEqual([]);
+    expect(harness.runtime.registry.entries()).toEqual([]);
+  });
+
+  test("a cwd that is a file errors with the resolved path", async () => {
+    await writeFile(join(workDir, "file.txt"), "x");
+    await expect(
+      harness.start.execute("call", { command: "ls", cwd: "file.txt" }, undefined, undefined, root),
+    ).rejects.toThrow(`Working directory is not a directory: ${join(workDir, "file.txt")}`);
   });
 });
 
@@ -513,6 +565,63 @@ describe("terminal_send", () => {
     expect(terminal.typed).toEqual([]);
   });
 
+  test("input to an exited Terminal errors with its exit code and sends nothing", async () => {
+    const { terminal } = await startTerminal();
+    terminal.exitWith({ code: 3, signal: null });
+    await expect(
+      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
+    ).rejects.toThrow("t1 exited with code 3 and accepts no input");
+    await expect(
+      harness.send.execute("call", { id: "t1", keys: ["Enter"] }, undefined, undefined, root),
+    ).rejects.toThrow("t1 exited with code 3 and accepts no input");
+    expect(terminal.typed).toEqual([]);
+    expect(terminal.pressed).toEqual([]);
+  });
+
+  test("input to a Terminal the exit watcher already recorded as exited errors too", async () => {
+    const { terminal } = await startTerminal();
+    terminal.exitWith({ code: 1, signal: null });
+    await harness.runtime.registry.pollTerminals();
+    await expect(
+      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
+    ).rejects.toThrow("t1 exited with code 1 and accepts no input");
+    expect(terminal.typed).toEqual([]);
+  });
+
+  test("input to an exited Terminal sends no deferred Exit notification", async () => {
+    const delivered: string[] = [];
+    harness.runtime.registry.bindOwner("root", (notices) => {
+      delivered.push(...notices.map((notice) => notice.id));
+      return false;
+    });
+    const { terminal } = await startTerminal();
+    terminal.exitWith({ code: 1, signal: null });
+    await harness.runtime.registry.pollTerminals();
+    await expect(
+      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
+    ).rejects.toThrow("accepts no input");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(delivered).toEqual([]);
+  });
+
+  test("input to a Terminal a signal ended names the signal", async () => {
+    const { terminal } = await startTerminal();
+    terminal.exitWith({ code: null, signal: "SIGTERM" });
+    await expect(
+      harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
+    ).rejects.toThrow("t1 ended by SIGTERM and accepts no input");
+  });
+
+  test("polling an exited Terminal still returns its final screen", async () => {
+    const { terminal } = await startTerminal();
+    terminal.screen = "bye";
+    terminal.exitWith({ code: 0, signal: null });
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ state: "exited", exit_code: 0, screen: "bye" });
+  });
+
   test("hides other sessions' Terminals and rejects input to Background jobs", async () => {
     await startTerminal();
     await expect(
@@ -669,6 +778,62 @@ describe("terminal_stop and terminal_list", () => {
       "Terminal t1 stopped.\n--- scrolled off ---\n>>> \nolder\n--- final screen ---\n>>> exit()",
     );
     expect(harness.runtime.registry.entries()).toEqual([]);
+  });
+
+  test("stopping an exited Terminal whose screen the agent saw omits the screen", async () => {
+    const { terminal } = await startTerminal();
+    terminal.screen = "bye";
+    terminal.exitWith({ code: 2, signal: null });
+    await timed(harness.send.execute("call", { id: "t1" }, undefined, undefined, root));
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toEqual({
+      id: "t1",
+      kind: "terminal",
+      state: "exited",
+      exit_code: 2,
+      changed: false,
+    });
+    expect(textOf(value)).toBe(
+      "Terminal t1 had already exited with code 2; removed.\nIts screen is unchanged since your last result.",
+    );
+    expect(harness.runtime.registry.entries()).toEqual([]);
+  });
+
+  test("stopping an exited Terminal still reports lines that scrolled off unseen", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["one", "two"];
+      self.screen = "two";
+    });
+    // A second running Terminal keeps the driver open, so the exited one's log stays readable.
+    await timed(harness.start.execute("call", { command: "sleep 9" }, undefined, undefined, root));
+    terminal.screen = "two";
+    terminal.exitWith({ code: 0, signal: null });
+    await timed(harness.send.execute("call", { id: "t1" }, undefined, undefined, root));
+    terminal.logLines = ["one", "two", "three"];
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ changed: false, scrolled_off: "two" });
+    expect(value.structuredContent).not.toHaveProperty("screen");
+  });
+
+  test("stopping an exited Terminal the agent has not seen since it changed shows the screen", async () => {
+    const { terminal } = await startTerminal();
+    terminal.screen = "bye";
+    terminal.exitWith({ code: 2, signal: null });
+    await harness.runtime.registry.pollTerminals();
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      state: "exited",
+      exit_code: 2,
+      changed: true,
+      screen: "bye",
+    });
+    expect(textOf(value)).toContain("--- final screen ---\nbye");
   });
 
   test("a stopped Terminal's full output file lasts until its session shuts down", async () => {

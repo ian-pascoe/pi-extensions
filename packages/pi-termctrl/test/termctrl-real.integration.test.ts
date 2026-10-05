@@ -125,6 +125,34 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     expect(exited.details).toMatchObject({ state: "exited", exit_code: 0 });
   });
 
+  test("handles an exited Terminal, cwd null and a missing cwd", { timeout: 20_000 }, async () => {
+    const tools = createTools();
+    const context = toolContext();
+    const started = await tools.start.execute(
+      "start",
+      { command: "echo done; exit 4", cwd: null, wait_ms: 10_000 },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(started.details).toMatchObject({ state: "exited", exit_code: 4, settle_reason: "exit" });
+    await expect(
+      tools.send.execute("send", { id: "t1", text: "x" }, undefined, undefined, context),
+    ).rejects.toThrow("t1 exited with code 4 and accepts no input");
+    const stopped = await tools.stop.execute("stop", { id: "t1" }, undefined, undefined, context);
+    expect(stopped.details).toEqual({
+      id: "t1",
+      kind: "terminal",
+      state: "exited",
+      exit_code: 4,
+      changed: false,
+    });
+    const missing = join(directory, "missing");
+    await expect(
+      tools.start.execute("start", { command: "ls", cwd: missing }, undefined, undefined, context),
+    ).rejects.toThrow(`Working directory does not exist: ${missing}`);
+  });
+
   test("drives a full-screen TUI", { timeout: 20_000 }, async () => {
     const file = join(directory, "numbers.txt");
     await writeFile(
