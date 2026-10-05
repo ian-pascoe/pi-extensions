@@ -165,6 +165,15 @@ trimmed source line. Document highlights name their kind (`read`, `write`, or `t
 position. Results are grouped under each server ID only when more than one server answered, and
 server failures follow as `Warning:` lines. Other reads show the server's response as compact JSON.
 
+Pi LSP starts one server per workspace root, so `lsp_find_references` and `lsp_rename` search
+only the workspace root of the queried file. In a monorepo where every package has a
+`package.json`, renaming a helper exported by one package finds no importers in the others. Both
+tools name the root they searched (`Searched typescript workspace root: packages/a`). When the same
+server has other roots, they add a warning listing them. Those roots are its running or known
+servers and directories under Pi's working directory that contain one of its root markers; hidden
+directories and `node_modules` are skipped. The rename warning starts the preview summary, so it is
+visible before `lsp_apply`; scripts receive it in `warnings` and the searched root in `root_path`.
+
 `lsp_workspace_symbols` requires `query` and a root-anchor `file_path`. `lsp_workspace_diagnostics`,
 `lsp_capabilities`, and `lsp_restart` require `server_id` and a root-anchor `file_path`. Other reads
 query every matching capable server unless narrowed by `server_id`; successful responses remain

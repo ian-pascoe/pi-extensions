@@ -54,7 +54,11 @@ import {
   type ServerCapabilities,
   type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
-import { formatLspLocationReadText, isLspLocationOperation } from "./lsp-location-text.js";
+import {
+  formatLspLocationReadText,
+  isLspLocationOperation,
+  lspDisplayPath,
+} from "./lsp-location-text.js";
 import {
   convertLspCodePointPosition,
   convertLspProtocolPosition,
@@ -251,6 +255,48 @@ function piLspFailureError(failures: readonly LspServerFailure[]): Error {
   return piLspError(`${message}\n\n${TROUBLESHOOTING_HINT}`);
 }
 
+/** The workspace root one Server Instance searched for a references or rename result. */
+interface ServerInstanceScope {
+  /** Names the searched root. */
+  readonly line: string;
+  /** Present when other workspace roots of the same Server Definition exist. */
+  readonly warning?: string;
+}
+
+/**
+ * Disclose the single workspace root a references or rename request searched. Each root of a
+ * Server Definition gets its own Server Instance, so files under other roots may be missing.
+ */
+async function serverInstanceScope(
+  dependencies: LspToolDependencies,
+  serverId: string,
+  rootPath: string,
+  cwd: string,
+): Promise<ServerInstanceScope> {
+  const root = lspDisplayPath(cwd, rootPath);
+  const line = `Searched ${serverId} workspace root: ${root}`;
+  const others = await dependencies.manager.findOtherWorkspaceRoots(serverId, rootPath);
+  if (others.rootPaths.length === 0) return { line };
+  const otherRoots = [
+    ...others.rootPaths.map((path) => lspDisplayPath(cwd, path)),
+    ...(others.hasMore ? ["and more"] : []),
+  ].join(", ");
+  return {
+    line,
+    warning: `${serverId} searched only its workspace root ${root}, but other ${serverId} workspace roots exist: ${otherRoots}. Files outside ${root} may not have been considered; query a file under each other root or search for importers before relying on this result.`,
+  };
+}
+
+function serverInstanceScopeLines(scopes: readonly ServerInstanceScope[]): string[] {
+  return scopes.flatMap(({ line, warning }) =>
+    warning === undefined ? [line] : [line, `Warning: ${warning}`],
+  );
+}
+
+function serverInstanceScopeWarnings(scopes: readonly ServerInstanceScope[]): string[] {
+  return scopes.flatMap(({ warning }) => (warning === undefined ? [] : [warning]));
+}
+
 async function createLspToolOutput(
   text: string,
   details: LspToolResultDetails,
@@ -292,7 +338,8 @@ async function createLspToolOutput(
 /**
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
  * response; location reads derive readable model-visible text from the same data (ADR-0003), and
- * other reads show that JSON.
+ * other reads show that JSON. References also name each searched workspace root and warn when
+ * other roots of the same Server Definition exist.
  */
 async function readOutput(
   operation: LspToolParameters["operation"],
@@ -303,7 +350,16 @@ async function readOutput(
   const resolved = await result;
   requireReadSuccess(resolved);
   const results = readOperationValue(resolved);
-  const warnings = resolved.failures.map(({ message }) => message);
+  const failureWarnings = resolved.failures.map(({ message }) => message);
+  const scopes =
+    operation === "find_references" && location !== undefined
+      ? await Promise.all(
+          resolved.successes.map(({ serverId, rootPath }) =>
+            serverInstanceScope(dependencies, serverId, rootPath, location.cwd),
+          ),
+        )
+      : [];
+  const warnings = [...serverInstanceScopeWarnings(scopes), ...failureWarnings];
   const json = formatLspToolValue({ results, warnings });
   const details = operationDetails(operation, readOperationOutcomes(resolved));
   if (location === undefined || !isLspLocationOperation(operation)) {
@@ -314,7 +370,8 @@ async function readOutput(
     cwd: location.cwd,
     documentPath: location.documentPath,
     reads: results,
-    warnings,
+    warnings: failureWarnings,
+    scope: serverInstanceScopeLines(scopes),
   });
   const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   return createLspToolOutput(
@@ -655,17 +712,24 @@ function sameMutationManifest(left: MutationManifest, right: MutationManifest): 
 
 async function workspacePreviewOutput(
   dependencies: LspToolDependencies,
-  operation: "format_document" | "format_range" | "format_on_type" | "rename" | "code_actions",
-  serverId: string,
+  operation: "format_document" | "format_range" | "format_on_type" | "rename",
+  route: LspServerRoute,
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The preview store owns validation of raw server Workspace Edits before filesystem inspection.
   edit: unknown,
   positionEncoding: PositionEncodingKind,
+  scope?: ServerInstanceScope,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
+  const { serverId, rootPath } = route;
   const preview = await dependencies.workspaceEdits.createPreview({
     edit,
     serverId,
     positionEncoding,
   });
+  // The scope leads the summary so that output truncation cannot hide it before lsp_apply.
+  const scopeLines = scope === undefined ? [] : serverInstanceScopeLines([scope]);
+  const summary = [scopeLines.join("\n"), preview.summary]
+    .filter((part) => part !== "")
+    .join("\n\n");
   dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
   const manifest = normalizeStoreMutationManifest(
     dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
@@ -674,18 +738,20 @@ async function workspacePreviewOutput(
     kind: "workspace_edit_preview",
     preview_id: preview.preview_id,
     operation,
-    summary: preview.summary,
+    summary,
     mutation_manifest: manifest,
     preview_record: preview,
     state: "available",
   };
   return createLspToolOutput(
-    `Workspace Edit Preview ${preview.preview_id}\n${preview.summary}`,
+    `Workspace Edit Preview ${preview.preview_id}\n${summary}`,
     details,
     {
       preview_id: preview.preview_id,
       server_id: serverId,
-      summary: preview.summary,
+      root_path: rootPath,
+      summary,
+      warnings: scope === undefined ? [] : serverInstanceScopeWarnings([scope]),
       mutation_manifest: manifest,
     },
     dependencies,
@@ -985,7 +1051,7 @@ async function executeFormattingPreview(
   return workspacePreviewOutput(
     dependencies,
     parameters.operation,
-    route.serverId,
+    route,
     workspaceEditFromTextEdits(prepared.document.uri, edits),
     client.positionEncoding,
   );
@@ -1019,9 +1085,10 @@ async function executeRenamePreview(
   return workspacePreviewOutput(
     dependencies,
     "rename",
-    route.serverId,
+    route,
     edit,
     client.positionEncoding,
+    await serverInstanceScope(dependencies, route.serverId, route.rootPath, context.cwd),
   );
 }
 

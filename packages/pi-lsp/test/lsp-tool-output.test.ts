@@ -131,7 +131,9 @@ const BOUNDED_OUTPUT_CASES = [
     fields: {
       preview_id: "preview-1",
       server_id: "ts",
+      root_path: "/repo",
       summary: big(50_000),
+      warnings: [],
       mutation_manifest: manifest,
       server_preview_ids: ["preview-1"],
     },

@@ -147,6 +147,23 @@ export interface LspServerManagerStatus {
   readonly warnings: readonly string[];
 }
 
+/** Workspace roots of one Server Definition other than a searched Server Instance root. */
+export interface LspOtherWorkspaceRoots {
+  /** Up to `LSP_OTHER_WORKSPACE_ROOT_LIMIT` absolute roots, sorted. */
+  readonly rootPaths: readonly string[];
+  /** Whether more roots exist than `rootPaths` lists. */
+  readonly hasMore: boolean;
+}
+
+/** Most other workspace roots one discovery reports. */
+export const LSP_OTHER_WORKSPACE_ROOT_LIMIT = 5;
+
+/** Most directories one root-marker discovery lists, bounding its cost in large trees. */
+const ROOT_DISCOVERY_DIRECTORY_LIMIT = 4096;
+
+/** Directories root-marker discovery never descends into: installed dependencies. */
+const ROOT_DISCOVERY_SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set(["node_modules"]);
+
 /** Construction inputs for one session-scoped language-server manager. */
 export interface LspServerManagerInput<TClient extends LspManagedServerClient> {
   /** Pi session working directory used for relative paths and root fallback. */
@@ -223,6 +240,50 @@ export function routeLspServersForFile(
   }
 
   return routes;
+}
+
+/**
+ * List directories under `baseDirectory` (itself included) that contain a root marker, breadth
+ * first in name order, skipping hidden and dependency directories and symbolic links. Discovery
+ * stops once `wanted` roots other than `excludedRoot` are found or the directory limit is reached.
+ */
+async function discoverLspMarkerRoots(
+  baseDirectory: string,
+  rootMarkers: readonly string[],
+  excludedRoot: string,
+  wanted: number,
+): Promise<string[]> {
+  const roots: string[] = [];
+  const queue = [baseDirectory];
+  let listed = 0;
+  while (queue.length > 0 && roots.length < wanted && listed < ROOT_DISCOVERY_DIRECTORY_LIMIT) {
+    const directory = queue.shift();
+    if (directory === undefined) break;
+    listed++;
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    if (
+      directory !== excludedRoot &&
+      entries.some((entry) => rootMarkers.some((marker) => matchesGlob(entry.name, marker)))
+    ) {
+      roots.push(directory);
+    }
+    for (const entry of entries) {
+      if (
+        entry.isDirectory() &&
+        !entry.name.startsWith(".") &&
+        !ROOT_DISCOVERY_SKIPPED_DIRECTORIES.has(entry.name)
+      ) {
+        queue.push(resolve(directory, entry.name));
+      }
+    }
+  }
+  return roots;
 }
 
 function describeLspError(cause: unknown): string {
@@ -361,6 +422,40 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     return [...this.input.settings.servers.values()].some((definition) =>
       definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
     );
+  }
+
+  /**
+   * Find workspace roots of one Server Definition other than `rootPath`: roots of its known Server
+   * Instances, and directories under the working directory that contain one of its root markers.
+   * Files under those roots route to other Server Instances, so a request to the instance at
+   * `rootPath` may not consider them. Hidden and `node_modules` directories are not searched.
+   */
+  async findOtherWorkspaceRoots(
+    serverId: string,
+    rootPath: string,
+  ): Promise<LspOtherWorkspaceRoots> {
+    const searchedRoot = resolve(this.input.cwd, rootPath);
+    const wanted = LSP_OTHER_WORKSPACE_ROOT_LIMIT + 1;
+    const roots = new Set(
+      [...this.knownRoutes.values()]
+        .filter((route) => route.serverId === serverId && route.rootPath !== searchedRoot)
+        .map((route) => route.rootPath),
+    );
+    const rootMarkers = this.input.settings.servers.get(serverId)?.rootMarkers ?? [];
+    if (roots.size < wanted && rootMarkers.length > 0) {
+      const discovered = await discoverLspMarkerRoots(
+        resolve(this.input.cwd),
+        rootMarkers,
+        searchedRoot,
+        wanted,
+      );
+      for (const root of discovered) roots.add(root);
+    }
+    const sorted = [...roots].sort((left, right) => left.localeCompare(right));
+    return {
+      rootPaths: sorted.slice(0, LSP_OTHER_WORKSPACE_ROOT_LIMIT),
+      hasMore: sorted.length > LSP_OTHER_WORKSPACE_ROOT_LIMIT,
+    };
   }
 
   /** Query matching capable instances while retaining independent operational failures. */
