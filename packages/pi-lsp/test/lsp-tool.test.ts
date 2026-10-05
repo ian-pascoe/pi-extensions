@@ -1152,6 +1152,66 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("warns about sibling roots above the working directory before their Instances start", async () => {
+    const fixture = await createToolFixture();
+    const repo = fixture.context.cwd;
+    const searchedRoot = resolve(repo, "packages/a");
+    const sourcePath = resolve(searchedRoot, "source.ts");
+    await mkdir(resolve(repo, "packages/b"), { recursive: true });
+    await mkdir(searchedRoot, { recursive: true });
+    for (const directory of [repo, searchedRoot, resolve(repo, "packages/b")]) {
+      await writeFile(resolve(directory, "package.json"), "{}\n");
+    }
+    await writeFile(sourcePath, "export const helper = 1;\n");
+    fixture.client.responseByMethod.set("textDocument/references", []);
+    fixture.client.responseByMethod.set("textDocument/rename", {
+      changes: {
+        [pathToFileURL(sourcePath).href]: [
+          {
+            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
+            newText: "renamed",
+          },
+        ],
+      },
+    });
+    // Pi starts inside the package, so both the tool context and the manager use that directory.
+    // SAFETY: Tool execution only reads cwd from ExtensionContext.
+    const insidePackage = { ...fixture, context: { cwd: searchedRoot } as ExtensionToolContext };
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd: searchedRoot,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+
+    const references = await executeTool(
+      insidePackage,
+      { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
+      dependencies,
+    );
+    const rename = await executeTool(
+      insidePackage,
+      { operation: "rename", file_path: sourcePath, line: 1, character: 14, new_name: "renamed" },
+      dependencies,
+    );
+
+    // Roots outside the working directory display as absolute paths.
+    const others = [repo, resolve(repo, "packages/b")];
+    for (const result of [references, rename]) {
+      expect(result.structuredContent).toMatchObject({
+        warnings: [
+          expect.stringContaining(`other typescript workspace roots exist: ${others.join(", ")}.`),
+        ],
+      });
+    }
+    expect(references.structuredContent).toMatchObject({
+      results: [{ root_path: searchedRoot, server_id: "typescript" }],
+    });
+    expect(rename.structuredContent).toMatchObject({ root_path: searchedRoot });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
   test("warns in the rename preview summary that other workspace roots were not searched", async () => {
     const fixture = await createToolFixture();
     const cwd = fixture.context.cwd;

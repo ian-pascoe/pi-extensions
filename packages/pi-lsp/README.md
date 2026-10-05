@@ -219,9 +219,14 @@ only the workspace root of the queried file. In a monorepo where every package h
 `package.json`, renaming a helper exported by one package finds no importers in the others. Both
 tools name the root they searched (`Searched typescript workspace root: packages/a`). When the same
 server has other roots, they add a warning listing them. Those roots are its running or known
-servers and directories under Pi's working directory that contain one of its root markers; hidden
-directories and `node_modules` are skipped. Discovery checks at most 4,096 directories; when it
-stops early, the warning says other roots may exist. The rename warning starts the preview summary, so it is
+servers and directories that contain one of its root markers, found by searching down from the
+outermost ancestor of the searched root that contains a root marker (or Pi's working directory,
+when that is higher). Pi can therefore start inside a package and still find sibling packages
+under the shared repository root. The search starts no higher than that directory, and never at
+your home directory or above it, unless Pi's working directory is at or above it, so a stray
+marker file in `~` does not widen the scan. Symbolic links, hidden directories, and
+`node_modules` are skipped. Discovery checks at most 4,096 directories; when it stops early,
+the warning says other roots may exist. The rename warning starts the preview summary, so it is
 visible before `lsp_apply`; scripts receive it in `warnings` and the searched root in `root_path`.
 
 `lsp_workspace_symbols` requires `query` and a root-anchor `file_path`. `lsp_workspace_diagnostics`,

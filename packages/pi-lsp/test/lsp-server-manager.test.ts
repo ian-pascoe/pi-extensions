@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { LspServerClient } from "../src/lsp-server-client.js";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readdir } from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
@@ -1124,6 +1124,120 @@ describe("other workspace roots of a Server Definition", () => {
       hasMore: false,
     });
     await manager.shutdown();
+  });
+
+  test("finds sibling roots above a working directory inside a package before any Instance starts", async () => {
+    const parent = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-repo-"));
+    temporaryDirectories.push(parent);
+    const repo = resolve(parent, "repo");
+    const searchedRoot = resolve(repo, "packages/a");
+    for (const directory of [repo, searchedRoot, resolve(repo, "packages/b")]) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, "package.json"), "{}\n");
+    }
+    await mkdir(resolve(searchedRoot, "src"));
+    // Beside the repository, above its outermost marker directory: never searched.
+    await mkdir(resolve(parent, "unrelated"));
+    await writeFile(resolve(parent, "unrelated/package.json"), "{}\n");
+
+    for (const cwd of [searchedRoot, resolve(searchedRoot, "src"), repo]) {
+      const manager = new LspServerManager({
+        cwd,
+        settings: resolvedSettings(["typescript"]),
+        startClient: createRecordingClientFactory().start,
+      });
+      expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot), cwd).toEqual({
+        rootPaths: [repo, resolve(repo, "packages/b")],
+        hasMore: false,
+      });
+    }
+  });
+
+  test("does not start discovery at the home directory or above it", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-home-"));
+    temporaryDirectories.push(home);
+    const repo = resolve(home, "code/repo");
+    const searchedRoot = resolve(repo, "packages/a");
+    for (const directory of [
+      home,
+      repo,
+      searchedRoot,
+      resolve(repo, "packages/b"),
+      resolve(home, "code/other"),
+      resolve(home, "Downloads/x"),
+    ]) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, "package.json"), "{}\n");
+    }
+    const findFrom = (cwd: string) =>
+      new LspServerManager({
+        cwd,
+        homeDirectory: home,
+        settings: resolvedSettings(["typescript"]),
+        startClient: createRecordingClientFactory().start,
+      }).findOtherWorkspaceRoots("typescript", searchedRoot);
+
+    // A marker in the home directory does not widen discovery beyond the repository.
+    const repoOnly = { rootPaths: [repo, resolve(repo, "packages/b")], hasMore: false };
+    expect(await findFrom(repo)).toEqual(repoOnly);
+    expect(await findFrom(searchedRoot)).toEqual(repoOnly);
+    // A working directory at the home directory chose that scope itself.
+    expect((await findFrom(home)).rootPaths).toEqual(
+      [
+        home,
+        repo,
+        resolve(repo, "packages/b"),
+        resolve(home, "code/other"),
+        resolve(home, "Downloads/x"),
+      ].sort((left, right) => left.localeCompare(right)),
+    );
+  });
+
+  test("starts discovery at the outermost marker ancestor, not the nearest", async () => {
+    const parent = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-nested-"));
+    temporaryDirectories.push(parent);
+    const repo = resolve(parent, "repo");
+    const searchedRoot = resolve(repo, "packages/a/app");
+    for (const directory of [
+      repo,
+      resolve(repo, "packages"),
+      resolve(repo, "packages/a"),
+      searchedRoot,
+      resolve(repo, "tools/b"),
+    ]) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, "package.json"), "{}\n");
+    }
+    const manager = new LspServerManager({
+      cwd: searchedRoot,
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
+      rootPaths: [
+        repo,
+        resolve(repo, "packages"),
+        resolve(repo, "packages/a"),
+        resolve(repo, "tools/b"),
+      ],
+      hasMore: false,
+    });
+  });
+
+  test("reports none from a working directory inside the only root", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const searchedRoot = resolve(cwd, "packages/example");
+    const manager = new LspServerManager({
+      cwd: dirname(filePath),
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
+      rootPaths: [],
+      hasMore: false,
+    });
   });
 
   test("reports none when the searched root is the only root", async () => {
