@@ -256,7 +256,7 @@ function resultText(result: AgentToolResult<LspToolResultDetails>): string {
   return result.content[0]?.type === "text" ? result.content[0].text : "";
 }
 
-function oneBasedRange() {
+function range() {
   return {
     start: { line: 1, character: 1 },
     end: { line: 1, character: 1 },
@@ -515,7 +515,7 @@ describe("registered LSP tool", () => {
         requests: ["textDocument/codeLens"],
       },
       {
-        input: { operation: "inlay_hints", file_path: fixture.filePath, range: oneBasedRange() },
+        input: { operation: "inlay_hints", file_path: fixture.filePath, range: range() },
         requests: ["textDocument/inlayHint"],
       },
       {
@@ -535,7 +535,7 @@ describe("registered LSP tool", () => {
         input: {
           operation: "format_range",
           file_path: fixture.filePath,
-          range: oneBasedRange(),
+          range: range(),
           tab_size: 2,
           insert_spaces: true,
         },
@@ -568,7 +568,7 @@ describe("registered LSP tool", () => {
         requests: ["textDocument/rename"],
       },
       {
-        input: { operation: "code_actions", file_path: fixture.filePath, range: oneBasedRange() },
+        input: { operation: "code_actions", file_path: fixture.filePath, range: range() },
         requests: ["textDocument/codeAction", "codeAction/resolve"],
       },
     ];
@@ -702,7 +702,7 @@ describe("registered LSP tool", () => {
     const actions = await executeTool(fixture, {
       operation: "code_actions",
       file_path: fixture.filePath,
-      range: oneBasedRange(),
+      range: range(),
     });
     expect(actions.structuredContent).toEqual({
       server_id: "typescript",
@@ -910,6 +910,65 @@ describe("registered LSP tool", () => {
     expect(text).toContain('"originSelectionRange":{"end":{"character":2');
     expect(text).toContain('"targetRange":{"end":{"character":4');
     expect(text).toContain('"targetSelectionRange":{"end":{"character":4');
+    await fixture.close();
+  });
+
+  test("converts incoming-call ranges against each caller file's Unicode text", async () => {
+    const fixture = await createToolFixture();
+    const longCallerPath = resolve(fixture.context.cwd, "long-caller.ts");
+    const unicodeCallerPath = resolve(fixture.context.cwd, "unicode-caller.ts");
+    await writeFile(longCallerPath, "export function aLongCallerName() { callee(); }\n");
+    await writeFile(unicodeCallerPath, "const 😀 = callee();\n");
+    const callHierarchyItem = (uri: string, line: number, character: number) => ({
+      name: "caller",
+      kind: 12,
+      uri,
+      range: { start: { line, character }, end: { line, character } },
+      selectionRange: { start: { line, character }, end: { line, character } },
+    });
+    const range = (line: number, start: number, end: number) => ({
+      start: { line, character: start },
+      end: { line, character: end },
+    });
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+      callHierarchyItem(pathToFileURL(fixture.filePath).href, 0, 0),
+    ]);
+    fixture.client.responseByMethod.set("callHierarchy/incomingCalls", [
+      {
+        from: callHierarchyItem(pathToFileURL(longCallerPath).href, 0, 16),
+        fromRanges: [range(0, 36, 42)],
+      },
+      {
+        from: callHierarchyItem(pathToFileURL(unicodeCallerPath).href, 0, 0),
+        fromRanges: [range(0, 11, 17)],
+      },
+      {
+        from: callHierarchyItem(pathToFileURL(fixture.filePath).href, 0, 0),
+        fromRanges: [range(0, 17, 18)],
+      },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "incoming_calls",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(JSON.parse(text)).toMatchObject({
+      results: [
+        {
+          value: [
+            {
+              from: { uri: longCallerPath, selectionRange: range(1, 17, 17) },
+              fromRanges: [range(1, 37, 43)],
+            },
+            { from: { uri: unicodeCallerPath }, fromRanges: [range(1, 11, 17)] },
+            { from: { uri: fixture.filePath }, fromRanges: [range(1, 17, 18)] },
+          ],
+        },
+      ],
+    });
     await fixture.close();
   });
 
