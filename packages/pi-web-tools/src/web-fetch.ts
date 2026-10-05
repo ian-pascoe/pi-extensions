@@ -5,6 +5,7 @@ import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { extractMainContent } from "./html-main-content.js";
+import { convertHtmlInChunks } from "./html-markdown.js";
 import {
   cancelResponse,
   describeWebFailure,
@@ -253,16 +254,33 @@ const LINE_ELEMENTS = new Set([
 const CELL_ELEMENTS = new Set(["td", "th"]);
 
 function extractTextFromHtml(html: string): string {
-  let text = "";
+  // Output is accumulated as parts and joined once; state tracks the tail so no step rescans it.
+  const parts: string[] = [];
+  let trailingNewlines = 0;
+  let pendingSpace = false;
   let skipDepth = 0;
   let preDepth = 0;
-  const omittedElements = new Set(["script", "style", "noscript", "iframe", "object", "embed"]);
+  const omittedElements = new Set([
+    "script",
+    "style",
+    "noscript",
+    "iframe",
+    "object",
+    "embed",
+    "template",
+  ]);
+  const emit = (value: string): void => {
+    if (value.length === 0) return;
+    parts.push(value);
+    let newlines = 0;
+    while (newlines < value.length && value[value.length - 1 - newlines] === "\n") newlines++;
+    trailingNewlines = newlines === value.length ? trailingNewlines + newlines : newlines;
+  };
   // Ensure the text ends with at least `newlines` line breaks, without adding to existing ones.
   const breakLine = (newlines: number): void => {
-    if (text.length === 0) return;
-    text = text.replace(/[ \t]+$/, "");
-    const existing = text.length - text.trimEnd().length;
-    text += "\n".repeat(Math.max(0, newlines - existing));
+    pendingSpace = false;
+    if (parts.length === 0) return;
+    emit("\n".repeat(Math.max(0, newlines - trailingNewlines)));
   };
   const parser = new Parser({
     onopentag(name) {
@@ -270,19 +288,28 @@ function extractTextFromHtml(html: string): string {
         skipDepth++;
         return;
       }
-      if (name === "br") text += "\n";
-      else if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
+      if (name === "br") {
+        pendingSpace = false;
+        if (parts.length > 0 && (preDepth > 0 || trailingNewlines < 2)) emit("\n");
+      } else if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
       else if (LINE_ELEMENTS.has(name)) breakLine(1);
       if (name === "pre") preDepth++;
     },
     ontext(value) {
       if (skipDepth > 0) return;
       if (preDepth > 0) {
-        text += value;
+        emit(value);
         return;
       }
-      const collapsed = value.replace(/\s+/g, " ");
-      text += text.length === 0 || text.endsWith("\n") ? collapsed.trimStart() : collapsed;
+      const core = value.trim().replace(/\s+/g, " ");
+      const atLineStart = parts.length === 0 || trailingNewlines > 0;
+      const spaceBefore = pendingSpace || /^\s/.test(value);
+      if (core.length > 0) {
+        emit(spaceBefore && !atLineStart ? ` ${core}` : core);
+        pendingSpace = /\s$/.test(value);
+      } else if (!atLineStart && /\s/.test(value)) {
+        pendingSpace = true;
+      }
     },
     onclosetag(name) {
       if (skipDepth > 0) {
@@ -292,18 +319,21 @@ function extractTextFromHtml(html: string): string {
       if (name === "pre") preDepth = Math.max(0, preDepth - 1);
       if (PARAGRAPH_ELEMENTS.has(name)) breakLine(2);
       else if (LINE_ELEMENTS.has(name)) breakLine(1);
-      else if (CELL_ELEMENTS.has(name) && !text.endsWith("\n")) text += " ";
+      else if (CELL_ELEMENTS.has(name) && trailingNewlines === 0) pendingSpace = true;
     },
   });
   parser.write(html);
   parser.end();
-  return text
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return parts.join("").replace(/^\n+/, "").trimEnd();
 }
 
-function convertHtmlToMarkdown(html: string): string {
+const CHROME_REMOVED_NOTE = "Site chrome outside the main content was removed.";
+
+function firstLine(text: string): string {
+  return text.trimStart().split("\n", 1)[0]?.trim() ?? "";
+}
+
+function newTurndown(): TurndownService {
   const turndown = new TurndownService({
     headingStyle: "atx",
     hr: "---",
@@ -312,23 +342,11 @@ function convertHtmlToMarkdown(html: string): string {
     emDelimiter: "*",
   });
   turndown.remove(["script", "style", "meta", "link"]);
-  return turndown.turndown(html);
+  return turndown;
 }
 
-const CHROME_REMOVED_NOTE = "Site navigation and other page chrome were removed.";
-
-function firstLine(text: string): string {
-  return (
-    text
-      .trimStart()
-      .split("\n", 1)[0]
-      ?.replace(/^#+\s*/, "")
-      .trim() ?? ""
-  );
-}
-
-function convertHtml(html: string, format: "markdown" | "text"): string {
-  return format === "markdown" ? convertHtmlToMarkdown(html) : extractTextFromHtml(html);
+function turndownInChunks(turndown: TurndownService, html: string): string {
+  return convertHtmlInChunks(html, (chunk) => turndown.turndown(chunk));
 }
 
 /**
@@ -337,19 +355,26 @@ function convertHtml(html: string, format: "markdown" | "text"): string {
  */
 function convertHtmlPage(html: string, format: "markdown" | "text"): string {
   const main = extractMainContent(html);
-  if (main === undefined) return convertHtml(html, format);
-  const body = convertHtml(main.html, format);
+  if (main === undefined) {
+    return format === "markdown"
+      ? turndownInChunks(newTurndown(), html)
+      : extractTextFromHtml(html);
+  }
+  if (format === "text") {
+    const body = extractTextFromHtml(main.html);
+    const note = main.chromeRemoved ? `[${CHROME_REMOVED_NOTE}]` : undefined;
+    const heading = firstLine(body) === main.title ? undefined : main.title;
+    return [heading, note, body].filter((part) => part !== undefined).join("\n\n");
+  }
+  const turndown = newTurndown();
+  const body = turndownInChunks(turndown, main.html);
+  // Escape the title as Turndown escapes text, so `Foo_bar` matches a `# Foo\_bar` heading.
+  const title = main.title === undefined ? undefined : turndown.escape(main.title);
   const heading =
-    main.title === undefined || firstLine(body) === main.title
+    title === undefined || firstLine(body).replace(/^#+\s*/, "") === title
       ? undefined
-      : format === "markdown"
-        ? `# ${main.title}`
-        : main.title;
-  const note = main.chromeRemoved
-    ? format === "markdown"
-      ? `*${CHROME_REMOVED_NOTE}*`
-      : `[${CHROME_REMOVED_NOTE}]`
-    : undefined;
+      : `# ${title}`;
+  const note = main.chromeRemoved ? `*${CHROME_REMOVED_NOTE}*` : undefined;
   return [heading, note, body].filter((part) => part !== undefined).join("\n\n");
 }
 

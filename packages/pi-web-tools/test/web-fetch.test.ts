@@ -636,7 +636,7 @@ describe("Web Fetch main content", () => {
       expect(output).not.toContain("trackingBeacon");
       expect(output).toContain("Guide to Widgets");
       expect(output).toContain("Widgets are small");
-      expect(output).toContain("page chrome were removed");
+      expect(output).toContain("Site chrome outside the main content was removed");
 
       expect(
         output.startsWith(format === "markdown" ? "# Guide to Widgets" : "Guide to Widgets"),
@@ -646,14 +646,14 @@ describe("Web Fetch main content", () => {
 
   test("renders the main content as Markdown", async () => {
     expect(await fetchHtmlPage(NAVIGATION_PAGE, "markdown")).toBe(
-      "# Guide to Widgets\n\n*Site navigation and other page chrome were removed.*\n\n# Widgets\n\nWidgets are small **useful** things.",
+      "# Guide to Widgets\n\n*Site chrome outside the main content was removed.*\n\n# Widgets\n\nWidgets are small **useful** things.",
     );
   });
 
   test("prefers [role=main] and skips a title the content already repeats", async () => {
     const html = `<html><head><title>Widgets</title></head><body><nav>NavAlpha</nav><div role="main"><h1>Widgets</h1><p>Body.</p></div></body></html>`;
     expect(await fetchHtmlPage(html, "markdown")).toBe(
-      "*Site navigation and other page chrome were removed.*\n\n# Widgets\n\nBody.",
+      "*Site chrome outside the main content was removed.*\n\n# Widgets\n\nBody.",
     );
   });
 
@@ -667,7 +667,7 @@ describe("Web Fetch main content", () => {
       expect(output).toContain("Post body text.");
       expect(output).not.toContain("NavAlpha");
       expect(output).not.toContain("FooterLegal");
-      expect(output).toContain("page chrome were removed");
+      expect(output).toContain("Site chrome outside the main content was removed");
     },
   );
 
@@ -695,14 +695,14 @@ describe("Web Fetch main content", () => {
       expect(output).toContain("Content body text.");
       // A <header> inside a <section> is content, not site chrome.
       expect(output).toContain("Section Heading Block");
-      expect(output).toContain("page chrome were removed");
+      expect(output).toContain("Site chrome outside the main content was removed");
     },
   );
 
   test("converts the whole page when nothing qualifies", async () => {
     const markdown = await fetchHtmlPage(NO_CHROME_PAGE, "markdown");
     expect(markdown).toContain("Only content.");
-    expect(markdown).not.toContain("page chrome were removed");
+    expect(markdown).not.toContain("Site chrome outside the main content was removed");
     // Page that is only chrome keeps everything instead of returning nothing.
     const onlyNav = await fetchHtmlPage("<html><body><nav>OnlyNav</nav></body></html>", "text");
     expect(onlyNav).toContain("OnlyNav");
@@ -759,7 +759,128 @@ describe("Web Fetch main content", () => {
     );
   });
 
+  test("ignores a <nav>-role landmark and keeps only the headings of a <header> in <main>", async () => {
+    const languages = Array.from(
+      { length: 150 },
+      (_, index) => `<li><a href="/${index}">Language${index}</a></li>`,
+    ).join("");
+    const html = `<html><head><title>Ferris - Encyclopedia</title></head><body>
+<div role="navigation" aria-label="Site"><a>SiteNavigation</a></div>
+<main id="content"><header class="titlebar"><h1>Ferris</h1>
+<div class="dropdown"><ul>${languages}</ul></div></header>
+<p>Ferris is a crab.</p>
+<div role="navigation" class="navbox"><a>NavboxEntry</a></div>
+<p>Second paragraph.</p>
+<div role="search">SearchBox</div></main></body></html>`;
+
+    for (const format of ["markdown", "text"] as const) {
+      const output = await fetchHtmlPage(html, format);
+      expect(output).not.toContain("Language");
+      expect(output).not.toContain("NavboxEntry");
+      expect(output).not.toContain("SiteNavigation");
+      expect(output).not.toContain("SearchBox");
+      expect(output).toContain("Ferris");
+      expect(output).toContain("Ferris is a crab.");
+      expect(output).toContain("Second paragraph.");
+      expect(output).toContain("Site chrome outside the main content was removed");
+    }
+  });
+
+  test("does not pick an <article> that is a sidebar card", async () => {
+    const html = `<html><head><title>Plain</title></head><body>
+<aside><article>CardOnly</article></aside>
+<div><p>Real body text.</p></div><footer>FooterLegal</footer></body></html>`;
+    for (const format of ["markdown", "text"] as const) {
+      const output = await fetchHtmlPage(html, format);
+      expect(output).toContain("Real body text.");
+      expect(output).not.toContain("CardOnly");
+      expect(output).not.toContain("FooterLegal");
+    }
+  });
+
+  test("ignores <main> in <template> or <noscript> and an end tag inside <script>", async () => {
+    const hidden = `<html><head><title>Hidden</title></head><body><nav>NavAlpha</nav>
+<template><main>TemplateMain</main></template><noscript><main>NoscriptMain</main></noscript>
+<script>document.write("</main><main>")</script><p>Visible body.</p></body></html>`;
+    const output = await fetchHtmlPage(hidden, "text");
+    expect(output).toContain("Visible body.");
+    expect(output).not.toContain("NavAlpha");
+    expect(output).not.toContain("TemplateMain");
+    expect(output).not.toContain("NoscriptMain");
+
+    const scripted = `<body><nav>NavAlpha</nav><main><p>Before</p><script>var s = "</main>";</script><p>After</p></main></body>`;
+    const scriptedOutput = await fetchHtmlPage(scripted, "text");
+    expect(scriptedOutput).toContain("Before");
+    expect(scriptedOutput).toContain("After");
+  });
+
+  test("tolerates a stray end tag, multibyte text before <main>, and an encoded <title>", async () => {
+    const html = `<html><head><title>Tom &amp; Jerry &lt;Show&gt;</title></head><body>
+<nav>ナビゲーション 🚀</nav></div><p>日本語の前文 🚀</p>
+<main><p>メイン本文 🚀</p></main></body></html>`;
+    for (const format of ["markdown", "text"] as const) {
+      const output = await fetchHtmlPage(html, format);
+      expect(output).toContain("メイン本文 🚀");
+      expect(output).not.toContain("日本語の前文");
+      expect(output).not.toContain("ナビゲーション");
+      expect(output).toContain("Tom & Jerry <Show>");
+    }
+    expect(await fetchHtmlPage(html, "text")).toMatch(/^Tom & Jerry <Show>/);
+  });
+
+  test("does not repeat a title that Markdown escapes", async () => {
+    const html = `<html><head><title>Foo_bar</title></head><body><nav>NavAlpha</nav><main><h1>Foo_bar</h1><p>Body.</p></main></body></html>`;
+    const output = await fetchHtmlPage(html, "markdown");
+    expect(output.match(/Foo\\?_bar/g)).toHaveLength(1);
+  });
+
+  test("text format keeps blank lines and trailing spaces inside <pre>", async () => {
+    const html = "<p>Intro</p><pre>line one  \n\n\n\nline two   </pre><p>Outro</p>";
+    expect(await fetchHtmlPage(html, "text")).toBe(
+      "Intro\n\nline one  \n\n\n\nline two   \n\nOutro",
+    );
+  });
+
   test("returns html format unchanged", async () => {
     expect(await fetchHtmlPage(NAVIGATION_PAGE, "html")).toBe(NAVIGATION_PAGE);
   });
+});
+
+describe("Web Fetch main content on large pages", () => {
+  // Several MiB of HTML; extraction must stay linear because it runs synchronously and a request
+  // timeout cannot interrupt it.
+  const LARGE_PAGES = {
+    "paragraphs in <main>": `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main>${Array.from(
+      { length: 120_000 },
+      (_, index) => `<p>paragraph ${index}</p>`,
+    ).join("")}</main></body></html>`,
+    "<aside> elements": `<html><head><title>Big</title></head><body>${Array.from(
+      { length: 120_000 },
+      (_, index) => `<aside>aside ${index}</aside>`,
+    ).join("")}<div><p>Real body text.</p></div></body></html>`,
+    "<nav> elements": `<html><head><title>Big</title></head><body>${Array.from(
+      { length: 120_000 },
+      (_, index) => `<nav>nav ${index}</nav>`,
+    ).join("")}<div><p>Real body text.</p></div></body></html>`,
+  } as const;
+
+  for (const [name, html] of Object.entries(LARGE_PAGES)) {
+    for (const format of ["text", "markdown"] as const) {
+      test(`converts a multi-MiB page of ${name} in ${format} format quickly`, async () => {
+        expect(html.length).toBeGreaterThan(2 * 1024 * 1024);
+        const fetch: typeof globalThis.fetch = async () =>
+          new Response(html, { headers: { "content-type": "text/html" } });
+        const started = performance.now();
+        const result = await executeFetch({ fetch }, { url: "https://example.com/big", format });
+        const elapsed = performance.now() - started;
+        const spill = result.details.truncation?.fullOutputPath;
+        if (spill !== undefined) spillDirectories.push(dirname(spill));
+
+        expect(elapsed).toBeLessThan(5_000);
+        expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).not.toContain(
+          "NavAlpha",
+        );
+      }, 30_000);
+    }
+  }
 });
