@@ -344,4 +344,38 @@ describe("resolveLspSettings", () => {
       expect.stringContaining("global lsp.servers.impossible.rootMarkers"),
     ]);
   });
+
+  test("parses workspace root markers, treats an empty list as unset, and quarantines empty markers", async () => {
+    const settingsManager = await createSettingsReader(
+      {
+        lsp: {
+          servers: {
+            workspace: {
+              ...typescriptServer("workspace-lsp"),
+              workspaceRootMarkers: ["pnpm-workspace.yaml", ".git"],
+            },
+            empty: { ...typescriptServer("empty-lsp"), workspaceRootMarkers: [] },
+            blank: { ...typescriptServer("blank-lsp"), workspaceRootMarkers: [""] },
+            wrongType: { ...typescriptServer("wrong-type-lsp"), workspaceRootMarkers: [1] },
+          },
+        },
+      },
+      {},
+      true,
+    );
+
+    const settings = resolveLspSettings(settingsManager);
+
+    expect(settings.servers.get("workspace")?.workspaceRootMarkers).toEqual([
+      "pnpm-workspace.yaml",
+      ".git",
+    ]);
+    expect(settings.servers.get("empty")).toBeDefined();
+    expect(settings.servers.get("empty")).not.toHaveProperty("workspaceRootMarkers");
+    expect([...settings.servers.keys()]).toEqual(["empty", "workspace"]);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("global lsp.servers.blank.workspaceRootMarkers.0"),
+      expect.stringContaining("global lsp.servers.wrongType.workspaceRootMarkers.0"),
+    ]);
+  });
 });

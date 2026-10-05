@@ -76,6 +76,7 @@ class RecordingLspClient implements LspToolServerClient {
   };
   failureByMethod = new Map<string, Error>();
   readonly unsupportedMethods = new Set<string>();
+  readonly synchronizedPaths = new Set<string>();
   shutdownCount = 0;
 
   hasCapability(method: string): boolean {
@@ -88,11 +89,16 @@ class RecordingLspClient implements LspToolServerClient {
   ): Promise<LspSynchronizedDocument> {
     if (this.synchronizationFailure !== undefined) throw this.synchronizationFailure;
     const text = await readFile(filePath, "utf8");
+    this.synchronizedPaths.add(resolve(filePath));
     return {
       uri: pathToFileURL(filePath).href,
       version: 1,
       text,
     };
+  }
+
+  synchronizedDocumentPaths(): readonly string[] {
+    return [...this.synchronizedPaths];
   }
 
   async request(
@@ -1298,6 +1304,152 @@ describe("registered LSP tool", () => {
       ],
     });
     await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("warns about workspace packages the Server Instance has not loaded until a file there is queried", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    await writeFile(resolve(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    const packageNames = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    for (const name of packageNames) {
+      await mkdir(resolve(cwd, "packages", name), { recursive: true });
+      await writeFile(resolve(cwd, "packages", name, "package.json"), "{}\n");
+      await writeFile(resolve(cwd, "packages", name, "index.ts"), "export const helper = 1;\n");
+    }
+    const sourcePath = resolve(cwd, "packages/a/index.ts");
+    fixture.client.responseByMethod.set("textDocument/rename", {
+      changes: {
+        [pathToFileURL(sourcePath).href]: [
+          {
+            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
+            newText: "renamed",
+          },
+        ],
+      },
+    });
+    const settings = resolvedSettings(["typescript"], ["package.json"]);
+    const definition = settings.servers.get("typescript");
+    if (definition === undefined) throw new Error("Expected the typescript definition");
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: {
+        ...settings,
+        servers: new Map([
+          ["typescript", { ...definition, workspaceRootMarkers: ["pnpm-workspace.yaml"] }],
+        ]),
+      },
+      startClient: async () => fixture.client,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+    const position = { file_path: sourcePath, line: 1, character: 14 };
+    const references = () =>
+      executeTool(fixture, { operation: "find_references", ...position }, dependencies);
+    const unloadedWarning = (names: string) =>
+      `typescript has not loaded files from ${names} under ${cwd}; their references may be missing. Run any LSP tool on a file there (for example lsp_document_symbols), then retry.`;
+    const packagePaths = (names: readonly string[]) =>
+      names.map((name) => join("packages", name)).join(", ");
+
+    const first = await references();
+    const firstWarning = unloadedWarning(`${packagePaths(["b", "c", "d", "e", "f"])}, and 2 more`);
+    expect(resultText(first)).toContain(
+      `Searched typescript workspace root: ${cwd}\nWarning: ${firstWarning}`,
+    );
+    expect(first.structuredContent).toMatchObject({ warnings: [firstWarning] });
+    const rename = await executeTool(
+      fixture,
+      { operation: "rename", ...position, new_name: "renamed" },
+      dependencies,
+    );
+    expect(rename.structuredContent).toMatchObject({ warnings: [firstWarning] });
+
+    // Querying a file in a package loads it: that package is no longer named.
+    await executeTool(
+      fixture,
+      {
+        operation: "hover",
+        file_path: resolve(cwd, "packages/b/index.ts"),
+        line: 1,
+        character: 14,
+      },
+      dependencies,
+    );
+    expect((await references()).structuredContent).toMatchObject({
+      warnings: [unloadedWarning(`${packagePaths(["c", "d", "e", "f", "g"])}, and 1 more`)],
+    });
+    for (const name of packageNames.slice(2)) {
+      await executeTool(
+        fixture,
+        {
+          operation: "hover",
+          file_path: resolve(cwd, "packages", name, "index.ts"),
+          line: 1,
+          character: 14,
+        },
+        dependencies,
+      );
+    }
+    const loaded = await references();
+    expect(loaded.structuredContent).toMatchObject({ warnings: [] });
+    expect(resultText(loaded)).not.toContain("Warning");
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("reports a workspace walk cut short with the unloaded packages, not as other roots", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    await writeFile(resolve(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    for (const name of ["a", "b"]) {
+      await mkdir(resolve(cwd, "packages", name, "src"), { recursive: true });
+      await writeFile(resolve(cwd, "packages", name, "package.json"), "{}\n");
+    }
+    const sourcePath = resolve(cwd, "packages/a/src/index.ts");
+    await writeFile(sourcePath, "export const helper = 1;\n");
+    const settings = resolvedSettings(["typescript"], ["package.json"]);
+    const definition = settings.servers.get("typescript");
+    if (definition === undefined) throw new Error("Expected the typescript definition");
+    const warningsWithLimit = async (
+      rootDiscoveryDirectoryLimit: number,
+      rootMarkers: readonly string[] = definition.rootMarkers,
+    ) => {
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd,
+        settings: {
+          ...settings,
+          servers: new Map([
+            [
+              "typescript",
+              { ...definition, rootMarkers, workspaceRootMarkers: ["pnpm-workspace.yaml"] },
+            ],
+          ]),
+        },
+        startClient: async () => fixture.client,
+        rootDiscoveryDirectoryLimit,
+      });
+      const result = await executeTool(
+        fixture,
+        { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
+        { ...fixture.dependencies, manager },
+      );
+      await manager.shutdown();
+      return result.structuredContent;
+    };
+
+    // The fixture's cwd also holds its session directory, listed after `packages`. Three
+    // directories leave every package unchecked; five reach packages/b but not the src directories.
+    expect(await warningsWithLimit(3)).toMatchObject({
+      warnings: [
+        `typescript may not have loaded every package under ${cwd} (discovery stopped early); references in unloaded packages may be missing.`,
+      ],
+    });
+    expect(await warningsWithLimit(5)).toMatchObject({
+      warnings: [
+        `typescript has not loaded files from ${join("packages", "b")} under ${cwd} (discovery stopped early; others may exist); their references may be missing. Run any LSP tool on a file there (for example lsp_document_symbols), then retry.`,
+      ],
+    });
+    // Without root markers there are no packages to name, even when the walk is cut short.
+    expect(await warningsWithLimit(3, [])).toMatchObject({ warnings: [] });
     await fixture.close();
   });
 

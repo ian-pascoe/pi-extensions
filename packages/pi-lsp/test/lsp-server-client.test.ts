@@ -141,6 +141,11 @@ describe("LspServerClient", () => {
       paths.map((filePath, index) => writeFile(filePath, `export const v${index} = ${index};\n`)),
     );
     for (const filePath of paths) await client.synchronizeDocument(filePath, "typescript");
+    // The oldest document was evicted; the rest are listed oldest first.
+    expect(client.synchronizedDocumentPaths()).toEqual(paths.slice(1));
+    // Synchronizing a listed document again moves it last.
+    await client.synchronizeDocument(paths[1] ?? "", "typescript");
+    expect(client.synchronizedDocumentPaths()).toEqual([...paths.slice(2), paths[1]]);
 
     const bomPath = paths.at(-1);
     if (bomPath === undefined) throw new Error("Fake LSP test: missing BOM path");

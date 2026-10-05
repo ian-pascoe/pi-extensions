@@ -64,8 +64,34 @@ ancestor becomes the server root and Pi's working directory is the fallback. Set
 `requireRootMarker` to `true` to exclude the server for files without any matching ancestor; it
 defaults to `false`. A required empty `rootMarkers` list is invalid. Explicit requests naming an
 otherwise compatible excluded server report that its required root marker was not found. A server
-without `rootMarkers` always uses the working directory as its root. Routing reads a file's
-ancestor directories only when an enabled server that handles its language has root markers.
+without `rootMarkers` or `workspaceRootMarkers` always uses the working directory as its root.
+Routing reads a file's ancestor directories only when an enabled server that handles its language
+has either kind of marker.
+
+Set `workspaceRootMarkers` to let one server cover a monorepo. They are basename glob patterns
+such as `pnpm-workspace.yaml` or `.git`; when set, the nearest ancestor that contains one becomes
+the server root, so files in every package of a workspace share one server and
+`lsp_find_references` and `lsp_rename` can cross package boundaries. The search never selects
+your home directory, any directory above it, or the filesystem root, unless Pi's working
+directory is at or above it. Without a matching ancestor, the nearest `rootMarkers` ancestor and
+then the working directory are used as before. `requireRootMarker` still checks only
+`rootMarkers`, so a workspace marker alone does not make a server apply. An empty list is the
+same as leaving it unset. For example, add
+`"workspaceRootMarkers": ["pnpm-workspace.yaml"]` to the TypeScript server above.
+
+A server searches only the code it has loaded: the TypeScript server loads a package's
+`tsconfig.json` project when a file in that package is opened, so references in a package where
+the server has no open file can be missing. `lsp_find_references` and `lsp_rename` therefore warn
+about packages in the workspace (directories holding one of the server's `rootMarkers`) where it
+has no open file yet, naming up to five, for example `typescript has not loaded files from
+packages/b, packages/c under /work/repo; their references may be missing. Run any LSP tool on a
+file there (for example lsp_document_symbols), then retry.` Pi LSP never opens files to load
+them. A package stops being named once any LSP tool has opened one of its files with that server
+in the session; the server keeps at most 100 files open, so a package whose files were all closed
+again is named again. The packages are found by the same bounded search as other workspace roots
+(below); when it stops early, the warning says so instead of claiming other roots outside the
+workspace. A server without `rootMarkers` gets no package warning. One server for a whole
+workspace also uses more memory than one per package.
 
 Global and project timeouts merge by field. A project server replaces the complete global server
 with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
@@ -224,17 +250,21 @@ position without a hierarchy item from an item without calls or types.
 
 Pi LSP starts one server per workspace root, so `lsp_find_references` and `lsp_rename` search
 only the workspace root of the queried file. In a monorepo where every package has a
-`package.json`, renaming a helper exported by one package finds no importers in the others. Both
+`package.json`, renaming a helper exported by one package finds no importers in the others,
+unless the server sets `workspaceRootMarkers` (see [Settings](#settings)). Both
 tools name the root they searched (`Searched typescript workspace root: packages/a`). When the same
 server has other roots, they add a warning listing them. Those roots are its running or known
-servers and directories that contain one of its root markers, found by searching down from the
-outermost ancestor of the searched root that contains a root marker (or Pi's working directory,
+servers and the roots of directories that contain one of its root or workspace root markers; a
+package inside the searched workspace root is not another root. They are found by searching down
+from the outermost ancestor of the searched root that contains either kind of marker (or Pi's working directory,
 when that is higher). Pi can therefore start inside a package and still find sibling packages
 under the shared repository root. The search starts no higher than that directory, and never at
 your home directory or above it, unless Pi's working directory is at or above it, so a stray
 marker file in `~` does not widen the scan. Symbolic links, hidden directories, and
 `node_modules` are skipped. Discovery checks at most 4,096 directories; when it stops early,
-the warning says other roots may exist. The rename warning starts the preview summary, so it is
+the warning says other roots may exist, unless every unchecked directory is inside a searched
+workspace root, which only the unloaded-package warning then mentions. The same search finds a
+workspace root's packages. The rename warning starts the preview summary, so it is
 visible before `lsp_apply`; scripts receive it in `warnings` and the searched root in `root_path`.
 
 `lsp_workspace_symbols` requires `query` and a root-anchor `file_path`. `lsp_workspace_diagnostics`,

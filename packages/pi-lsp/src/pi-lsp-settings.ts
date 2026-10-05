@@ -33,6 +33,7 @@ const LspServerDefinitionSchema = Type.Object(
     requireRootMarker: Type.Optional(Type.Boolean()),
     rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
     settings: Type.Optional(JsonValueSchema),
+    workspaceRootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
   },
   { additionalProperties: false },
 );
@@ -84,6 +85,11 @@ export interface LspServerDefinition {
   readonly requireRootMarker: boolean;
   readonly rootMarkers: readonly string[];
   readonly settings?: JsonValue;
+  /**
+   * Basename globs that select a workspace-wide root: the nearest ancestor holding one, below the
+   * home directory unless the working directory is at or above it. Absent when unset or empty.
+   */
+  readonly workspaceRootMarkers?: readonly string[];
 }
 
 /** Contains bounded timeout values used for all requests made to an LSP server. */
@@ -327,7 +333,7 @@ function resolveLspServerDefinition(
     fileNames: language.fileNames ?? [],
     languageId: language.languageId,
   }));
-  const resolved = {
+  const required = {
     args: server.args ?? [],
     command: server.command ?? "",
     environment: resolveLspEnvironment(server.environment),
@@ -336,6 +342,10 @@ function resolveLspServerDefinition(
     requireRootMarker: server.requireRootMarker ?? false,
     rootMarkers: server.rootMarkers ?? [],
   };
+  // An empty workspace-root marker list is the same as leaving it unset.
+  const workspaceRootMarkers = server.workspaceRootMarkers ?? [];
+  const resolved: LspServerDefinition =
+    workspaceRootMarkers.length === 0 ? required : { ...required, workspaceRootMarkers };
   const initializationOptions = server.initializationOptions;
   const settings = server.settings;
   if (initializationOptions !== undefined && settings !== undefined) {

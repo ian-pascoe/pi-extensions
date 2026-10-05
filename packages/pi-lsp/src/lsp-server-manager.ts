@@ -39,6 +39,11 @@ export interface LspServerRoutingDefinition {
   readonly requireRootMarker?: boolean;
   /** Basename glob patterns that select this server instance's nearest workspace root. */
   readonly rootMarkers?: readonly string[];
+  /**
+   * Basename glob patterns whose nearest ancestor, within the root search limit, is the root
+   * instead. Root markers still decide the Activation Gate and the fallback root.
+   */
+  readonly workspaceRootMarkers?: readonly string[];
 }
 
 /** Supplies one ancestor directory and its entry basenames, ordered nearest-first. */
@@ -55,7 +60,7 @@ export interface LspServerRoute {
   readonly serverId: string;
   /** Language mapping that matched the requested file. */
   readonly language: LspServerLanguage;
-  /** Nearest matching ancestor directory, or the caller's working directory. */
+  /** Root selected by the definition's root and workspace root markers, or the working directory. */
   readonly rootPath: string;
 }
 
@@ -73,7 +78,7 @@ export interface LspServerStartInput {
   readonly definition: LspServerDefinition;
   /** Marks a started instance unavailable after a process or protocol failure. */
   readonly onUnavailable: (cause: unknown) => void;
-  /** Nearest workspace root selected for this Server Instance. */
+  /** Workspace root selected for this Server Instance. */
   readonly rootPath: string;
   /** Cancels initialization when the Instance is stopped before startup completes. */
   readonly signal: AbortSignal;
@@ -190,9 +195,45 @@ export interface LspOtherWorkspaceRoots {
   readonly rootPaths: readonly string[];
   /**
    * Whether more roots may exist than `rootPaths` lists: more were found, or discovery stopped at
-   * its directory limit before checking every directory.
+   * its directory limit before checking every directory that could hold one. Unchecked directories
+   * inside a searched workspace root do not count; they are reported with its unloaded packages.
    */
   readonly hasMore: boolean;
+}
+
+/** Package roots inside a workspace root whose Server Instance has synchronized none of their files. */
+export interface LspUnloadedWorkspacePackages {
+  /** Every unloaded absolute package root found, sorted. */
+  readonly packageRoots: readonly string[];
+  /** Whether discovery stopped at its directory limit before checking every directory in the root. */
+  readonly hasMore: boolean;
+}
+
+/** How to tell which files a Server Instance has loaded. */
+export interface LspLoadedDocuments<TClient extends LspManagedServerClient> {
+  /** The file a request was made for, which counts as loaded. */
+  readonly queriedFilePath: string;
+  /** Absolute paths of the documents a running instance currently has synchronized. */
+  readonly synchronizedFilePaths: (client: TClient) => Iterable<string>;
+}
+
+/** What a request to one Server Instance may not consider. */
+export interface LspWorkspaceScope {
+  /** Other workspace roots of the same Server Definition. */
+  readonly otherRoots: LspOtherWorkspaceRoots;
+  /** Present for a workspace root whose definition has root markers, when loaded documents were given. */
+  readonly unloadedPackages?: LspUnloadedWorkspacePackages;
+}
+
+function summarizeOtherRoots(
+  roots: ReadonlySet<string>,
+  unchecked: boolean,
+): LspOtherWorkspaceRoots {
+  const sorted = [...roots].sort((left, right) => left.localeCompare(right));
+  return {
+    rootPaths: sorted.slice(0, LSP_OTHER_WORKSPACE_ROOT_LIMIT),
+    hasMore: sorted.length > LSP_OTHER_WORKSPACE_ROOT_LIMIT || unchecked,
+  };
 }
 
 /** Most other workspace roots one discovery reports. */
@@ -214,7 +255,10 @@ export interface LspServerManagerInput<TClient extends LspManagedServerClient> {
   readonly startClient: StartLspServerClient<TClient>;
   /** Lists one directory's entry names for root-marker routing; defaults to the filesystem. */
   readonly readDirectory?: (directoryPath: string) => Promise<readonly string[]>;
-  /** Home directory that bounds other-root discovery; defaults to the user's home directory. */
+  /**
+   * Home directory that bounds workspace-root routing and other-root discovery; defaults to the
+   * user's home directory.
+   */
   readonly homeDirectory?: string;
   /** Most directories one root-marker discovery lists; defaults to `LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT`. */
   readonly rootDiscoveryDirectoryLimit?: number;
@@ -242,31 +286,85 @@ function containsLspRootMarker(
   );
 }
 
-function findNearestLspRoot(
-  rootMarkers: readonly string[] | undefined,
-  ancestorDirectories: readonly LspAncestorDirectory[],
-  cwd: string,
-  requireRootMarker: boolean,
-): string | undefined {
-  if (rootMarkers === undefined || rootMarkers.length === 0) {
-    return requireRootMarker ? undefined : resolve(cwd);
-  }
-  for (const directory of ancestorDirectories) {
-    if (containsLspRootMarker(directory.entryNames, rootMarkers)) {
-      return directory.path;
-    }
-  }
-  return requireRootMarker ? undefined : resolve(cwd);
+function isSameOrAncestorDirectory(ancestor: string, descendant: string): boolean {
+  const relativePath = relative(ancestor, descendant);
+  return (
+    relativePath === "" ||
+    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
+  );
 }
 
-/** Route one file to every matching configured server in stable settings-map order. */
+/**
+ * Whether an upward root search must not use `directory`: the home directory and every directory
+ * above it, including the filesystem root, are out of scope unless the working directory is at or
+ * above `directory`.
+ */
+function isBeyondLspRootSearchLimit(
+  directory: string,
+  cwd: string,
+  homeDirectory: string,
+): boolean {
+  return (
+    isSameOrAncestorDirectory(directory, homeDirectory) &&
+    !isSameOrAncestorDirectory(cwd, directory)
+  );
+}
+
+/** Whether a definition selects its root from ancestor directories at all. */
+function hasLspRootMarkers(definition: {
+  readonly rootMarkers?: readonly string[];
+  readonly workspaceRootMarkers?: readonly string[];
+}): boolean {
+  return (
+    (definition.rootMarkers?.length ?? 0) > 0 || (definition.workspaceRootMarkers?.length ?? 0) > 0
+  );
+}
+
+/**
+ * Select a definition's root from ancestors ordered nearest-first: the nearest ancestor holding a
+ * workspace root marker within the root search limit, else the nearest holding a root marker,
+ * else the working directory. Returns `undefined` when the Activation Gate requires a root marker
+ * and none is found; workspace root markers never satisfy the gate.
+ */
+function findLspRoot(
+  definition: LspServerRoutingDefinition,
+  ancestorDirectories: readonly LspAncestorDirectory[],
+  cwd: string,
+  homeDirectory: string,
+): string | undefined {
+  const rootMarkers = definition.rootMarkers ?? [];
+  const markerRoot =
+    rootMarkers.length === 0
+      ? undefined
+      : ancestorDirectories.find(({ entryNames }) => containsLspRootMarker(entryNames, rootMarkers))
+          ?.path;
+  if (markerRoot === undefined && definition.requireRootMarker === true) return undefined;
+  const workspaceRootMarkers = definition.workspaceRootMarkers ?? [];
+  const workspaceRoot =
+    workspaceRootMarkers.length === 0
+      ? undefined
+      : ancestorDirectories.find(
+          ({ entryNames, path }) =>
+            !isBeyondLspRootSearchLimit(path, cwd, homeDirectory) &&
+            containsLspRootMarker(entryNames, workspaceRootMarkers),
+        )?.path;
+  return workspaceRoot ?? markerRoot ?? cwd;
+}
+
+/**
+ * Route one file to every matching configured server in stable settings-map order. Workspace root
+ * markers are not searched at `homeDirectory` or above it unless `cwd` is at or above it.
+ */
 export function routeLspServersForFile(
   serverDefinitions: readonly LspServerRoutingDefinition[],
   filePath: string,
   cwd: string,
   ancestorDirectories: readonly LspAncestorDirectory[],
+  homeDirectory: string = homedir(),
 ): readonly LspServerRoute[] {
   const normalizedFilePath = normalizeLspFilePath(filePath);
+  const resolvedCwd = resolve(cwd);
+  const resolvedHomeDirectory = resolve(homeDirectory);
   const routes: LspServerRoute[] = [];
 
   for (const serverDefinition of serverDefinitions) {
@@ -274,11 +372,11 @@ export function routeLspServersForFile(
       languageMatchesFile(candidate, normalizedFilePath),
     );
     if (language === undefined) continue;
-    const rootPath = findNearestLspRoot(
-      serverDefinition.rootMarkers,
+    const rootPath = findLspRoot(
+      serverDefinition,
       ancestorDirectories,
-      cwd,
-      serverDefinition.requireRootMarker ?? false,
+      resolvedCwd,
+      resolvedHomeDirectory,
     );
     if (rootPath === undefined) continue;
     routes.push({
@@ -291,67 +389,134 @@ export function routeLspServersForFile(
   return routes;
 }
 
+/** The root-selection inputs that marker-root discovery mirrors. */
+interface LspRootDiscoveryPolicy {
+  readonly cwd: string;
+  readonly homeDirectory: string;
+  readonly rootMarkers: readonly string[];
+  readonly workspaceRootMarkers: readonly string[];
+}
+
+/** Directories one discovery walk lists concurrently; they are still visited in walk order. */
+const ROOT_DISCOVERY_READ_CONCURRENCY = 32;
+
+/** Whether `directory` holds a workspace root marker that root selection may use. */
+function isLspWorkspaceRoot(
+  directory: string,
+  entryNames: readonly string[],
+  policy: LspRootDiscoveryPolicy,
+): boolean {
+  return (
+    containsLspRootMarker(entryNames, policy.workspaceRootMarkers) &&
+    !isBeyondLspRootSearchLimit(directory, policy.cwd, policy.homeDirectory)
+  );
+}
+
+/** What one discovery walk found below its base directory. */
+interface LspDiscoveredRoots {
+  /** Roots other than the searched root that discovered marker directories route to. */
+  readonly otherRoots: readonly string[];
+  /** Directories with a root marker that route to the searched root, which is excluded. */
+  readonly packageRoots: readonly string[];
+  /** Directories left unlisted at the directory limit; nothing below them was checked either. */
+  readonly unchecked: readonly string[];
+}
+
+async function listLspDiscoveryDirectory(directory: string) {
+  try {
+    return await readdir(directory, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * List directories under `baseDirectory` (itself included) that contain a root marker, breadth
- * first in name order, skipping hidden and dependency directories and symbolic links. Discovery
- * stops once `maxRoots` roots other than `excludedRoot` are found or `directoryLimit` directories
- * were listed; `complete` reports whether every directory was checked.
+ * Walk `baseDirectory` and the directories under it once, breadth first in name order, skipping
+ * hidden and dependency directories and symbolic links. A directory holding a root or workspace
+ * root marker routes like a file there would: to its nearest workspace-marker directory within the
+ * root search limit, or else to itself. Routes other than `searchedRoot` are other roots. The walk
+ * lists at most `directoryLimit` directories, and stops once `maxOtherRoots` other roots are found
+ * unless it collects packages.
+ *
+ * With `collectPackages`, root-marker directories routing to `searchedRoot` are its packages.
+ * `searchedRoot` and its subtree are then walked first, even when it lies below a directory the
+ * walk skips or the limit would not reach, and the walk from `baseDirectory` skips them after.
  */
-async function discoverLspMarkerRoots(
+async function discoverLspRoots(
   baseDirectory: string,
-  rootMarkers: readonly string[],
-  excludedRoot: string,
-  maxRoots: number,
-  directoryLimit: number,
-): Promise<{ readonly roots: readonly string[]; readonly complete: boolean }> {
-  const roots: string[] = [];
-  const queue = [baseDirectory];
+  policy: LspRootDiscoveryPolicy,
+  searchedRoot: string,
+  options: {
+    readonly collectPackages: boolean;
+    readonly directoryLimit: number;
+    readonly maxOtherRoots: number;
+  },
+): Promise<LspDiscoveredRoots> {
+  const otherRoots = new Set<string>();
+  const packageRoots: string[] = [];
+  const isDone = () => !options.collectPackages && otherRoots.size >= options.maxOtherRoots;
+  const found = (unchecked: readonly string[]): LspDiscoveredRoots => ({
+    otherRoots: [...otherRoots],
+    packageRoots,
+    unchecked,
+  });
+  const starts =
+    options.collectPackages && baseDirectory !== searchedRoot
+      ? [searchedRoot, baseDirectory]
+      : [baseDirectory];
   let listed = 0;
-  while (queue.length > 0 && roots.length < maxRoots) {
-    if (listed === directoryLimit) return { roots, complete: false };
-    const directory = queue.shift();
-    if (directory === undefined) break;
-    listed++;
-    let entries;
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    entries.sort((left, right) => left.name.localeCompare(right.name));
-    if (
-      directory !== excludedRoot &&
-      containsLspRootMarker(
-        entries.map(({ name }) => name),
-        rootMarkers,
-      )
-    ) {
-      roots.push(directory);
-    }
-    for (const entry of entries) {
-      if (
-        entry.isDirectory() &&
-        !entry.name.startsWith(".") &&
-        !ROOT_DISCOVERY_SKIPPED_DIRECTORIES.has(entry.name)
-      ) {
-        queue.push(resolve(directory, entry.name));
+  for (const [startIndex, start] of starts.entries()) {
+    const skippedSubtree = startIndex > 0 ? searchedRoot : undefined;
+    const queue: { readonly path: string; readonly workspaceRoot: string | undefined }[] = [
+      { path: start, workspaceRoot: undefined },
+    ];
+    while (queue.length > 0 && !isDone()) {
+      if (listed === options.directoryLimit) {
+        return found([...queue.map(({ path }) => path), ...starts.slice(startIndex + 1)]);
+      }
+      const batch = queue.splice(
+        0,
+        Math.min(ROOT_DISCOVERY_READ_CONCURRENCY, options.directoryLimit - listed),
+      );
+      const listings = await Promise.all(batch.map(({ path }) => listLspDiscoveryDirectory(path)));
+      for (const [index, item] of batch.entries()) {
+        if (isDone()) return found([]);
+        listed++;
+        const entries = listings[index];
+        if (entries === undefined) continue;
+        entries.sort((left, right) => left.name.localeCompare(right.name));
+        const entryNames = entries.map(({ name }) => name);
+        const isWorkspaceRoot = isLspWorkspaceRoot(item.path, entryNames, policy);
+        const workspaceRoot = isWorkspaceRoot ? item.path : item.workspaceRoot;
+        const hasRootMarker = containsLspRootMarker(entryNames, policy.rootMarkers);
+        if (isWorkspaceRoot || hasRootMarker) {
+          const routedRoot = workspaceRoot ?? item.path;
+          if (routedRoot !== searchedRoot) {
+            otherRoots.add(routedRoot);
+          } else if (options.collectPackages && hasRootMarker && item.path !== searchedRoot) {
+            packageRoots.push(item.path);
+          }
+        }
+        for (const entry of entries) {
+          const path = resolve(item.path, entry.name);
+          if (
+            entry.isDirectory() &&
+            !entry.name.startsWith(".") &&
+            !ROOT_DISCOVERY_SKIPPED_DIRECTORIES.has(entry.name) &&
+            path !== skippedSubtree
+          ) {
+            queue.push({ path, workspaceRoot });
+          }
+        }
       }
     }
   }
-  return { roots, complete: true };
-}
-
-function isSameOrAncestorDirectory(ancestor: string, descendant: string): boolean {
-  const relativePath = relative(ancestor, descendant);
-  return (
-    relativePath === "" ||
-    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
-  );
+  return found([]);
 }
 
 /**
  * Pick where marker-root discovery starts for `searchedRoot`: its outermost ancestor (itself
- * included) that holds a root marker, or the working directory when that is a higher ancestor.
+ * included) that holds one of `markers`, or the working directory when that is a higher ancestor.
  * The upward walk stops below the home directory and every directory above it, including the
  * filesystem root, unless the working directory is at or above that directory. Home and
  * filesystem-root scans therefore stay out of scope.
@@ -366,12 +531,7 @@ async function findLspDiscoveryBase(
   let base = searchedRoot;
   let directory = searchedRoot;
   for (;;) {
-    if (
-      isSameOrAncestorDirectory(directory, homeDirectory) &&
-      !isSameOrAncestorDirectory(cwd, directory)
-    ) {
-      return base;
-    }
+    if (isBeyondLspRootSearchLimit(directory, cwd, homeDirectory)) return base;
     let entryNames: readonly string[] = [];
     try {
       entryNames = await readDirectory(directory);
@@ -565,8 +725,8 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
     );
     // Ancestor listings are costly in large directories; list them only when a candidate has
-    // root markers to find. Marker-free candidates root at the working directory.
-    const ancestors = candidates.some((definition) => definition.rootMarkers.length > 0)
+    // root or workspace root markers to find. Marker-free candidates root at the working directory.
+    const ancestors = candidates.some(hasLspRootMarkers)
       ? await readLspAncestorDirectories(absolutePath, this.input.readDirectory ?? readdir)
       : [];
     const definitions = candidates.map((definition) => ({
@@ -574,8 +734,15 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       requireRootMarker: definition.requireRootMarker,
       rootMarkers: definition.rootMarkers,
       serverId: definition.id,
+      workspaceRootMarkers: definition.workspaceRootMarkers ?? [],
     }));
-    return routeLspServersForFile(definitions, absolutePath, this.input.cwd, ancestors);
+    return routeLspServersForFile(
+      definitions,
+      absolutePath,
+      this.input.cwd,
+      ancestors,
+      this.input.homeDirectory ?? homedir(),
+    );
   }
 
   /** IDs of the Server Definitions accepting the file's language, before enablement and gating. */
@@ -588,18 +755,42 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       .map((definition) => definition.id);
   }
 
-  /**
-   * Find workspace roots of one Server Definition other than `rootPath`: roots of its known Server
-   * Instances, and directories that contain one of its root markers under the outermost ancestor
-   * of `rootPath` that has one (or under the working directory, when that is higher). Files under
-   * those roots route to other Server Instances, so a request to the instance at `rootPath` may
-   * not consider them. Hidden and `node_modules` directories are not searched, and discovery
-   * lists at most `rootDiscoveryDirectoryLimit` directories.
-   */
+  /** Find workspace roots of one Server Definition other than `rootPath`; see `findWorkspaceScope`. */
   async findOtherWorkspaceRoots(
     serverId: string,
     rootPath: string,
   ): Promise<LspOtherWorkspaceRoots> {
+    return (await this.findWorkspaceScope(serverId, rootPath)).otherRoots;
+  }
+
+  /**
+   * Describe what a request to the Server Instance at `rootPath` may not consider, with one
+   * bounded walk.
+   *
+   * Other roots are roots of the definition's known Server Instances, and the roots that
+   * directories holding one of its root or workspace root markers route to, found under the
+   * outermost ancestor of `rootPath` that has a marker (or under the working directory, when that
+   * is higher). Files under them route to other Server Instances; package directories inside a
+   * searched workspace root route to it and are not other roots.
+   *
+   * With `loaded`, when `rootPath` was selected by a workspace root marker and the definition has
+   * root markers, unloaded packages are the directories under it holding a root marker (and
+   * routing to it) in which the instance has synchronized no document: a language server loads a
+   * package's project only when a file there is opened. A document belongs to its nearest package
+   * root, and the queried file counts as synchronized.
+   *
+   * The walk skips hidden and `node_modules` directories and lists at most
+   * `rootDiscoveryDirectoryLimit` directories. When it looks for packages, it walks the workspace
+   * root's subtree first, even below a skipped directory. Unchecked directories inside the
+   * workspace root can hide only its packages and nested workspaces, so they mark the unloaded
+   * packages, not the other roots, as incomplete; unchecked directories elsewhere, including its
+   * ancestors, mark only the other roots as incomplete.
+   */
+  async findWorkspaceScope(
+    serverId: string,
+    rootPath: string,
+    loaded?: LspLoadedDocuments<TClient>,
+  ): Promise<LspWorkspaceScope> {
     const searchedRoot = resolve(this.input.cwd, rootPath);
     const maxRoots = LSP_OTHER_WORKSPACE_ROOT_LIMIT + 1;
     const roots = new Set(
@@ -607,30 +798,82 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         .filter((route) => route.serverId === serverId && route.rootPath !== searchedRoot)
         .map((route) => route.rootPath),
     );
-    const rootMarkers = this.input.settings.servers.get(serverId)?.rootMarkers ?? [];
-    let complete = true;
-    if (roots.size < maxRoots && rootMarkers.length > 0) {
-      const discoveryBase = await findLspDiscoveryBase(
-        searchedRoot,
-        rootMarkers,
-        resolve(this.input.cwd),
-        resolve(this.input.homeDirectory ?? homedir()),
-        this.input.readDirectory ?? readdir,
-      );
-      const discovery = await discoverLspMarkerRoots(
-        discoveryBase,
-        rootMarkers,
-        searchedRoot,
-        maxRoots,
-        this.input.rootDiscoveryDirectoryLimit ?? LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT,
-      );
-      for (const root of discovery.roots) roots.add(root);
-      complete = discovery.complete;
+    const definition = this.input.settings.servers.get(serverId);
+    if (definition === undefined || !hasLspRootMarkers(definition)) {
+      return { otherRoots: summarizeOtherRoots(roots, false) };
     }
-    const sorted = [...roots].sort((left, right) => left.localeCompare(right));
+    const policy = this.rootDiscoveryPolicy(definition);
+    const readDirectory = this.input.readDirectory ?? readdir;
+    let isWorkspaceRoot = false;
+    if (policy.workspaceRootMarkers.length > 0) {
+      let entryNames: readonly string[] = [];
+      try {
+        entryNames = await readDirectory(searchedRoot);
+      } catch {
+        // An unreadable root holds no markers we can see.
+      }
+      isWorkspaceRoot = isLspWorkspaceRoot(searchedRoot, entryNames, policy);
+    }
+    const collectPackages =
+      loaded !== undefined && isWorkspaceRoot && policy.rootMarkers.length > 0;
+    if (roots.size >= maxRoots && !collectPackages) {
+      return { otherRoots: summarizeOtherRoots(roots, false) };
+    }
+    const discoveryBase = await findLspDiscoveryBase(
+      searchedRoot,
+      [...policy.rootMarkers, ...policy.workspaceRootMarkers],
+      policy.cwd,
+      policy.homeDirectory,
+      readDirectory,
+    );
+    const discovery = await discoverLspRoots(discoveryBase, policy, searchedRoot, {
+      collectPackages,
+      directoryLimit: this.input.rootDiscoveryDirectoryLimit ?? LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT,
+      maxOtherRoots: maxRoots,
+    });
+    for (const root of discovery.otherRoots) roots.add(root);
+    const isInsideSearchedRoot = (path: string) => isSameOrAncestorDirectory(searchedRoot, path);
+    const otherRoots = summarizeOtherRoots(
+      roots,
+      discovery.unchecked.some((path) => !isWorkspaceRoot || !isInsideSearchedRoot(path)),
+    );
+    if (!collectPackages) return { otherRoots };
+
+    const client = this.clients.get(lspInstanceKey(serverId, searchedRoot));
+    const loadedPackages = new Set<string>();
+    for (const filePath of [
+      resolve(this.input.cwd, normalizeLspFilePath(loaded.queriedFilePath)),
+      ...(client === undefined ? [] : loaded.synchronizedFilePaths(client)),
+    ]) {
+      // The nearest package root is the longest one containing the file.
+      let owner: string | undefined;
+      for (const packageRoot of discovery.packageRoots) {
+        if (
+          isSameOrAncestorDirectory(packageRoot, filePath) &&
+          (owner === undefined || packageRoot.length > owner.length)
+        ) {
+          owner = packageRoot;
+        }
+      }
+      if (owner !== undefined) loadedPackages.add(owner);
+    }
     return {
-      rootPaths: sorted.slice(0, LSP_OTHER_WORKSPACE_ROOT_LIMIT),
-      hasMore: sorted.length > LSP_OTHER_WORKSPACE_ROOT_LIMIT || !complete,
+      otherRoots,
+      unloadedPackages: {
+        packageRoots: discovery.packageRoots
+          .filter((packageRoot) => !loadedPackages.has(packageRoot))
+          .sort((left, right) => left.localeCompare(right)),
+        hasMore: discovery.unchecked.some(isInsideSearchedRoot),
+      },
+    };
+  }
+
+  private rootDiscoveryPolicy(definition: LspServerDefinition): LspRootDiscoveryPolicy {
+    return {
+      cwd: resolve(this.input.cwd),
+      homeDirectory: resolve(this.input.homeDirectory ?? homedir()),
+      rootMarkers: definition.rootMarkers,
+      workspaceRootMarkers: definition.workspaceRootMarkers ?? [],
     };
   }
 

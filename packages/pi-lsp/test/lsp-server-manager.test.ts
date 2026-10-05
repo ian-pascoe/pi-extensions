@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { LspServerClient, LspServerClientError } from "../src/lsp-server-client.js";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -129,6 +129,95 @@ describe("LSP server file routing", () => {
     ]);
   });
 
+  describe("with workspace root markers", () => {
+    const workspaceServer: LspServerRoutingDefinition = {
+      serverId: "typescript",
+      languages: [{ extensions: [".ts"], languageId: "typescript" }],
+      rootMarkers: ["package.json"],
+      workspaceRootMarkers: ["pnpm-workspace.yaml", ".git"],
+    };
+    const packageAncestors = (packageName: string): LspAncestorDirectory[] => [
+      { entryNames: ["index.ts"], path: `/home/user/repo/packages/${packageName}/src` },
+      { entryNames: ["package.json"], path: `/home/user/repo/packages/${packageName}` },
+      { entryNames: [packageName], path: "/home/user/repo/packages" },
+      { entryNames: ["package.json", "pnpm-workspace.yaml"], path: "/home/user/repo" },
+      { entryNames: ["repo", ".git", "package.json"], path: "/home/user" },
+      { entryNames: ["user"], path: "/home" },
+      { entryNames: ["home", ".git"], path: "/" },
+    ];
+    const route = (
+      definition: LspServerRoutingDefinition,
+      ancestorDirectories: readonly LspAncestorDirectory[],
+      cwd = "/home/user/repo/packages/a",
+    ) =>
+      routeLspServersForFile(
+        [definition],
+        `${ancestorDirectories[0]?.path ?? ""}/index.ts`,
+        cwd,
+        ancestorDirectories,
+        "/home/user",
+      ).map(({ rootPath }) => rootPath);
+
+    test("routes files in different packages to the nearest workspace-marker ancestor", () => {
+      expect(route(workspaceServer, packageAncestors("a"))).toEqual(["/home/user/repo"]);
+      expect(route(workspaceServer, packageAncestors("b"))).toEqual(["/home/user/repo"]);
+      // Without workspace root markers, each package keeps its own nearest root.
+      const { workspaceRootMarkers: _unset, ...packageServer } = workspaceServer;
+      expect(route(packageServer, packageAncestors("a"))).toEqual(["/home/user/repo/packages/a"]);
+      expect(route(packageServer, packageAncestors("b"))).toEqual(["/home/user/repo/packages/b"]);
+    });
+
+    test("falls back to the nearest root-marker root, then the working directory", () => {
+      const withoutWorkspace = packageAncestors("a").map((directory) => ({
+        ...directory,
+        entryNames: directory.entryNames.filter(
+          (name) => name !== "pnpm-workspace.yaml" && name !== ".git",
+        ),
+      }));
+      expect(route(workspaceServer, withoutWorkspace)).toEqual(["/home/user/repo/packages/a"]);
+      const markerless = withoutWorkspace.map((directory) => ({ ...directory, entryNames: [] }));
+      expect(route(workspaceServer, markerless, "/home/user/repo/../repo")).toEqual([
+        "/home/user/repo",
+      ]);
+    });
+
+    test("keeps the Activation Gate on root markers only", () => {
+      const gated = { ...workspaceServer, requireRootMarker: true };
+      expect(route(gated, packageAncestors("a"))).toEqual(["/home/user/repo"]);
+      // A workspace marker alone does not pass the gate.
+      const workspaceOnly = packageAncestors("a").map((directory) => ({
+        ...directory,
+        entryNames: directory.entryNames.filter((name) => name !== "package.json"),
+      }));
+      expect(route(gated, workspaceOnly)).toEqual([]);
+      expect(route(workspaceServer, workspaceOnly)).toEqual(["/home/user/repo"]);
+    });
+
+    test("never selects the home directory or above unless the working directory is there", () => {
+      const outsideRepository = packageAncestors("a").map((directory) =>
+        directory.path === "/home/user/repo"
+          ? { ...directory, entryNames: ["package.json"] }
+          : directory,
+      );
+      // `/home/user` and `/` hold `.git`, but are out of scope: the root-marker root is used.
+      expect(route(workspaceServer, outsideRepository)).toEqual(["/home/user/repo/packages/a"]);
+      expect(route(workspaceServer, outsideRepository, "/home/user")).toEqual(["/home/user"]);
+      expect(route(workspaceServer, outsideRepository, "/")).toEqual(["/home/user"]);
+      // Outside the home directory, only the filesystem root is out of scope.
+      const temporary: LspAncestorDirectory[] = [
+        { entryNames: ["package.json"], path: "/tmp/repo/packages/a" },
+        { entryNames: ["a"], path: "/tmp/repo/packages" },
+        { entryNames: ["packages"], path: "/tmp/repo" },
+        { entryNames: ["repo", ".git"], path: "/tmp" },
+        { entryNames: ["tmp", ".git"], path: "/" },
+      ];
+      expect(route(workspaceServer, temporary, "/tmp/repo")).toEqual(["/tmp"]);
+      expect(route(workspaceServer, temporary.slice(0, 3).concat(temporary[4] ?? []))).toEqual([
+        "/tmp/repo/packages/a",
+      ]);
+    });
+  });
+
   test("keeps all matching servers in deterministic definition order", () => {
     const routes = routeLspServersForFile(
       [...configuredServers].reverse(),
@@ -232,6 +321,24 @@ function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
     },
     warnings: [],
   };
+}
+
+function workspaceServerDefinition(id: string): LspServerDefinition {
+  return { ...serverDefinition(id), workspaceRootMarkers: ["pnpm-workspace.yaml"] };
+}
+
+/** A pnpm-style workspace whose packages `a` and `b` each hold a `package.json`. */
+async function createMonorepoFixture(): Promise<{ cwd: string; filePath: string }> {
+  const cwd = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-monorepo-"));
+  temporaryDirectories.push(cwd);
+  await writeFile(resolve(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+  await writeFile(resolve(cwd, "package.json"), "{}\n");
+  for (const name of ["a", "b"]) {
+    await mkdir(resolve(cwd, "packages", name, "src"), { recursive: true });
+    await writeFile(resolve(cwd, "packages", name, "package.json"), "{}\n");
+    await writeFile(resolve(cwd, "packages", name, "src/index.ts"), "export {};\n");
+  }
+  return { cwd, filePath: resolve(cwd, "packages/a/src/index.ts") };
 }
 
 async function createRoutedFileFixture(): Promise<{ cwd: string; filePath: string }> {
@@ -392,6 +499,60 @@ describe("session-scoped LSP server manager", () => {
     );
     expect(explicitLint.successes.map(({ value }) => value)).toEqual([cwd]);
     expect(directoriesRead).toEqual([]);
+  });
+
+  test("routes files in two packages to one Server Instance with workspace root markers", async () => {
+    const { cwd, filePath } = await createMonorepoFixture();
+    const otherFile = resolve(cwd, "packages/b/src/index.ts");
+    const startedRoots = async (definition: LspServerDefinition) => {
+      const factory = createRecordingClientFactory();
+      const manager = new LspServerManager({
+        cwd: resolve(cwd, "packages/a"),
+        homeDirectory: dirname(cwd),
+        settings: { ...resolvedSettings([]), servers: new Map([[definition.id, definition]]) },
+        startClient: factory.start,
+      });
+      await manager.getCapabilities(definition.id, filePath);
+      await manager.getCapabilities(definition.id, otherFile);
+      await manager.shutdown();
+      return factory.inputs.map(({ rootPath }) => rootPath);
+    };
+
+    expect(await startedRoots(workspaceServerDefinition("typescript"))).toEqual([cwd]);
+    // Without workspace root markers, routing is unchanged: one Server Instance per package.
+    expect(await startedRoots(serverDefinition("typescript"))).toEqual([
+      resolve(cwd, "packages/a"),
+      resolve(cwd, "packages/b"),
+    ]);
+  });
+
+  test("lists ancestor directories for a definition with only workspace root markers", async () => {
+    const { cwd, filePath } = await createMonorepoFixture();
+    const directoriesRead: string[] = [];
+    const manager = new LspServerManager({
+      cwd,
+      settings: {
+        ...resolvedSettings([]),
+        servers: new Map([
+          ["typescript", { ...workspaceServerDefinition("typescript"), rootMarkers: [] }],
+        ]),
+      },
+      startClient: createRecordingClientFactory().start,
+      readDirectory: async (directoryPath) => {
+        directoriesRead.push(directoryPath);
+        return readdir(directoryPath);
+      },
+    });
+
+    const routed = await manager.runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async (_client, route) => route.rootPath,
+    );
+    expect(routed.successes.map(({ value }) => value)).toEqual([cwd]);
+    expect(directoriesRead[0]).toBe(dirname(filePath));
+    await manager.shutdown();
   });
 
   test("disables every root, excludes automatic routing, and blocks explicit startup until enabled", async () => {
@@ -1442,6 +1603,259 @@ describe("other workspace roots of a Server Definition", () => {
     expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
       rootPaths: [],
       hasMore: false,
+    });
+  });
+
+  test("counts only directories that route to a different root under workspace root markers", async () => {
+    const { cwd, filePath } = await createMonorepoFixture();
+    // A nested, independent workspace routes its packages to its own root.
+    const nested = resolve(cwd, "vendor/tool");
+    await mkdir(resolve(nested, "packages/x"), { recursive: true });
+    await writeFile(resolve(nested, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    await writeFile(resolve(nested, "packages/x/package.json"), "{}\n");
+    const manager = new LspServerManager({
+      cwd: resolve(cwd, "packages/a"),
+      homeDirectory: dirname(cwd),
+      settings: {
+        ...resolvedSettings([]),
+        servers: new Map([["typescript", workspaceServerDefinition("typescript")]]),
+      },
+      startClient: createRecordingClientFactory().start,
+    });
+    await manager.getCapabilities("typescript", filePath);
+    await manager.getCapabilities("typescript", resolve(cwd, "packages/b/src/index.ts"));
+
+    // Package directories inside the searched workspace root are not other roots.
+    expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
+      rootPaths: [nested],
+      hasMore: false,
+    });
+    await rm(nested, { force: true, recursive: true });
+    expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
+      rootPaths: [],
+      hasMore: false,
+    });
+    await manager.shutdown();
+  });
+
+  test("finds workspace packages whose files the Server Instance has not synchronized", async () => {
+    const { cwd, filePath } = await createMonorepoFixture();
+    for (const directory of ["packages/c", "packages/c/nested/d", "vendor/tool/packages/x"]) {
+      await mkdir(resolve(cwd, directory), { recursive: true });
+      await writeFile(resolve(cwd, directory, "package.json"), "{}\n");
+    }
+    // A nested workspace routes to its own Server Instance; its packages are not this root's.
+    await writeFile(resolve(cwd, "vendor/tool/pnpm-workspace.yaml"), "packages: []\n");
+    const synchronized: string[] = [];
+    const createManager = (definition: LspServerDefinition) =>
+      new LspServerManager({
+        cwd,
+        homeDirectory: dirname(cwd),
+        settings: { ...resolvedSettings([]), servers: new Map([[definition.id, definition]]) },
+        startClient: createRecordingClientFactory().start,
+      });
+    const manager = createManager(workspaceServerDefinition("typescript"));
+    const loaded = { queriedFilePath: filePath, synchronizedFilePaths: () => synchronized };
+    const find = (rootPath = cwd) => manager.findWorkspaceScope("typescript", rootPath, loaded);
+
+    // Before the Server Instance starts, only the queried file's package counts as loaded.
+    expect(await find()).toEqual({
+      otherRoots: { rootPaths: [resolve(cwd, "vendor/tool")], hasMore: false },
+      unloadedPackages: {
+        packageRoots: [
+          resolve(cwd, "packages/b"),
+          resolve(cwd, "packages/c"),
+          resolve(cwd, "packages/c/nested/d"),
+        ],
+        hasMore: false,
+      },
+    });
+    await manager.getCapabilities("typescript", filePath);
+    // A document belongs to its nearest package root only.
+    synchronized.push(resolve(cwd, "packages/c/nested/d/x.ts"));
+    expect((await find()).unloadedPackages?.packageRoots).toEqual([
+      resolve(cwd, "packages/b"),
+      resolve(cwd, "packages/c"),
+    ]);
+    synchronized.push(resolve(cwd, "packages/b/src/index.ts"), resolve(cwd, "packages/c/x.ts"));
+    expect((await find()).unloadedPackages).toEqual({ packageRoots: [], hasMore: false });
+    // Only a root selected by a workspace root marker is checked.
+    expect((await find(resolve(cwd, "packages/a"))).unloadedPackages).toBeUndefined();
+    await manager.shutdown();
+
+    const packageScope = await createManager(serverDefinition("typescript")).findWorkspaceScope(
+      "typescript",
+      resolve(cwd, "packages/a"),
+      loaded,
+    );
+    expect(packageScope.unloadedPackages).toBeUndefined();
+    // Without root markers there are no package roots to search for.
+    const markerFreeScope = await createManager({
+      ...workspaceServerDefinition("typescript"),
+      rootMarkers: [],
+    }).findWorkspaceScope("typescript", cwd, loaded);
+    expect(markerFreeScope).toEqual({
+      otherRoots: { rootPaths: [resolve(cwd, "vendor/tool")], hasMore: false },
+    });
+  });
+
+  test("keeps directories cut from a workspace walk out of the other-roots result", async () => {
+    const parent = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-cut-"));
+    temporaryDirectories.push(parent);
+    // An outer marker directory puts discovery's base above the workspace root.
+    await writeFile(resolve(parent, "package.json"), "{}\n");
+    await mkdir(resolve(parent, "other"));
+    const workspaceRoot = resolve(parent, "repo");
+    await mkdir(workspaceRoot);
+    await writeFile(resolve(workspaceRoot, "pnpm-workspace.yaml"), "packages: []\n");
+    for (const name of ["a", "b"]) {
+      await mkdir(resolve(workspaceRoot, "packages", name, "src"), { recursive: true });
+      await writeFile(resolve(workspaceRoot, "packages", name, "package.json"), "{}\n");
+    }
+    const scope = (directoryLimit: number) =>
+      new LspServerManager({
+        cwd: workspaceRoot,
+        homeDirectory: dirname(parent),
+        settings: {
+          ...resolvedSettings([]),
+          servers: new Map([["typescript", workspaceServerDefinition("typescript")]]),
+        },
+        startClient: createRecordingClientFactory().start,
+        rootDiscoveryDirectoryLimit: directoryLimit,
+      }).findWorkspaceScope("typescript", workspaceRoot, {
+        queriedFilePath: resolve(workspaceRoot, "packages/a/src/index.ts"),
+        synchronizedFilePaths: () => [],
+      });
+
+    const packageB = resolve(workspaceRoot, "packages/b");
+    // The workspace root's six directories are walked first, then the parent and `other`.
+    expect(await scope(100)).toEqual({
+      otherRoots: { rootPaths: [parent], hasMore: false },
+      unloadedPackages: { packageRoots: [packageB], hasMore: false },
+    });
+    // The workspace root is complete; `other`, outside it, is unchecked.
+    expect(await scope(7)).toEqual({
+      otherRoots: { rootPaths: [parent], hasMore: true },
+      unloadedPackages: { packageRoots: [packageB], hasMore: false },
+    });
+    // The parent, an ancestor of the workspace root, is unchecked: only other roots are incomplete.
+    expect(await scope(6)).toEqual({
+      otherRoots: { rootPaths: [], hasMore: true },
+      unloadedPackages: { packageRoots: [packageB], hasMore: false },
+    });
+    // Directories inside the workspace root are unchecked too: both are incomplete.
+    expect(await scope(5)).toEqual({
+      otherRoots: { rootPaths: [], hasMore: true },
+      unloadedPackages: { packageRoots: [packageB], hasMore: true },
+    });
+    expect(await scope(1)).toEqual({
+      otherRoots: { rootPaths: [], hasMore: true },
+      unloadedPackages: { packageRoots: [], hasMore: true },
+    });
+  });
+
+  test.each([".worktrees", "node_modules", "linked"])(
+    "walks a workspace root under a %s directory that discovery skips",
+    async (skippedName) => {
+      const repo = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-skipped-"));
+      temporaryDirectories.push(repo);
+      await mkdir(resolve(repo, ".git"));
+      await writeFile(resolve(repo, "package.json"), "{}\n");
+      let skippedParent = resolve(repo, skippedName);
+      if (skippedName === "linked") {
+        const target = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-link-target-"));
+        temporaryDirectories.push(target);
+        await symlink(target, skippedParent, "dir");
+      } else {
+        await mkdir(skippedParent);
+      }
+      // A git worktree checkout: its `.git` is a file.
+      const workspaceRoot = resolve(skippedParent, "x");
+      await mkdir(resolve(workspaceRoot, "packages/b"), { recursive: true });
+      await writeFile(resolve(workspaceRoot, ".git"), "gitdir: elsewhere\n");
+      await writeFile(resolve(workspaceRoot, "package.json"), "{}\n");
+      await writeFile(resolve(workspaceRoot, "packages/b/package.json"), "{}\n");
+      const manager = new LspServerManager({
+        cwd: workspaceRoot,
+        homeDirectory: dirname(repo),
+        settings: {
+          ...resolvedSettings([]),
+          servers: new Map([
+            ["typescript", { ...serverDefinition("typescript"), workspaceRootMarkers: [".git"] }],
+          ]),
+        },
+        startClient: createRecordingClientFactory().start,
+      });
+
+      expect(
+        await manager.findWorkspaceScope("typescript", workspaceRoot, {
+          queriedFilePath: resolve(workspaceRoot, "index.ts"),
+          synchronizedFilePaths: () => [],
+        }),
+      ).toEqual({
+        otherRoots: { rootPaths: [repo], hasMore: false },
+        unloadedPackages: {
+          packageRoots: [resolve(workspaceRoot, "packages/b")],
+          hasMore: false,
+        },
+      });
+    },
+  );
+
+  test("walks a workspace root first when the working directory holds many repositories", async () => {
+    const code = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-code-"));
+    temporaryDirectories.push(code);
+    for (let index = 0; index < 10; index++) {
+      await mkdir(resolve(code, `repo-${index}/src`), { recursive: true });
+    }
+    const workspaceRoot = resolve(code, "repo-z");
+    await mkdir(resolve(workspaceRoot, "packages/b"), { recursive: true });
+    await writeFile(resolve(workspaceRoot, "pnpm-workspace.yaml"), "packages: []\n");
+    await writeFile(resolve(workspaceRoot, "packages/b/package.json"), "{}\n");
+    const manager = new LspServerManager({
+      cwd: code,
+      homeDirectory: dirname(code),
+      settings: {
+        ...resolvedSettings([]),
+        servers: new Map([["typescript", workspaceServerDefinition("typescript")]]),
+      },
+      startClient: createRecordingClientFactory().start,
+      rootDiscoveryDirectoryLimit: 6,
+    });
+
+    // The working directory is the discovery base; its other repositories exhaust the limit.
+    expect(
+      await manager.findWorkspaceScope("typescript", workspaceRoot, {
+        queriedFilePath: resolve(workspaceRoot, "index.ts"),
+        synchronizedFilePaths: () => [],
+      }),
+    ).toEqual({
+      otherRoots: { rootPaths: [], hasMore: true },
+      unloadedPackages: { packageRoots: [resolve(workspaceRoot, "packages/b")], hasMore: false },
+    });
+  });
+
+  test("stops other-root discovery inside a batch once enough roots are found", async () => {
+    const cwd = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-batch-"));
+    temporaryDirectories.push(cwd);
+    const children = Array.from({ length: 40 }, (_, index) => `c${String(index).padStart(2, "0")}`);
+    for (const child of children) await mkdir(resolve(cwd, child));
+    for (const child of children.slice(34)) {
+      await writeFile(resolve(cwd, child, "package.json"), "{}\n");
+    }
+    // Listed in the same batch as c32-c39, but after them in walk order.
+    await mkdir(resolve(cwd, "c00/a"));
+    await writeFile(resolve(cwd, "c00/a/package.json"), "{}\n");
+    const manager = new LspServerManager({
+      cwd,
+      homeDirectory: dirname(cwd),
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
+      rootPaths: ["c34", "c35", "c36", "c37", "c38"].map((child) => resolve(cwd, child)),
+      hasMore: true,
     });
   });
 
