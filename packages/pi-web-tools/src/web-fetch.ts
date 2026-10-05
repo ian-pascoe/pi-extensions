@@ -346,7 +346,7 @@ function newTurndown(): TurndownService {
 }
 
 function turndownInChunks(turndown: TurndownService, html: string): string {
-  return convertHtmlInChunks(html, (chunk) => turndown.turndown(chunk));
+  return convertHtmlInChunks(html, (chunk) => turndown.turndown(chunk), extractTextFromHtml);
 }
 
 /**

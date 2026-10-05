@@ -786,6 +786,30 @@ describe("Web Fetch main content", () => {
     }
   });
 
+  test("keeps the byline of a <header> inside an <article> within <main>", async () => {
+    const html = `<html><head><title>Post</title></head><body><nav>NavAlpha</nav>
+<main><header><h1>Page Title</h1><div class="widgets">PageWidgets</div></header>
+<article><header><h2>Post Heading</h2><p>By Ada, 2024</p></header><p>Post body.</p></article></main></body></html>`;
+    for (const format of ["markdown", "text"] as const) {
+      const output = await fetchHtmlPage(html, format);
+      expect(output).toContain("Page Title");
+      expect(output).not.toContain("PageWidgets");
+      expect(output).toContain("By Ada, 2024");
+      expect(output).toContain("Post body.");
+    }
+  });
+
+  test("keeps the text of a heading that has no end tag inside a <main> header", async () => {
+    const html = `<html><head><title>Doc</title></head><body><nav>NavAlpha</nav>
+<main><header><h1>Unclosed Title<h2>Subtitle</h2><div>HeaderWidgets</div></header><p>Body.</p></main></body></html>`;
+    for (const format of ["markdown", "text"] as const) {
+      const output = await fetchHtmlPage(html, format);
+      expect(output).toContain("Unclosed Title");
+      expect(output).toContain("Subtitle");
+      expect(output).toContain("Body.");
+    }
+  });
+
   test("does not pick an <article> that is a sidebar card", async () => {
     const html = `<html><head><title>Plain</title></head><body>
 <aside><article>CardOnly</article></aside>
@@ -858,6 +882,30 @@ describe("Web Fetch main content on large pages", () => {
       { length: 120_000 },
       (_, index) => `<aside>aside ${index}</aside>`,
     ).join("")}<div><p>Real body text.</p></div></body></html>`,
+    "paragraphs on a plain page (no main or chrome)": `<!doctype html><html><head><title>Big</title></head><body>${Array.from(
+      { length: 110_000 },
+      (_, index) => `<p>paragraph ${index}</p>`,
+    ).join("")}</body></html>`,
+    "paragraphs in two <div>s inside <main>": `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main>${[
+      0, 1,
+    ]
+      .map(
+        (half) =>
+          `<div>${Array.from({ length: 55_000 }, (_, index) => `<p>half ${half} paragraph ${index}</p>`).join("")}</div>`,
+      )
+      .join("")}</main></body></html>`,
+    "list items in one <ul> inside <main>": `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main><ul>${Array.from(
+      { length: 100_000 },
+      (_, index) => `<li>item number ${index}</li>`,
+    ).join("")}</ul></main></body></html>`,
+    "list items in one <ol> on a plain page": `<html><body><ol start="5">${Array.from(
+      { length: 100_000 },
+      (_, index) => `<li>item number ${index}</li>`,
+    ).join("")}</ol></body></html>`,
+    "rows in one <table> (plain-text backstop)": `<html><body><p>Intro</p><table>${Array.from(
+      { length: 90_000 },
+      (_, index) => `<tr><td>row ${index}</td><td>value</td></tr>`,
+    ).join("")}</table></body></html>`,
     "<nav> elements": `<html><head><title>Big</title></head><body>${Array.from(
       { length: 120_000 },
       (_, index) => `<nav>nav ${index}</nav>`,

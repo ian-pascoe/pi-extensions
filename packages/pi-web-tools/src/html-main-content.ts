@@ -17,8 +17,8 @@ type ParsedElement = {
   readonly role: string | undefined;
   readonly start: number;
   readonly parent: number;
-  /** Whether an ancestor is a sectioning element, so a <header> or <footer> here is not page chrome. */
-  readonly sectioned: boolean;
+  /** Index of the nearest sectioning ancestor, or -1; a <header> or <footer> inside one is not page chrome. */
+  readonly section: number;
   /** Whether an ancestor is navigation, an aside, or a header or footer. */
   readonly insideChrome: boolean;
   /** Exclusive end offset; undefined until a matching end tag closes the element. */
@@ -73,9 +73,12 @@ function parsePage(html: string): ParsedPage {
         role: attributes["role"]?.trim().toLowerCase(),
         start: parser.startIndex,
         parent: parentIndex,
-        sectioned:
-          parentElement !== undefined &&
-          (parentElement.sectioned || SECTIONING_ELEMENTS.has(parentElement.name)),
+        section:
+          parentElement === undefined
+            ? -1
+            : SECTIONING_ELEMENTS.has(parentElement.name)
+              ? parentIndex
+              : parentElement.section,
         insideChrome:
           parentElement !== undefined &&
           (parentElement.insideChrome ||
@@ -178,28 +181,39 @@ function outermostSpans(
   return spans;
 }
 
-/** The parts of `header` outside its headings: a page title block keeps its heading, not its widgets. */
+/**
+ * The parts of `header` outside its headings: a page title block keeps its heading, not its widgets.
+ * A heading without an end tag, as in `<h1>Title<h2>`, runs to the next heading or the header's end.
+ */
 function outsideHeadings(elements: readonly ParsedElement[], header: Span): Span[] {
+  const headings: ParsedElement[] = [];
+  for (let index = lowerBound(elements, header.start); index < elements.length; index++) {
+    const element = elements[index];
+    if (element === undefined || element.start >= header.end) break;
+    if (HEADING_ELEMENTS.has(element.name)) headings.push(element);
+  }
   const gaps: Span[] = [];
   let position = header.start;
-  for (const heading of outermostSpans(elements, header, (element) =>
-    HEADING_ELEMENTS.has(element.name),
-  )) {
+  headings.forEach((heading, index) => {
+    if (heading.start < position) return;
+    const end = Math.min(heading.end ?? headings[index + 1]?.start ?? header.end, header.end);
     if (heading.start > position) gaps.push({ start: position, end: heading.start });
-    position = heading.end;
-  }
+    position = Math.max(end, heading.start);
+  });
   if (header.end > position) gaps.push({ start: position, end: header.end });
   return gaps;
 }
 
 /**
- * Spans to cut from selected content: navigation landmarks and, in `<main>`, everything but the
- * headings of a `<header>` (such as Wikipedia's language menu beside the article title).
+ * Spans to cut from selected content: navigation landmarks and, when `mainIndex` names the selected
+ * main element, everything but the headings of a `<header>` that belongs to the main itself (such
+ * as Wikipedia's language menu beside the article title). A `<header>` inside an `<article>` or
+ * `<section>` within the main keeps its byline and summary.
  */
 function contentCuts(
   elements: readonly ParsedElement[],
   content: Span,
-  trimHeaders: boolean,
+  mainIndex: number | undefined,
 ): Span[] {
   const cuts: Span[] = [];
   let coveredUntil = content.start;
@@ -212,7 +226,11 @@ function contentCuts(
     if (isNavigation(element)) {
       cuts.push(span);
       coveredUntil = span.end;
-    } else if (trimHeaders && element.name === "header") {
+    } else if (
+      mainIndex !== undefined &&
+      element.name === "header" &&
+      element.section <= mainIndex
+    ) {
       cuts.push(...outsideHeadings(elements, span));
       coveredUntil = span.end;
     }
@@ -257,8 +275,8 @@ function select(
  * text, then the page's only `<article>` (one that sits inside a sidebar, navigation, header, or
  * footer does not count), and otherwise strips navigation, `<aside>`, and `<header>` and `<footer>`
  * that belong to the page rather than to a section. Navigation is `<nav>` or a navigation or search
- * role. Selected content also loses its navigation, and a `<header>` inside `<main>` keeps only its
- * headings. Returns `undefined` when nothing qualifies or nothing would be removed, so the caller
+ * role. Selected content also loses its navigation, and a `<header>` that belongs to `<main>` itself
+ * keeps only its headings. Returns `undefined` when nothing qualifies or nothing would be removed, so the caller
  * converts the whole page. Only elements with an end tag are selected or cut, so an unclosed tag
  * never swallows the rest of the page. Work is linear in the page size apart from sorted lookups.
  */
@@ -267,13 +285,14 @@ export function extractMainContent(html: string): HtmlMainContent | undefined {
   const { elements, texts } = page;
   const everything: Span = { start: 0, end: html.length };
 
-  const main = elements.find((element) => {
+  const mainIndex = elements.findIndex((element) => {
     const span = closedSpan(element);
     return isMainElement(element) && span !== undefined && hasText(texts, span);
   });
+  const main = elements[mainIndex];
   const mainSpan = main === undefined ? undefined : closedSpan(main);
   if (mainSpan !== undefined) {
-    return select(page, html, mainSpan, contentCuts(elements, mainSpan, true));
+    return select(page, html, mainSpan, contentCuts(elements, mainSpan, mainIndex));
   }
 
   // An <article> inside a sidebar or header is a card, not the page's article.
@@ -284,14 +303,14 @@ export function extractMainContent(html: string): HtmlMainContent | undefined {
   );
   const article = articles.length === 1 ? articles[0] : undefined;
   if (article !== undefined && hasText(texts, article)) {
-    return select(page, html, article, contentCuts(elements, article, false));
+    return select(page, html, article, contentCuts(elements, article, undefined));
   }
 
   const body = elements.find((element) => element.name === "body" && element.end !== undefined);
   const bodySpan = (body === undefined ? undefined : closedSpan(body)) ?? everything;
   const chrome = outermostSpans(elements, bodySpan, (element) => {
     if (isNavigation(element) || element.name === "aside") return true;
-    return (element.name === "header" || element.name === "footer") && !element.sectioned;
+    return (element.name === "header" || element.name === "footer") && element.section < 0;
   });
   const stripped = select(page, html, bodySpan, chrome);
   const keptTexts =
