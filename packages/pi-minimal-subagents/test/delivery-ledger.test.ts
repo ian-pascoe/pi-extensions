@@ -122,6 +122,27 @@ describe("minimal subagents delivery ledger", () => {
     expect(selectObservableDeliveryTurn(ledger, options)).toBe("child:unclaimed");
   });
 
+  it("skips a turn whose result was already handed to the destination automatically", () => {
+    let ledger = createDeliveryLedger();
+    for (const turnId of ["child:handed", "child:pending"]) {
+      ledger = addTerminalDelivery(ledger, {
+        destinationAgentId: "root",
+        path: "message",
+        result: completedResult("child", turnId),
+      }).ledger;
+    }
+
+    expect(
+      selectObservableDeliveryTurn(ledger, {
+        sourceAgentId: "child",
+        destinationAgentId: "root",
+        waitHandedDeliveryIds: new Set(),
+        isTurnHandedOff: (turnId) => turnId === "child:handed",
+        activeTurnId: "child:active",
+      }),
+    ).toBe("child:pending");
+  });
+
   it("falls back to the active, then latest, turn when every retained turn is claimed", () => {
     let ledger = addTerminalDelivery(createDeliveryLedger(), {
       destinationAgentId: "root",

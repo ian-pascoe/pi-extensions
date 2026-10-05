@@ -50,6 +50,8 @@ export interface SelectObservableDeliveryTurnOptions {
   sourceAgentId: string;
   destinationAgentId: string;
   waitHandedDeliveryIds: ReadonlySet<string>;
+  /** Whether the turn's terminal result was already queued to the destination automatically. */
+  isTurnHandedOff?: (turnId: string) => boolean;
   activeTurnId?: string;
   latestResultTurnId?: string;
 }
@@ -421,8 +423,8 @@ export function releaseEmptyDeliveryLedgerTurn(
 }
 
 /**
- * Select the oldest sequenced observable source turn whose terminal result the caller has not
- * claimed, falling back to the active, then latest, turn.
+ * Select the oldest sequenced observable source turn whose terminal result the caller has neither
+ * claimed nor been handed automatically, falling back to the active, then latest, turn.
  */
 export function selectObservableDeliveryTurn(
   ledger: DeliveryLedger,
@@ -431,6 +433,7 @@ export function selectObservableDeliveryTurn(
   const candidates = new Map<string, number>();
   const addCandidate = (turnId: string, sequence: number) => {
     if (ledger.waitClaimedTurns.includes(deliveryTurnKey(options.sourceAgentId, turnId))) return;
+    if (options.isTurnHandedOff?.(turnId)) return;
     const existing = candidates.get(turnId);
     if (existing === undefined || sequence < existing) candidates.set(turnId, sequence);
   };

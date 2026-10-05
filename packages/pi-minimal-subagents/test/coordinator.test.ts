@@ -1361,7 +1361,8 @@ describe("minimal subagents coordinator", () => {
       source_agent_id: "worker",
       source_turn_id: turnId,
       destination_agent_id: "root",
-      path: "message" as const,
+      // "wait" keeps restore from handing the results to the parent automatically.
+      path: "wait" as const,
       settled: false,
       sequence,
       result: {
@@ -1518,6 +1519,48 @@ describe("minimal subagents coordinator", () => {
       again.coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
     ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
   });
+
+  it.each([
+    { name: "after its Delivery Evidence was reconciled", reconcile: true },
+    { name: "before its Delivery Evidence was reconciled", reconcile: false },
+  ])(
+    "targets the new turn after an automatically delivered result $name",
+    async ({ reconcile }) => {
+      const runtime = childRuntime();
+      runtime.runMessage.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
+      const { coordinator, root, queuedMessages } = coordinatorFixture(runtime, 0);
+      const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+      // Nobody waits, so the result reaches the parent as an automatic custom message.
+      await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
+      expect(queuedMessages[0]).toMatchObject({
+        customType: "minimal-subagents.result",
+        details: { source_turn_id: first.turn_id },
+      });
+      if (reconcile) {
+        root.hasDeliveryEvidence.mockImplementation(
+          (agentId, turnId) => agentId === "worker" && turnId === first.turn_id,
+        );
+        await coordinator.reconcileDeliveries();
+        expect(coordinator.snapshot().deliveries).toEqual([]);
+      }
+      const started = await coordinator.sendAgentMessage(
+        "root",
+        { agent_id: "worker", message: "Second" },
+        "root:turn",
+      );
+      if (started.disposition !== "started-turn" || !started.turn_id) {
+        throw new Error("expected agent_message to start a turn");
+      }
+
+      await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+        event: "timeout",
+        turn_id: started.turn_id,
+      });
+      await expect(
+        coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
+      ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
+    },
+  );
 
   it("targets a cancelled new turn after a claimed turn", async () => {
     const runtime = childRuntime();

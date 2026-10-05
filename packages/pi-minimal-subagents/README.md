@@ -40,7 +40,7 @@ From this package checkout, load the source directly with
    `agent_message` in the same tool batch can target the new child.
 2. `subagent_wait` claims the turn's result, or leave it unclaimed and the final
    response arrives automatically as a steer message. Without `turn_id`, a wait
-   skips turns whose result you already claimed.
+   skips turns whose result you already claimed or received automatically.
 3. `agent_message` continues an idle child: the result reports
    `disposition: "started-turn"` with the new `turn_id`. A plain
    `subagent_wait({ agent_id })` targets that new turn, not the first result;
@@ -317,9 +317,9 @@ wait returns its terminal result with queued messages in `messages`; waiting
 again for the same settled turn returns the same result while it is retained. Pass
 optional `turn_id` to address a retained turn exactly, including one whose
 result you already claimed (a claimed result stays retained until Delivery
-Evidence settles it). Without it, waits skip claimed turns and select the
-oldest unclaimed observable turn, falling back to the active, then latest,
-turn. A caller may have only one outstanding wait for the same source turn; a
+Evidence settles it). Without it, waits skip claimed turns and turns whose
+result was already delivered to you automatically, and select the oldest
+remaining observable turn, falling back to the active, then latest, turn. A caller may have only one outstanding wait for the same source turn; a
 concurrent duplicate is rejected instead of competing for one Wait Event.
 When `timeout_ms` expires, the wait returns an observational `event: "timeout"`
 with the requested turn identity and the same detailed Child Agent status used

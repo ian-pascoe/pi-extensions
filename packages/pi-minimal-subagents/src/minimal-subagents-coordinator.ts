@@ -165,6 +165,8 @@ export class MinimalSubagentsCoordinator {
   private readonly automaticDeliveryKeys = new Set<string>();
   private readonly automaticCoordinationDeliveryIds = new Set<string>();
   private readonly waitHandedDeliveryIds = new Set<string>();
+  /** Terminal results already queued to their parent, until Delivery Evidence settles them. */
+  private readonly handedTerminalKeys = new Set<string>();
   private readonly backgroundOperations = new Set<Promise<void>>();
   private acceptingOperations = true;
   private lifecycleEpoch = 0;
@@ -720,6 +722,7 @@ export class MinimalSubagentsCoordinator {
     this.waiters.clear();
     this.waitHandedDeliveryIds.clear();
     this.automaticDeliveryKeys.clear();
+    this.handedTerminalKeys.clear();
     this.automaticCoordinationDeliveryIds.clear();
     this.deliveryLedger = createDeliveryLedger({
       deliveries: snapshot.deliveries,
@@ -1210,6 +1213,7 @@ export class MinimalSubagentsCoordinator {
             this.isTerminalDeliveryCurrent(delivery) &&
             batchedCoordinationDeliveries.every((item) => this.isCoordinationDeliveryCurrent(item)),
         );
+        this.handedTerminalKeys.add(deliveryKey);
       });
     } catch (error) {
       for (const batchedDelivery of batchedCoordinationDeliveries) {
@@ -1317,6 +1321,8 @@ export class MinimalSubagentsCoordinator {
       sourceAgentId,
       destinationAgentId,
       waitHandedDeliveryIds: this.waitHandedDeliveryIds,
+      isTurnHandedOff: (turnId) =>
+        this.handedTerminalKeys.has(agentDeliveryKey(sourceAgentId, turnId)),
       activeTurnId: agent?.active_turn_id,
       latestResultTurnId: agent?.latest_result?.turn_id,
     });
@@ -1602,6 +1608,9 @@ export class MinimalSubagentsCoordinator {
   }
 
   private settleDelivery(delivery: PersistedDelivery): void {
+    this.handedTerminalKeys.delete(
+      agentDeliveryKey(delivery.source_agent_id, delivery.source_turn_id),
+    );
     this.deliveryLedger = settleTerminalDelivery(
       this.deliveryLedger,
       delivery.source_agent_id,
