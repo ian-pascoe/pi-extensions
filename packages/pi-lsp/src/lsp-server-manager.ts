@@ -73,7 +73,7 @@ export interface LspServerStartInput {
 /** Names the capability an operation requires so unsupported-operation failures can cite it. */
 export interface LspCapabilityRequirement<TClient extends LspManagedServerClient> {
   /** Protocol method of the capability, such as `textDocument/declaration`. */
-  readonly name: string;
+  readonly method: string;
   /** Whether a ready client currently advertises the capability. */
   readonly isSupportedBy: (client: TClient) => boolean;
 }
@@ -345,7 +345,7 @@ function incapableServerFailure<TClient extends LspManagedServerClient>(
 ): LspServerFailure {
   return {
     code: "no-capable-server",
-    message: `Pi LSP: server ${serverId} does not support ${capability.name}`,
+    message: `Pi LSP: server ${serverId} does not support ${capability.method}`,
     serverId,
   };
 }
@@ -356,7 +356,7 @@ function noCapableServerFailure<TClient extends LspManagedServerClient>(
 ): LspServerFailure {
   return {
     code: "no-capable-server",
-    message: `Pi LSP: no matching server supports ${capability.name}; matching servers without it: ${incapableServerIds.join(", ")}`,
+    message: `Pi LSP: no matching server supports ${capability.method}; matching servers without it: ${incapableServerIds.join(", ")}`,
     serverId: "*",
   };
 }
@@ -560,10 +560,10 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       if ("code" in outcome) failures.push(outcome);
       else successes.push(outcome);
     }
-    if (failures.length === 0 && successes.length === 0) {
-      const incapableServerIds = routes
-        .filter((_route, index) => outcomes[index] === undefined)
-        .map((route) => route.serverId);
+    const incapableServerIds = routes
+      .filter((_route, index) => outcomes[index] === undefined)
+      .map((route) => route.serverId);
+    if (successes.length === 0 && incapableServerIds.length > 0) {
       failures.push(noCapableServerFailure(capability, incapableServerIds));
     }
     return { failures, successes };

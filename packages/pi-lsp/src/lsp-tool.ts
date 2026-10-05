@@ -317,18 +317,18 @@ function serverInstanceScopeWarnings(scopes: readonly ServerInstanceScope[]): st
 
 /** Require the protocol method an operation sends, naming it in unsupported-operation failures. */
 function requireMethod(method: string): LspCapabilityRequirement<LspToolServerClient> {
-  return { name: method, isSupportedBy: (client) => client.hasCapability(method) };
+  return { method, isSupportedBy: (client) => client.hasCapability(method) };
 }
 
 /** Every server serves document diagnostics, by pull request or from pushed diagnostics. */
 const DOCUMENT_DIAGNOSTICS_CAPABILITY: LspCapabilityRequirement<LspToolServerClient> = {
-  name: DocumentDiagnosticRequest.method,
+  method: DocumentDiagnosticRequest.method,
   isSupportedBy: () => true,
 };
 
 /** Every server serves workspace diagnostics, by pull request or from cached pushes. */
 const WORKSPACE_DIAGNOSTICS_CAPABILITY: LspCapabilityRequirement<LspToolServerClient> = {
-  name: WorkspaceDiagnosticRequest.method,
+  method: WorkspaceDiagnosticRequest.method,
   isSupportedBy: () => true,
 };
 

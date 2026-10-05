@@ -191,7 +191,7 @@ class ManagerPostEditDiagnosticsRunner {
         filePath,
         undefined,
         {
-          name: DocumentDiagnosticRequest.method,
+          method: DocumentDiagnosticRequest.method,
           isSupportedBy: (client) => client.hasCapability(DocumentDiagnosticRequest.method),
         },
         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {

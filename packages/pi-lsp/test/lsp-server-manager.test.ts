@@ -173,11 +173,11 @@ class RecordingLspClient implements LspManagedServerClient {
 }
 
 const anyCapability: LspCapabilityRequirement<RecordingLspClient> = {
-  name: "test/any",
+  method: "test/any",
   isSupportedBy: () => true,
 };
 const hoverCapability: LspCapabilityRequirement<RecordingLspClient> = {
-  name: "textDocument/hover",
+  method: "textDocument/hover",
   isSupportedBy: (client) => client.supported,
 };
 
@@ -911,7 +911,7 @@ describe("session-scoped LSP server manager", () => {
     });
   });
 
-  test("preserves startup failures while omitting incapable automatic read servers", async () => {
+  test("reports startup failures and the capability incapable servers lack when no read succeeds", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory(async ({ definition }) => {
       if (definition.id === "typescript") throw new Error("fixture startup failed");
@@ -931,7 +931,15 @@ describe("session-scoped LSP server manager", () => {
     );
 
     expect(result).toMatchObject({
-      failures: [{ code: "server-unavailable", serverId: "typescript" }],
+      failures: [
+        { code: "server-unavailable", serverId: "typescript" },
+        {
+          code: "no-capable-server",
+          message:
+            "Pi LSP: no matching server supports textDocument/hover; matching servers without it: lint",
+          serverId: "*",
+        },
+      ],
       successes: [],
     });
   });
