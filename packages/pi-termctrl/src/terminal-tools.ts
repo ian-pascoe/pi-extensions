@@ -77,9 +77,18 @@ export interface TerminalToolRuntime {
 
 const TerminalStateSchema = Type.Union([Type.Literal("running"), Type.Literal("exited")]);
 
+const SettleReasonSchema = Type.Union(
+  [Type.Literal("matched"), Type.Literal("timeout"), Type.Literal("quiet"), Type.Literal("exit")],
+  {
+    description:
+      "Why the wait ended: wait_for_text matched, wait_ms ran out or the call was cancelled, the screen was quiet for 250 ms, or the Terminal exited",
+  },
+);
+
 const TerminalResultSchema = Type.Object({
   id: Type.String(),
   state: TerminalStateSchema,
+  settle_reason: SettleReasonSchema,
   exit_code: Type.Optional(Type.Number({ description: "Present once the Terminal has exited" })),
   signal: Type.Optional(Type.String({ description: "Present when a signal ended the Terminal" })),
   changed: Type.Boolean({ description: "Whether the screen differs from the previous result" }),
@@ -270,7 +279,7 @@ export function parseWaitPattern(pattern: string): (screen: string) => boolean {
 
 type SettleMode = "start" | "input" | "poll";
 /** Why a Terminal wait ended. */
-export type SettleReason = "quiet" | "matched" | "exited" | "timeout";
+export type SettleReason = Static<typeof SettleReasonSchema>;
 
 interface SettleRequest {
   readonly mode: SettleMode;
@@ -304,7 +313,7 @@ export async function settleTerminal(
       snapshot.idleForMs === null ? lastChangeAt : Math.max(lastChangeAt, now - snapshot.idleForMs);
     if (outputAt > request.startedAt) sawOutput = true;
 
-    if (snapshot.state === "exited") return { snapshot, reason: "exited" };
+    if (snapshot.state === "exited") return { snapshot, reason: "exit" };
     if (request.matches !== undefined) {
       const stale =
         request.baseline !== undefined &&
@@ -500,6 +509,13 @@ async function truncateOutput(
   return { ...fitted, fullOutputPath: path, notice: `${range} Full output: ${path}]` };
 }
 
+/** Says that `wait_for_text` was not seen when its wait timed out. */
+function unmatchedNote(reason: SettleReason, pattern: string | undefined): string | undefined {
+  return reason === "timeout" && pattern !== undefined
+    ? `wait_for_text ${JSON.stringify(pattern)} was not seen before the wait ended.`
+    : undefined;
+}
+
 function formatTerminalText(
   result: TerminalResult,
   note: string | undefined,
@@ -509,7 +525,9 @@ function formatTerminalText(
     result.state === "running"
       ? "running"
       : describeExit({ code: result.exit_code ?? null, signal: result.signal ?? null });
-  const parts = [`${result.id} ${exit}${result.changed ? "" : " · screen unchanged"}`];
+  const parts = [
+    `${result.id} ${exit} · settled: ${result.settle_reason}${result.changed ? "" : " · screen unchanged"}`,
+  ];
   if (note !== undefined) parts.push(note);
   if (result.scrolled_off !== "") {
     parts.push(`--- scrolled off ---\n${result.scrolled_off}`);
@@ -524,6 +542,7 @@ async function terminalResult(
   registry: TermctrlRegistry,
   entry: TerminalEntry,
   snapshot: TerminalSnapshot | undefined,
+  settleReason: SettleReason,
   note?: string,
 ) {
   const screen = snapshot?.screen ?? entry.finalScreen ?? entry.lastScreen ?? "";
@@ -540,6 +559,7 @@ async function terminalResult(
   const result: TerminalResult = {
     id: entry.id,
     state: exited ? "exited" : "running",
+    settle_reason: settleReason,
     ...exitFields(exited ? entry.exit : null),
     changed: entry.lastScreen !== screen,
     screen: output.screen,
@@ -623,7 +643,7 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
       // Launching, including a cold driver start, does not count toward the quiet period.
       const startedAt = Date.now();
       return driveTerminal(runtime.registry, entry, async () => {
-        const { snapshot } = await settleTerminal(entry, {
+        const { snapshot, reason } = await settleTerminal(entry, {
           mode: "start",
           waitMs: clampWait(params.wait_ms, START_WAIT_MS),
           startedAt,
@@ -631,7 +651,7 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
           baseline: undefined,
           signal,
         });
-        return terminalResult(runtime.registry, entry, snapshot);
+        return terminalResult(runtime.registry, entry, snapshot, reason);
       });
     },
   });
@@ -674,6 +694,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
           runtime.registry,
           entry,
           undefined,
+          "exit",
           hasInput ? "Input was not sent because the Terminal has exited." : undefined,
         );
       }
@@ -685,7 +706,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
         if (params.text !== undefined && params.text !== "") await entry.handle.type(params.text);
         const validKeys = keys.filter(isKey);
         if (validKeys.length > 0) await entry.handle.press(validKeys);
-        const { snapshot } = await settleTerminal(entry, {
+        const { snapshot, reason } = await settleTerminal(entry, {
           mode: hasInput ? "input" : "poll",
           waitMs: clampWait(params.wait_ms, hasInput ? INPUT_WAIT_MS : POLL_WAIT_MS),
           startedAt,
@@ -693,7 +714,13 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
           baseline,
           signal,
         });
-        return terminalResult(runtime.registry, entry, snapshot);
+        return terminalResult(
+          runtime.registry,
+          entry,
+          snapshot,
+          reason,
+          unmatchedNote(reason, params.wait_for_text),
+        );
       });
     },
   });
