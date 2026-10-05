@@ -129,14 +129,19 @@ export type LspDocumentDiagnosticResult =
     }
   | { readonly status: "timeout"; readonly diagnostics: readonly [] };
 
-/** Workspace diagnostics grouped by URI, with cached push fallback only when pull is unsupported. */
+/**
+ * Workspace diagnostics grouped by URI, with cached push fallback only when pull is unsupported.
+ * `unsupported` means the server publishes no workspace diagnostics: it answers only document
+ * pulls and has pushed nothing, so an empty push cache would misreport "no diagnostics".
+ */
 export type LspWorkspaceDiagnosticResult =
   | {
       readonly status: "fresh";
       readonly source: "workspace_pull" | "push_cache";
       readonly diagnosticsByUri: ReadonlyMap<string, readonly Diagnostic[]>;
     }
-  | { readonly status: "timeout"; readonly diagnosticsByUri: ReadonlyMap<string, never> };
+  | { readonly status: "timeout"; readonly diagnosticsByUri: ReadonlyMap<string, never> }
+  | { readonly status: "unsupported" };
 
 /** Classified process, protocol, timeout, cancellation, and UTF-8 client failure. */
 export class LspServerClientError extends Error {
@@ -711,10 +716,16 @@ export class LspServerClient {
     }
   }
 
-  /** Pull workspace diagnostics when supported, otherwise return cached push diagnostics only. */
+  /**
+   * Pull workspace diagnostics when supported, otherwise return cached push diagnostics only. A
+   * document-pull server that has never pushed is reported as `unsupported`.
+   */
   async workspaceDiagnostics(signal?: AbortSignal): Promise<LspWorkspaceDiagnosticResult> {
     const registration = this.workspacePullRegistration();
     if (registration === undefined) {
+      if (this.documentPullRegistration() !== undefined && this.diagnosticsRevision === 0) {
+        return { status: "unsupported" };
+      }
       return {
         status: "fresh",
         source: "push_cache",

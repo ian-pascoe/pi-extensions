@@ -263,7 +263,7 @@ describe("session-scoped LSP server manager", () => {
 
     await manager.stopServer("typescript", resolve(cwd, "packages/example"));
     expect(factory.clients.map((client) => client.shutdownCount)).toEqual([1, 0]);
-    expect(manager.getStatus().servers).toEqual([
+    expect(manager.getStatus().servers).toMatchObject([
       { serverId: "typescript", rootPath: otherRoot, state: "running" },
       { serverId: "typescript", rootPath: resolve(cwd, "packages/example"), state: "stopped" },
     ]);
@@ -315,12 +315,12 @@ describe("session-scoped LSP server manager", () => {
 
     await manager.setEnablement(new Map(), new Map([["typescript", false]]));
     expect(factory.clients.map((client) => client.shutdownCount)).toEqual([1, 1]);
-    expect(manager.getStatus().servers.filter(({ serverId }) => serverId === "typescript")).toEqual(
-      [
-        { serverId: "typescript", rootPath: cwd, state: "disabled" },
-        { serverId: "typescript", rootPath: resolve(cwd, "packages/example"), state: "disabled" },
-      ],
-    );
+    expect(
+      manager.getStatus().servers.filter(({ serverId }) => serverId === "typescript"),
+    ).toMatchObject([
+      { serverId: "typescript", rootPath: cwd, state: "disabled" },
+      { serverId: "typescript", rootPath: resolve(cwd, "packages/example"), state: "disabled" },
+    ]);
     expect(manager.getEnablement("typescript")).toEqual({ enabled: false, scope: "session" });
     const automatic = await manager.runRead(filePath, undefined, anyCapability, async () => "ok");
     expect(automatic.successes.map(({ serverId }) => serverId)).toEqual(["lint"]);
@@ -448,7 +448,13 @@ describe("session-scoped LSP server manager", () => {
       settings: { ...resolvedSettings(["typescript"]), enablement: configured },
       startClient: factory.start,
     });
-    expect(manager.getStatus().servers).toEqual([{ serverId: "typescript", state: "disabled" }]);
+    expect(manager.getStatus().servers).toEqual([
+      {
+        serverId: "typescript",
+        state: "disabled",
+        languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
+      },
+    ]);
     await manager.setEnablement(configured, new Map([["typescript", true]]));
     expect(manager.getEnablement("typescript")).toEqual({ enabled: true, scope: "session" });
     expect(factory.clients).toHaveLength(0);
@@ -985,7 +991,9 @@ describe("session-scoped LSP server manager", () => {
 
     await manager.shutdown();
     expect(factory.clients[0]?.shutdownCount).toBe(1);
-    expect(manager.getStatus().servers).toEqual([{ serverId: "typescript", state: "configured" }]);
+    expect(manager.getStatus().servers).toMatchObject([
+      { serverId: "typescript", state: "configured" },
+    ]);
   });
 });
 

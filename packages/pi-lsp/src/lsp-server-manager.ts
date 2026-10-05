@@ -140,6 +140,8 @@ export type LspServerResolution<TClient extends LspManagedServerClient> =
 export interface LspServerStatusEntry {
   /** Latest unavailable reason, when startup, process, or protocol lifecycle failed. */
   readonly error?: string;
+  /** The Server Definition's language mappings, which decide the files it handles. */
+  readonly languages: readonly LspServerLanguage[];
   /** Workspace root for a resolved instance; absent before any file routes to the server. */
   readonly rootPath?: string;
   /** Configured server ID. */
@@ -414,12 +416,13 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   /** Return configuration and known instance state without starting a server. */
   getStatus(): LspServerManagerStatus {
     const servers: LspServerStatusEntry[] = [];
-    for (const [serverId] of this.input.settings.servers) {
+    for (const [serverId, { languages }] of this.input.settings.servers) {
       const routes = [...this.knownRoutes.entries()]
         .filter(([, route]) => route.serverId === serverId)
         .sort(([, left], [, right]) => left.rootPath.localeCompare(right.rootPath));
       if (routes.length === 0) {
         servers.push({
+          languages,
           serverId,
           state: this.getEnablement(serverId).enabled ? "configured" : "disabled",
         });
@@ -427,16 +430,17 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       }
       for (const [key, route] of routes) {
         const error = this.unavailable.get(key);
+        const instance = { languages, rootPath: route.rootPath, serverId };
         if (!this.getEnablement(serverId).enabled) {
-          servers.push({ rootPath: route.rootPath, serverId, state: "disabled" });
+          servers.push({ ...instance, state: "disabled" });
         } else if (error !== undefined) {
-          servers.push({ error, rootPath: route.rootPath, serverId, state: "unavailable" });
+          servers.push({ ...instance, error, state: "unavailable" });
         } else if (this.inFlightStarts.has(key)) {
-          servers.push({ rootPath: route.rootPath, serverId, state: "starting" });
+          servers.push({ ...instance, state: "starting" });
         } else if (this.clients.has(key)) {
-          servers.push({ rootPath: route.rootPath, serverId, state: "running" });
+          servers.push({ ...instance, state: "running" });
         } else {
-          servers.push({ rootPath: route.rootPath, serverId, state: "stopped" });
+          servers.push({ ...instance, state: "stopped" });
         }
       }
     }

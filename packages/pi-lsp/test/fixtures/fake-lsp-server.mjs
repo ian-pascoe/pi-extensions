@@ -103,7 +103,7 @@ async function handleRequest(message) {
         capabilities.diagnosticProvider = {
           identifier: "fake",
           interFileDependencies: false,
-          workspaceDiagnostics: true,
+          workspaceDiagnostics: process.env.FAKE_NO_WORKSPACE_PULL !== "1",
         };
       }
       respond(message.id, {

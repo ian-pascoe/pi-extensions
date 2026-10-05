@@ -177,18 +177,30 @@ visible before `lsp_apply`; scripts receive it in `warnings` and the searched ro
 
 `lsp_workspace_symbols` requires `query` and a root-anchor `file_path`. `lsp_workspace_diagnostics`,
 `lsp_capabilities`, and `lsp_restart` require `server_id` and a root-anchor `file_path`. Other reads
-query every matching capable server unless narrowed by `server_id`; successful responses remain
-visible when another server fails. Automatic reads omit matching incapable servers and fail once if
-none are capable; explicitly selecting an incapable server reports that the operation is
-unsupported. A mutation may omit `server_id` only when exactly one matching capable server exists.
+and `lsp_code_actions` query every matching capable server unless narrowed by `server_id`;
+successful responses remain visible when another server fails. Automatic reads omit matching
+incapable servers and fail once if none are capable; explicitly selecting an incapable server
+reports that the operation is unsupported. `lsp_rename` and the `lsp_format_*` tools may omit
+`server_id` only when exactly one matching capable server exists.
+
+`lsp_status` lists each Server Definition's languages as a map from language ID to the file
+extensions and filenames it handles, so it shows which servers a file routes to before any has
+started.
+
+`lsp_workspace_diagnostics` uses the server's workspace diagnostics pull when it has one, and
+otherwise the diagnostics it has pushed for files opened in this session. A server that answers only
+document pulls, such as the TypeScript server, publishes no workspace diagnostics; its value is then
+`{ status: "unsupported", message }`, pointing to `lsp_diagnostics`, rather than an empty result.
 
 Formatting requires `tab_size` and `insert_spaces`. It optionally accepts
 `trim_trailing_whitespace`, `insert_final_newline`, and `trim_final_newlines`. Range formatting also
 requires a `range`; on-type formatting requires a position and `trigger_character`. `lsp_rename`
-requires `new_name`. `lsp_code_actions` accepts a range and optional `only_kinds` filters. It sends
-the selected server's current LSP Diagnostics that overlap the range, so diagnostic-dependent quick
-fixes such as adding a missing import are offered. It uses diagnostics the server has already
-reported for the file's current contents, otherwise waits for them within the diagnostics timeout;
+requires `new_name`. A preview whose edits change nothing reports `No changes` and an empty Mutation
+Manifest. `lsp_code_actions` accepts a range and optional `only_kinds` filters. It lists the actions
+of every capable server, each naming its `server_id`, with failing servers as `warnings`. It sends
+each server's current LSP Diagnostics that overlap the range, so diagnostic-dependent quick fixes
+such as adding a missing import are offered. It uses diagnostics the server has already reported
+for the file's current contents, otherwise waits for them within the diagnostics timeout;
 unavailable diagnostics never prevent the request.
 
 The shared rules reach the model as one system-prompt guideline, which Pi adds once while any LSP

@@ -421,6 +421,9 @@ async function restorePath(
   await symlink(snapshot.link_target, path);
 }
 
+/** The summary of a Workspace Edit Preview that changes no file. */
+export const NO_CHANGES_SUMMARY = "No changes";
+
 /** Own persisted Workspace Edit Preview state and guarded one-use application. */
 export class LspWorkspaceEditStore {
   private readonly previews = new Map<string, LspWorkspaceEditPreview>();
@@ -598,7 +601,16 @@ export class LspWorkspaceEditStore {
       });
     }
 
-    const summaries = operations
+    // Text edits that leave a file's bytes unchanged (such as an empty formatting result) are not
+    // file operations, so they stay out of the Mutation Manifest.
+    const changingOperations = operations.filter(
+      (operation) =>
+        operation.kind !== "modify" ||
+        !contentsFromSnapshot(operation.before).equals(
+          Buffer.from(operation.after_base64, "base64"),
+        ),
+    );
+    const summaries = changingOperations
       .flatMap((operation) => {
         if (operation.kind === "modify") {
           return [
@@ -616,9 +628,9 @@ export class LspWorkspaceEditStore {
       kind: "workspace_edit_preview",
       preview_id: this.createPreviewId(),
       server_id: input.serverId,
-      summary: summaries.join("\n"),
+      summary: changingOperations.length === 0 ? NO_CHANGES_SUMMARY : summaries.join("\n"),
       state: "available",
-      operations,
+      operations: changingOperations,
     };
     this.previews.set(preview.preview_id, preview);
     this.unreportedPreviews.set(preview.preview_id, preview);

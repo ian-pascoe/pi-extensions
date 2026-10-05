@@ -66,6 +66,45 @@ afterEach(async () => {
 });
 
 describe("Workspace Edit Preview and Validated Workspace Edit", () => {
+  test("leaves text edits that change no bytes out of the Mutation Manifest", async () => {
+    const root = await makeTemporaryDirectory();
+    const unchanged = resolve(root, "unchanged.ts");
+    const sameText = resolve(root, "same-text.ts");
+    const changed = resolve(root, "changed.ts");
+    await writeFile(unchanged, "one\n");
+    await writeFile(sameText, "two\n");
+    await writeFile(changed, "three\n");
+    const store = new LspWorkspaceEditStore();
+
+    const preview = await store.createPreview({
+      edit: {
+        changes: {
+          [fileUri(unchanged)]: [],
+          ...textEdit(sameText, 3, "two").changes,
+          ...textEdit(changed, 5, "THREE").changes,
+        },
+      },
+      serverId: "typescript",
+    });
+
+    expect(store.prepareMutationManifest(preview.preview_id).entries).toEqual([
+      { named_path: changed, operation: "modify", path: changed },
+    ]);
+    expect(preview.summary).not.toContain("unchanged.ts");
+    expect(preview.summary).not.toContain("same-text.ts");
+
+    const empty = await store.createPreview({
+      edit: { changes: { [fileUri(unchanged)]: [] } },
+      serverId: "typescript",
+    });
+    const manifest = store.prepareMutationManifest(empty.preview_id);
+    expect(manifest.entries).toEqual([]);
+    expect(empty.summary).toBe("No changes");
+    await expect(store.applyPreview(empty.preview_id, manifest)).resolves.toMatchObject({
+      changed_files: [],
+    });
+  });
+
   test("previews and applies deterministic multi-file text changes while preserving BOMs and modes", async () => {
     const root = await makeTemporaryDirectory();
     const first = resolve(root, "first.ts");

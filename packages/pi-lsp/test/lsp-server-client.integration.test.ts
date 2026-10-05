@@ -190,9 +190,9 @@ describe("real TypeScript 7 language server client", () => {
       );
 
       expect(result.structuredContent).toMatchObject({
-        server_id: "typescript",
         actions: expect.arrayContaining([
           expect.objectContaining({
+            server_id: "typescript",
             applicable: true,
             kind: "quickfix",
             title: 'Add import from "./helper"',
