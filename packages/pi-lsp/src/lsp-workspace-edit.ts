@@ -642,6 +642,12 @@ export class LspWorkspaceEditStore {
     this.unreportedPreviews.delete(previewId);
   }
 
+  /** Forget a preview that no result names, so it can never be applied. */
+  discardPreview(previewId: string): void {
+    this.previews.delete(previewId);
+    this.unreportedPreviews.delete(previewId);
+  }
+
   /** Take server-initiated previews that must be exposed through the active LSP result. */
   takeUnreportedPreviewRecords(): LspWorkspaceEditPreview[] {
     const records = [...this.unreportedPreviews.values()].map((preview) =>

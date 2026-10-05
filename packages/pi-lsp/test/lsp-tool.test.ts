@@ -33,6 +33,7 @@ import {
   LspApplyOutputSchema,
   LspPositionReadOutputSchema,
   LspReadOutputSchema,
+  LspCodeActionsOutputSchema,
   type LspToolParameters,
   type LspToolResultDetails,
 } from "../src/lsp-tool-contract.js";
@@ -283,6 +284,10 @@ function prepareApply(
 
 function resultText(result: AgentToolResult<LspToolResultDetails>): string {
   return result.content[0]?.type === "text" ? result.content[0].text : "";
+}
+
+function byText(left: string, right: string): number {
+  return left.localeCompare(right);
 }
 
 function range() {
@@ -1790,6 +1795,121 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     );
     await manager.shutdown();
     await fixture.close();
+  });
+
+  describe("code actions with an invalid Workspace Edit", () => {
+    const insertion = (uri: string) => ({
+      changes: {
+        [uri]: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+            newText: "// edit\n",
+          },
+        ],
+      },
+    });
+
+    test("lists the invalid action as not applicable and keeps the others", async () => {
+      const fixture = await createToolFixture(["typescript", "oxlint"]);
+      const uri = pathToFileURL(fixture.filePath).href;
+      const missingUri = pathToFileURL(join(fixture.context.cwd, "missing.ts")).href;
+      const typescript = new RecordingLspClient();
+      const oxlint = new RecordingLspClient();
+      typescript.responseByMethod.set("textDocument/codeAction", [
+        { title: "First fix", kind: "quickfix", edit: insertion(uri) },
+        { title: "Fix elsewhere", kind: "quickfix", edit: insertion(missingUri) },
+        { title: "Last fix", kind: "quickfix.import", edit: insertion(uri) },
+      ]);
+      oxlint.responseByMethod.set("textDocument/codeAction", [
+        { title: "Lint fix", kind: "quickfix", edit: insertion(uri) },
+      ]);
+      const clients = new Map([
+        ["typescript", typescript],
+        ["oxlint", oxlint],
+      ]);
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd: fixture.context.cwd,
+        settings: resolvedSettings(["typescript", "oxlint"]),
+        startClient: async ({ definition }) => clients.get(definition.id) ?? typescript,
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+      const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
+
+      const result = await executeTool(
+        fixture,
+        { operation: "code_actions", file_path: fixture.filePath, range: range() },
+        dependencies,
+      );
+
+      expect(result.structuredContent).toMatchObject({
+        actions: [
+          { server_id: "typescript", title: "First fix", applicable: true },
+          {
+            server_id: "typescript",
+            title: "Fix elsewhere",
+            kind: "quickfix",
+            applicable: false,
+            error: expect.stringContaining("text edit file is missing"),
+          },
+          { server_id: "typescript", title: "Last fix", applicable: true },
+          { server_id: "oxlint", title: "Lint fix", applicable: true },
+        ],
+        warnings: [],
+      });
+      const { actions } = Value.Parse(LspCodeActionsOutputSchema, result.structuredContent);
+      expect(actions[1]).not.toHaveProperty("preview_id");
+      expect(result.details).toMatchObject({
+        server_outcomes: [
+          { server_id: "typescript", outcome: "success" },
+          { server_id: "oxlint", outcome: "success" },
+        ],
+      });
+      // Every preview in the store is named by a returned action.
+      const settled = await Promise.allSettled(
+        createPreview.mock.results.map((entry) => entry.value),
+      );
+      const created = settled.flatMap((entry) =>
+        entry.status === "fulfilled" ? entry.value.preview_id : [],
+      );
+      const named = actions.flatMap((action) => action.preview_id ?? []);
+      expect(named).toHaveLength(3);
+      expect(created.toSorted(byText)).toEqual(named.toSorted(byText));
+      // Previews of the valid actions survive the invalid one.
+      for (const id of named) {
+        expect(() => dependencies.workspaceEdits.prepareMutationManifest(id)).not.toThrow();
+      }
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("discards the previews already created when another error propagates", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      fixture.client.responseByMethod.set("textDocument/codeAction", [
+        { title: "First fix", kind: "quickfix", edit: insertion(uri) },
+        { title: "Second fix", kind: "quickfix", edit: insertion(uri) },
+      ]);
+      const store = fixture.dependencies.workspaceEdits;
+      const realCreatePreview = store.createPreview.bind(store);
+      const createPreview = vi.spyOn(store, "createPreview");
+      createPreview.mockImplementationOnce(realCreatePreview);
+      createPreview.mockImplementationOnce(() => {
+        throw new Error("unexpected store failure");
+      });
+
+      await expect(
+        executeTool(fixture, {
+          operation: "code_actions",
+          file_path: fixture.filePath,
+          range: range(),
+        }),
+      ).rejects.toThrow("unexpected store failure");
+
+      const first = await createPreview.mock.results[0]?.value;
+      expect(first).toBeDefined();
+      expect(() => store.prepareMutationManifest(first.preview_id)).toThrow();
+      await fixture.close();
+    });
   });
 
   test("reports no changes for a format preview without edits", async () => {

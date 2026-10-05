@@ -251,7 +251,9 @@ its `server_id`, with failing servers as `warnings`. It sends each server's curr
 that overlap the range, so diagnostic-dependent quick fixes such as adding a missing import are
 offered. It uses diagnostics the server has already reported for the file's current contents,
 otherwise waits for them within the diagnostics timeout; unavailable diagnostics never prevent the
-request.
+request. An action whose edit fails Workspace Edit Preview validation (for example, it targets a
+missing file) is listed with `applicable: false` and an `error`; the server's other actions and
+their previews are unaffected. Other failures, such as an unreadable file, still fail the server.
 
 The shared rules reach the model as one system-prompt guideline, which Pi adds once while any LSP
 tool is declared. On Pi 1.0.0 and later, scripts can also read them with

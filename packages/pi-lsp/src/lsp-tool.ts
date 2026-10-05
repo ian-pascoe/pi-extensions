@@ -1017,11 +1017,16 @@ async function recordToolPreview(
     serverId,
     positionEncoding,
   });
-  dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
-  const manifest = normalizeStoreMutationManifest(
-    dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
-  );
-  return { preview, manifest };
+  try {
+    dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
+    const manifest = normalizeStoreMutationManifest(
+      dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
+    );
+    return { preview, manifest };
+  } catch (cause) {
+    dependencies.workspaceEdits.discardPreview(preview.preview_id);
+    throw cause;
+  }
 }
 
 async function workspacePreviewOutput(
@@ -1520,6 +1525,8 @@ interface CodeActionResult {
   readonly mutation_manifest?: MutationManifest;
   readonly preview_id?: string;
   readonly summary?: string;
+  /** Why an edit-bearing action could not become a Workspace Edit Preview. */
+  readonly error?: string;
 }
 
 /** One server's listed code actions and the Workspace Edit Previews created for them. */
@@ -1584,37 +1591,57 @@ async function serverCodeActions(
   }
   const results: CodeActionResult[] = [];
   const previewRecords: LspWorkspaceEditPreviewRecord[] = [];
-  for (const action of Array.isArray(actions) ? actions : []) {
-    const record = protocolRecord(action);
-    if (record === undefined) continue;
-    const kind = protocolString(record.kind);
-    const title = protocolString(record.title);
-    if (record.command !== undefined || record.edit === undefined) {
-      results.push({
-        server_id: route.serverId,
-        applicable: false,
-        command: record.command,
-        kind,
-        title,
-      });
-      continue;
+  try {
+    for (const action of Array.isArray(actions) ? actions : []) {
+      const record = protocolRecord(action);
+      if (record === undefined) continue;
+      const kind = protocolString(record.kind);
+      const title = protocolString(record.title);
+      if (record.command !== undefined || record.edit === undefined) {
+        results.push({
+          server_id: route.serverId,
+          applicable: false,
+          command: record.command,
+          kind,
+          title,
+        });
+        continue;
+      }
+      try {
+        const { preview, manifest } = await recordToolPreview(
+          dependencies,
+          route.serverId,
+          record.edit,
+          client.positionEncoding,
+        );
+        previewRecords.push(preview);
+        results.push({
+          server_id: route.serverId,
+          applicable: true,
+          kind,
+          mutation_manifest: manifest,
+          preview_id: preview.preview_id,
+          summary: preview.summary,
+          title,
+        });
+      } catch (cause) {
+        // The server answered; only this action's edit cannot become a preview.
+        if (!(cause instanceof LspWorkspaceEditError)) throw cause;
+        results.push({
+          server_id: route.serverId,
+          applicable: false,
+          error: cause.message,
+          kind,
+          title,
+        });
+      }
     }
-    const { preview, manifest } = await recordToolPreview(
-      dependencies,
-      route.serverId,
-      record.edit,
-      client.positionEncoding,
-    );
-    previewRecords.push(preview);
-    results.push({
-      server_id: route.serverId,
-      applicable: true,
-      kind,
-      mutation_manifest: manifest,
-      preview_id: preview.preview_id,
-      summary: preview.summary,
-      title,
-    });
+  } catch (cause) {
+    // No result will name the previews of this failed listing, so none may remain applicable.
+    for (const { preview_id: previewId } of previewRecords) {
+      dependencies.workspaceEdits.discardPreview(previewId);
+    }
+    throw cause;
   }
   return { actions: results, previewRecords };
 }
