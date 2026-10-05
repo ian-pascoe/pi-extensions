@@ -257,8 +257,6 @@ describe("Pi Web Tools extension", () => {
       Value.Check(search.parameters, {
         query: "current Pi release",
         numResults: 20,
-        livecrawl: "preferred",
-        type: "deep",
         contextMaxCharacters: 50_000,
       }),
     ).toBe(true);
@@ -267,8 +265,9 @@ describe("Pi Web Tools extension", () => {
       { query: "x", numResults: 0 },
       { query: "x", numResults: 21 },
       { query: "x", numResults: 1.5 },
-      { query: "x", livecrawl: "always" },
-      { query: "x", type: "slow" },
+      // Neither Search Provider honors these, so the schema no longer accepts them.
+      { query: "x", livecrawl: "fallback" },
+      { query: "x", type: "auto" },
       { query: "x", contextMaxCharacters: 0 },
       { query: "x", contextMaxCharacters: 50_001 },
     ]) {

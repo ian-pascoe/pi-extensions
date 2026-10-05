@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
@@ -14,14 +13,11 @@ import {
 } from "./web-response.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 import { renderWebSearchToolCall, renderWebSearchToolResult } from "./web-tool-rendering.js";
-import {
-  createWebToolOutput,
-  webToolWarningNotice,
-  WebToolTruncationDetailsSchema,
-} from "./web-tool-output.js";
+import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
 
 const DEFAULT_EXA_URL = "https://mcp.exa.ai/mcp";
 const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
+const DEFAULT_NUM_RESULTS = 8;
 const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
 const NO_SEARCH_RESULTS = "No search results found. Please try a different query.";
 const MAX_PROVIDER_MESSAGE_CHARACTERS = 500;
@@ -56,59 +52,8 @@ export function redactWebSearchApiKey(value: string): RedactedWebSearchApiKey {
   });
 }
 
-/** Optional Web Search parameter names, in the stable order warnings list them. */
-const OPTIONAL_SEARCH_PARAMETERS = [
-  "numResults",
-  "type",
-  "livecrawl",
-  "contextMaxCharacters",
-] as const;
-
-type OptionalSearchParameter = (typeof OPTIONAL_SEARCH_PARAMETERS)[number];
-
-type SearchParameterSupport = {
-  readonly [Parameter in OptionalSearchParameter]: readonly SearchProvider[];
-};
-
-/**
- * Which Search Providers honor each optional parameter. This is the single source of truth for the
- * parameter descriptions and the ignored-parameter warning; update it when a provider schema changes.
- * Verified against the live `tools/list` schemas: Exa `web_search_exa` accepts only `numResults`, and
- * Parallel `web_search` accepts none. Pi still sends every supplied control to Exa, which ignores
- * unknown keys; removing the ignored parameters from the schema would be a breaking change.
- */
-const SEARCH_PARAMETER_SUPPORT: SearchParameterSupport = {
-  numResults: ["exa"],
-  type: [],
-  livecrawl: [],
-  contextMaxCharacters: [],
-};
-
-const SEARCH_PROVIDERS: readonly SearchProvider[] = ["exa", "parallel"];
-
 function providerName(provider: SearchProvider): string {
   return provider === "exa" ? "Exa" : "Parallel";
-}
-
-/** Static sentence naming the Search Providers that honor a parameter. */
-function searchParameterSupportNote(parameter: OptionalSearchParameter): string {
-  const honoring = SEARCH_PARAMETER_SUPPORT[parameter];
-  const ignoring = SEARCH_PROVIDERS.filter((provider) => !honoring.includes(provider));
-  if (honoring.length === 0) return "Currently ignored by both Search Providers.";
-  if (ignoring.length === 0) return "Honored by both Search Providers.";
-  return `Honored by ${honoring.map(providerName).join(", ")}; ${ignoring.map(providerName).join(", ")} ignores it.`;
-}
-
-/** Explicitly supplied parameters the Search Provider ignores, or nothing to warn about. */
-function ignoredParameterWarnings(
-  provider: SearchProvider,
-  supplied: Pick<WebSearchParameters, OptionalSearchParameter>,
-): string[] {
-  const ignored = OPTIONAL_SEARCH_PARAMETERS.filter(
-    (parameter) =>
-      supplied[parameter] !== undefined && !SEARCH_PARAMETER_SUPPORT[parameter].includes(provider),
-  );
-  return ignored.length === 0 ? [] : [`${providerName(provider)} ignores: ${ignored.join(", ")}.`];
 }
 
 /** Native transport and hosted endpoints used by a Web Search definition. */
@@ -120,16 +65,10 @@ export type WebSearchToolOptions = {
   readonly parallelApiKey?: RedactedWebSearchApiKey | undefined;
 };
 
-const WarningsSchema = Type.Array(Type.String(), {
-  minItems: 1,
-  description: "Present only when the Search Provider ignored parameters the call supplied",
-});
-
 /** Runtime contract for model-invisible Web Search execution metadata. */
 export const WebSearchDetailsSchema = Type.Object(
   {
     provider: SearchProviderSchema,
-    warnings: Type.Optional(WarningsSchema),
     truncation: Type.Optional(WebToolTruncationDetailsSchema),
   },
   { additionalProperties: false },
@@ -140,14 +79,15 @@ export type WebSearchDetails = Static<typeof WebSearchDetailsSchema>;
 
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
- * `content` is the Search Provider's complete text answer (at most 256 KiB), which is free-form
+ * `content` is the Search Provider's text answer after `numResults` and `contextMaxCharacters` (at most 256 KiB), which is free-form
  * rather than a result list; `full_output_path` is present when the model saw it truncated.
  */
 export const WebSearchOutputSchema = Type.Object(
   {
     provider: SearchProviderSchema,
-    content: Type.String({ description: "Search Provider's complete text answer" }),
-    warnings: Type.Optional(WarningsSchema),
+    content: Type.String({
+      description: "Search Provider's text answer, after numResults and contextMaxCharacters",
+    }),
     full_output_path: Type.Optional(
       Type.String({ description: "Private file with the full text" }),
     ),
@@ -166,26 +106,16 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
         minimum: 1,
         maximum: 20,
         default: 8,
-        description: `Number of results (default: 8, maximum: 20). ${searchParameterSupportNote("numResults")}`,
-      }),
-    ),
-    livecrawl: Type.Optional(
-      StringEnum(["fallback", "preferred"] as const, {
-        default: "fallback",
-        description: `Live crawl mode (sent to Exa as fallback when omitted). ${searchParameterSupportNote("livecrawl")}`,
-      }),
-    ),
-    type: Type.Optional(
-      StringEnum(["auto", "fast", "deep"] as const, {
-        default: "auto",
-        description: `Search type (sent to Exa as auto when omitted). ${searchParameterSupportNote("type")}`,
+        description:
+          "Maximum number of results (default: 8, maximum: 20). Exa applies it; for Parallel, Pi trims the returned result list to this count.",
       }),
     ),
     contextMaxCharacters: Type.Optional(
       Type.Integer({
         minimum: 1,
         maximum: 50_000,
-        description: `Maximum model context characters (sent to Exa only when supplied). ${searchParameterSupportNote("contextMaxCharacters")}`,
+        description:
+          "Maximum characters of Search Provider text returned (1–50,000). No default: all text is returned, up to a 256 KiB response limit. Longer text is cut and marked.",
       }),
     ),
   },
@@ -230,14 +160,12 @@ const MCP_RESPONSE_SCHEMA = Type.Object(
 );
 
 const WEB_SEARCH_DESCRIPTION =
-  "Discover current public web information using Exa or Parallel. Optional parameters are honored only by some Search Providers; each parameter says which, and a warning names supplied parameters the active provider ignored. Results are textual and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
+  "Discover current public web information using Exa or Parallel. Results are textual and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
 type ExaSearchArguments = {
   query: string;
-  type: "auto" | "fast" | "deep";
+  objective: string;
   numResults: number;
-  livecrawl: "fallback" | "preferred";
-  contextMaxCharacters?: number;
 };
 
 type SearchRequestHeaders = {
@@ -415,15 +343,12 @@ async function callSearchProvider(
 ): Promise<string> {
   let request: SearchProviderRequest;
   if (provider === "exa") {
+    // Exa's current `web_search_exa` schema requires `objective` next to `query`.
     const arguments_: ExaSearchArguments = {
       query: parameters.query,
-      type: parameters.type ?? "auto",
-      numResults: parameters.numResults ?? 8,
-      livecrawl: parameters.livecrawl ?? "fallback",
+      objective: parameters.query,
+      numResults: parameters.numResults ?? DEFAULT_NUM_RESULTS,
     };
-    if (parameters.contextMaxCharacters !== undefined) {
-      arguments_.contextMaxCharacters = parameters.contextMaxCharacters;
-    }
     request = {
       url: exaEndpoint(options.exaUrl ?? DEFAULT_EXA_URL, options.exaApiKey),
       headers: {
@@ -557,6 +482,44 @@ function providerTextSanitizer(options: WebSearchToolOptions): SanitizeProviderT
   };
 }
 
+const PARALLEL_RESULTS_SCHEMA = Type.Object(
+  { results: Type.Array(Type.Unknown()) },
+  { additionalProperties: true },
+);
+
+/**
+ * Parallel's `web_search` has no result-count field, but its text is a pretty-printed JSON object
+ * with a `results` array. Trim that array to `numResults` and print it the same way; anything else
+ * (Exa, non-JSON text, an unexpected shape) is returned unchanged.
+ */
+function limitResultCount(
+  provider: SearchProvider,
+  text: string,
+  parameters: WebSearchParameters,
+): string {
+  if (provider !== "parallel") return text;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (!Value.Check(PARALLEL_RESULTS_SCHEMA, parsed)) return text;
+  const limit = parameters.numResults ?? DEFAULT_NUM_RESULTS;
+  if (parsed.results.length <= limit) return text;
+  return JSON.stringify({ ...parsed, results: parsed.results.slice(0, limit) }, null, 2);
+}
+
+/** Cut provider text to `contextMaxCharacters` code points and say so. */
+function limitSearchText(text: string, parameters: WebSearchParameters): string {
+  const limit = parameters.contextMaxCharacters;
+  // UTF-16 length never undercounts code points, so shorter text is certainly within the limit.
+  if (limit === undefined || text.length <= limit) return text;
+  const characters = Array.from(text);
+  if (characters.length <= limit) return text;
+  return `${characters.slice(0, limit).join("")}\n\n[Search results cut at ${limit} characters]`;
+}
+
 function unableToSearch(query: string | undefined, failure: WebFailure): Error {
   const subject =
     query === undefined ? "Unable to search the web" : `Unable to search the web for ${query}`;
@@ -602,7 +565,7 @@ export function createWebSearchTool(
           undefined,
           describeWebFailure(
             new WebInputError(
-              "invalid parameters (expected a query string with optional numResults, livecrawl, type, and contextMaxCharacters)",
+              "invalid parameters (expected a query string with optional numResults and contextMaxCharacters)",
             ),
           ),
         );
@@ -634,19 +597,13 @@ export function createWebSearchTool(
         throw unableToSearch(input.query, failure);
       }
       // Spilling the full output is local work; its failures are not Web Search request failures.
-      // Value.Parse fills no schema defaults, so an optional field is defined only when the call supplied it.
-      const warnings = ignoredParameterWarnings(provider, input);
-      // The warning leads the model-visible text, so the shared output limits account for it.
-      const output = await createWebToolOutput(
-        warnings.length === 0 ? search : `${webToolWarningNotice(warnings)}\n\n${search}`,
-      );
-      const structuredContent: WebSearchOutput = { provider, content: search };
-      if (warnings.length > 0) structuredContent.warnings = warnings;
+      const text = limitSearchText(limitResultCount(provider, search, input), input);
+      const output = await createWebToolOutput(text);
+      const structuredContent: WebSearchOutput = { provider, content: text };
       if (output.truncation !== undefined) {
         structuredContent.full_output_path = output.truncation.fullOutputPath;
       }
       const details: WebSearchDetails = { provider };
-      if (warnings.length > 0) details.warnings = warnings;
       if (output.truncation !== undefined) details.truncation = output.truncation;
       return {
         content: [{ type: "text", text: output.content }],

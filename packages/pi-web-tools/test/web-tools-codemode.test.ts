@@ -232,7 +232,7 @@ describe("Web Tools through Pi codemode", () => {
     // Pi appends the script-call result line to a declared tool's description (or lists it in codemode's).
     const text = (first?.tools ?? []).map(({ description }) => description).join("\n");
     expect(text).toMatch(
-      /web_search\(args\)` resolves to `\{ provider, content, warnings\?, full_output_path\? \}`/,
+      /web_search\(args\)` resolves to `\{ provider, content, full_output_path\? \}`/,
     );
     expect(text).toMatch(
       /web_fetch\(args\)` resolves to `\{ url, content_type, format, content, truncated, structured_truncated, full_output_path\? \}`/,
@@ -243,24 +243,36 @@ describe("Web Tools through Pi codemode", () => {
     }
   });
 
-  test("scripts see warnings only for parameters they supplied", async () => {
+  test("rejects the removed type and livecrawl arguments through Pi's validation", async () => {
     const fixture = await createFixture();
-    const provider = selectSearchProvider(fixture.session.sessionId);
-    const ignoredType = `${provider === "exa" ? "Exa" : "Parallel"} ignores: type.`;
     const code = `
-      const plain = await tools.web_search({ query: "pi" });
-      const typed = await tools.web_search({ query: "pi", type: "fast" });
-      return { plainHasWarnings: "warnings" in plain, typedWarnings: typed.warnings };`;
+      const outcomes = {};
+      for (const extra of [{ type: "fast" }, { livecrawl: "preferred" }]) {
+        try {
+          await tools.web_search({ query: "pi", ...extra });
+          outcomes[Object.keys(extra)[0]] = "accepted";
+        } catch (error) {
+          outcomes[Object.keys(extra)[0]] = String(error);
+        }
+      }
+      const accepted = await tools.web_search({ query: "pi", numResults: 2, contextMaxCharacters: 10 });
+      return { outcomes, content: accepted.content };`;
     fixture.responses.push(
       fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
       fauxAssistantMessage("Done."),
     );
-    await fixture.session.prompt("Search twice");
+    await fixture.session.prompt("Search with removed parameters");
 
     const output = scriptResult(fixture.turns[1]?.messages ?? []);
     expect(output).toMatch(/^Script completed/);
     const value: unknown = JSON.parse(output.slice(output.indexOf("{")));
-    expect(value).toEqual({ plainHasWarnings: false, typedWarnings: [ignoredType] });
+    expect(value).toEqual({
+      outcomes: {
+        type: expect.stringMatching(/must NOT have additional properties|type/),
+        livecrawl: expect.stringMatching(/must NOT have additional properties|livecrawl/),
+      },
+      content: `${SEARCH_TEXT.slice(0, 10)}\n\n[Search results cut at 10 characters]`,
+    });
   });
 
   test("declares identical tools and system prompt for Exa and Parallel sessions", async () => {

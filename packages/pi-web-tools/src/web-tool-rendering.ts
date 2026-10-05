@@ -20,7 +20,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { WebFetchDetails, WebFetchParameters } from "./web-fetch.js";
 import type { WebSearchDetails, WebSearchParameters } from "./web-search.js";
-import { webToolWarningNotice, type WebToolTruncationDetails } from "./web-tool-output.js";
+import type { WebToolTruncationDetails } from "./web-tool-output.js";
 import { redactWebUrlUserinfo, webFetchUrlTarget } from "./web-url.js";
 import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 
@@ -108,17 +108,11 @@ export function renderWebSearchToolCall(
   const query = JSON.stringify(sanitizeWebToolPresentationText(parameters.query));
   container.addChild(new Text(renderWebToolCallHeader("Search", query, theme), 0, 0));
   const hasOptions =
-    parameters.numResults !== undefined ||
-    parameters.type !== undefined ||
-    parameters.livecrawl !== undefined ||
-    parameters.contextMaxCharacters !== undefined;
+    parameters.numResults !== undefined || parameters.contextMaxCharacters !== undefined;
   if (!expanded || !hasOptions) return container;
   container.addChild(new Spacer(1));
   if (parameters.numResults !== undefined)
     appendField(container, theme, "Results", parameters.numResults);
-  if (parameters.type !== undefined) appendField(container, theme, "Search type", parameters.type);
-  if (parameters.livecrawl !== undefined)
-    appendField(container, theme, "Live crawl", parameters.livecrawl);
   if (parameters.contextMaxCharacters !== undefined)
     appendField(container, theme, "Context", `${parameters.contextMaxCharacters} characters`);
   return container;
@@ -148,7 +142,6 @@ function webSearchSummary(details: WebSearchDetails, theme: WebToolRenderTheme):
   return [
     theme.fg("success", "✓ completed"),
     theme.fg("muted", provider),
-    details.warnings === undefined ? undefined : theme.fg("warning", "parameters ignored"),
     details.truncation === undefined ? undefined : theme.fg("warning", "truncated"),
   ]
     .filter((part): part is string => part !== undefined)
@@ -216,20 +209,9 @@ export function renderWebSearchToolResult(
   container.addChild(new Text(summary, 0, 0));
   container.addChild(new Spacer(1));
   appendField(container, theme, "Provider", details.provider === "exa" ? "Exa" : "Parallel");
-  for (const warning of details.warnings ?? [])
-    container.addChild(
-      new Text(theme.fg("warning", `Warning: ${sanitizeWebToolPresentationText(warning)}`), 0, 0),
-    );
   if (details.truncation !== undefined)
     appendTruncationDetails(container, theme, details.truncation);
-  // The warnings are already shown above; do not repeat the line that leads the model-visible text.
-  const leadingNotice = `${webToolWarningNotice(details.warnings ?? [])}\n\n`;
-  const text = toolResultText(result);
-  const body =
-    details.warnings !== undefined && text.startsWith(leadingNotice)
-      ? text.slice(leadingNotice.length)
-      : text;
-  appendWebToolOutput(container, boundedWebToolText(body), true, theme);
+  appendWebToolOutput(container, boundedWebToolText(toolResultText(result)), true, theme);
   return container;
 }
 

@@ -30,8 +30,6 @@ describe("Pi Web Tools transcript rendering", () => {
     const search = {
       query: "Pi\u001b[31m tools",
       numResults: 3,
-      livecrawl: "preferred" as const,
-      type: "deep" as const,
       contextMaxCharacters: 1_200,
     };
     expect(renderLines(renderWebSearchToolCall(search, plainTheme, false))).toBe(
@@ -39,8 +37,6 @@ describe("Pi Web Tools transcript rendering", () => {
     );
     const expandedSearch = renderLines(renderWebSearchToolCall(search, plainTheme, true));
     expect(expandedSearch).toContain("Results: 3");
-    expect(expandedSearch).toContain("Search type: deep");
-    expect(expandedSearch).toContain("Live crawl: preferred");
     expect(expandedSearch).toContain("Context: 1200 characters");
 
     const fetch = {
@@ -87,35 +83,6 @@ describe("Pi Web Tools transcript rendering", () => {
     expect(expandedSearch).toContain("Provider: Exa");
     expect(expandedSearch).toContain("Search result");
     expect(expandedSearch).toContain("Useful content");
-
-    const warned = {
-      content: [
-        { type: "text" as const, text: "Warning: Parallel ignores: numResults.\n\nUseful content" },
-      ],
-      details: { provider: "parallel" as const, warnings: ["Parallel ignores: numResults."] },
-    };
-    const collapsedWarned = renderLines(
-      renderWebSearchToolResult(
-        warned,
-        { expanded: false, isPartial: false },
-        plainTheme,
-        false,
-        warned.details,
-      ),
-    );
-    expect(collapsedWarned).toContain("✓ completed  ·  Parallel  ·  parameters ignored");
-    const expandedWarned = renderLines(
-      renderWebSearchToolResult(
-        warned,
-        { expanded: true, isPartial: false },
-        plainTheme,
-        false,
-        warned.details,
-      ),
-    );
-    expect(expandedWarned).toContain("Warning: Parallel ignores: numResults.");
-    expect(expandedWarned.match(/Parallel ignores/g)).toHaveLength(1);
-    expect(expandedWarned).toContain("Useful content");
 
     const fetchResult = {
       content: [{ type: "text" as const, text: "# Fetched page\n\nBody" }],
