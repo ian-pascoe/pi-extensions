@@ -45,6 +45,11 @@ with input, and 30 s for a `terminal_send` with neither `text` nor `keys` (a
 poll, which settles on quiet only after new output). Every `wait_ms` clamps to
 5 minutes.
 
+Results say why the wait ended in `settle_reason` (`matched`, `timeout`, `quiet`
+or `exit`) and in their first line, such as `t1 running · settled: timeout`; a
+`wait_for_text` that timed out adds that the pattern was not seen. Polls report
+their reason too.
+
 Results contain the visible screen, the log lines that scrolled off since the
 agent's previous result, `state`, `exit_code` or `signal` once exited, and
 `changed: false` when the screen matches the previous result. Scrolled-off lines

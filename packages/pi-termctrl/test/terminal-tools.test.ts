@@ -119,11 +119,12 @@ describe("terminal_start", () => {
     expect(result.structuredContent).toEqual({
       id: "t1",
       state: "running",
+      settle_reason: "quiet",
       changed: true,
       screen: ">>> ",
       scrolled_off: "",
     });
-    expect(textOf(result)).toBe("t1 running\n--- screen ---\n>>> ");
+    expect(textOf(result)).toBe("t1 running · settled: quiet\n--- screen ---\n>>> ");
   });
 
   test("settles after 250 ms of quiet", async () => {
@@ -170,7 +171,7 @@ describe("terminal_start", () => {
     );
     expect(elapsed).toBeLessThan(100);
     expect(value.structuredContent).toMatchObject({ state: "exited", exit_code: 3, screen: "bye" });
-    expect(textOf(value)).toContain("t1 exited with code 3");
+    expect(textOf(value)).toContain("t1 exited with code 3 · settled: exit");
   });
 
   test("a Terminal seen running still sends an Exit notification when it exits later", async () => {
@@ -211,7 +212,7 @@ describe("terminal_send", () => {
     expect(elapsed).toBeGreaterThanOrEqual(500);
     expect(elapsed).toBeLessThan(600);
     expect(value.structuredContent).toMatchObject({ changed: false, state: "running" });
-    expect(textOf(value)).toContain("t1 running · screen unchanged");
+    expect(textOf(value)).toContain("t1 running · settled: timeout · screen unchanged");
   });
 
   test("settles on a wait_for_text match, as a literal or a regex", async () => {
@@ -526,6 +527,121 @@ describe("terminal_send", () => {
     await expect(
       harness.send.execute("call", { id: "b1", text: "x" }, undefined, undefined, root),
     ).rejects.toThrow("b1 is a Background job, which accepts no input");
+  });
+});
+
+describe("settle reason", () => {
+  test("is matched when wait_for_text is found", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    terminal.onInput = (self) => {
+      self.screen = "Build finished";
+    };
+    const { value } = await timed(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "make\n", wait_for_text: "finished", wait_ms: 5_000 },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(value.structuredContent).toMatchObject({ settle_reason: "matched" });
+    expect(textOf(value)).toContain("t1 running · settled: matched");
+    expect(textOf(value)).not.toContain("was not seen");
+  });
+
+  test("is timeout when wait_ms runs out, and an unmatched wait_for_text says it was not seen", async () => {
+    const { terminal } = await startTerminal();
+    busy(terminal);
+    const { value } = await timed(
+      harness.send.execute(
+        "call",
+        {
+          id: "t1",
+          text: "make\n",
+          wait_for_text: "/never[0-9]+/",
+          wait_ms: 1_000,
+        },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(value.structuredContent).toMatchObject({ settle_reason: "timeout" });
+    expect(textOf(value)).toContain("t1 running · settled: timeout");
+    expect(textOf(value)).toContain(
+      'wait_for_text "/never[0-9]+/" was not seen before the wait ended.',
+    );
+  });
+
+  test("is timeout for a terminal_start whose output never pauses", async () => {
+    harness.drivers.onLaunch = busy;
+    const { value } = await timed(
+      harness.start.execute("call", { command: "yes" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ settle_reason: "timeout" });
+    expect(textOf(value)).toContain("t1 running · settled: timeout");
+    expect(textOf(value)).not.toContain("was not seen");
+  });
+
+  test("is quiet when the screen stops changing", async () => {
+    await startTerminal();
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ settle_reason: "quiet" });
+    expect(textOf(value)).toContain("settled: quiet");
+  });
+
+  test("is exit when the process exits, including a poll of an exited Terminal", async () => {
+    const { terminal } = await startTerminal();
+    terminal.onInput = (self) => {
+      self.exitWith({ code: 0, signal: null });
+    };
+    const { value } = await timed(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "exit\n", wait_for_text: "never" },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    expect(value.structuredContent).toMatchObject({
+      state: "exited",
+      settle_reason: "exit",
+    });
+    expect(textOf(value)).toContain("t1 exited with code 0 · settled: exit");
+
+    const poll = await timed(
+      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(poll.value.structuredContent).toMatchObject({
+      settle_reason: "exit",
+    });
+  });
+
+  test("is reported by a poll for output as quiet, and as timeout when nothing arrives under constant output", async () => {
+    const { terminal } = await startTerminal();
+    terminal.reportsIdle = false;
+    setTimeout(() => {
+      terminal.screen = ">>> tick";
+    }, 1_000);
+    const active = await timed(
+      harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(active.value.structuredContent).toMatchObject({
+      settle_reason: "quiet",
+    });
+
+    busy(terminal);
+    const idle = await timed(
+      harness.send.execute("call", { id: "t1", wait_ms: 1_000 }, undefined, undefined, root),
+    );
+    expect(idle.value.structuredContent).toMatchObject({
+      settle_reason: "timeout",
+    });
   });
 });
 
