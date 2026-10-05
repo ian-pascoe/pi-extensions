@@ -7,6 +7,7 @@
 - **Native state** — Prefer Pi settings for configuration and Pi sessions for durable session state. Minimize external settings files, caches, and other persistence; derive state from Pi where feasible. Introduce external storage only for a concrete need Pi cannot meet, and document that limitation.
 - **Coexistence** — When changing tool activation or context delivery, trace other extensions using the same Pi APIs. Test affected standalone and combined modes with existing fixtures.
 - **Cache proofs** — Prove prefix stability in offline SDK integration tests by comparing the affected ordered tool definitions, system prompt, or message history. Equal name sets or token estimates alone are insufficient.
+- **Verification** — While iterating, run focused checks such as `pnpm --filter <package> test`. `pnpm verify` and the pre-push hook share a Turborepo cache keyed on file contents, so rerunning either on unchanged files replays instantly; never bypass the hook with `--no-verify`.
 - **PR completion** — Include a Changeset covering every package with releasable changes before opening a PR; test-only package edits need no bump. Follow [docs/releases.md](docs/releases.md) for versioning and release gates.
 
 ## Context pointers

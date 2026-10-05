@@ -1,0 +1,52 @@
+{
+  "$schema": "./node_modules/turbo/schema.json",
+  "agentGuidance": false,
+  "envMode": "loose",
+  "globalDependencies": ["mise.toml", "tsconfig.json", "vitest.config.ts"],
+  "tasks": {
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
+    "typecheck": {
+      "dependsOn": ["transit"]
+    },
+    "test": {
+      "dependsOn": ["transit"]
+    },
+    "//#typecheck:root": {
+      "inputs": ["scripts/**/*.mjs", "test/**/*.ts", "vitest.config.ts"]
+    },
+    "//#format:check": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "packages/**",
+        "tools/**",
+        ".oxfmtrc.json",
+        "!**/node_modules/**",
+        "!**/dist/**",
+        "!**/coverage/**",
+        "!**/*.tgz",
+        "!.pi/**",
+        "!.repos/**",
+        "!.scratch/**",
+        "!**/.turbo/**"
+      ]
+    },
+    "//#lint": {
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "packages/**",
+        "tools/**",
+        ".oxlintrc.json",
+        "!**/node_modules/**",
+        "!**/dist/**",
+        "!**/coverage/**",
+        "!**/*.tgz",
+        "!.pi/**",
+        "!.repos/**",
+        "!.scratch/**",
+        "!**/.turbo/**"
+      ]
+    }
+  }
+}

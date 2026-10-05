@@ -16,6 +16,8 @@ const fixturePath = resolve(import.meta.dirname, "fixtures/fake-dap-adapter.mjs"
 const temporaryDirectories: string[] = [];
 const clients: DapProtocolClient[] = [];
 
+// Successful starts return once the adapter listens; a generous budget keeps them reliable under
+// parallel `turbo run` load. Startup-timeout tests pass their own short budgets.
 async function createClient(
   overrides: Partial<DapProtocolClientOptions> = {},
 ): Promise<DapProtocolClient> {
@@ -28,7 +30,7 @@ async function createClient(
     args: [fixturePath],
     environment: {},
     transport: "stdio",
-    timeouts: { startupMs: 500, requestMs: 1_000, shutdownMs: 500 },
+    timeouts: { startupMs: 5_000, requestMs: 5_000, shutdownMs: 500 },
     stderrPath: resolve(directory, "adapter.stderr.log"),
     ...overrides,
   });
@@ -137,7 +139,7 @@ describe("DapProtocolClient", () => {
 
   test("times out one request without losing the live client", async () => {
     const client = await createClient({
-      timeouts: { startupMs: 500, requestMs: 30, shutdownMs: 500 },
+      timeouts: { startupMs: 5_000, requestMs: 30, shutdownMs: 500 },
     });
 
     await expect(client.request("hang")).rejects.toMatchObject({ kind: "timeout" });
@@ -231,7 +233,7 @@ describe("DapProtocolClient", () => {
       args: [fixturePath, "--tcp", "$PORT"],
       environment: { FAKE_LISTEN_DELAY_MS: "80" },
       transport: tcpTransport(),
-      timeouts: { startupMs: 500, requestMs: 200, shutdownMs: 500 },
+      timeouts: { startupMs: 5_000, requestMs: 200, shutdownMs: 500 },
     });
 
     await expect(client.request("echo", { connected: true })).resolves.toEqual({ connected: true });
@@ -365,7 +367,7 @@ describe("DapProtocolClient", () => {
   test("forces an uncooperative Debug Adapter process down within shutdownMs", async () => {
     const client = await createClient({
       environment: { FAKE_IGNORE_SHUTDOWN: "1", FAKE_IGNORE_SIGTERM: "1" },
-      timeouts: { startupMs: 500, requestMs: 25, shutdownMs: 250 },
+      timeouts: { startupMs: 5_000, requestMs: 25, shutdownMs: 250 },
     });
     const pid = client.adapterPid;
     const startedAt = Date.now();

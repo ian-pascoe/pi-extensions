@@ -21,9 +21,10 @@
     "pack:check": "node scripts/check-package-packs.mjs",
     "prepare": "node scripts/prepare.mjs",
     "publish-packages": "changeset publish",
-    "test": "pnpm -r --filter './packages/*' test",
-    "typecheck": "tsc --noEmit && pnpm -r --filter './packages/*' typecheck",
-    "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck:root typecheck",
+    "typecheck:root": "tsc --noEmit",
+    "verify": "turbo run format:check lint typecheck:root typecheck test --output-logs=errors-only",
     "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {
@@ -40,6 +41,7 @@
     "oxfmt": "^0.71.0",
     "oxlint": "^1.86.0",
     "oxlint-tsgolint": "^7.0.2003",
+    "turbo": "^2.11.7",
     "typebox": "^1.3.34",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"
