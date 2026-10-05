@@ -30,8 +30,6 @@ describe("Pi Web Tools transcript rendering", () => {
     const search = {
       query: "Pi\u001b[31m tools",
       numResults: 3,
-      livecrawl: "preferred" as const,
-      type: "deep" as const,
       contextMaxCharacters: 1_200,
     };
     expect(renderLines(renderWebSearchToolCall(search, plainTheme, false))).toBe(
@@ -39,8 +37,6 @@ describe("Pi Web Tools transcript rendering", () => {
     );
     const expandedSearch = renderLines(renderWebSearchToolCall(search, plainTheme, true));
     expect(expandedSearch).toContain("Results: 3");
-    expect(expandedSearch).toContain("Search type: deep");
-    expect(expandedSearch).toContain("Live crawl: preferred");
     expect(expandedSearch).toContain("Context: 1200 characters");
 
     const fetch = {

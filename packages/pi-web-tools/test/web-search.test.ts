@@ -1,8 +1,10 @@
 import { toToolContext } from "./tool-context.js";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
@@ -96,8 +98,6 @@ async function executeSearch(
   parameters: {
     readonly query: string;
     readonly numResults?: number;
-    readonly livecrawl?: "fallback" | "preferred";
-    readonly type?: "auto" | "fast" | "deep";
     readonly contextMaxCharacters?: number;
   },
   signal?: AbortSignal,
@@ -140,8 +140,6 @@ describe("Web Search", () => {
       {
         query: "current Pi release",
         numResults: 3,
-        livecrawl: "preferred",
-        type: "fast",
         contextMaxCharacters: 2_500,
       },
     );
@@ -157,14 +155,28 @@ describe("Web Search", () => {
           name: "web_search_exa",
           arguments: {
             query: "current Pi release",
+            objective: "current Pi release",
             numResults: 3,
-            livecrawl: "preferred",
-            type: "fast",
-            contextMaxCharacters: 2_500,
           },
         },
       },
     });
+    // Exa receives only what its schema declares: no type, livecrawl, or contextMaxCharacters.
+    expect(server.requests[0]).toMatchObject({
+      body: {
+        params: {
+          arguments: {
+            query: "current Pi release",
+            objective: "current Pi release",
+            numResults: 3,
+          },
+        },
+      },
+    });
+    const sent = JSON.stringify(server.requests[0]?.body);
+    for (const absent of ["type", "livecrawl", "contextMaxCharacters"]) {
+      expect(sent).not.toContain(`"${absent}"`);
+    }
     expect(server.requests[0]?.headers.accept).toBe("application/json, text/event-stream");
     expect(server.requests[0]?.headers["content-type"]).toContain("application/json");
     expect(result).toEqual({
@@ -175,7 +187,7 @@ describe("Web Search", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 
-  test("omits absent Exa context characters so the provider owns its effective default", async () => {
+  test("sends Exa the query as its objective and the default result count", async () => {
     const server = await startServer(() => ({ body: mcpResult("defaults") }));
     await executeSearch(
       "exa",
@@ -183,19 +195,13 @@ describe("Web Search", () => {
       { query: "defaults" },
     );
 
-    expect(server.requests[0]).toMatchObject({
-      body: {
-        params: {
-          arguments: {
-            query: "defaults",
-            numResults: 8,
-            livecrawl: "fallback",
-            type: "auto",
-          },
-        },
-      },
+    const body = server.requests[0]?.body;
+    expect(body).toMatchObject({
+      params: { arguments: { query: "defaults", objective: "defaults", numResults: 8 } },
     });
-    expect(JSON.stringify(server.requests[0]?.body)).not.toContain("contextMaxCharacters");
+    for (const absent of ["type", "livecrawl", "contextMaxCharacters"]) {
+      expect(JSON.stringify(body)).not.toContain(`"${absent}"`);
+    }
   });
 
   test("calls Parallel with its session, bearer credential, and SSE response", async () => {
@@ -211,7 +217,7 @@ describe("Web Search", () => {
         parallelUrl: `${server.baseUrl}/parallel`,
         parallelApiKey: redactWebSearchApiKey(secret),
       },
-      { query: "Effect TypeScript", numResults: 20, type: "deep", livecrawl: "preferred" },
+      { query: "Effect TypeScript", numResults: 20, contextMaxCharacters: 50_000 },
     );
 
     expect(server.requests).toHaveLength(1);
@@ -229,7 +235,9 @@ describe("Web Search", () => {
         },
       },
     });
-    expect(JSON.stringify(server.requests[0]?.body)).not.toContain("numResults");
+    const sent = JSON.stringify(server.requests[0]?.body);
+    expect(sent).not.toContain("numResults");
+    expect(sent).not.toContain("contextMaxCharacters");
     expect(result).toEqual({
       content: [{ type: "text", text: "parallel results" }],
       details: { provider: "parallel" },
@@ -254,6 +262,39 @@ describe("Web Search", () => {
     expect(result.content).toEqual([
       { type: "text", text: "No search results found. Please try a different query." },
     ]);
+  });
+
+  test("does not cut the no-results notice at contextMaxCharacters", async () => {
+    const server = await startServer(() => ({
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "image", data: "ignored" }] },
+      }),
+    }));
+    for (const provider of ["exa", "parallel"] as const) {
+      const result = await executeSearch(
+        provider,
+        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "nothing", contextMaxCharacters: 5 },
+      );
+      const notice = "No search results found. Please try a different query.";
+      expect(result.content).toEqual([{ type: "text", text: notice }]);
+      expect(result.structuredContent).toEqual({ provider, content: notice });
+    }
+  });
+
+  test("cuts Exa's objective to its 4096-character limit by code points", async () => {
+    const server = await startServer(() => ({ body: mcpResult("ok") }));
+    const query = `${"😀".repeat(4_095)}ab${"c".repeat(100)}`;
+    await executeSearch(
+      "exa",
+      { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+      { query },
+    );
+    expect(server.requests[0]).toMatchObject({
+      body: { params: { arguments: { query, objective: `${"😀".repeat(4_095)}a` } } },
+    });
   });
 
   test("fails once without provider fallback or transport leakage", async () => {
@@ -939,5 +980,146 @@ describe("Web Search", () => {
     expect(Value.Check(WebSearchOutputSchema, result.structuredContent)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(await readFile(path, "utf8")).not.toContain(secret);
+  });
+
+  describe("result shaping", () => {
+    // Modeled on a live anonymous Parallel `web_search` answer: pretty-printed JSON text.
+    function parallelText(count: number): string {
+      return JSON.stringify(
+        {
+          search_id: "search_0123456789abcdef",
+          results: Array.from({ length: count }, (_, index) => ({
+            url: `https://example.com/pi/${index}`,
+            title: `Pi coding agent ${index}`,
+            publish_date: null,
+            excerpts: [`Excerpt ${index}: a minimal agent harness.\nSecond line ${index}.`],
+          })),
+          warnings: null,
+          metadata: null,
+          session_id: "pi-web-tools-probe",
+        },
+        null,
+        2,
+      );
+    }
+
+    async function search(
+      provider: SearchProvider,
+      providerText: string,
+      parameters: Parameters<typeof executeSearch>[2],
+    ) {
+      const server = await startServer(() => ({ body: mcpResult(providerText) }));
+      const result = await executeSearch(
+        provider,
+        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+        parameters,
+      );
+      const text = result.content[0];
+      if (text?.type !== "text") throw new Error("Expected text search result");
+      return { result, text: text.text };
+    }
+
+    // Live Parallel text, trimmed (see web-tools-research.md): the exact pretty-printed bytes with
+    // non-ASCII characters unescaped. The three-result file adds one result in the same format.
+    const fixture = (name: string) =>
+      readFileSync(resolve(import.meta.dirname, "fixtures", name), "utf8");
+    const livePayloadTwo = fixture("parallel-search-2-results.txt");
+    const livePayloadThree = fixture("parallel-search-3-results.txt");
+
+    test("re-serializes a live Parallel payload byte for byte, keeping non-ASCII unescaped", async () => {
+      expect(livePayloadThree).toContain("español");
+      expect(livePayloadThree).toContain("日本語");
+      const { text } = await search("parallel", livePayloadThree, { query: "q", numResults: 2 });
+      expect(text).toBe(livePayloadTwo);
+      expect(text).toContain("español");
+      expect(text).not.toContain("\\u");
+      // Within the limit the live text is returned untouched.
+      expect((await search("parallel", livePayloadTwo, { query: "q", numResults: 2 })).text).toBe(
+        livePayloadTwo,
+      );
+    });
+
+    function resultCount(text: string): number {
+      const parsed: unknown = JSON.parse(text);
+      if (!Value.Check(Type.Object({ results: Type.Array(Type.Unknown()) }), parsed)) {
+        throw new Error("Expected a Parallel payload");
+      }
+      return parsed.results.length;
+    }
+
+    test("trims Parallel results to numResults and keeps the payload format", async () => {
+      const { result, text } = await search("parallel", parallelText(10), {
+        query: "q",
+        numResults: 3,
+      });
+      expect(resultCount(text)).toBe(3);
+      const expected = parallelText(3);
+      expect(text).toBe(expected);
+      expect(result.structuredContent).toEqual({ provider: "parallel", content: expected });
+    });
+
+    test("trims Parallel results to the default count when numResults is omitted", async () => {
+      const { text } = await search("parallel", parallelText(10), { query: "q" });
+      expect(resultCount(text)).toBe(8);
+    });
+
+    test("leaves Parallel text unchanged when it has fewer results or is not the JSON payload", async () => {
+      const few = parallelText(2);
+      expect((await search("parallel", few, { query: "q", numResults: 5 })).text).toBe(few);
+      for (const other of ["plain prose results", "[1, 2, 3]", '{"results": "none"}', "{broken"]) {
+        expect((await search("parallel", other, { query: "q", numResults: 1 })).text).toBe(other);
+      }
+    });
+
+    test("never trims Exa text, which Exa limits itself", async () => {
+      const text = parallelText(10);
+      expect((await search("exa", text, { query: "q", numResults: 2 })).text).toBe(text);
+    });
+
+    test("cuts provider text at contextMaxCharacters and marks the cut for both providers", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const { result, text } = await search(provider, "abcdefghij", {
+          query: "q",
+          contextMaxCharacters: 4,
+        });
+        const expected = "abcd\n\n[Search results cut at 4 characters]";
+        expect(text).toBe(expected);
+        // The model text and the script content agree.
+        expect(result.structuredContent).toEqual({ provider, content: expected });
+      }
+    });
+
+    test("does not cut or mark text within the limit", async () => {
+      const { text } = await search("exa", "abcd", { query: "q", contextMaxCharacters: 4 });
+      expect(text).toBe("abcd");
+      expect((await search("exa", "abcdef", { query: "q" })).text).toBe("abcdef");
+    });
+
+    test("counts code points, never splitting a multibyte character at the boundary", async () => {
+      // "😀" is one code point but two UTF-16 units; "é" is two UTF-8 bytes.
+      const { text } = await search("exa", "a😀é😀b", { query: "q", contextMaxCharacters: 2 });
+      expect(text).toBe("a😀\n\n[Search results cut at 2 characters]");
+      const exact = await search("exa", "😀😀😀", { query: "q", contextMaxCharacters: 3 });
+      expect(exact.text).toBe("😀😀😀");
+    });
+
+    test("applies the numResults trim before the character cut", async () => {
+      const { text } = await search("parallel", parallelText(10), {
+        query: "q",
+        numResults: 1,
+        contextMaxCharacters: 20,
+      });
+      expect(text).toBe(`${parallelText(1).slice(0, 20)}\n\n[Search results cut at 20 characters]`);
+    });
+
+    test("describes each parameter's real behavior in static schema text", () => {
+      const { properties }: { properties: Record<string, { description?: string }> } = JSON.parse(
+        JSON.stringify(createWebSearchTool().parameters),
+      );
+      expect(Object.keys(properties)).toEqual(["query", "numResults", "contextMaxCharacters"]);
+      expect(properties.numResults?.description).toContain("Exa applies it");
+      expect(properties.contextMaxCharacters?.description).toContain("1–50,000");
+      expect(properties.contextMaxCharacters?.description).toContain("No default");
+    });
   });
 });

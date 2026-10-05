@@ -108,17 +108,11 @@ export function renderWebSearchToolCall(
   const query = JSON.stringify(sanitizeWebToolPresentationText(parameters.query));
   container.addChild(new Text(renderWebToolCallHeader("Search", query, theme), 0, 0));
   const hasOptions =
-    parameters.numResults !== undefined ||
-    parameters.type !== undefined ||
-    parameters.livecrawl !== undefined ||
-    parameters.contextMaxCharacters !== undefined;
+    parameters.numResults !== undefined || parameters.contextMaxCharacters !== undefined;
   if (!expanded || !hasOptions) return container;
   container.addChild(new Spacer(1));
   if (parameters.numResults !== undefined)
     appendField(container, theme, "Results", parameters.numResults);
-  if (parameters.type !== undefined) appendField(container, theme, "Search type", parameters.type);
-  if (parameters.livecrawl !== undefined)
-    appendField(container, theme, "Live crawl", parameters.livecrawl);
   if (parameters.contextMaxCharacters !== undefined)
     appendField(container, theme, "Context", `${parameters.contextMaxCharacters} characters`);
   return container;

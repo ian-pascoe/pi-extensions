@@ -1,0 +1,24 @@
+{
+  "search_id": "search_311b9502d426a649b2b601ae37cc322e",
+  "results": [
+    {
+      "url": "https://pypi.org/project/pi-coding-agent",
+      "title": "pi-coding-agent · PyPI",
+      "publish_date": null,
+      "excerpts": [
+        "Skip to main content Switch to mobile version\nPyPI\nSearch PyPI Search\n* Help\n* Docs\n* Log in\n* Register\n* Help\n* Docs\n* Log in\n* Register\n* Deutsch\n* English\n* español\n* Esperanto\n* français\n* portugu"
+      ]
+    },
+    {
+      "url": "https://pi.dev/",
+      "title": "Pi Coding Agent",
+      "publish_date": null,
+      "excerpts": [
+        "There are many agent harnesses but this one is yours\nPi is a minimal agent harness. Adapt Pi to your workflows, not the other way around.\ncurl PowerShell npm pnpm bun\ncurl -fsSL https://pi.dev/install"
+      ]
+    }
+  ],
+  "warnings": null,
+  "metadata": null,
+  "session_id": "pi-web-tools-probe"
+}

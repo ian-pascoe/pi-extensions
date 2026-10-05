@@ -4,7 +4,7 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Value } from "typebox/value";
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { WebFetchParameters } from "../src/web-fetch.js";
-import type { WebSearchParameters } from "../src/web-search.js";
+import { selectSearchProvider, type WebSearchParameters } from "../src/web-search.js";
 import piWebToolsExtension, { createPiWebToolsExtension } from "../src/index.js";
 import { createWebToolsTestRunner } from "./web-tools-test-harness.js";
 
@@ -102,6 +102,30 @@ describe("Pi Web Tools extension", () => {
     const after = await modelFacingDefinitionsAt("2027-06-15T12:00:00Z");
     expect(after).toEqual(before);
     expect(before.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
+  });
+
+  test("declares identical ordered tool definitions for Exa and Parallel sessions", async () => {
+    // session-b selects Exa and session-a selects Parallel (see selectSearchProvider).
+    const definitionsFor = async (sessionId: string) => {
+      const runner = await createWebToolsTestRunner(piWebToolsExtension, sessionId);
+      const provider = selectSearchProvider(runner.createContext().sessionManager.getSessionId());
+      const definitions = runner
+        .getAllRegisteredTools()
+        .map(({ definition: { name, description, promptSnippet, parameters, outputSchema } }) => ({
+          name,
+          description,
+          promptSnippet,
+          parameters: JSON.parse(JSON.stringify(parameters)),
+          outputSchema: JSON.parse(JSON.stringify(outputSchema)),
+        }));
+      return { provider, definitions };
+    };
+    const exa = await definitionsFor("session-b");
+    const parallel = await definitionsFor("session-a");
+    expect([exa.provider, parallel.provider]).toEqual(["exa", "parallel"]);
+    expect(exa.definitions.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
+    expect(parallel.definitions).toEqual(exa.definitions);
+    expect(JSON.stringify(exa.definitions)).toBe(JSON.stringify(parallel.definitions));
   });
 
   test("declares output schemas for the structured results scripts receive", async () => {
@@ -233,8 +257,6 @@ describe("Pi Web Tools extension", () => {
       Value.Check(search.parameters, {
         query: "current Pi release",
         numResults: 20,
-        livecrawl: "preferred",
-        type: "deep",
         contextMaxCharacters: 50_000,
       }),
     ).toBe(true);
@@ -243,8 +265,9 @@ describe("Pi Web Tools extension", () => {
       { query: "x", numResults: 0 },
       { query: "x", numResults: 21 },
       { query: "x", numResults: 1.5 },
-      { query: "x", livecrawl: "always" },
-      { query: "x", type: "slow" },
+      // Neither Search Provider honors these, so the schema no longer accepts them.
+      { query: "x", livecrawl: "fallback" },
+      { query: "x", type: "auto" },
       { query: "x", contextMaxCharacters: 0 },
       { query: "x", contextMaxCharacters: 50_001 },
     ]) {
