@@ -1528,7 +1528,24 @@ interface ServerCodeActions {
   readonly previewRecords: readonly LspWorkspaceEditPreviewRecord[];
 }
 
-/** Request one Server Instance's code actions and preview every edit-bearing action. */
+/**
+ * Whether a code-action kind is one of the requested kinds or a sub-kind of one. Kinds are
+ * hierarchical with `.` as the separator, so `quickfix` matches `quickfix.import` but not
+ * `quickfixes`.
+ */
+function matchesRequestedKind(kind: string | undefined, requested: readonly string[]): boolean {
+  return (
+    kind !== undefined &&
+    requested.some(
+      (requestedKind) => kind === requestedKind || kind.startsWith(`${requestedKind}.`),
+    )
+  );
+}
+
+/**
+ * Request one Server Instance's code actions and preview every edit-bearing action. Servers may
+ * ignore `only_kinds`, so the matching is repeated here before any preview is created.
+ */
 async function serverCodeActions(
   dependencies: LspToolDependencies,
   parameters: Extract<LspToolParameters, { operation: "code_actions" }>,
@@ -1541,7 +1558,7 @@ async function serverCodeActions(
     end: protocolPosition(prepared, parameters.range.end),
   };
   const diagnostics = await codeActionDiagnostics(prepared, range, signal);
-  let actions = await client.request(
+  const offered = await client.request(
     CodeActionRequest.method,
     {
       textDocument: { uri: prepared.document.uri },
@@ -1553,6 +1570,15 @@ async function serverCodeActions(
     },
     signal,
   );
+  // Servers may ignore only_kinds. Filter before resolving, so dropped actions cost no request.
+  // The client advertises no resolveSupport, so a kind is already present before resolution.
+  let actions: unknown = Array.isArray(offered)
+    ? offered.filter(
+        (action) =>
+          parameters.only_kinds === undefined ||
+          matchesRequestedKind(protocolString(protocolRecord(action)?.kind), parameters.only_kinds),
+      )
+    : offered;
   if (supportsResolveProvider(client.capabilities.codeActionProvider)) {
     actions = await resolveCodeActionItems(client, actions, signal);
   }
@@ -1561,13 +1587,15 @@ async function serverCodeActions(
   for (const action of Array.isArray(actions) ? actions : []) {
     const record = protocolRecord(action);
     if (record === undefined) continue;
+    const kind = protocolString(record.kind);
+    const title = protocolString(record.title);
     if (record.command !== undefined || record.edit === undefined) {
       results.push({
         server_id: route.serverId,
         applicable: false,
         command: record.command,
-        kind: protocolString(record.kind),
-        title: protocolString(record.title),
+        kind,
+        title,
       });
       continue;
     }
@@ -1581,11 +1609,11 @@ async function serverCodeActions(
     results.push({
       server_id: route.serverId,
       applicable: true,
-      kind: protocolString(record.kind),
+      kind,
       mutation_manifest: manifest,
       preview_id: preview.preview_id,
       summary: preview.summary,
-      title: protocolString(record.title),
+      title,
     });
   }
   return { actions: results, previewRecords };
