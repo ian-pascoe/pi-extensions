@@ -913,6 +913,168 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     await fixture.close();
   });
 
+  test("filters completions by the identifier before the position and resolves only the kept items", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.capabilities.completionProvider = { resolveProvider: true };
+    const items = [
+      { label: "emotion", kind: 6, sortText: "2", data: { token: "private-emotion" } },
+      { label: "encodeURI", kind: 3, data: { token: "private-encode" } },
+      { label: "emoji", kind: 6, sortText: "1", data: { token: "private-emoji" } },
+      { label: "Emoticon", kind: 7, sortText: "3", data: { token: "private-emoticon" } },
+    ];
+    fixture.client.responseByMethod.set("textDocument/completion", {
+      isIncomplete: false,
+      items,
+    });
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The resolve responder receives an opaque protocol item.
+    fixture.client.responderByMethod.set("completionItem/resolve", (item: unknown) => ({
+      ...Value.Parse(Type.Object({ label: Type.String() }, { additionalProperties: true }), item),
+      detail: "resolved",
+    }));
+
+    // `const emo|ji`: the identifier before the position is "emo".
+    const result = await executeTool(fixture, {
+      operation: "completion",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 10,
+      limit: 2,
+    });
+
+    expect(resultText(result)).toBe(
+      [
+        'Completions starting with "emo":',
+        "emoji (variable)  resolved",
+        "emotion (variable)  resolved",
+        "1 more omitted; raise limit or refine the prefix to see them.",
+      ].join("\n"),
+    );
+    expect(resultText(result)).not.toContain("private-");
+    expect(fixture.client.parametersByMethod.get("completionItem/resolve")).toEqual([
+      items[2],
+      items[0],
+    ]);
+    expect(result.structuredContent).toEqual({
+      results: [
+        {
+          root_path: fixture.context.cwd,
+          server_id: "typescript",
+          prefix: "emo",
+          omitted: 1,
+          value: {
+            isIncomplete: false,
+            items: [
+              { ...items[2], detail: "resolved" },
+              { ...items[0], detail: "resolved" },
+            ],
+          },
+        },
+      ],
+      warnings: [],
+      structured_truncated: false,
+      truncated: false,
+    });
+    expect(result.details).toMatchObject({ operation: "completion", result_count: 2 });
+
+    const explicit = await executeTool(fixture, {
+      operation: "completion",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 10,
+      prefix: "",
+    });
+    expect(resultText(explicit).split("\n")).toEqual([
+      "emoji (variable)  resolved",
+      "emotion (variable)  resolved",
+      "Emoticon (class)  resolved",
+      "encodeURI (function)  resolved",
+    ]);
+    await fixture.close();
+  });
+
+  test("returns at most 50 completions or workspace symbols by default", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.responseByMethod.set(
+      "textDocument/completion",
+      Array.from({ length: 120 }, (_, index) => ({
+        label: `item${String(index).padStart(3, "0")}`,
+      })),
+    );
+    const result = await executeTool(fixture, {
+      operation: "completion",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+    const lines = resultText(result).split("\n");
+    expect(lines).toHaveLength(51);
+    expect(lines[0]).toBe("item000");
+    expect(lines[49]).toBe("item049");
+    expect(lines[50]).toBe("70 more omitted; raise limit or refine the prefix to see them.");
+
+    fixture.client.responseByMethod.set(
+      "workspace/symbol",
+      Array.from({ length: 60 }, (_, index) => ({ name: `symbol${index}` })),
+    );
+    const symbols = await executeTool(fixture, {
+      operation: "workspace_symbols",
+      query: "symbol",
+      file_path: fixture.filePath,
+    });
+    expect(symbols.structuredContent).toMatchObject({ results: [{ omitted: 10 }] });
+    expect(resultText(symbols).split("\n").at(-1)).toBe(
+      "10 more omitted; raise limit or refine the query to see them.",
+    );
+    await fixture.close();
+  });
+
+  test("limits workspace symbols and lists one per line with relative locations", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.capabilities.workspaceSymbolProvider = { resolveProvider: true };
+    const uri = pathToFileURL(fixture.filePath).href;
+    const symbol = (name: string, line: number) => ({
+      name,
+      kind: 13,
+      containerName: "module",
+      location: {
+        uri,
+        range: { start: { line, character: 6 }, end: { line, character: 11 } },
+      },
+      data: { token: `private-${name}` },
+    });
+    fixture.client.responseByMethod.set("workspace/symbol", [
+      symbol("emoji", 0),
+      symbol("emojiTwo", 0),
+      symbol("emojiThree", 0),
+    ]);
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- The resolve responder echoes an opaque protocol item.
+    fixture.client.responderByMethod.set("workspaceSymbol/resolve", (item: unknown) => item);
+
+    const result = await executeTool(fixture, {
+      operation: "workspace_symbols",
+      query: "emoji",
+      file_path: fixture.filePath,
+      limit: 2,
+    });
+
+    expect(resultText(result)).toBe(
+      [
+        "emoji (variable) source.ts:1:7  in module",
+        "emojiTwo (variable) source.ts:1:7  in module",
+        "1 more omitted; raise limit or refine the query to see them.",
+      ].join("\n"),
+    );
+    expect(resultText(result)).not.toContain("private-");
+    expect(fixture.client.parametersByMethod.get("workspaceSymbol/resolve")).toHaveLength(2);
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        { server_id: "typescript", omitted: 1, value: [{ name: "emoji" }, { name: "emojiTwo" }] },
+      ],
+    });
+    expect(result.details).toMatchObject({ operation: "workspace_symbols", result_count: 2 });
+    await fixture.close();
+  });
+
   test("names the searched workspace root and warns that other roots exist for references", async () => {
     const fixture = await createToolFixture();
     const cwd = fixture.context.cwd;
@@ -1715,8 +1877,7 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       line: 1,
       character: 1,
     });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(JSON.parse(text)).toMatchObject({
+    expect(result.structuredContent).toMatchObject({
       results: [
         {
           value: {
@@ -2050,6 +2211,7 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
           root_path: fixture.context.cwd,
           server_id: "typescript",
           value: [{ name: "x".repeat(60 * 1024) }],
+          omitted: 0,
         },
       ],
       warnings: [],
@@ -2073,6 +2235,7 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       operation: "workspace_symbols",
       query: "y",
       file_path: fixture.filePath,
+      limit: 100_000,
     });
     if (result.details.kind !== "operation" || result.details.spill_path === undefined) {
       throw new Error("Expected Result Spill path");
