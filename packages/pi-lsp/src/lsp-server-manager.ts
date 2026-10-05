@@ -1,5 +1,15 @@
 import { readdir } from "node:fs/promises";
-import { basename, dirname, extname, matchesGlob, resolve } from "node:path";
+import { homedir } from "node:os";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  matchesGlob,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { LspInputError } from "./lsp-input-error.js";
 import type {
   LspServerDefinition,
@@ -188,6 +198,8 @@ export interface LspServerManagerInput<TClient extends LspManagedServerClient> {
   readonly startClient: StartLspServerClient<TClient>;
   /** Lists one directory's entry names for root-marker routing; defaults to the filesystem. */
   readonly readDirectory?: (directoryPath: string) => Promise<readonly string[]>;
+  /** Home directory that bounds other-root discovery; defaults to the user's home directory. */
+  readonly homeDirectory?: string;
   /** Most directories one root-marker discovery lists; defaults to `LSP_ROOT_DISCOVERY_DIRECTORY_LIMIT`. */
   readonly rootDiscoveryDirectoryLimit?: number;
 }
@@ -311,6 +323,50 @@ async function discoverLspMarkerRoots(
     }
   }
   return { roots, complete: true };
+}
+
+function isSameOrAncestorDirectory(ancestor: string, descendant: string): boolean {
+  const relativePath = relative(ancestor, descendant);
+  return (
+    relativePath === "" ||
+    (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
+  );
+}
+
+/**
+ * Pick where marker-root discovery starts for `searchedRoot`: its outermost ancestor (itself
+ * included) that holds a root marker, or the working directory when that is a higher ancestor.
+ * The upward walk stops below the home directory and every directory above it, including the
+ * filesystem root, unless the working directory is at or above that directory. Home and
+ * filesystem-root scans therefore stay out of scope.
+ */
+async function findLspDiscoveryBase(
+  searchedRoot: string,
+  rootMarkers: readonly string[],
+  cwd: string,
+  homeDirectory: string,
+  readDirectory: (directoryPath: string) => Promise<readonly string[]>,
+): Promise<string> {
+  let base = searchedRoot;
+  let directory = searchedRoot;
+  for (;;) {
+    if (
+      isSameOrAncestorDirectory(directory, homeDirectory) &&
+      !isSameOrAncestorDirectory(cwd, directory)
+    ) {
+      return base;
+    }
+    let entryNames: readonly string[] = [];
+    try {
+      entryNames = await readDirectory(directory);
+    } catch {
+      // An unreadable ancestor holds no markers we can see; keep climbing.
+    }
+    if (directory === cwd || containsLspRootMarker(entryNames, rootMarkers)) base = directory;
+    const parent = dirname(directory);
+    if (parent === directory) return base;
+    directory = parent;
+  }
 }
 
 function describeLspError(cause: unknown): string {
@@ -450,15 +506,25 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     };
   }
 
-  private async routeFile(filePath: string): Promise<readonly LspServerRoute[]> {
+  private async routeFile(
+    filePath: string,
+    requestedServerId?: string,
+  ): Promise<readonly LspServerRoute[]> {
     const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
-    // Ancestor listings are costly in large directories; skip them when no language matches.
-    if (!this.hasConfiguredLanguageServerForFile(absolutePath)) return [];
-    const ancestors = await readLspAncestorDirectories(
-      absolutePath,
-      this.input.readDirectory ?? readdir,
+    // Route only candidates: the requested definition, or every enabled one when none is named.
+    const candidates = [...this.input.settings.servers.values()].filter(
+      (definition) =>
+        (requestedServerId === undefined
+          ? this.getEnablement(definition.id).enabled
+          : definition.id === requestedServerId) &&
+        definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
     );
-    const definitions = [...this.input.settings.servers.values()].map((definition) => ({
+    // Ancestor listings are costly in large directories; list them only when a candidate has
+    // root markers to find. Marker-free candidates root at the working directory.
+    const ancestors = candidates.some((definition) => definition.rootMarkers.length > 0)
+      ? await readLspAncestorDirectories(absolutePath, this.input.readDirectory ?? readdir)
+      : [];
+    const definitions = candidates.map((definition) => ({
       languages: definition.languages,
       requireRootMarker: definition.requireRootMarker,
       rootMarkers: definition.rootMarkers,
@@ -477,10 +543,11 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
 
   /**
    * Find workspace roots of one Server Definition other than `rootPath`: roots of its known Server
-   * Instances, and directories under the working directory that contain one of its root markers.
-   * Files under those roots route to other Server Instances, so a request to the instance at
-   * `rootPath` may not consider them. Hidden and `node_modules` directories are not searched, and
-   * discovery lists at most `rootDiscoveryDirectoryLimit` directories.
+   * Instances, and directories that contain one of its root markers under the outermost ancestor
+   * of `rootPath` that has one (or under the working directory, when that is higher). Files under
+   * those roots route to other Server Instances, so a request to the instance at `rootPath` may
+   * not consider them. Hidden and `node_modules` directories are not searched, and discovery
+   * lists at most `rootDiscoveryDirectoryLimit` directories.
    */
   async findOtherWorkspaceRoots(
     serverId: string,
@@ -496,8 +563,15 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     const rootMarkers = this.input.settings.servers.get(serverId)?.rootMarkers ?? [];
     let complete = true;
     if (roots.size < maxRoots && rootMarkers.length > 0) {
-      const discovery = await discoverLspMarkerRoots(
+      const discoveryBase = await findLspDiscoveryBase(
+        searchedRoot,
+        rootMarkers,
         resolve(this.input.cwd),
+        resolve(this.input.homeDirectory ?? homedir()),
+        this.input.readDirectory ?? readdir,
+      );
+      const discovery = await discoverLspMarkerRoots(
+        discoveryBase,
         rootMarkers,
         searchedRoot,
         maxRoots,
@@ -693,7 +767,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     filePath: string,
     serverId: string | undefined,
   ): Promise<readonly LspServerRoute[]> {
-    const routes = await this.routeFile(filePath);
+    const routes = await this.routeFile(filePath, serverId);
     return routes.filter((route) =>
       serverId === undefined
         ? this.getEnablement(route.serverId).enabled

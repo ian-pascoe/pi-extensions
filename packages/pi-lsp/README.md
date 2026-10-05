@@ -63,7 +63,9 @@ include their leading period. `rootMarkers` are basename glob patterns; the near
 ancestor becomes the server root and Pi's working directory is the fallback. Set
 `requireRootMarker` to `true` to exclude the server for files without any matching ancestor; it
 defaults to `false`. A required empty `rootMarkers` list is invalid. Explicit requests naming an
-otherwise compatible excluded server report that its required root marker was not found.
+otherwise compatible excluded server report that its required root marker was not found. A server
+without `rootMarkers` always uses the working directory as its root. Routing reads a file's
+ancestor directories only when an enabled server that handles its language has root markers.
 
 Global and project timeouts merge by field. A project server replaces the complete global server
 with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
@@ -217,9 +219,14 @@ only the workspace root of the queried file. In a monorepo where every package h
 `package.json`, renaming a helper exported by one package finds no importers in the others. Both
 tools name the root they searched (`Searched typescript workspace root: packages/a`). When the same
 server has other roots, they add a warning listing them. Those roots are its running or known
-servers and directories under Pi's working directory that contain one of its root markers; hidden
-directories and `node_modules` are skipped. Discovery checks at most 4,096 directories; when it
-stops early, the warning says other roots may exist. The rename warning starts the preview summary, so it is
+servers and directories that contain one of its root markers, found by searching down from the
+outermost ancestor of the searched root that contains a root marker (or Pi's working directory,
+when that is higher). Pi can therefore start inside a package and still find sibling packages
+under the shared repository root. The search starts no higher than that directory, and never at
+your home directory or above it, unless Pi's working directory is at or above it, so a stray
+marker file in `~` does not widen the scan. Symbolic links, hidden directories, and
+`node_modules` are skipped. Discovery checks at most 4,096 directories; when it stops early,
+the warning says other roots may exist. The rename warning starts the preview summary, so it is
 visible before `lsp_apply`; scripts receive it in `warnings` and the searched root in `root_path`.
 
 `lsp_workspace_symbols` requires `query` and a root-anchor `file_path`. `lsp_workspace_diagnostics`,

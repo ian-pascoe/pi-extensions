@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { LspServerClient } from "../src/lsp-server-client.js";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readdir } from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
@@ -300,6 +300,98 @@ describe("session-scoped LSP server manager", () => {
     await manager.getCapabilities("typescript", resolve(cwd, "root.ts"));
     expect(directoriesRead[0]).toBe(cwd);
     await manager.shutdown();
+  });
+
+  test("lists ancestor directories only when an enabled matching Server Definition has root markers", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const markerFree = (id: string) => ({ ...serverDefinition(id), rootMarkers: [] });
+    const settings = (definitions: readonly LspServerDefinition[]): ResolvedLspSettings => ({
+      ...resolvedSettings([]),
+      servers: new Map(definitions.map((definition) => [definition.id, definition])),
+    });
+    const directoriesRead: string[] = [];
+    const createManager = (definitions: readonly LspServerDefinition[]) =>
+      new LspServerManager({
+        cwd,
+        settings: settings(definitions),
+        startClient: createRecordingClientFactory().start,
+        readDirectory: async (directoryPath) => {
+          directoriesRead.push(directoryPath);
+          return readdir(directoryPath);
+        },
+      });
+
+    // Marker-free definitions root at the working directory without listing anything.
+    const markerFreeManager = createManager([markerFree("lint"), markerFree("spell")]);
+    const routed = await markerFreeManager.runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async (_client, route) => route.rootPath,
+    );
+    expect(routed.successes.map(({ serverId, value }) => [serverId, value])).toEqual([
+      ["lint", cwd],
+      ["spell", cwd],
+    ]);
+    expect(directoriesRead).toEqual([]);
+
+    // A marker-bearing definition that is disabled or does not match the language is ignored.
+    const disabledManager = createManager([markerFree("lint"), serverDefinition("typescript")]);
+    await disabledManager.setEnablement(new Map(), new Map([["typescript", false]]));
+    await disabledManager.runRead(filePath, undefined, anyCapability, async () => "ok");
+    const otherLanguage = {
+      ...serverDefinition("python"),
+      languages: [{ extensions: [".py"], fileNames: [], languageId: "python" }],
+    };
+    await createManager([markerFree("lint"), otherLanguage]).runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async () => "ok",
+    );
+    expect(directoriesRead).toEqual([]);
+
+    // A matching enabled marker-bearing definition lists, and marker-free peers keep the cwd root.
+    const mixed = await createManager([markerFree("lint"), serverDefinition("typescript")]).runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async (_client, route) => route.rootPath,
+    );
+    expect(mixed.successes.map(({ serverId, value }) => [serverId, value])).toEqual([
+      ["lint", cwd],
+      ["typescript", resolve(cwd, "packages/example")],
+    ]);
+    expect(directoriesRead[0]).toBe(resolve(cwd, "packages/example/src"));
+
+    // Explicitly requesting a disabled marker-bearing definition still resolves its marker root.
+    directoriesRead.length = 0;
+    const explicitManager = createManager([serverDefinition("typescript")]);
+    await explicitManager.setEnablement(new Map(), new Map([["typescript", false]]));
+    const disabled = await explicitManager.runRead(
+      filePath,
+      "typescript",
+      anyCapability,
+      async () => "ok",
+    );
+    expect(disabled.failures.map(({ code }) => code)).toEqual(["server-disabled"]);
+    expect(explicitManager.getStatus().servers).toMatchObject([
+      { serverId: "typescript", state: "disabled" },
+    ]);
+    expect(directoriesRead.length).toBeGreaterThan(0);
+
+    // An explicit request decides on the requested definition alone: a marker-bearing peer is not
+    // listed for.
+    directoriesRead.length = 0;
+    const peerManager = createManager([markerFree("lint"), serverDefinition("typescript")]);
+    const explicitLint = await peerManager.runRead(
+      filePath,
+      "lint",
+      anyCapability,
+      async (_client, route) => route.rootPath,
+    );
+    expect(explicitLint.successes.map(({ value }) => value)).toEqual([cwd]);
+    expect(directoriesRead).toEqual([]);
   });
 
   test("disables every root, excludes automatic routing, and blocks explicit startup until enabled", async () => {
@@ -1032,6 +1124,120 @@ describe("other workspace roots of a Server Definition", () => {
       hasMore: false,
     });
     await manager.shutdown();
+  });
+
+  test("finds sibling roots above a working directory inside a package before any Instance starts", async () => {
+    const parent = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-repo-"));
+    temporaryDirectories.push(parent);
+    const repo = resolve(parent, "repo");
+    const searchedRoot = resolve(repo, "packages/a");
+    for (const directory of [repo, searchedRoot, resolve(repo, "packages/b")]) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, "package.json"), "{}\n");
+    }
+    await mkdir(resolve(searchedRoot, "src"));
+    // Beside the repository, above its outermost marker directory: never searched.
+    await mkdir(resolve(parent, "unrelated"));
+    await writeFile(resolve(parent, "unrelated/package.json"), "{}\n");
+
+    for (const cwd of [searchedRoot, resolve(searchedRoot, "src"), repo]) {
+      const manager = new LspServerManager({
+        cwd,
+        settings: resolvedSettings(["typescript"]),
+        startClient: createRecordingClientFactory().start,
+      });
+      expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot), cwd).toEqual({
+        rootPaths: [repo, resolve(repo, "packages/b")],
+        hasMore: false,
+      });
+    }
+  });
+
+  test("does not start discovery at the home directory or above it", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-home-"));
+    temporaryDirectories.push(home);
+    const repo = resolve(home, "code/repo");
+    const searchedRoot = resolve(repo, "packages/a");
+    for (const directory of [
+      home,
+      repo,
+      searchedRoot,
+      resolve(repo, "packages/b"),
+      resolve(home, "code/other"),
+      resolve(home, "Downloads/x"),
+    ]) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, "package.json"), "{}\n");
+    }
+    const findFrom = (cwd: string) =>
+      new LspServerManager({
+        cwd,
+        homeDirectory: home,
+        settings: resolvedSettings(["typescript"]),
+        startClient: createRecordingClientFactory().start,
+      }).findOtherWorkspaceRoots("typescript", searchedRoot);
+
+    // A marker in the home directory does not widen discovery beyond the repository.
+    const repoOnly = { rootPaths: [repo, resolve(repo, "packages/b")], hasMore: false };
+    expect(await findFrom(repo)).toEqual(repoOnly);
+    expect(await findFrom(searchedRoot)).toEqual(repoOnly);
+    // A working directory at the home directory chose that scope itself.
+    expect((await findFrom(home)).rootPaths).toEqual(
+      [
+        home,
+        repo,
+        resolve(repo, "packages/b"),
+        resolve(home, "code/other"),
+        resolve(home, "Downloads/x"),
+      ].sort((left, right) => left.localeCompare(right)),
+    );
+  });
+
+  test("starts discovery at the outermost marker ancestor, not the nearest", async () => {
+    const parent = await mkdtemp(resolve(tmpdir(), "pi-lsp-manager-nested-"));
+    temporaryDirectories.push(parent);
+    const repo = resolve(parent, "repo");
+    const searchedRoot = resolve(repo, "packages/a/app");
+    for (const directory of [
+      repo,
+      resolve(repo, "packages"),
+      resolve(repo, "packages/a"),
+      searchedRoot,
+      resolve(repo, "tools/b"),
+    ]) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(resolve(directory, "package.json"), "{}\n");
+    }
+    const manager = new LspServerManager({
+      cwd: searchedRoot,
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
+      rootPaths: [
+        repo,
+        resolve(repo, "packages"),
+        resolve(repo, "packages/a"),
+        resolve(repo, "tools/b"),
+      ],
+      hasMore: false,
+    });
+  });
+
+  test("reports none from a working directory inside the only root", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const searchedRoot = resolve(cwd, "packages/example");
+    const manager = new LspServerManager({
+      cwd: dirname(filePath),
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
+      rootPaths: [],
+      hasMore: false,
+    });
   });
 
   test("reports none when the searched root is the only root", async () => {
