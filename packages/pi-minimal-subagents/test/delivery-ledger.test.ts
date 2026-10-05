@@ -77,18 +77,16 @@ describe("minimal subagents delivery ledger", () => {
     expect(deliveryLedgerSnapshot(added.ledger).coordination_deliveries).toHaveLength(1);
   });
 
-  it("selects the oldest claimed observable turn ahead of newer work", () => {
+  it("skips claimed turns and selects the oldest unclaimed observable turn", () => {
     let ledger = createDeliveryLedger();
-    const older = addCoordinationDelivery(ledger, {
-      destinationAgentId: "root",
-      message: coordinationMessage("child", "child:older", "older"),
-    });
-    ledger = older.ledger;
-    const newer = addCoordinationDelivery(ledger, {
-      destinationAgentId: "root",
-      message: coordinationMessage("child", "child:newer", "newer"),
-    });
-    ledger = claimDeliveryLedgerTurn(newer.ledger, "child", "child:older").ledger;
+    for (const turnId of ["child:claimed", "child:older", "child:newer"]) {
+      ledger = addTerminalDelivery(ledger, {
+        destinationAgentId: "root",
+        path: "message",
+        result: completedResult("child", turnId),
+      }).ledger;
+    }
+    ledger = claimDeliveryLedgerTurn(ledger, "child", "child:claimed").ledger;
 
     expect(
       selectObservableDeliveryTurn(ledger, {
@@ -98,6 +96,31 @@ describe("minimal subagents delivery ledger", () => {
         activeTurnId: "child:active",
       }),
     ).toBe("child:older");
+  });
+
+  it("falls back to the active, then latest, turn when every retained turn is claimed", () => {
+    let ledger = addTerminalDelivery(createDeliveryLedger(), {
+      destinationAgentId: "root",
+      path: "wait",
+      result: completedResult("child", "child:claimed"),
+    }).ledger;
+    ledger = claimDeliveryLedgerTurn(ledger, "child", "child:claimed").ledger;
+    const options = {
+      sourceAgentId: "child",
+      destinationAgentId: "root",
+      waitHandedDeliveryIds: new Set<string>(),
+    };
+
+    expect(
+      selectObservableDeliveryTurn(ledger, {
+        ...options,
+        activeTurnId: "child:active",
+        latestResultTurnId: "child:claimed",
+      }),
+    ).toBe("child:active");
+    expect(
+      selectObservableDeliveryTurn(ledger, { ...options, latestResultTurnId: "child:latest" }),
+    ).toBe("child:latest");
   });
 
   it("retains only the newest 20 wait-only terminal items per source without pruning messages", () => {

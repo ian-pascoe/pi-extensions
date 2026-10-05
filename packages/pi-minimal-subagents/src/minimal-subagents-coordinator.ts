@@ -456,7 +456,7 @@ export class MinimalSubagentsCoordinator {
     if (agent.active_turn_id !== turnId) {
       return Promise.reject(
         new Error(
-          `Minimal subagents wait: turn ${turnId} is unknown or no longer retained for ${agentId}; omit turn_id to wait for its oldest observable turn`,
+          `Minimal subagents wait: turn ${turnId} is unknown or no longer retained for ${agentId}; omit turn_id to wait for its oldest unclaimed observable turn`,
         ),
       );
     }
