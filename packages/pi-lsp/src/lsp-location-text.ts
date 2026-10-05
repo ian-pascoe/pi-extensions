@@ -34,11 +34,11 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SOURCE_LINE_MAX_CHARACTERS = 200;
 
 /** One-based Unicode code-point position, as normalized protocol results carry them. */
-const PositionSchema = Type.Object({
+export const LspNormalizedPositionSchema = Type.Object({
   line: Type.Integer({ minimum: 1 }),
   character: Type.Integer({ minimum: 1 }),
 });
-const RangeSchema = Type.Object({ start: PositionSchema });
+const RangeSchema = Type.Object({ start: LspNormalizedPositionSchema });
 const LocationSchema = Type.Object({ uri: Type.String(), range: RangeSchema });
 const LocationLinkSchema = Type.Object({
   targetUri: Type.String(),
@@ -57,7 +57,7 @@ const HIGHLIGHT_KIND_NAMES: ReadonlyMap<number, string> = new Map([
 ]);
 
 /** One location in a model-visible result, with an optional kind label. */
-interface LspTextLocation {
+export interface LspTextLocation {
   readonly path: string;
   readonly line: number;
   readonly character: number;
@@ -81,7 +81,7 @@ export function lspDisplayPath(cwd: string, filePath: string): string {
 }
 
 /** Cached source lines of files named by one result; unreadable files have none. */
-class SourceLines {
+export class LspSourceLines {
   readonly #files = new Map<string, Promise<readonly string[] | undefined>>();
 
   async line(path: string, oneBasedLine: number): Promise<string | undefined> {
@@ -92,11 +92,16 @@ class SourceLines {
     }
     const line = (await lines)?.[oneBasedLine - 1]?.trim();
     if (line === undefined || line === "") return undefined;
-    const characters = Array.from(line);
-    return characters.length > SOURCE_LINE_MAX_CHARACTERS
-      ? `${characters.slice(0, SOURCE_LINE_MAX_CHARACTERS).join("")}…`
-      : line;
+    return shortenLspText(line);
   }
+}
+
+/** Shorten text longer than a source line may be shown, marking the cut with `…`. */
+export function shortenLspText(text: string): string {
+  const characters = Array.from(text);
+  return characters.length > SOURCE_LINE_MAX_CHARACTERS
+    ? `${characters.slice(0, SOURCE_LINE_MAX_CHARACTERS).join("")}…`
+    : text;
 }
 
 async function readSourceLines(path: string): Promise<readonly string[] | undefined> {
@@ -108,20 +113,24 @@ async function readSourceLines(path: string): Promise<readonly string[] | undefi
   }
 }
 
-/** Render locations as `path:line:col[ kind]  <trimmed source line>`, one per line. */
-async function formatLocationLines(
-  locations: readonly LspTextLocation[],
+/** Display one location as `path:line:col` with a display path. */
+export function lspDisplayPosition(
   cwd: string,
-  sources: SourceLines,
-): Promise<string[]> {
-  return Promise.all(
-    locations.map(async (location) => {
-      const position = `${lspDisplayPath(cwd, location.path)}:${location.line}:${location.character}`;
-      const head = location.label === undefined ? position : `${position} ${location.label}`;
-      const source = await sources.line(location.path, location.line);
-      return source === undefined ? head : `${head}  ${source}`;
-    }),
-  );
+  location: Pick<LspTextLocation, "path" | "line" | "character">,
+): string {
+  return `${lspDisplayPath(cwd, location.path)}:${location.line}:${location.character}`;
+}
+
+/** Render one location as `path:line:col[ kind]  <trimmed source line>`. */
+export async function formatLspLocationLine(
+  location: LspTextLocation,
+  cwd: string,
+  sources: LspSourceLines,
+): Promise<string> {
+  const position = lspDisplayPosition(cwd, location);
+  const head = location.label === undefined ? position : `${position} ${location.label}`;
+  const source = await sources.line(location.path, location.line);
+  return source === undefined ? head : `${head}  ${source}`;
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Normalized protocol items are opaque until one location schema matches.
@@ -158,8 +167,8 @@ function emptyMessage(operation: LspLocationOperation): string {
   return "No locations found.";
 }
 
-/** One server's successful response to a location read. */
-export interface LspLocationRead {
+/** One server's successful response to a read. */
+export interface LspRead {
   readonly server_id: string;
   // oxlint-disable-next-line anti-slop/no-unknown-property-types -- Normalized server responses stay opaque; recognized location shapes are checked while rendering.
   readonly value: unknown;
@@ -172,10 +181,38 @@ export interface LspLocationReadTextInput {
   readonly cwd: string;
   /** Absolute path of the queried document, which document highlights refer to. */
   readonly documentPath: string;
-  readonly reads: readonly LspLocationRead[];
+  readonly reads: readonly LspRead[];
   readonly warnings: readonly string[];
   /** Lines shown before the locations, such as the workspace roots that were searched. */
   readonly scope?: readonly string[];
+}
+
+/** The rendered lines of one server's response. */
+export interface LspReadTextBlock {
+  readonly server_id: string;
+  readonly lines: readonly string[];
+}
+
+/**
+ * Assemble a read's model-visible text: optional scope lines, then each server's lines (grouped
+ * under its server ID only when more than one server answered), then failures as warnings.
+ */
+export function assembleLspReadText(input: {
+  readonly blocks: readonly LspReadTextBlock[];
+  readonly warnings: readonly string[];
+  readonly scope?: readonly string[];
+}): string {
+  const grouped = input.blocks.length > 1;
+  const lines = input.blocks.flatMap((block) =>
+    grouped ? [`${block.server_id}:`, ...block.lines.map((line) => `  ${line}`)] : block.lines,
+  );
+  const warnings = input.warnings.map((warning) => `Warning: ${warning}`);
+  const scope = input.scope ?? [];
+  return [
+    ...(scope.length === 0 ? [] : [...scope, ""]),
+    ...lines,
+    ...(warnings.length === 0 ? [] : ["", ...warnings]),
+  ].join("\n");
 }
 
 /**
@@ -186,23 +223,20 @@ export interface LspLocationReadTextInput {
  * location-shaped is shown as compact JSON instead.
  */
 export async function formatLspLocationReadText(input: LspLocationReadTextInput): Promise<string> {
-  const sources = new SourceLines();
-  const grouped = input.reads.length > 1;
+  const sources = new LspSourceLines();
   const blocks = await Promise.all(
-    input.reads.map(async (read) => {
+    input.reads.map(async (read): Promise<LspReadTextBlock> => {
       const locations = parseLocations(read.value, input.documentPath);
-      let lines: string[];
+      let lines: readonly string[];
       if (locations === undefined) lines = [formatLspToolValue(read.value)];
       else if (locations.length === 0) lines = [emptyMessage(input.operation)];
-      else lines = await formatLocationLines(locations, input.cwd, sources);
-      return grouped ? [`${read.server_id}:`, ...lines.map((line) => `  ${line}`)] : lines;
+      else {
+        lines = await Promise.all(
+          locations.map((location) => formatLspLocationLine(location, input.cwd, sources)),
+        );
+      }
+      return { server_id: read.server_id, lines };
     }),
   );
-  const warnings = input.warnings.map((warning) => `Warning: ${warning}`);
-  const scope = input.scope ?? [];
-  return [
-    ...(scope.length === 0 ? [] : [...scope, ""]),
-    ...blocks.flat(),
-    ...(warnings.length === 0 ? [] : ["", ...warnings]),
-  ].join("\n");
+  return assembleLspReadText({ blocks, warnings: input.warnings, scope: input.scope ?? [] });
 }

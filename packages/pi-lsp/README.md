@@ -163,7 +163,28 @@ src/b.ts:3:17  console.log(value);
 Paths are relative to Pi's working directory, or absolute outside it, and each line ends with the
 trimmed source line. Document highlights name their kind (`read`, `write`, or `text`) after the
 position. Results are grouped under each server ID only when more than one server answered, and
-server failures follow as `Warning:` lines. Other reads show the server's response as compact JSON.
+server failures follow as `Warning:` lines.
+
+Symbol, hierarchy, and range results use the same paths and positions, with symbol kinds named
+(`class`, `function`, `variable`, …) instead of numbered:
+
+- `lsp_document_symbols` and `lsp_workspace_symbols` list `name (kind) path:line:col` lines.
+  Document symbols form an indented outline and end with the symbol's detail; workspace symbols end
+  with `in <container>`.
+- `lsp_call_hierarchy`, `lsp_type_hierarchy`, `lsp_supertypes`, and `lsp_subtypes` list
+  `name (kind) path:line:col` lines. `lsp_incoming_calls` and `lsp_outgoing_calls` indent each call
+  site below the caller or callee as `path:line:col  <source line>`.
+- `lsp_selection_ranges` lists `line:col-line:col` ranges from innermost to outermost, under a
+  `line:col:` heading per requested position when there are several.
+- `lsp_folding_ranges` lists `startLine-endLine kind  <first source line>`.
+
+```text
+Greeter (class) src/a.ts:1:14
+  greet (method) src/a.ts:2:3  (): string
+helper (function, deprecated) src/a.ts:6:17
+```
+
+Other reads show the server's response as compact JSON, as does a response of an unexpected shape.
 
 Pi LSP starts one server per workspace root, so `lsp_find_references` and `lsp_rename` search
 only the workspace root of the queried file. In a monorepo where every package has a

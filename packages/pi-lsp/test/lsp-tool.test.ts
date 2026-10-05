@@ -855,6 +855,64 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     await fixture.close();
   });
 
+  test("renders document symbols as an outline over unchanged structured data", async () => {
+    const fixture = await createToolFixture();
+    const protocolRange = (start: number, end: number) => ({
+      start: { line: 0, character: start },
+      end: { line: 0, character: end },
+    });
+    fixture.client.responseByMethod.set("textDocument/documentSymbol", [
+      {
+        name: "emoji",
+        kind: 14,
+        range: protocolRange(0, 14),
+        selectionRange: protocolRange(6, 11),
+        children: [],
+      },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "document_symbols",
+      file_path: "source.ts",
+    });
+
+    expect(resultText(result)).toBe("emoji (constant) source.ts:1:7");
+    const oneBasedRange = (start: number, end: number) => ({
+      end: { character: end, line: 1 },
+      start: { character: start, line: 1 },
+    });
+    // Byte-identical to the compact JSON these reads returned as text before.
+    expect(JSON.stringify(result.structuredContent)).toBe(
+      JSON.stringify({
+        results: [
+          {
+            root_path: fixture.context.cwd,
+            server_id: "typescript",
+            value: [
+              {
+                children: [],
+                kind: 14,
+                name: "emoji",
+                range: oneBasedRange(1, 15),
+                selectionRange: oneBasedRange(7, 12),
+              },
+            ],
+          },
+        ],
+        warnings: [],
+        truncated: false,
+        structured_truncated: false,
+      }),
+    );
+    expect(result.details).toEqual({
+      kind: "operation",
+      operation: "document_symbols",
+      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
+      result_count: 1,
+    });
+    await fixture.close();
+  });
+
   test("names the searched workspace root and warns that other roots exist for references", async () => {
     const fixture = await createToolFixture();
     const cwd = fixture.context.cwd;
@@ -1492,8 +1550,17 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       line: 1,
       character: 1,
     });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-    expect(JSON.parse(text)).toMatchObject({
+    expect(resultText(result)).toBe(
+      [
+        "caller (function) long-caller.ts:1:17",
+        "  long-caller.ts:1:37  export function aLongCallerName() { callee(); }",
+        "caller (function) unicode-caller.ts:1:1",
+        "  unicode-caller.ts:1:11  const 😀 = callee();",
+        "caller (function) source.ts:1:1",
+        "  source.ts:1:17  const emoji = '😀';",
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
       results: [
         {
           value: [
@@ -1503,6 +1570,127 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
             },
             { from: { uri: unicodeCallerPath }, fromRanges: [range(1, 11, 17)] },
             { from: { uri: fixture.filePath }, fromRanges: [range(1, 17, 18)] },
+          ],
+        },
+      ],
+    });
+    await fixture.close();
+  });
+
+  test("places outgoing call sites in the prepared item's file, not the queried file", async () => {
+    const fixture = await createToolFixture();
+    const helperPath = resolve(fixture.context.cwd, "helper.ts");
+    const runPath = resolve(fixture.context.cwd, "run.ts");
+    await writeFile(helperPath, "function helper() { const 😀 = run(); }\n");
+    await writeFile(runPath, "export function run() {}\n");
+    const position = (line: number, character: number) => ({ line, character });
+    const item = (name: string, uri: string, line: number, character: number) => ({
+      name,
+      kind: 12,
+      uri,
+      range: { start: position(line, 0), end: position(line, character) },
+      selectionRange: { start: position(line, character), end: position(line, character) },
+    });
+    // Preparing at a call site yields the called declaration, here in another file.
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+      item("helper", pathToFileURL(helperPath).href, 0, 9),
+    ]);
+    fixture.client.responseByMethod.set("callHierarchy/outgoingCalls", [
+      {
+        to: item("run", pathToFileURL(runPath).href, 0, 16),
+        fromRanges: [{ start: position(0, 31), end: position(0, 34) }],
+      },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "outgoing_calls",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+
+    expect(resultText(result)).toBe(
+      [
+        "run (function) run.ts:1:17",
+        "  helper.ts:1:31  function helper() { const 😀 = run(); }",
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        {
+          value: [
+            {
+              to: { uri: runPath, selectionRange: { start: { line: 1, character: 17 } } },
+              fromRanges: [{ start: { line: 1, character: 31 }, end: { line: 1, character: 34 } }],
+            },
+          ],
+        },
+      ],
+    });
+    await fixture.close();
+  });
+
+  test("converts each prepared item's outgoing call sites against that item's own file", async () => {
+    const fixture = await createToolFixture();
+    const helperPath = resolve(fixture.context.cwd, "helper.ts");
+    const runPath = resolve(fixture.context.cwd, "run.ts");
+    await writeFile(helperPath, "function helper() { const 😀 = run(); }\n");
+    await writeFile(runPath, "export function run() {}\n");
+    const position = (line: number, character: number) => ({ line, character });
+    const item = (name: string, uri: string, character: number) => ({
+      name,
+      kind: 12,
+      uri,
+      range: { start: position(0, 0), end: position(0, character) },
+      selectionRange: { start: position(0, character), end: position(0, character) },
+    });
+    const helperUri = pathToFileURL(helperPath).href;
+    const sourceUri = pathToFileURL(fixture.filePath).href;
+    const runItem = item("run", pathToFileURL(runPath).href, 16);
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+      item("helper", helperUri, 9),
+      item("emoji", sourceUri, 6),
+    ]);
+    // Each prepared item's call sites lie in that item's file: helper.ts, then the queried source.ts.
+    fixture.client.responderByMethod.set("callHierarchy/outgoingCalls", (parameters) => {
+      const preparedUri = Value.Check(
+        Type.Object({ item: Type.Object({ uri: Type.String() }) }),
+        parameters,
+      )
+        ? parameters.item.uri
+        : undefined;
+      const site =
+        preparedUri === helperUri
+          ? { start: position(0, 31), end: position(0, 34) }
+          : { start: position(0, 14), end: position(0, 18) };
+      return [{ to: runItem, fromRanges: [site] }];
+    });
+
+    const result = await executeTool(fixture, {
+      operation: "outgoing_calls",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 7,
+    });
+
+    expect(resultText(result)).toBe(
+      [
+        "run (function) run.ts:1:17",
+        "  helper.ts:1:31  function helper() { const 😀 = run(); }",
+        "run (function) run.ts:1:17",
+        "  source.ts:1:15  const emoji = '😀';",
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        {
+          value: [
+            {
+              fromRanges: [{ start: { line: 1, character: 31 }, end: { line: 1, character: 34 } }],
+            },
+            {
+              fromRanges: [{ start: { line: 1, character: 15 }, end: { line: 1, character: 18 } }],
+            },
           ],
         },
       ],
@@ -1556,7 +1744,8 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
       operation: "folding_ranges",
       file_path: fixture.filePath,
     });
-    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(resultText(result)).toBe("1-1  const emoji = '😀';");
+    const text = JSON.stringify(result.structuredContent);
     expect(text).toContain('"startCharacter":16');
     expect(text).toContain('"endCharacter":17');
     expect(text).toContain('"startLine":1');
