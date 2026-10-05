@@ -68,6 +68,7 @@ import {
   isLspLocationOperation,
   lspDisplayPath,
 } from "./lsp-location-text.js";
+import { LspPreviewLedger } from "./lsp-preview-ledger.js";
 import {
   lspApproximatePositionsWarning,
   lspStalePositionsWarning,
@@ -364,35 +365,41 @@ async function createLspToolOutput(
   dependencies: LspToolDependencies,
 ) {
   const previewRecords = dependencies.workspaceEdits.takeUnreportedPreviewRecords();
-  const normalizedPreviewRecords = previewRecords.map((record) =>
-    Value.Parse(LspWorkspaceEditPreviewRecordSchema, record),
-  );
-  const mergedDetails =
-    normalizedPreviewRecords.length === 0
-      ? details
-      : {
-          ...details,
-          preview_records: [...(details.preview_records ?? []), ...normalizedPreviewRecords],
-        };
-  const previewNotice =
-    previewRecords.length === 0
-      ? ""
-      : `\n\nServer Workspace Edit Preview${previewRecords.length === 1 ? "" : "s"}: ${previewRecords
-          .map(({ preview_id: previewId }) => previewId)
-          .join(", ")}`;
-  const structuredWithPreviews =
-    previewRecords.length === 0
-      ? structured
-      : {
-          ...structured,
-          server_preview_ids: previewRecords.map(({ preview_id: previewId }) => previewId),
-        };
-  return createBaseLspToolOutput(
-    `${text}${previewNotice}`,
-    mergedDetails,
-    structuredWithPreviews,
-    dependencies.sessionFiles,
-  );
+  try {
+    const normalizedPreviewRecords = previewRecords.map((record) =>
+      Value.Parse(LspWorkspaceEditPreviewRecordSchema, record),
+    );
+    const mergedDetails =
+      normalizedPreviewRecords.length === 0
+        ? details
+        : {
+            ...details,
+            preview_records: [...(details.preview_records ?? []), ...normalizedPreviewRecords],
+          };
+    const previewNotice =
+      previewRecords.length === 0
+        ? ""
+        : `\n\nServer Workspace Edit Preview${previewRecords.length === 1 ? "" : "s"}: ${previewRecords
+            .map(({ preview_id: previewId }) => previewId)
+            .join(", ")}`;
+    const structuredWithPreviews =
+      previewRecords.length === 0
+        ? structured
+        : {
+            ...structured,
+            server_preview_ids: previewRecords.map(({ preview_id: previewId }) => previewId),
+          };
+    return await createBaseLspToolOutput(
+      `${text}${previewNotice}`,
+      mergedDetails,
+      structuredWithPreviews,
+      dependencies.sessionFiles,
+    );
+  } catch (cause) {
+    // No result carries the taken server-initiated previews, so the next result must.
+    dependencies.workspaceEdits.restoreUnreportedPreviewRecords(previewRecords);
+    throw cause;
+  }
 }
 
 /** What a read's readable model-visible text needs beyond the servers' responses. */
@@ -886,30 +893,50 @@ function statusLanguages(languages: readonly LspServerLanguage[]) {
  */
 async function recordToolPreview(
   dependencies: LspToolDependencies,
+  previews: LspPreviewLedger,
   serverId: string,
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The preview store owns validation of raw server Workspace Edits before filesystem inspection.
   edit: unknown,
   positionEncoding: PositionEncodingKind,
 ): Promise<{ preview: LspWorkspaceEditPreviewRecord; manifest: MutationManifest }> {
-  const preview = await dependencies.workspaceEdits.createPreview({
-    edit,
-    serverId,
-    positionEncoding,
-  });
+  const preview = await previews.createPreview({ edit, serverId, positionEncoding });
+  const manifest = normalizeStoreMutationManifest(
+    dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
+  );
+  return { preview, manifest };
+}
+
+/** The IDs of the Workspace Edit Previews a tool result names, which must stay applicable. */
+function namedPreviewIds(details: LspToolResultDetails): Set<string> {
+  const ids = new Set<string>();
+  if (details.kind === "workspace_edit_preview") ids.add(details.preview_id);
+  for (const { preview_id: previewId } of details.preview_records ?? []) ids.add(previewId);
+  return ids;
+}
+
+/**
+ * Run a preview-creating operation with a `LspPreviewLedger`. The previews it creates stay
+ * applicable only if the returned result names them; whatever else it created is discarded
+ * when the call ends, whether it returns or throws. Every error propagates unchanged.
+ */
+async function withPreviewLedger(
+  dependencies: LspToolDependencies,
+  run: (previews: LspPreviewLedger) => Promise<AgentToolResult<LspToolResultDetails>>,
+): Promise<AgentToolResult<LspToolResultDetails>> {
+  const previews = new LspPreviewLedger(dependencies.workspaceEdits);
+  let named = new Set<string>();
   try {
-    dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
-    const manifest = normalizeStoreMutationManifest(
-      dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
-    );
-    return { preview, manifest };
-  } catch (cause) {
-    dependencies.workspaceEdits.discardPreview(preview.preview_id);
-    throw cause;
+    const result = await run(previews);
+    named = namedPreviewIds(result.details);
+    return result;
+  } finally {
+    previews.discardUnnamed(named);
   }
 }
 
 async function workspacePreviewOutput(
   dependencies: LspToolDependencies,
+  previews: LspPreviewLedger,
   operation: "format_document" | "format_range" | "format_on_type" | "rename",
   route: LspServerRoute,
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The preview store owns validation of raw server Workspace Edits before filesystem inspection.
@@ -920,6 +947,7 @@ async function workspacePreviewOutput(
   const { serverId, rootPath } = route;
   const { preview, manifest } = await recordToolPreview(
     dependencies,
+    previews,
     serverId,
     edit,
     positionEncoding,
@@ -1283,6 +1311,7 @@ async function executeWorkspaceSymbols(
 
 async function executeFormattingPreview(
   dependencies: LspToolDependencies,
+  previews: LspPreviewLedger,
   parameters: Extract<
     LspToolParameters,
     { operation: "format_document" | "format_range" | "format_on_type" }
@@ -1332,6 +1361,7 @@ async function executeFormattingPreview(
   const { edits, uri } = result.value;
   return workspacePreviewOutput(
     dependencies,
+    previews,
     parameters.operation,
     route,
     workspaceEditFromTextEdits(uri, edits),
@@ -1341,6 +1371,7 @@ async function executeFormattingPreview(
 
 async function executeRenamePreview(
   dependencies: LspToolDependencies,
+  previews: LspPreviewLedger,
   parameters: Extract<LspToolParameters, { operation: "rename" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
@@ -1369,6 +1400,7 @@ async function executeRenamePreview(
   if (edit === null) throw piLspError("rename returned no Workspace Edit Preview");
   return workspacePreviewOutput(
     dependencies,
+    previews,
     "rename",
     route,
     edit,
@@ -1445,10 +1477,12 @@ function matchesRequestedKind(kind: string | undefined, requested: readonly stri
 
 /**
  * Request one Server Instance's code actions and preview every edit-bearing action. Servers may
- * ignore `only_kinds`, so the matching is repeated here before any preview is created.
+ * ignore `only_kinds`, so the matching is repeated here before any preview is created. Previews
+ * are recorded in the call's ledger, which discards those the final result does not name.
  */
 async function serverCodeActions(
   dependencies: LspToolDependencies,
+  previews: LspPreviewLedger,
   parameters: Extract<LspToolParameters, { operation: "code_actions" }>,
   prepared: PreparedDocument,
   signal: AbortSignal | undefined,
@@ -1485,57 +1519,50 @@ async function serverCodeActions(
   }
   const results: CodeActionResult[] = [];
   const previewRecords: LspWorkspaceEditPreviewRecord[] = [];
-  try {
-    for (const action of Array.isArray(actions) ? actions : []) {
-      const record = protocolRecord(action);
-      if (record === undefined) continue;
-      const kind = protocolString(record.kind);
-      const title = protocolString(record.title);
-      if (record.command !== undefined || record.edit === undefined) {
-        results.push({
-          server_id: route.serverId,
-          applicable: false,
-          command: record.command,
-          kind,
-          title,
-        });
-        continue;
-      }
-      try {
-        const { preview, manifest } = await recordToolPreview(
-          dependencies,
-          route.serverId,
-          record.edit,
-          client.positionEncoding,
-        );
-        previewRecords.push(preview);
-        results.push({
-          server_id: route.serverId,
-          applicable: true,
-          kind,
-          mutation_manifest: manifest,
-          preview_id: preview.preview_id,
-          summary: preview.summary,
-          title,
-        });
-      } catch (cause) {
-        // The server answered; only this action's edit cannot become a preview.
-        if (!(cause instanceof LspWorkspaceEditError)) throw cause;
-        results.push({
-          server_id: route.serverId,
-          applicable: false,
-          error: cause.message,
-          kind,
-          title,
-        });
-      }
+  for (const action of Array.isArray(actions) ? actions : []) {
+    const record = protocolRecord(action);
+    if (record === undefined) continue;
+    const kind = protocolString(record.kind);
+    const title = protocolString(record.title);
+    if (record.command !== undefined || record.edit === undefined) {
+      results.push({
+        server_id: route.serverId,
+        applicable: false,
+        command: record.command,
+        kind,
+        title,
+      });
+      continue;
     }
-  } catch (cause) {
-    // No result will name the previews of this failed listing, so none may remain applicable.
-    for (const { preview_id: previewId } of previewRecords) {
-      dependencies.workspaceEdits.discardPreview(previewId);
+    try {
+      const { preview, manifest } = await recordToolPreview(
+        dependencies,
+        previews,
+        route.serverId,
+        record.edit,
+        client.positionEncoding,
+      );
+      previewRecords.push(preview);
+      results.push({
+        server_id: route.serverId,
+        applicable: true,
+        kind,
+        mutation_manifest: manifest,
+        preview_id: preview.preview_id,
+        summary: preview.summary,
+        title,
+      });
+    } catch (cause) {
+      // The server answered; only this action's edit cannot become a preview.
+      if (!(cause instanceof LspWorkspaceEditError)) throw cause;
+      results.push({
+        server_id: route.serverId,
+        applicable: false,
+        error: cause.message,
+        kind,
+        title,
+      });
     }
-    throw cause;
   }
   return { actions: results, previewRecords };
 }
@@ -1546,6 +1573,7 @@ async function serverCodeActions(
  */
 async function executeCodeActions(
   dependencies: LspToolDependencies,
+  previews: LspPreviewLedger,
   parameters: Extract<LspToolParameters, { operation: "code_actions" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
@@ -1558,6 +1586,7 @@ async function executeCodeActions(
     async (client, route) =>
       serverCodeActions(
         dependencies,
+        previews,
         parameters,
         await prepareLspDocument(client, route, filePath),
         signal,
@@ -1783,11 +1812,17 @@ async function executeLspOperation(
     case "format_document":
     case "format_range":
     case "format_on_type":
-      return executeFormattingPreview(dependencies, parameters, context, signal);
+      return withPreviewLedger(dependencies, (previews) =>
+        executeFormattingPreview(dependencies, previews, parameters, context, signal),
+      );
     case "rename":
-      return executeRenamePreview(dependencies, parameters, context, signal);
+      return withPreviewLedger(dependencies, (previews) =>
+        executeRenamePreview(dependencies, previews, parameters, context, signal),
+      );
     case "code_actions":
-      return executeCodeActions(dependencies, parameters, context, signal);
+      return withPreviewLedger(dependencies, (previews) =>
+        executeCodeActions(dependencies, previews, parameters, context, signal),
+      );
     case "apply":
       return executeApplyPreview(dependencies, parameters, signal);
   }

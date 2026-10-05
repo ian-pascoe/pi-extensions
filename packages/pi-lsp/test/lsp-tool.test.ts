@@ -13,13 +13,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import {
   type Diagnostic,
   PositionEncodingKind,
   type ServerCapabilities,
   type WorkspaceEdit,
 } from "vscode-languageserver-protocol/node";
+import { LspInputError } from "../src/lsp-input-error.js";
 import {
   LspServerClientError,
   type LspDocumentDiagnosticResult,
@@ -1969,6 +1970,424 @@ describe("registered LSP tool", () => {
       const first = await createPreview.mock.results[0]?.value;
       expect(first).toBeDefined();
       expect(() => store.prepareMutationManifest(first.preview_id)).toThrow();
+      await fixture.close();
+    });
+  });
+
+  describe("previews that no result names", () => {
+    const insertion = (uri: string) => ({
+      changes: {
+        [uri]: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+            newText: "// edit\n",
+          },
+        ],
+      },
+    });
+
+    /** The IDs of every preview the store created while the spy was installed. */
+    async function createdPreviewIds(
+      createPreview: MockInstance<LspWorkspaceEditStore["createPreview"]>,
+    ): Promise<string[]> {
+      const settled = await Promise.allSettled(
+        createPreview.mock.results.flatMap((entry) =>
+          entry.type === "return" ? [entry.value] : [],
+        ),
+      );
+      return settled.flatMap((entry) =>
+        entry.status === "fulfilled" ? [entry.value.preview_id] : [],
+      );
+    }
+
+    function expectDiscarded(store: LspWorkspaceEditStore, ids: readonly string[]): void {
+      expect(ids.length).toBeGreaterThan(0);
+      for (const id of ids) expect(() => store.prepareMutationManifest(id)).toThrow();
+    }
+
+    /** A client whose copy of the document has one line, so line 2 is past the end of it. */
+    function singleLineDocumentClient(delayMs = 0): RecordingLspClient {
+      return new (class extends RecordingLspClient {
+        override async synchronizeDocument(
+          filePath: string,
+          languageId: string,
+        ): Promise<LspSynchronizedDocument> {
+          const document = await super.synchronizeDocument(filePath, languageId);
+          await new Promise((done) => setTimeout(done, delayMs));
+          return { ...document, text: "x" };
+        }
+      })();
+    }
+
+    test("discards a server's previews when another server then raises an input error", async () => {
+      const fixture = await createToolFixture(["typescript", "oxlint"]);
+      const uri = pathToFileURL(fixture.filePath).href;
+      const typescript = new RecordingLspClient();
+      typescript.responseByMethod.set("textDocument/codeAction", [
+        { title: "First fix", kind: "quickfix", edit: insertion(uri) },
+        { title: "Second fix", kind: "quickfix", edit: insertion(uri) },
+      ]);
+      // Rejects only after typescript has answered and created its previews.
+      const oxlint = singleLineDocumentClient(30);
+      const clients = new Map([
+        ["typescript", typescript],
+        ["oxlint", oxlint],
+      ]);
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd: fixture.context.cwd,
+        settings: resolvedSettings(["typescript", "oxlint"]),
+        startClient: async ({ definition }) => clients.get(definition.id) ?? typescript,
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+      const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
+
+      const failure = await executeTool(
+        fixture,
+        {
+          operation: "code_actions",
+          file_path: fixture.filePath,
+          range: { start: { line: 2, character: 1 }, end: { line: 2, character: 1 } },
+        },
+        dependencies,
+      ).catch((cause: unknown) => cause);
+
+      expect(failure).toBeInstanceOf(LspInputError);
+      const created = await createdPreviewIds(createPreview);
+      expect(created).toHaveLength(2);
+      expectDiscarded(dependencies.workspaceEdits, created);
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("discards a server's previews, created late, when another server raises an input error", async () => {
+      const fixture = await createToolFixture(["typescript", "oxlint"]);
+      const uri = pathToFileURL(fixture.filePath).href;
+      const typescript = new RecordingLspClient();
+      // Answers after the other server has already rejected the call.
+      typescript.responderByMethod.set("textDocument/codeAction", async () => {
+        await new Promise((done) => setTimeout(done, 30));
+        return [
+          { title: "First fix", kind: "quickfix", edit: insertion(uri) },
+          { title: "Second fix", kind: "quickfix", edit: insertion(uri) },
+        ];
+      });
+      const oxlint = singleLineDocumentClient();
+      const clients = new Map([
+        ["typescript", typescript],
+        ["oxlint", oxlint],
+      ]);
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd: fixture.context.cwd,
+        settings: resolvedSettings(["typescript", "oxlint"]),
+        startClient: async ({ definition }) => clients.get(definition.id) ?? typescript,
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+      const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
+
+      const failure = await executeTool(
+        fixture,
+        {
+          operation: "code_actions",
+          file_path: fixture.filePath,
+          range: { start: { line: 2, character: 1 }, end: { line: 2, character: 1 } },
+        },
+        dependencies,
+      ).catch((cause: unknown) => cause);
+
+      // The input error propagates unchanged: no server label, no troubleshooting hint.
+      expect(failure).toBeInstanceOf(LspInputError);
+      expect(String(failure)).toContain("past the end of the document");
+      expect(String(failure)).not.toContain(TROUBLESHOOTING_HINT);
+      expect(typescript.requests).toContain("textDocument/codeAction");
+      expectDiscarded(dependencies.workspaceEdits, await createdPreviewIds(createPreview));
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("discards the previews of a failed server and keeps those the result names", async () => {
+      const fixture = await createToolFixture(["typescript", "oxlint"]);
+      const uri = pathToFileURL(fixture.filePath).href;
+      const typescript = new RecordingLspClient();
+      typescript.responseByMethod.set("textDocument/codeAction", [
+        { title: "Good fix", kind: "quickfix", edit: insertion(uri) },
+      ]);
+      const oxlint = new RecordingLspClient();
+      oxlint.responseByMethod.set("textDocument/codeAction", [
+        { title: "First fix", kind: "quickfix", edit: insertion(uri) },
+        { title: "Second fix", kind: "quickfix", edit: insertion(uri) },
+      ]);
+      const clients = new Map([
+        ["typescript", typescript],
+        ["oxlint", oxlint],
+      ]);
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd: fixture.context.cwd,
+        settings: resolvedSettings(["typescript", "oxlint"]),
+        startClient: async ({ definition }) => clients.get(definition.id) ?? typescript,
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+      const store = dependencies.workspaceEdits;
+      const realCreatePreview = store.createPreview.bind(store);
+      const createPreview = vi.spyOn(store, "createPreview");
+      // oxlint's listing fails after its first preview; typescript's is unaffected.
+      let oxlintPreviews = 0;
+      createPreview.mockImplementation(async (input) => {
+        if (input.serverId === "oxlint" && ++oxlintPreviews === 2) {
+          throw new Error("expected store failure");
+        }
+        return realCreatePreview(input);
+      });
+
+      const result = await executeTool(
+        fixture,
+        { operation: "code_actions", file_path: fixture.filePath, range: range() },
+        dependencies,
+      );
+
+      const { actions } = Value.Parse(LspCodeActionsOutputSchema, result.structuredContent);
+      const named = actions.flatMap((action) => action.preview_id ?? []);
+      expect(named).toHaveLength(1);
+      const created = await createdPreviewIds(createPreview);
+      expect(created).toHaveLength(2);
+      expect(() => store.prepareMutationManifest(named[0] ?? "")).not.toThrow();
+      expectDiscarded(
+        store,
+        created.filter((id) => !named.includes(id)),
+      );
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("discards code action previews when the Result Spill cannot be written", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      fixture.client.responseByMethod.set(
+        "textDocument/codeAction",
+        Array.from({ length: 3 }, (_unused, index) => ({
+          title: `Fix ${index} ${"x".repeat(40 * 1024)}`,
+          kind: "quickfix",
+          edit: insertion(uri),
+        })),
+      );
+      const sessionFiles: LspSessionFiles = {
+        ...fixture.sessionFiles,
+        writeResultSpill: async () => {
+          throw new Error("disk full");
+        },
+      };
+      const dependencies = { ...fixture.dependencies, sessionFiles };
+      const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
+
+      await expect(
+        executeTool(
+          fixture,
+          { operation: "code_actions", file_path: fixture.filePath, range: range() },
+          dependencies,
+        ),
+      ).rejects.toThrow("disk full");
+
+      const created = await createdPreviewIds(createPreview);
+      expect(created).toHaveLength(3);
+      expectDiscarded(dependencies.workspaceEdits, created);
+      await fixture.close();
+    });
+
+    test.each([
+      [
+        "rename",
+        {
+          operation: "rename",
+          file_path: "",
+          line: 1,
+          character: 1,
+          new_name: "renamed",
+        },
+        "textDocument/rename",
+      ],
+      [
+        "format_document",
+        { operation: "format_document", file_path: "", tab_size: 2, insert_spaces: true },
+        "textDocument/formatting",
+      ],
+      [
+        "format_range",
+        {
+          operation: "format_range",
+          file_path: "",
+          range: range(),
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        "textDocument/rangeFormatting",
+      ],
+      [
+        "format_on_type",
+        {
+          operation: "format_on_type",
+          file_path: "",
+          line: 1,
+          character: 1,
+          trigger_character: ";",
+          tab_size: 2,
+          insert_spaces: true,
+        },
+        "textDocument/onTypeFormatting",
+      ],
+    ] as const)(
+      "discards the %s preview when its Result Spill cannot be written",
+      async (_name, call, method) => {
+        const fixture = await createToolFixture();
+        const uri = pathToFileURL(fixture.filePath).href;
+        // The preview summary is a patch of 3,000 added lines, beyond the model-visible limit.
+        const textEdit = {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+          newText: "added\n".repeat(3000),
+        };
+        fixture.client.responseByMethod.set(
+          method,
+          method === "textDocument/rename" ? { changes: { [uri]: [textEdit] } } : [textEdit],
+        );
+        const sessionFiles: LspSessionFiles = {
+          ...fixture.sessionFiles,
+          writeResultSpill: async () => {
+            throw new Error("disk full");
+          },
+        };
+        const dependencies = { ...fixture.dependencies, sessionFiles };
+        const createPreview = vi.spyOn(dependencies.workspaceEdits, "createPreview");
+
+        await expect(
+          executeTool(fixture, { ...call, file_path: fixture.filePath }, dependencies),
+        ).rejects.toThrow("disk full");
+
+        expectDiscarded(dependencies.workspaceEdits, await createdPreviewIds(createPreview));
+        await fixture.close();
+      },
+    );
+
+    test("holds a server-initiated preview for the next result when a preview call fails", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      const held = await fixture.dependencies.workspaceEdits.createPreview({
+        edit: insertion(uri),
+        serverId: "typescript",
+      });
+      const sessionFiles: LspSessionFiles = {
+        ...fixture.sessionFiles,
+        writeResultSpill: async () => {
+          throw new Error("disk full");
+        },
+      };
+      // A 3,000-line summary makes the failing call's output exceed the model-visible limit.
+      fixture.client.responseByMethod.set("textDocument/rename", {
+        changes: {
+          [uri]: [
+            {
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+              newText: "added\n".repeat(3000),
+            },
+          ],
+        },
+      });
+
+      await expect(
+        executeTool(
+          fixture,
+          {
+            operation: "rename",
+            file_path: fixture.filePath,
+            line: 1,
+            character: 1,
+            new_name: "renamed",
+          },
+          { ...fixture.dependencies, sessionFiles },
+        ),
+      ).rejects.toThrow("disk full");
+
+      const next = await executeTool(fixture, { operation: "status" });
+      expect(next.structuredContent).toMatchObject({ server_preview_ids: [held.preview_id] });
+      expect(() =>
+        fixture.dependencies.workspaceEdits.prepareMutationManifest(held.preview_id),
+      ).not.toThrow();
+      await fixture.close();
+    });
+
+    test("keeps and applies one call's preview when a concurrent call fails", async () => {
+      const fixture = await createToolFixture();
+      const otherPath = join(fixture.context.cwd, "other.ts");
+      await writeFile(otherPath, "const other = 1;\n");
+      const failingUri = pathToFileURL(fixture.filePath).href;
+      const keptUri = pathToFileURL(otherPath).href;
+      const delay = (ms: number) => new Promise((done) => setTimeout(done, ms));
+      // The failing call is listed first and fails before the other call creates its preview.
+      fixture.client.responderByMethod.set("textDocument/codeAction", async (parameters) => {
+        const requested = JSON.stringify(parameters).includes("source.ts") ? failingUri : keptUri;
+        if (requested === failingUri) {
+          return [
+            { title: "First fix", kind: "quickfix", edit: insertion(failingUri) },
+            { title: "Second fix", kind: "quickfix", edit: insertion(failingUri) },
+          ];
+        }
+        await delay(30);
+        return [{ title: "Kept fix", kind: "quickfix", edit: insertion(keptUri) }];
+      });
+      const store = fixture.dependencies.workspaceEdits;
+      const realCreatePreview = store.createPreview.bind(store);
+      const createPreview = vi.spyOn(store, "createPreview");
+      let failingPreviews = 0;
+      createPreview.mockImplementation(async (input) => {
+        const preview = await realCreatePreview(input);
+        if (JSON.stringify(input.edit).includes("source.ts") && ++failingPreviews === 2) {
+          throw new Error("expected store failure");
+        }
+        return preview;
+      });
+
+      const [failed, kept] = await Promise.allSettled([
+        executeTool(fixture, {
+          operation: "code_actions",
+          file_path: fixture.filePath,
+          range: range(),
+        }),
+        executeTool(fixture, {
+          operation: "code_actions",
+          file_path: otherPath,
+          range: range(),
+        }),
+      ]);
+
+      expect(failed.status).toBe("rejected");
+      if (kept.status !== "fulfilled") throw new Error("Expected the concurrent call to succeed");
+      const { actions } = Value.Parse(LspCodeActionsOutputSchema, kept.value.structuredContent);
+      const previewId = actions[0]?.preview_id;
+      if (previewId === undefined) throw new Error("Expected a preview");
+      const applied = await executeTool(fixture, {
+        operation: "apply",
+        ...prepareApply(fixture, { preview_id: previewId }),
+      });
+      expect(applied.details).toMatchObject({ kind: "workspace_edit_apply", state: "applied" });
+      expect(await readFile(otherPath, "utf8")).toBe("// edit\nconst other = 1;\n");
+      await fixture.close();
+    });
+
+    test("keeps the preview a rename result names", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      fixture.client.responseByMethod.set("textDocument/rename", insertion(uri));
+
+      const result = await executeTool(fixture, {
+        operation: "rename",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 1,
+        new_name: "renamed",
+      });
+
+      if (result.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
+      const previewId = result.details.preview_id;
+      expect(() =>
+        fixture.dependencies.workspaceEdits.prepareMutationManifest(previewId),
+      ).not.toThrow();
       await fixture.close();
     });
   });

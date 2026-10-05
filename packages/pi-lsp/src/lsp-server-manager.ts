@@ -637,7 +637,8 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   /**
    * Query matching capable instances while retaining independent operational failures. An
    * `LspInputError` or a cancellation from `operation` rejects the whole read: it is the
-   * caller's input or abort, not a server failure.
+   * caller's input or abort, not a server failure. The read rejects only after every operation
+   * that already started has answered or failed, and it starts no operation after the rejection.
    */
   async runRead<T>(
     filePath: string,
@@ -649,17 +650,38 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     if (selection.kind === "failure") return { failures: [selection.failure], successes: [] };
     const { routes } = selection;
 
+    // Once an operation rejects, no further operation starts, but those that already started
+    // answer or fail before this read rejects: one still running could otherwise create state,
+    // such as Workspace Edit Previews, after its caller has already cleaned up. A server that is
+    // still starting is not waited for; its start continues, shared and cached, in the background.
+    // The first rejection in time is the one that propagates, as it was when the read rejected at once.
+    let rejection: { readonly reason: unknown } | undefined;
+    let markRejected: () => void = () => undefined;
+    const rejected = new Promise<undefined>((resolveRejected) => {
+      markRejected = () => resolveRejected(undefined);
+    });
     const outcomes = await Promise.all(
       routes.map(async (route): Promise<LspServerSuccess<T> | LspServerFailure | undefined> => {
-        const resolution = await this.ensureClient(route);
-        if (resolution.kind === "failure") return resolution.failure;
-        if (!capability.isSupportedBy(resolution.instance.client)) {
-          if (serverId === undefined) return undefined;
-          return incapableServerFailure(route.serverId, capability);
+        try {
+          const starting = this.ensureClient(route);
+          const resolution = await Promise.race([starting, rejected]);
+          // A start that loses the race may still fail later; that failure is not this read's.
+          starting.catch(() => undefined);
+          if (resolution === undefined || rejection !== undefined) return undefined;
+          if (resolution.kind === "failure") return resolution.failure;
+          if (!capability.isSupportedBy(resolution.instance.client)) {
+            if (serverId === undefined) return undefined;
+            return incapableServerFailure(route.serverId, capability);
+          }
+          return await runServerOperation(resolution.instance, operation);
+        } catch (reason) {
+          rejection ??= { reason };
+          markRejected();
+          return undefined;
         }
-        return runServerOperation(resolution.instance, operation);
       }),
     );
+    if (rejection !== undefined) throw rejection.reason;
 
     const failures: LspServerFailure[] = [];
     const successes: LspServerSuccess<T>[] = [];
