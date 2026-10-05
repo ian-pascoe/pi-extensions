@@ -9,8 +9,13 @@ import type {
   LocationLink,
 } from "vscode-languageserver-protocol";
 import { DefinitionRequest } from "vscode-languageserver-protocol";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { LspServerClient } from "../src/lsp-server-client.js";
+import { LspServerManager } from "../src/lsp-server-manager.js";
+import { createLspSessionFiles } from "../src/lsp-session-files.js";
+import { createLspToolDefinition, type LspToolServerClient } from "../src/lsp-tool.js";
+import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const temporaryDirectories: string[] = [];
@@ -100,5 +105,106 @@ describe("real TypeScript 7 language server client", () => {
     clients.splice(clients.indexOf(client), 1);
     expect(client.isRunning).toBe(false);
     if (processId !== undefined) expect(processExists(processId)).toBe(false);
+  }, 60_000);
+
+  test("returns a diagnostic-dependent quick fix as a Workspace Edit Preview", async () => {
+    const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
+    temporaryDirectories.push(projectDirectory);
+    await writeFile(
+      resolve(projectDirectory, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
+    );
+    await writeFile(
+      resolve(projectDirectory, "helper.ts"),
+      "export function missingName(): number {\n  return 1;\n}\n",
+    );
+    const filePath = resolve(projectDirectory, "example.ts");
+    await writeFile(filePath, "export const value: number = missingName();\n", "utf8");
+
+    const sessionFiles = await createLspSessionFiles(projectDirectory);
+    const workspaceEdits = new LspWorkspaceEditStore();
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd: projectDirectory,
+      settings: {
+        enablement: new Map(),
+        warnings: [],
+        timeouts: {
+          initializeMs: 45_000,
+          requestMs: 5_000,
+          diagnosticsMs: 8_000,
+          shutdownMs: 5_000,
+        },
+        servers: new Map([
+          [
+            "typescript",
+            {
+              id: "typescript",
+              command: resolve(repositoryRoot, "node_modules/.bin/tsc"),
+              args: ["--lsp", "--stdio"],
+              environment: {},
+              languages: [{ extensions: [".ts"], fileNames: [], languageId: "typescript" }],
+              requireRootMarker: false,
+              rootMarkers: ["tsconfig.json"],
+            },
+          ],
+        ]),
+      },
+      startClient: async ({ definition, onUnavailable, rootPath, timeouts, signal }) =>
+        LspServerClient.start({
+          serverId: definition.id,
+          rootPath,
+          command: definition.command,
+          args: definition.args,
+          environment: { ...process.env },
+          initializationOptions: {},
+          settings: {},
+          timeouts,
+          signal,
+          stderrPath: resolve(projectDirectory, ".pi-lsp/typescript.stderr.log"),
+          onUnavailable,
+          onWorkspaceEdit: async () => {
+            throw new Error("TypeScript integration test: unexpected server workspace edit");
+          },
+        }),
+    });
+    try {
+      const tool = createLspToolDefinition("code_actions", () => ({
+        manager,
+        workspaceEdits,
+        sessionFiles,
+      }));
+      // SAFETY: Tool execution only reads cwd from ExtensionContext.
+      const context = { cwd: projectDirectory } as ExtensionToolContext;
+
+      // `missingName` spans one-based characters 30 through 40 on line 1; the end is exclusive.
+      const result = await tool.execute(
+        "tool-call",
+        {
+          file_path: filePath,
+          range: { start: { line: 1, character: 30 }, end: { line: 1, character: 41 } },
+          only_kinds: ["quickfix"],
+        },
+        undefined,
+        undefined,
+        context,
+      );
+
+      expect(result.structuredContent).toMatchObject({
+        server_id: "typescript",
+        actions: expect.arrayContaining([
+          expect.objectContaining({
+            applicable: true,
+            kind: "quickfix",
+            title: 'Add import from "./helper"',
+            summary: expect.stringContaining('+import { missingName } from "./helper";'),
+            preview_id: expect.any(String),
+            mutation_manifest: [{ operation: "modify", path: filePath }],
+          }),
+        ]),
+      });
+    } finally {
+      await manager.shutdown();
+      await sessionFiles.close();
+    }
   }, 60_000);
 });

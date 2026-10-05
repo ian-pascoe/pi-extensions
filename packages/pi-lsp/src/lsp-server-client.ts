@@ -161,6 +161,8 @@ export class LspServerClientError extends Error {
 
 interface OpenDocumentState extends LspSynchronizedDocument {
   readonly languageId: string;
+  /** Diagnostics revision before this version was sent; later pushes may describe it. */
+  readonly synchronizedRevision: number;
 }
 
 interface PushDiagnosticsState {
@@ -573,6 +575,7 @@ export class LspServerClient {
       version: (existing?.version ?? 0) + 1,
       text,
       languageId,
+      synchronizedRevision: this.diagnosticsRevision,
     };
 
     if (this.textDocumentSyncKind !== TextDocumentSyncKind.None) {
@@ -625,7 +628,11 @@ export class LspServerClient {
     this.pullDiagnostics.delete(uri);
   }
 
-  /** Synchronize a document, then wait for authoritative fresh push or pull diagnostics. */
+  /**
+   * Synchronize a document, then wait for authoritative fresh push or pull diagnostics. A push
+   * counts only when it is newer than the last cached push for the file, so a caller that just
+   * changed a file on disk never receives diagnostics for unchanged content it already saw.
+   */
   async documentDiagnostics(
     filePath: string,
     languageId: string,
@@ -634,6 +641,36 @@ export class LspServerClient {
     const uri = pathToFileURL(resolve(filePath)).href;
     const previousRevision = this.pushDiagnostics.get(uri)?.revision ?? 0;
     const document = await this.synchronizeDocument(filePath, languageId);
+    return this.awaitDocumentDiagnostics(document, previousRevision, signal);
+  }
+
+  /**
+   * Return LSP Diagnostics for a synchronized document version: a cached push received since that
+   * version was sent, otherwise fresh push or pull diagnostics. A timeout, or a version already
+   * superseded by a later synchronization, returns no diagnostics.
+   */
+  async currentDocumentDiagnostics(
+    document: LspSynchronizedDocument,
+    signal?: AbortSignal,
+  ): Promise<readonly Diagnostic[]> {
+    const open = this.openDocuments.get(document.uri);
+    if (open?.version !== document.version) return [];
+    const { synchronizedRevision } = open;
+    const cached = this.currentPushDiagnostics(
+      document.uri,
+      document.version,
+      synchronizedRevision,
+    );
+    if (cached !== undefined) return cached;
+    const result = await this.awaitDocumentDiagnostics(document, synchronizedRevision, signal);
+    return result.diagnostics;
+  }
+
+  private async awaitDocumentDiagnostics(
+    document: LspSynchronizedDocument,
+    previousRevision: number,
+    signal: AbortSignal | undefined,
+  ): Promise<LspDocumentDiagnosticResult> {
     const candidates: Array<Promise<LspDocumentDiagnosticResult>> = [
       this.waitForPushDiagnostics(document.uri, document.version, previousRevision, signal),
     ];
@@ -980,13 +1017,9 @@ export class LspServerClient {
   ): Promise<LspDocumentDiagnosticResult> {
     const deadline = Date.now() + this.options.timeouts.diagnosticsMs;
     for (;;) {
-      const current = this.pushDiagnostics.get(uri);
-      if (
-        current !== undefined &&
-        current.revision > previousRevision &&
-        (current.version === undefined || current.version === version)
-      ) {
-        return { status: "fresh", source: "push", diagnostics: current.diagnostics };
+      const current = this.currentPushDiagnostics(uri, version, previousRevision);
+      if (current !== undefined) {
+        return { status: "fresh", source: "push", diagnostics: current };
       }
 
       const remainingMs = deadline - Date.now();
@@ -1008,6 +1041,22 @@ export class LspServerClient {
         }
       }
     }
+  }
+
+  private currentPushDiagnostics(
+    uri: string,
+    version: number,
+    previousRevision: number,
+  ): readonly Diagnostic[] | undefined {
+    const current = this.pushDiagnostics.get(uri);
+    if (
+      current !== undefined &&
+      current.revision > previousRevision &&
+      (current.version === undefined || current.version === version)
+    ) {
+      return current.diagnostics;
+    }
+    return undefined;
   }
 
   private async pullDocumentDiagnostics(

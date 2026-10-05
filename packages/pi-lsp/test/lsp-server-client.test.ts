@@ -276,6 +276,71 @@ describe("LspServerClient", () => {
     expect(result.diagnostics.map(({ message }) => message)).toEqual(["fresh diagnostic"]);
   });
 
+  test("returns cached current push diagnostics without waiting for a newer push", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "current.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      diagnosticsMs: 200,
+      environment: { FAKE_DIAGNOSTICS: "one", FAKE_NO_PULL: "1", FAKE_STALE_PUSH: "1" },
+    });
+
+    const first = await client.currentDocumentDiagnostics(
+      await client.synchronizeDocument(filePath, "typescript"),
+    );
+    expect(first.map(({ message }) => message)).toEqual(["fresh diagnostic"]);
+    // The unchanged document gets no newer push; documentDiagnostics would time out here.
+    const second = await client.currentDocumentDiagnostics(
+      await client.synchronizeDocument(filePath, "typescript"),
+    );
+    expect(second.map(({ message }) => message)).toEqual(["fresh diagnostic"]);
+  });
+
+  test("pulls current diagnostics from a pull-only server", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "pull.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_DIAGNOSTICS: "one", FAKE_PUSH: "none" },
+    });
+
+    const diagnostics = await client.currentDocumentDiagnostics(
+      await client.synchronizeDocument(filePath, "typescript"),
+    );
+    expect(diagnostics.map(({ message }) => message)).toEqual(["fake diagnostic"]);
+  });
+
+  test("returns no current diagnostics for a superseded document version", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "superseded.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      environment: { FAKE_DIAGNOSTICS: "one", FAKE_NO_PULL: "1" },
+    });
+
+    const superseded = await client.synchronizeDocument(filePath, "typescript");
+    await writeFile(filePath, "export const value = false;\n");
+    const current = await client.synchronizeDocument(filePath, "typescript");
+
+    await expect(client.currentDocumentDiagnostics(superseded)).resolves.toEqual([]);
+    const diagnostics = await client.currentDocumentDiagnostics(current);
+    expect(diagnostics.map(({ message }) => message)).toEqual(["fake diagnostic"]);
+  });
+
+  test("returns no current diagnostics when the diagnostics budget expires", async () => {
+    const directory = await createTemporaryDirectory();
+    const filePath = resolve(directory, "silent.ts");
+    await writeFile(filePath, "export const value = true;\n");
+    const client = await startFakeServer(directory, {
+      diagnosticsMs: 50,
+      environment: { FAKE_DELAY_DIAGNOSTICS: "1", FAKE_PUSH: "none" },
+    });
+
+    await expect(
+      client.currentDocumentDiagnostics(await client.synchronizeDocument(filePath, "typescript")),
+    ).resolves.toEqual([]);
+  });
+
   test("omits stale versioned pushes from cached workspace diagnostics", async () => {
     const directory = await createTemporaryDirectory();
     const filePath = resolve(directory, "stale.ts");

@@ -48,6 +48,8 @@ import {
   WorkspaceSymbolRequest,
   WorkspaceSymbolResolveRequest,
   Position,
+  type Diagnostic,
+  type Range,
   type ReferenceParams,
   type ServerCapabilities,
   type TextDocumentPositionParams,
@@ -191,6 +193,11 @@ export interface LspToolServerClient {
     languageId: string,
     signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult>;
+  /** Return LSP Diagnostics for a synchronized document version, cached when possible. */
+  currentDocumentDiagnostics(
+    document: LspSynchronizedDocument,
+    signal?: AbortSignal,
+  ): Promise<readonly Diagnostic[]>;
   /** Return pull workspace diagnostics or the cached push fallback. */
   workspaceDiagnostics(signal?: AbortSignal): Promise<LspWorkspaceDiagnosticResult>;
   /** Gracefully shut down the owned server process. */
@@ -1018,6 +1025,38 @@ async function executeRenamePreview(
   );
 }
 
+function comparePositions(left: Position, right: Position): number {
+  return left.line === right.line ? left.character - right.character : left.line - right.line;
+}
+
+/** Whether two protocol ranges share a position, counting touching endpoints. */
+function rangesOverlap(left: Range, right: Range): boolean {
+  return (
+    comparePositions(left.start, right.end) <= 0 && comparePositions(right.start, left.end) <= 0
+  );
+}
+
+/**
+ * Select the Server Instance's current LSP Diagnostics that overlap a code-action range, so
+ * diagnostic-dependent quick fixes are offered. Any diagnostics failure except cancellation sends
+ * none: refactors and source actions still return, and a failed server surfaces on the
+ * code-action request itself.
+ */
+async function codeActionDiagnostics(
+  prepared: PreparedDocument,
+  range: Range,
+  signal: AbortSignal | undefined,
+): Promise<Diagnostic[]> {
+  let diagnostics: readonly Diagnostic[];
+  try {
+    diagnostics = await prepared.client.currentDocumentDiagnostics(prepared.document, signal);
+  } catch (cause) {
+    if (signal?.aborted === true) throw cause;
+    return [];
+  }
+  return diagnostics.filter((diagnostic) => rangesOverlap(diagnostic.range, range));
+}
+
 async function executeCodeActions(
   dependencies: LspToolDependencies,
   parameters: Extract<LspToolParameters, { operation: "code_actions" }>,
@@ -1033,16 +1072,18 @@ async function executeCodeActions(
   if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
   const { client, route } = resolution.instance;
   const prepared = await prepareLspDocument(client, route, filePath);
+  const range: Range = {
+    start: protocolPosition(prepared, parameters.range.start),
+    end: protocolPosition(prepared, parameters.range.end),
+  };
+  const diagnostics = await codeActionDiagnostics(prepared, range, signal);
   let actions = await client.request(
     CodeActionRequest.method,
     {
       textDocument: { uri: prepared.document.uri },
-      range: {
-        start: protocolPosition(prepared, parameters.range.start),
-        end: protocolPosition(prepared, parameters.range.end),
-      },
+      range,
       context: {
-        diagnostics: [],
+        diagnostics,
         only: parameters.only_kinds,
       },
     },
