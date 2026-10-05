@@ -43,8 +43,9 @@ From this package checkout, load the source directly with
    skips turns whose result you already claimed.
 3. `agent_message` continues an idle child: the result reports
    `disposition: "started-turn"` with the new `turn_id`. A plain
-   `subagent_wait({ agent_id })` now targets that new turn, not the first result
-   again; pass `turn_id` to re-read any retained turn, claimed or not.
+   `subagent_wait({ agent_id })` targets that new turn, not the first result;
+   pass `turn_id` to re-read a turn whose result is still retained, claimed or
+   not.
 4. `subagent_status` inspects children; `subagent_cancel` stops work but keeps
    the session; `subagent_delete` removes it. Deleted IDs cannot be reused.
 
@@ -313,10 +314,12 @@ intermediate Wait Event containing a Coordination Message before the child turn
 settles. That event claims only its message, so later unconsumed messages and the
 terminal result retain automatic fallback. If the turn has already settled, a
 wait returns its terminal result with queued messages in `messages`; waiting
-again for the same settled turn returns the same result. Pass
-optional `turn_id` to address any retained turn exactly, including one whose
-result you already claimed. Without it, waits skip claimed turns and select the
-oldest unclaimed observable turn, falling back to the active, then latest, turn. A caller may have only one outstanding wait for the same source turn; a
+again for the same settled turn returns the same result while it is retained. Pass
+optional `turn_id` to address a retained turn exactly, including one whose
+result you already claimed (a claimed result stays retained until Delivery
+Evidence settles it). Without it, waits skip claimed turns and select the
+oldest unclaimed observable turn, falling back to the active, then latest,
+turn. A caller may have only one outstanding wait for the same source turn; a
 concurrent duplicate is rejected instead of competing for one Wait Event.
 When `timeout_ms` expires, the wait returns an observational `event: "timeout"`
 with the requested turn identity and the same detailed Child Agent status used

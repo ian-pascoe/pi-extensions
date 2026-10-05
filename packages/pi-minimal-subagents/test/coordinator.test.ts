@@ -1504,15 +1504,14 @@ describe("minimal subagents coordinator", () => {
     await again.coordinator.restore(reloaded);
 
     expect(reloaded.wait_claimed_turns).toContain(`worker\u0000${first.turn_id}`);
-    await expect(restored.coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+    // The reload interrupts the second turn and restarts its unsettled message as a newer turn.
+    await expect(again.coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
       event: "timeout",
-      turn_id: started.turn_id,
+      agent: { latest_turn: { turn_id: started.turn_id, status: "interrupted" } },
     });
     await expect(
       again.coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
     ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
-    const waited = await again.coordinator.wait("root", "worker", 1);
-    expect(waited.turn_id).not.toBe(first.turn_id);
   });
 
   it("targets a cancelled new turn after a claimed turn", async () => {

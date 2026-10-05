@@ -98,6 +98,30 @@ describe("minimal subagents delivery ledger", () => {
     ).toBe("child:older");
   });
 
+  it("skips a claimed turn even when a Coordination Message for it is still pending", () => {
+    let ledger = addCoordinationDelivery(createDeliveryLedger(), {
+      destinationAgentId: "root",
+      message: coordinationMessage("child", "child:claimed", "leftover"),
+    }).ledger;
+    ledger = claimDeliveryLedgerTurn(ledger, "child", "child:claimed").ledger;
+    const options = {
+      sourceAgentId: "child",
+      destinationAgentId: "root",
+      waitHandedDeliveryIds: new Set<string>(),
+    };
+
+    // Only an explicit turn_id reaches the claimed turn's leftover message.
+    expect(selectObservableDeliveryTurn(ledger, { ...options, activeTurnId: "child:active" })).toBe(
+      "child:active",
+    );
+    ledger = addTerminalDelivery(ledger, {
+      destinationAgentId: "root",
+      path: "message",
+      result: completedResult("child", "child:unclaimed"),
+    }).ledger;
+    expect(selectObservableDeliveryTurn(ledger, options)).toBe("child:unclaimed");
+  });
+
   it("falls back to the active, then latest, turn when every retained turn is claimed", () => {
     let ledger = addTerminalDelivery(createDeliveryLedger(), {
       destinationAgentId: "root",
