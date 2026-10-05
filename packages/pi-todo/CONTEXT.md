@@ -15,3 +15,7 @@ _Avoid_: Done flag, progress
 **Todo List**:
 The current session branch's collection of Tasks made available to the agent.
 _Avoid_: Task list, plan
+
+**Todo List Snapshot**:
+The hidden, header-labelled message that carries the Todo List's final state for one tool group (or the post-compaction baseline) into the model's context.
+_Avoid_: Todo message, state update

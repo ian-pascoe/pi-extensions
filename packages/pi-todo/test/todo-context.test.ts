@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { projectTodoContext } from "../src/todo-context.js";
 
 type Message = ContextEvent["messages"][number];
+const HEADER = "Todo List state from the pi-todo extension (not a user message):\n";
 function state(manager: SessionManager, title: string | null): string {
   return manager.appendCustomEntry("pi-todo-state", {
     nextId: title === null ? 1 : 2,
@@ -47,16 +48,16 @@ describe("immutable Todo journal projection", () => {
     const incoming = [...manager.buildSessionContext().messages, foreign];
     const result = project(manager, incoming);
     expect(result.slice(0, first.length)).toEqual(first);
-    expect(snapshots(result)).toEqual(["Todo List:\n[ ] #1 First", "Todo List:\n[ ] #1 Second"]);
+    expect(snapshots(result)).toEqual([`${HEADER}[ ] #1 First`, `${HEADER}[ ] #1 Second`]);
     expect(result.at(-1)).toBe(foreign);
     expect(incoming).toHaveLength(3);
     expect(project(manager, result)).toEqual(result);
     state(manager, null);
     state(manager, null);
     expect(snapshots(project(manager))).toEqual([
-      "Todo List:\n[ ] #1 First",
-      "Todo List:\n[ ] #1 Second",
-      "Todo List:\nTodo List is empty",
+      `${HEADER}[ ] #1 First`,
+      `${HEADER}[ ] #1 Second`,
+      `${HEADER}Todo List is empty`,
     ]);
   });
 
@@ -71,11 +72,11 @@ describe("immutable Todo journal projection", () => {
     manager.branch(root);
     state(manager, "Selected");
     const selected = manager.getLeafId()!;
-    expect(snapshots(project(manager))).toEqual(["Todo List:\n[ ] #1 Selected"]);
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Selected`]);
     manager.branch(root);
     expect(snapshots(project(manager))).toEqual([]);
     manager.branch(selected);
-    expect(snapshots(project(manager))).toEqual(["Todo List:\n[ ] #1 Selected"]);
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Selected`]);
   });
 
   it("holds a pre-cutoff baseline fixed while retained states and future updates supersede it", () => {
@@ -88,8 +89,8 @@ describe("immutable Todo journal projection", () => {
     const first = project(manager);
     expect(first.map((m) => m.role)).toEqual(["compactionSummary", "custom", "user", "custom"]);
     expect(snapshots(first)).toEqual([
-      "Todo List:\n[ ] #1 Before cutoff",
-      "Todo List:\n[ ] #1 Retained change",
+      `${HEADER}[ ] #1 Before cutoff`,
+      `${HEADER}[ ] #1 Retained change`,
     ]);
     user(manager, "New request");
     state(manager, "Newest");
@@ -114,8 +115,8 @@ describe("immutable Todo journal projection", () => {
     );
     expect(projected.map((m) => m.role)).toEqual(["compactionSummary", "custom", "user", "custom"]);
     expect(snapshots(projected)).toEqual([
-      "Todo List:\n[ ] #1 Before cutoff",
-      "Todo List:\n[ ] #1 Retained change",
+      `${HEADER}[ ] #1 Before cutoff`,
+      `${HEADER}[ ] #1 Retained change`,
     ]);
   });
 
@@ -124,7 +125,7 @@ describe("immutable Todo journal projection", () => {
     user(manager, "Request");
     const cutoff = state(manager, "First state");
     manager.appendCompaction("State cutoff", cutoff, 1000);
-    expect(snapshots(project(manager))).toEqual(["Todo List:\n[ ] #1 First state"]);
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 First state`]);
     const empty = manager.appendCompaction("Empty Tail", "unused", 1000);
     // Native appendCompaction can express an empty Tail by pointing at the checkpoint itself.
     const entry = manager.getEntry(empty);
@@ -141,29 +142,14 @@ describe("immutable Todo journal projection", () => {
       },
     ];
     expect(snapshots(projectTodoContext(branch, messages))).toEqual([
-      "Todo List:\n[ ] #1 First state",
+      `${HEADER}[ ] #1 First state`,
     ]);
   });
 
-  it("keeps snapshots after all sibling results when tool calls share an ID", () => {
-    const manager = SessionManager.inMemory();
-    user(manager, "Update twice");
+  function assistantCalls(manager: SessionManager, ids: string[]): void {
     manager.appendMessage({
       role: "assistant",
-      content: [
-        {
-          type: "toolCall",
-          id: "same",
-          name: "todo",
-          arguments: { action: "add", title: "First" },
-        },
-        {
-          type: "toolCall",
-          id: "same",
-          name: "todo",
-          arguments: { action: "update", id: 1, title: "Second" },
-        },
-      ],
+      content: ids.map((id) => ({ type: "toolCall", id, name: "todo", arguments: {} })),
       api: "anthropic-messages",
       provider: "anthropic",
       model: "test",
@@ -178,24 +164,26 @@ describe("immutable Todo journal projection", () => {
       stopReason: "toolUse",
       timestamp: 1,
     });
-    state(manager, "First");
+  }
+  function toolResult(manager: SessionManager, id: string): void {
     manager.appendMessage({
       role: "toolResult",
-      toolCallId: "same",
+      toolCallId: id,
       toolName: "todo",
-      content: [{ type: "text", text: "First saved" }],
+      content: [{ type: "text", text: `${id} saved at ${manager.getEntries().length}` }],
       isError: false,
       timestamp: 2,
     });
+  }
+
+  it("projects only the final state of a tool group after all sibling results, even when calls share an ID", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Update twice");
+    assistantCalls(manager, ["same", "same"]);
+    state(manager, "First");
+    toolResult(manager, "same");
     state(manager, "Second");
-    manager.appendMessage({
-      role: "toolResult",
-      toolCallId: "same",
-      toolName: "todo",
-      content: [{ type: "text", text: "Second saved" }],
-      isError: false,
-      timestamp: 3,
-    });
+    toolResult(manager, "same");
     const result = project(manager);
     expect(result.map((message) => message.role)).toEqual([
       "user",
@@ -203,10 +191,51 @@ describe("immutable Todo journal projection", () => {
       "toolResult",
       "toolResult",
       "custom",
+    ]);
+    expect(snapshots(result)).toEqual([`${HEADER}[ ] #1 Second`]);
+    expect(project(manager, result)).toEqual(result);
+  });
+
+  it("projects one snapshot per tool group and keeps earlier groups fixed", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Work");
+    assistantCalls(manager, ["a", "b"]);
+    state(manager, "A1");
+    toolResult(manager, "a");
+    state(manager, "A2");
+    toolResult(manager, "b");
+    const first = project(manager);
+    assistantCalls(manager, ["c", "d"]);
+    state(manager, "B1");
+    toolResult(manager, "c");
+    state(manager, "B2");
+    toolResult(manager, "d");
+    const second = project(manager);
+    expect(snapshots(second)).toEqual([`${HEADER}[ ] #1 A2`, `${HEADER}[ ] #1 B2`]);
+    expect(second.slice(0, first.length)).toEqual(first);
+    expect(second.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+      "toolResult",
+      "custom",
+      "assistant",
+      "toolResult",
+      "toolResult",
       "custom",
     ]);
-    expect(snapshots(result)).toEqual(["Todo List:\n[ ] #1 First", "Todo List:\n[ ] #1 Second"]);
-    expect(project(manager, result)).toEqual(result);
+  });
+
+  it("projects nothing for a tool group that ends in the state it began with", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Start");
+    state(manager, "Stable");
+    assistantCalls(manager, ["a", "b"]);
+    state(manager, "Temporary");
+    toolResult(manager, "a");
+    state(manager, "Stable");
+    toolResult(manager, "b");
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Stable`]);
   });
 
   it("rejects destroyed or ambiguous anchors rather than relocating old snapshots", () => {

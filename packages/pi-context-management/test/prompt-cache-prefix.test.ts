@@ -236,7 +236,8 @@ it("preserves written snapshots through updates, no-ops, and explicit empty stat
     .at(-1)!
     .messages.filter(
       (message) =>
-        message.role === "user" && JSON.stringify(message.content).includes("Todo List:"),
+        message.role === "user" &&
+        JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
     );
   expect(snapshots).toHaveLength(3);
   expect(JSON.stringify(snapshots[0])).toContain("Original Task");
@@ -310,7 +311,8 @@ for (const transition of ["native", "rollover"] as const) {
       expect(JSON.stringify(fresh.messages)).toContain("Retained update");
       const baseline = fresh.messages.find(
         (message) =>
-          message.role === "user" && JSON.stringify(message.content).includes("Todo List:"),
+          message.role === "user" &&
+          JSON.stringify(message.content).includes("Todo List state from the pi-todo extension"),
       );
       expect(JSON.stringify(baseline)).toContain(
         transition === "native" ? "Retained update" : "Before cutoff",
