@@ -26,7 +26,10 @@ const directories: string[] = [];
 const sessions: AgentSession[] = [];
 
 afterEach(async () => {
-  for (const session of sessions.splice(0)) session.dispose();
+  for (const session of sessions.splice(0)) {
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    session.dispose();
+  }
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );

@@ -137,11 +137,11 @@ model and, when the role has a suffix, its thinking level. An explicit `model` o
 `thinking_level` overrides the role's value independently, so
 `{ role: "design", thinking_level: "low" }` keeps the role's model with a
 different thinking level. The role is recorded even when explicit `model` and
-`thinking_level` override all of its values. An unknown `role` fails before any child is created
-and lists the configured role names. The Launch Contract records the resolved
-`model` and `thinking_level` together with the `role` used (`role` is absent
-when none was named), and `subagent_status` and the expanded `subagent` result
-show it. Recording the name does not tie the child to the role: later settings
+`thinking_level` override all of its values. An unknown `role` fails before any
+child is created and lists the configured role names. The Launch Contract
+records the resolved `model` and `thinking_level` together with the `role` used
+(`role` is absent when none was named), and `subagent_status` and the expanded
+`subagent` result show it. Recording the name does not tie the child to the role: later settings
 changes never alter an existing Launch Contract.
 
 Roles are read when the session starts, so editing `modelRoles` mid-session
