@@ -33,7 +33,9 @@ For a local checkout, run `pi -e ./packages/pi-termctrl/src/index.ts`.
 
 `terminal_start` runs `command` through the shell Pi's `bash` uses (the
 `shellPath` setting, otherwise Pi's default bash), applies `shellCommandPrefix`,
-and opens a PTY sized by `termctrl.defaultViewport`.
+and opens a PTY sized by `termctrl.defaultViewport`. A relative `cwd` resolves against
+the session's directory. A `cwd` that is missing or not a directory fails with an
+error naming the resolved path.
 
 `terminal_start` and `terminal_send` wait until the Terminal **settles**: at the
 first of 250 ms of screen quiet, a `wait_for_text` match, process exit, or
@@ -49,6 +51,9 @@ Results say why the wait ended in `settle_reason` (`matched`, `timeout`, `quiet`
 or `exit`) and in their first line, such as `t1 running · settled: timeout`; a
 `wait_for_text` that timed out adds that the pattern was not seen. Polls report
 their reason too.
+
+Sending `text` or `keys` to an exited Terminal is an error that names its exit
+code or signal; a poll (neither `text` nor `keys`) still returns its final screen.
 
 Results contain the visible screen, the log lines that scrolled off since the
 agent's previous result, `state`, `exit_code` or `signal` once exited, and
@@ -87,7 +92,10 @@ another fails and lists the caller's live entries.
 `terminal_stop` stops a running entry (termctrl stop, then `SIGKILL` of the
 Terminal's process group if it is still alive after 3 s) and forgets it. For a
 Terminal it returns the final screen and scrolled-off lines; for a Background
-job, its recent output. Exited entries stay
+job, its recent output. When a Terminal had already exited and its screen is
+unchanged since the agent's last result, the result omits the screen and reports
+`changed: false` with `state` and `exit_code` or `signal`; `scrolled_off` still
+appears when lines scrolled off since that result. Exited entries stay
 readable and listed until the agent stops them, the user removes them in `/ps`,
 or their session shuts down. `terminal_list` lists the caller's Terminals and,
 in a separate `background_jobs` section, its Background jobs with their log
