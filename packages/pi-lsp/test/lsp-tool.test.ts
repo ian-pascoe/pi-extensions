@@ -913,6 +913,69 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("converts incoming-call ranges against each caller file's Unicode text", async () => {
+    const fixture = await createToolFixture();
+    const longCallerPath = resolve(fixture.context.cwd, "long-caller.ts");
+    const unicodeCallerPath = resolve(fixture.context.cwd, "unicode-caller.ts");
+    await writeFile(longCallerPath, "export function aLongCallerName() { callee(); }\n");
+    await writeFile(unicodeCallerPath, "const 😀 = callee();\n");
+    const callHierarchyItem = (uri: string, line: number, character: number) => ({
+      name: "caller",
+      kind: 12,
+      uri,
+      range: { start: { line, character }, end: { line, character } },
+      selectionRange: { start: { line, character }, end: { line, character } },
+    });
+    const range = (line: number, start: number, end: number) => ({
+      start: { line, character: start },
+      end: { line, character: end },
+    });
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+      callHierarchyItem(pathToFileURL(fixture.filePath).href, 0, 0),
+    ]);
+    fixture.client.responseByMethod.set("callHierarchy/incomingCalls", [
+      {
+        from: callHierarchyItem(pathToFileURL(longCallerPath).href, 0, 16),
+        fromRanges: [range(0, 36, 42)],
+      },
+      {
+        from: callHierarchyItem(pathToFileURL(unicodeCallerPath).href, 0, 0),
+        fromRanges: [range(0, 11, 17)],
+      },
+      {
+        from: callHierarchyItem(pathToFileURL(fixture.filePath).href, 0, 0),
+        fromRanges: [range(0, 17, 18)],
+      },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "incoming_calls",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+    const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+    const oneBasedRange = (line: number, start: number, end: number) => ({
+      start: { line, character: start },
+      end: { line, character: end },
+    });
+    expect(JSON.parse(text)).toMatchObject({
+      results: [
+        {
+          value: [
+            {
+              from: { uri: longCallerPath, selectionRange: oneBasedRange(1, 17, 17) },
+              fromRanges: [oneBasedRange(1, 37, 43)],
+            },
+            { from: { uri: unicodeCallerPath }, fromRanges: [oneBasedRange(1, 11, 17)] },
+            { from: { uri: fixture.filePath }, fromRanges: [oneBasedRange(1, 17, 18)] },
+          ],
+        },
+      ],
+    });
+    await fixture.close();
+  });
+
   test("preserves opaque completion metadata without treating lookalike fields as positions", async () => {
     const fixture = await createToolFixture();
     fixture.client.responseByMethod.set("textDocument/completion", {

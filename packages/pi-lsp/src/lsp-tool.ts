@@ -521,6 +521,11 @@ async function normalizeProtocolResult(
   const targetText =
     targetUriValue === undefined ? undefined : await textForProtocolUri(targetUriValue);
   const localText = uriText ?? targetText ?? sourceText;
+  // An incoming call's fromRanges sit in its caller's file, which its `from` item names.
+  const callerUriValue =
+    record.fromRanges === undefined ? undefined : protocolString(protocolRecord(record.from)?.uri);
+  const callerText =
+    callerUriValue === undefined ? undefined : await textForProtocolUri(callerUriValue);
   const entries = await Promise.all(
     Object.entries(record).map(async ([key, entryValue]) => {
       if ((key === "uri" || key === "targetUri") && Value.Check(ProtocolStringSchema, entryValue)) {
@@ -534,12 +539,14 @@ async function normalizeProtocolResult(
         await normalizeProtocolResult(
           entryValue,
           prepared,
-          targetUriValue !== undefined && key === "originSelectionRange"
-            ? sourceText
-            : targetUriValue !== undefined &&
-                (key === "targetRange" || key === "targetSelectionRange")
-              ? targetText
-              : localText,
+          key === "fromRanges" && callerText !== undefined
+            ? callerText
+            : targetUriValue !== undefined && key === "originSelectionRange"
+              ? sourceText
+              : targetUriValue !== undefined &&
+                  (key === "targetRange" || key === "targetSelectionRange")
+                ? targetText
+                : localText,
           positionEncoding,
         ),
       ] as const;
