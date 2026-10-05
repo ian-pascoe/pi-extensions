@@ -2,12 +2,12 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
   assembleLspReadText,
+  compactLspText,
   formatLspLocationLine,
   lspDisplayPath,
   lspDisplayPosition,
   LspNormalizedPositionSchema,
   LspSourceLines,
-  shortenLspText,
   type LspRead,
   type LspReadTextBlock,
 } from "./lsp-location-text.js";
@@ -150,11 +150,6 @@ interface RenderContext {
   readonly sources: LspSourceLines;
 }
 
-/** Collapse whitespace, such as a multi-line detail, onto one shortened line. */
-function compactText(text: string): string {
-  return shortenLspText(text.replaceAll(/\s+/gu, " ").trim());
-}
-
 function symbolKindName(kind: number): string {
   return SYMBOL_KIND_NAMES[kind - 1] ?? `kind ${kind}`;
 }
@@ -165,8 +160,8 @@ function symbolLine(symbol: SymbolFields, location: string, suffix?: string | nu
   const kind = deprecated
     ? `${symbolKindName(symbol.kind)}, deprecated`
     : symbolKindName(symbol.kind);
-  const head = `${compactText(symbol.name)} (${kind}) ${location}`;
-  const extra = suffix === undefined || suffix === null ? "" : compactText(suffix);
+  const head = `${compactLspText(symbol.name)} (${kind}) ${location}`;
+  const extra = suffix === undefined || suffix === null ? "" : compactLspText(suffix);
   return extra === "" ? head : `${head}  ${extra}`;
 }
 
@@ -373,8 +368,18 @@ function emptyMessage(operation: LspStructureOperation): string {
 export async function formatLspStructureReadText(
   input: LspStructureReadTextInput,
 ): Promise<string> {
+  return assembleLspReadText({
+    blocks: await formatLspStructureReadBlocks(input),
+    warnings: input.warnings,
+  });
+}
+
+/** Render each server's lines of a structure read, before grouping and warnings are added. */
+export async function formatLspStructureReadBlocks(
+  input: LspStructureReadTextInput,
+): Promise<readonly LspReadTextBlock[]> {
   const context: RenderContext = { input, sources: new LspSourceLines() };
-  const blocks = await Promise.all(
+  return Promise.all(
     input.reads.map(async (read): Promise<LspReadTextBlock> => {
       if (read.value === null || read.value === undefined) {
         return { server_id: read.server_id, lines: [emptyMessage(input.operation)] };
@@ -385,5 +390,4 @@ export async function formatLspStructureReadText(
       return { server_id: read.server_id, lines: lines ?? [formatLspToolValue(read.value)] };
     }),
   );
-  return assembleLspReadText({ blocks, warnings: input.warnings });
 }

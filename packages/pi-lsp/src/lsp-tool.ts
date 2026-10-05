@@ -58,6 +58,13 @@ import {
 } from "vscode-languageserver-protocol/node";
 import { LspInputError } from "./lsp-input-error.js";
 import {
+  boundLspCompletions,
+  boundLspWorkspaceSymbols,
+  completionPrefixAt,
+  formatLspItemListText,
+  type LspBoundedItems,
+} from "./lsp-item-list.js";
+import {
   formatLspLocationReadText,
   isLspLocationOperation,
   lspDisplayPath,
@@ -87,6 +94,7 @@ import {
 } from "./lsp-server-manager.js";
 import type { LspSessionFiles } from "./lsp-session-files.js";
 import {
+  DEFAULT_LSP_ITEM_LIMIT,
   LSP_OPERATION_NAMES,
   LspApplyOutputSchema,
   LspCodeActionsOutputSchema,
@@ -162,7 +170,6 @@ type FileReadOperation =
   | "code_lenses"
   | "document_colors";
 type PositionReadOperation =
-  | "completion"
   | "hover"
   | "signature_help"
   | "declaration"
@@ -448,6 +455,45 @@ async function readOutput(
   return createLspToolOutput(
     text,
     { ...details, result_count: resultCount },
+    lspStructuredFields(json),
+    dependencies,
+  );
+}
+
+/**
+ * Return a completion or workspace-symbol read. The Structured Result holds each server's bounded
+ * response with its prefix and omitted count; the model-visible text lists one line per item
+ * derived from the same data (ADR-0003), without server-private resolve data.
+ */
+async function itemListOutput(
+  operation: "completion" | "workspace_symbols",
+  result: Promise<LspServerReadResult<BoundedServerItems>>,
+  dependencies: LspToolDependencies,
+  textContext: ReadTextContext,
+) {
+  const resolved = await result;
+  requireReadSuccess(resolved);
+  const results = resolved.successes.map(({ serverId, rootPath, value }) => ({
+    root_path: rootPath,
+    server_id: serverId,
+    value: value.value,
+    omitted: value.omitted,
+    // Undefined fields are dropped from the serialized result, so symbols carry no prefix.
+    prefix: value.prefix,
+  }));
+  const warnings = resolved.failures.map(({ message }) => message);
+  const json = formatLspToolValue({ results, warnings });
+  const text = await formatLspItemListText({
+    operation,
+    cwd: textContext.cwd,
+    documentPath: textContext.documentPath,
+    reads: results,
+    warnings,
+  });
+  const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
+  return createLspToolOutput(
+    text,
+    { ...operationDetails(operation, readOperationOutcomes(resolved)), result_count: resultCount },
     lspStructuredFields(json),
     dependencies,
   );
@@ -928,7 +974,6 @@ async function executePositionRead(
 ): Promise<LspServerReadResult<unknown>> {
   const filePath = await documentFilePath(parameters.file_path, context);
   const methodByOperation = {
-    completion: CompletionRequest.method,
     hover: HoverRequest.method,
     signature_help: SignatureHelpRequest.method,
     declaration: DeclarationRequest.method,
@@ -999,14 +1044,55 @@ async function executePositionRead(
             preparedItems.map((item) => client.request(followupMethod, { item }, signal)),
           )
         ).flat();
-      } else if (
-        parameters.operation === "completion" &&
-        supportsResolveProvider(client.capabilities.completionProvider)
-      ) {
-        value = await resolveProtocolItems(client, value, CompletionResolveRequest.method, signal);
       }
 
       return normalizeProtocolResult(value, prepared);
+    },
+  );
+}
+
+/** One server's completions or workspace symbols, cut to the call's prefix and limit. */
+interface BoundedServerItems extends LspBoundedItems {
+  /** The prefix completions were filtered by. */
+  readonly prefix?: string;
+}
+
+/**
+ * Request completions and keep those starting with the call's prefix (by default the identifier
+ * before the position), up to its limit. Only the kept items are resolved.
+ */
+async function executeCompletion(
+  dependencies: LspToolDependencies,
+  parameters: Extract<LspToolParameters, { operation: "completion" }>,
+  context: ExtensionContext,
+  signal: AbortSignal | undefined,
+): Promise<LspServerReadResult<BoundedServerItems>> {
+  const filePath = await documentFilePath(parameters.file_path, context);
+  return dependencies.manager.runRead(
+    filePath,
+    parameters.server_id,
+    requireMethod(CompletionRequest.method),
+    async (client, route): Promise<BoundedServerItems> => {
+      const prepared = await prepareLspDocument(client, route, filePath);
+      const position = protocolPosition(prepared, parameters);
+      const prefix = parameters.prefix ?? completionPrefixAt(prepared.document.text, parameters);
+      const bounded = boundLspCompletions(
+        await client.request(
+          CompletionRequest.method,
+          { textDocument: { uri: prepared.document.uri }, position },
+          signal,
+        ),
+        { prefix, limit: parameters.limit ?? DEFAULT_LSP_ITEM_LIMIT },
+      );
+      let value = bounded.value;
+      if (supportsResolveProvider(client.capabilities.completionProvider)) {
+        value = await resolveProtocolItems(client, value, CompletionResolveRequest.method, signal);
+      }
+      return {
+        value: await normalizeProtocolResult(value, prepared),
+        omitted: bounded.omitted,
+        prefix,
+      };
     },
   );
 }
@@ -1123,48 +1209,53 @@ async function executeSelectionRanges(
   );
 }
 
-async function executeWorkspaceRead(
+async function executeWorkspaceDiagnostics(
   dependencies: LspToolDependencies,
-  parameters: Extract<
-    LspToolParameters,
-    { operation: "workspace_diagnostics" | "workspace_symbols" }
-  >,
+  parameters: Extract<LspToolParameters, { operation: "workspace_diagnostics" }>,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ): Promise<LspServerReadResult<unknown>> {
   const filePath = absoluteLspFilePath(parameters.file_path, context);
-  if (parameters.operation === "workspace_diagnostics") {
-    return dependencies.manager.runRead(
-      filePath,
-      parameters.server_id,
-      WORKSPACE_DIAGNOSTICS_CAPABILITY,
-      async (client, route) => {
-        const result = await client.workspaceDiagnostics(signal);
-        if (result.status === "unsupported") {
-          return {
-            status: result.status,
-            message: `Server ${route.serverId} publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.`,
-          };
-        }
-        return normalizeProtocolResult(
-          result,
-          undefined,
-          undefined,
-          normalizeLspPositionEncoding(client.positionEncoding),
-        );
-      },
-    );
-  }
+  return dependencies.manager.runRead(
+    filePath,
+    parameters.server_id,
+    WORKSPACE_DIAGNOSTICS_CAPABILITY,
+    async (client, route) => {
+      const result = await client.workspaceDiagnostics(signal);
+      if (result.status === "unsupported") {
+        return {
+          status: result.status,
+          message: `Server ${route.serverId} publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.`,
+        };
+      }
+      return normalizeProtocolResult(
+        result,
+        undefined,
+        undefined,
+        normalizeLspPositionEncoding(client.positionEncoding),
+      );
+    },
+  );
+}
+
+/** Request workspace symbols up to the call's limit, in the server's order; only those are resolved. */
+async function executeWorkspaceSymbols(
+  dependencies: LspToolDependencies,
+  parameters: Extract<LspToolParameters, { operation: "workspace_symbols" }>,
+  context: ExtensionContext,
+  signal: AbortSignal | undefined,
+): Promise<LspServerReadResult<BoundedServerItems>> {
+  const filePath = absoluteLspFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
     parameters.server_id,
     requireMethod(WorkspaceSymbolRequest.method),
-    async (client) => {
-      let value = await client.request(
-        WorkspaceSymbolRequest.method,
-        { query: parameters.query },
-        signal,
+    async (client): Promise<BoundedServerItems> => {
+      const bounded = boundLspWorkspaceSymbols(
+        await client.request(WorkspaceSymbolRequest.method, { query: parameters.query }, signal),
+        parameters.limit ?? DEFAULT_LSP_ITEM_LIMIT,
       );
+      let value = bounded.value;
       if (supportsResolveProvider(client.capabilities.workspaceSymbolProvider)) {
         value = await resolveProtocolItems(
           client,
@@ -1173,12 +1264,15 @@ async function executeWorkspaceRead(
           signal,
         );
       }
-      return normalizeProtocolResult(
-        value,
-        undefined,
-        undefined,
-        normalizeLspPositionEncoding(client.positionEncoding),
-      );
+      return {
+        value: await normalizeProtocolResult(
+          value,
+          undefined,
+          undefined,
+          normalizeLspPositionEncoding(client.positionEncoding),
+        ),
+        omitted: bounded.omitted,
+      };
     },
   );
 }
@@ -1558,6 +1652,12 @@ async function executeLspOperation(
       );
     }
     case "completion":
+      return itemListOutput(
+        parameters.operation,
+        executeCompletion(dependencies, parameters, context, signal),
+        dependencies,
+        readTextContext(parameters.file_path, context),
+      );
     case "hover":
     case "signature_help":
     case "declaration":
@@ -1592,10 +1692,16 @@ async function executeLspOperation(
         readTextContext(parameters.file_path, context),
       );
     case "workspace_diagnostics":
-    case "workspace_symbols":
       return readOutput(
         parameters.operation,
-        executeWorkspaceRead(dependencies, parameters, context, signal),
+        executeWorkspaceDiagnostics(dependencies, parameters, context, signal),
+        dependencies,
+        readTextContext(parameters.file_path, context),
+      );
+    case "workspace_symbols":
+      return itemListOutput(
+        parameters.operation,
+        executeWorkspaceSymbols(dependencies, parameters, context, signal),
         dependencies,
         readTextContext(parameters.file_path, context),
       );
@@ -1687,7 +1793,8 @@ const LSP_TOOL_DESCRIPTIONS = {
   diagnostics: "Get fresh LSP Diagnostics for a file from every matching server.",
   workspace_diagnostics:
     "Get a server's diagnostics for its whole workspace, from workspace pull or cached push diagnostics. A server that publishes none reports status unsupported; use lsp_diagnostics per file.",
-  completion: "List completions at a position.",
+  completion:
+    "List completions at a position, one `label (kind)  detail` line each. By default only those starting with the identifier before the position.",
   hover: "Get type information and documentation for the symbol at a position.",
   signature_help: "Get signature help for the call at a position.",
   declaration: "Find the declaration of the symbol at a position.",
@@ -1698,7 +1805,8 @@ const LSP_TOOL_DESCRIPTIONS = {
     "Find references to the symbol at a position. include_declaration defaults to true.",
   document_highlights: "Find the occurrences of the symbol at a position within its file.",
   document_symbols: "List the symbols declared in a file.",
-  workspace_symbols: "Search the workspace's symbols by name.",
+  workspace_symbols:
+    "Search the workspace's symbols by name, one `name (kind) path:line:col` line each.",
   document_links: "List the links in a file.",
   call_hierarchy: "Prepare call hierarchy items for the function at a position.",
   incoming_calls: "Find the calls to the function at a position.",

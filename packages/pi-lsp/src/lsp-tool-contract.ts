@@ -86,6 +86,15 @@ const RootAnchorPathSchema = Type.String({
   description: "Any file in the workspace; selects the server and its root",
 });
 const ServerIdSchema = Type.String({ minLength: 1 });
+/** Items returned per server when a completion or workspace-symbol call names no `limit`. */
+export const DEFAULT_LSP_ITEM_LIMIT = 50;
+/** Most items each server returns to a completion or workspace-symbol call. */
+const ItemLimitSchema = Type.Optional(
+  Type.Integer({
+    minimum: 1,
+    description: `Most items per server (default ${DEFAULT_LSP_ITEM_LIMIT})`,
+  }),
+);
 const OptionalServerIdSchema = Type.Optional(ServerIdSchema);
 const FormattingOptionsSchema = {
   tab_size: Type.Integer({ minimum: 1 }),
@@ -172,7 +181,22 @@ export const LspOperationParametersSchemas = {
   restart: serverParametersSchema(),
   diagnostics: fileParametersSchema(),
   workspace_diagnostics: serverParametersSchema(),
-  completion: positionParametersSchema(),
+  completion: Type.Object(
+    {
+      file_path: FilePathSchema,
+      line: LineSchema,
+      character: CharacterSchema,
+      prefix: Type.Optional(
+        Type.String({
+          description:
+            'Keep items starting with this, ignoring case; defaults to the identifier before the position, and "" keeps all',
+        }),
+      ),
+      limit: ItemLimitSchema,
+      server_id: OptionalServerIdSchema,
+    },
+    { additionalProperties: false },
+  ),
   hover: positionParametersSchema(),
   signature_help: positionParametersSchema(),
   declaration: positionParametersSchema(),
@@ -195,6 +219,7 @@ export const LspOperationParametersSchemas = {
     {
       query: Type.String(),
       file_path: RootAnchorPathSchema,
+      limit: ItemLimitSchema,
       server_id: OptionalServerIdSchema,
     },
     { additionalProperties: false },
@@ -509,10 +534,23 @@ const MutationManifestOutputSchema = Type.Array(
   }),
 );
 
-/** Structured result of every read query: each answering server's normalized protocol value. */
+/**
+ * Structured result of every read query: each answering server's normalized protocol value.
+ * Completion and workspace-symbol values hold only the items kept by the prefix and limit.
+ */
 export const LspReadOutputSchema = Type.Object({
   results: Type.Array(
-    Type.Object({ server_id: Type.String(), root_path: Type.String(), value: Type.Unknown() }),
+    Type.Object({
+      server_id: Type.String(),
+      root_path: Type.String(),
+      value: Type.Unknown(),
+      prefix: Type.Optional(
+        Type.String({ description: "The prefix completions were filtered by" }),
+      ),
+      omitted: Type.Optional(
+        Type.Integer({ minimum: 0, description: "Matching items left out by the limit" }),
+      ),
+    }),
   ),
   warnings: Type.Array(Type.String()),
   ...StructuredResultEnvelope,

@@ -184,6 +184,22 @@ Greeter (class) src/a.ts:1:14
 helper (function, deprecated) src/a.ts:6:17
 ```
 
+`lsp_completion` and `lsp_workspace_symbols` return at most `limit` items per server (default 50) and state how many more matched. `lsp_completion` keeps items whose filter text starts with
+`prefix`, ignoring case, ordered by the server's sort text; `prefix` defaults to the identifier
+before the position, and `""` keeps every item. `lsp_workspace_symbols` keeps the server's order.
+Only kept items are resolved. Completions read as `label (kind)  detail`, without the
+server-private `data` that only their resolve request uses:
+
+```text
+Completions starting with "lo":
+log (method)  (method) Console.log(...data: any[]): void
+logger (variable)  ./logger
+12 more omitted; raise limit or refine the prefix to see them.
+```
+
+Scripts receive each server's bounded response with its `prefix` and the count of `omitted`
+matching items.
+
 Other reads show the server's response as compact JSON, as does a response of an unexpected shape.
 
 Pi LSP starts one server per workspace root, so `lsp_find_references` and `lsp_rename` search
