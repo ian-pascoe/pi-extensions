@@ -1,3 +1,5 @@
+import { LspInputError } from "./lsp-input-error.js";
+
 /** A negotiated LSP character-unit encoding supported by the protocol. */
 export type LspPositionEncoding = "utf-8" | "utf-16" | "utf-32";
 
@@ -29,27 +31,31 @@ export function documentLines(documentText: string): readonly string[] {
   return documentText.split(/\r\n|[\n\r]/u);
 }
 
-function requirePositiveInteger(value: number, description: string): void {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`Pi LSP: ${description} must be a positive integer`);
-  }
-}
-
 function requireNonNegativeInteger(value: number, description: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`Pi LSP: ${description} must be a non-negative integer`);
   }
 }
 
+function countOf(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
 function requireCodePointLine(
   lines: readonly string[],
   position: LspCodePointPosition,
 ): readonly string[] {
-  requirePositiveInteger(position.line, "code-point position line");
-  requirePositiveInteger(position.character, "code-point position character");
+  if (!Number.isSafeInteger(position.line) || position.line < 1) {
+    throw new LspInputError("code-point position line must be a positive integer");
+  }
+  if (!Number.isSafeInteger(position.character) || position.character < 1) {
+    throw new LspInputError("code-point position character must be a positive integer");
+  }
   const line = lines[position.line - 1];
   if (line === undefined) {
-    throw new Error("Pi LSP: code-point position line exceeds document length");
+    throw new LspInputError(
+      `line ${position.line} is past the end of the document, which has ${countOf(lines.length, "line")} (line must be at most ${lines.length})`,
+    );
   }
   return Array.from(line);
 }
@@ -103,7 +109,9 @@ export function convertLspCodePointPosition(
   const characters = requireCodePointLine(documentLines(documentText), position);
   const codePointOffset = position.character - 1;
   if (codePointOffset > characters.length) {
-    throw new Error("Pi LSP: code-point position character exceeds line length");
+    throw new LspInputError(
+      `character ${position.character} is past the end of line ${position.line}, which has ${countOf(characters.length, "character")} (character must be at most ${characters.length + 1})`,
+    );
   }
   return {
     line: position.line - 1,

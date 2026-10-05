@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { basename, dirname, extname, matchesGlob, resolve } from "node:path";
+import { LspInputError } from "./lsp-input-error.js";
 import type {
   LspServerDefinition,
   LspServerEnablement,
@@ -67,6 +68,14 @@ export interface LspServerStartInput {
   readonly signal: AbortSignal;
   /** Resolved request and lifecycle timeout policy. */
   readonly timeouts: LspTimeouts;
+}
+
+/** Names the capability an operation requires so unsupported-operation failures can cite it. */
+export interface LspCapabilityRequirement<TClient extends LspManagedServerClient> {
+  /** Protocol method of the capability, such as `textDocument/declaration`. */
+  readonly name: string;
+  /** Whether a ready client currently advertises the capability. */
+  readonly isSupportedBy: (client: TClient) => boolean;
 }
 
 /** Starts one concrete client for a selected Server Definition and root. */
@@ -330,6 +339,28 @@ async function readLspAncestorDirectories(
   }
 }
 
+function incapableServerFailure<TClient extends LspManagedServerClient>(
+  serverId: string,
+  capability: LspCapabilityRequirement<TClient>,
+): LspServerFailure {
+  return {
+    code: "no-capable-server",
+    message: `Pi LSP: server ${serverId} does not support ${capability.name}`,
+    serverId,
+  };
+}
+
+function noCapableServerFailure<TClient extends LspManagedServerClient>(
+  capability: LspCapabilityRequirement<TClient>,
+  incapableServerIds: readonly string[],
+): LspServerFailure {
+  return {
+    code: "no-capable-server",
+    message: `Pi LSP: no matching server supports ${capability.name}; matching servers without it: ${incapableServerIds.join(", ")}`,
+    serverId: "*",
+  };
+}
+
 function unavailableFailure(route: LspServerRoute, error: string): LspServerFailure {
   return {
     code: "server-unavailable",
@@ -478,11 +509,15 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     };
   }
 
-  /** Query matching capable instances while retaining independent operational failures. */
+  /**
+   * Query matching capable instances while retaining independent operational failures. An
+   * `LspInputError` from `operation` rejects the whole read: it is the caller's to fix, not a
+   * server failure.
+   */
   async runRead<T>(
     filePath: string,
     serverId: string | undefined,
-    isCapable: (client: TClient) => boolean,
+    capability: LspCapabilityRequirement<TClient>,
     operation: (client: TClient, route: LspServerRoute) => Promise<T>,
   ): Promise<LspServerReadResult<T>> {
     const routes = await this.selectRoutes(filePath, serverId);
@@ -497,13 +532,9 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       routes.map(async (route): Promise<LspServerSuccess<T> | LspServerFailure | undefined> => {
         const resolution = await this.ensureClient(route);
         if (resolution.kind === "failure") return resolution.failure;
-        if (!isCapable(resolution.instance.client)) {
+        if (!capability.isSupportedBy(resolution.instance.client)) {
           if (serverId === undefined) return undefined;
-          return {
-            code: "no-capable-server",
-            message: `Pi LSP: server ${route.serverId} does not support the requested operation`,
-            serverId: route.serverId,
-          };
+          return incapableServerFailure(route.serverId, capability);
         }
         try {
           return {
@@ -512,6 +543,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
             value: await operation(resolution.instance.client, route),
           };
         } catch (error) {
+          if (error instanceof LspInputError) throw error;
           return {
             code: "request-failed",
             message: `Pi LSP: server ${route.serverId} request failed: ${describeLspError(error)}`,
@@ -529,11 +561,10 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       else successes.push(outcome);
     }
     if (failures.length === 0 && successes.length === 0) {
-      failures.push({
-        code: "no-capable-server",
-        message: "Pi LSP: no matching server supports the requested read operation",
-        serverId: "*",
-      });
+      const incapableServerIds = routes
+        .filter((_route, index) => outcomes[index] === undefined)
+        .map((route) => route.serverId);
+      failures.push(noCapableServerFailure(capability, incapableServerIds));
     }
     return { failures, successes };
   }
@@ -542,7 +573,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
   async resolveMutationClient(
     filePath: string,
     serverId: string | undefined,
-    isCapable: (client: TClient) => boolean,
+    capability: LspCapabilityRequirement<TClient>,
   ): Promise<LspServerResolution<TClient>> {
     const routes = await this.selectRoutes(filePath, serverId);
     if (routes.length === 0) {
@@ -552,7 +583,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     const resolutions = await Promise.all(routes.map((route) => this.ensureClient(route)));
     const capable = resolutions.filter(
       (resolution): resolution is Extract<LspServerResolution<TClient>, { kind: "success" }> =>
-        resolution.kind === "success" && isCapable(resolution.instance.client),
+        resolution.kind === "success" && capability.isSupportedBy(resolution.instance.client),
     );
     const onlyCapable = capable[0];
     if (onlyCapable !== undefined && capable.length === 1) return onlyCapable;
@@ -576,11 +607,13 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     if (unavailableResolution !== undefined) return unavailableResolution;
     return {
       kind: "failure",
-      failure: {
-        code: "no-capable-server",
-        message: "Pi LSP: no matching server supports the requested mutation",
-        serverId: serverId ?? "*",
-      },
+      failure:
+        serverId === undefined
+          ? noCapableServerFailure(
+              capability,
+              routes.map((route) => route.serverId),
+            )
+          : incapableServerFailure(serverId, capability),
     };
   }
 
@@ -678,12 +711,15 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         serverId: definition.id,
       };
     }
-    const requestedServer = serverId === undefined ? "any configured server" : `server ${serverId}`;
-    return {
-      code: "no-matching-server",
-      message: `Pi LSP: ${requestedServer} does not match ${normalizedFilePath}`,
-      serverId: serverId ?? "*",
-    };
+    let message: string;
+    if (serverId === undefined) {
+      message = `Pi LSP: no configured server matches ${normalizedFilePath}`;
+    } else if (definition === undefined) {
+      message = `Pi LSP: server ${serverId} is not configured`;
+    } else {
+      message = `Pi LSP: server ${serverId} does not match ${normalizedFilePath}`;
+    }
+    return { code: "no-matching-server", message, serverId: serverId ?? "*" };
   }
 
   private ensureClient(route: LspServerRoute): Promise<LspServerResolution<TClient>> {

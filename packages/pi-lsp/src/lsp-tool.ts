@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -23,6 +23,7 @@ import {
   DeclarationRequest,
   DefinitionRequest,
   DocumentColorRequest,
+  DocumentDiagnosticRequest,
   DocumentFormattingRequest,
   DocumentHighlightRequest,
   DocumentLinkRequest,
@@ -45,6 +46,7 @@ import {
   TypeHierarchyPrepareRequest,
   TypeHierarchySubtypesRequest,
   TypeHierarchySupertypesRequest,
+  WorkspaceDiagnosticRequest,
   WorkspaceSymbolRequest,
   WorkspaceSymbolResolveRequest,
   Position,
@@ -54,6 +56,7 @@ import {
   type ServerCapabilities,
   type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
+import { LspInputError } from "./lsp-input-error.js";
 import {
   formatLspLocationReadText,
   isLspLocationOperation,
@@ -73,7 +76,9 @@ import type {
 } from "./lsp-server-client.js";
 import {
   normalizeLspFilePath,
+  type LspCapabilityRequirement,
   type LspServerFailure,
+  type LspServerFailureCode,
   type LspServerManager,
   type LspServerReadResult,
   type LspServerRoute,
@@ -246,12 +251,22 @@ function piLspError(message: string): Error {
 }
 
 /**
- * Raise server failures, pointing to the troubleshooting Skill unless the model can fix every
- * failure itself (an ambiguous mutation is resolved by supplying `server_id`).
+ * Failures that are expected outcomes rather than broken servers or configuration: an ambiguous
+ * mutation is resolved by supplying `server_id`, and a missing capability is a fact about the
+ * server. Neither points to the troubleshooting Skill (ADR-0005).
+ */
+const EXPECTED_FAILURE_CODES: ReadonlySet<LspServerFailureCode> = new Set([
+  "ambiguous-server",
+  "no-capable-server",
+]);
+
+/**
+ * Raise server failures, pointing to the troubleshooting Skill when any is a server startup,
+ * crash, timeout, request, or configuration failure.
  */
 function piLspFailureError(failures: readonly LspServerFailure[]): Error {
   const message = failures.map((failure) => failure.message).join("; ");
-  if (failures.every(({ code }) => code === "ambiguous-server")) return piLspError(message);
+  if (failures.every(({ code }) => EXPECTED_FAILURE_CODES.has(code))) return piLspError(message);
   return piLspError(`${message}\n\n${TROUBLESHOOTING_HINT}`);
 }
 
@@ -299,6 +314,23 @@ function serverInstanceScopeLines(scopes: readonly ServerInstanceScope[]): strin
 function serverInstanceScopeWarnings(scopes: readonly ServerInstanceScope[]): string[] {
   return scopes.flatMap(({ warning }) => (warning === undefined ? [] : [warning]));
 }
+
+/** Require the protocol method an operation sends, naming it in unsupported-operation failures. */
+function requireMethod(method: string): LspCapabilityRequirement<LspToolServerClient> {
+  return { name: method, isSupportedBy: (client) => client.hasCapability(method) };
+}
+
+/** Every server serves document diagnostics, by pull request or from pushed diagnostics. */
+const DOCUMENT_DIAGNOSTICS_CAPABILITY: LspCapabilityRequirement<LspToolServerClient> = {
+  name: DocumentDiagnosticRequest.method,
+  isSupportedBy: () => true,
+};
+
+/** Every server serves workspace diagnostics, by pull request or from cached pushes. */
+const WORKSPACE_DIAGNOSTICS_CAPABILITY: LspCapabilityRequirement<LspToolServerClient> = {
+  name: WorkspaceDiagnosticRequest.method,
+  isSupportedBy: () => true,
+};
 
 async function createLspToolOutput(
   text: string,
@@ -408,6 +440,27 @@ function lspOperationCall<TOperation extends LspOperationName>(
 
 function absoluteLspFilePath(filePath: string, context: ExtensionContext): string {
   return resolve(context.cwd, normalizeLspFilePath(filePath));
+}
+
+/**
+ * Resolve the path of a document an operation opens, rejecting a missing file or a directory as an
+ * input error before any server is routed or started.
+ */
+async function documentFilePath(filePath: string, context: ExtensionContext): Promise<string> {
+  const absolutePath = absoluteLspFilePath(filePath, context);
+  let stats;
+  try {
+    stats = await stat(absolutePath);
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause) {
+      if (cause.code === "ENOENT" || cause.code === "ENOTDIR") {
+        throw new LspInputError(`file not found: ${absolutePath}`);
+      }
+    }
+    throw cause;
+  }
+  if (stats.isDirectory()) throw new LspInputError(`${absolutePath} is a directory, not a file`);
+  return absolutePath;
 }
 
 async function prepareLspDocument(
@@ -767,7 +820,7 @@ async function executePositionRead(
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ): Promise<LspServerReadResult<unknown>> {
-  const filePath = absoluteLspFilePath(parameters.file_path, context);
+  const filePath = await documentFilePath(parameters.file_path, context);
   const methodByOperation = {
     completion: CompletionRequest.method,
     hover: HoverRequest.method,
@@ -790,7 +843,7 @@ async function executePositionRead(
   return dependencies.manager.runRead(
     filePath,
     parameters.server_id,
-    (client) => client.hasCapability(capabilityMethod),
+    requireMethod(capabilityMethod),
     async (client, route) => {
       const prepared = await prepareLspDocument(client, route, filePath);
       const position = protocolPosition(prepared, {
@@ -848,7 +901,7 @@ async function executeFileRead(
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ): Promise<LspServerReadResult<unknown>> {
-  const filePath = absoluteLspFilePath(parameters.file_path, context);
+  const filePath = await documentFilePath(parameters.file_path, context);
   const methodByOperation = {
     diagnostics: "diagnostics",
     document_symbols: DocumentSymbolRequest.method,
@@ -861,7 +914,7 @@ async function executeFileRead(
   return dependencies.manager.runRead(
     filePath,
     parameters.server_id,
-    (client) => method === "diagnostics" || client.hasCapability(method),
+    method === "diagnostics" ? DOCUMENT_DIAGNOSTICS_CAPABILITY : requireMethod(method),
     async (client, route) => {
       const prepared = await prepareLspDocument(client, route, filePath);
       if (parameters.operation === "diagnostics") {
@@ -902,11 +955,11 @@ async function executeInlayHints(
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ): Promise<LspServerReadResult<unknown>> {
-  const filePath = absoluteLspFilePath(parameters.file_path, context);
+  const filePath = await documentFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
     parameters.server_id,
-    (client) => client.hasCapability(InlayHintRequest.method),
+    requireMethod(InlayHintRequest.method),
     async (client, route) => {
       const prepared = await prepareLspDocument(client, route, filePath);
       let value = await client.request(
@@ -934,11 +987,11 @@ async function executeSelectionRanges(
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ): Promise<LspServerReadResult<unknown>> {
-  const filePath = absoluteLspFilePath(parameters.file_path, context);
+  const filePath = await documentFilePath(parameters.file_path, context);
   return dependencies.manager.runRead(
     filePath,
     parameters.server_id,
-    (client) => client.hasCapability(SelectionRangeRequest.method),
+    requireMethod(SelectionRangeRequest.method),
     async (client, route) => {
       const prepared = await prepareLspDocument(client, route, filePath);
       const value = await client.request(
@@ -968,7 +1021,7 @@ async function executeWorkspaceRead(
     return dependencies.manager.runRead(
       filePath,
       parameters.server_id,
-      () => true,
+      WORKSPACE_DIAGNOSTICS_CAPABILITY,
       async (client) =>
         normalizeProtocolResult(
           await client.workspaceDiagnostics(signal),
@@ -981,7 +1034,7 @@ async function executeWorkspaceRead(
   return dependencies.manager.runRead(
     filePath,
     parameters.server_id,
-    (client) => client.hasCapability(WorkspaceSymbolRequest.method),
+    requireMethod(WorkspaceSymbolRequest.method),
     async (client) => {
       let value = await client.request(
         WorkspaceSymbolRequest.method,
@@ -1015,7 +1068,7 @@ async function executeFormattingPreview(
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ) {
-  const filePath = absoluteLspFilePath(parameters.file_path, context);
+  const filePath = await documentFilePath(parameters.file_path, context);
   const method =
     parameters.operation === "format_document"
       ? DocumentFormattingRequest.method
@@ -1025,7 +1078,7 @@ async function executeFormattingPreview(
   const resolution = await dependencies.manager.resolveMutationClient(
     filePath,
     parameters.server_id,
-    (client) => client.hasCapability(method),
+    requireMethod(method),
   );
   if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
   const { client, route } = resolution.instance;
@@ -1066,11 +1119,11 @@ async function executeRenamePreview(
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ) {
-  const filePath = absoluteLspFilePath(parameters.file_path, context);
+  const filePath = await documentFilePath(parameters.file_path, context);
   const resolution = await dependencies.manager.resolveMutationClient(
     filePath,
     parameters.server_id,
-    (client) => client.hasCapability(RenameRequest.method),
+    requireMethod(RenameRequest.method),
   );
   if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
   const { client, route } = resolution.instance;
@@ -1133,11 +1186,11 @@ async function executeCodeActions(
   context: ExtensionContext,
   signal: AbortSignal | undefined,
 ) {
-  const filePath = absoluteLspFilePath(parameters.file_path, context);
+  const filePath = await documentFilePath(parameters.file_path, context);
   const resolution = await dependencies.manager.resolveMutationClient(
     filePath,
     parameters.server_id,
-    (client) => client.hasCapability(CodeActionRequest.method),
+    requireMethod(CodeActionRequest.method),
   );
   if (resolution.kind === "failure") throw piLspFailureError([resolution.failure]);
   const { client, route } = resolution.instance;

@@ -65,10 +65,11 @@ class RecordingLspClient implements LspToolServerClient {
   currentDiagnostics: Diagnostic[] = [];
   currentDiagnosticsFailure: Error | undefined;
   failureByMethod = new Map<string, Error>();
+  readonly unsupportedMethods = new Set<string>();
   shutdownCount = 0;
 
-  hasCapability(_method: string): boolean {
-    return true;
+  hasCapability(method: string): boolean {
+    return !this.unsupportedMethods.has(method);
   }
 
   async synchronizeDocument(
@@ -1497,6 +1498,109 @@ describe("registered LSP tool", () => {
         character: 1,
       }),
     ).rejects.not.toThrow(TROUBLESHOOTING_HINT);
+    await fixture.close();
+  });
+
+  test("reports a missing file as an input error before asking any server", async () => {
+    const fixture = await createToolFixture();
+    const missing = resolve(fixture.context.cwd, "missing.ts");
+    for (const call of [
+      { operation: "hover", file_path: "missing.ts", line: 1, character: 1 },
+      { operation: "diagnostics", file_path: "@missing.ts" },
+      { operation: "rename", file_path: missing, line: 1, character: 1, new_name: "x" },
+    ] satisfies LspToolParameters[]) {
+      const failure = await executeTool(fixture, call).catch((cause: unknown) => cause);
+      expect(failure, call.operation).toEqual(new Error(`Pi LSP: file not found: ${missing}`));
+      expect(String(failure)).not.toContain(TROUBLESHOOTING_HINT);
+    }
+    await expect(
+      executeTool(fixture, {
+        operation: "document_symbols",
+        file_path: fixture.context.cwd,
+      }),
+    ).rejects.toThrow(`Pi LSP: ${fixture.context.cwd} is a directory, not a file`);
+    expect(fixture.client.requests).toEqual([]);
+    await fixture.close();
+  });
+
+  test("reports out-of-range positions as input errors with the document's bounds", async () => {
+    const fixture = await createToolFixture();
+    for (const [call, message] of [
+      [
+        { operation: "hover", file_path: fixture.filePath, line: 5, character: 1 },
+        "Pi LSP: line 5 is past the end of the document, which has 2 lines (line must be at most 2)",
+      ],
+      [
+        { operation: "hover", file_path: fixture.filePath, line: 1, character: 30 },
+        "Pi LSP: character 30 is past the end of line 1, which has 18 characters (character must be at most 19)",
+      ],
+      [
+        {
+          operation: "code_actions",
+          file_path: fixture.filePath,
+          range: { start: { line: 1, character: 1 }, end: { line: 3, character: 1 } },
+        },
+        "Pi LSP: line 3 is past the end of the document, which has 2 lines (line must be at most 2)",
+      ],
+    ] satisfies [LspToolParameters, string][]) {
+      const failure = await executeTool(fixture, call).catch((cause: unknown) => cause);
+      expect(failure, message).toEqual(new Error(message));
+      expect(String(failure)).not.toContain(TROUBLESHOOTING_HINT);
+    }
+    await fixture.close();
+  });
+
+  test("names the unsupported capability and the matching servers that lack it, without the hint", async () => {
+    const fixture = await createToolFixture(["typescript", "other"]);
+    fixture.client.unsupportedMethods.add("textDocument/declaration");
+    fixture.client.unsupportedMethods.add("textDocument/formatting");
+    const read = await executeTool(fixture, {
+      operation: "declaration",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    }).catch((cause: unknown) => cause);
+    expect(read).toEqual(
+      new Error(
+        "Pi LSP: no matching server supports textDocument/declaration; matching servers without it: typescript, other",
+      ),
+    );
+    const mutation = await executeTool(fixture, {
+      operation: "format_document",
+      file_path: fixture.filePath,
+      tab_size: 2,
+      insert_spaces: true,
+      server_id: "other",
+    }).catch((cause: unknown) => cause);
+    expect(mutation).toEqual(
+      new Error("Pi LSP: server other does not support textDocument/formatting"),
+    );
+    await fixture.close();
+  });
+
+  test("points server startup failures to the troubleshooting Skill", async () => {
+    const cwd = await mkdtemp(resolve(tmpdir(), "pi-lsp-tool-"));
+    temporaryDirectories.push(cwd);
+    const filePath = resolve(cwd, "source.ts");
+    await writeFile(filePath, "export {};\n");
+    const sessionFiles = await createLspSessionFiles(cwd);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: async () => {
+        throw new Error("spawn typescript-language-server ENOENT");
+      },
+    });
+    const fixture = await createToolFixture();
+    await expect(
+      executeTool(
+        fixture,
+        { operation: "hover", file_path: filePath, line: 1, character: 1 },
+        { manager, workspaceEdits: new LspWorkspaceEditStore(), sessionFiles },
+      ),
+    ).rejects.toThrow(TROUBLESHOOTING_HINT);
+    await manager.shutdown();
+    await sessionFiles.close();
     await fixture.close();
   });
 
