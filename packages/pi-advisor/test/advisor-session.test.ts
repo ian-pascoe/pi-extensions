@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { onTestFinished, describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import {
   InMemoryCredentialStore,
@@ -54,6 +54,7 @@ async function observedFixture(
   extensionFactories: InlineExtension[] = [],
 ) {
   const dir = await mkdtemp(join(tmpdir(), "advisor-sdk-"));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const settings =
     suppliedSettings ??
     SettingsManager.inMemory({
@@ -112,10 +113,9 @@ async function observedFixture(
     throw new Error("Fixture does not replace sessions");
   });
   await runtime.session.bindExtensions({ mode: "print" });
-  afterEach(async () => {
+  onTestFinished(async () => {
     await runtime.session.abort();
     await runtime.dispose();
-    await rm(dir, { recursive: true, force: true });
   });
   return { observed: runtime.session, dir };
 }
@@ -150,7 +150,7 @@ describe("private Advisor native sessions", () => {
       config: readAdvisorSettings(observed).settings,
       adviceTool,
     });
-    afterEach(() => disposeAdvisorSession(runtime));
+    onTestFinished(() => disposeAdvisorSession(runtime));
     const fresh = runtime.session.resourceLoader.getExtensions().extensions.at(-1);
     expect(fresh).toMatchObject({
       path: original?.path,
@@ -247,6 +247,7 @@ describe("private Advisor native sessions", () => {
 
   it("reopens the actual native auth file rather than guessing or pinning a copied file credential", async () => {
     const authDir = await mkdtemp(join(tmpdir(), "advisor-auth-"));
+    onTestFinished(() => rm(authDir, { recursive: true, force: true }));
     const authPath = join(authDir, "custom-auth.json");
     await writeFile(
       authPath,
@@ -259,15 +260,12 @@ describe("private Advisor native sessions", () => {
       modelsPath: null,
       refreshOnCreate: false,
     });
-    afterEach(async () => {
-      await rm(authDir, { recursive: true, force: true });
-    });
     const { observed } = await observedFixture([fixture], undefined, false, models);
     const runtime = await createAdvisorSession(observed, {
       config: readAdvisorSettings(observed).settings,
       adviceTool,
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await disposeAdvisorSession(runtime);
     });
     await writeFile(
@@ -307,7 +305,7 @@ describe("private Advisor native sessions", () => {
       adviceTool,
       resourceInputs,
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await disposeAdvisorSession(runtime);
     });
     await runtime.session.prompt("/touch-fixture");
@@ -354,7 +352,7 @@ describe("private Advisor native sessions", () => {
         adviceTool,
         resourceInputs: inputs,
       });
-      afterEach(async () => {
+      onTestFinished(async () => {
         await disposeAdvisorSession(runtime);
       });
       return runtime.session.getToolDefinition("codemode")?.description;
@@ -382,7 +380,7 @@ describe("private Advisor native sessions", () => {
     );
     const config = readAdvisorSettings(observed).settings;
     const direct = await createAdvisorSession(observed, { config, adviceTool });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await disposeAdvisorSession(direct);
     });
     expect(direct.session.getActiveToolNames()).toEqual([...config.allowedTools, "advisor_report"]);
@@ -390,7 +388,7 @@ describe("private Advisor native sessions", () => {
       config: { ...config, allowedTools: [...config.allowedTools, "codemode"] },
       adviceTool,
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await disposeAdvisorSession(scripted);
     });
     expect(scripted.session.getActiveToolNames()).toEqual([
@@ -427,7 +425,7 @@ describe("private Advisor native sessions", () => {
       config,
       adviceTool,
     });
-    afterEach(() => disposeAdvisorSession(runtime));
+    onTestFinished(() => disposeAdvisorSession(runtime));
     const declared = [
       "read",
       "grep",
@@ -444,7 +442,7 @@ describe("private Advisor native sessions", () => {
     // The model request declares exactly those tools, in the same order after every change.
     const requests: Tool[][] = [];
     globalThis.advisorSessionRequestTools = requests;
-    afterEach(() => {
+    onTestFinished(() => {
       globalThis.advisorSessionRequestTools = undefined;
     });
     await runtime.session.prompt("First review");
@@ -488,10 +486,10 @@ describe("private Advisor native sessions", () => {
         allowedTools: [...settings.allowedTools, "codemode", "codemode_tool", "deferred_tool"],
       };
       const runtime = await createAdvisorSession(observed, { config, adviceTool });
-      afterEach(() => disposeAdvisorSession(runtime));
+      onTestFinished(() => disposeAdvisorSession(runtime));
       const requests: Tool[][] = [];
       globalThis.advisorSessionRequestTools = requests;
-      afterEach(() => {
+      onTestFinished(() => {
         globalThis.advisorSessionRequestTools = undefined;
       });
       await runtime.session.prompt("Review");
@@ -533,7 +531,7 @@ describe("private Advisor native sessions", () => {
       adviceTool,
     });
     let closed = false;
-    afterEach(async () => {
+    onTestFinished(async () => {
       globalThis.advisorSessionResponses = undefined;
       if (!closed) await disposeAdvisorSession(runtime);
     });
@@ -618,7 +616,7 @@ describe("private Advisor native sessions", () => {
       adviceTool,
       signal: creationOnly.signal,
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await runtime.session.abort();
       await runtime.dispose();
     });
@@ -641,7 +639,7 @@ describe("private Advisor native sessions", () => {
       config,
       adviceTool,
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await runtime.session.abort();
       await runtime.dispose();
     });
@@ -673,7 +671,7 @@ describe("private Advisor native sessions", () => {
       config,
       adviceTool,
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await runtime.session.abort();
       await runtime.dispose();
     });
@@ -716,7 +714,7 @@ describe("private Advisor native sessions", () => {
       config: readAdvisorSettings(observed).settings,
       adviceTool,
     });
-    afterEach(async () => {
+    onTestFinished(async () => {
       await runtime.session.abort();
       await runtime.dispose();
     });

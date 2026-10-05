@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { onTestFinished, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +23,7 @@ import "./fixtures/observer-extension.js";
 
 it("returns enabled main-agent consultation as an ordinary tool result", async () => {
   const directory = await mkdtemp(join(tmpdir(), "advisor-consultation-"));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
   const privatePrompts: string[] = [];
   const privateToolNames: string[][] = [];
   const questions = ["What risk should I check first?"];
@@ -141,10 +142,9 @@ it("returns enabled main-agent consultation as an ordinary tool result", async (
     throw new Error("No replacement");
   });
   await runtime.session.bindExtensions({ mode: "print" });
-  afterEach(async () => {
+  onTestFinished(async () => {
     await runtime.session.abort();
     await runtime.dispose();
-    await rm(directory, { recursive: true, force: true });
   });
 
   await runtime.session.prompt("Ask for a second opinion before finishing.");

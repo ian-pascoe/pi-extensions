@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach } from "vitest";
+import { onTestFinished } from "vitest";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
@@ -44,6 +44,7 @@ export async function createSdkHarness(
   options: HarnessOptions = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "pi-context-test-"));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const manager = options.manager ?? SessionManager.create(dir, dir);
   const document = {
     contextManagement: options.contextSettings,
@@ -105,9 +106,8 @@ export async function createSdkHarness(
     model,
     noTools: "builtin",
   });
-  afterEach(async () => {
+  onTestFinished(async () => {
     session.dispose();
-    await rm(dir, { recursive: true, force: true });
   });
   const events: AgentSessionEvent[] = [];
   session.subscribe((event) => events.push(event));
