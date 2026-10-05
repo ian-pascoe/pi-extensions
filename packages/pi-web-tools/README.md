@@ -29,15 +29,19 @@ export EXA_API_KEY=...
 export PARALLEL_API_KEY=...
 ```
 
-| Parameter              | Values                    | Default                       |
-| ---------------------- | ------------------------- | ----------------------------- |
-| `query`                | required string           | —                             |
-| `numResults`           | integer 1–20              | 8                             |
-| `livecrawl`            | `fallback` or `preferred` | `fallback`                    |
-| `type`                 | `auto`, `fast`, or `deep` | `auto`                        |
-| `contextMaxCharacters` | integer 1–50,000          | Exa effective default: 10,000 |
+| Parameter              | Values                    | Default                       | Honored by       |
+| ---------------------- | ------------------------- | ----------------------------- | ---------------- |
+| `query`                | required string           | —                             | Exa and Parallel |
+| `numResults`           | integer 1–20              | 8                             | Exa              |
+| `type`                 | `auto`, `fast`, or `deep` | `auto`                        | neither          |
+| `livecrawl`            | `fallback` or `preferred` | `fallback`                    | neither          |
+| `contextMaxCharacters` | integer 1–50,000          | Exa effective default: 10,000 | neither          |
 
-Exa receives all controls and an optional `EXA_API_KEY` endpoint credential. Parallel receives the query and Pi session ID; its protocol has no matching tuning fields. Search results are provider text without citation rewriting. A provider failure has no retry and never falls back to the other provider. Failures keep their cause: `Unable to search the web for <query>: <cause>` names the HTTP status, timeout, network error class, or the Search Provider's own message (an MCP `isError` result, a JSON-RPC `error`, or Exa's free-tier rate limit). An empty or whitespace-only query is rejected before any request. API keys never appear in errors.
+The "Honored by" column follows the providers' live tool schemas: Exa `web_search_exa` accepts `query` and `numResults`; Parallel `web_search` accepts no tuning fields. Both servers silently ignore the rest. Each parameter's description says which Search Provider honors it, and those descriptions are static, so the tool definition (and the prompt cache) is identical whichever provider the session selects. The parameters stay in the schema for compatibility; removing them would be a breaking change.
+
+When a call explicitly supplies parameters the selected Search Provider ignores, the result carries a warning such as `Parallel ignores: numResults, type.` Parameters are listed in table order, and nothing is added when no supplied parameter is ignored. The warning appears as a `Warning:` line before the provider text the model reads, as `warnings: string[]` in `structuredContent` and in the session `details` (omitted when empty), and in the expanded Transcript.
+
+Pi still sends every supplied control to Exa, with an optional `EXA_API_KEY` endpoint credential. Parallel receives the query and Pi session ID; its protocol has no matching tuning fields. Search results are provider text without citation rewriting. A provider failure has no retry and never falls back to the other provider. Failures keep their cause: `Unable to search the web for <query>: <cause>` names the HTTP status, timeout, network error class, or the Search Provider's own message (an MCP `isError` result, a JSON-RPC `error`, or Exa's free-tier rate limit). An empty or whitespace-only query is rejected before any request. API keys never appear in errors.
 
 ### `web_fetch`
 
@@ -63,7 +67,7 @@ Both tools declare an `outputSchema` and return matching `structuredContent`, so
 
 | Tool         | Script value                                                                                             |
 | ------------ | -------------------------------------------------------------------------------------------------------- |
-| `web_search` | `{ provider, content, full_output_path? }`                                                               |
+| `web_search` | `{ provider, content, warnings?, full_output_path? }`                                                    |
 | `web_fetch`  | `{ url, content_type, format, content, truncated, structured_truncated, full_output_path? }` (final URL) |
 
 Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's complete text answer (at most 256 KiB). Web Fetch `content` is the converted text up to 1 MiB of UTF-8, cut on a character boundary.

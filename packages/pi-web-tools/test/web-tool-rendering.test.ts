@@ -88,6 +88,35 @@ describe("Pi Web Tools transcript rendering", () => {
     expect(expandedSearch).toContain("Search result");
     expect(expandedSearch).toContain("Useful content");
 
+    const warned = {
+      content: [
+        { type: "text" as const, text: "Warning: Parallel ignores: numResults.\n\nUseful content" },
+      ],
+      details: { provider: "parallel" as const, warnings: ["Parallel ignores: numResults."] },
+    };
+    const collapsedWarned = renderLines(
+      renderWebSearchToolResult(
+        warned,
+        { expanded: false, isPartial: false },
+        plainTheme,
+        false,
+        warned.details,
+      ),
+    );
+    expect(collapsedWarned).toContain("✓ completed  ·  Parallel  ·  parameters ignored");
+    const expandedWarned = renderLines(
+      renderWebSearchToolResult(
+        warned,
+        { expanded: true, isPartial: false },
+        plainTheme,
+        false,
+        warned.details,
+      ),
+    );
+    expect(expandedWarned).toContain("Warning: Parallel ignores: numResults.");
+    expect(expandedWarned.match(/Parallel ignores/g)).toHaveLength(1);
+    expect(expandedWarned).toContain("Useful content");
+
     const fetchResult = {
       content: [{ type: "text" as const, text: "# Fetched page\n\nBody" }],
       details: {

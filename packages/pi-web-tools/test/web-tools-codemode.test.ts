@@ -218,7 +218,7 @@ describe("Web Tools through Pi codemode", () => {
     // Pi appends the script-call result line to a declared tool's description (or lists it in codemode's).
     const text = (first?.tools ?? []).map(({ description }) => description).join("\n");
     expect(text).toMatch(
-      /web_search\(args\)` resolves to `\{ provider, content, full_output_path\? \}`/,
+      /web_search\(args\)` resolves to `\{ provider, content, warnings\?, full_output_path\? \}`/,
     );
     expect(text).toMatch(
       /web_fetch\(args\)` resolves to `\{ url, content_type, format, content, truncated, structured_truncated, full_output_path\? \}`/,

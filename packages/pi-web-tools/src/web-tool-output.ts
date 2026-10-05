@@ -55,6 +55,11 @@ export type WebToolOutput = {
   readonly truncation?: WebToolTruncationDetails;
 };
 
+/** Model-visible text for Web Tool warnings, one `Warning:` line each; also stripped by the renderer. */
+export function webToolWarningNotice(warnings: readonly string[]): string {
+  return warnings.map((warning) => `Warning: ${warning}`).join("\n");
+}
+
 async function removeTemporaryDirectory(directory: string): Promise<void> {
   await rm(directory, { recursive: true, force: true }).catch(() => undefined);
 }

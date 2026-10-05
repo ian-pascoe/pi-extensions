@@ -14,7 +14,11 @@ import {
 } from "./web-response.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 import { renderWebSearchToolCall, renderWebSearchToolResult } from "./web-tool-rendering.js";
-import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
+import {
+  createWebToolOutput,
+  webToolWarningNotice,
+  WebToolTruncationDetailsSchema,
+} from "./web-tool-output.js";
 
 const DEFAULT_EXA_URL = "https://mcp.exa.ai/mcp";
 const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
@@ -52,6 +56,61 @@ export function redactWebSearchApiKey(value: string): RedactedWebSearchApiKey {
   });
 }
 
+/** Optional Web Search parameter names, in the stable order warnings list them. */
+const OPTIONAL_SEARCH_PARAMETERS = [
+  "numResults",
+  "type",
+  "livecrawl",
+  "contextMaxCharacters",
+] as const;
+
+type OptionalSearchParameter = (typeof OPTIONAL_SEARCH_PARAMETERS)[number];
+
+/**
+ * Which Search Providers honor each optional parameter. This is the single source of truth for the
+ * parameter descriptions and the ignored-parameter warning; update it when a provider schema changes.
+ * Verified against the live `tools/list` schemas: Exa `web_search_exa` accepts only `numResults`, and
+ * Parallel `web_search` accepts none. Pi still sends every supplied control to Exa, which ignores
+ * unknown keys; removing the ignored parameters from the schema would be a breaking change.
+ */
+export const SEARCH_PARAMETER_SUPPORT = {
+  numResults: ["exa"],
+  type: [],
+  livecrawl: [],
+  contextMaxCharacters: [],
+} as const satisfies { readonly [Parameter in OptionalSearchParameter]: readonly SearchProvider[] };
+
+function honoringProviders(parameter: OptionalSearchParameter): readonly SearchProvider[] {
+  return SEARCH_PARAMETER_SUPPORT[parameter];
+}
+
+const SEARCH_PROVIDERS: readonly SearchProvider[] = ["exa", "parallel"];
+
+function providerName(provider: SearchProvider): string {
+  return provider === "exa" ? "Exa" : "Parallel";
+}
+
+/** Static sentence naming the Search Providers that honor a parameter. */
+function searchParameterSupportNote(parameter: OptionalSearchParameter): string {
+  const honoring = honoringProviders(parameter);
+  const ignoring = SEARCH_PROVIDERS.filter((provider) => !honoring.includes(provider));
+  if (honoring.length === 0) return "Currently ignored by both Search Providers.";
+  if (ignoring.length === 0) return "Honored by both Search Providers.";
+  return `Honored by ${honoring.map(providerName).join(", ")}; ${ignoring.map(providerName).join(", ")} ignores it.`;
+}
+
+/** Explicitly supplied parameters the Search Provider ignores, or nothing to warn about. */
+function ignoredParameterWarnings(
+  provider: SearchProvider,
+  supplied: Pick<WebSearchParameters, OptionalSearchParameter>,
+): string[] {
+  const ignored = OPTIONAL_SEARCH_PARAMETERS.filter(
+    (parameter) =>
+      supplied[parameter] !== undefined && !honoringProviders(parameter).includes(provider),
+  );
+  return ignored.length === 0 ? [] : [`${providerName(provider)} ignores: ${ignored.join(", ")}.`];
+}
+
 /** Native transport and hosted endpoints used by a Web Search definition. */
 export type WebSearchToolOptions = {
   readonly fetch?: typeof globalThis.fetch | undefined;
@@ -61,10 +120,16 @@ export type WebSearchToolOptions = {
   readonly parallelApiKey?: RedactedWebSearchApiKey | undefined;
 };
 
+const WarningsSchema = Type.Array(Type.String(), {
+  minItems: 1,
+  description: "Present only when the Search Provider ignored parameters the call supplied",
+});
+
 /** Runtime contract for model-invisible Web Search execution metadata. */
 export const WebSearchDetailsSchema = Type.Object(
   {
     provider: SearchProviderSchema,
+    warnings: Type.Optional(WarningsSchema),
     truncation: Type.Optional(WebToolTruncationDetailsSchema),
   },
   { additionalProperties: false },
@@ -82,6 +147,7 @@ export const WebSearchOutputSchema = Type.Object(
   {
     provider: SearchProviderSchema,
     content: Type.String({ description: "Search Provider's complete text answer" }),
+    warnings: Type.Optional(WarningsSchema),
     full_output_path: Type.Optional(
       Type.String({ description: "Private file with the full text" }),
     ),
@@ -100,26 +166,26 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
         minimum: 1,
         maximum: 20,
         default: 8,
-        description: "Number of results (default: 8, maximum: 20)",
+        description: `Number of results (default: 8, maximum: 20). ${searchParameterSupportNote("numResults")}`,
       }),
     ),
     livecrawl: Type.Optional(
       StringEnum(["fallback", "preferred"] as const, {
         default: "fallback",
-        description: "Live crawl mode (default: fallback)",
+        description: `Live crawl mode (default: fallback). ${searchParameterSupportNote("livecrawl")}`,
       }),
     ),
     type: Type.Optional(
       StringEnum(["auto", "fast", "deep"] as const, {
         default: "auto",
-        description: "Search type (default: auto)",
+        description: `Search type (default: auto). ${searchParameterSupportNote("type")}`,
       }),
     ),
     contextMaxCharacters: Type.Optional(
       Type.Integer({
         minimum: 1,
         maximum: 50_000,
-        description: "Maximum model context characters (effective default: 10000)",
+        description: `Maximum model context characters (effective default: 10000). ${searchParameterSupportNote("contextMaxCharacters")}`,
       }),
     ),
   },
@@ -164,7 +230,7 @@ const MCP_RESPONSE_SCHEMA = Type.Object(
 );
 
 const WEB_SEARCH_DESCRIPTION =
-  "Discover current public web information using Exa or Parallel. Results are textual and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
+  "Discover current public web information using Exa or Parallel. Optional parameters are honored only by some Search Providers; each parameter says which, and a warning names supplied parameters the active provider ignored. Results are textual and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
 type ExaSearchArguments = {
   query: string;
@@ -226,10 +292,6 @@ class SearchProviderError extends Error {
     this.name = "SearchProviderError";
     this.diagnosable = diagnosable;
   }
-}
-
-function providerName(provider: SearchProvider): string {
-  return provider === "exa" ? "Exa" : "Parallel";
 }
 
 /** Turns provider-controlled text into one short, key-free, control-free line. */
@@ -572,17 +634,22 @@ export function createWebSearchTool(
         throw unableToSearch(input.query, failure);
       }
       // Spilling the full output is local work; its failures are not Web Search request failures.
-      const output = await createWebToolOutput(search);
+      const warnings = ignoredParameterWarnings(provider, parameters);
+      // The warning leads the model-visible text, so the shared output limits account for it.
+      const output = await createWebToolOutput(
+        warnings.length === 0 ? search : `${webToolWarningNotice(warnings)}\n\n${search}`,
+      );
       const structuredContent: WebSearchOutput = { provider, content: search };
+      if (warnings.length > 0) structuredContent.warnings = warnings;
       if (output.truncation !== undefined) {
         structuredContent.full_output_path = output.truncation.fullOutputPath;
       }
+      const details: WebSearchDetails = { provider };
+      if (warnings.length > 0) details.warnings = warnings;
+      if (output.truncation !== undefined) details.truncation = output.truncation;
       return {
         content: [{ type: "text", text: output.content }],
-        details:
-          output.truncation === undefined
-            ? { provider }
-            : { provider, truncation: output.truncation },
+        details,
         structuredContent,
       };
     },

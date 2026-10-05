@@ -168,9 +168,21 @@ describe("Web Search", () => {
     expect(server.requests[0]?.headers.accept).toBe("application/json, text/event-stream");
     expect(server.requests[0]?.headers["content-type"]).toContain("application/json");
     expect(result).toEqual({
-      content: [{ type: "text", text: "exa results" }],
-      details: { provider: "exa" },
-      structuredContent: { provider: "exa", content: "exa results" },
+      content: [
+        {
+          type: "text",
+          text: "Warning: Exa ignores: type, livecrawl, contextMaxCharacters.\n\nexa results",
+        },
+      ],
+      details: {
+        provider: "exa",
+        warnings: ["Exa ignores: type, livecrawl, contextMaxCharacters."],
+      },
+      structuredContent: {
+        provider: "exa",
+        content: "exa results",
+        warnings: ["Exa ignores: type, livecrawl, contextMaxCharacters."],
+      },
     });
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -231,9 +243,21 @@ describe("Web Search", () => {
     });
     expect(JSON.stringify(server.requests[0]?.body)).not.toContain("numResults");
     expect(result).toEqual({
-      content: [{ type: "text", text: "parallel results" }],
-      details: { provider: "parallel" },
-      structuredContent: { provider: "parallel", content: "parallel results" },
+      content: [
+        {
+          type: "text",
+          text: "Warning: Parallel ignores: numResults, type, livecrawl.\n\nparallel results",
+        },
+      ],
+      details: {
+        provider: "parallel",
+        warnings: ["Parallel ignores: numResults, type, livecrawl."],
+      },
+      structuredContent: {
+        provider: "parallel",
+        content: "parallel results",
+        warnings: ["Parallel ignores: numResults, type, livecrawl."],
+      },
     });
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -930,6 +954,7 @@ describe("Web Search", () => {
     if (visible?.type !== "text") throw new Error("Expected text search result");
     expect(Buffer.byteLength(visible.text)).toBeLessThanOrEqual(50 * 1024);
     expect(await readFile(path, "utf8")).toBe(complete);
+    expect(result.details).not.toHaveProperty("warnings");
     // Scripts cannot read the spill file, so they receive the complete provider text.
     expect(result.structuredContent).toEqual({
       provider: "exa",
@@ -939,5 +964,118 @@ describe("Web Search", () => {
     expect(Value.Check(WebSearchOutputSchema, result.structuredContent)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(await readFile(path, "utf8")).not.toContain(secret);
+  });
+
+  describe("ignored-parameter warnings", () => {
+    async function search(
+      provider: SearchProvider,
+      parameters: Parameters<typeof executeSearch>[2],
+    ) {
+      const server = await startServer(() => ({ body: mcpResult("results") }));
+      const result = await executeSearch(
+        provider,
+        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+        parameters,
+      );
+      const text = result.content[0];
+      if (text?.type !== "text") throw new Error("Expected text search result");
+      return { result, text: text.text, requests: server.requests };
+    }
+
+    test("Parallel names every supplied parameter it ignores in a stable order", async () => {
+      const { result, text } = await search("parallel", {
+        query: "q",
+        contextMaxCharacters: 100,
+        type: "deep",
+        livecrawl: "preferred",
+        numResults: 5,
+      });
+      const warnings = ["Parallel ignores: numResults, type, livecrawl, contextMaxCharacters."];
+      expect(text).toBe(`Warning: ${warnings[0]}\n\nresults`);
+      expect(result.details).toEqual({ provider: "parallel", warnings });
+      expect(result.structuredContent).toEqual({
+        provider: "parallel",
+        content: "results",
+        warnings,
+      });
+      expect(Value.Check(WebSearchOutputSchema, result.structuredContent)).toBe(true);
+    });
+
+    test("Parallel warns about only the parameters that were supplied", async () => {
+      const { result } = await search("parallel", { query: "q", type: "fast", numResults: 2 });
+      expect(result.details.warnings).toEqual(["Parallel ignores: numResults, type."]);
+    });
+
+    test("Exa ignores every optional parameter except numResults", async () => {
+      const { result, text, requests } = await search("exa", {
+        query: "q",
+        numResults: 4,
+        type: "fast",
+        contextMaxCharacters: 50,
+      });
+      expect(text).toBe("Warning: Exa ignores: type, contextMaxCharacters.\n\nresults");
+      expect(result.details.warnings).toEqual(["Exa ignores: type, contextMaxCharacters."]);
+      expect(result.structuredContent).toMatchObject({
+        warnings: ["Exa ignores: type, contextMaxCharacters."],
+      });
+      // The request is unchanged: Exa still receives every supplied control.
+      expect(requests[0]).toMatchObject({
+        body: { params: { arguments: { numResults: 4, type: "fast", contextMaxCharacters: 50 } } },
+      });
+    });
+
+    test("adds no warning when only the query is supplied", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const { result, text } = await search(provider, { query: "q" });
+        expect(text).toBe("results");
+        expect(result.details).toEqual({ provider });
+        expect(result.structuredContent).toEqual({ provider, content: "results" });
+        expect(result.details).not.toHaveProperty("warnings");
+        expect(result.structuredContent).not.toHaveProperty("warnings");
+      }
+    });
+
+    test("adds no Exa warning when only numResults is supplied", async () => {
+      const { result, text } = await search("exa", { query: "q", numResults: 3 });
+      expect(text).toBe("results");
+      expect(result.details).toEqual({ provider: "exa" });
+      expect(result.structuredContent).toEqual({ provider: "exa", content: "results" });
+    });
+
+    test("keeps the warning inside the model-visible output limits", async () => {
+      const complete = Array.from({ length: 2_100 }, (_, index) => `result ${index}`).join("\n");
+      const server = await startServer(() => ({ body: mcpResult(complete) }));
+      const result = await executeSearch(
+        "parallel",
+        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "q", numResults: 3 },
+      );
+      const path = result.details.truncation?.fullOutputPath;
+      if (path === undefined) throw new Error("Expected search result spill");
+      spillDirectories.push(dirname(path));
+      const visible = result.content[0];
+      if (visible?.type !== "text") throw new Error("Expected text search result");
+      expect(visible.text.startsWith("Warning: Parallel ignores: numResults.\n\nresult 0")).toBe(
+        true,
+      );
+      expect(visible.text.split("\n").length).toBeLessThanOrEqual(2_000);
+      expect(Buffer.byteLength(visible.text)).toBeLessThanOrEqual(50 * 1024);
+      expect(result.structuredContent).toMatchObject({ content: complete });
+    });
+
+    test("describes each parameter's provider support in static schema text", () => {
+      const { properties }: { properties: Record<string, { description?: string }> } = JSON.parse(
+        JSON.stringify(createWebSearchTool().parameters),
+      );
+      const descriptions = Object.fromEntries(
+        Object.entries(properties).map(([name, schema]) => [name, schema.description]),
+      );
+      expect(descriptions.numResults).toBe(
+        "Number of results (default: 8, maximum: 20). Honored by Exa; Parallel ignores it.",
+      );
+      for (const parameter of ["type", "livecrawl", "contextMaxCharacters"]) {
+        expect(descriptions[parameter]).toMatch(/Currently ignored by both Search Providers\.$/);
+      }
+    });
   });
 });
