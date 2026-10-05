@@ -14,7 +14,8 @@
 Pi Formatter runs matching Formatter Definitions sequentially after a Supported Mutation Tool
 reports changed destination files. Formatting completes before later tool-result middleware runs.
 A successful mutation remains successful when formatting fails. Deleted and vanished files are
-not formatter targets.
+not formatter targets. Formatter changes to a file are reported as one line on the mutation result,
+and formatter syntax-error failures are input outcomes without a troubleshooting hint.
 
 An Activation Gate is evaluated independently for every candidate file. A Formatter Definition
 that does not pass its gate is expected to do nothing, without warning. Changes to root markers
