@@ -1,8 +1,17 @@
 import { StringEnum } from "@earendil-works/pi-ai";
+import { stripControlCharacters } from "@ian-pascoe/pi-utils";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { cancelResponse, readBoundedResponseBody, requestSignal } from "./web-response.js";
+import {
+  cancelResponse,
+  describeWebFailure,
+  readBoundedResponseBody,
+  requestSignal,
+  WebHttpStatusError,
+  WebInputError,
+  type WebFailure,
+} from "./web-response.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 import { renderWebSearchToolCall, renderWebSearchToolResult } from "./web-tool-rendering.js";
 import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-output.js";
@@ -11,6 +20,9 @@ const DEFAULT_EXA_URL = "https://mcp.exa.ai/mcp";
 const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
 const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
 const NO_SEARCH_RESULTS = "No search results found. Please try a different query.";
+const MAX_PROVIDER_MESSAGE_CHARACTERS = 500;
+const MAX_ERROR_BODY_BYTES = 4 * 1024;
+const EXA_RATE_LIMITED_META = "ai.exa/rateLimited";
 
 /** Total Web Search request budget, including response reading. */
 export const WEB_SEARCH_TIMEOUT_MS = 25_000;
@@ -119,16 +131,33 @@ export type WebSearchParameters = Static<typeof WEB_SEARCH_PARAMETERS>;
 
 const MCP_RESPONSE_SCHEMA = Type.Object(
   {
-    result: Type.Object(
-      {
-        content: Type.Array(
-          Type.Object(
-            { type: Type.String(), text: Type.Optional(Type.String()) },
-            { additionalProperties: true },
+    id: Type.Optional(Type.Union([Type.Number(), Type.String(), Type.Null()])),
+    method: Type.Optional(Type.String()),
+    result: Type.Optional(
+      Type.Object(
+        {
+          content: Type.Optional(
+            Type.Array(
+              Type.Object(
+                { type: Type.String(), text: Type.Optional(Type.String()) },
+                { additionalProperties: true },
+              ),
+            ),
           ),
-        ),
-      },
-      { additionalProperties: true },
+          isError: Type.Optional(Type.Boolean()),
+          _meta: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+        },
+        { additionalProperties: true },
+      ),
+    ),
+    error: Type.Optional(
+      Type.Object(
+        {
+          code: Type.Optional(Type.Number()),
+          message: Type.Optional(Type.String()),
+        },
+        { additionalProperties: true },
+      ),
     ),
   },
   { additionalProperties: true },
@@ -188,23 +217,122 @@ export function selectSearchProvider(sessionId: string): SearchProvider {
   return Number.parseInt(checksum ?? "0", 36) % 2 === 0 ? "exa" : "parallel";
 }
 
-function parseMcpPayload(payload: string): string | undefined {
-  const trimmed = payload.trim();
-  if (!trimmed.startsWith("{")) return undefined;
-  const parsed: unknown = JSON.parse(trimmed);
-  const response = Value.Parse(MCP_RESPONSE_SCHEMA, parsed);
-  return response.result.content.find(
-    ({ type, text }) => type === "text" && text !== undefined && text.length > 0,
-  )?.text;
+/** A failure the Search Provider itself reported, carrying its own message. */
+class SearchProviderError extends Error {
+  readonly diagnosable: boolean;
+
+  constructor(message: string, diagnosable = false) {
+    super(message);
+    this.name = "SearchProviderError";
+    this.diagnosable = diagnosable;
+  }
 }
 
-function parseMcpResponse(body: string): string | undefined {
-  const direct = body.trim().length === 0 ? undefined : parseMcpPayload(body);
-  if (direct !== undefined) return direct;
-  for (const line of body.split("\n")) {
-    if (!line.startsWith("data: ")) continue;
-    const text = parseMcpPayload(line.slice(6));
-    if (text !== undefined) return text;
+function providerName(provider: SearchProvider): string {
+  return provider === "exa" ? "Exa" : "Parallel";
+}
+
+/** Turns provider-controlled text into one short, key-free, control-free line. */
+type SanitizeProviderText = (text: string) => string;
+
+/** Request id Web Search sends, which a Search Provider echoes on its response. */
+const REQUEST_ID = 1;
+
+function firstText(content: readonly { type: string; text?: string | undefined }[] | undefined) {
+  return content?.find(({ type, text }) => type === "text" && text !== undefined && text.length > 0)
+    ?.text;
+}
+
+function withDetail(summary: string, detail: string): string {
+  return detail === "" ? summary : `${summary}: ${detail}`;
+}
+
+function describeJsonRpcError(
+  provider: SearchProvider,
+  error: { readonly code?: number | undefined; readonly message?: string | undefined },
+  sanitize: SanitizeProviderText,
+): string {
+  const code = error.code === undefined ? "" : ` ${error.code}`;
+  return withDetail(
+    `${providerName(provider)} returned error${code}`,
+    sanitize(error.message ?? ""),
+  );
+}
+
+/** The outcome of one JSON-RPC payload that is not a Search Provider failure. */
+type McpPayload =
+  | { readonly kind: "skipped" }
+  | { readonly kind: "result"; readonly text: string | undefined };
+
+/** Return provider text, throw a provider failure, or skip a payload that answers nothing. */
+function parseMcpPayload(
+  payload: string,
+  provider: SearchProvider,
+  sanitize: SanitizeProviderText,
+): McpPayload {
+  const trimmed = payload.trim();
+  if (!trimmed.startsWith("{")) return { kind: "skipped" };
+  const response = Value.Parse(MCP_RESPONSE_SCHEMA, JSON.parse(trimmed));
+  // Notifications carry a method but no result or error; responses to other requests are not ours.
+  if (response.result === undefined && response.error === undefined) return { kind: "skipped" };
+  if (response.id !== undefined && response.id !== null && response.id !== REQUEST_ID) {
+    return { kind: "skipped" };
+  }
+  const name = providerName(provider);
+  if (response.error !== undefined) {
+    throw new SearchProviderError(describeJsonRpcError(provider, response.error, sanitize));
+  }
+  const result = response.result;
+  if (result === undefined) return { kind: "skipped" };
+  const text = firstText(result.content);
+  const detail = text === undefined ? "" : sanitize(text);
+  if (provider === "exa" && result._meta?.[EXA_RATE_LIMITED_META] === true) {
+    // An API key lifts the free-tier limit, so the troubleshooting Skill can help.
+    throw new SearchProviderError(withDetail(`${name} rate limit reached`, detail), true);
+  }
+  if (result.isError === true) {
+    throw new SearchProviderError(withDetail(`${name} reported an error`, detail));
+  }
+  return { kind: "result", text };
+}
+
+/** Split a Server-Sent Events body into events, joining each event's `data:` lines with newlines. */
+function sseEventPayloads(body: string): string[] {
+  const events: string[] = [];
+  let data: string[] = [];
+  const flush = () => {
+    if (data.length > 0) events.push(data.join("\n"));
+    data = [];
+  };
+  for (const line of body.split(/\r\n|\n|\r/)) {
+    if (line === "") flush();
+    else if (line.startsWith("data:")) data.push(line.slice(line.startsWith("data: ") ? 6 : 5));
+  }
+  flush();
+  return events;
+}
+
+/**
+ * Read the answer to Web Search's request from a JSON or SSE body. The first payload carrying text
+ * or a failure decides the outcome, so a later error never replaces an earlier answer. Returns
+ * undefined for a valid result without text and throws for anything that is not JSON-RPC.
+ */
+function parseMcpResponse(
+  body: string,
+  provider: SearchProvider,
+  sanitize: SanitizeProviderText,
+): string | undefined {
+  const trimmed = body.trim();
+  const payloads = trimmed.startsWith("{") ? [trimmed] : sseEventPayloads(body);
+  let sawResult = false;
+  for (const payload of payloads) {
+    const parsed = parseMcpPayload(payload, provider, sanitize);
+    if (parsed.kind === "skipped") continue;
+    sawResult = true;
+    if (parsed.text !== undefined) return parsed.text;
+  }
+  if (!sawResult) {
+    throw new SearchProviderError(`${providerName(provider)} returned an unrecognized response`);
   }
   return undefined;
 }
@@ -281,13 +409,97 @@ async function callSearchProvider(
     body: JSON.stringify(request.body),
     signal,
   });
-  if (!response.ok) {
-    await cancelResponse(response);
-    throw new Error(`Web Search returned HTTP ${response.status}`);
-  }
+  const sanitize = providerTextSanitizer(options);
+  if (!response.ok) throw await httpFailure(response, provider, sanitize, signal);
 
   const body = await readBoundedResponseBody(response, MAX_SEARCH_RESPONSE_BYTES, signal);
-  return parseMcpResponse(new TextDecoder().decode(body)) ?? NO_SEARCH_RESULTS;
+  try {
+    return (
+      parseMcpResponse(new TextDecoder().decode(body), provider, sanitize) ?? NO_SEARCH_RESULTS
+    );
+  } catch (error) {
+    if (error instanceof SearchProviderError) throw error;
+    throw new SearchProviderError(`${providerName(provider)} returned an unrecognized response`);
+  }
+}
+
+/** Key or rate-limit rejections that the troubleshooting Skill can fix, besides server errors. */
+function isDiagnosableStatus(status: number): boolean {
+  return status >= 500 || status === 401 || status === 403 || status === 429;
+}
+
+/** Name the HTTP status and, for a small JSON body, the JSON-RPC error the provider explained it with. */
+async function httpFailure(
+  response: Response,
+  provider: SearchProvider,
+  sanitize: SanitizeProviderText,
+  signal: AbortSignal,
+): Promise<SearchProviderError> {
+  const { cause } = describeWebFailure(new WebHttpStatusError(response.status));
+  let detail = "";
+  if ((response.headers.get("content-type") ?? "").toLowerCase().includes("json")) {
+    try {
+      const body = await readBoundedResponseBody(response, MAX_ERROR_BODY_BYTES, signal);
+      const parsed = Value.Parse(MCP_RESPONSE_SCHEMA, JSON.parse(new TextDecoder().decode(body)));
+      if (parsed.error !== undefined)
+        detail = describeJsonRpcError(provider, parsed.error, sanitize);
+    } catch {
+      // An oversized, unreadable, or non-JSON-RPC error body leaves only the status.
+    }
+  } else {
+    await cancelResponse(response);
+  }
+  return new SearchProviderError(withDetail(cause, detail), isDiagnosableStatus(response.status));
+}
+
+function secretVariants(secret: string): Set<string> {
+  return new Set([
+    secret,
+    encodeURIComponent(secret),
+    new URLSearchParams({ k: secret }).toString().slice(2),
+  ]);
+}
+
+/** Remove configured API keys, in every encoding a URL might carry, from echoed text. */
+function redactApiKeys(message: string, options: WebSearchToolOptions): string {
+  let redacted = message;
+  for (const key of [options.exaApiKey, options.parallelApiKey]) {
+    const secret = key?.reveal();
+    if (secret === undefined || secret === "") continue;
+    for (const variant of secretVariants(secret)) {
+      redacted = redacted.replaceAll(variant, "[REDACTED]");
+    }
+  }
+  return redacted;
+}
+
+// Terminal escape sequences start with ESC; they are removed from provider text.
+const TERMINAL_SEQUENCE =
+  // oxlint-disable-next-line eslint/no-control-regex -- SAFETY: Matching ESC and BEL is the purpose of this expression.
+  /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|[@-Z\\-_])/g;
+
+/**
+ * Build the sanitizer for text a Search Provider controls. Keys are redacted before anything is cut
+ * and again after control characters are removed, so no key fragment survives truncation.
+ */
+function providerTextSanitizer(options: WebSearchToolOptions): SanitizeProviderText {
+  return (text) => {
+    const stripped = stripControlCharacters(
+      redactApiKeys(text, options).replace(TERMINAL_SEQUENCE, ""),
+    ).replace(/\p{Cf}/gu, "");
+    const collapsed = redactApiKeys(stripped, options).replace(/\s+/g, " ").trim();
+    const characters = Array.from(collapsed);
+    return characters.length > MAX_PROVIDER_MESSAGE_CHARACTERS
+      ? `${characters.slice(0, MAX_PROVIDER_MESSAGE_CHARACTERS).join("")}…`
+      : collapsed;
+  };
+}
+
+function unableToSearch(query: string | undefined, failure: WebFailure): Error {
+  const subject =
+    query === undefined ? "Unable to search the web" : `Unable to search the web for ${query}`;
+  const message = `${subject}: ${failure.cause}`;
+  return new Error(failure.diagnosable ? `${message}\n\n${TROUBLESHOOTING_HINT}` : message);
 }
 
 /** Create the model-invoked Web Search definition. */
@@ -324,36 +536,55 @@ export function createWebSearchTool(
       try {
         input = Value.Parse(WEB_SEARCH_PARAMETERS, parameters);
       } catch {
-        throw new Error(`Unable to search the web for ${parameters.query}`);
+        throw unableToSearch(
+          undefined,
+          describeWebFailure(
+            new WebInputError(
+              "invalid parameters (expected a query string with optional numResults, livecrawl, type, and contextMaxCharacters)",
+            ),
+          ),
+        );
       }
+      if (input.query.trim() === "") {
+        throw unableToSearch(
+          undefined,
+          describeWebFailure(
+            new WebInputError("query is empty (provide the text to search the web for)"),
+          ),
+        );
+      }
+      const sessionId = context.sessionManager.getSessionId();
+      let search: string;
       try {
-        const search = await callSearchProvider(
+        search = await callSearchProvider(
           provider,
-          context.sessionManager.getSessionId(),
+          sessionId,
           input,
           options,
           requestSignal(callerSignal, WEB_SEARCH_TIMEOUT_MS),
         );
-        const output = await createWebToolOutput(search);
-        const structuredContent: WebSearchOutput = { provider, content: search };
-        if (output.truncation !== undefined) {
-          structuredContent.full_output_path = output.truncation.fullOutputPath;
-        }
-        return {
-          content: [{ type: "text", text: output.content }],
-          details:
-            output.truncation === undefined
-              ? { provider }
-              : { provider, truncation: output.truncation },
-          structuredContent,
-        };
-      } catch {
-        const failure = `Unable to search the web for ${input.query}`;
-        // User cancellation is not a failure the Skill diagnoses.
-        throw new Error(
-          callerSignal?.aborted === true ? failure : `${failure}\n\n${TROUBLESHOOTING_HINT}`,
-        );
+      } catch (error) {
+        // User cancellation and provider-reported rejections are not failures the Skill diagnoses.
+        const failure =
+          error instanceof SearchProviderError && callerSignal?.aborted !== true
+            ? { cause: error.message, diagnosable: error.diagnosable }
+            : describeWebFailure(error, { callerSignal, timeoutMs: WEB_SEARCH_TIMEOUT_MS });
+        throw unableToSearch(input.query, failure);
       }
+      // Spilling the full output is local work; its failures are not Web Search request failures.
+      const output = await createWebToolOutput(search);
+      const structuredContent: WebSearchOutput = { provider, content: search };
+      if (output.truncation !== undefined) {
+        structuredContent.full_output_path = output.truncation.fullOutputPath;
+      }
+      return {
+        content: [{ type: "text", text: output.content }],
+        details:
+          output.truncation === undefined
+            ? { provider }
+            : { provider, truncation: output.truncation },
+        structuredContent,
+      };
     },
   });
 }

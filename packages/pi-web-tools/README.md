@@ -37,7 +37,7 @@ export PARALLEL_API_KEY=...
 | `type`                 | `auto`, `fast`, or `deep` | `auto`                        |
 | `contextMaxCharacters` | integer 1–50,000          | Exa effective default: 10,000 |
 
-Exa receives all controls and an optional `EXA_API_KEY` endpoint credential. Parallel receives the query and Pi session ID; its protocol has no matching tuning fields. Search results are provider text without citation rewriting. A provider failure has no retry and never falls back to the other provider.
+Exa receives all controls and an optional `EXA_API_KEY` endpoint credential. Parallel receives the query and Pi session ID; its protocol has no matching tuning fields. Search results are provider text without citation rewriting. A provider failure has no retry and never falls back to the other provider. Failures keep their cause: `Unable to search the web for <query>: <cause>` names the HTTP status, timeout, network error class, or the Search Provider's own message (an MCP `isError` result, a JSON-RPC `error`, or Exa's free-tier rate limit). An empty or whitespace-only query is rejected before any request. API keys never appear in errors.
 
 ### `web_fetch`
 

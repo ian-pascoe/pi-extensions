@@ -29,6 +29,17 @@ type TestResponse = {
   readonly status?: number;
 };
 
+type ProviderMessage = {
+  readonly jsonrpc?: "2.0";
+  readonly id?: number | null;
+  readonly result?: {
+    readonly _meta?: Readonly<Record<string, boolean>>;
+    readonly content?: readonly { readonly type: string; readonly text?: string }[];
+    readonly isError?: boolean;
+  };
+  readonly error?: { readonly code: number; readonly message: string };
+};
+
 const servers: Server[] = [];
 const spillDirectories: string[] = [];
 
@@ -189,7 +200,7 @@ describe("Web Search", () => {
 
   test("calls Parallel with its session, bearer credential, and SSE response", async () => {
     const server = await startServer(() => ({
-      body: `data: [DONE]\nevent: message\ndata: ${mcpResult("parallel results")}\n\n`,
+      body: `data: [DONE]\n\nevent: message\ndata: ${mcpResult("parallel results")}\n\n`,
       headers: { "content-type": "text/event-stream" },
     }));
     const secret = "parallel-secret";
@@ -271,8 +282,542 @@ describe("Web Search", () => {
         { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
         { query: "status failure" },
       ),
-    ).rejects.toThrow(`Unable to search the web for status failure\n\n${TROUBLESHOOTING_HINT}`);
+    ).rejects.toThrow(
+      `Unable to search the web for status failure: HTTP 503 Service Unavailable\n\n${TROUBLESHOOTING_HINT}`,
+    );
     expect(server.requests).toHaveLength(1);
+  });
+
+  test("rejects an empty or whitespace-only query before any request", async () => {
+    const server = await startServer(() => ({ body: mcpResult("never") }));
+    for (const provider of ["exa", "parallel"] as const) {
+      for (const query of ["", "  \n\t "]) {
+        const failure: unknown = await executeSearch(
+          provider,
+          { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+          { query },
+        ).catch((cause: unknown) => cause);
+        expect(failure).toBeInstanceOf(Error);
+        expect(String(failure)).toBe(
+          "Error: Unable to search the web: query is empty (provide the text to search the web for)",
+        );
+      }
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(executeSearch("exa", { fetch }, { query: " " })).rejects.toThrow("query is empty");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(server.requests).toHaveLength(0);
+  });
+
+  describe("provider failures", () => {
+    const exaSecret = "exa secret/key+1";
+    const parallelSecret = "parallel-secret-key";
+
+    function sse(payload: ProviderMessage): TestResponse {
+      return {
+        body: `event: message\ndata: ${JSON.stringify(payload)}\n\n`,
+        headers: { "content-type": "text/event-stream" },
+      };
+    }
+
+    async function failureOf(
+      provider: SearchProvider,
+      respond: TestResponse,
+      query = "failing query",
+    ): Promise<{ readonly message: string; readonly requests: number }> {
+      const server = await startServer(() => respond);
+      const failure: unknown = await executeSearch(
+        provider,
+        {
+          exaUrl: `${server.baseUrl}/exa`,
+          parallelUrl: `${server.baseUrl}/parallel`,
+          exaApiKey: redactWebSearchApiKey(exaSecret),
+          parallelApiKey: redactWebSearchApiKey(parallelSecret),
+        },
+        { query },
+      ).catch((cause: unknown) => cause);
+      if (!(failure instanceof Error)) throw new Error("Expected Web Search to fail");
+      expect(failure.message).not.toContain(exaSecret);
+      expect(failure.message).not.toContain(parallelSecret);
+      return { message: failure.message, requests: server.requests.length };
+    }
+
+    test("surfaces Exa isError text from an SSE response without the hint", async () => {
+      const text =
+        'MCP error -32602: Input validation error: Invalid arguments for tool web_search_exa: [\n  {\n    "code": "too_small",\n    "message": "String must contain at least 1 character(s)",\n    "path": [\n      "query"\n    ]\n  }\n]';
+      const failure = await failureOf(
+        "exa",
+        sse({
+          result: { content: [{ type: "text", text }], isError: true },
+          jsonrpc: "2.0",
+          id: 1,
+        }),
+      );
+      expect(failure.requests).toBe(1);
+      expect(failure.message).toBe(
+        `Unable to search the web for failing query: Exa reported an error: MCP error -32602: Input validation error: Invalid arguments for tool web_search_exa: [ { "code": "too_small", "message": "String must contain at least 1 character(s)", "path": [ "query" ] } ]`,
+      );
+      expect(failure.message).not.toContain(TROUBLESHOOTING_HINT);
+    });
+
+    test("surfaces Parallel isError text from a JSON response without the hint", async () => {
+      const failure = await failureOf("parallel", {
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: "Error executing tool web_search: search_queries must be a non-empty list of non-empty strings. (Internal Detail: None)",
+              },
+            ],
+            isError: true,
+          },
+        }),
+        headers: { "content-type": "application/json" },
+      });
+      expect(failure.message).toBe(
+        "Unable to search the web for failing query: Parallel reported an error: Error executing tool web_search: search_queries must be a non-empty list of non-empty strings. (Internal Detail: None)",
+      );
+    });
+
+    test("reports isError without text", async () => {
+      const failure = await failureOf("parallel", {
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [], isError: true } }),
+      });
+      expect(failure.message).toBe(
+        "Unable to search the web for failing query: Parallel reported an error",
+      );
+    });
+
+    test("surfaces a JSON-RPC error object returned with HTTP 200 by either provider", async () => {
+      const providerError = {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error: invalid JSON" },
+      } satisfies ProviderMessage;
+      const body = JSON.stringify(providerError);
+      const parallel = await failureOf("parallel", { body });
+      expect(parallel.message).toBe(
+        "Unable to search the web for failing query: Parallel returned error -32700: Parse error: invalid JSON",
+      );
+      const exa = await failureOf("exa", sse(providerError));
+      expect(exa.message).toBe(
+        "Unable to search the web for failing query: Exa returned error -32700: Parse error: invalid JSON",
+      );
+    });
+
+    test("treats Exa's rate-limit meta on an HTTP 200 result as a diagnosable failure", async () => {
+      const text =
+        "You've hit Exa's free MCP rate limit. To continue using without limits, create your own Exa API key.\n\nFix: Create API key at https://dashboard.exa.ai/api-keys , and then update Exa MCP URL to this https://mcp.exa.ai/mcp?exaApiKey=YOUR_EXA_API_KEY";
+      const failure = await failureOf(
+        "exa",
+        sse({
+          result: { _meta: { "ai.exa/rateLimited": true }, content: [{ type: "text", text }] },
+          jsonrpc: "2.0",
+          id: 1,
+        }),
+      );
+      expect(failure.message).toBe(
+        `Unable to search the web for failing query: Exa rate limit reached: ${text.replace(/\s+/g, " ")}\n\n${TROUBLESHOOTING_HINT}`,
+      );
+    });
+
+    test("does not treat a false rate-limit flag as a failure", async () => {
+      const server = await startServer(() =>
+        sse({
+          result: {
+            _meta: { "ai.exa/rateLimited": false },
+            content: [{ type: "text", text: "ok" }],
+          },
+        }),
+      );
+      const result = await executeSearch(
+        "exa",
+        { exaUrl: `${server.baseUrl}/exa` },
+        { query: "fine" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+    });
+
+    test("bounds very long provider messages", async () => {
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          result: {
+            content: [{ type: "text", text: `${"boom ".repeat(1_000)}tail` }],
+            isError: true,
+          },
+        }),
+      });
+      expect(failure.message.length).toBeLessThan(600);
+      expect(failure.message).toContain("boom boom");
+      expect(failure.message).toContain("…");
+      expect(failure.message).not.toContain("tail");
+    });
+
+    test("redacts API keys a provider echoes back", async () => {
+      const exa = await failureOf("exa", {
+        body: JSON.stringify({
+          result: {
+            content: [
+              {
+                type: "text",
+                text: `bad key ${exaSecret} at ?exaApiKey=${encodeURIComponent(exaSecret)}`,
+              },
+            ],
+            isError: true,
+          },
+        }),
+      });
+      expect(exa.message).toContain("bad key [REDACTED] at ?exaApiKey=[REDACTED]");
+      const parallel = await failureOf("parallel", {
+        body: JSON.stringify({
+          error: { code: -32001, message: `Unauthorized: Bearer ${parallelSecret}` },
+        }),
+      });
+      expect(parallel.message).toContain("Unauthorized: Bearer [REDACTED]");
+    });
+
+    test("redacts a key before truncation so no fragment survives the cut", async () => {
+      const key = exaSecret;
+      const text = `${"a".repeat(495)}${key} trailing`;
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: { content: [{ type: "text", text }], isError: true },
+        }),
+      });
+      expect(failure.message).toContain(`${"a".repeat(495)}[REDA…`);
+      for (let length = 3; length <= key.length; length++) {
+        expect(failure.message).not.toContain(key.slice(0, length));
+      }
+    });
+
+    test("redacts the form-encoded key and a key split by invisible characters", async () => {
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: `form ${new URLSearchParams({ k: exaSecret }).toString().slice(2)} split ${exaSecret.slice(0, 4)}\u200b${exaSecret.slice(4)}`,
+              },
+            ],
+            isError: true,
+          },
+        }),
+      });
+      expect(failure.message).not.toContain("exa+secret");
+      expect(failure.message).not.toContain("exa%20secret");
+      expect(failure.message).not.toContain(exaSecret);
+      expect(failure.message).not.toContain(exaSecret.slice(0, 4));
+    });
+
+    test("strips terminal and invisible control characters from provider messages", async () => {
+      const failure = await failureOf("parallel", {
+        body: JSON.stringify({
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: "bad\u001b[31m red\u001b]0;title\u0007 nul\u0000 bidi\u202Eevil\u200B zero\u0085 end",
+              },
+            ],
+            isError: true,
+          },
+        }),
+      });
+      expect(failure.message).toBe(
+        "Unable to search the web for failing query: Parallel reported an error: bad red nul bidievil zero end",
+      );
+    });
+
+    test("never splits a surrogate pair when bounding", async () => {
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: { content: [{ type: "text", text: "😀".repeat(600) }], isError: true },
+        }),
+      });
+      const bounded = failure.message.split("reported an error: ")[1] ?? "";
+      expect(bounded).toBe(`${"😀".repeat(500)}…`);
+    });
+
+    test("drops the separator when the provider text is blank", async () => {
+      const failure = await failureOf("exa", {
+        body: JSON.stringify({
+          id: 1,
+          result: { content: [{ type: "text", text: " \n\t " }], isError: true },
+        }),
+      });
+      expect(failure.message).toBe(
+        "Unable to search the web for failing query: Exa reported an error",
+      );
+    });
+
+    test("honors the Exa rate-limit meta only for Exa", async () => {
+      const body = JSON.stringify({
+        id: 1,
+        result: {
+          _meta: { "ai.exa/rateLimited": true },
+          content: [{ type: "text", text: "found" }],
+        },
+      });
+      const server = await startServer(() => ({ body }));
+      const result = await executeSearch(
+        "parallel",
+        { parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "not exa" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "found" }]);
+    });
+
+    test("keeps the no-results fallback for a valid result without text", async () => {
+      const server = await startServer(() => ({
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } }),
+      }));
+      const result = await executeSearch(
+        "parallel",
+        { parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "nothing" },
+      );
+      expect(result.content).toEqual([
+        { type: "text", text: "No search results found. Please try a different query." },
+      ]);
+    });
+
+    test("skips notifications and other requests' responses on the SSE stream", async () => {
+      const notification = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/message",
+        params: { level: "info" },
+      });
+      const other = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        result: { content: [], isError: true },
+      });
+      const server = await startServer(() => ({
+        body: `data:${notification}\n\ndata: ${other}\n\ndata:${mcpResult("the answer")}\n\n`,
+        headers: { "content-type": "text/event-stream" },
+      }));
+      const result = await executeSearch(
+        "exa",
+        { exaUrl: `${server.baseUrl}/exa` },
+        { query: "streamed" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "the answer" }]);
+    });
+
+    test("joins multi-line data fields of one SSE event before parsing", async () => {
+      const [head, tail] = [
+        '{"jsonrpc":"2.0","id":1,',
+        '"result":{"content":[{"type":"text","text":"joined"}]}}',
+      ];
+      const server = await startServer(() => ({
+        body: `data: ${head}\ndata: ${tail}\n\n`,
+        headers: { "content-type": "text/event-stream" },
+      }));
+      const result = await executeSearch(
+        "parallel",
+        { parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "multi-line" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "joined" }]);
+    });
+
+    test("orders an answer and a later error deterministically: the first decisive event wins", async () => {
+      const answer = mcpResult("first answer");
+      const failure = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "late failure" }], isError: true },
+      });
+      const empty = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } });
+      const answered = await startServer(() => ({
+        body: `data: ${answer}\n\ndata: ${failure}\n\n`,
+      }));
+      const result = await executeSearch(
+        "exa",
+        { exaUrl: `${answered.baseUrl}/exa` },
+        { query: "ordered" },
+      );
+      expect(result.content).toEqual([{ type: "text", text: "first answer" }]);
+
+      const failed = await failureOf("exa", { body: `data: ${empty}\n\ndata: ${failure}\n\n` });
+      expect(failed.message).toBe(
+        "Unable to search the web for failing query: Exa reported an error: late failure",
+      );
+    });
+
+    test("reports an unrecognized response for malformed provider bodies", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const failure = await failureOf(provider, { body: "{}" });
+        expect(failure.message).toBe(
+          `Unable to search the web for failing query: ${provider === "exa" ? "Exa" : "Parallel"} returned an unrecognized response`,
+        );
+        const broken = await failureOf(provider, { body: "data: {not json\n" });
+        expect(broken.message).toContain("returned an unrecognized response");
+        for (const body of [
+          "",
+          "   ",
+          "<html><body>Bad gateway</body></html>",
+          "data: [DONE]\n\n",
+        ]) {
+          const failure = await failureOf(provider, { body });
+          expect(failure.message).toBe(
+            `Unable to search the web for failing query: ${provider === "exa" ? "Exa" : "Parallel"} returned an unrecognized response`,
+          );
+        }
+      }
+    });
+
+    test("names the HTTP status and hints for server errors and key problems", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const unavailable = await failureOf(provider, { body: "unavailable", status: 503 });
+        expect(unavailable.message).toBe(
+          `Unable to search the web for failing query: HTTP 503 Service Unavailable\n\n${TROUBLESHOOTING_HINT}`,
+        );
+        const badRequest = await failureOf(provider, { body: "no", status: 400 });
+        expect(badRequest.message).toBe(
+          "Unable to search the web for failing query: HTTP 400 Bad Request",
+        );
+        expect(badRequest.requests).toBe(1);
+        for (const [status, phrase] of [
+          [401, "Unauthorized"],
+          [403, "Forbidden"],
+          [429, "Too Many Requests"],
+        ] as const) {
+          const keyProblem = await failureOf(provider, { body: "denied", status });
+          expect(keyProblem.message).toBe(
+            `Unable to search the web for failing query: HTTP ${status} ${phrase}\n\n${TROUBLESHOOTING_HINT}`,
+          );
+        }
+      }
+    });
+
+    test("appends the JSON-RPC error a provider explains an HTTP error with", async () => {
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32700, message: "Parse error" },
+        id: null,
+      });
+      for (const provider of ["exa", "parallel"] as const) {
+        const name = provider === "exa" ? "Exa" : "Parallel";
+        const badRequest = await failureOf(provider, {
+          body,
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+        expect(badRequest.message).toBe(
+          `Unable to search the web for failing query: HTTP 400 Bad Request: ${name} returned error -32700: Parse error`,
+        );
+        const keyed = await failureOf(provider, {
+          body: JSON.stringify({ error: { code: -32001, message: `bad ${exaSecret}` } }),
+          status: 401,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+        expect(keyed.message).toBe(
+          `Unable to search the web for failing query: HTTP 401 Unauthorized: ${name} returned error -32001: bad [REDACTED]\n\n${TROUBLESHOOTING_HINT}`,
+        );
+        const oversized = await failureOf(provider, {
+          body: JSON.stringify({ error: { code: 1, message: "x".repeat(10_000) } }),
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+        expect(oversized.message).toBe(
+          `Unable to search the web for failing query: HTTP 502 Bad Gateway\n\n${TROUBLESHOOTING_HINT}`,
+        );
+        const notJsonRpc = await failureOf(provider, {
+          body: "<html>",
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+        expect(notJsonRpc.message).toBe(
+          "Unable to search the web for failing query: HTTP 400 Bad Request",
+        );
+      }
+    });
+
+    test("names the network error class and hints", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const fetch: typeof globalThis.fetch = () => {
+          throw new TypeError("fetch failed", {
+            cause: Object.assign(
+              new Error(`connect ECONNREFUSED 127.0.0.1:9?exaApiKey=${exaSecret}`),
+              { code: "ECONNREFUSED" },
+            ),
+          });
+        };
+        const failure: unknown = await executeSearch(
+          provider,
+          {
+            fetch,
+            exaApiKey: redactWebSearchApiKey(exaSecret),
+            parallelApiKey: redactWebSearchApiKey(parallelSecret),
+          },
+          { query: "offline" },
+        ).catch((cause: unknown) => cause);
+        expect(String(failure)).toBe(
+          `Error: Unable to search the web for offline: network error ECONNREFUSED\n\n${TROUBLESHOOTING_HINT}`,
+        );
+      }
+    });
+
+    test("names the timeout deadline and hints", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const deadline = new AbortController();
+        const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+        try {
+          let requests = 0;
+          const fetch: typeof globalThis.fetch = (_input, init) => {
+            requests++;
+            return new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+                once: true,
+              });
+            });
+          };
+          const pending = executeSearch(provider, { fetch }, { query: "slow" }).catch(
+            (cause: unknown) => cause,
+          );
+          while (requests === 0) await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
+          deadline.abort(new DOMException("Timed out", "TimeoutError"));
+          expect(String(await pending)).toBe(
+            `Error: Unable to search the web for slow: timed out after 25 seconds\n\n${TROUBLESHOOTING_HINT}`,
+          );
+        } finally {
+          timeout.mockRestore();
+        }
+      }
+    });
+
+    test("reports caller cancellation without a hint or key", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const stalled = await startServer(() => undefined);
+        const controller = new AbortController();
+        const pending = executeSearch(
+          provider,
+          {
+            exaUrl: `${stalled.baseUrl}/exa`,
+            parallelUrl: `${stalled.baseUrl}/parallel`,
+            exaApiKey: redactWebSearchApiKey(exaSecret),
+            parallelApiKey: redactWebSearchApiKey(parallelSecret),
+          },
+          { query: "cancel me" },
+          controller.signal,
+        ).catch((cause: unknown) => cause);
+        while (stalled.requests.length === 0)
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
+        controller.abort();
+        expect(String(await pending)).toBe(
+          "Error: Unable to search the web for cancel me: request cancelled",
+        );
+      }
+    });
   });
 
   test("applies the 25-second deadline to an in-flight request", async () => {
@@ -314,7 +859,9 @@ describe("Web Search", () => {
     while (stalled.requests.length === 0)
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 1));
     controller.abort();
-    await expect(pending).rejects.toThrow(new Error("Unable to search the web for cancel me"));
+    await expect(pending).rejects.toThrow(
+      new Error("Unable to search the web for cancel me: request cancelled"),
+    );
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
     expect(stalledClosed).toBe(true);
 
@@ -325,11 +872,13 @@ describe("Web Search", () => {
         { exaUrl: `${oversized.baseUrl}/exa`, parallelUrl: `${oversized.baseUrl}/parallel` },
         { query: "too much" },
       ),
-    ).rejects.toThrow("Unable to search the web for too much");
+    ).rejects.toThrow(
+      "Unable to search the web for too much: response body exceeds the 262144-byte limit",
+    );
     expect(oversized.requests).toHaveLength(1);
   });
 
-  test("translates private spill failures without leaking credentials", async () => {
+  test("reports a failed output spill as itself, without leaking credentials", async () => {
     const directory = await mkdtemp(resolve(tmpdir(), "pi-web-tools-test-"));
     spillDirectories.push(directory);
     const blocker = resolve(directory, "not-a-directory");
@@ -348,7 +897,10 @@ describe("Web Search", () => {
         { query: "spill failure" },
       ).catch((cause: unknown) => cause);
       expect(failure).toBeInstanceOf(Error);
-      expect(String(failure)).toContain("Unable to search the web for spill failure");
+      expect(String(failure)).toContain("Unable to save complete Web Tool output");
+      expect(String(failure)).not.toContain("Unable to search the web");
+      expect(String(failure)).not.toContain("network error");
+      expect(String(failure)).not.toContain(TROUBLESHOOTING_HINT);
       expect(String(failure)).not.toContain(secret);
     } finally {
       if (previousTemporaryDirectory === undefined) delete process.env.TMPDIR;
