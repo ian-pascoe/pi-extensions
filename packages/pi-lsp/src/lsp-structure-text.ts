@@ -5,10 +5,13 @@ import {
   formatLspLocationLine,
   lspDisplayPath,
   lspDisplayPosition,
+  LspNormalizedPositionSchema,
   LspSourceLines,
+  shortenLspText,
   type LspRead,
   type LspReadTextBlock,
 } from "./lsp-location-text.js";
+import type { LspCodePointPosition } from "./lsp-position-encoding.js";
 import type { LspOperationName } from "./lsp-tool-contract.js";
 import { formatLspToolValue } from "./lsp-tool-output.js";
 
@@ -25,7 +28,7 @@ const STRUCTURE_OPERATIONS = [
   "folding_ranges",
 ] as const satisfies readonly LspOperationName[];
 
-/** Read operations whose model-visible text lists symbols, hierarchy items, or ranges (ADR-0003). */
+/** Read operations whose model-visible text lists symbols, hierarchy items, or ranges (ADR-0003: derived from the Structured Result). */
 export type LspStructureOperation = (typeof STRUCTURE_OPERATIONS)[number];
 
 const STRUCTURE_OPERATION_SET: ReadonlySet<LspOperationName> = new Set(STRUCTURE_OPERATIONS);
@@ -36,9 +39,6 @@ export function isLspStructureOperation(
 ): operation is LspStructureOperation {
   return STRUCTURE_OPERATION_SET.has(operation);
 }
-
-/** Longest symbol detail shown before it is shortened. */
-const DETAIL_MAX_CHARACTERS = 200;
 
 /** `SymbolKind` names; the protocol encodes them as numbers starting at 1. */
 const SYMBOL_KIND_NAMES = [
@@ -73,12 +73,10 @@ const SYMBOL_KIND_NAMES = [
 /** `SymbolTag.Deprecated`, the only symbol tag the protocol defines. */
 const DEPRECATED_SYMBOL_TAG = 1;
 
-/** One-based Unicode code-point position, as normalized protocol results carry them. */
-const PositionSchema = Type.Object({
-  line: Type.Integer({ minimum: 1 }),
-  character: Type.Integer({ minimum: 1 }),
+const RangeSchema = Type.Object({
+  start: LspNormalizedPositionSchema,
+  end: LspNormalizedPositionSchema,
 });
-const RangeSchema = Type.Object({ start: PositionSchema, end: PositionSchema });
 const OptionalTextSchema = Type.Optional(Type.Union([Type.String(), Type.Null()]));
 const SymbolFieldsSchema = Type.Object({
   name: Type.String(),
@@ -124,6 +122,8 @@ const FoldingRangeSchema = Type.Object({
 });
 
 type SymbolFields = Static<typeof SymbolFieldsSchema>;
+/** A normalized outgoing call, as the model-visible text reads it. */
+export type LspTextOutgoingCall = Static<typeof OutgoingCallSchema>;
 type Range = Static<typeof RangeSchema>;
 
 /** The inputs of one structure read's model-visible text. */
@@ -136,7 +136,12 @@ export interface LspStructureReadTextInput {
   readonly reads: readonly LspRead[];
   readonly warnings: readonly string[];
   /** Requested selection-range positions, which head each list when there are several. */
-  readonly positions?: readonly { readonly line: number; readonly character: number }[] | undefined;
+  readonly positions?: readonly LspCodePointPosition[] | undefined;
+  /**
+   * The file of an outgoing call's sites: the prepared item it was requested for. Without one, the
+   * sites are placed in the queried document.
+   */
+  readonly outgoingCallSitePath?: (call: LspTextOutgoingCall) => string | undefined;
 }
 
 /** Shared rendering state of one read. */
@@ -145,12 +150,9 @@ interface RenderContext {
   readonly sources: LspSourceLines;
 }
 
+/** Collapse whitespace, such as a multi-line detail, onto one shortened line. */
 function compactText(text: string): string {
-  const compact = text.replaceAll(/\s+/gu, " ").trim();
-  const characters = Array.from(compact);
-  return characters.length > DETAIL_MAX_CHARACTERS
-    ? `${characters.slice(0, DETAIL_MAX_CHARACTERS).join("")}…`
-    : compact;
+  return shortenLspText(text.replaceAll(/\s+/gu, " ").trim());
 }
 
 function symbolKindName(kind: number): string {
@@ -242,9 +244,14 @@ async function hierarchyLines(
       if (!Value.Check(IncomingCallSchema, item)) return undefined;
       return callLines(item.from, item.from.uri, item.fromRanges, context);
     case "outgoing_calls":
-      // An outgoing call's sites lie in the queried function's file.
+      // An outgoing call's sites lie in the prepared item's file.
       if (!Value.Check(OutgoingCallSchema, item)) return undefined;
-      return callLines(item.to, context.input.documentPath, item.fromRanges, context);
+      return callLines(
+        item.to,
+        context.input.outgoingCallSitePath?.(item) ?? context.input.documentPath,
+        item.fromRanges,
+        context,
+      );
     default:
       if (!Value.Check(HierarchyItemSchema, item)) return undefined;
       return [hierarchyItemLine(item, context.input.cwd)];

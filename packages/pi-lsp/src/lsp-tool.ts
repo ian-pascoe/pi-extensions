@@ -387,7 +387,7 @@ interface ReadTextContext {
   /** Absolute path of the queried document or, for workspace reads, the root anchor. */
   readonly documentPath: string;
   /** Requested selection-range positions. */
-  readonly positions?: readonly { readonly line: number; readonly character: number }[];
+  readonly positions?: readonly LspCodePointPosition[];
 }
 
 function readTextContext(filePath: string, context: ExtensionContext): ReadTextContext {
@@ -397,14 +397,14 @@ function readTextContext(filePath: string, context: ExtensionContext): ReadTextC
 /**
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
  * response; location, symbol, hierarchy, and range reads derive readable model-visible text from
- * the same data (ADR-0003), and other reads show that JSON. References also name each searched workspace root and warn when
- * other roots of the same Server Definition exist.
+ * the same data (ADR-0003), and other reads show that JSON. References also name each searched
+ * workspace root and warn when other roots of the same Server Definition exist.
  */
 async function readOutput(
   operation: LspToolParameters["operation"],
   result: Promise<LspServerReadResult<unknown>>,
   dependencies: LspToolDependencies,
-  location: ReadTextContext,
+  textContext: ReadTextContext,
 ) {
   const resolved = await result;
   requireReadSuccess(resolved);
@@ -414,7 +414,7 @@ async function readOutput(
     operation === "find_references"
       ? await Promise.all(
           resolved.successes.map(({ serverId, rootPath }) =>
-            serverInstanceScope(dependencies, serverId, rootPath, location.cwd),
+            serverInstanceScope(dependencies, serverId, rootPath, textContext.cwd),
           ),
         )
       : [];
@@ -425,8 +425,8 @@ async function readOutput(
   if (isLspLocationOperation(operation)) {
     text = await formatLspLocationReadText({
       operation,
-      cwd: location.cwd,
-      documentPath: location.documentPath,
+      cwd: textContext.cwd,
+      documentPath: textContext.documentPath,
       reads: results,
       warnings: failureWarnings,
       scope: serverInstanceScopeLines(scopes),
@@ -434,11 +434,12 @@ async function readOutput(
   } else if (isLspStructureOperation(operation)) {
     text = await formatLspStructureReadText({
       operation,
-      cwd: location.cwd,
-      documentPath: location.documentPath,
+      cwd: textContext.cwd,
+      documentPath: textContext.documentPath,
       reads: results,
       warnings: failureWarnings,
-      positions: location.positions,
+      positions: textContext.positions,
+      outgoingCallSitePath: (call) => OUTGOING_CALL_SITE_PATHS.get(call),
     });
   } else {
     return createLspToolOutput(json, details, lspStructuredFields(json), dependencies);
@@ -716,6 +717,37 @@ async function normalizeProtocolResult(
   return Object.fromEntries(entries);
 }
 
+/**
+ * The file holding each normalized outgoing call's `fromRanges`: the prepared item it was requested
+ * for, which is not always the queried file. Kept beside the Structured Result, which does not name
+ * that item, so the model-visible text can place the call sites.
+ */
+const OUTGOING_CALL_SITE_PATHS = new WeakMap<object, string>();
+
+/** Normalize one prepared item's outgoing calls, converting call sites against that item's file. */
+async function normalizeOutgoingCalls(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Outgoing-call responses stay opaque; normalization validates each position it rewrites.
+  calls: unknown,
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The prepared item is opaque except for its checked uri.
+  item: unknown,
+  prepared: PreparedDocument,
+  // oxlint-disable-next-line anti-slop/no-unknown-returns -- Normalization preserves dynamic payloads without claiming a method-specific result type.
+): Promise<unknown> {
+  const itemUri = protocolString(protocolRecord(item)?.uri);
+  const itemText =
+    itemUri === undefined || itemUri === prepared.document.uri
+      ? undefined
+      : await textForProtocolUri(itemUri);
+  const normalized = await normalizeProtocolResult(calls, prepared, itemText);
+  if (itemUri !== undefined && itemUri.startsWith("file:") && Array.isArray(normalized)) {
+    const sitePath = fileURLToPath(itemUri);
+    for (const call of normalized) {
+      if (protocolRecord(call) !== undefined) OUTGOING_CALL_SITE_PATHS.set(call, sitePath);
+    }
+  }
+  return normalized;
+}
+
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Protocol fields such as titles are opaque until checked here.
 function protocolString(value: unknown): string | undefined {
   return Value.Check(ProtocolStringSchema, value) ? value : undefined;
@@ -937,20 +969,30 @@ async function executePositionRead(
       }
       let value = await prepared.client.request(capabilityMethod, requestParameters, signal);
 
+      if (parameters.operation === "outgoing_calls") {
+        const preparedItems = Array.isArray(value) ? value : [];
+        const calls = await Promise.all(
+          preparedItems.map(async (item) =>
+            normalizeOutgoingCalls(
+              await client.request(CallHierarchyOutgoingCallsRequest.method, { item }, signal),
+              item,
+              prepared,
+            ),
+          ),
+        );
+        return calls.flat();
+      }
       if (
         parameters.operation === "incoming_calls" ||
-        parameters.operation === "outgoing_calls" ||
         parameters.operation === "supertypes" ||
         parameters.operation === "subtypes"
       ) {
         const followupMethod =
           parameters.operation === "incoming_calls"
             ? CallHierarchyIncomingCallsRequest.method
-            : parameters.operation === "outgoing_calls"
-              ? CallHierarchyOutgoingCallsRequest.method
-              : parameters.operation === "supertypes"
-                ? TypeHierarchySupertypesRequest.method
-                : TypeHierarchySubtypesRequest.method;
+            : parameters.operation === "supertypes"
+              ? TypeHierarchySupertypesRequest.method
+              : TypeHierarchySubtypesRequest.method;
         const preparedItems = Array.isArray(value) ? value : [];
         value = (
           await Promise.all(

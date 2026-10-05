@@ -1577,6 +1577,127 @@ describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
     await fixture.close();
   });
 
+  test("places outgoing call sites in the prepared item's file, not the queried file", async () => {
+    const fixture = await createToolFixture();
+    const helperPath = resolve(fixture.context.cwd, "helper.ts");
+    const runPath = resolve(fixture.context.cwd, "run.ts");
+    await writeFile(helperPath, "function helper() { const 😀 = run(); }\n");
+    await writeFile(runPath, "export function run() {}\n");
+    const position = (line: number, character: number) => ({ line, character });
+    const item = (name: string, uri: string, line: number, character: number) => ({
+      name,
+      kind: 12,
+      uri,
+      range: { start: position(line, 0), end: position(line, character) },
+      selectionRange: { start: position(line, character), end: position(line, character) },
+    });
+    // Preparing at a call site yields the called declaration, here in another file.
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+      item("helper", pathToFileURL(helperPath).href, 0, 9),
+    ]);
+    fixture.client.responseByMethod.set("callHierarchy/outgoingCalls", [
+      {
+        to: item("run", pathToFileURL(runPath).href, 0, 16),
+        fromRanges: [{ start: position(0, 31), end: position(0, 34) }],
+      },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "outgoing_calls",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    });
+
+    expect(resultText(result)).toBe(
+      [
+        "run (function) run.ts:1:17",
+        "  helper.ts:1:31  function helper() { const 😀 = run(); }",
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        {
+          value: [
+            {
+              to: { uri: runPath, selectionRange: { start: { line: 1, character: 17 } } },
+              fromRanges: [{ start: { line: 1, character: 31 }, end: { line: 1, character: 34 } }],
+            },
+          ],
+        },
+      ],
+    });
+    await fixture.close();
+  });
+
+  test("converts each prepared item's outgoing call sites against that item's own file", async () => {
+    const fixture = await createToolFixture();
+    const helperPath = resolve(fixture.context.cwd, "helper.ts");
+    const runPath = resolve(fixture.context.cwd, "run.ts");
+    await writeFile(helperPath, "function helper() { const 😀 = run(); }\n");
+    await writeFile(runPath, "export function run() {}\n");
+    const position = (line: number, character: number) => ({ line, character });
+    const item = (name: string, uri: string, character: number) => ({
+      name,
+      kind: 12,
+      uri,
+      range: { start: position(0, 0), end: position(0, character) },
+      selectionRange: { start: position(0, character), end: position(0, character) },
+    });
+    const helperUri = pathToFileURL(helperPath).href;
+    const sourceUri = pathToFileURL(fixture.filePath).href;
+    const runItem = item("run", pathToFileURL(runPath).href, 16);
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [
+      item("helper", helperUri, 9),
+      item("emoji", sourceUri, 6),
+    ]);
+    // Each prepared item's call sites lie in that item's file: helper.ts, then the queried source.ts.
+    fixture.client.responderByMethod.set("callHierarchy/outgoingCalls", (parameters) => {
+      const preparedUri = Value.Check(
+        Type.Object({ item: Type.Object({ uri: Type.String() }) }),
+        parameters,
+      )
+        ? parameters.item.uri
+        : undefined;
+      const site =
+        preparedUri === helperUri
+          ? { start: position(0, 31), end: position(0, 34) }
+          : { start: position(0, 14), end: position(0, 18) };
+      return [{ to: runItem, fromRanges: [site] }];
+    });
+
+    const result = await executeTool(fixture, {
+      operation: "outgoing_calls",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 7,
+    });
+
+    expect(resultText(result)).toBe(
+      [
+        "run (function) run.ts:1:17",
+        "  helper.ts:1:31  function helper() { const 😀 = run(); }",
+        "run (function) run.ts:1:17",
+        "  source.ts:1:15  const emoji = '😀';",
+      ].join("\n"),
+    );
+    expect(result.structuredContent).toMatchObject({
+      results: [
+        {
+          value: [
+            {
+              fromRanges: [{ start: { line: 1, character: 31 }, end: { line: 1, character: 34 } }],
+            },
+            {
+              fromRanges: [{ start: { line: 1, character: 15 }, end: { line: 1, character: 18 } }],
+            },
+          ],
+        },
+      ],
+    });
+    await fixture.close();
+  });
+
   test("preserves opaque completion metadata without treating lookalike fields as positions", async () => {
     const fixture = await createToolFixture();
     fixture.client.responseByMethod.set("textDocument/completion", {

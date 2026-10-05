@@ -34,11 +34,11 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SOURCE_LINE_MAX_CHARACTERS = 200;
 
 /** One-based Unicode code-point position, as normalized protocol results carry them. */
-const PositionSchema = Type.Object({
+export const LspNormalizedPositionSchema = Type.Object({
   line: Type.Integer({ minimum: 1 }),
   character: Type.Integer({ minimum: 1 }),
 });
-const RangeSchema = Type.Object({ start: PositionSchema });
+const RangeSchema = Type.Object({ start: LspNormalizedPositionSchema });
 const LocationSchema = Type.Object({ uri: Type.String(), range: RangeSchema });
 const LocationLinkSchema = Type.Object({
   targetUri: Type.String(),
@@ -92,11 +92,16 @@ export class LspSourceLines {
     }
     const line = (await lines)?.[oneBasedLine - 1]?.trim();
     if (line === undefined || line === "") return undefined;
-    const characters = Array.from(line);
-    return characters.length > SOURCE_LINE_MAX_CHARACTERS
-      ? `${characters.slice(0, SOURCE_LINE_MAX_CHARACTERS).join("")}…`
-      : line;
+    return shortenLspText(line);
   }
+}
+
+/** Shorten text longer than a source line may be shown, marking the cut with `…`. */
+export function shortenLspText(text: string): string {
+  const characters = Array.from(text);
+  return characters.length > SOURCE_LINE_MAX_CHARACTERS
+    ? `${characters.slice(0, SOURCE_LINE_MAX_CHARACTERS).join("")}…`
+    : text;
 }
 
 async function readSourceLines(path: string): Promise<readonly string[] | undefined> {
