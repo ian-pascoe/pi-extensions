@@ -5,9 +5,11 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readdir } from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
+import { LspInputError } from "../src/lsp-input-error.js";
 import {
   routeLspServersForFile,
   type LspAncestorDirectory,
+  type LspCapabilityRequirement,
   type LspManagedServerClient,
   LspServerManager,
   type LspServerRoutingDefinition,
@@ -170,6 +172,15 @@ class RecordingLspClient implements LspManagedServerClient {
   }
 }
 
+const anyCapability: LspCapabilityRequirement<RecordingLspClient> = {
+  method: "test/any",
+  isSupportedBy: () => true,
+};
+const hoverCapability: LspCapabilityRequirement<RecordingLspClient> = {
+  method: "textDocument/hover",
+  isSupportedBy: (client) => client.supported,
+};
+
 interface RecordingClientFactory {
   readonly clients: RecordingLspClient[];
   readonly inputs: LspServerStartInput[];
@@ -278,7 +289,7 @@ describe("session-scoped LSP server manager", () => {
     const result = await manager.runRead(
       resolve(cwd, "notes.md"),
       undefined,
-      () => true,
+      anyCapability,
       async () => "ok",
     );
     expect(result.failures.map(({ code }) => code)).toEqual(["no-matching-server"]);
@@ -311,18 +322,13 @@ describe("session-scoped LSP server manager", () => {
       ],
     );
     expect(manager.getEnablement("typescript")).toEqual({ enabled: false, scope: "session" });
-    const automatic = await manager.runRead(
-      filePath,
-      undefined,
-      () => true,
-      async () => "ok",
-    );
+    const automatic = await manager.runRead(filePath, undefined, anyCapability, async () => "ok");
     expect(automatic.successes.map(({ serverId }) => serverId)).toEqual(["lint"]);
     expect(automatic.failures).toEqual([]);
     for (const request of [
       manager.getCapabilities("typescript", filePath),
       manager.restartServer("typescript", filePath),
-      manager.resolveMutationClient(filePath, "typescript", () => true),
+      manager.resolveMutationClient(filePath, "typescript", anyCapability),
     ]) {
       await expect(request).resolves.toMatchObject({
         kind: "failure",
@@ -596,15 +602,10 @@ describe("session-scoped LSP server manager", () => {
     const stopped = expect(
       manager.stopServer("typescript", resolve(cwd, "packages/example")),
     ).rejects.toThrow("teardown failed");
-    const read = manager.runRead(
-      filePath,
-      undefined,
-      () => true,
-      async (_client, route) => {
-        if (route.serverId === "lint") healthyRead.resolve();
-        return "retained";
-      },
-    );
+    const read = manager.runRead(filePath, undefined, anyCapability, async (_client, route) => {
+      if (route.serverId === "lint") healthyRead.resolve();
+      return "retained";
+    });
     await healthyRead.promise;
     shutdown.reject(new Error("teardown failed"));
     await stopped;
@@ -721,7 +722,7 @@ describe("session-scoped LSP server manager", () => {
     const result = await manager.runRead(
       filePath,
       undefined,
-      () => true,
+      anyCapability,
       async (_client, route) => {
         if (route.serverId === "lint") throw new Error("fixture request failed");
         return "definition.ts:1:1";
@@ -754,7 +755,7 @@ describe("session-scoped LSP server manager", () => {
     const result = await manager.runRead(
       filePath,
       undefined,
-      (client) => client.supported,
+      hoverCapability,
       async (_client, route) => route.serverId,
     );
 
@@ -782,7 +783,7 @@ describe("session-scoped LSP server manager", () => {
     const result = await manager.runRead(
       filePath,
       undefined,
-      (client) => client.supported,
+      hoverCapability,
       async () => "unused",
     );
 
@@ -790,12 +791,101 @@ describe("session-scoped LSP server manager", () => {
       failures: [
         {
           code: "no-capable-server",
-          message: "Pi LSP: no matching server supports the requested read operation",
+          message:
+            "Pi LSP: no matching server supports textDocument/hover; matching servers without it: lint, typescript",
           serverId: "*",
         },
       ],
       successes: [],
     });
+  });
+
+  test("names the capability and the matching servers lacking it when no mutation server is capable", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory(async () => new RecordingLspClient(false));
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["first", "second"]),
+      startClient: factory.start,
+    });
+
+    await expect(
+      manager.resolveMutationClient(filePath, undefined, hoverCapability),
+    ).resolves.toEqual({
+      kind: "failure",
+      failure: {
+        code: "no-capable-server",
+        message:
+          "Pi LSP: no matching server supports textDocument/hover; matching servers without it: first, second",
+        serverId: "*",
+      },
+    });
+    await expect(
+      manager.resolveMutationClient(filePath, "second", hoverCapability),
+    ).resolves.toEqual({
+      kind: "failure",
+      failure: {
+        code: "no-capable-server",
+        message: "Pi LSP: server second does not support textDocument/hover",
+        serverId: "second",
+      },
+    });
+    await manager.shutdown();
+  });
+
+  test("reports files no configured server matches and unknown server IDs", async () => {
+    const { cwd } = await createRoutedFileFixture();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+    const notes = resolve(cwd, "notes.md");
+
+    await expect(
+      manager.runRead(notes, undefined, anyCapability, async () => "unused"),
+    ).resolves.toEqual({
+      failures: [
+        {
+          code: "no-matching-server",
+          message: `Pi LSP: no configured server matches ${notes}`,
+          serverId: "*",
+        },
+      ],
+      successes: [],
+    });
+    await expect(manager.getCapabilities("typescript", notes)).resolves.toMatchObject({
+      failure: {
+        code: "no-matching-server",
+        message: `Pi LSP: server typescript does not match ${notes}`,
+      },
+    });
+    await expect(
+      manager.getCapabilities("missing", resolve(cwd, "root.ts")),
+    ).resolves.toMatchObject({
+      failure: {
+        code: "no-matching-server",
+        message: "Pi LSP: server missing is not configured",
+        serverId: "missing",
+      },
+    });
+    await manager.shutdown();
+  });
+
+  test("rejects a read with the input error an operation raises instead of a server failure", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["lint", "typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    await expect(
+      manager.runRead(filePath, undefined, anyCapability, async () => {
+        throw new LspInputError("line 9 is past the end of the document");
+      }),
+    ).rejects.toThrow(new LspInputError("line 9 is past the end of the document"));
+    await manager.shutdown();
   });
 
   test("reports an explicitly selected incapable read server", async () => {
@@ -807,20 +897,21 @@ describe("session-scoped LSP server manager", () => {
       startClient: factory.start,
     });
 
-    const result = await manager.runRead(
-      filePath,
-      "lint",
-      (client) => client.supported,
-      async () => "unused",
-    );
+    const result = await manager.runRead(filePath, "lint", hoverCapability, async () => "unused");
 
-    expect(result).toMatchObject({
-      failures: [{ code: "no-capable-server", serverId: "lint" }],
+    expect(result).toEqual({
+      failures: [
+        {
+          code: "no-capable-server",
+          message: "Pi LSP: server lint does not support textDocument/hover",
+          serverId: "lint",
+        },
+      ],
       successes: [],
     });
   });
 
-  test("preserves startup failures while omitting incapable automatic read servers", async () => {
+  test("reports startup failures and the capability incapable servers lack when no read succeeds", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory(async ({ definition }) => {
       if (definition.id === "typescript") throw new Error("fixture startup failed");
@@ -835,12 +926,20 @@ describe("session-scoped LSP server manager", () => {
     const result = await manager.runRead(
       filePath,
       undefined,
-      (client) => client.supported,
+      hoverCapability,
       async () => "unused",
     );
 
     expect(result).toMatchObject({
-      failures: [{ code: "server-unavailable", serverId: "typescript" }],
+      failures: [
+        { code: "server-unavailable", serverId: "typescript" },
+        {
+          code: "no-capable-server",
+          message:
+            "Pi LSP: no matching server supports textDocument/hover; matching servers without it: lint",
+          serverId: "*",
+        },
+      ],
       successes: [],
     });
   });
@@ -854,21 +953,13 @@ describe("session-scoped LSP server manager", () => {
       startClient: factory.start,
     });
 
-    const ambiguous = await manager.resolveMutationClient(
-      filePath,
-      undefined,
-      (client) => client.supported,
-    );
+    const ambiguous = await manager.resolveMutationClient(filePath, undefined, hoverCapability);
     expect(ambiguous).toMatchObject({
       failure: { code: "ambiguous-server" },
       kind: "failure",
     });
 
-    const selected = await manager.resolveMutationClient(
-      filePath,
-      "second",
-      (client) => client.supported,
-    );
+    const selected = await manager.resolveMutationClient(filePath, "second", hoverCapability);
     expect(selected).toMatchObject({
       instance: { route: { serverId: "second" } },
       kind: "success",

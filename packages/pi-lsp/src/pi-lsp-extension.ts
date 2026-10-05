@@ -190,7 +190,10 @@ class ManagerPostEditDiagnosticsRunner {
       const result = await this.session.manager.runRead(
         filePath,
         undefined,
-        (client) => client.hasCapability(DocumentDiagnosticRequest.method),
+        {
+          method: DocumentDiagnosticRequest.method,
+          isSupportedBy: (client) => client.hasCapability(DocumentDiagnosticRequest.method),
+        },
         async (client, route): Promise<readonly PostEditDiagnosticOutcome[]> => {
           const diagnostics = await client.documentDiagnostics(
             filePath,

@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { LspInputError } from "../src/lsp-input-error.js";
 import {
   convertLspCodePointPosition,
   convertLspProtocolPosition,
@@ -47,13 +48,34 @@ test("rejects non-integral, out-of-range, and split-character positions", () => 
     "Pi LSP: code-point position line must be a positive integer",
   );
   expect(() => convertLspCodePointPosition(text, { line: 1, character: 5 }, "utf-16")).toThrow(
-    "Pi LSP: code-point position character exceeds line length",
+    "Pi LSP: character 5 is past the end of line 1, which has 3 characters (character must be at most 4)",
   );
   expect(() => convertLspProtocolPosition(text, { line: 0, character: 2 }, "utf-16")).toThrow(
     "Pi LSP: protocol position splits a Unicode character",
   );
   expect(() => convertLspProtocolPosition(text, { line: 0, character: 2 }, "utf-8")).toThrow(
     "Pi LSP: protocol position splits a Unicode character",
+  );
+});
+
+test("reports out-of-range code-point positions as input errors naming the valid bounds", () => {
+  const text = "first\nx\n";
+
+  const pastLastLine = () => convertLspCodePointPosition(text, { line: 4, character: 1 }, "utf-16");
+  expect(pastLastLine).toThrow(LspInputError);
+  expect(pastLastLine).toThrow(
+    "Pi LSP: line 4 is past the end of the document, which has 3 lines (line must be at most 3)",
+  );
+  expect(() => convertLspCodePointPosition("", { line: 2, character: 1 }, "utf-16")).toThrow(
+    "Pi LSP: line 2 is past the end of the document, which has 1 line (line must be at most 1)",
+  );
+  const pastLineEnd = () => convertLspCodePointPosition(text, { line: 2, character: 3 }, "utf-16");
+  expect(pastLineEnd).toThrow(LspInputError);
+  expect(pastLineEnd).toThrow(
+    "Pi LSP: character 3 is past the end of line 2, which has 1 character (character must be at most 2)",
+  );
+  expect(() => convertLspCodePointPosition(text, { line: 0, character: 1 }, "utf-16")).toThrow(
+    LspInputError,
   );
 });
 
