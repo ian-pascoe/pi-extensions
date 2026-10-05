@@ -55,8 +55,6 @@ import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/trouble
 import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
-/** Several tests take about 1 s alone but approach Vitest's 5 s default under the parallel suite. */
-const HEAVY_TEST_TIMEOUT_MS = 20_000;
 
 class RecordingLspClient implements LspToolServerClient {
   readonly capabilities: ServerCapabilities = {};
@@ -300,7 +298,7 @@ afterEach(async () => {
   );
 });
 
-describe("registered LSP tool", { timeout: HEAVY_TEST_TIMEOUT_MS }, () => {
+describe("registered LSP tool", () => {
   test("registers one namespaced tool per operation with exact exposure and annotations", async () => {
     const fixture = await createToolFixture();
     const registrar = new RecordingLspToolRegistrar();

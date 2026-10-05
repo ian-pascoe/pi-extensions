@@ -63,7 +63,9 @@ include their leading period. `rootMarkers` are basename glob patterns; the near
 ancestor becomes the server root and Pi's working directory is the fallback. Set
 `requireRootMarker` to `true` to exclude the server for files without any matching ancestor; it
 defaults to `false`. A required empty `rootMarkers` list is invalid. Explicit requests naming an
-otherwise compatible excluded server report that its required root marker was not found.
+otherwise compatible excluded server report that its required root marker was not found. A server
+without `rootMarkers` always uses the working directory as its root. Routing reads a file's
+ancestor directories only when an enabled server that handles its language has root markers.
 
 Global and project timeouts merge by field. A project server replaces the complete global server
 with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only

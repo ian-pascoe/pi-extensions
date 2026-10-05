@@ -302,6 +302,98 @@ describe("session-scoped LSP server manager", () => {
     await manager.shutdown();
   });
 
+  test("lists ancestor directories only when an enabled matching Server Definition has root markers", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const markerFree = (id: string) => ({ ...serverDefinition(id), rootMarkers: [] });
+    const settings = (definitions: readonly LspServerDefinition[]): ResolvedLspSettings => ({
+      ...resolvedSettings([]),
+      servers: new Map(definitions.map((definition) => [definition.id, definition])),
+    });
+    const directoriesRead: string[] = [];
+    const createManager = (definitions: readonly LspServerDefinition[]) =>
+      new LspServerManager({
+        cwd,
+        settings: settings(definitions),
+        startClient: createRecordingClientFactory().start,
+        readDirectory: async (directoryPath) => {
+          directoriesRead.push(directoryPath);
+          return readdir(directoryPath);
+        },
+      });
+
+    // Marker-free definitions root at the working directory without listing anything.
+    const markerFreeManager = createManager([markerFree("lint"), markerFree("spell")]);
+    const routed = await markerFreeManager.runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async (_client, route) => route.rootPath,
+    );
+    expect(routed.successes.map(({ serverId, value }) => [serverId, value])).toEqual([
+      ["lint", cwd],
+      ["spell", cwd],
+    ]);
+    expect(directoriesRead).toEqual([]);
+
+    // A marker-bearing definition that is disabled or does not match the language is ignored.
+    const disabledManager = createManager([markerFree("lint"), serverDefinition("typescript")]);
+    await disabledManager.setEnablement(new Map(), new Map([["typescript", false]]));
+    await disabledManager.runRead(filePath, undefined, anyCapability, async () => "ok");
+    const otherLanguage = {
+      ...serverDefinition("python"),
+      languages: [{ extensions: [".py"], fileNames: [], languageId: "python" }],
+    };
+    await createManager([markerFree("lint"), otherLanguage]).runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async () => "ok",
+    );
+    expect(directoriesRead).toEqual([]);
+
+    // A matching enabled marker-bearing definition lists, and marker-free peers keep the cwd root.
+    const mixed = await createManager([markerFree("lint"), serverDefinition("typescript")]).runRead(
+      filePath,
+      undefined,
+      anyCapability,
+      async (_client, route) => route.rootPath,
+    );
+    expect(mixed.successes.map(({ serverId, value }) => [serverId, value])).toEqual([
+      ["lint", cwd],
+      ["typescript", resolve(cwd, "packages/example")],
+    ]);
+    expect(directoriesRead[0]).toBe(resolve(cwd, "packages/example/src"));
+
+    // Explicitly requesting a disabled marker-bearing definition still resolves its marker root.
+    directoriesRead.length = 0;
+    const explicitManager = createManager([serverDefinition("typescript")]);
+    await explicitManager.setEnablement(new Map(), new Map([["typescript", false]]));
+    const disabled = await explicitManager.runRead(
+      filePath,
+      "typescript",
+      anyCapability,
+      async () => "ok",
+    );
+    expect(disabled.failures.map(({ code }) => code)).toEqual(["server-disabled"]);
+    expect(explicitManager.getStatus().servers).toMatchObject([
+      { serverId: "typescript", state: "disabled" },
+    ]);
+    expect(directoriesRead.length).toBeGreaterThan(0);
+
+    // An explicit request decides on the requested definition alone: a marker-bearing peer is not
+    // listed for.
+    directoriesRead.length = 0;
+    const peerManager = createManager([markerFree("lint"), serverDefinition("typescript")]);
+    const explicitLint = await peerManager.runRead(
+      filePath,
+      "lint",
+      anyCapability,
+      async (_client, route) => route.rootPath,
+    );
+    expect(explicitLint.successes.map(({ value }) => value)).toEqual([cwd]);
+    expect(directoriesRead).toEqual([]);
+  });
+
   test("disables every root, excludes automatic routing, and blocks explicit startup until enabled", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory();

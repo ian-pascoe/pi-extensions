@@ -450,15 +450,25 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     };
   }
 
-  private async routeFile(filePath: string): Promise<readonly LspServerRoute[]> {
+  private async routeFile(
+    filePath: string,
+    requestedServerId?: string,
+  ): Promise<readonly LspServerRoute[]> {
     const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
-    // Ancestor listings are costly in large directories; skip them when no language matches.
-    if (!this.hasConfiguredLanguageServerForFile(absolutePath)) return [];
-    const ancestors = await readLspAncestorDirectories(
-      absolutePath,
-      this.input.readDirectory ?? readdir,
+    // Route only candidates: the requested definition, or every enabled one when none is named.
+    const candidates = [...this.input.settings.servers.values()].filter(
+      (definition) =>
+        (requestedServerId === undefined
+          ? this.getEnablement(definition.id).enabled
+          : definition.id === requestedServerId) &&
+        definition.languages.some((language) => languageMatchesFile(language, absolutePath)),
     );
-    const definitions = [...this.input.settings.servers.values()].map((definition) => ({
+    // Ancestor listings are costly in large directories; list them only when a candidate has
+    // root markers to find. Marker-free candidates root at the working directory.
+    const ancestors = candidates.some((definition) => definition.rootMarkers.length > 0)
+      ? await readLspAncestorDirectories(absolutePath, this.input.readDirectory ?? readdir)
+      : [];
+    const definitions = candidates.map((definition) => ({
       languages: definition.languages,
       requireRootMarker: definition.requireRootMarker,
       rootMarkers: definition.rootMarkers,
@@ -693,7 +703,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     filePath: string,
     serverId: string | undefined,
   ): Promise<readonly LspServerRoute[]> {
-    const routes = await this.routeFile(filePath);
+    const routes = await this.routeFile(filePath, serverId);
     return routes.filter((route) =>
       serverId === undefined
         ? this.getEnablement(route.serverId).enabled
