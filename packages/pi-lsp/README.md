@@ -175,7 +175,11 @@ unsupported. A mutation may omit `server_id` only when exactly one matching capa
 Formatting requires `tab_size` and `insert_spaces`. It optionally accepts
 `trim_trailing_whitespace`, `insert_final_newline`, and `trim_final_newlines`. Range formatting also
 requires a `range`; on-type formatting requires a position and `trigger_character`. `lsp_rename`
-requires `new_name`. `lsp_code_actions` accepts a range and optional `only_kinds` filters.
+requires `new_name`. `lsp_code_actions` accepts a range and optional `only_kinds` filters. It sends
+the selected server's current LSP Diagnostics that overlap the range, so diagnostic-dependent quick
+fixes such as adding a missing import are offered. It uses diagnostics the server has already
+reported for the file's current contents, otherwise waits for them within the diagnostics timeout;
+unavailable diagnostics never prevent the request.
 
 The shared rules reach the model as one system-prompt guideline, which Pi adds once while any LSP
 tool is declared. On Pi 1.0.0 and later, scripts can also read them with

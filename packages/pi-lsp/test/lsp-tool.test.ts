@@ -11,10 +11,11 @@ import type {
   ToolExposure,
   ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  type Diagnostic,
   PositionEncodingKind,
   type ServerCapabilities,
   type WorkspaceEdit,
@@ -57,7 +58,12 @@ class RecordingLspClient implements LspToolServerClient {
   readonly capabilities: ServerCapabilities = {};
   readonly positionEncoding = PositionEncodingKind.UTF16;
   readonly requests: string[] = [];
+  readonly parametersByMethod = new Map<string, unknown[]>();
   responseByMethod = new Map<string, unknown>();
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- Responders simulate servers over opaque protocol payloads.
+  responderByMethod = new Map<string, (parameters: unknown) => unknown>();
+  currentDiagnostics: Diagnostic[] = [];
+  currentDiagnosticsFailure: Error | undefined;
   failureByMethod = new Map<string, Error>();
   shutdownCount = 0;
 
@@ -80,15 +86,30 @@ class RecordingLspClient implements LspToolServerClient {
   async request(
     method: string,
     // oxlint-disable-next-line anti-slop/no-unknown-parameters -- The recording protocol transport deliberately accepts opaque method payloads, like the real client.
-    _parameters: unknown,
+    parameters: unknown,
     _signal?: AbortSignal,
     // oxlint-disable-next-line anti-slop/no-unknown-returns -- Fixture responses remain unparsed until the real dispatch/preview boundary checks them.
   ): Promise<unknown> {
     this.requests.push(method);
+    this.parametersByMethod.set(method, [
+      ...(this.parametersByMethod.get(method) ?? []),
+      parameters,
+    ]);
     const failure = this.failureByMethod.get(method);
     if (failure !== undefined) throw failure;
+    const responder = this.responderByMethod.get(method);
+    if (responder !== undefined) return responder(parameters);
     const response = this.responseByMethod.get(method) ?? [];
     return response;
+  }
+
+  async currentDocumentDiagnostics(
+    _filePath: string,
+    _languageId: string,
+    _signal?: AbortSignal,
+  ): Promise<readonly Diagnostic[]> {
+    if (this.currentDiagnosticsFailure !== undefined) throw this.currentDiagnosticsFailure;
+    return this.currentDiagnostics;
   }
 
   async documentDiagnostics(
@@ -842,6 +863,105 @@ describe("registered LSP tool", () => {
     );
     expect(warning).toContain("expected failure");
     await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("sends overlapping current LSP Diagnostics so diagnostic-dependent quick fixes return", async () => {
+    const fixture = await createToolFixture();
+    await writeFile(fixture.filePath, "const value = missingName();\nconst other = 1;\n");
+    const uri = pathToFileURL(fixture.filePath).href;
+    const missingName: Diagnostic = {
+      range: { start: { line: 0, character: 14 }, end: { line: 0, character: 25 } },
+      severity: 1,
+      code: 2304,
+      source: "ts",
+      message: "Cannot find name 'missingName'.",
+    };
+    const sameLineElsewhere: Diagnostic = {
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+      severity: 2,
+      message: "Prefer let.",
+    };
+    const otherLine: Diagnostic = {
+      range: { start: { line: 1, character: 6 }, end: { line: 1, character: 11 } },
+      severity: 4,
+      message: "'other' is declared but never used.",
+    };
+    fixture.client.currentDiagnostics = [sameLineElsewhere, missingName, otherLine];
+    const QuickFixContextSchema = Type.Object({
+      context: Type.Object({
+        diagnostics: Type.Array(Type.Object({ code: Type.Literal(2304) }), { minItems: 1 }),
+      }),
+    });
+    // Like a real server, offer the import quick fix only for the diagnostic it fixes.
+    fixture.client.responderByMethod.set("textDocument/codeAction", (parameters) =>
+      Value.Check(QuickFixContextSchema, parameters)
+        ? [
+            {
+              title: 'Add import from "./helper"',
+              kind: "quickfix",
+              diagnostics: [missingName],
+              edit: {
+                changes: {
+                  [uri]: [
+                    {
+                      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+                      newText: 'import { missingName } from "./helper";\n',
+                    },
+                  ],
+                },
+              },
+            },
+          ]
+        : [],
+    );
+
+    const actions = await executeTool(fixture, {
+      operation: "code_actions",
+      file_path: fixture.filePath,
+      range: { start: { line: 1, character: 15 }, end: { line: 1, character: 26 } },
+      only_kinds: ["quickfix"],
+    });
+
+    expect(fixture.client.parametersByMethod.get("textDocument/codeAction")).toEqual([
+      {
+        textDocument: { uri },
+        range: { start: { line: 0, character: 14 }, end: { line: 0, character: 25 } },
+        context: { diagnostics: [missingName], only: ["quickfix"] },
+      },
+    ]);
+    expect(actions.structuredContent).toMatchObject({
+      actions: [
+        {
+          applicable: true,
+          title: 'Add import from "./helper"',
+          kind: "quickfix",
+          preview_id: expect.any(String),
+        },
+      ],
+    });
+    await fixture.close();
+  });
+
+  test("still requests code actions when current LSP Diagnostics are unavailable", async () => {
+    const fixture = await createToolFixture();
+    fixture.client.currentDiagnosticsFailure = new Error("diagnostics pull failed");
+    fixture.client.responseByMethod.set("textDocument/codeAction", [
+      { title: "Organize imports", kind: "source.organizeImports", command: "organize" },
+    ]);
+
+    const actions = await executeTool(fixture, {
+      operation: "code_actions",
+      file_path: fixture.filePath,
+      range: range(),
+    });
+
+    expect(fixture.client.parametersByMethod.get("textDocument/codeAction")).toMatchObject([
+      { context: { diagnostics: [] } },
+    ]);
+    expect(actions.structuredContent).toMatchObject({
+      actions: [{ applicable: false, title: "Organize imports" }],
+    });
     await fixture.close();
   });
 
