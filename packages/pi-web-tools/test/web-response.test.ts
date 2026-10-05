@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { readBoundedResponseBody } from "../src/web-response.js";
+import {
+  describeWebFailure,
+  readBoundedResponseBody,
+  WebHttpStatusError,
+  WebInputError,
+  WebResponseTooLargeError,
+} from "../src/web-response.js";
 
 function responseFromChunks(
   chunks: readonly Uint8Array[],
@@ -93,5 +99,48 @@ describe("bounded Web response bodies", () => {
     );
 
     await expect(readBoundedResponseBody(response, 5)).rejects.toThrow("Response body read failed");
+  });
+});
+
+describe("Web failure causes", () => {
+  test.each([
+    [new WebHttpStatusError(404, "Not Found"), "HTTP 404 Not Found", false],
+    [new WebHttpStatusError(502), "HTTP 502", true],
+    [new WebInputError("invalid URL"), "invalid URL", false],
+    [new WebResponseTooLargeError(1024), "response body exceeds the 1024 bytes limit", false],
+    [new WebResponseTooLargeError(2 * 1024 * 1024), "response body exceeds the 2 MiB limit", false],
+    [
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("x"), { code: "ECONNRESET" }),
+      }),
+      "network error ECONNRESET",
+      true,
+    ],
+    [new TypeError("fetch failed"), "network error", true],
+    [new RangeError("secret user:pass@host"), "unexpected RangeError", false],
+    ["boom", "unexpected error", false],
+  ])("describes %s", (error, cause, diagnosable) => {
+    expect(describeWebFailure(error)).toEqual({ cause, diagnosable });
+  });
+
+  test("distinguishes the request deadline from caller cancellation", async () => {
+    const deadline = AbortSignal.timeout(1);
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+    expect(describeWebFailure(deadline.reason)).toEqual({ cause: "timed out", diagnosable: true });
+    expect(
+      describeWebFailure(new Error("read aborted", { cause: deadline.reason }), {
+        timeoutMs: 1500,
+      }),
+    ).toEqual({
+      cause: "timed out after 1.5 seconds",
+      diagnosable: true,
+    });
+
+    const caller = new AbortController();
+    caller.abort();
+    expect(describeWebFailure(caller.signal.reason, { callerSignal: caller.signal })).toEqual({
+      cause: "request cancelled",
+      diagnosable: false,
+    });
   });
 });
