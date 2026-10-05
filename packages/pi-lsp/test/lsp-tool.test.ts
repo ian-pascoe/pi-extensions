@@ -930,6 +930,36 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("warns that other roots may exist when root discovery stops before checking every directory", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    await writeFile(resolve(cwd, "package.json"), "{}\n");
+    await Promise.all(
+      Array.from({ length: 4100 }, (_, index) =>
+        mkdir(resolve(cwd, `wide/${String(index).padStart(4, "0")}`), { recursive: true }),
+      ),
+    );
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+    });
+
+    const result = await executeTool(
+      fixture,
+      { operation: "find_references", file_path: fixture.filePath, line: 1, character: 7 },
+      { ...fixture.dependencies, manager },
+    );
+
+    expect(result.structuredContent).toMatchObject({
+      warnings: [
+        `typescript searched only its workspace root ${cwd}, but other typescript workspace roots may exist in directories that were not checked. Files outside ${cwd} may not have been considered; query a file under each other root or search for importers before relying on this result.`,
+      ],
+    });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
   test("names the only workspace root without a warning", async () => {
     const fixture = await createToolFixture();
     const cwd = fixture.context.cwd;

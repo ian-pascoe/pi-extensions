@@ -988,4 +988,23 @@ describe("other workspace roots of a Server Definition", () => {
     expect(roots.rootPaths).not.toContain(resolve(cwd, "packages/example"));
     expect(roots.hasMore).toBe(true);
   });
+
+  test("reports that more roots may exist when discovery stops at its directory limit", async () => {
+    const { cwd } = await createRoutedFileFixture();
+    // More directories than one discovery lists, none holding a root marker.
+    await Promise.all(
+      Array.from({ length: 4100 }, (_, index) =>
+        mkdir(resolve(cwd, `wide/${String(index).padStart(4, "0")}`), { recursive: true }),
+      ),
+    );
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript"]),
+      startClient: createRecordingClientFactory().start,
+    });
+
+    expect(
+      await manager.findOtherWorkspaceRoots("typescript", resolve(cwd, "packages/example")),
+    ).toEqual({ rootPaths: [], hasMore: true });
+  });
 });

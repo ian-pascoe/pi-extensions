@@ -276,14 +276,17 @@ async function serverInstanceScope(
   const root = lspDisplayPath(cwd, rootPath);
   const line = `Searched ${serverId} workspace root: ${root}`;
   const others = await dependencies.manager.findOtherWorkspaceRoots(serverId, rootPath);
-  if (others.rootPaths.length === 0) return { line };
-  const otherRoots = [
-    ...others.rootPaths.map((path) => lspDisplayPath(cwd, path)),
-    ...(others.hasMore ? ["and more"] : []),
-  ].join(", ");
+  if (others.rootPaths.length === 0 && !others.hasMore) return { line };
+  const otherRoots =
+    others.rootPaths.length === 0
+      ? `other ${serverId} workspace roots may exist in directories that were not checked`
+      : `other ${serverId} workspace roots exist: ${[
+          ...others.rootPaths.map((path) => lspDisplayPath(cwd, path)),
+          ...(others.hasMore ? ["and more"] : []),
+        ].join(", ")}`;
   return {
     line,
-    warning: `${serverId} searched only its workspace root ${root}, but other ${serverId} workspace roots exist: ${otherRoots}. Files outside ${root} may not have been considered; query a file under each other root or search for importers before relying on this result.`,
+    warning: `${serverId} searched only its workspace root ${root}, but ${otherRoots}. Files outside ${root} may not have been considered; query a file under each other root or search for importers before relying on this result.`,
   };
 }
 
