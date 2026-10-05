@@ -230,10 +230,7 @@ class ManagerPostEditDiagnosticsRunner {
       outcomes.push(...successfulOutcomes);
       outcomes.push(
         ...result.failures.flatMap((failure) =>
-          failure.code === "no-capable-server" ||
-          failure.code === "server-disabled" ||
-          (failure.code === "no-matching-server" &&
-            this.session.manager.hasConfiguredLanguageServerForFile(filePath))
+          failure.code === "no-capable-server" || failure.code === "server-disabled"
             ? []
             : [failureDiagnosticOutcome(filePath, failure)],
         ),
@@ -248,8 +245,10 @@ async function appendSessionPostEditDiagnostics(
   session: ActivePiLspSession,
   context: ExtensionContext,
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
-  const patch = await appendPostEditDiagnostics(event, (paths) =>
-    new ManagerPostEditDiagnosticsRunner(session, context.signal).run(paths),
+  const patch = await appendPostEditDiagnostics(
+    event,
+    (paths) => new ManagerPostEditDiagnosticsRunner(session, context.signal).run(paths),
+    session.cwd,
   );
   if (patch === undefined) return undefined;
   const appendedValue = patch.content.at(-1);

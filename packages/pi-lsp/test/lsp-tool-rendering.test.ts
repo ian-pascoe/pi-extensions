@@ -36,6 +36,11 @@ describe("Pi LSP tool rendering", () => {
       text: '{"results":[{"value":{"status":"unsupported","message":"use lsp_diagnostics"}}]}',
       metric: "0 diagnostics",
     },
+    {
+      operation: "workspace_diagnostics" as const,
+      text: '{"results":[{"value":{"status":"fresh","source":"push_cache","diagnosticsByUri":[{"uri":"/a.ts","value":[{},{}]},{"uri":"/b.ts","value":[]}],"message":"Server a publishes no workspace diagnostics; these are the diagnostics it pushed for 2 files opened in this session. Use lsp_diagnostics for other files."}}]}',
+      metric: "2 diagnostics",
+    },
   ])("counts $operation output as $metric", ({ operation, text, metric }) => {
     const collapsed = renderLines(
       renderLspToolResult(

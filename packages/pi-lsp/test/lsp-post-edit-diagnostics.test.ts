@@ -3,6 +3,7 @@ import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import {
   appendPostEditDiagnostics,
   extractPostEditDiagnosticPaths,
+  type PostEditDiagnosticOutcome,
 } from "../src/lsp-post-edit-diagnostics.js";
 
 function mutationEvent(overrides: Partial<ToolResultEvent> = {}): ToolResultEvent {
@@ -136,6 +137,7 @@ test.each([false, true])(
         isError,
       }),
       async () => [{ kind: "no_diagnostics", path: "/work/a.ts" }],
+      "/work",
     );
     // A false input stays false: Post-edit Diagnostics never flips the error state.
     expect(result?.isError).toBe(isError);
@@ -152,9 +154,42 @@ test("keeps the structured result of an lsp_apply call it augments", async () =>
       structuredContent,
     }),
     async () => [{ kind: "no_diagnostics", path: "/work/a.ts" }],
+    "/work",
   );
   expect(result?.structuredContent).toBe(structuredContent);
 });
+
+function diagnosticOutcome(
+  path: string,
+  severity: number,
+  message: string,
+  serverId = "typescript",
+): PostEditDiagnosticOutcome {
+  return {
+    kind: "diagnostic",
+    diagnostic: { serverId, path, line: 3, character: 7, severity, message },
+  };
+}
+
+async function appendedText(
+  outcomes: readonly PostEditDiagnosticOutcome[],
+  cwd = "/work",
+): Promise<string | undefined> {
+  const result = await appendPostEditDiagnostics(
+    mutationEvent({ toolName: "apply_patch", details: applyPatchDetails(["unused"]) }),
+    async () => outcomes,
+    cwd,
+  );
+  const appended = result?.content.at(-1);
+  return appended?.type === "text" ? appended.text : undefined;
+}
+
+function applyPatchDetails(changedFiles: string[]) {
+  return {
+    status: "success",
+    result: { changedFiles, createdFiles: [], deletedFiles: [], movedFiles: [] },
+  };
+}
 
 test("appends diagnostics after a partial mutation without changing mutation fields", async () => {
   const event = mutationEvent({
@@ -170,51 +205,99 @@ test("appends diagnostics after a partial mutation without changing mutation fie
       },
     },
   });
-  const result = await appendPostEditDiagnostics(event, async (paths) => {
-    expect(paths).toEqual([{ path: "src/example.ts" }]);
-    return [
-      {
-        kind: "diagnostic" as const,
-        diagnostic: {
-          serverId: "z-server",
-          path: "z.ts",
-          line: 2,
-          character: 2,
-          severity: 2,
-          message: "warning",
-        },
-      },
-      { kind: "timeout" as const, path: "src/example.ts", serverId: "typescript" },
-      { kind: "no_diagnostics" as const, path: "empty.ts" },
-      {
-        kind: "diagnostic" as const,
-        diagnostic: {
-          serverId: "a-server",
-          path: "a.ts",
-          line: 1,
-          character: 1,
-          severity: 1,
-          message: "error",
-        },
-      },
-      {
-        kind: "diagnostic" as const,
-        diagnostic: {
-          serverId: "a-server",
-          path: "a.ts",
-          line: 1,
-          character: 1,
-          severity: 1,
-          message: "error",
-        },
-      },
-    ];
-  });
+  const result = await appendPostEditDiagnostics(
+    event,
+    async (paths) => {
+      expect(paths).toEqual([{ path: "src/example.ts" }]);
+      return [
+        diagnosticOutcome("/work/z.ts", 2, "warning", "z-server"),
+        { kind: "timeout" as const, path: "/work/src/example.ts", serverId: "typescript" },
+        { kind: "no_diagnostics" as const, path: "/work/empty.ts" },
+        diagnosticOutcome("/work/a.ts", 1, "error", "a-server"),
+        diagnosticOutcome("/work/a.ts", 1, "error", "a-server"),
+      ];
+    },
+    "/work",
+  );
 
   expect(result).toMatchObject({ details: event.details, isError: true });
   expect(result?.content).toHaveLength(2);
   expect(result?.content.at(-1)).toEqual({
     type: "text",
-    text: "\n\nLSP diagnostics\na.ts:1:1 [a-server] severity 1: error\na.ts:1:1 [a-server] severity 1: error\nz.ts:2:2 [z-server] severity 2: warning\nempty.ts: no diagnostics\nsrc/example.ts: diagnostics timeout (typescript)",
+    text: "\n\nLSP diagnostics\na.ts:3:7 error [a-server]: error\na.ts:3:7 error [a-server]: error\nz.ts:3:7 warning [z-server]: warning\nsrc/example.ts: diagnostics timeout (typescript)\nno diagnostics: empty.ts",
   });
+});
+
+test("names severities and shows workspace-relative paths for findings", async () => {
+  await expect(
+    appendedText([
+      diagnosticOutcome("/work/src/a.ts", 4, "consider this"),
+      diagnosticOutcome("/work/src/a.ts", 3, "fyi"),
+      diagnosticOutcome("/work/src/a.ts", 2, "careful"),
+      diagnosticOutcome("/work/src/a.ts", 1, "broken\n  in two lines"),
+      diagnosticOutcome("/elsewhere/b.ts", 9, "unknown severity"),
+    ]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "src/a.ts:3:7 error [typescript]: broken in two lines",
+      "src/a.ts:3:7 warning [typescript]: careful",
+      "src/a.ts:3:7 info [typescript]: fyi",
+      "src/a.ts:3:7 hint [typescript]: consider this",
+      "/elsewhere/b.ts:3:7 severity 9 [typescript]: unknown severity",
+    ].join("\n"),
+  );
+});
+
+test("keeps a long finding message whole, collapsed onto one line", async () => {
+  const message = `Type 'A' is not assignable to type 'B'.\n  ${"Types of property 'x' are incompatible. ".repeat(12)}`;
+  const text = await appendedText([diagnosticOutcome("/work/a.ts", 1, message)]);
+  expect(message.length).toBeGreaterThan(400);
+  expect(text).toBe(
+    `\n\nLSP diagnostics\na.ts:3:7 error [typescript]: ${message.replaceAll(/\s+/gu, " ").trim()}`,
+  );
+});
+
+test("reports clean results from configured servers on one line", async () => {
+  await expect(appendedText([{ kind: "no_diagnostics", path: "/work/a.ts" }])).resolves.toBe(
+    "\n\nLSP diagnostics: no diagnostics",
+  );
+  await expect(
+    appendedText([
+      { kind: "no_diagnostics", path: "/work/a.ts" },
+      { kind: "no_diagnostics", path: "/work/b.ts" },
+    ]),
+  ).resolves.toBe("\n\nLSP diagnostics: no diagnostics");
+});
+
+test("groups clean and unchecked files into one line each, after the findings", async () => {
+  await expect(
+    appendedText([
+      { kind: "no_configured_server", path: "/work/package.json" },
+      { kind: "no_diagnostics", path: "/work/b.ts" },
+      { kind: "no_configured_server", path: "/work/notes.md" },
+      diagnosticOutcome("/work/c.ts", 1, "broken"),
+      { kind: "no_diagnostics", path: "/work/a.ts" },
+      { kind: "no_configured_server", path: "/work/docs/a.md" },
+      { kind: "timeout", path: "/work/slow.ts", serverId: "typescript" },
+    ]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "c.ts:3:7 error [typescript]: broken",
+      "slow.ts: diagnostics timeout (typescript)",
+      "no diagnostics: a.ts, b.ts",
+      "not checked (no configured server): docs/a.md, notes.md, package.json",
+    ].join("\n"),
+  );
+});
+
+test("says a changed file with no configured server was not checked", async () => {
+  await expect(
+    appendedText([{ kind: "no_configured_server", path: "/work/docs/readme.txt" }]),
+  ).resolves.toBe("\n\nLSP diagnostics\nnot checked (no configured server): docs/readme.txt");
 });

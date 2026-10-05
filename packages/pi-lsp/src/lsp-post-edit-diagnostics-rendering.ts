@@ -4,6 +4,7 @@ import { Box, Container, Spacer, Text, type Component } from "@earendil-works/pi
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  lspSeverityName,
   PostEditDiagnosticOutcomeSchema,
   type PostEditDiagnosticOutcome,
 } from "./lsp-post-edit-diagnostics.js";
@@ -33,7 +34,7 @@ type ReportablePostEditDiagnosticOutcome = Exclude<
   { kind: "no_diagnostics" | "no_configured_server" }
 >;
 
-type DiagnosticSeverity = "error" | "warning" | "information" | "hint" | "diagnostic";
+type DiagnosticSeverity = "error" | "warning" | "info" | "hint" | "diagnostic";
 
 function isReportablePostEditDiagnosticOutcome(
   outcome: PostEditDiagnosticOutcome,
@@ -42,14 +43,14 @@ function isReportablePostEditDiagnosticOutcome(
 }
 
 function diagnosticSeverity(severity: number): DiagnosticSeverity {
-  switch (severity) {
-    case 1:
+  switch (lspSeverityName(severity)) {
+    case "error":
       return "error";
-    case 2:
+    case "warning":
       return "warning";
-    case 3:
-      return "information";
-    case 4:
+    case "info":
+      return "info";
+    case "hint":
       return "hint";
     default:
       return "diagnostic";
@@ -62,7 +63,7 @@ function severityColor(severity: DiagnosticSeverity): ThemeColor {
       return "error";
     case "warning":
       return "warning";
-    case "information":
+    case "info":
       return "accent";
     case "hint":
     case "diagnostic":
@@ -110,7 +111,7 @@ function entrySummary(data: PostEditDiagnosticsEntryData, theme: PostEditDiagnos
   const metrics = [
     [counts.get("error") ?? 0, "error", "errors", "error"],
     [warnings, "warning", "warnings", "warning"],
-    [counts.get("information") ?? 0, "info", "info", "accent"],
+    [counts.get("info") ?? 0, "info", "info", "accent"],
     [counts.get("hint") ?? 0, "hint", "hints", "muted"],
     [counts.get("diagnostic") ?? 0, "diagnostic", "diagnostics", "muted"],
     [timeouts, "timeout", "timeouts", "warning"],
