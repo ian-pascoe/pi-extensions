@@ -1017,11 +1017,16 @@ async function recordToolPreview(
     serverId,
     positionEncoding,
   });
-  dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
-  const manifest = normalizeStoreMutationManifest(
-    dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
-  );
-  return { preview, manifest };
+  try {
+    dependencies.workspaceEdits.markPreviewReported(preview.preview_id);
+    const manifest = normalizeStoreMutationManifest(
+      dependencies.workspaceEdits.prepareMutationManifest(preview.preview_id),
+    );
+    return { preview, manifest };
+  } catch (cause) {
+    dependencies.workspaceEdits.discardPreview(preview.preview_id);
+    throw cause;
+  }
 }
 
 async function workspacePreviewOutput(
@@ -1520,6 +1525,8 @@ interface CodeActionResult {
   readonly mutation_manifest?: MutationManifest;
   readonly preview_id?: string;
   readonly summary?: string;
+  /** Why an edit-bearing action could not become a Workspace Edit Preview. */
+  readonly error?: string;
 }
 
 /** One server's listed code actions and the Workspace Edit Previews created for them. */
@@ -1528,7 +1535,24 @@ interface ServerCodeActions {
   readonly previewRecords: readonly LspWorkspaceEditPreviewRecord[];
 }
 
-/** Request one Server Instance's code actions and preview every edit-bearing action. */
+/**
+ * Whether a code-action kind is one of the requested kinds or a sub-kind of one. Kinds are
+ * hierarchical with `.` as the separator, so `quickfix` matches `quickfix.import` but not
+ * `quickfixes`.
+ */
+function matchesRequestedKind(kind: string | undefined, requested: readonly string[]): boolean {
+  return (
+    kind !== undefined &&
+    requested.some(
+      (requestedKind) => kind === requestedKind || kind.startsWith(`${requestedKind}.`),
+    )
+  );
+}
+
+/**
+ * Request one Server Instance's code actions and preview every edit-bearing action. Servers may
+ * ignore `only_kinds`, so the matching is repeated here before any preview is created.
+ */
 async function serverCodeActions(
   dependencies: LspToolDependencies,
   parameters: Extract<LspToolParameters, { operation: "code_actions" }>,
@@ -1541,7 +1565,7 @@ async function serverCodeActions(
     end: protocolPosition(prepared, parameters.range.end),
   };
   const diagnostics = await codeActionDiagnostics(prepared, range, signal);
-  let actions = await client.request(
+  const offered = await client.request(
     CodeActionRequest.method,
     {
       textDocument: { uri: prepared.document.uri },
@@ -1553,40 +1577,71 @@ async function serverCodeActions(
     },
     signal,
   );
+  // Servers may ignore only_kinds. Filter before resolving, so dropped actions cost no request.
+  // The client advertises no resolveSupport, so a kind is already present before resolution.
+  let actions: unknown = Array.isArray(offered)
+    ? offered.filter(
+        (action) =>
+          parameters.only_kinds === undefined ||
+          matchesRequestedKind(protocolString(protocolRecord(action)?.kind), parameters.only_kinds),
+      )
+    : offered;
   if (supportsResolveProvider(client.capabilities.codeActionProvider)) {
     actions = await resolveCodeActionItems(client, actions, signal);
   }
   const results: CodeActionResult[] = [];
   const previewRecords: LspWorkspaceEditPreviewRecord[] = [];
-  for (const action of Array.isArray(actions) ? actions : []) {
-    const record = protocolRecord(action);
-    if (record === undefined) continue;
-    if (record.command !== undefined || record.edit === undefined) {
-      results.push({
-        server_id: route.serverId,
-        applicable: false,
-        command: record.command,
-        kind: protocolString(record.kind),
-        title: protocolString(record.title),
-      });
-      continue;
+  try {
+    for (const action of Array.isArray(actions) ? actions : []) {
+      const record = protocolRecord(action);
+      if (record === undefined) continue;
+      const kind = protocolString(record.kind);
+      const title = protocolString(record.title);
+      if (record.command !== undefined || record.edit === undefined) {
+        results.push({
+          server_id: route.serverId,
+          applicable: false,
+          command: record.command,
+          kind,
+          title,
+        });
+        continue;
+      }
+      try {
+        const { preview, manifest } = await recordToolPreview(
+          dependencies,
+          route.serverId,
+          record.edit,
+          client.positionEncoding,
+        );
+        previewRecords.push(preview);
+        results.push({
+          server_id: route.serverId,
+          applicable: true,
+          kind,
+          mutation_manifest: manifest,
+          preview_id: preview.preview_id,
+          summary: preview.summary,
+          title,
+        });
+      } catch (cause) {
+        // The server answered; only this action's edit cannot become a preview.
+        if (!(cause instanceof LspWorkspaceEditError)) throw cause;
+        results.push({
+          server_id: route.serverId,
+          applicable: false,
+          error: cause.message,
+          kind,
+          title,
+        });
+      }
     }
-    const { preview, manifest } = await recordToolPreview(
-      dependencies,
-      route.serverId,
-      record.edit,
-      client.positionEncoding,
-    );
-    previewRecords.push(preview);
-    results.push({
-      server_id: route.serverId,
-      applicable: true,
-      kind: protocolString(record.kind),
-      mutation_manifest: manifest,
-      preview_id: preview.preview_id,
-      summary: preview.summary,
-      title: protocolString(record.title),
-    });
+  } catch (cause) {
+    // No result will name the previews of this failed listing, so none may remain applicable.
+    for (const { preview_id: previewId } of previewRecords) {
+      dependencies.workspaceEdits.discardPreview(previewId);
+    }
+    throw cause;
   }
   return { actions: results, previewRecords };
 }

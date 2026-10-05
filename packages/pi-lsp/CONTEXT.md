@@ -25,7 +25,7 @@ The extension provides agent-useful language-server operations through one Pi to
 
 Language-server requests to apply edits are also converted into Workspace Edit Previews; servers never bypass explicit application. The extension imposes no workspace path boundary on a Validated Workspace Edit. Before application, its verified Mutation Manifest is visible to other extensions, which may block the tool call.
 
-Language-server documents are valid UTF-8 text. Content edits follow existing symlinks and identify the canonical target in the Mutation Manifest; resource operations act on the named directory entry. Conflicting or non-file workspace edits are rejected before they become applicable previews.
+Language-server documents are valid UTF-8 text. Content edits follow existing symlinks and identify the canonical target in the Mutation Manifest; resource operations act on the named directory entry. Conflicting or non-file workspace edits are rejected before they become applicable previews. A code action whose edit fails this validation is listed as not applicable, with the reason, while the server's other actions remain.
 
 Server Definitions come only from the `lsp` key in Pi's global and trusted project settings. Pi's standard reload lifecycle reloads configuration. Server Instances start lazily, are reused within the Pi session, and retain failure state until explicit recovery. Read operations and code-action listing may query several matching Server Instances; a rename or formatting preview must identify one when several match. References and rename name the root of the Server Instance they searched and warn when other roots of the same Server Definition exist, because files under those roots may be missing from the result.
 

@@ -627,7 +627,8 @@ export const LspPreviewOutputSchema = Type.Object({
 
 /**
  * Structured result of `lsp_code_actions`: the actions of every answering server, each naming its
- * server, and labeled failures of the others. Edit-bearing actions carry a preview.
+ * server, and labeled failures of the others. Edit-bearing actions carry a preview, unless their
+ * edit is invalid: those are `applicable: false` with an `error`.
  */
 export const LspCodeActionsOutputSchema = Type.Object({
   actions: Type.Array(
@@ -640,6 +641,7 @@ export const LspCodeActionsOutputSchema = Type.Object({
       summary: Type.Optional(Type.String()),
       mutation_manifest: Type.Optional(MutationManifestOutputSchema),
       command: Type.Optional(Type.Unknown()),
+      error: Type.Optional(Type.String()),
     }),
   ),
   warnings: Type.Array(Type.String()),
