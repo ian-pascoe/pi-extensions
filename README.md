@@ -133,7 +133,7 @@ provenance.
 
 ## Contributing
 
-Node `22.19.0` and pnpm `11.21.0` are required.
+`mise.toml` pins the required Node and pnpm versions; run `mise install` to get them.
 
 Published packages support Node `>=22.19.0` and Pi `>=0.99.0`, the first release with the tool exposure, output schema, and built-in extension APIs they use. The repository develops and tests against Pi `1.0.0`. Pi Command Deck reaches private editor fields and falls back to Pi's plain editor where they differ.
 
@@ -141,6 +141,8 @@ Published packages support Node `>=22.19.0` and Pi `>=0.99.0`, the first release
 pnpm install
 pnpm verify
 ```
+
+`pnpm verify` runs through Turborepo, which caches each check by its inputs. A rerun on unchanged files, including the pre-push hook after a commit, replays from `.turbo/cache`.
 
 Focused package checks:
 
