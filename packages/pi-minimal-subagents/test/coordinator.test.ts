@@ -1504,11 +1504,16 @@ describe("minimal subagents coordinator", () => {
     await again.coordinator.restore(reloaded);
 
     expect(reloaded.wait_claimed_turns).toContain(`worker\u0000${first.turn_id}`);
-    // The reload interrupts the second turn and restarts its unsettled message as a newer turn.
-    await expect(again.coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+    // The reload interrupts the second turn. Its unsettled message restarts as a newer turn only
+    // because this fixture records no Delivery Evidence in the child session; in production that
+    // evidence settles the message.
+    const timedOut = await again.coordinator.wait("root", "worker", 1);
+    expect(timedOut).toMatchObject({
       event: "timeout",
       agent: { latest_turn: { turn_id: started.turn_id, status: "interrupted" } },
     });
+    expect(timedOut.turn_id).not.toBe(first.turn_id);
+    expect(timedOut.turn_id).not.toBe(started.turn_id);
     await expect(
       again.coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
     ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
