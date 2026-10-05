@@ -1,6 +1,7 @@
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
+import { lspDisplayPath, lspDisplayPosition } from "./lsp-location-text.js";
 import { LSP_APPLY_RESULT_TOOL_NAMES, MutationManifestSchema } from "./lsp-tool-contract.js";
 
 const NativeMutationInputSchema = Type.Object(
@@ -198,29 +199,43 @@ export function extractPostEditDiagnosticPaths(
   return undefined;
 }
 
-function formatOutcome(outcome: PostEditDiagnosticOutcome): string {
+/** `DiagnosticSeverity` names shared by the model-visible text and the transcript entry. */
+const SEVERITY_NAMES: ReadonlyMap<number, string> = new Map([
+  [1, "error"],
+  [2, "warning"],
+  [3, "info"],
+  [4, "hint"],
+]);
+
+/** Name a protocol `DiagnosticSeverity`, or undefined for a number outside its four values. */
+export function lspSeverityName(severity: number): string | undefined {
+  return SEVERITY_NAMES.get(severity);
+}
+
+/** Outcomes that take a line of their own; clean and unchecked files are grouped instead. */
+type ReportedOutcome = Exclude<
+  PostEditDiagnosticOutcome,
+  { kind: "no_diagnostics" | "no_configured_server" }
+>;
+
+function formatOutcome(outcome: ReportedOutcome, cwd: string): string {
   switch (outcome.kind) {
     case "diagnostic": {
       const diagnostic = outcome.diagnostic;
-      return `${diagnostic.path}:${diagnostic.line}:${diagnostic.character} [${diagnostic.serverId}] severity ${diagnostic.severity}: ${diagnostic.message}`;
+      const severity = lspSeverityName(diagnostic.severity) ?? `severity ${diagnostic.severity}`;
+      const message = diagnostic.message.replaceAll(/\s+/gu, " ").trim();
+      return `${lspDisplayPosition(cwd, diagnostic)} ${severity} [${diagnostic.serverId}]: ${message}`;
     }
-    case "no_diagnostics":
-      return `${outcome.path}: no diagnostics`;
-    case "no_configured_server":
-      return `${outcome.path}: no configured server`;
     case "timeout":
-      return `${outcome.path}: diagnostics timeout${outcome.serverId === undefined ? "" : ` (${outcome.serverId})`}`;
+      return `${lspDisplayPath(cwd, outcome.path)}: diagnostics timeout${outcome.serverId === undefined ? "" : ` (${outcome.serverId})`}`;
     case "unavailable_server":
-      return `${outcome.path}: unavailable server${outcome.serverId === undefined ? "" : ` (${outcome.serverId})`}`;
+      return `${lspDisplayPath(cwd, outcome.path)}: unavailable server${outcome.serverId === undefined ? "" : ` (${outcome.serverId})`}`;
     case "warning":
       return outcome.message;
   }
 }
 
-function compareOutcomes(
-  left: PostEditDiagnosticOutcome,
-  right: PostEditDiagnosticOutcome,
-): number {
+function compareOutcomes(left: ReportedOutcome, right: ReportedOutcome, cwd: string): number {
   if (left.kind === "diagnostic" && right.kind === "diagnostic") {
     const leftDiagnostic = left.diagnostic;
     const rightDiagnostic = right.diagnostic;
@@ -234,19 +249,53 @@ function compareOutcomes(
   }
   if (left.kind === "diagnostic") return -1;
   if (right.kind === "diagnostic") return 1;
-  return formatOutcome(left).localeCompare(formatOutcome(right));
+  return formatOutcome(left, cwd).localeCompare(formatOutcome(right, cwd));
 }
 
-/** Render one compact deterministic LSP section without deduplicating independent server diagnostics. */
-export function formatPostEditDiagnostics(outcomes: readonly PostEditDiagnosticOutcome[]): string {
-  const lines = [...outcomes].sort(compareOutcomes).map(formatOutcome);
-  return `\n\nLSP diagnostics\n${lines.length === 0 ? "no diagnostics" : lines.join("\n")}`;
+function groupedPathsLine(label: string, paths: readonly string[], cwd: string): readonly string[] {
+  if (paths.length === 0) return [];
+  const displayed = [...new Set(paths.map((path) => lspDisplayPath(cwd, path)))].sort(
+    (left, right) => left.localeCompare(right),
+  );
+  return [`${label}: ${displayed.join(", ")}`];
+}
+
+/**
+ * Render one compact deterministic LSP section without deduplicating independent server
+ * diagnostics. Paths are relative to `cwd`. Findings and failures take one line each; clean files
+ * and files with no configured server are each grouped on one line, and when every file is clean
+ * the section is a single line.
+ */
+export function formatPostEditDiagnostics(
+  outcomes: readonly PostEditDiagnosticOutcome[],
+  cwd: string,
+): string {
+  if (outcomes.every(({ kind }) => kind === "no_diagnostics")) {
+    return "\n\nLSP diagnostics: no diagnostics";
+  }
+  const clean: string[] = [];
+  const unchecked: string[] = [];
+  const reported: ReportedOutcome[] = [];
+  for (const outcome of outcomes) {
+    if (outcome.kind === "no_diagnostics") clean.push(outcome.path);
+    else if (outcome.kind === "no_configured_server") unchecked.push(outcome.path);
+    else reported.push(outcome);
+  }
+  const lines = [
+    ...reported
+      .sort((left, right) => compareOutcomes(left, right, cwd))
+      .map((outcome) => formatOutcome(outcome, cwd)),
+    ...groupedPathsLine("no diagnostics", clean, cwd),
+    ...groupedPathsLine("not checked (no configured server)", unchecked, cwd),
+  ];
+  return `\n\nLSP diagnostics\n${lines.join("\n")}`;
 }
 
 /** Append fresh Post-edit Diagnostics while preserving every mutation-result field Pi already owns. */
 export async function appendPostEditDiagnostics(
   event: ToolResultEvent,
   diagnostics: PostEditDiagnosticsRunner,
+  cwd: string,
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
   const extracted = extractPostEditDiagnosticPaths(event);
   if (extracted === undefined) return undefined;
@@ -259,7 +308,7 @@ export async function appendPostEditDiagnostics(
   ];
   if (outcomes.length === 0) return undefined;
   const patch: PostEditDiagnosticsResultPatch = {
-    content: [...event.content, { type: "text", text: formatPostEditDiagnostics(outcomes) }],
+    content: [...event.content, { type: "text", text: formatPostEditDiagnostics(outcomes, cwd) }],
     details: event.details,
     structuredContent: event.structuredContent,
     isError: event.isError,

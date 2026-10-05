@@ -247,6 +247,9 @@ started.
 otherwise the diagnostics it has pushed for files opened in this session. A server that answers only
 document pulls, such as the TypeScript server, publishes no workspace diagnostics; its value is then
 `{ status: "unsupported", message }`, pointing to `lsp_diagnostics`, rather than an empty result.
+A result from pushed diagnostics carries a `message` too: it says how many files the push cache
+covers, counting files with no diagnostics, and points to `lsp_diagnostics` for other files, so an
+empty result is not read as a clean workspace.
 
 Formatting requires `tab_size` and `insert_spaces`. It optionally accepts
 `trim_trailing_whitespace`, `insert_final_newline`, and `trim_final_newlines`. Range formatting also
@@ -391,12 +394,20 @@ Pi LSP appends fresh diagnostics to results from:
 - successful or partially applied LSP previews from `lsp_apply`, and from the removed `lsp` tool.
 
 Changed, created, and renamed destination files are diagnosed; deleted files are not. Every
-recognized result gets an explicit outcome, including `no diagnostics`, `no configured server`,
-timeout, unavailable server, or an `apply_patch` adapter-version warning. Diagnostics preserve
+recognized result gets an explicit outcome, including `no diagnostics`, `not checked (no configured
+server)`, timeout, unavailable server, or an `apply_patch` adapter-version warning. Findings read
+`path:line:col severity [server]: message`, one line each, with paths relative to the working
+directory, named severities (`error`, `warning`, `info`, `hint`), and the whole message collapsed
+onto one line. When every changed file is clean, the section is one line:
+`LSP diagnostics: no diagnostics`. Otherwise clean files share one `no diagnostics: a.ts, b.ts`
+line, and files with no configured server share one
+`not checked (no configured server): README.md, package.json` line. Diagnostics preserve
 duplicates from independent servers and never change the original tool's success or error state.
 Only servers that advertise document diagnostics participate; formatting-only servers remain
-available for explicit LSP formatting operations without appearing in Post-edit Diagnostics.
-Files excluded by every matching server's Activation Gate or disable state are skipped silently.
+available for explicit LSP formatting operations without appearing in Post-edit Diagnostics. A
+file that no Server Definition covers, because none handles its language or every one that does
+fails its Activation Gate, is reported as not checked. A file whose only matching Server
+Definitions are disabled is skipped silently.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. Its collapsed rendering shows the summary

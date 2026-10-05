@@ -1046,7 +1046,7 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("silently skips post-edit diagnostics until a required root marker exists", async () => {
+  test("reports a file as not checked until a required root marker exists", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {
       lsp: {
@@ -1077,13 +1077,58 @@ describe("Pi LSP extension lifecycle", () => {
       isError: false,
     } satisfies ToolResultEvent;
 
-    await expect(harness.runner.emitToolResult(event)).resolves.toBeUndefined();
+    const unchecked = await harness.runner.emitToolResult(event);
+    expect(unchecked?.content?.at(-1)).toEqual({
+      type: "text",
+      text: "\n\nLSP diagnostics\nnot checked (no configured server): source.ts",
+    });
 
     await writeFile(resolve(cwd, "tsconfig.json"), "{}");
     const augmented = await harness.runner.emitToolResult(event);
     expect(augmented?.content?.at(-1)).toMatchObject({
       type: "text",
-      text: expect.stringContaining("fake diagnostic"),
+      text: "\n\nLSP diagnostics\nsource.ts:1:1 error [gated]: fake diagnostic",
+    });
+    await shutdownExtension(harness);
+  });
+
+  test("reports a file as not checked when its only enabled server fails its gate beside a disabled one", async () => {
+    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        servers: {
+          off: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+          gated: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+            requireRootMarker: true,
+            rootMarkers: ["tsconfig.json"],
+          },
+        },
+        enablement: { off: false },
+      },
+    });
+    await startExtension(harness);
+    const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
+    await writeFile(filePath, "const value = 1;\n");
+
+    const result = await harness.runner.emitToolResult({
+      type: "tool_result",
+      toolCallId: "gated-beside-disabled-write",
+      toolName: "write",
+      input: { path: filePath, content: "const value = 1;\n" },
+      content: [{ type: "text", text: "Wrote source.ts" }],
+      details: { bytesWritten: 17 },
+      isError: false,
+    } satisfies ToolResultEvent);
+    expect(result?.content?.at(-1)).toEqual({
+      type: "text",
+      text: "\n\nLSP diagnostics\nnot checked (no configured server): source.ts",
     });
     await shutdownExtension(harness);
   });

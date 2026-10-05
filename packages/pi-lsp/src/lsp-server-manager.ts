@@ -578,11 +578,6 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     return routeLspServersForFile(definitions, absolutePath, this.input.cwd, ancestors);
   }
 
-  /** Report whether any Server Definition accepts the file language before activation gating. */
-  hasConfiguredLanguageServerForFile(filePath: string): boolean {
-    return this.languageServerIds(filePath).length > 0;
-  }
-
   /** IDs of the Server Definitions accepting the file's language, before enablement and gating. */
   private languageServerIds(filePath: string): readonly string[] {
     const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
