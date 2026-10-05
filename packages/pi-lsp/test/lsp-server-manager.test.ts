@@ -436,6 +436,96 @@ describe("session-scoped LSP server manager", () => {
     await manager.shutdown();
   });
 
+  test("names the disabled servers when every Server Definition matching a file is disabled", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory();
+    const manager = new LspServerManager({
+      cwd,
+      settings: resolvedSettings(["typescript", "lint"]),
+      startClient: factory.start,
+    });
+    await manager.setEnablement(
+      new Map([["lint", { enabled: false, scope: "global" }]]),
+      new Map(),
+    );
+
+    // A mix of enabled and disabled servers skips the disabled ones without a warning.
+    const mixedRead = await manager.runRead(filePath, undefined, anyCapability, async () => "ok");
+    expect(mixedRead.successes.map(({ serverId }) => serverId)).toEqual(["typescript"]);
+    expect(mixedRead.failures).toEqual([]);
+    const mixedMutation = await manager.resolveMutationClient(filePath, undefined, anyCapability);
+    expect(mixedMutation).toMatchObject({
+      kind: "success",
+      instance: { route: { serverId: "typescript" } },
+    });
+
+    await manager.setEnablement(
+      new Map([["lint", { enabled: false, scope: "global" }]]),
+      new Map([["typescript", false]]),
+    );
+    const failure = {
+      code: "server-disabled",
+      message: `Pi LSP: all servers matching ${filePath} are disabled: typescript, lint; enable one with /lsp enable <id>`,
+      serverId: "*",
+    };
+    await expect(
+      manager.runRead(filePath, undefined, anyCapability, async () => "ok"),
+    ).resolves.toEqual({ failures: [failure], successes: [] });
+    await expect(
+      manager.resolveMutationClient(filePath, undefined, anyCapability),
+    ).resolves.toEqual({ kind: "failure", failure });
+    // A file no Server Definition handles still reports that no configured server matches it.
+    const unmatched = resolve(cwd, "notes.md");
+    await expect(
+      manager.runRead(unmatched, undefined, anyCapability, async () => "ok"),
+    ).resolves.toMatchObject({
+      failures: [
+        {
+          code: "no-matching-server",
+          message: `Pi LSP: no configured server matches ${unmatched}`,
+        },
+      ],
+    });
+    expect(factory.clients).toHaveLength(1);
+    await manager.shutdown();
+  });
+
+  test("reports no matching server when an enabled server fails its Activation Gate beside a disabled one", async () => {
+    const { cwd, filePath } = await createRoutedFileFixture();
+    const factory = createRecordingClientFactory();
+    const settings = resolvedSettings(["typescript", "gated"]);
+    const manager = new LspServerManager({
+      cwd,
+      settings: {
+        ...settings,
+        servers: new Map([
+          ["typescript", serverDefinition("typescript")],
+          [
+            "gated",
+            { ...serverDefinition("gated"), requireRootMarker: true, rootMarkers: ["deno.json"] },
+          ],
+        ]),
+      },
+      startClient: factory.start,
+    });
+    await manager.setEnablement(new Map(), new Map([["typescript", false]]));
+
+    await expect(
+      manager.runRead(filePath, undefined, anyCapability, async () => "ok"),
+    ).resolves.toEqual({
+      failures: [
+        {
+          code: "no-matching-server",
+          message: `Pi LSP: no configured server matches ${filePath}`,
+          serverId: "*",
+        },
+      ],
+      successes: [],
+    });
+    expect(factory.clients).toEqual([]);
+    await manager.shutdown();
+  });
+
   test("ignores late failures from a stopped process after a fresh lazy startup", async () => {
     const { cwd, filePath } = await createRoutedFileFixture();
     const factory = createRecordingClientFactory();

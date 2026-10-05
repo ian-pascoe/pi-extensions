@@ -2578,6 +2578,54 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("names disabled matching servers for reads and previews instead of no configured server", async () => {
+    const fixture = await createToolFixture(["typescript", "eslint"]);
+    const { manager } = fixture.dependencies;
+    const hover = {
+      operation: "hover",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 1,
+    } satisfies LspToolParameters;
+    const rename = {
+      operation: "rename",
+      file_path: fixture.filePath,
+      line: 1,
+      character: 7,
+      new_name: "smile",
+    } satisfies LspToolParameters;
+    fixture.client.responseByMethod.set("textDocument/rename", { changes: {} });
+
+    await manager.setEnablement(new Map(), new Map([["eslint", false]]));
+    const mixedRead = await executeTool(fixture, hover);
+    expect(mixedRead.details).toMatchObject({
+      server_outcomes: [{ server_id: "typescript", outcome: "success" }],
+    });
+    expect(await executeTool(fixture, rename)).toMatchObject({
+      structuredContent: { server_id: "typescript" },
+    });
+
+    await manager.setEnablement(
+      new Map(),
+      new Map([
+        ["typescript", false],
+        ["eslint", false],
+      ]),
+    );
+    const requestsBefore = fixture.client.requests.length;
+    for (const call of [hover, rename]) {
+      const failure = await executeTool(fixture, call).catch((cause: unknown) => cause);
+      expect(String(failure), call.operation).toContain(
+        `Pi LSP: all servers matching ${fixture.filePath} are disabled: typescript, eslint; enable one with /lsp enable <id>`,
+      );
+      expect(String(failure)).not.toContain("no configured server");
+      // Disabling every matching server is a configuration problem the Skill covers.
+      expect(String(failure)).toContain(TROUBLESHOOTING_HINT);
+    }
+    expect(fixture.client.requests).toHaveLength(requestsBefore);
+    await fixture.close();
+  });
+
   test("reports a missing file as an input error before asking any server", async () => {
     const fixture = await createToolFixture();
     const missing = resolve(fixture.context.cwd, "missing.ts");

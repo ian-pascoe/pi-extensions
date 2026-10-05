@@ -123,7 +123,9 @@ and other definition fields still require `/reload`.
 
 There are no `/lsp start`, `/lsp restart`, or `/lsp inherit` subcommands. Use explicit enable/disable
 choices to manage overrides. The agent-facing LSP tools remain available, but cannot start a
-disabled server.
+disabled server. Without `server_id`, they skip disabled servers when another matching server is
+enabled; when every server for the file's language is disabled, the error names them and points to
+`/lsp enable <id>`.
 
 ## LSP tools
 

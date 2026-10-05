@@ -231,6 +231,7 @@ class ManagerPostEditDiagnosticsRunner {
       outcomes.push(
         ...result.failures.flatMap((failure) =>
           failure.code === "no-capable-server" ||
+          failure.code === "server-disabled" ||
           (failure.code === "no-matching-server" &&
             this.session.manager.hasConfiguredLanguageServerForFile(filePath))
             ? []

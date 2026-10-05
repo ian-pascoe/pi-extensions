@@ -1024,6 +1024,28 @@ describe("Pi LSP extension lifecycle", () => {
     ).toEqual({ kind: "unavailable_server", path: "/workspace/a.ts", serverId: "typescript" });
   });
 
+  test("keeps Post-edit Diagnostics silent when every matching server is disabled", async () => {
+    const harness = await createExtensionHarness(false, {
+      lsp: { ...typescriptSettings.lsp, enablement: { typescript: false } },
+    });
+    await startExtension(harness);
+    const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
+    await writeFile(filePath, "const value = 1;\n");
+
+    await expect(
+      harness.runner.emitToolResult({
+        type: "tool_result",
+        toolCallId: "disabled-write",
+        toolName: "write",
+        input: { path: filePath, content: "const value = 1;\n" },
+        content: [{ type: "text", text: "Wrote source.ts" }],
+        details: { bytesWritten: 17 },
+        isError: false,
+      } satisfies ToolResultEvent),
+    ).resolves.toBeUndefined();
+    await shutdownExtension(harness);
+  });
+
   test("silently skips post-edit diagnostics until a required root marker exists", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {
