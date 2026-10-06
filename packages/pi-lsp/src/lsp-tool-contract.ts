@@ -595,6 +595,13 @@ export const LspReadOutputSchema = Type.Object({
             "Matching items left out by the limit, or the nested symbols and import bindings left out of a document outline",
         }),
       ),
+      omitted_imports: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          description:
+            "The part of `omitted` that is import bindings, left out of a document outline",
+        }),
+      ),
     }),
   ),
   warnings: Type.Array(Type.String()),

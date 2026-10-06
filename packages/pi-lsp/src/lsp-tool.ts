@@ -290,11 +290,15 @@ interface LspReadValue {
   readonly value: unknown;
   /** Nested symbols and import bindings a document-symbol read left out of its outline. */
   readonly omitted?: number;
+  /** The part of `omitted` that is import bindings. */
+  readonly omitted_imports?: number;
 }
 
 /** One server's normalized response, with the count of items a depth or limit left out. */
 interface LspBoundedProtocolResult extends LspNormalizedProtocolResult {
   readonly omitted?: number;
+  /** The part of `omitted` that is import bindings. */
+  readonly omittedImports?: number | undefined;
 }
 
 interface PreparedDocument {
@@ -631,8 +635,11 @@ async function readOutput(
     successes: normalized.successes.map((success) => ({ ...success, value: success.value.value })),
   };
   const results = readOperationValue(resolved).map((read, index) => {
-    const omitted = normalized.successes[index]?.value.omitted;
-    return omitted === undefined ? read : { ...read, omitted };
+    const { omitted, omittedImports } = normalized.successes[index]?.value ?? {};
+    if (omitted === undefined) return read;
+    return omittedImports === undefined
+      ? { ...read, omitted }
+      : { ...read, omitted, omitted_imports: omittedImports };
   });
   const failureWarnings = [
     ...resultPositionWarnings(normalized, textContext.cwd),
@@ -1364,7 +1371,8 @@ async function requestImportFoldingRanges(
     return importFoldingRanges(
       await client.request(FoldingRangeRequest.method, { textDocument }, signal),
     );
-  } catch {
+  } catch (cause) {
+    if (signal?.aborted === true) throw cause;
     return [];
   }
 }
@@ -1405,14 +1413,20 @@ async function executeFileRead(
         depth !== "all" &&
         client.hasCapability(FoldingRangeRequest.method)
           ? requestImportFoldingRanges(client, textDocument, signal)
-          : undefined;
-      let value = await client.request(method, { textDocument }, signal);
+          : Promise.resolve([]);
+      // Awaited together, so an aborted folding request never rejects unobserved.
+      const [imports, response] = await Promise.all([
+        importRanges,
+        client.request(method, { textDocument }, signal),
+      ]);
+      let value = response;
       if (parameters.operation === "document_symbols") {
-        const withoutImports = dropImportSymbols(value, (await importRanges) ?? []);
+        const withoutImports = dropImportSymbols(value, imports);
         const limited = limitLspDocumentSymbolDepth(withoutImports.value, depth);
         return {
           ...(await normalizeProtocolResult(limited.value, prepared)),
           omitted: withoutImports.omitted + limited.omitted,
+          omittedImports: withoutImports.omitted > 0 ? withoutImports.omitted : undefined,
         };
       }
       if (

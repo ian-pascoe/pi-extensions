@@ -1020,7 +1020,7 @@ describe("registered LSP tool", () => {
       "Store",
       "add",
       "create",
-      '3 nested or import symbols omitted; raise depth or pass depth: "all" to see them.',
+      '3 nested symbols omitted; raise depth or pass depth: "all" to see them.',
     ]);
     expect(byDefault.omitted).toEqual([3]);
     expect(byDefault.structured).toContain('"name":"add"');
@@ -1106,17 +1106,16 @@ describe("registered LSP tool", () => {
           .split("\n")
           .map((line) => line.trim().split(" (")[0]),
         omitted: structured.results.map((read) => read.omitted),
+        omittedImports: structured.results.map((read) => read.omitted_imports),
       };
     }
 
     test("drops top-level symbols inside an imports folding range with one extra request", async () => {
       const fixture = await fixtureWithImports();
       expect(await outline(fixture)).toEqual({
-        text: [
-          "run",
-          '2 nested or import symbols omitted; raise depth or pass depth: "all" to see them.',
-        ],
+        text: ["run", '2 import bindings omitted; pass depth: "all" to see them.'],
         omitted: [2],
+        omittedImports: [2],
       });
       expect(symbolRequests(fixture).toSorted()).toEqual([
         "textDocument/documentSymbol",
@@ -1131,14 +1130,26 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("adds the dropped imports to the count of nested symbols the depth drops", async () => {
+    test("reports dropped imports apart from the nested symbols the depth drops", async () => {
       const fixture = await fixtureWithImports();
       fixture.client.responseByMethod.set("textDocument/documentSymbol", [
         symbol("alpha", 13, 0),
         { ...symbol("run", 12, 3), children: [symbol("local", 13, 4)] },
       ]);
-      expect((await outline(fixture)).omitted).toEqual([2]);
-      expect((await outline(fixture, { depth: 2 })).omitted).toEqual([1]);
+      // The structured `omitted` sums both; the text counts each kind on its own line.
+      expect(await outline(fixture)).toEqual({
+        text: [
+          "run",
+          '1 nested symbol omitted; raise depth or pass depth: "all" to see it.',
+          '1 import binding omitted; pass depth: "all" to see it.',
+        ],
+        omitted: [2],
+        omittedImports: [1],
+      });
+      expect(await outline(fixture, { depth: 2 })).toMatchObject({
+        text: ["run", "local", '1 import binding omitted; pass depth: "all" to see it.'],
+        omitted: [1],
+      });
       await fixture.close();
     });
 
@@ -1160,11 +1171,28 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
+    test("treats a flat entry whose container matches no symbol as top-level", async () => {
+      const fixture = await fixtureWithImports();
+      const uri = pathToFileURL(fixture.filePath).href;
+      fixture.client.responseByMethod.set("textDocument/documentSymbol", [
+        {
+          name: "alpha",
+          kind: 13,
+          containerName: "no such symbol",
+          location: { uri, range: protocolRange(0) },
+        },
+        { name: "run", kind: 12, location: { uri, range: protocolRange(3) } },
+      ]);
+      expect((await outline(fixture)).omitted).toEqual([1]);
+      await fixture.close();
+    });
+
     test("lists imports at depth all without asking for folding ranges", async () => {
       const fixture = await fixtureWithImports();
       expect(await outline(fixture, { depth: "all" })).toEqual({
         text: ["alpha", "beta", "run"],
         omitted: [0],
+        omittedImports: [undefined],
       });
       expect(symbolRequests(fixture)).toEqual(["textDocument/documentSymbol"]);
       await fixture.close();
@@ -1173,7 +1201,11 @@ describe("registered LSP tool", () => {
     test("lists imports when the server has no folding range support", async () => {
       const fixture = await fixtureWithImports();
       fixture.client.unsupportedMethods.add("textDocument/foldingRange");
-      expect(await outline(fixture)).toEqual({ text: ["alpha", "beta", "run"], omitted: [0] });
+      expect(await outline(fixture)).toEqual({
+        text: ["alpha", "beta", "run"],
+        omitted: [0],
+        omittedImports: [undefined],
+      });
       expect(symbolRequests(fixture)).toEqual(["textDocument/documentSymbol"]);
       await fixture.close();
     });
@@ -1184,16 +1216,44 @@ describe("registered LSP tool", () => {
         { startLine: 0, endLine: 1, kind: "comment" },
         { startLine: 0, endLine: 1 },
       ]);
-      expect(await outline(fixture)).toEqual({ text: ["alpha", "beta", "run"], omitted: [0] });
+      expect(await outline(fixture)).toEqual({
+        text: ["alpha", "beta", "run"],
+        omitted: [0],
+        omittedImports: [undefined],
+      });
       fixture.client.responseByMethod.set("textDocument/foldingRange", null);
       expect((await outline(fixture)).text).toEqual(["alpha", "beta", "run"]);
+      await fixture.close();
+    });
+
+    test("rejects when the call is aborted while the folding range request is pending", async () => {
+      const fixture = await fixtureWithImports();
+      const controller = new AbortController();
+      fixture.client.responderByMethod.set("textDocument/foldingRange", () => {
+        controller.abort();
+        return Promise.reject(new Error("request cancelled"));
+      });
+      const tool = createLspToolDefinition("document_symbols", () => fixture.dependencies);
+      await expect(
+        tool.execute(
+          "tool-call",
+          { file_path: fixture.filePath },
+          controller.signal,
+          undefined,
+          fixture.context,
+        ),
+      ).rejects.toThrow();
       await fixture.close();
     });
 
     test("falls back to listing imports when the folding range request fails", async () => {
       const fixture = await fixtureWithImports();
       fixture.client.failureByMethod.set("textDocument/foldingRange", new Error("timed out"));
-      expect(await outline(fixture)).toEqual({ text: ["alpha", "beta", "run"], omitted: [0] });
+      expect(await outline(fixture)).toEqual({
+        text: ["alpha", "beta", "run"],
+        omitted: [0],
+        omittedImports: [undefined],
+      });
       await fixture.close();
     });
   });

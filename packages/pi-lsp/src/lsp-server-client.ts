@@ -1016,7 +1016,10 @@ export class LspServerClient {
               callHierarchy: { dynamicRegistration: true },
               typeHierarchy: { dynamicRegistration: true },
               selectionRange: { dynamicRegistration: true },
-              foldingRange: { dynamicRegistration: true },
+              foldingRange: {
+                dynamicRegistration: true,
+                foldingRangeKind: { valueSet: ["comment", "imports", "region"] },
+              },
               codeLens: { dynamicRegistration: true },
               inlayHint: { dynamicRegistration: true },
               colorProvider: { dynamicRegistration: true },

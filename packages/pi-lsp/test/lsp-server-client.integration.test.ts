@@ -328,9 +328,7 @@ describe("real TypeScript 7 language server client", () => {
       }
       expect(byDefault.names.some((name) => name?.includes("callback"))).toBe(false);
       // The output says symbols were left out, and how to see them.
-      expect(
-        byDefault.names.some((name) => name?.includes("nested or import symbols omitted")),
-      ).toBe(true);
+      expect(byDefault.names.some((name) => name?.includes("nested symbols omitted"))).toBe(true);
       expect(byDefault.structuredNames).not.toContain('"name":"ok"');
       expect(byDefault.structuredNames).toContain('"name":"summarize"');
 
@@ -407,9 +405,11 @@ describe("real TypeScript 7 language server client", () => {
       }
       // The hint counts the four dropped import bindings.
       expect(byDefault.lines).toContain(
-        '4 nested or import symbols omitted; raise depth or pass depth: "all" to see them.',
+        '4 import bindings omitted; pass depth: "all" to see them.',
       );
+      expect(byDefault.lines.some((line) => line.includes("nested"))).toBe(false);
       expect(byDefault.structured).toContain('"omitted":4');
+      expect(byDefault.structured).toContain('"omitted_imports":4');
 
       // A deeper count still omits imports; only "all" lists them.
       expect((await outline({ depth: 2 })).names).not.toContain("readFileSync");

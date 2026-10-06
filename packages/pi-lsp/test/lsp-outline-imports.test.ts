@@ -3,6 +3,7 @@ import { dropImportSymbols, importFoldingRanges } from "../src/lsp-outline-impor
 
 const VARIABLE = 13;
 const FUNCTION = 12;
+const CLASS = 5;
 
 function range(startLine: number, endLine: number) {
   return { start: { line: startLine, character: 0 }, end: { line: endLine, character: 4 } };
@@ -79,19 +80,30 @@ describe("dropImportSymbols", () => {
     expect(result.omitted).toBe(2);
   });
 
-  test("drops flat top-level entries but not entries with a container", () => {
+  test("drops flat top-level entries but not entries inside a container", () => {
+    const store = {
+      ...flat("Store", CLASS, 0),
+      location: { uri: "file:///a.ts", range: range(0, 9) },
+    };
     const result = dropImportSymbols(
       [
         flat("a", VARIABLE, 0),
         flat("b", VARIABLE, 1, ""),
         flat("c", VARIABLE, 2, null),
+        store,
         flat("member", VARIABLE, 1, "Store"),
         flat("run", FUNCTION, 5),
       ],
       imports,
     );
-    expect(names(result.value)).toEqual(["member", "run"]);
+    // `Store` spans past the imports range, and `member` is nested in it.
+    expect(names(result.value)).toEqual(["Store", "member", "run"]);
     expect(result.omitted).toBe(3);
+  });
+
+  test("reads a flat entry whose container names no symbol as top-level", () => {
+    const result = dropImportSymbols([flat("a", VARIABLE, 0, "Missing")], imports);
+    expect(result).toEqual({ value: [], omitted: 1 });
   });
 
   test("leaves the response alone without imports ranges, without a list, or without ranges", () => {
