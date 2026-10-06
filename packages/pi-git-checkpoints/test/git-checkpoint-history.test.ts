@@ -457,7 +457,7 @@ describe("ignored path inheritance", () => {
       changedPaths: [".gitignore", "code.ts"],
       skippedPaths: [".env"],
     });
-    expect(second.endEntryId).toBeDefined();
+    expect(gitCheckpointIgnoredPathsAt(history, second.endEntryId)).toEqual([]);
   });
 });
 
