@@ -1,5 +1,0 @@
----
-"@ian-pascoe/pi-web-tools": patch
----
-
-Web Search errors now keep their cause instead of only `Unable to search the web for <query>`. Search Provider failures that arrive with HTTP 200 are no longer reported as results or generic failures: an MCP `isError` result (Exa and Parallel), a JSON-RPC `error` object (Parallel), and Exa's free-tier rate limit (`ai.exa/rateLimited`) now throw with the provider's message, bounded to a short line. Errors also name the HTTP status, timeout, or network error class. An empty or whitespace-only query is rejected before any request. HTTP error responses append the provider's JSON-RPC message when it sends one, and a 200 response that is not valid JSON-RPC is reported as an unrecognized response rather than as no results. The troubleshooting Skill hint appears only for server (5xx), network, timeout, rate-limit, and key (HTTP 401/403/429) failures, not for other client errors, provider rejections, or cancellation. Provider messages are stripped of terminal control and invisible characters, and API keys are redacted before any message is bounded.

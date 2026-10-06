@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.4.0
+
+### Minor Changes
+
+- 7ae7fed: `terminal_start` and `terminal_send` results now say why the wait ended. The Structured Result has a `settle_reason` of `matched` (`wait_for_text` found), `timeout` (`wait_ms` ran out), `quiet` (250 ms of screen quiet) or `exited` (the Terminal exited), and the result text repeats it in its first line, such as `t1 running · settled: timeout`. A `wait_for_text` that times out is no longer indistinguishable from a match: the text adds that the pattern was not seen. Polls, which send neither `text` nor `keys`, report their reason too.
+
+### Patch Changes
+
+- f6b9802: Terminal edge cases now fail loudly and cheaply. `terminal_send` with `text` or `keys` to an exited Terminal returns an error naming its exit code or signal instead of silently dropping the input; a poll still returns the final screen. `terminal_stop` on an exited Terminal whose screen is unchanged since the agent's last result omits the screen and returns only its state and exit code or signal. `terminal_start` with a `cwd` that is missing or not a directory fails with an error naming the resolved path instead of termctrl's opaque "canonicalize session working directory" message.
+
 ## 0.3.0
 
 ### Minor Changes

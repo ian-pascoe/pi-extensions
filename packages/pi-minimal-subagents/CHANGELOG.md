@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.14.0
+
+### Minor Changes
+
+- 8359f6f: `subagent` now accepts an optional `role` naming a configured model role (`minimalSubagents.modelRoles`), so the agent no longer translates each role into `model` and `thinking_level` by hand. The role resolves to its model and, when it has a suffix, its thinking level; an explicit `model` or `thinking_level` overrides the role's value, and an unknown role fails before any child is created, listing the configured role names. The Launch Contract records the resolved model and thinking level plus the `role` used, and `subagent_status` and the expanded `subagent` result show it; Registry V2 persists `role` as an optional Launch Contract field, so existing sessions and V1 records load unchanged. `role` is a plain string, not an enum of the configured names, so the tool definition stays byte-identical when `modelRoles` changes; only the role list in the system prompt changes, and only at reload.
+
+### Patch Changes
+
+- a29888e: A child result queued to the root is no longer lost when Pi discards the queued message before the model sees it, for example when Esc interrupts the root turn. At the root's next turn boundary with nothing left in Pi's queue, a queued result without Delivery Evidence becomes selectable by a default `subagent_wait` again, together with any Coordination Messages batched into it. Automatic fallback re-sends it ahead of newer results: into the same run when the queue was cleared without an abort, or after Esc when the root's next run starts. It never starts a root turn by itself, so Esc stays respected. A result the root already received is settled instead, so it is never delivered twice. An automatic hand-off whose grace period spans a session branch change is now abandoned without disturbing the selected branch's replay, which decides delivery.
+- a8cfbf9: `subagent_wait` without `turn_id` now skips turns whose terminal result you already claimed or that was already delivered to you automatically. After waiting on a child's first result and sending `agent_message` (which reports `started-turn` with a new `turn_id`), `subagent_wait({ agent_id })` targets the new turn, both while it runs and after it is cancelled, instead of returning the first result again. It selects the oldest remaining observable turn, then the active turn, then the latest turn; settled turns you have neither claimed nor received are still returned oldest first, and an explicit `turn_id` still addresses any retained turn, claimed or not. Delivery Ledger persistence and automatic fallback are unchanged.
+- a8cfbf9: A `subagent_wait` timeout is no longer treated as Delivery Evidence for the waited-on turn's final result. Before, after a wait timed out on a running turn, the root session held a wait tool result for that turn, so reconciliation settled the later automatic result as delivered without it ever reaching the parent. Timeout results now count like intermediate message results: only a wait that returned the turn's terminal result, or the automatic result message itself, proves delivery.
+
 ## 0.13.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-termctrl",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": false,
   "description": "Interactive Terminals, Background jobs, and a /ps panel for Pi.",
   "keywords": [
