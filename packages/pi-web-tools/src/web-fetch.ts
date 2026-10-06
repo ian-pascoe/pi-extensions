@@ -4,7 +4,7 @@ import { Parser } from "htmlparser2";
 import TurndownService from "turndown";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { extractMainContent } from "./html-main-content.js";
+import { extractMainContent, type HtmlMainContent } from "./html-main-content.js";
 import { convertHtmlInChunks } from "./html-markdown.js";
 import {
   cancelResponse,
@@ -329,6 +329,14 @@ function extractTextFromHtml(html: string): string {
 
 const CHROME_REMOVED_NOTE = "Site chrome outside the main content was removed.";
 
+/** The note for a page whose chrome removal dropped `main`'s text, or undefined when none was dropped. */
+function chromeNote(main: HtmlMainContent): string | undefined {
+  if (main.largeRemovalPercent !== undefined) {
+    return `${CHROME_REMOVED_NOTE.slice(0, -1)} (${main.largeRemovalPercent}% of page text); use format: html for the full page.`;
+  }
+  return main.chromeRemoved ? CHROME_REMOVED_NOTE : undefined;
+}
+
 function firstLine(text: string): string {
   return text.trimStart().split("\n", 1)[0]?.trim() ?? "";
 }
@@ -362,9 +370,10 @@ function convertHtmlPage(html: string, format: "markdown" | "text"): string {
   }
   if (format === "text") {
     const body = extractTextFromHtml(main.html);
-    const note = main.chromeRemoved ? `[${CHROME_REMOVED_NOTE}]` : undefined;
+    const note = chromeNote(main);
+    const bracketed = note === undefined ? undefined : `[${note}]`;
     const heading = firstLine(body) === main.title ? undefined : main.title;
-    return [heading, note, body].filter((part) => part !== undefined).join("\n\n");
+    return [heading, bracketed, body].filter((part) => part !== undefined).join("\n\n");
   }
   const turndown = newTurndown();
   const body = turndownInChunks(turndown, main.html);
@@ -374,8 +383,9 @@ function convertHtmlPage(html: string, format: "markdown" | "text"): string {
     title === undefined || firstLine(body).replace(/^#+\s*/, "") === title
       ? undefined
       : `# ${title}`;
-  const note = main.chromeRemoved ? `*${CHROME_REMOVED_NOTE}*` : undefined;
-  return [heading, note, body].filter((part) => part !== undefined).join("\n\n");
+  const note = chromeNote(main);
+  const emphasized = note === undefined ? undefined : `*${note}*`;
+  return [heading, emphasized, body].filter((part) => part !== undefined).join("\n\n");
 }
 
 function convertFetchedContent(content: string, mime: string, format: WebFetchFormat): string {
