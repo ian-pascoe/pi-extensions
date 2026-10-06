@@ -8,12 +8,39 @@ export const advisorSeveritySchema = Type.Union([
 ]);
 export type AdvisorSeverity = Static<typeof advisorSeveritySchema>;
 
-/** One reported finding; also the journaled details of an Intervention message. */
-export const advisorFindingSchema = Type.Object(
+/** What a finding cites from the Review Evidence it was judged against. */
+export const advisorEvidenceSchema = Type.Object(
   {
-    severity: advisorSeveritySchema,
-    message: Type.String({ minLength: 1, maxLength: 4000 }),
+    refs: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 64 }), {
+        maxItems: 8,
+        description:
+          "Tool-Call References (the `ref` of a tool call or its result in the supplied evidence) that show the defect",
+      }),
+    ),
+    quote: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 1000,
+        description: "A short verbatim quote from the supplied evidence that shows the defect",
+      }),
+    ),
   },
+  { additionalProperties: false },
+);
+export type AdvisorEvidence = Static<typeof advisorEvidenceSchema>;
+
+const findingFields = {
+  severity: advisorSeveritySchema,
+  message: Type.String({ minLength: 1, maxLength: 4000 }),
+};
+
+/**
+ * One finding; also the journaled details of an Intervention message. `evidence` is absent from
+ * Interventions recorded before findings cited evidence, and from legacy single-finding reports.
+ */
+export const advisorFindingSchema = Type.Object(
+  { ...findingFields, evidence: Type.Optional(advisorEvidenceSchema) },
   { additionalProperties: false },
 );
 export type AdvisorFinding = Static<typeof advisorFindingSchema>;
@@ -30,6 +57,32 @@ export const advisorReviewCostSchema = Type.Object({
   total: knownCost,
 });
 export type AdvisorReviewCost = Static<typeof advisorReviewCostSchema>;
+
+/** A finding as `advisor_report` accepts it: every finding cites its evidence. */
+export const advisorReportFindingSchema = Type.Object(
+  {
+    ...findingFields,
+    evidence: Type.Object(advisorEvidenceSchema.properties, {
+      additionalProperties: false,
+      description:
+        "Evidence for a concrete defect in completed work: at least one Tool-Call Reference or a verbatim quote",
+    }),
+  },
+  { additionalProperties: false },
+);
+
+/**
+ * Findings an Advisor dropped since it started, by reason: Nits over `maxNitsPerRequest`,
+ * findings citing no or unknown evidence, Nits of a re-validating Review that was superseded
+ * again, and Reviews ended without findings by invalid reports.
+ */
+export const advisorDroppedFindingsSchema = Type.Object({
+  overNitCap: Type.Number(),
+  unsupported: Type.Number(),
+  superseded: Type.Number(),
+  invalidReviews: Type.Number(),
+});
+export type AdvisorDroppedFindings = Static<typeof advisorDroppedFindingsSchema>;
 
 /** Observer lifecycle state reported by its `status`. */
 export const advisorObserverStateSchema = Type.Union([

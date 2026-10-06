@@ -10,6 +10,7 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
   advisorFindingSchema,
+  advisorDroppedFindingsSchema,
   advisorReviewCostSchema,
   advisorSeveritySchema,
   advisorStateSchema,
@@ -52,6 +53,11 @@ const statusSchema = Type.Object({
   usage: Type.Optional(Type.Union([Type.Object({ total: Type.Number() }), Type.Null()])),
   cost: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
   reviewCost: Type.Optional(Type.Union([advisorReviewCostSchema, Type.Null()])),
+  deferredFindings: Type.Optional(Type.Number()),
+  droppedFindings: Type.Optional(
+    // Entries recorded before a reason existed omit its count.
+    Type.Partial(advisorDroppedFindingsSchema),
+  ),
   unavailableTools: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
   children: Type.Optional(
     Type.Array(
@@ -208,6 +214,28 @@ function formatReviewCost({ reviews, last, total }: AdvisorReviewCost) {
   return `${reviews} ${reviews === 1 ? "Review" : "Reviews"} ${amount(total)} · last Review ${amount(last)}`;
 }
 
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+/** Findings withheld for re-validation and findings dropped, when there are any. */
+function findingCounts(entry: AdvisorStatusEntry): string[] {
+  const { deferredFindings: deferred, droppedFindings: dropped } = entry;
+  return [
+    deferred ? `${plural(deferred, "finding", "findings")} awaiting re-validation` : "",
+    dropped?.overNitCap
+      ? `${plural(dropped.overNitCap, "Nit", "Nits")} over the request cap dropped`
+      : "",
+    dropped?.unsupported
+      ? `${plural(dropped.unsupported, "finding", "findings")} without valid evidence dropped`
+      : "",
+    dropped?.superseded
+      ? `${plural(dropped.superseded, "Nit", "Nits")} from a superseded re-validating Review dropped`
+      : "",
+    dropped?.invalidReviews
+      ? `${plural(dropped.invalidReviews, "Review", "Reviews")} ended by invalid reports`
+      : "",
+  ].filter(Boolean);
+}
+
 /** Human-readable option value; an absent value inherits. */
 export function formatAdvisorOption(options: AdvisorOptions, key: keyof AdvisorOptions): string {
   switch (key) {
@@ -285,6 +313,8 @@ function summaryLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): str
     " · ",
   );
   if (activity) lines.push(theme.fg("muted", activity));
+  const counts = findingCounts(entry);
+  if (counts.length) lines.push(theme.fg("muted", counts.join(" · ")));
   if (entry.unavailableTools?.length)
     lines.push(theme.fg("warning", `⚠ unavailable tools: ${entry.unavailableTools.join(", ")}`));
   const error = entry.error ?? entry.lastError;

@@ -29,11 +29,11 @@ The configured set of tools an Advisor is permitted to call, distinct from the e
 _Avoid_: Extension allowlist
 
 **Intervention**:
-Actionable advice from an Advisor to the observed agent, visible to the user and intended to improve or redirect ongoing work. It neither overrides the user's instructions nor grants the Advisor veto power.
+Actionable advice from an Advisor to the observed agent about a concrete defect in its completed work, citing Review Evidence, visible to the user and intended to improve or redirect ongoing work. Advice about what to do next belongs to a Consultation instead. It neither overrides the user's instructions nor grants the Advisor veto power.
 _Avoid_: Veto, approval gate
 
 **Nit**:
-A non-interrupting Intervention identifying worthwhile low-risk cleanup, simplification, style, or a missed opportunity. It enters the observed context at a natural step boundary and never starts a Corrective Turn.
+A non-interrupting Intervention identifying worthwhile low-risk cleanup, simplification, style, or a missed opportunity in completed work. It enters the observed context at a natural step boundary and never starts a Corrective Turn. At most `maxNitsPerRequest` Nits are delivered per request.
 _Avoid_: Concern
 
 **Concern**:
@@ -43,6 +43,10 @@ _Avoid_: Nit
 **Blocker**:
 An urgent Intervention identifying materially unsound work that needs immediate reconsideration, including an unsupported completion claim. It may prompt a corrective continuation after normal completion, but never overrides a deliberate user interruption.
 _Avoid_: Execution veto
+
+**Superseded Finding**:
+A finding from a Review whose observed agent completed more turns before the finding could be delivered. It is withheld and re-validated by the next Review against the newer turns rather than delivered, at most once: if that Review is superseded too, its Concerns and Blockers are delivered and its Nits dropped.
+_Avoid_: Retracted finding
 
 **Corrective Turn**:
 A continuation of the observed agent prompted by a Blocker after normal completion, rather than by a new user request.

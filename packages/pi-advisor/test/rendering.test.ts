@@ -93,6 +93,7 @@ const settings = {
   maxToolCalls: 8,
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
+  maxNitsPerRequest: 3,
   seedBudgetTokens: "auto",
   reviewEvery: "turn",
   maxSessionTokens: "auto",
@@ -112,6 +113,7 @@ const snapshot = {
     maxToolCalls: "default",
     maxCorrectiveTurns: "default",
     maxFindingsPerReview: "default",
+    maxNitsPerRequest: "default",
     seedBudgetTokens: "default",
     reviewEvery: "default",
     maxSessionTokens: "default",
@@ -173,6 +175,36 @@ describe("Advisor status", () => {
       true,
     );
     expect(text).toMatch(/↳ worker\s+● armed\s+2 Reviews \$0\.05 · last Review \$0\.02/);
+  });
+
+  it("counts findings awaiting re-validation and findings dropped, only when there are any", () => {
+    const text = status({
+      ...snapshot,
+      deferredFindings: 2,
+      droppedFindings: { overNitCap: 1, unsupported: 3, superseded: 2, invalidReviews: 1 },
+    });
+    for (const count of [
+      "2 findings awaiting re-validation",
+      "1 Nit over the request cap dropped",
+      "3 findings without valid evidence dropped",
+      "2 Nits from a superseded re-validating Review dropped",
+      "1 Review ended by invalid reports",
+    ])
+      expect(text.replace(/\s+/g, " ")).toContain(count);
+    expect(
+      status({
+        ...snapshot,
+        deferredFindings: 0,
+        droppedFindings: { overNitCap: 4, unsupported: 0 },
+      }),
+    ).toContain("dropped");
+    const quiet = status({
+      ...snapshot,
+      deferredFindings: 0,
+      droppedFindings: { overNitCap: 0, unsupported: 0 },
+    });
+    expect(quiet).not.toContain("re-validation");
+    expect(quiet).not.toContain("dropped");
   });
 
   it("never presents unknown cost as zero and omits empty problem lines", () => {
