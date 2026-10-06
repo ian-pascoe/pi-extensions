@@ -7,7 +7,7 @@ import {
   selectContextSeed,
   toolCallRef,
 } from "../src/advisor-evidence.js";
-import { seedBudget } from "../src/advisor-settings.js";
+import { seedBudget, sessionTokenLimit } from "../src/advisor-settings.js";
 
 const longCallId = `call_${"x".repeat(420)}|fc_${"y".repeat(40)}`;
 const image = { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" } as const;
@@ -492,11 +492,28 @@ it("keeps no original request when compaction cut the turn that held it", () => 
 
 it("derives the automatic seed budget from the Advisor model's context window", () => {
   expect(seedBudget("auto", 200_000)).toBe(50_000);
-  expect(seedBudget("auto", 1_000_000)).toBe(250_000);
+  // Large windows are capped absolutely, below the automatic Advisor Session cap.
+  expect(seedBudget("auto", 400_000)).toBe(100_000);
+  expect(seedBudget("auto", 1_000_000)).toBe(100_000);
   // Models without a declared window use Pi's 128k fallback.
   expect(seedBudget("auto", 0)).toBe(32_000);
   expect(seedBudget(12_345, 200_000)).toBe(12_345);
   // An explicit budget never exceeds a declared window.
   expect(seedBudget(500_000, 200_000)).toBe(200_000);
   expect(seedBudget(500_000, undefined)).toBe(500_000);
+});
+
+it("derives the automatic Advisor Session cap from the window, bounded absolutely", () => {
+  expect(sessionTokenLimit("auto", 200_000)).toBe(100_000);
+  expect(sessionTokenLimit("auto", 400_000)).toBe(200_000);
+  expect(sessionTokenLimit("auto", 1_000_000)).toBe(200_000);
+  // Models without a declared window use Pi's 128k fallback.
+  expect(sessionTokenLimit("auto", 0)).toBe(64_000);
+  // An automatic Context Seed always fits under the automatic cap.
+  for (const window of [0, 32_000, 200_000, 400_000, 1_000_000, 2_000_000])
+    expect(seedBudget("auto", window)).toBeLessThanOrEqual(sessionTokenLimit("auto", window) / 2);
+  expect(sessionTokenLimit(150_000, 1_000_000)).toBe(150_000);
+  // An explicit cap never exceeds a declared window.
+  expect(sessionTokenLimit(500_000, 200_000)).toBe(200_000);
+  expect(sessionTokenLimit(500_000, undefined)).toBe(500_000);
 });

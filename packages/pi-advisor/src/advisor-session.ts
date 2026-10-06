@@ -63,6 +63,13 @@ const registrationNames = ({ tools, commands, flags }: Extension) => [
   ...[...flags.keys()].map((name) => `flag:${name}`),
 ];
 
+/** Context Management's private tools; an extension or session providing all three loads it. */
+export const contextManagementTools = ["context_notes", "context_history", "context_rollover"];
+/** Whether these tool names include all of Context Management's; it then owns compaction. */
+export function providesContextManagement(tools: { has(name: string): boolean }): boolean {
+  return contextManagementTools.every((name) => tools.has(name));
+}
+
 /** Private role is native journal state and is installed before session_start. */
 export function isAdvisorSession(manager: Pick<SessionManager, "getBranch">): boolean {
   return manager
@@ -256,12 +263,11 @@ async function buildAdvisorSession(
   const global = JSON.stringify(observed.settingsManager.getGlobalSettings());
   const project = JSON.stringify(observed.settingsManager.getProjectSettings());
   const config = structuredClone(options.config);
-  const contextTools = ["context_notes", "context_history", "context_rollover"];
   const hasContextManagement = source
     .getExtensions()
-    .extensions.some((extension) => contextTools.every((name) => extension.tools.has(name)));
+    .extensions.some((extension) => providesContextManagement(extension.tools));
   const missingContextGrants = hasContextManagement
-    ? contextTools.filter((name) => !config.allowedTools.includes(name))
+    ? contextManagementTools.filter((name) => !config.allowedTools.includes(name))
     : [];
   if (missingContextGrants.length)
     throw new Error(

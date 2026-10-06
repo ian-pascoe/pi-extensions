@@ -1,82 +1,22 @@
 import { onTestFinished, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
-  InMemoryCredentialStore,
-  InMemoryModelsStore,
   createAssistantMessageEventStream,
   fauxAssistantMessage,
-  type Api,
   type Context,
-  type Model,
 } from "@earendil-works/pi-ai";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import {
-  createAgentSessionServices,
-  createAgentSessionFromServices,
-  AgentSessionRuntime,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-  convertToLlm,
-  type ToolResultEvent,
-} from "@earendil-works/pi-coding-agent";
-import "./fixtures/observer-extension.js";
+  activeFixture,
+  conversation,
+  expectPrefix,
+  longSessionStream,
+  seedPayload,
+  type PrivateRequest,
+} from "./fixtures/observer-harness.js";
 import { createSdkHarness } from "../../pi-context-management/test/sdk-harness.js";
 import { projectEvidence, toolCallRef } from "../src/advisor-evidence.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
-
-/** Pi 0.86+ stores the system prompt as the leading session message. */
-const conversation = <T extends { role: string }>(messages: T[]) =>
-  messages.filter((message) => message.role !== "system");
-
-async function activeFixture() {
-  const dir = await mkdtemp(join(tmpdir(), "advisor-observer-"));
-  onTestFinished(() => rm(dir, { recursive: true, force: true }));
-  const modelRuntime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(),
-    modelsStore: new InMemoryModelsStore(),
-    modelsPath: null,
-    refreshOnCreate: false,
-  });
-  const services = await createAgentSessionServices({
-    cwd: dir,
-    agentDir: dir,
-    modelRuntime,
-    settingsManager: SettingsManager.inMemory({
-      compaction: { enabled: false },
-      retry: { enabled: false },
-    }),
-    resourceLoaderOptions: {
-      noExtensions: true,
-      noSkills: true,
-      noContextFiles: true,
-      noThemes: true,
-      noPromptTemplates: true,
-      additionalExtensionPaths: [
-        fileURLToPath(new URL("./fixtures/observer-extension.ts", import.meta.url)),
-      ],
-    },
-  });
-  const model = modelRuntime.getModel("observer-fixture", "model");
-  if (!model) throw new Error("Missing fixture model");
-  const created = await createAgentSessionFromServices({
-    services,
-    model,
-    sessionManager: SessionManager.create(dir, join(dir, "sessions")),
-  });
-  const runtime = new AgentSessionRuntime(created.session, services, async () => {
-    throw new Error("No replacement");
-  });
-  await runtime.session.bindExtensions({ mode: "print" });
-  onTestFinished(async () => {
-    await runtime.session.abort();
-    await runtime.dispose();
-  });
-  return runtime.session;
-}
 
 it.each(["none", "blocker"] as const)(
   "reviews %s without changing the observed request prefix or restarting headless completion",
@@ -855,7 +795,7 @@ it.each(["aborted", "error"] as const)(
   },
 );
 
-it("stops unfinished headless review work at the separate 30-second drain ceiling", async () => {
+it("bounds the headless final drain by the Review deadline, not the 30-second Catch-up ceiling", async () => {
   const started = Promise.withResolvers<void>();
   globalThis.advisorObserverTest = {
     stream(model, context, options) {
@@ -885,7 +825,12 @@ it("stops unfinished headless review work at the separate 30-second drain ceilin
   const session = await activeFixture();
   const observer = new AdvisorObserver(
     session,
-    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: "off",
+      reviewTimeoutMs: 45_000,
+    },
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
@@ -894,11 +839,17 @@ it("stops unfinished headless review work at the separate 30-second drain ceilin
     await observer.dispose();
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const prompt = session.prompt("Finish");
+  let finished = false;
+  const prompt = session.prompt("Finish").then(() => {
+    finished = true;
+  });
   await started.promise;
-  await vi.advanceTimersByTimeAsync(30000);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(finished).toBe(false);
+  await vi.advanceTimersByTimeAsync(15_000);
   await prompt;
-  expect(observer.status.backlog).toBe(0);
+  // The Review began before the drain, so its own deadline ends it first, as for any Review.
+  expect(observer.status.lastError).toBe("Advisor review deadline exceeded");
   expect(conversation(session.messages)).toHaveLength(2);
 });
 
@@ -1697,98 +1648,6 @@ it("cancels an on-demand consultation without pausing later advice", async () =>
   expect(consultationPrompts.at(-1)).toContain("Seed context");
 });
 
-/** One private Advisor request: its full context and the prompt text it ends with. */
-interface PrivateRequest {
-  messages: Context["messages"];
-  text: string;
-}
-
-/**
- * A long observed session: each request runs its listed number of tool batches, whose results
- * `result` writes. Private requests are recorded in order.
- */
-function longSessionStream(
-  batches: Record<string, number>,
-  privateRequests: PrivateRequest[],
-  result: (id: string) => string = (id) => `result ${id} ${"x".repeat(8_000)}`,
-) {
-  return {
-    stream(model: Model<Api>, context: Context) {
-      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-      const stream = createAssistantMessageEventStream();
-      const message = {
-        ...fauxAssistantMessage("Done"),
-        model: model.id,
-        provider: model.provider,
-        api: model.api,
-      };
-      if (privateRole) {
-        const request = context.messages.at(-1);
-        const text =
-          request?.role === "user" && Array.isArray(request.content)
-            ? request.content
-                .flatMap((block) => (block.type === "text" ? [block.text] : []))
-                .join("")
-            : "";
-        privateRequests.push({ messages: structuredClone(context.messages), text });
-        if (!text.startsWith("Consultation request")) {
-          message.content = [
-            { type: "toolCall", id: "report", name: "advisor_report", arguments: { findings: [] } },
-          ];
-          message.stopReason = "toolUse";
-        }
-      } else if (!context.tools?.length) {
-        message.content = [
-          { type: "text", text: "Summary: the user asked to refactor the parser." },
-        ];
-      } else {
-        const start = context.messages.findLastIndex((entry) => entry.role === "user");
-        const request = context.messages[start];
-        const text = request?.role === "user" ? JSON.stringify(request.content) : "";
-        const done = context.messages.slice(start).filter((entry) => entry.role === "toolResult");
-        const planned = Object.entries(batches).find(([prompt]) => text.includes(prompt))?.[1];
-        if (done.length < (planned ?? 0)) {
-          const id = `${start}-${done.length}`;
-          message.content = [
-            { type: "toolCall", id, name: "read", arguments: { path: `/missing-advisor-${id}` } },
-          ];
-          message.stopReason = "toolUse";
-        }
-      }
-      queueMicrotask(() =>
-        stream.push({
-          type: "done",
-          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
-          message,
-        }),
-      );
-      return stream;
-    },
-    toolResult: (event: ToolResultEvent) => ({
-      content: [{ type: "text" as const, text: result(event.toolCallId) }],
-    }),
-  };
-}
-
-/** A private prompt's header line and its JSON payload, exactly as sent. */
-function seedPayload(request: PrivateRequest | undefined) {
-  const text = request?.text ?? "";
-  const newline = text.indexOf("\n");
-  const json = text.slice(newline + 1);
-  return {
-    header: text.slice(0, newline),
-    /** Pi's chars/4 estimate of the payload the Advisor received. */
-    tokens: Math.ceil(json.length / 4),
-    evidence: JSON.parse(json || "{}"),
-  };
-}
-
-/** Advisor prompt-cache proof: a later request extends the earlier context unchanged. */
-function expectPrefix(later: PrivateRequest | undefined, earlier: PrivateRequest | undefined) {
-  expect(earlier?.messages.length).toBeGreaterThan(0);
-  expect(later?.messages.slice(0, earlier?.messages.length)).toEqual(earlier?.messages);
-}
-
 const code = (id: string) =>
   `export function parse(input: string): Node {\n  if (input === "\\n") return { "kind": "newline", "id": "${id}" };\n\treturn parseExpression(input, { "strict": true });\n}\n`;
 
@@ -1803,7 +1662,7 @@ it.each([
     globalThis.advisorObserverTest = longSessionStream(
       { "Original request": batches },
       privateRequests,
-      result,
+      { result },
     );
     const session = await activeFixture();
     await session.prompt("Original request: refactor the parser.");
@@ -1909,7 +1768,7 @@ it("keeps the newest turn when its tool result alone exceeds the seed budget", a
     { "Original request": 20, "Read the big log": 1 },
     privateRequests,
     // Batch IDs start with the index of their request; the first request is message 0.
-    (id) => (id.startsWith("0-") ? `ok ${id}` : "L".repeat(200_000)),
+    { result: (id) => (id.startsWith("0-") ? `ok ${id}` : "L".repeat(200_000)) },
   );
   const session = await activeFixture();
   await session.prompt("Original request: refactor the parser.");

@@ -1,5 +1,6 @@
 import type {
   ExtensionAPI,
+  SessionBeforeCompactResult,
   ToolInfo,
   ToolResultEvent,
   ToolResultEventResult,
@@ -28,6 +29,8 @@ declare global {
     settled?: () => Promise<void>;
     privateSettled?: () => Promise<void>;
     privateShutdown?: () => Promise<void>;
+    /** The private Advisor Session's native `session_before_compact` result. */
+    privateBeforeCompact?: () => SessionBeforeCompactResult | undefined;
     /** Tools the private Advisor Session reports to its inherited extensions. */
     privateTools?: (tools: ToolInfo[]) => void;
   };
@@ -39,12 +42,16 @@ export default function observerFixture(pi: ExtensionAPI): void {
     api: "openai-completions",
     apiKey: "offline",
     baseUrl: "https://observer.invalid",
-    models: ["model", "alternate"].map((id) => ({
+    models: ["model", "alternate", "priced"].map((id) => ({
       id,
       name: "Offline",
       reasoning: true,
       input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      // `priced` declares prices, so its zero-usage responses cost a known $0.
+      cost:
+        id === "priced"
+          ? { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
+          : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 200000,
       maxTokens: 2048,
     })),
@@ -66,6 +73,9 @@ export default function observerFixture(pi: ExtensionAPI): void {
   );
   pi.on("tool_result", (event) =>
     privateRole ? undefined : globalThis.advisorObserverTest.toolResult?.(event),
+  );
+  pi.on("session_before_compact", () =>
+    privateRole ? globalThis.advisorObserverTest.privateBeforeCompact?.() : undefined,
   );
   pi.on("session_shutdown", () =>
     privateRole ? globalThis.advisorObserverTest.privateShutdown?.() : undefined,

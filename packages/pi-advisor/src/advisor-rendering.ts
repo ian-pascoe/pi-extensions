@@ -10,8 +10,10 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
   advisorFindingSchema,
+  advisorReviewCostSchema,
   advisorSeveritySchema,
   advisorStateSchema,
+  type AdvisorReviewCost,
   type AdvisorSeverity,
   type AdvisorState,
 } from "./advisor-contract.js";
@@ -49,6 +51,7 @@ const statusSchema = Type.Object({
   effectiveThinkingLevel: Type.Optional(nullableString),
   usage: Type.Optional(Type.Union([Type.Object({ total: Type.Number() }), Type.Null()])),
   cost: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+  reviewCost: Type.Optional(Type.Union([advisorReviewCostSchema, Type.Null()])),
   unavailableTools: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
   children: Type.Optional(
     Type.Array(
@@ -56,6 +59,7 @@ const statusSchema = Type.Object({
         agentId: Type.String(),
         state: Type.Optional(advisorStateSchema),
         backlog: Type.Optional(Type.Number()),
+        reviewCost: Type.Optional(Type.Union([advisorReviewCostSchema, Type.Null()])),
       }),
     ),
   ),
@@ -189,9 +193,19 @@ function formatTokens(total: number): string {
   return `${(total / 1_000_000).toFixed(1)}M`;
 }
 
+function formatMoney(cost: number): string {
+  return `$${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+}
+
 function formatCost(cost: number | null | undefined): string {
   if (cost === null || cost === undefined) return "cost unknown";
-  return `cost $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+  return `cost ${formatMoney(cost)}`;
+}
+
+/** Running Review total, then the last Review alone; unknown stays unknown. */
+function formatReviewCost({ reviews, last, total }: AdvisorReviewCost) {
+  const amount = (cost: number | null) => (cost === null ? "cost unknown" : formatMoney(cost));
+  return `${reviews} ${reviews === 1 ? "Review" : "Reviews"} ${amount(total)} · last Review ${amount(last)}`;
 }
 
 /** Human-readable option value; an absent value inherits. */
@@ -265,6 +279,7 @@ function summaryLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): str
     [
       entry.usage ? `tokens ${formatTokens(entry.usage.total)}` : undefined,
       entry.usage ? formatCost(entry.cost) : undefined,
+      entry.reviewCost?.reviews ? formatReviewCost(entry.reviewCost) : undefined,
       children ? `${children} ${children === 1 ? "child" : "children"}` : undefined,
     ],
     " · ",
@@ -298,6 +313,7 @@ function detailLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): stri
           `  ${theme.fg("accent", `↳ ${child.agentId}`)}`,
           child.state ? badge(child.state, theme) : undefined,
           child.backlog ? `backlog ${child.backlog}` : undefined,
+          child.reviewCost?.reviews ? formatReviewCost(child.reviewCost) : undefined,
         ],
         "  ",
       ),

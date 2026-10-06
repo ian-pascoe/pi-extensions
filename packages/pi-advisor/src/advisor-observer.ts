@@ -9,18 +9,22 @@ import {
   advisorFindingSchema,
   type AdvisorFinding,
   type AdvisorObserverState,
+  type AdvisorReviewCost,
   type AdvisorSeverity,
 } from "./advisor-contract.js";
 import {
+  evidenceTokens,
   messageOrigins,
   projectEvidence,
   selectContextSeed,
   type ContextSeed,
 } from "./advisor-evidence.js";
-import { seedBudget, type AdvisorConfig } from "./advisor-settings.js";
+import { seedBudget, sessionTokenLimit, type AdvisorConfig } from "./advisor-settings.js";
 import {
+  contextManagementTools,
   createAdvisorSession,
   disposeAdvisorSession,
+  providesContextManagement,
   type AdvisorResourceInputs,
   type AdvisorSessionOptions,
 } from "./advisor-session.js";
@@ -76,9 +80,6 @@ type PromptExtras =
 function observationBoundary(session: AgentSession) {
   return {
     sessionId: session.sessionManager.getSessionId(),
-    compactionId: session.sessionManager
-      .getBranch()
-      .findLast((entry) => entry.type === "compaction")?.id,
     model: session.model,
     thinkingLevel: session.thinkingLevel,
   };
@@ -93,17 +94,17 @@ interface OperationBase {
 interface Review extends OperationBase {
   kind: "review";
   findings?: AdvisorFinding[];
+  /** The Advisor Session this Review prompted and its native cost before it, once prompted. */
+  usage?: { runtime: AgentSessionRuntime; costBefore: number };
 }
 interface Consultation extends OperationBase {
   kind: "consultation";
 }
 type AdvisorOperation = Review | Consultation;
-const maintenanceTools = new Set([
-  "advisor_report",
-  "context_notes",
-  "context_history",
-  "context_rollover",
-]);
+const maintenanceTools = new Set(["advisor_report", ...contextManagementTools]);
+/** Native compaction guidance for the Advisor's summary of its own private history. */
+const compactionInstructions =
+  "This is a private Advisor Session reviewing another agent. Keep the observed user's request and standing instructions, the findings already reported with their severity, open concerns, and what the Advisor has verified, so later incremental Reviews can build on them.";
 
 function normalized(message: string): string {
   return message
@@ -169,6 +170,23 @@ function operationFailure(runtime: AgentSessionRuntime, since: number): string |
   );
 }
 
+/** Native catalogs normalize missing prices to zero; do not claim that means free. */
+function priced(runtime: AgentSessionRuntime): boolean {
+  const pricing = runtime.session.model?.cost;
+  return Boolean(
+    pricing &&
+    [pricing, ...(pricing.tiers ?? [])].some(
+      (rate) => rate.input > 0 || rate.output > 0 || rate.cacheRead > 0 || rate.cacheWrite > 0,
+    ),
+  );
+}
+
+/** Pi declines without a model call when the recent history it keeps is the whole session. */
+function declinedCompaction(cause: unknown): boolean {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return /^(?:Nothing to compact|Already compacted)\b/.test(message);
+}
+
 /** Coalesced native review work; it never owns the observed tools, prompt, or agent loop. */
 export class AdvisorObserver {
   private snapshot: ObservedSnapshot | undefined;
@@ -177,6 +195,10 @@ export class AdvisorObserver {
   private readonly pendingFindings = new Map<AdvisorFinding, Review>();
   private completed = 0;
   private reviewed = 0;
+  /** Completed turns a Review is due to cover, according to `reviewEvery`. */
+  private dueThrough = 0;
+  /** Cost of Reviews since this observer started, across Advisor Session rebuilds and resets. */
+  private reviewCost: AdvisorReviewCost | null = null;
   private running: Promise<void> | undefined;
   private consulting = false;
   private pendingConsultations = 0;
@@ -233,8 +255,17 @@ export class AdvisorObserver {
     };
     observed.agent.streamFunction = this.captureStream;
     this.unsubscribeSession = observed.subscribe((event) => {
-      if (event.type === "thinking_level_changed" || event.type === "compaction_start")
-        this.reset();
+      if (event.type === "thinking_level_changed") this.reset();
+      // Request completion: the run has ended after its steering and follow-ups, and Pi will not
+      // retry it. Observed compaction afterwards neither invalidates nor cancels this Review.
+      if (
+        event.type === "agent_end" &&
+        !event.willRetry &&
+        this.config.enabled &&
+        !this.closed &&
+        !this.error
+      )
+        this.markDue();
       if (event.type === "message_end" && Value.Check(adviceMessageSchema, event.message))
         this.pendingFindings.delete(event.message.details);
     });
@@ -258,7 +289,14 @@ export class AdvisorObserver {
       )
         this.unsafeEnding = true;
       this.completed++;
-      this.start();
+      // `request` waits for agent_end; a failed tool call is reviewed at once under any cadence.
+      const cadence = this.config.reviewEvery;
+      const every = cadence === "turn" ? 1 : cadence === "request" ? Infinity : cadence;
+      if (
+        event.toolResults.some((result) => result.isError) ||
+        this.completed - Math.max(this.dueThrough, this.reviewed) >= every
+      )
+        this.markDue();
       this.changed();
       if (this.config.catchUpThreshold !== "off")
         await this.wait(this.config.catchUpThreshold, signal);
@@ -269,21 +307,14 @@ export class AdvisorObserver {
   }
 
   get status() {
-    const stats = this.runtime?.session.getSessionStats();
+    const runtime = this.runtime;
+    const stats = runtime?.session.getSessionStats();
     const actualModel = this.runtime?.session.model;
     const observedModel = this.observed.model;
     const inheritedModel = observedModel ? `${observedModel.provider}/${observedModel.id}` : null;
     const effectiveModel = actualModel
       ? `${actualModel.provider}/${actualModel.id}`
       : (this.config.model ?? inheritedModel);
-    const pricing = this.runtime?.session.model?.cost;
-    // Native catalogs normalize missing prices to zero; do not claim that means free.
-    const priced =
-      pricing &&
-      [pricing, ...(pricing.tiers ?? [])].some(
-        (rate) => rate.input > 0 || rate.output > 0 || rate.cacheRead > 0 || rate.cacheWrite > 0,
-      );
-    const knownCost = stats && (stats.cost > 0 || (stats.tokens.total > 0 && priced));
     const state: AdvisorObserverState = !this.config.enabled
       ? "disabled"
       : this.error
@@ -301,7 +332,11 @@ export class AdvisorObserver {
         this.runtime?.session.thinkingLevel ??
         this.config.thinkingLevel ??
         this.observed.thinkingLevel,
-      cost: knownCost ? stats.cost : null,
+      cost:
+        runtime && stats && (stats.cost > 0 || (stats.tokens.total > 0 && priced(runtime)))
+          ? stats.cost
+          : null,
+      reviewCost: this.reviewCost && { ...this.reviewCost },
       usage: stats?.assistantMessages ? stats.tokens : null,
       lastError: this.error ?? null,
       unavailableTools: this.runtime
@@ -384,6 +419,12 @@ export class AdvisorObserver {
       this.sameObservation(review)
     );
   }
+  /** A Review is due for every turn completed so far; it covers all unreviewed turns. */
+  private markDue(): void {
+    this.dueThrough = this.completed;
+    this.start();
+  }
+
   private start(): void {
     if (
       this.running ||
@@ -391,7 +432,7 @@ export class AdvisorObserver {
       this.closed ||
       !this.config.enabled ||
       this.error ||
-      this.reviewed === this.completed
+      this.dueThrough <= this.reviewed
     )
       return;
     const review: Review = {
@@ -404,11 +445,13 @@ export class AdvisorObserver {
     };
     this.active = review;
     const operation = this.review(review)
+      .then(() => this.compactAfter(review))
       .catch((cause) => {
         if (review.epoch === this.epoch && !this.closed && this.sameObservation(review))
           this.fail(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
+        this.chargeReview(review);
         if (this.running !== operation) return;
         if (!this.sameObservation(review)) {
           this.reset();
@@ -466,12 +509,25 @@ export class AdvisorObserver {
     );
   }
 
+  /** Whether the evidence not yet supplied fits the Context Seed budget. */
+  private fits(runtime: AgentSessionRuntime, snapshot: Context): boolean {
+    const supplied = this.supplied?.messages.length ?? 0;
+    return (
+      evidenceTokens(projectEvidence(snapshot.messages.slice(supplied))) <=
+      seedBudget(this.config.seedBudgetTokens, runtime.session.model?.contextWindow)
+    );
+  }
+
   private async prepareOperation(
     operation: AdvisorOperation,
     snapshot: Context,
   ): Promise<{ runtime: AgentSessionRuntime; stable: boolean } | undefined> {
-    // A new Advisor Session has seen nothing, so it always starts from a Context Seed.
-    const stable = this.runtime !== undefined && this.stable(operation, snapshot);
+    // A new Advisor Session has seen nothing, so it always starts from a Context Seed; so does
+    // one whose new evidence, gathered over several turns, exceeds the Context Seed budget.
+    const stable =
+      this.runtime !== undefined &&
+      this.stable(operation, snapshot) &&
+      this.fits(this.runtime, snapshot);
     const old = stable ? undefined : this.detachRuntime();
     if (old) {
       operation.epoch = ++this.epoch;
@@ -640,6 +696,7 @@ export class AdvisorObserver {
     if (!prepared) return;
     const { runtime, stable } = prepared;
     const before = runtime.session.messages.length;
+    review.usage = { runtime, costBefore: runtime.session.getSessionStats().cost };
     const { note, images, json } = this.pendingEvidence(runtime, snapshot, stable, {
       deferredConcerns: this.deferred.length
         ? {
@@ -675,6 +732,71 @@ export class AdvisorObserver {
     } finally {
       review.cancellation.signal.removeEventListener("abort", abort);
     }
+  }
+
+  /**
+   * After a completed Review, compact the Advisor Session with Pi's native compaction once it
+   * exceeds `maxSessionTokens`. Only the Advisor's own history is summarized: what it was
+   * supplied stays recorded, so later Reviews continue with incremental evidence, and deferred
+   * Concerns and delivered findings live in this observer. Compaction keeps Pi's
+   * `keepRecentTokens`, so a lower cap is raised to it. Context Management replaces native
+   * compaction with its own Rollover, so it is left to manage a session where it is loaded.
+   *
+   * Compaction runs after the Review's deadline, with its own deadline of the same length. If it
+   * fails or times out, such as when an inherited extension cancels it, the Advisor Session is
+   * discarded so the next Review starts from a Context Seed within its budget; the Advisor is
+   * not paused, because the Review itself succeeded.
+   */
+  private async compactAfter(review: Review): Promise<void> {
+    const runtime = this.runtime;
+    if (!runtime || !this.current(review) || !this.oversized(runtime)) return;
+    const timer = setTimeout(() => runtime.session.abortCompaction(), this.config.reviewTimeoutMs);
+    try {
+      await runtime.session.compact(compactionInstructions);
+    } catch (cause) {
+      if (declinedCompaction(cause) || this.runtime !== runtime || !this.current(review)) return;
+      const detached = this.detachRuntime();
+      if (detached) this.closeRuntime(detached);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Whether the Advisor Session exceeds its cap and native compaction is Advisor's to run. */
+  private oversized(runtime: AgentSessionRuntime): boolean {
+    const session = runtime.session;
+    if (providesContextManagement(new Set(session.getAllTools().map(({ name }) => name))))
+      return false;
+    // Pi reports no size after compaction until a response with usage; estimate as Pi does.
+    const tokens =
+      session.getContextUsage()?.tokens ??
+      session.messages.reduce((sum, message) => sum + piSdk.estimateTokens(message), 0);
+    const limit = Math.max(
+      sessionTokenLimit(this.config.maxSessionTokens, session.model?.contextWindow),
+      session.settingsManager.getCompactionSettings(session.model).keepRecentTokens,
+    );
+    return tokens > limit;
+  }
+
+  /**
+   * Add one Review's native usage cost, including its compaction, to the running totals. Every
+   * Review that prompted the Advisor counts, including failed and invalidated ones, since their
+   * tokens were billed. A cost is known when the Review cost something or its model has prices,
+   * so a Review without usage on a priced model costs $0.
+   */
+  private chargeReview(review: Review): void {
+    if (!review.usage) return;
+    const { runtime, costBefore } = review.usage;
+    delete review.usage;
+    const cost = runtime.session.getSessionStats().cost - costBefore;
+    const known = cost > 0 || priced(runtime);
+    const previous = this.reviewCost;
+    this.reviewCost = {
+      reviews: (previous?.reviews ?? 0) + 1,
+      last: known ? cost : null,
+      total: known && previous?.total !== null ? (previous?.total ?? 0) + cost : null,
+    };
+    this.changed();
   }
 
   private consultationUnavailable(): string | undefined {
@@ -907,19 +1029,36 @@ export class AdvisorObserver {
   }
   /** Coordinator-owned barrier before final task delivery. No detached child prompts. */
   async finishOwnedTurn(): Promise<void> {
-    await this.wait(1);
+    this.markDue();
+    await this.drain();
     await this.preservePendingFindings();
     while (this.canCorrect()) {
       await this.correct();
-      await this.wait(1);
+      this.markDue();
+      await this.drain();
       await this.preservePendingFindings();
     }
-    if (this.running) this.reset();
+    this.stopUnfinishedReview();
   }
-  private async wait(threshold: number, signal?: AbortSignal): Promise<void> {
+  /**
+   * Final drain before completion: wait for every completed turn's Review and any compaction
+   * after it, for at most one Review deadline rather than the Catch-up Wait ceiling, so a Review
+   * covering a whole request can finish.
+   */
+  private drain(): Promise<void> {
+    return this.wait(0, undefined, this.config.reviewTimeoutMs);
+  }
+  /**
+   * After the final drain, stop a Review still under way. A compaction left running keeps its
+   * own deadline, so the Advisor Session and deferred Concerns survive it.
+   */
+  private stopUnfinishedReview(): void {
+    if (this.running && this.completed > this.reviewed) this.reset();
+  }
+  private async wait(threshold: number, signal?: AbortSignal, ceilingMs = 30_000): Promise<void> {
     const { promise: expired, resolve } = Promise.withResolvers<void>();
     const release = () => resolve();
-    const timer = setTimeout(release, 30000);
+    const timer = setTimeout(release, ceilingMs);
     if (signal?.aborted) release();
     else signal?.addEventListener("abort", release, { once: true });
     try {
@@ -942,11 +1081,12 @@ export class AdvisorObserver {
   }
   /** Root extension's awaited native agent_settled hook. */
   async settled(): Promise<void> {
+    this.markDue();
     await this.preservePendingFindings();
     this.scheduleCorrection();
     if (this.mode !== "headless-root") return;
-    await this.wait(1);
-    if (this.running) this.reset();
+    await this.drain();
+    this.stopUnfinishedReview();
   }
   /** Invalidate old context synchronously; native private shutdown remains tracked. */
   reset(): void {
@@ -959,6 +1099,7 @@ export class AdvisorObserver {
     this.snapshot = undefined;
     this.completed = 0;
     this.reviewed = 0;
+    this.dueThrough = 0;
     this.error = undefined;
     this.deferred = [];
     this.pendingCorrection = false;

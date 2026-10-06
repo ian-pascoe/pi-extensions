@@ -1,0 +1,9 @@
+---
+"@ian-pascoe/pi-advisor": minor
+---
+
+Advisor Reviews can now cost less. The new `reviewEvery` setting reviews after every turn (`"turn"`, the default), after every N turns and when the request completes, or once per request (`"request"`); a turn with a failed tool call is still reviewed at once, and each Review covers every turn not yet reviewed. The new `maxSessionTokens` setting (default `auto`, half the Advisor model's context window, at most 200k tokens) compacts the private Advisor Session with Pi's native compaction after a Review that leaves it larger, so later Reviews stop re-reading an ever-growing history; delivered findings, deferred Concerns, and incremental evidence carry on unchanged. `/advisor status` now shows the last Review's cost and the running total of Reviews, including any compaction they ran, and shows unknown cost as unknown; expanded, it shows each Child Agent's Review cost. A failed or timed-out compaction does not pause the Advisor; the next Review starts a fresh Advisor Session from a Context Seed.
+
+Headless final drains and Minimal Subagents task completion now wait for final Reviews up to one Review deadline (`reviewTimeoutMs`, 120 seconds by default) instead of 30 seconds, so a Review covering a whole request is not dropped. A Review already running when the observed session compacts now finishes and delivers its findings instead of being discarded. When the evidence a Review would add exceeds `seedBudgetTokens`, the Advisor Session is rebuilt from a Context Seed within that budget.
+
+The `auto` `seedBudgetTokens` is now at most 100k tokens (still a quarter of the window for windows up to 400k), so an automatic Context Seed fits well within the automatic Advisor Session cap. Both ceilings keep Advisors on 1M-token models from re-reading a ~500k-token session on every Review, which was measured costing at least $0.12 per Review that found nothing; set either value explicitly to use more of a large window.

@@ -35,6 +35,8 @@ describe("Advisor commands through the native SDK", () => {
       "set maxCorrectiveTurns",
       "set maxFindingsPerReview",
       "set seedBudgetTokens",
+      "set reviewEvery",
+      "set maxSessionTokens",
     ]);
     expect(await values("inherit c")).toEqual(["inherit catchUpThreshold"]);
     expect(await values("set  allowedT")).toEqual(["set  allowedTools"]);
@@ -457,6 +459,29 @@ describe("Advisor commands through the native SDK", () => {
     }
     await session.prompt('/advisor set seedBudgetTokens "auto"');
     expect(status()).toMatchObject({ data: { settings: { seedBudgetTokens: "auto" } } });
+    expect(status()).toMatchObject({
+      data: { settings: { reviewEvery: "turn", maxSessionTokens: "auto" } },
+    });
+    for (const value of ['"request"', "5", '"turn"']) {
+      await session.prompt(`/advisor set reviewEvery ${value}`);
+      expect(status()).toMatchObject({
+        data: { settings: { reviewEvery: JSON.parse(value) }, sources: { reviewEvery: "session" } },
+      });
+    }
+    await session.prompt("/advisor set maxSessionTokens 150000");
+    expect(status()).toMatchObject({
+      data: { settings: { maxSessionTokens: 150_000 }, sources: { maxSessionTokens: "session" } },
+    });
+    for (const [key, value] of [
+      ["reviewEvery", "0"],
+      ["reviewEvery", "2.5"],
+      ["reviewEvery", '"task"'],
+      ["maxSessionTokens", "0"],
+      ["maxSessionTokens", '"half"'],
+    ] as const) {
+      await session.prompt(`/advisor set ${key} ${value}`);
+      expect(status()).toMatchObject({ data: { error: expect.stringContaining(key) } });
+    }
     await session.prompt("/advisor set catchUpThreshold 0 --global");
     expect(status()).toMatchObject({
       data: { error: expect.stringContaining("Invalid global Advisor settings") },

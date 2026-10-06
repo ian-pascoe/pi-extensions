@@ -34,6 +34,10 @@ export const advisorOptionsSchema = Type.Object(
     ),
     maxFindingsPerReview: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 })),
     seedBudgetTokens: Type.Optional(Type.Union([positiveInteger, Type.Literal("auto")])),
+    reviewEvery: Type.Optional(
+      Type.Union([Type.Literal("turn"), Type.Literal("request"), positiveInteger]),
+    ),
+    maxSessionTokens: Type.Optional(Type.Union([positiveInteger, Type.Literal("auto")])),
   },
   { additionalProperties: false },
 );
@@ -71,12 +75,26 @@ const defaults = {
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
   seedBudgetTokens: "auto" as const,
+  reviewEvery: "turn" as const,
+  maxSessionTokens: "auto" as const,
 };
 
 /**
- * Context Seed token budget. `auto` takes a quarter of the Advisor model's context window: the
- * seed is resent with every inference of the first Review and stays in the Advisor Session, so
- * the rest is left for the Advisor Prompt, investigation, and later incremental Reviews.
+ * Absolute ceilings for the `auto` sizes. Every Review re-reads the whole Advisor Session, so its
+ * size, not the model's window, sets the per-Review floor: a ~500K-token session cost at least
+ * $0.12 per empty Review in cache reads alone. Window fractions alone reproduce that on 1M
+ * windows; these keep large-window defaults at what a 400K window gets.
+ */
+const autoSeedCeiling = 100_000;
+const autoSessionCeiling = 200_000;
+/** Pi's branch summarization uses the same fallback for models without a declared window. */
+const fallbackWindow = 128_000;
+
+/**
+ * Context Seed token budget. `auto` takes a quarter of the Advisor model's context window, at most
+ * 100K: the seed is resent with every inference of the first Review and stays in the Advisor
+ * Session, so the rest is left for the Advisor Prompt, investigation, and later incremental
+ * Reviews, and it stays at most half the `auto` Advisor Session cap.
  */
 export function seedBudget(
   setting: AdvisorConfig["seedBudgetTokens"],
@@ -84,8 +102,22 @@ export function seedBudget(
 ): number {
   // An explicit budget never exceeds the window of a model that declares one.
   if (setting !== "auto") return contextWindow ? Math.min(setting, contextWindow) : setting;
-  // Pi's branch summarization uses the same fallback for models without a declared window.
-  return Math.floor((contextWindow || 128_000) / 4);
+  return Math.min(Math.floor((contextWindow || fallbackWindow) / 4), autoSeedCeiling);
+}
+
+/**
+ * Advisor Session size above which a completed Review compacts it. `auto` takes half the Advisor
+ * model's context window, at most 200K: room for an `auto` Context Seed plus as much again for
+ * incremental Reviews, so a full seed alone never forces compaction, while staying far below
+ * Pi's own threshold (the window less its reserve), where every Review re-reads almost a full
+ * window. Compaction re-sends the history it summarizes, so a much lower cap compacts often.
+ */
+export function sessionTokenLimit(
+  setting: AdvisorConfig["maxSessionTokens"],
+  contextWindow: number | undefined,
+): number {
+  if (setting !== "auto") return contextWindow ? Math.min(setting, contextWindow) : setting;
+  return Math.min(Math.floor((contextWindow || fallbackWindow) / 2), autoSessionCeiling);
 }
 
 const sessionSchema = Type.Object(

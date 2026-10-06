@@ -218,7 +218,6 @@ export default function advisor(pi: ExtensionAPI): void {
     for (const child of children.values()) child.observer?.reset();
     await refresh(ctx);
   });
-  pi.on("session_compact", () => observer?.reset());
   pi.on("model_select", () => observer?.reset());
   pi.on("before_agent_start", () => observer?.beforeTask());
   pi.on("agent_settled", () => observer?.settled());
@@ -372,6 +371,7 @@ export default function advisor(pi: ExtensionAPI): void {
       effectiveThinkingLevel: live?.effectiveThinkingLevel ?? null,
       usage: live?.usage ?? null,
       cost: live?.cost ?? null,
+      reviewCost: live?.reviewCost ?? null,
       unavailableTools: live?.unavailableTools ?? null,
       children: [...children.values()].map((child) => ({
         agentId: child.agentId,
