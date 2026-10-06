@@ -667,6 +667,20 @@ describe("minimal subagents coordinator", () => {
     await coordinator.shutdown();
   });
 
+  it("names the existing child's state and next steps when an agent ID is already in use", async () => {
+    const { coordinator } = coordinatorFixture();
+    await coordinator.spawn("root", { task: "Investigate", agent_id: "echo" }, caller);
+    const duplicate = () => coordinator.spawn("root", { task: "Again", agent_id: "echo" }, caller);
+    await expect(duplicate()).rejects.toThrow(
+      "Minimal subagents duplicate agent ID: echo already exists (running). Use agent_message to continue it, subagent_delete to remove it, or choose another agent_id.",
+    );
+    await coordinator.wait("root", "echo", 1_000);
+    await expect(duplicate()).rejects.toThrow(
+      "duplicate agent ID: echo already exists (idle). Use agent_message to continue it, subagent_delete to remove it, or choose another agent_id.",
+    );
+    await coordinator.shutdown();
+  });
+
   it("reports the live Runtime Profile while preserving the Launch Contract and nested defaults", async () => {
     const runtime = childRuntime();
     const { coordinator } = coordinatorFixture(runtime);

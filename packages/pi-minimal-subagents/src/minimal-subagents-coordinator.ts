@@ -260,7 +260,11 @@ export class MinimalSubagentsCoordinator {
       );
     }
     if (this.agents.has(agentId) || this.pendingAgentIds.has(agentId)) {
-      throw new Error(`Minimal subagents duplicate agent ID: ${agentId}`);
+      const existing = this.agents.get(agentId);
+      const state = !existing ? "starting" : existing.active_turn_id ? "running" : "idle";
+      throw new Error(
+        `Minimal subagents duplicate agent ID: ${agentId} already exists (${state}). Use agent_message to continue it, subagent_delete to remove it, or choose another agent_id.`,
+      );
     }
 
     const sessionContext = parameters.session_context ?? "omit";
