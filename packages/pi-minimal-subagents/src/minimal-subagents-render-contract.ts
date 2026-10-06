@@ -5,7 +5,7 @@ import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
 
 export type CoordinatorToolName = (typeof COORDINATOR_TOOL_NAMES)[number];
 
-export const RenderUsageSchema = Type.Object({
+const RenderUsageSchema = Type.Object({
   input: Type.Number(),
   output: Type.Number(),
   cacheRead: Type.Number(),
@@ -272,7 +272,10 @@ const CoordinatorWaitSourceOutputSchema = {
   source_turn_id: Type.String(),
 };
 
-/** Final details schemas exposed to CodeMode for the six coordinator tools. */
+/**
+ * Final details schemas exposed to CodeMode for the six coordinator tools. `structuredContent`
+ * matches them with every `usage.cost` field rounded for presentation.
+ */
 export const CoordinatorToolOutputSchemas = {
   subagent: Type.Object({
     agent_id: Type.String(),

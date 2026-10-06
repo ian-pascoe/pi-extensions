@@ -64,10 +64,18 @@ describe("minimal subagents usage", () => {
       }
     });
 
-    it("keeps the rounded total equal to the rounded component sum within rounding tolerance", () => {
-      const { cost } = roundMinimalSubagentsUsageCosts(noisy);
+    it("keeps the rounded total within rounding tolerance of the rounded component sum", () => {
+      // Each part rounds down to 0 while the total rounds up, so rounding visibly drifts.
+      const part = 4e-7;
+      const drifting = {
+        ...usage(1),
+        cost: { input: part, output: part, cacheRead: part, cacheWrite: part, total: 4 * part },
+      };
+      const { cost } = roundMinimalSubagentsUsageCosts(drifting);
       const sum = cost.input + cost.output + cost.cacheRead + cost.cacheWrite;
-      // Each of the five fields is rounded independently, so drift is at most half a unit each.
+      expect(cost.total).toBe(0.000002);
+      expect(sum).toBe(0);
+      // Five independently rounded fields drift by at most half a unit each.
       expect(Math.abs(cost.total - sum)).toBeLessThanOrEqual(
         5 * 0.5 * 10 ** -MINIMAL_SUBAGENTS_COST_DECIMALS,
       );
@@ -81,9 +89,11 @@ describe("minimal subagents usage", () => {
       expect(rounded.totalTokens).toBe(1);
     });
 
-    it("preserves non-finite costs", () => {
-      const odd = { ...usage(1), cost: { ...usage(1).cost, total: Number.NaN } };
-      expect(roundMinimalSubagentsUsageCosts(odd).cost.total).toBeNaN();
+    it("preserves a non-finite cost while still rounding the others", () => {
+      const odd = { ...usage(1), cost: { ...noisy.cost, total: Number.NaN } };
+      const { cost } = roundMinimalSubagentsUsageCosts(odd);
+      expect(cost.total).toBeNaN();
+      expect(cost.input).toBe(0.000023);
     });
   });
 });

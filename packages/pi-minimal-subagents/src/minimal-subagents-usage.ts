@@ -1,6 +1,4 @@
 import type { Usage } from "@earendil-works/pi-ai";
-import { Value } from "typebox/value";
-import { RenderUsageSchema } from "./minimal-subagents-render-contract.js";
 
 /** Return a clone with optional counters present, so every reported usage has one shape. */
 export function normalizeMinimalSubagentsUsage(usage: Usage): Usage {
@@ -64,22 +62,4 @@ export function roundMinimalSubagentsUsageCosts(usage: Usage): Usage {
       total: roundCost(usage.cost.total),
     },
   };
-}
-
-/** Every value `JSON.stringify` can hand to a replacer. */
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-
-/**
- * Serialize a tool result to JSON with every nested `usage` cost rounded for presentation. Exact
- * values stay in the Registry and session data, which never pass through here.
- */
-export function stringifyMinimalSubagentsResult<T>(result: T, space?: number): string {
-  return JSON.stringify(
-    result,
-    (key, value: JsonValue) =>
-      key === "usage" && Value.Check(RenderUsageSchema, value)
-        ? roundMinimalSubagentsUsageCosts(value)
-        : value,
-    space,
-  );
 }
