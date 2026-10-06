@@ -478,8 +478,9 @@ session. Before Pi's `tool_call` hooks run, `prepareArguments()` replaces any su
 `operation` is `create`, `modify`, `delete`, or `rename`; only rename also has
 `destination_path`. A permission extension may inspect or
 block this manifest. Pi LSP validates it again after all hooks, then rechecks preview state,
-existence, hashes, modes, and destinations inside Pi's per-file mutation queues, taken once per real file in the order Pi Formatter uses. Paths are
-not restricted to the workspace.
+existence, hashes, modes, and destinations inside Pi's per-file mutation queues, taken sorted by
+real path so a symlink cannot order differently than its target. Paths are not restricted to the
+workspace.
 
 Application uses temporary-file replacement, preserves modes and UTF-8 BOMs, and keeps originals
 for reverse rollback. Content edits follow existing symlinks and expose the canonical target;

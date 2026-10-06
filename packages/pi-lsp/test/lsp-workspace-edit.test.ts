@@ -52,6 +52,19 @@ function textEdit(path: string, oldEnd: number, newText: string): WorkspaceEdit 
   };
 }
 
+/** "completed" when the work settles in time, else "deadlocked"; the guard timer never lingers. */
+async function completesWithin(work: Promise<unknown>, milliseconds = 3000): Promise<string> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<string>((done) => {
+    timer = setTimeout(() => done("deadlocked"), milliseconds);
+  });
+  try {
+    return await Promise.race([work.then(() => "completed"), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function expectWorkspaceEditCode(
   promise: Promise<unknown>,
   code: LspWorkspaceEditError["code"],
@@ -454,7 +467,7 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
     expect(await readFile(file, "utf8")).toBe("after\n");
   });
 
-  test("acquires sorted canonical queues and honors cancellation before mutation", async () => {
+  test("acquires sorted real-path queues and honors cancellation before mutation", async () => {
     const root = await makeTemporaryDirectory();
     const a = resolve(root, "a.ts");
     const z = resolve(root, "z.ts");
@@ -537,10 +550,7 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
       preview.preview_id,
       store.prepareMutationManifest(preview.preview_id),
     );
-    const outcome = await Promise.race([
-      applied.then(() => "completed"),
-      new Promise<string>((done) => setTimeout(() => done("deadlocked"), 3000)),
-    ]);
+    const outcome = await completesWithin(applied);
     expect(outcome).toBe("completed");
     expect(queued).toEqual([await realpath(target)]);
     expect(await readFile(target, "utf8")).toBe("Z");
@@ -590,10 +600,7 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
       preview.preview_id,
       store.prepareMutationManifest(preview.preview_id),
     );
-    const outcome = await Promise.race([
-      Promise.all([holder, applied]).then(() => "completed"),
-      new Promise<string>((done) => setTimeout(() => done("deadlocked"), 3000)),
-    ]);
+    const outcome = await completesWithin(Promise.all([holder, applied]));
     expect(outcome).toBe("completed");
     expect(await readFile(target, "utf8")).toBe("z");
     await expect(lstat(link)).rejects.toMatchObject({ code: "ENOENT" });

@@ -415,12 +415,12 @@ async function mutationQueueKey(path: string): Promise<string> {
 }
 
 /**
- * The paths to queue for a manifest: one per distinct queue key, in the order Pi Formatter takes
- * them (`localeCompare`, ties broken by code unit). Pi's queue is not reentrant, so paths naming
- * one file are queued once, and sorting keys rather than named paths keeps a symlink from
- * ordering differently than its target does for another holder.
+ * The queue keys to take for a manifest, one per distinct key, sorted by `localeCompare` with ties
+ * broken by code unit; Pi Formatter sorts its keys the same way. Pi's queue is not reentrant, so
+ * paths sharing a key are queued once, and sorting keys rather than named paths keeps a symlink
+ * from ordering differently than its target does for another holder.
  */
-async function manifestQueuePaths(manifest: LspMutationManifest): Promise<string[]> {
+async function manifestQueueKeys(manifest: LspMutationManifest): Promise<string[]> {
   const paths = new Set<string>();
   for (const entry of manifest.entries) {
     paths.add(entry.path);
@@ -725,11 +725,11 @@ export class LspWorkspaceEditStore {
         "Mutation Manifest no longer matches its preview",
       );
     }
-    const queuePaths = await manifestQueuePaths(canonical);
+    const queueKeys = await manifestQueueKeys(canonical);
     const acquire = async (index: number): Promise<LspWorkspaceEditApplyResult> => {
-      const path = queuePaths[index];
-      if (path === undefined) return this.applyInsideQueues(preview, canonical, signal);
-      return this.queueMutation(path, () => acquire(index + 1));
+      const key = queueKeys[index];
+      if (key === undefined) return this.applyInsideQueues(preview, canonical, signal);
+      return this.queueMutation(key, () => acquire(index + 1));
     };
     return acquire(0);
   }
