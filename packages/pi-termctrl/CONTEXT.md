@@ -16,3 +16,7 @@ _Avoid_: Background shell, detached process, task
 **Exit notification**:
 A message telling the agent that a Terminal or Background job ended, which it had not already seen through a tool call.
 _Avoid_: Completion event, callback
+
+**Call queue**:
+The order in which one Terminal's tool calls run: each types, presses keys, and settles before the next starts. Different Terminals have separate queues.
+_Avoid_: Lock, serialization

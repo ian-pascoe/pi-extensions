@@ -47,6 +47,12 @@ with input, and 30 s for a `terminal_send` with neither `text` nor `keys` (a
 poll, which settles on quiet only after new output). Every `wait_ms` clamps to
 5 minutes.
 
+Calls to one Terminal run one at a time, in arrival order: a parallel batch of
+`terminal_send` calls (and the final snapshot of a `terminal_stop`) each types,
+presses keys, and settles before the next starts, so every result shows its own
+call's screen. Calls to different Terminals stay concurrent. Aborting a waiting
+call removes it without affecting the running one.
+
 Results say why the wait ended in `settle_reason` (`matched`, `timeout`, `quiet`
 or `exited`) and in their first line, such as `t1 running · settled: timeout`; a
 `wait_for_text` that timed out adds that the pattern was not seen. Polls report
