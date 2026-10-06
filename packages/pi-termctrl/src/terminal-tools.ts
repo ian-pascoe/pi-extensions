@@ -580,20 +580,12 @@ async function terminalResult(
   };
 }
 
-/** The calls driving one Terminal: one runs at a time and the rest wait in arrival order. */
-interface CallQueue {
-  busy: boolean;
-  readonly waiting: QueuedCall[];
-}
-
-interface QueuedCall {
-  readonly start: () => void;
-}
-
-const callQueues = new WeakMap<TerminalEntry, CallQueue>();
-
-function cancelledBeforeStart(entry: TerminalEntry): Error {
-  return new Error(`The call to ${entry.id} was cancelled before it started.`);
+/** A call that was removed from its Terminal's queue before it started. */
+class CallCancelledError extends Error {
+  constructor(id: string) {
+    super(`The call to ${id} was cancelled before it started.`);
+    this.name = "CallCancelledError";
+  }
 }
 
 /**
@@ -603,39 +595,37 @@ function cancelledBeforeStart(entry: TerminalEntry): Error {
  * it from the queue and rejects it; the running call is untouched.
  */
 function awaitTurn(entry: TerminalEntry, signal: AbortSignal | undefined): Promise<() => void> {
-  let queue = callQueues.get(entry);
-  if (queue === undefined) {
-    queue = { busy: false, waiting: [] };
-    callQueues.set(entry, queue);
-  }
-  const owned = queue;
+  const queue = entry.callQueue;
   const release = () => {
-    const next = owned.waiting.shift();
-    if (next === undefined) owned.busy = false;
-    else next.start();
+    const next = queue.waiting.shift();
+    if (next === undefined) queue.running = false;
+    else next();
   };
-  if (signal?.aborted === true) return Promise.reject(cancelledBeforeStart(entry));
-  if (!owned.busy) {
-    owned.busy = true;
+  if (signal?.aborted === true) return Promise.reject(new CallCancelledError(entry.id));
+  if (!queue.running) {
+    queue.running = true;
     return Promise.resolve(release);
   }
   return new Promise((resolve, reject) => {
     const onAbort = () => {
-      const index = owned.waiting.indexOf(call);
-      if (index !== -1) owned.waiting.splice(index, 1);
-      reject(cancelledBeforeStart(entry));
+      const index = queue.waiting.indexOf(start);
+      if (index !== -1) queue.waiting.splice(index, 1);
+      reject(new CallCancelledError(entry.id));
     };
-    const call: QueuedCall = {
-      start: () => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve(release);
-      },
+    const start = () => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(release);
     };
-    owned.waiting.push(call);
+    queue.waiting.push(start);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
+/**
+ * Run one call against a Terminal in its turn. A call that waited finds the Terminal as the calls
+ * ahead left it, so `run` must read the Terminal's state itself. A Terminal that a call ahead
+ * stopped is gone by then.
+ */
 async function driveTerminal<T>(
   registry: TermctrlRegistry,
   entry: TerminalEntry,
@@ -647,6 +637,7 @@ async function driveTerminal<T>(
   let release: (() => void) | undefined;
   try {
     release = await awaitTurn(entry, signal);
+    if (registry.find(entry.owner, entry.id) !== entry) throw unknownId(entry.id);
     return await run();
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause));
@@ -726,7 +717,9 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
       });
       // Launching, including a cold driver start, does not count toward the quiet period.
       const startedAt = Date.now();
-      return driveTerminal(runtime.registry, entry, signal, async () => {
+      // The Terminal is running and nothing else knows its id yet, so the call never queues; an
+      // abort ends the wait but must still return the id, or the agent could not reach the Terminal.
+      return driveTerminal(runtime.registry, entry, undefined, async () => {
         const { snapshot, reason } = await settleTerminal(entry, {
           mode: "start",
           waitMs: clampWait(params.wait_ms, START_WAIT_MS),
@@ -779,18 +772,10 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
         );
       }
       const hasInput = (params.text ?? "") !== "" || keys.length > 0;
-      if (entry.state === "exited") {
-        if (hasInput) {
-          // The error tells the agent about the exit, so a deferred Exit notification is redundant.
-          runtime.registry.markSeen(entry.id);
-          throw inputToExited(entry.id, entry.exit);
-        }
-        return terminalResult(runtime.registry, entry, undefined, "exited");
-      }
       return driveTerminal(runtime.registry, entry, signal, async () => {
         if (entry.state === "exited") {
-          // A call ahead in the queue saw the Terminal exit while this one waited.
           if (!hasInput) return terminalResult(runtime.registry, entry, undefined, "exited");
+          // The error tells the agent about the exit, so a deferred Exit notification is redundant.
           runtime.registry.markSeen(entry.id);
           throw inputToExited(entry.id, entry.exit);
         }
@@ -830,21 +815,39 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
 }
 
 /** Capture the lines a Terminal scrolled off since the agent's last result, before it is stopped. */
-async function finalScrolledOff(
-  registry: TermctrlRegistry,
-  entry: TerminalEntry,
-  signal: AbortSignal | undefined,
-): Promise<ScrolledOff> {
+async function finalScrolledOff(entry: TerminalEntry): Promise<ScrolledOff> {
   try {
     if (entry.state === "exited") return await takeScrolledOff(entry, entry.finalScreen ?? "");
-    return await driveTerminal(registry, entry, signal, async () =>
-      takeScrolledOff(entry, (await entry.handle.snapshot()).screen),
-    );
-  } catch (cause) {
-    // Cancelling a stop that is still queued must not kill the Terminal.
-    if (signal?.aborted === true) throw cause;
+    return await takeScrolledOff(entry, (await entry.handle.snapshot()).screen);
+  } catch {
     return NOTHING_SCROLLED;
   }
+}
+
+/** What a stop saw of a Terminal at its turn, before stopping it. */
+interface StopView {
+  readonly wasRunning: boolean;
+  readonly previousScreen: string | undefined;
+  readonly scrolled: ScrolledOff;
+  readonly entry: TermctrlEntry;
+}
+
+/**
+ * Stop a Terminal in its turn: the calls ahead have finished, so `wasRunning` and the previous
+ * screen are what they left, and calls queued behind find the Terminal gone.
+ */
+function stopTerminalInTurn(
+  registry: TermctrlRegistry,
+  known: TerminalEntry,
+  signal: AbortSignal | undefined,
+): Promise<StopView> {
+  return driveTerminal(registry, known, signal, async () => {
+    const wasRunning = known.state === "running";
+    const previousScreen = known.lastScreen;
+    const scrolled = await finalScrolledOff(known);
+    const entry = (await registry.stop(known.owner, known.id)) ?? known;
+    return { wasRunning, previousScreen, scrolled, entry };
+  });
 }
 
 /** `terminal_stop`: stop a Terminal or Background job and forget it. */
@@ -867,13 +870,15 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       const owner = ownerOf(context);
       const known = registry.find(owner, params.id);
       if (known === undefined) throw unknownId(params.id);
-      const wasRunning = known.state === "running";
-      const previousScreen = known.kind === "terminal" ? known.lastScreen : undefined;
-      const scrolled =
+      const { wasRunning, previousScreen, scrolled, entry } =
         known.kind === "terminal"
-          ? await finalScrolledOff(registry, known, signal)
-          : NOTHING_SCROLLED;
-      const entry = (await registry.stop(owner, params.id)) ?? known;
+          ? await stopTerminalInTurn(registry, known, signal)
+          : {
+              wasRunning: known.state === "running",
+              previousScreen: undefined,
+              scrolled: NOTHING_SCROLLED,
+              entry: (await registry.stop(owner, params.id)) ?? known,
+            };
       const label = entry.kind === "terminal" ? "Terminal" : "Background job";
       const header = wasRunning
         ? `${label} ${entry.id} stopped.`
