@@ -939,9 +939,15 @@ export class LspServerClient {
               synchronization: { didOpen: true, didClose: true, didSave: true },
               publishDiagnostics: { relatedInformation: true, versionSupport: true },
               diagnostic: { dynamicRegistration: true, relatedDocumentSupport: true },
-              completion: { dynamicRegistration: true },
-              hover: { dynamicRegistration: true },
-              signatureHelp: { dynamicRegistration: true },
+              completion: {
+                dynamicRegistration: true,
+                completionItem: { documentationFormat: ["markdown", "plaintext"] },
+              },
+              hover: { dynamicRegistration: true, contentFormat: ["markdown", "plaintext"] },
+              signatureHelp: {
+                dynamicRegistration: true,
+                signatureInformation: { documentationFormat: ["markdown", "plaintext"] },
+              },
               declaration: { dynamicRegistration: true, linkSupport: true },
               definition: { dynamicRegistration: true, linkSupport: true },
               typeDefinition: { dynamicRegistration: true, linkSupport: true },

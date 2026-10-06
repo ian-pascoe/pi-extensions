@@ -15,6 +15,11 @@ const clients: LspServerClient[] = [];
 
 interface FakeServerState {
   readonly initializationOptions: unknown;
+  readonly textDocumentCapabilities: {
+    readonly hover: unknown;
+    readonly completion: unknown;
+    readonly signatureHelp: unknown;
+  };
   readonly settingsNotifications: readonly unknown[];
   readonly opened: readonly {
     readonly uri: string;
@@ -112,6 +117,13 @@ describe("LspServerClient", () => {
     expect(client.hasCapability("textDocument/foldingRange")).toBe(true);
     expect(client.hasCapability("textDocument/prepareRename")).toBe(true);
     expect(state.initializationOptions).toEqual({ fakeInitialization: true });
+    expect(state.textDocumentCapabilities).toMatchObject({
+      hover: { contentFormat: ["markdown", "plaintext"] },
+      completion: { completionItem: { documentationFormat: ["markdown", "plaintext"] } },
+      signatureHelp: {
+        signatureInformation: { documentationFormat: ["markdown", "plaintext"] },
+      },
+    });
     expect(state.settingsNotifications).toEqual([
       { typescript: { preferences: { quoteStyle: "single" } } },
     ]);

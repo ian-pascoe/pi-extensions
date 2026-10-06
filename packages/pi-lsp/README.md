@@ -260,7 +260,9 @@ Diagnostics, hover, status, code actions, and apply results are compact text too
   diagnostics start with the server's coverage message, if any, and count clean files on one
   `N files: no diagnostics` line. A malformed diagnostic is shown as JSON on its own line.
 - `lsp_hover` shows only the hover's markdown or plaintext contents, under the `Query position:`
-  line.
+  line. The client advertises markdown support for hover, completion, and signature-help
+  documentation, so servers such as typescript-language-server fence the signature and set it apart
+  from its documentation; servers that only answer plaintext render as sent.
 - `lsp_status` lists one `server_id state [root] language(extensions,...) [error: ...]` line per
   Server Instance (running, starting, unavailable, or stopped) and per Disabled Server Definition.
   One `+N configured, not started (pass all: true to list)` line counts the other Server
