@@ -16,7 +16,7 @@ import type { TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, test } from "vitest";
 import todoExtension from "../src/index.js";
-import type { TodoActionInput, TodoToolDetails } from "../src/todo-list.js";
+import type { TodoActionInput, TodoTaskChange, TodoToolDetails } from "../src/todo-list.js";
 import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
 
 type TodoToolResult = {
@@ -445,6 +445,180 @@ describe("Pi Todo extension", () => {
         ),
       ),
     ).toBe("Added 1 Task\n[ ] #1 Batch");
+  });
+
+  test("batch update changes several Tasks atomically with one state entry", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+    const outputSchema = harness.tool.outputSchema;
+    if (outputSchema === undefined) throw new Error("todo declares no outputSchema");
+    await harness.execute(
+      {
+        action: "add",
+        tasks: [{ title: "One", description: "Old" }, { title: "Two" }, { title: "Three" }],
+      },
+      context,
+    );
+
+    const updated = await harness.execute(
+      {
+        action: "update",
+        updates: [
+          { id: 2, status: "active" },
+          { id: 1, status: "completed", title: "  Uno  ", description: null },
+        ],
+      },
+      context,
+    );
+
+    expect(resultText(updated)).toBe("Updated 2 Tasks\n[>] #2 Two\n[x] #1 Uno");
+    const changed = [
+      { id: 2, title: "Two", status: "active" },
+      { id: 1, title: "Uno", status: "completed" },
+    ];
+    expect(updated.details).toEqual({ action: "update", tasks: changed });
+    expect(updated.structuredContent).toEqual({ action: "update", tasks: changed });
+    expect(Value.Check(outputSchema, updated.structuredContent)).toBe(true);
+    expect(harness.entries).toHaveLength(2);
+    expect(harness.entries.at(-1)?.data).toEqual({
+      nextId: 4,
+      tasks: [
+        { id: 1, title: "Uno", status: "completed" },
+        { id: 2, title: "Two", status: "active" },
+        { id: 3, title: "Three", status: "pending" },
+      ],
+    });
+  });
+
+  test("batch update rejects the whole call without changing any Task", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+    await harness.execute({ action: "add", tasks: [{ title: "One" }, { title: "Two" }] }, context);
+    const before = resultText(await harness.execute({ action: "list" }, context));
+
+    const rejected = (updates: TodoTaskChange[], message: string) =>
+      expect(harness.execute({ action: "update", updates }, context)).rejects.toThrow(message);
+    await rejected(
+      [
+        { id: 1, status: "completed" },
+        { id: 9, status: "active" },
+      ],
+      "Todo update failed: updates[1].id: Task #9 was not found",
+    );
+    await rejected(
+      [
+        { id: 1, status: "completed" },
+        { id: 2, title: "   " },
+      ],
+      "Todo update failed: updates[1].title must not be empty",
+    );
+    await rejected(
+      [
+        { id: 1, status: "completed" },
+        { id: 2, description: " " },
+      ],
+      "Todo update failed: updates[1].description must not be empty",
+    );
+    await rejected(
+      [{ id: 1, status: "completed" }, { id: 2 }],
+      "Todo update failed: updates[1] must provide a title, description, or status",
+    );
+    await rejected(
+      [
+        { id: 1, status: "completed" },
+        { id: 2, status: "active" },
+        { id: 1, title: "Again" },
+      ],
+      "Todo update failed: updates[2].id #1 duplicates updates[0].id",
+    );
+    await rejected([], "Todo update failed: updates must not be empty");
+
+    expect(harness.entries).toHaveLength(1);
+    expect(resultText(await harness.execute({ action: "list" }, context))).toBe(before);
+  });
+
+  test("update rejects a request that combines updates with single-task fields", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+    await harness.execute({ action: "add", title: "One" }, context);
+    const updates = [{ id: 1, status: "active" as const }];
+
+    for (const single of [
+      { id: 1 },
+      { title: "Loose" },
+      { description: "Loose" },
+      { status: "completed" as const },
+    ]) {
+      await expect(
+        harness.execute({ action: "update", ...single, updates }, context),
+      ).rejects.toThrow("Todo update failed: provide either id and fields or updates, not both");
+    }
+    expect(harness.entries).toHaveLength(1);
+    // A null description means "absent", as it does for batch add.
+    expect(
+      resultText(await harness.execute({ action: "update", description: null, updates }, context)),
+    ).toBe("Updated 1 Task\n[>] #1 One");
+  });
+
+  test("tool schema accepts batch update and the transcript labels it", async () => {
+    const harness = new TodoExtensionHarness();
+    const { parameters } = harness.tool;
+    expect(
+      Value.Check(parameters, {
+        action: "update",
+        updates: [{ id: 1, status: "active", title: "A", description: null }],
+      }),
+    ).toBe(true);
+    expect(Value.Check(parameters, { action: "update", updates: [] })).toBe(false);
+    expect(Value.Check(parameters, { action: "update", updates: [{ status: "active" }] })).toBe(
+      false,
+    );
+    expect(Value.Check(parameters, { action: "update", updates: [{ id: 0 }] })).toBe(false);
+    expect(Value.Check(parameters, { action: "update", updates: [{ id: 1, extra: 1 }] })).toBe(
+      false,
+    );
+    if (!harness.tool.renderCall || !harness.tool.renderResult) {
+      throw new Error("todo declares no transcript renderers");
+    }
+    const context = harness.context();
+    await harness.execute(
+      { action: "add", tasks: [1, 2, 3, 4, 5, 6].map((n) => ({ title: `T${n}` })) },
+      context,
+    );
+    const batch = await harness.execute(
+      {
+        action: "update",
+        updates: [1, 2, 3, 4, 5, 6].map((id) => ({ id, status: "completed" as const })),
+      },
+      context,
+    );
+    expect(
+      renderTodoComponent(
+        harness.tool.renderResult(
+          batch,
+          { expanded: false, isPartial: false },
+          createTodoTestTheme(),
+        ),
+        80,
+      ).join("\n"),
+    ).toBe(
+      "Updated 6 Tasks:\n[x] #1 ~T1~\n[x] #2 ~T2~\n[x] #3 ~T3~\n[x] #4 ~T4~\n[x] #5 ~T5~\n… 1 more",
+    );
+    expect(
+      renderTodoComponent(
+        harness.tool.renderCall(
+          {
+            action: "update",
+            updates: [
+              { id: 1, status: "active" },
+              { id: 2, status: "active" },
+            ],
+          },
+          createTodoTestTheme(),
+        ),
+        80,
+      ),
+    ).toEqual(["todo update 2 Tasks"]);
   });
 
   test("batch add rejects exhausting the Task ID space without persisting", async () => {

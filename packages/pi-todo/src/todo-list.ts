@@ -38,6 +38,14 @@ export type TodoTaskDraft = {
   readonly description?: string;
 };
 
+/** One Task change within a batch `update`. */
+export type TodoTaskChange = {
+  readonly id: number;
+  readonly title?: string;
+  readonly description?: string | null;
+  readonly status?: TodoStatus;
+};
+
 /** Boundary input shared by the Todo tool's five operations. */
 export type TodoActionInput = {
   readonly action: TodoAction;
@@ -45,6 +53,7 @@ export type TodoActionInput = {
   readonly title?: string;
   readonly description?: string | null;
   readonly tasks?: readonly TodoTaskDraft[];
+  readonly updates?: readonly TodoTaskChange[];
   readonly status?: TodoStatus;
 };
 
@@ -52,10 +61,10 @@ export type TodoActionInput = {
  * Render details and the tool's structured result. The action, plus `tasks` versus `task` for
  * `add`, discriminates the list from the Task(s) a mutation added or updated, the ID it removed,
  * and the count it cleared. A batch `add` returns the Tasks it created as `tasks`; a single `add`
- * returns `task`.
+ * returns `task`; likewise a batch `update` returns the Tasks it changed as `tasks`.
  */
 export type TodoToolDetails =
-  | { readonly action: "list" | "add"; readonly tasks: readonly TodoTask[] }
+  | { readonly action: "list" | "add" | "update"; readonly tasks: readonly TodoTask[] }
   | { readonly action: "add" | "update"; readonly task: TodoTask }
   | { readonly action: "remove"; readonly id: TodoTaskId }
   | { readonly action: "clear"; readonly cleared: number };
@@ -74,14 +83,15 @@ const TodoTaskRecord = Type.Object({
 /**
  * JSON Schema of the `todo` tool's `structuredContent`, which codemode scripts receive instead of
  * the model-facing text. Flat so Pi's one-line script declaration stays compact; `action` (and, for
- * `add`, whether the request carried `tasks`) says which other field is present.
+ * `add` and `update`, whether the request carried `tasks` or `updates`) says which other field is present.
  */
 export const TodoToolOutputSchema = Type.Object(
   {
     action: StringEnum(TODO_ACTIONS, { description: "The operation that ran" }),
     tasks: Type.Optional(
       Type.Array(TodoTaskRecord, {
-        description: "list: every Task in ID order; add with tasks: the Tasks created, in ID order",
+        description:
+          "list: every Task in ID order; add with tasks: the Tasks created, in ID order; update with updates: the Tasks changed, in request order",
       }),
     ),
     task: Type.Optional(TodoTaskRecord),
@@ -258,6 +268,106 @@ function addTasks(
   };
 }
 
+/** Replaces each changed Task in place, keeping Task order and the next ID. */
+function replaceTasks(state: TodoStateSnapshot, changed: readonly TodoTask[]): TodoStateSnapshot {
+  const byId = new Map(changed.map((task) => [task.id, task]));
+  return {
+    nextId: state.nextId,
+    tasks: state.tasks.map((candidate) => byId.get(candidate.id) ?? candidate),
+  };
+}
+
+/** Applies one change to a Task; `field` prefixes the field name in the failure message. */
+function changeTask(
+  task: TodoTask,
+  change: Pick<TodoTaskChange, "title" | "description" | "status">,
+  field: string,
+): TodoTask | TodoActionResult {
+  if (
+    change.title === undefined &&
+    change.description === undefined &&
+    change.status === undefined
+  ) {
+    return todoOperationFailure(
+      "update",
+      field === ""
+        ? "Todo update failed: provide a title, description, or status"
+        : `Todo update failed: ${field.slice(0, -1)} must provide a title, description, or status`,
+    );
+  }
+  const title = change.title === undefined ? task.title : change.title.trim();
+  if (!title) {
+    return todoOperationFailure("update", `Todo update failed: ${field}title must not be empty`);
+  }
+  const description =
+    change.description === undefined ? task.description : change.description?.trim();
+  if (change.description !== undefined && change.description !== null && !description) {
+    return todoOperationFailure(
+      "update",
+      `Todo update failed: ${field}description must not be empty`,
+    );
+  }
+  return newTodoTask(task.id, title, description, change.status ?? task.status);
+}
+
+/** Validates every change before applying any, so a batch is all-or-nothing. */
+function updateTasks(
+  state: TodoStateSnapshot,
+  input: TodoActionInput & { readonly updates: readonly TodoTaskChange[] },
+): TodoActionResult {
+  // A null description is "absent" here, as it is for a batch add.
+  if (
+    input.id !== undefined ||
+    input.title !== undefined ||
+    (input.description ?? undefined) !== undefined ||
+    input.status !== undefined
+  ) {
+    return todoOperationFailure(
+      "update",
+      "Todo update failed: provide either id and fields or updates, not both",
+    );
+  }
+  if (input.updates.length === 0) {
+    return todoOperationFailure("update", "Todo update failed: updates must not be empty");
+  }
+  const seen = new Map<number, number>();
+  const changed: TodoTask[] = [];
+  for (const [index, change] of input.updates.entries()) {
+    const field = `updates[${index}].`;
+    const id = parseTodoTaskId(change.id);
+    if (id === undefined) {
+      return todoOperationFailure(
+        "update",
+        `Todo update failed: ${field}id must be a positive safe integer`,
+      );
+    }
+    const first = seen.get(id);
+    if (first !== undefined) {
+      return todoOperationFailure(
+        "update",
+        `Todo update failed: ${field}id #${id} duplicates updates[${first}].id`,
+      );
+    }
+    seen.set(id, index);
+    const task = state.tasks.find((candidate) => candidate.id === id);
+    if (!task) {
+      return todoOperationFailure(
+        "update",
+        `Todo update failed: ${field}id: Task #${id} was not found`,
+      );
+    }
+    const result = changeTask(task, change, field);
+    if (!("title" in result)) return result;
+    changed.push(result);
+  }
+  return {
+    ok: true,
+    state: replaceTasks(state, changed),
+    message: `Updated ${formatTaskCount(changed.length)}\n${formatTodoList(changed)}`,
+    details: { action: "update", tasks: changed },
+  };
+}
+
 /** Applies one validated-by-schema tool request without performing session or UI effects. */
 export function applyTodoAction(
   state: TodoStateSnapshot,
@@ -280,6 +390,9 @@ export function applyTodoAction(
     case "update":
     case "remove": {
       const action = input.action;
+      if (action === "update" && input.updates !== undefined) {
+        return updateTasks(state, { ...input, updates: input.updates });
+      }
       if (input.id === undefined) {
         return todoOperationFailure(action, `Todo ${action} failed: id is required`);
       }
@@ -308,38 +421,13 @@ export function applyTodoAction(
           details: { action: "remove", id: task.id },
         };
       }
-      if (
-        input.title === undefined &&
-        input.description === undefined &&
-        input.status === undefined
-      ) {
-        return todoOperationFailure(
-          "update",
-          "Todo update failed: provide a title, description, or status",
-        );
-      }
-      const title = input.title === undefined ? task.title : input.title.trim();
-      if (!title) {
-        return todoOperationFailure("update", "Todo update failed: title must not be empty");
-      }
-      const description =
-        input.description === undefined ? task.description : input.description?.trim();
-      if (input.description !== undefined && input.description !== null && !description) {
-        return todoOperationFailure("update", "Todo update failed: description must not be empty");
-      }
-      const updatedTask: TodoTask = description
-        ? { id: task.id, title, description, status: input.status ?? task.status }
-        : { id: task.id, title, status: input.status ?? task.status };
+      const changed = changeTask(task, input, "");
+      if (!("title" in changed)) return changed;
       return {
         ok: true,
-        state: {
-          nextId: state.nextId,
-          tasks: state.tasks.map((candidate) =>
-            candidate.id === updatedTask.id ? updatedTask : candidate,
-          ),
-        },
+        state: replaceTasks(state, [changed]),
         message: `Updated Task #${task.id}`,
-        details: { action: "update", task: updatedTask },
+        details: { action: "update", task: changed },
       };
     }
 
