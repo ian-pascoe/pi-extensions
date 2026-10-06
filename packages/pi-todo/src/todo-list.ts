@@ -59,7 +59,7 @@ export type TodoActionInput = {
 
 /**
  * Render details and the tool's structured result. The action, plus `tasks` versus `task` for
- * `add`, discriminates the list from the Task(s) a mutation added or updated, the ID it removed,
+ * `add` and `update`, discriminates the list from the Task(s) a mutation added or updated, the ID it removed,
  * and the count it cleared. A batch `add` returns the Tasks it created as `tasks`; a single `add`
  * returns `task`; likewise a batch `update` returns the Tasks it changed as `tasks`.
  */
@@ -83,7 +83,8 @@ const TodoTaskRecord = Type.Object({
 /**
  * JSON Schema of the `todo` tool's `structuredContent`, which codemode scripts receive instead of
  * the model-facing text. Flat so Pi's one-line script declaration stays compact; `action` (and, for
- * `add` and `update`, whether the request carried `tasks` or `updates`) says which other field is present.
+ * `add` and `update`, whether the request carried `tasks` or `updates`) says which other field is
+ * present.
  */
 export const TodoToolOutputSchema = Type.Object(
   {
@@ -211,7 +212,9 @@ function parseTodoDraft(
   return { title: trimmedTitle, description: trimmedDescription };
 }
 
-function isTodoActionResult(value: ParsedTodoDraft | TodoActionResult): value is TodoActionResult {
+function isTodoActionResult<T extends object>(
+  value: T | TodoActionResult,
+): value is TodoActionResult {
   return "ok" in value;
 }
 
@@ -277,11 +280,11 @@ function replaceTasks(state: TodoStateSnapshot, changed: readonly TodoTask[]): T
   };
 }
 
-/** Applies one change to a Task; `field` prefixes the field name in the failure message. */
+/** Applies one change to a Task; `path` (e.g. `updates[1]`) locates a batch entry in failures. */
 function changeTask(
   task: TodoTask,
   change: Pick<TodoTaskChange, "title" | "description" | "status">,
-  field: string,
+  path: string | undefined,
 ): TodoTask | TodoActionResult {
   if (
     change.title === undefined &&
@@ -290,21 +293,24 @@ function changeTask(
   ) {
     return todoOperationFailure(
       "update",
-      field === ""
+      path === undefined
         ? "Todo update failed: provide a title, description, or status"
-        : `Todo update failed: ${field.slice(0, -1)} must provide a title, description, or status`,
+        : `Todo update failed: ${path} must provide a title, description, or status`,
     );
   }
   const title = change.title === undefined ? task.title : change.title.trim();
   if (!title) {
-    return todoOperationFailure("update", `Todo update failed: ${field}title must not be empty`);
+    return todoOperationFailure(
+      "update",
+      `Todo update failed: ${path ? `${path}.` : ""}title must not be empty`,
+    );
   }
   const description =
     change.description === undefined ? task.description : change.description?.trim();
   if (change.description !== undefined && change.description !== null && !description) {
     return todoOperationFailure(
       "update",
-      `Todo update failed: ${field}description must not be empty`,
+      `Todo update failed: ${path ? `${path}.` : ""}description must not be empty`,
     );
   }
   return newTodoTask(task.id, title, description, change.status ?? task.status);
@@ -315,7 +321,8 @@ function updateTasks(
   state: TodoStateSnapshot,
   input: TodoActionInput & { readonly updates: readonly TodoTaskChange[] },
 ): TodoActionResult {
-  // A null description is "absent" here, as it is for a batch add.
+  // Pi normalises an omitted optional field to null, so a null description is treated as absent,
+  // as it is for a batch add.
   if (
     input.id !== undefined ||
     input.title !== undefined ||
@@ -333,31 +340,28 @@ function updateTasks(
   const seen = new Map<number, number>();
   const changed: TodoTask[] = [];
   for (const [index, change] of input.updates.entries()) {
-    const field = `updates[${index}].`;
+    const path = `updates[${index}]`;
     const id = parseTodoTaskId(change.id);
     if (id === undefined) {
       return todoOperationFailure(
         "update",
-        `Todo update failed: ${field}id must be a positive safe integer`,
+        `Todo update failed: ${path}.id must be a positive safe integer`,
       );
     }
     const first = seen.get(id);
     if (first !== undefined) {
       return todoOperationFailure(
         "update",
-        `Todo update failed: ${field}id #${id} duplicates updates[${first}].id`,
+        `Todo update failed: ${path}.id #${id} duplicates updates[${first}].id`,
       );
     }
     seen.set(id, index);
     const task = state.tasks.find((candidate) => candidate.id === id);
     if (!task) {
-      return todoOperationFailure(
-        "update",
-        `Todo update failed: ${field}id: Task #${id} was not found`,
-      );
+      return todoOperationFailure("update", `Todo update failed: ${path}.id #${id} was not found`);
     }
-    const result = changeTask(task, change, field);
-    if (!("title" in result)) return result;
+    const result = changeTask(task, change, path);
+    if (isTodoActionResult(result)) return result;
     changed.push(result);
   }
   return {
@@ -421,8 +425,8 @@ export function applyTodoAction(
           details: { action: "remove", id: task.id },
         };
       }
-      const changed = changeTask(task, input, "");
-      if (!("title" in changed)) return changed;
+      const changed = changeTask(task, input, undefined);
+      if (isTodoActionResult(changed)) return changed;
       return {
         ok: true,
         state: replaceTasks(state, [changed]),

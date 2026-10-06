@@ -447,6 +447,28 @@ describe("Pi Todo extension", () => {
     ).toBe("Added 1 Task\n[ ] #1 Batch");
   });
 
+  test("batch add rejects exhausting the Task ID space without persisting", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context([
+      {
+        type: "custom",
+        id: "limit",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        customType: "pi-todo-state",
+        data: { nextId: Number.MAX_SAFE_INTEGER - 1, tasks: [] },
+      },
+    ]);
+    await harness.emit("session_start", { type: "session_start", reason: "resume" }, context);
+    await expect(
+      harness.execute({ action: "add", tasks: [{ title: "Fits" }, { title: "Too far" }] }, context),
+    ).rejects.toThrow("Task ID limit reached");
+    expect(harness.entries).toHaveLength(0);
+    expect(
+      resultText(await harness.execute({ action: "add", tasks: [{ title: "Fits" }] }, context)),
+    ).toBe("Added 1 Task\n[ ] #9007199254740990 Fits");
+  });
+
   test("batch update changes several Tasks atomically with one state entry", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context();
@@ -496,34 +518,34 @@ describe("Pi Todo extension", () => {
     await harness.execute({ action: "add", tasks: [{ title: "One" }, { title: "Two" }] }, context);
     const before = resultText(await harness.execute({ action: "list" }, context));
 
-    const rejected = (updates: TodoTaskChange[], message: string) =>
+    const expectRejected = (updates: TodoTaskChange[], message: string) =>
       expect(harness.execute({ action: "update", updates }, context)).rejects.toThrow(message);
-    await rejected(
+    await expectRejected(
       [
         { id: 1, status: "completed" },
         { id: 9, status: "active" },
       ],
-      "Todo update failed: updates[1].id: Task #9 was not found",
+      "Todo update failed: updates[1].id #9 was not found",
     );
-    await rejected(
+    await expectRejected(
       [
         { id: 1, status: "completed" },
         { id: 2, title: "   " },
       ],
       "Todo update failed: updates[1].title must not be empty",
     );
-    await rejected(
+    await expectRejected(
       [
         { id: 1, status: "completed" },
         { id: 2, description: " " },
       ],
       "Todo update failed: updates[1].description must not be empty",
     );
-    await rejected(
+    await expectRejected(
       [{ id: 1, status: "completed" }, { id: 2 }],
       "Todo update failed: updates[1] must provide a title, description, or status",
     );
-    await rejected(
+    await expectRejected(
       [
         { id: 1, status: "completed" },
         { id: 2, status: "active" },
@@ -531,7 +553,7 @@ describe("Pi Todo extension", () => {
       ],
       "Todo update failed: updates[2].id #1 duplicates updates[0].id",
     );
-    await rejected([], "Todo update failed: updates must not be empty");
+    await expectRejected([], "Todo update failed: updates must not be empty");
 
     expect(harness.entries).toHaveLength(1);
     expect(resultText(await harness.execute({ action: "list" }, context))).toBe(before);
@@ -619,28 +641,6 @@ describe("Pi Todo extension", () => {
         80,
       ),
     ).toEqual(["todo update 2 Tasks"]);
-  });
-
-  test("batch add rejects exhausting the Task ID space without persisting", async () => {
-    const harness = new TodoExtensionHarness();
-    const context = harness.context([
-      {
-        type: "custom",
-        id: "limit",
-        parentId: null,
-        timestamp: "2026-01-01T00:00:00.000Z",
-        customType: "pi-todo-state",
-        data: { nextId: Number.MAX_SAFE_INTEGER - 1, tasks: [] },
-      },
-    ]);
-    await harness.emit("session_start", { type: "session_start", reason: "resume" }, context);
-    await expect(
-      harness.execute({ action: "add", tasks: [{ title: "Fits" }, { title: "Too far" }] }, context),
-    ).rejects.toThrow("Task ID limit reached");
-    expect(harness.entries).toHaveLength(0);
-    expect(
-      resultText(await harness.execute({ action: "add", tasks: [{ title: "Fits" }] }, context)),
-    ).toBe("Added 1 Task\n[ ] #9007199254740990 Fits");
   });
 
   test("clear resets IDs after every Task was individually removed", async () => {
