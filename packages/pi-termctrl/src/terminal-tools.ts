@@ -580,17 +580,72 @@ async function terminalResult(
   };
 }
 
+/** A call that was removed from its Terminal's queue before it started. */
+class CallCancelledError extends Error {
+  constructor(id: string) {
+    super(`The call to ${id} was cancelled before it started.`);
+    this.name = "CallCancelledError";
+  }
+}
+
+/**
+ * Wait for this call's turn on a Terminal. Calls to one Terminal run one at a time, each typing,
+ * pressing keys and settling before the next starts, so a parallel batch of sends gets screens
+ * that match its calls. Calls to other Terminals are unaffected. Aborting a waiting call removes
+ * it from the queue and rejects it; the running call is untouched.
+ */
+function awaitTurn(entry: TerminalEntry, signal: AbortSignal | undefined): Promise<() => void> {
+  const queue = entry.callQueue;
+  const release = () => {
+    const next = queue.waiting.shift();
+    if (next === undefined) queue.running = false;
+    else next();
+  };
+  if (signal?.aborted === true) return Promise.reject(new CallCancelledError(entry.id));
+  if (!queue.running) {
+    queue.running = true;
+    return Promise.resolve(release);
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      const index = queue.waiting.indexOf(start);
+      if (index !== -1) queue.waiting.splice(index, 1);
+      reject(new CallCancelledError(entry.id));
+    };
+    const start = () => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(release);
+    };
+    queue.waiting.push(start);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/**
+ * Run one call against a Terminal in its turn. A call that waited finds the Terminal as the calls
+ * ahead left it, so `run` must read the Terminal's state itself. A Terminal that a call ahead
+ * stopped is gone by then.
+ */
 async function driveTerminal<T>(
   registry: TermctrlRegistry,
   entry: TerminalEntry,
+  signal: AbortSignal | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
+  // Counted while queued too, so the exit watcher leaves a Terminal the agent is driving alone.
   entry.activeCalls++;
+  let release: (() => void) | undefined;
   try {
+    release = await awaitTurn(entry, signal);
+    if (registry.find(entry.owner, entry.id) !== entry) throw unknownId(entry.id);
     return await run();
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause));
-    if (registry.reportTerminalError(entry, error)) {
+    if (
+      release !== undefined &&
+      !(error instanceof InputToExitedError) &&
+      registry.reportTerminalError(entry, error)
+    ) {
       throw new Error(
         `${entry.id} was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`,
         { cause },
@@ -598,6 +653,7 @@ async function driveTerminal<T>(
     }
     throw error;
   } finally {
+    release?.();
     entry.activeCalls--;
   }
 }
@@ -665,7 +721,9 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
       });
       // Launching, including a cold driver start, does not count toward the quiet period.
       const startedAt = Date.now();
-      return driveTerminal(runtime.registry, entry, async () => {
+      // The Terminal is running and nothing else knows its id yet, so the call never queues; an
+      // abort ends the wait but must still return the id, or the agent could not reach the Terminal.
+      return driveTerminal(runtime.registry, entry, undefined, async () => {
         const { snapshot, reason } = await settleTerminal(entry, {
           mode: "start",
           waitMs: clampWait(params.wait_ms, START_WAIT_MS),
@@ -680,10 +738,17 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
   });
 }
 
-function inputToExited(id: string, exit: TerminalExit | null): Error {
-  return new Error(
-    `${id} ${describeExit(exit)} and accepts no input. Poll it with terminal_send for its final screen, or remove it with terminal_stop.`,
-  );
+/**
+ * Input to a Terminal that exited. It is the agent's mistake, not a driver failure, even when the
+ * exit says the driver died: that loss was already reported.
+ */
+class InputToExitedError extends Error {
+  constructor(id: string, exit: TerminalExit | null) {
+    super(
+      `${id} ${describeExit(exit)} and accepts no input. Poll it with terminal_send for its final screen, or remove it with terminal_stop.`,
+    );
+    this.name = "InputToExitedError";
+  }
 }
 
 /** `terminal_send`: type text and keys into a Terminal, or poll it, and wait for it to settle. */
@@ -718,15 +783,13 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
         );
       }
       const hasInput = (params.text ?? "") !== "" || keys.length > 0;
-      if (entry.state === "exited") {
-        if (hasInput) {
+      return driveTerminal(runtime.registry, entry, signal, async () => {
+        if (entry.state === "exited") {
+          if (!hasInput) return terminalResult(runtime.registry, entry, undefined, "exited");
           // The error tells the agent about the exit, so a deferred Exit notification is redundant.
           runtime.registry.markSeen(entry.id);
-          throw inputToExited(entry.id, entry.exit);
+          throw new InputToExitedError(entry.id, entry.exit);
         }
-        return terminalResult(runtime.registry, entry, undefined, "exited");
-      }
-      return driveTerminal(runtime.registry, entry, async () => {
         const matches =
           params.wait_for_text === undefined ? undefined : parseWaitPattern(params.wait_for_text);
         const before =
@@ -735,7 +798,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
           // The exit watcher has not noticed this exit yet.
           const exit = before.exit ?? { code: null, signal: null };
           runtime.registry.terminalExited(entry.id, exit, before.screen, true);
-          throw inputToExited(entry.id, exit);
+          throw new InputToExitedError(entry.id, exit);
         }
         const baseline = matches === undefined ? undefined : before?.screen;
         const startedAt = Date.now();
@@ -763,18 +826,39 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
 }
 
 /** Capture the lines a Terminal scrolled off since the agent's last result, before it is stopped. */
-async function finalScrolledOff(
-  registry: TermctrlRegistry,
-  entry: TerminalEntry,
-): Promise<ScrolledOff> {
+async function finalScrolledOff(entry: TerminalEntry): Promise<ScrolledOff> {
   try {
     if (entry.state === "exited") return await takeScrolledOff(entry, entry.finalScreen ?? "");
-    return await driveTerminal(registry, entry, async () =>
-      takeScrolledOff(entry, (await entry.handle.snapshot()).screen),
-    );
+    return await takeScrolledOff(entry, (await entry.handle.snapshot()).screen);
   } catch {
     return NOTHING_SCROLLED;
   }
+}
+
+/** What a stop saw of a Terminal at its turn, before stopping it. */
+interface StopView {
+  readonly wasRunning: boolean;
+  readonly previousScreen: string | undefined;
+  readonly scrolled: ScrolledOff;
+  readonly entry: TermctrlEntry;
+}
+
+/**
+ * Stop a Terminal in its turn: the calls ahead have finished, so `wasRunning` and the previous
+ * screen are what they left, and calls queued behind find the Terminal gone.
+ */
+function stopTerminalInTurn(
+  registry: TermctrlRegistry,
+  known: TerminalEntry,
+  signal: AbortSignal | undefined,
+): Promise<StopView> {
+  return driveTerminal(registry, known, signal, async () => {
+    const wasRunning = known.state === "running";
+    const previousScreen = known.lastScreen;
+    const scrolled = await finalScrolledOff(known);
+    const entry = (await registry.stop(known.owner, known.id)) ?? known;
+    return { wasRunning, previousScreen, scrolled, entry };
+  });
 }
 
 /** `terminal_stop`: stop a Terminal or Background job and forget it. */
@@ -793,15 +877,19 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       openWorldHint: false,
     },
     outputSchema: StopResultSchema,
-    async execute(_toolCallId, params, _signal, _onUpdate, context) {
+    async execute(_toolCallId, params, signal, _onUpdate, context) {
       const owner = ownerOf(context);
       const known = registry.find(owner, params.id);
       if (known === undefined) throw unknownId(params.id);
-      const wasRunning = known.state === "running";
-      const previousScreen = known.kind === "terminal" ? known.lastScreen : undefined;
-      const scrolled =
-        known.kind === "terminal" ? await finalScrolledOff(registry, known) : NOTHING_SCROLLED;
-      const entry = (await registry.stop(owner, params.id)) ?? known;
+      const { wasRunning, previousScreen, scrolled, entry } =
+        known.kind === "terminal"
+          ? await stopTerminalInTurn(registry, known, signal)
+          : {
+              wasRunning: known.state === "running",
+              previousScreen: undefined,
+              scrolled: NOTHING_SCROLLED,
+              entry: (await registry.stop(owner, params.id)) ?? known,
+            };
       const label = entry.kind === "terminal" ? "Terminal" : "Background job";
       const header = wasRunning
         ? `${label} ${entry.id} stopped.`

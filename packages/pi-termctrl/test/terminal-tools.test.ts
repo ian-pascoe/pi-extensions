@@ -551,6 +551,29 @@ describe("terminal_send", () => {
     ).rejects.toThrow(`t1 was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`);
   });
 
+  test("input to a Terminal lost with its driver says it accepts no input, not that the driver failed", async () => {
+    await startTerminal();
+    harness.drivers.latest.die();
+    const first = harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root);
+    const second = harness.send.execute(
+      "call",
+      { id: "t1", text: "b" },
+      undefined,
+      undefined,
+      root,
+    );
+    await expect(first).rejects.toThrow("t1 was lost because the termctrl driver exited");
+    const error = await second.then(
+      () => undefined,
+      (cause: Error) => cause,
+    );
+    expect(error?.message).toContain("t1 ended by termctrl driver exited and accepts no input");
+    expect(error?.message).not.toContain(TROUBLESHOOTING_HINT);
+    await expect(
+      harness.send.execute("call", { id: "t1", text: "c" }, undefined, undefined, root),
+    ).rejects.toThrow("accepts no input");
+  });
+
   test("rejects unknown keys before sending anything", async () => {
     const { terminal } = await startTerminal();
     await expect(
@@ -636,6 +659,295 @@ describe("terminal_send", () => {
     await expect(
       harness.send.execute("call", { id: "b1", text: "x" }, undefined, undefined, root),
     ).rejects.toThrow("b1 is a Background job, which accepts no input");
+  });
+});
+
+describe("terminal_send queueing", () => {
+  /** A shell-like program: typed text appears on the screen as it lands. */
+  function echoing(terminal: FakeTerminal): void {
+    terminal.onInput = (self) => {
+      self.screen = self.typed.join("|");
+    };
+  }
+
+  async function startTerminals(count: number) {
+    harness.drivers.onLaunch = (terminal) => {
+      terminal.screen = ">>> ";
+      terminal.lastOutputAt = Date.now() - 1_000;
+      echoing(terminal);
+    };
+    for (let index = 0; index < count; index++) {
+      await timed(
+        harness.start.execute("call", { command: "python3" }, undefined, undefined, root),
+      );
+    }
+  }
+
+  const inputs = ["one", "two", "three", "four", "five"];
+
+  function screensOf(results: readonly Awaited<ReturnType<typeof harness.send.execute>>[]) {
+    return results.map(({ details }) => ({
+      screen: details?.screen,
+      scrolled_off: details?.scrolled_off,
+      changed: details?.changed,
+    }));
+  }
+
+  /** The message a call failed with, or "resolved". */
+  async function failure(call: Promise<unknown>): Promise<string> {
+    try {
+      await call;
+      return "resolved";
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  test("five parallel sends to one Terminal return the screens of five sequential sends", async () => {
+    await startTerminals(2);
+    const sequential: Awaited<ReturnType<typeof harness.send.execute>>[] = [];
+    for (const text of inputs) {
+      const { value } = await timed(
+        harness.send.execute("call", { id: "t2", text }, undefined, undefined, root),
+      );
+      sequential.push(value);
+    }
+    const { value: parallel } = await timed(
+      Promise.all(
+        inputs.map((text) =>
+          harness.send.execute("call", { id: "t1", text }, undefined, undefined, root),
+        ),
+      ),
+    );
+    expect(harness.drivers.terminal(0).typed).toEqual(inputs);
+    expect(screensOf(parallel)).toEqual(screensOf(sequential));
+    expect(screensOf(parallel).map((entry) => entry.screen)).toEqual([
+      "one",
+      "one|two",
+      "one|two|three",
+      "one|two|three|four",
+      "one|two|three|four|five",
+    ]);
+  });
+
+  test("sends to different Terminals run concurrently", async () => {
+    await startTerminals(2);
+    busy(harness.drivers.terminal(0));
+    busy(harness.drivers.terminal(1));
+    const { elapsed } = await timed(
+      Promise.all([
+        harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
+        harness.send.execute("call", { id: "t2", text: "b" }, undefined, undefined, root),
+      ]),
+    );
+    expect(elapsed).toBeGreaterThanOrEqual(500);
+    expect(elapsed).toBeLessThan(600);
+  });
+
+  test("calls to one Terminal wait for the previous call to settle", async () => {
+    await startTerminals(1);
+    const terminal = harness.drivers.terminal(0);
+    busy(terminal);
+    const { elapsed } = await timed(
+      Promise.all([
+        harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root),
+        harness.send.execute("call", { id: "t1", text: "b" }, undefined, undefined, root),
+      ]),
+    );
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    expect(elapsed).toBeLessThan(1_100);
+  });
+
+  test("aborting a queued call removes it without affecting the running one", async () => {
+    await startTerminals(1);
+    const terminal = harness.drivers.terminal(0);
+    busy(terminal);
+    const controller = new AbortController();
+    const running = harness.send.execute(
+      "call",
+      { id: "t1", text: "a" },
+      undefined,
+      undefined,
+      root,
+    );
+    const queued = harness.send.execute(
+      "call",
+      { id: "t1", text: "b" },
+      controller.signal,
+      undefined,
+      root,
+    );
+    const last = harness.send.execute("call", { id: "t1", text: "c" }, undefined, undefined, root);
+    const outcome = failure(queued);
+    setTimeout(() => controller.abort(), 100);
+    const { value, elapsed } = await timed(Promise.all([running, outcome, last]));
+    const [first, message, third] = value;
+    expect(message).toContain("cancelled before it started");
+    expect(first.structuredContent).toMatchObject({ settle_reason: "timeout", screen: "a" });
+    expect(third.structuredContent).toMatchObject({ screen: "a|c" });
+    expect(terminal.typed).toEqual(["a", "c"]);
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    expect(elapsed).toBeLessThan(1_100);
+  });
+
+  test("a queued send to a Terminal that exited meanwhile reports the exit", async () => {
+    await startTerminals(1);
+    const terminal = harness.drivers.terminal(0);
+    terminal.onInput = (self) => self.exitWith({ code: 0, signal: null });
+    const first = harness.send.execute(
+      "call",
+      { id: "t1", text: "quit" },
+      undefined,
+      undefined,
+      root,
+    );
+    const second = harness.send.execute(
+      "call",
+      { id: "t1", text: "more" },
+      undefined,
+      undefined,
+      root,
+    );
+    const outcome = failure(second);
+    const { value } = await timed(Promise.all([first, outcome]));
+    expect(value[0].structuredContent).toMatchObject({ state: "exited", exit_code: 0 });
+    expect(value[1]).toContain("t1 exited with code 0 and accepts no input");
+    expect(terminal.typed).toEqual(["quit"]);
+  });
+
+  test("aborting a queued stop leaves the Terminal running", async () => {
+    await startTerminals(1);
+    const terminal = harness.drivers.terminal(0);
+    busy(terminal);
+    const controller = new AbortController();
+    const send = harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root);
+    const stop = harness.stop.execute("call", { id: "t1" }, controller.signal, undefined, root);
+    const outcome = failure(stop);
+    setTimeout(() => controller.abort(), 100);
+    const { value } = await timed(Promise.all([send, outcome]));
+    expect(value[1]).toContain("cancelled before it started");
+    expect(terminal.stopCalls).toBe(0);
+    expect(harness.runtime.registry.entries()).toHaveLength(1);
+  });
+
+  test("a stop queued behind a send reports what the agent saw, as a sequential stop would", async () => {
+    await startTerminals(1);
+    const send = harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root);
+    const stop = harness.stop.execute("call", { id: "t1" }, undefined, undefined, root);
+    const { value } = await timed(Promise.all([send, stop]));
+    expect(value[0].structuredContent).toMatchObject({ screen: "a" });
+    expect(harness.drivers.terminal(0).stopCalls).toBe(1);
+    expect(value[1].structuredContent).toEqual({
+      id: "t1",
+      kind: "terminal",
+      state: "exited",
+      signal: "SIGKILL",
+      changed: false,
+    });
+    expect(textOf(value[1])).toBe(
+      "Terminal t1 stopped.\nIts screen is unchanged since your last result.",
+    );
+  });
+
+  test("a stop queued behind a send that saw the Terminal exit reports it had already exited", async () => {
+    await startTerminals(1);
+    harness.drivers.terminal(0).onInput = (self) => {
+      self.screen = "bye";
+      self.exitWith({ code: 0, signal: null });
+    };
+    const send = harness.send.execute(
+      "call",
+      { id: "t1", text: "quit" },
+      undefined,
+      undefined,
+      root,
+    );
+    const stop = harness.stop.execute("call", { id: "t1" }, undefined, undefined, root);
+    const { value } = await timed(Promise.all([send, stop]));
+    expect(value[0].structuredContent).toMatchObject({ state: "exited", screen: "bye" });
+    expect(textOf(value[1])).toBe(
+      "Terminal t1 had already exited with code 0; removed.\nIts screen is unchanged since your last result.",
+    );
+    expect(value[1].structuredContent).toMatchObject({ changed: false, exit_code: 0 });
+    expect(harness.drivers.terminal(0).stopCalls).toBe(0);
+  });
+
+  test("a send queued behind a stop finds the Terminal gone", async () => {
+    await startTerminals(1);
+    const terminal = harness.drivers.terminal(0);
+    const stop = harness.stop.execute("call", { id: "t1" }, undefined, undefined, root);
+    const send = failure(
+      harness.send.execute("call", { id: "t1", text: "late" }, undefined, undefined, root),
+    );
+    const { value } = await timed(Promise.all([stop, send]));
+    expect(value[1]).toContain("Unknown id t1");
+    expect(value[1]).not.toContain("driver exited");
+    expect(terminal.typed).toEqual([]);
+  });
+
+  test("aborting the running call lets the next one start", async () => {
+    await startTerminals(1);
+    busy(harness.drivers.terminal(0));
+    const controller = new AbortController();
+    const running = harness.send.execute(
+      "call",
+      { id: "t1", text: "a", wait_ms: 10_000 },
+      controller.signal,
+      undefined,
+      root,
+    );
+    const next = harness.send.execute("call", { id: "t1", text: "b" }, undefined, undefined, root);
+    setTimeout(() => controller.abort(), 100);
+    const { value, elapsed } = await timed(Promise.all([running, next]));
+    expect(value[1].structuredContent).toMatchObject({ screen: "a|b" });
+    expect(elapsed).toBeGreaterThanOrEqual(600);
+    expect(elapsed).toBeLessThan(700);
+  });
+
+  test("a call that fails still hands over its turn", async () => {
+    await startTerminals(1);
+    const failing = failure(
+      harness.send.execute(
+        "call",
+        { id: "t1", text: "a", wait_for_text: "/(/" },
+        undefined,
+        undefined,
+        root,
+      ),
+    );
+    const next = harness.send.execute("call", { id: "t1", text: "b" }, undefined, undefined, root);
+    const { value } = await timed(Promise.all([failing, next]));
+    expect(value[0]).not.toBe("resolved");
+    expect(value[1].structuredContent).toMatchObject({ screen: "b" });
+    expect(harness.drivers.terminal(0).typed).toEqual(["b"]);
+  });
+
+  test("a call whose signal is already aborted never starts", async () => {
+    await startTerminals(1);
+    const controller = new AbortController();
+    controller.abort();
+    const message = await failure(
+      harness.send.execute("call", { id: "t1", text: "a" }, controller.signal, undefined, root),
+    );
+    expect(message).toContain("cancelled before it started");
+    expect(harness.drivers.terminal(0).typed).toEqual([]);
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "b" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ screen: "b" });
+  });
+
+  test("a terminal_start aborted during launch still returns the Terminal's id", async () => {
+    const controller = new AbortController();
+    harness.drivers.onLaunch = (terminal) => {
+      terminal.screen = ">>> ";
+      controller.abort();
+    };
+    const { value } = await timed(
+      harness.start.execute("call", { command: "python3" }, controller.signal, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ id: "t1", state: "running" });
+    expect(harness.runtime.registry.entries()).toHaveLength(1);
   });
 });
 
