@@ -327,12 +327,13 @@ function extractTextFromHtml(html: string): string {
   return parts.join("").replace(/^\n+/, "").trimEnd();
 }
 
-const CHROME_REMOVED_NOTE = "Site chrome outside the main content was removed.";
+const CHROME_REMOVED_STEM = "Site chrome outside the main content was removed";
+const CHROME_REMOVED_NOTE = `${CHROME_REMOVED_STEM}.`;
 
 /** The note for a page whose chrome removal dropped `main`'s text, or undefined when none was dropped. */
 function chromeNote(main: HtmlMainContent): string | undefined {
   if (main.largeRemovalPercent !== undefined) {
-    return `${CHROME_REMOVED_NOTE.slice(0, -1)} (${main.largeRemovalPercent}% of page text); use format: html for the full page.`;
+    return `${CHROME_REMOVED_STEM} (${main.largeRemovalPercent}% of page text); use format: html for the full page.`;
   }
   return main.chromeRemoved ? CHROME_REMOVED_NOTE : undefined;
 }

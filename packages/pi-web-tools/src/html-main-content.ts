@@ -36,9 +36,10 @@ type ParsedText = {
   readonly charsBefore: number;
 };
 
-/** A large drop is at least this share of the page's visible text... */
-const LARGE_REMOVAL_SHARE = 0.5;
-/** ...and at least this many characters, so a tiny page with a link bar is not flagged. */
+/**
+ * Removing more than half of a page's visible text is large, but only from this many characters
+ * up, so a tiny page with a link bar is not flagged.
+ */
 const LARGE_REMOVAL_CHARS = 1000;
 
 /** Elements whose text is never page content. */
@@ -282,8 +283,9 @@ function droppedVisibleText(
   return countTexts(texts, within) < texts.length || cuts.some((cut) => hasText(texts, cut));
 }
 
+/** Whether dropping `removedChars` of `totalChars` leaves a large page mostly gone. */
 function isLargeRemoval(removedChars: number, totalChars: number): boolean {
-  return removedChars >= LARGE_REMOVAL_CHARS && removedChars >= totalChars * LARGE_REMOVAL_SHARE;
+  return removedChars >= LARGE_REMOVAL_CHARS && removedChars * 2 > totalChars;
 }
 
 function sum(values: readonly number[]): number {
@@ -303,7 +305,7 @@ function select(
     title: page.title,
     chromeRemoved: droppedVisibleText(page.texts, within, cuts),
     largeRemovalPercent: isLargeRemoval(removedChars, page.totalChars)
-      ? Math.round((removedChars / page.totalChars) * 100)
+      ? Math.floor((removedChars / page.totalChars) * 100)
       : undefined,
   };
 }
@@ -314,9 +316,10 @@ function select(
  * footer does not count), and otherwise strips navigation, `<aside>`, and `<header>` and `<footer>`
  * that belong to the page rather than to a section. Navigation is `<nav>` or a navigation or search
  * role. Selected content also loses its navigation, and a `<header>` that belongs to `<main>` itself
- * keeps only its headings. A fallback landmark that holds most of the body text is kept, and when the
- * remaining cuts would still drop most of it the whole page is kept. Returns `undefined` when nothing qualifies or nothing would be removed, so the caller
- * converts the whole page. Only elements with an end tag are selected or cut, so an unclosed tag
+ * keeps only its headings. A fallback landmark that holds most of the body text is kept, and when
+ * the remaining cuts would still drop most of a large page (see `LARGE_REMOVAL_CHARS`) the whole
+ * page is kept. Returns `undefined` when nothing qualifies or nothing would be removed, so the
+ * caller converts the whole page. Only elements with an end tag are selected or cut, so an unclosed tag
  * never swallows the rest of the page. Work is linear in the page size apart from sorted lookups.
  */
 export function extractMainContent(html: string): HtmlMainContent | undefined {
@@ -359,9 +362,7 @@ export function extractMainContent(html: string): HtmlMainContent | undefined {
   });
   const cutChars = sum(chrome.map((cut) => countChars(page, cut)));
   // When cuts would drop most of the text, the page has no recognizable content column.
-  if (chrome.length === 0 || (isLargeRemoval(cutChars, bodyChars) && cutChars * 2 > bodyChars)) {
-    return undefined;
-  }
+  if (chrome.length === 0 || isLargeRemoval(cutChars, bodyChars)) return undefined;
   const stripped = select(page, html, bodySpan, chrome);
   return stripped.chromeRemoved && bodyChars > cutChars ? stripped : undefined;
 }
