@@ -35,6 +35,18 @@ const DapResponseEnvelopeSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+const DapFailureBodySchema = Type.Object(
+  {
+    error: Type.Object(
+      {
+        format: Type.Optional(Type.String()),
+        variables: Type.Optional(Type.Record(Type.String(), Type.String())),
+      },
+      { additionalProperties: true },
+    ),
+  },
+  { additionalProperties: true },
+);
 const DapEventEnvelopeSchema = Type.Object(
   {
     seq: Type.Integer({ minimum: 1 }),
@@ -135,9 +147,15 @@ export interface DapProtocolTargetChannelOptions {
   readonly onFailure?: DapProtocolClientOptions["onFailure"];
 }
 
+/** Error options for a DAP client failure. */
+export interface DapProtocolClientErrorOptions extends ErrorOptions {
+  /** Omit the stderr path from the message because the adapter wrote nothing to it. */
+  readonly stderrEmpty?: boolean;
+}
+
 /** Classified Debug Adapter process, transport, protocol, timeout, and cancellation failure. */
 export class DapProtocolClientError extends Error {
-  /** Construct a searchable DAP client failure that always names its stderr capture. */
+  /** Construct a searchable DAP client failure that names its stderr capture unless told it is empty. */
   constructor(
     readonly kind:
       | "cancelled"
@@ -151,9 +169,13 @@ export class DapProtocolClientError extends Error {
     readonly adapterId: string,
     readonly stderrPath: string,
     message: string,
-    options?: ErrorOptions,
+    options?: DapProtocolClientErrorOptions,
   ) {
-    super(`DAP Protocol Client: ${message} (adapter ${adapterId}; stderr ${stderrPath})`, options);
+    const location =
+      options?.stderrEmpty === true
+        ? `adapter ${adapterId}`
+        : `adapter ${adapterId}; stderr ${stderrPath}`;
+    super(`DAP Protocol Client: ${message} (${location})`, options);
   }
 }
 
@@ -447,6 +469,10 @@ class BoundedAdapterStderr {
     });
   }
 
+  get isEmpty(): boolean {
+    return this.retained.length === 0;
+  }
+
   async flush(): Promise<void> {
     while (this.writePromise !== undefined) await this.writePromise;
   }
@@ -458,6 +484,24 @@ class BoundedAdapterStderr {
     }
     this.writePromise = undefined;
   }
+}
+
+/** Build failed-response text from `message`, then `body.error.format` with `{name}` placeholders filled. */
+function failedRequestText(command: string, response: ParsedDapResponse): string {
+  const parts: string[] = [];
+  if (response.message !== undefined && response.message !== "") parts.push(response.message);
+  const format = adapterErrorFormat(response.body);
+  if (format !== undefined && !parts.includes(format)) parts.push(format);
+  return `${command} request failed${parts.length === 0 ? "" : `: ${parts.join(": ")}`}`;
+}
+
+function adapterErrorFormat(body: DapProtocolObject | undefined): string | undefined {
+  if (!Value.Check(DapFailureBodySchema, body)) return undefined;
+  const { format, variables } = body.error;
+  if (format === undefined || format === "") return undefined;
+  return format.replace(/\{([^{}]+)\}/g, (placeholder, name: string) =>
+    Object.hasOwn(variables ?? {}, name) ? (variables?.[name] ?? placeholder) : placeholder,
+  );
 }
 
 function processExitPromise(child: ChildProcessWithoutNullStreams): Promise<void> {
@@ -976,7 +1020,8 @@ export class DapProtocolClient {
           "request",
           this.adapterId,
           this.stderrPath,
-          `${pending.command} request failed${response.message === undefined ? "" : `: ${response.message}`}`,
+          failedRequestText(pending.command, response),
+          { stderrEmpty: this.stderr?.isEmpty ?? true },
         ),
       );
       return;

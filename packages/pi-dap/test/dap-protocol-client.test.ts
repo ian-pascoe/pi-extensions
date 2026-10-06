@@ -99,6 +99,32 @@ describe("DapProtocolClient", () => {
     });
   });
 
+  test("builds failed request text from the adapter error format and omits an empty stderr path", async () => {
+    const client = await createClient();
+
+    const error: unknown = await client
+      .request("fail-error-format")
+      .catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({
+      kind: "request",
+      message:
+        "DAP Protocol Client: fail-error-format request failed: ReferenceError: nope is not defined (nope, {missing}) (adapter fixture)",
+    });
+    await expect(client.request("fail")).rejects.toMatchObject({
+      message: expect.not.stringContaining("stderr"),
+    });
+  });
+
+  test("names the adapter stderr path on failed requests once stderr has content", async () => {
+    const client = await createClient();
+
+    await expect(client.request("fail-with-stderr")).rejects.toMatchObject({
+      kind: "request",
+      message: expect.stringContaining(`stderr ${client.stderrPath}`),
+    });
+  });
+
   test("parses coalesced event and response frames", async () => {
     const client = await createClient();
     const event = client.waitForEvent("fixture");
