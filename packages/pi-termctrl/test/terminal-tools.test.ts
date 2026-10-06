@@ -780,6 +780,27 @@ describe("terminal_stop and terminal_list", () => {
     expect(harness.runtime.registry.entries()).toEqual([]);
   });
 
+  test("stopping a running Terminal whose screen the agent saw omits the screen", async () => {
+    const { terminal } = await startTerminal();
+    terminal.screen = "ready";
+    await timed(harness.send.execute("call", { id: "t1" }, undefined, undefined, root));
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(terminal.stopCalls).toBe(1);
+    expect(value.structuredContent).toEqual({
+      id: "t1",
+      kind: "terminal",
+      state: "exited",
+      signal: "SIGKILL",
+      changed: false,
+    });
+    expect(textOf(value)).toBe(
+      "Terminal t1 stopped.\nIts screen is unchanged since your last result.",
+    );
+    expect(harness.runtime.registry.entries()).toEqual([]);
+  });
+
   test("stopping an exited Terminal whose screen the agent saw omits the screen", async () => {
     const { terminal } = await startTerminal();
     terminal.screen = "bye";
