@@ -25,7 +25,7 @@ import {
   type Model,
 } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test } from "vitest";
 import { EXIT_NOTIFICATION_TYPE } from "../src/exit-notification.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";
@@ -120,18 +120,22 @@ afterEach(async () => {
   );
 });
 
-async function loadChildSessionFactory(): Promise<
-  new (options: ChildSessionFactoryOptions) => ChildSessionFactory
-> {
+let PiAgentSessionFactory: new (options: ChildSessionFactoryOptions) => ChildSessionFactory;
+
+/**
+ * Importing the sibling package's session module transforms its whole source tree: about a second
+ * on an idle machine and several under a cold `pnpm verify`. Loading it once here keeps that
+ * one-time cost out of the test's timeout. The hook timeout only guards against a hang.
+ */
+beforeAll(async () => {
   // Load the sibling package's source without widening this package's TypeScript rootDir.
-  const {
-    PiAgentSessionFactory,
-  }: { PiAgentSessionFactory: new (options: ChildSessionFactoryOptions) => ChildSessionFactory } =
-    await import(
-      new URL("../../pi-minimal-subagents/src/minimal-subagents-sessions.js", import.meta.url).href
-    );
-  return PiAgentSessionFactory;
-}
+  const sessions: {
+    PiAgentSessionFactory: new (options: ChildSessionFactoryOptions) => ChildSessionFactory;
+  } = await import(
+    new URL("../../pi-minimal-subagents/src/minimal-subagents-sessions.js", import.meta.url).href
+  );
+  PiAgentSessionFactory = sessions.PiAgentSessionFactory;
+}, 60_000);
 
 interface ChildHarness {
   readonly factory: ChildSessionFactory;
@@ -169,7 +173,6 @@ export default createPiTermctrlExtension({
   const sessions: AgentSession[] = [];
   const responses: AssistantMessage[] = [];
   const requests: number[] = [];
-  const PiAgentSessionFactory = await loadChildSessionFactory();
   const factory = new PiAgentSessionFactory({
     cwd: directory,
     agentDir: directory,
