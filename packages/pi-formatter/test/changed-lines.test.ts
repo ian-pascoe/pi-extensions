@@ -102,9 +102,81 @@ describe("diffChangedLines", () => {
     ]);
   });
 
+  test("diffs small changes at both ends of a large file", () => {
+    const lines = Array.from({ length: 5_000 }, (_value, index) => `line ${index}\n`);
+    const before = lines.join("");
+    const after = lines
+      .map((line, index) => (index === 0 || index === 4_999 ? "X\n" : line))
+      .join("");
+    expect(diffChangedLines(before, after)).toEqual([
+      "@@ -1,4 +1,4 @@",
+      "-line 0",
+      "+X",
+      " line 1",
+      " line 2",
+      " line 3",
+      "@@ -4997,4 +4997,4 @@",
+      " line 4996",
+      " line 4997",
+      " line 4998",
+      "-line 4999",
+      "+X",
+    ]);
+  });
+
+  test("renders hunks that rebuild the formatted content from the original", () => {
+    let seed = 7;
+    const random = (limit: number): number => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed % limit;
+    };
+    for (let round = 0; round < 200; round++) {
+      const before = Array.from({ length: random(25) }, () => `${random(6)}\n`);
+      const after = Array.from({ length: random(25) }, () => `${random(6)}\n`);
+      if (random(4) === 0 && after.length > 0) after[after.length - 1] = "tail";
+      const diff = diffChangedLines(before.join(""), after.join(""));
+      if (before.join("") === after.join("")) continue;
+      expect(diff).toBeDefined();
+      expect(applyHunks(before, diff ?? [])).toEqual(after);
+    }
+  });
+
   test("gives up on a rewrite too large to diff cheaply", () => {
     const before = Array.from({ length: 2_000 }, (_value, index) => `a${index}\n`).join("");
     const after = Array.from({ length: 2_000 }, (_value, index) => `b${index}\n`).join("");
     expect(diffChangedLines(before, after)).toBeUndefined();
   });
 });
+
+/** Apply unified diff hunks to `before` lines (lines keep their terminator). */
+function applyHunks(before: readonly string[], diff: readonly string[]): string[] {
+  const result: string[] = [];
+  let next = 0;
+  let previous: string | undefined;
+  for (const line of diff) {
+    const header = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@$/.exec(line);
+    if (header !== null) {
+      const start = Number(header[1]);
+      const count = header[2] === undefined ? 1 : Number(header[2]);
+      const target = count === 0 ? start : start - 1;
+      result.push(...before.slice(next, target));
+      next = target;
+      continue;
+    }
+    if (line.startsWith("\\")) {
+      // The marker says the added line before it has no terminator; context and removed lines
+      // take theirs from the original.
+      if (previous === "+") result[result.length - 1] = (result.at(-1) ?? "").replace(/\n$/, "");
+      continue;
+    }
+    const text = `${line.slice(1)}\n`;
+    if (line.startsWith(" ")) {
+      result.push(before[next] ?? text);
+      next++;
+    } else if (line.startsWith("-")) next++;
+    else result.push(text);
+    previous = line[0];
+  }
+  result.push(...before.slice(next));
+  return result;
+}

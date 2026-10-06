@@ -3,6 +3,26 @@ function splitLines(text: string): string[] {
   return text === "" ? [] : text.split(/(?<=\n)/);
 }
 
+interface SharedEnds {
+  readonly prefix: number;
+  readonly suffix: number;
+}
+
+/** Count the lines two versions share at the start and at the end, without overlapping. */
+function sharedEnds(beforeLines: readonly string[], afterLines: readonly string[]): SharedEnds {
+  const shared = Math.min(beforeLines.length, afterLines.length);
+  let prefix = 0;
+  while (prefix < shared && beforeLines[prefix] === afterLines[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < shared - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+  return { prefix, suffix };
+}
+
 /**
  * Describe where a formatter changed a file, in line numbers of the formatted content.
  *
@@ -17,16 +37,7 @@ export function describeChangedLines(before: string, after: string): string | un
   const beforeLines = splitLines(before);
   const afterLines = splitLines(after);
   if (afterLines.length === 0) return "all lines removed";
-  const shared = Math.min(beforeLines.length, afterLines.length);
-  let prefix = 0;
-  while (prefix < shared && beforeLines[prefix] === afterLines[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < shared - prefix &&
-    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
+  const { prefix, suffix } = sharedEnds(beforeLines, afterLines);
   const first = prefix + 1;
   const last = afterLines.length - suffix;
   if (last < first)
@@ -35,64 +46,95 @@ export function describeChangedLines(before: string, after: string): string | un
 }
 
 const CONTEXT_LINES = 3;
-/** Most cells of the line-matching table; a larger rewrite is not worth diffing line by line. */
-const MAX_MATCH_CELLS = 250_000;
+/** Most added plus removed lines worth finding; a rewrite that differs more is not diffed. */
+const MAX_EDIT_DISTANCE = 100;
 
 interface DiffOperation {
   readonly marker: " " | "-" | "+";
   readonly line: string;
-  /** Lines of the original and the formatted content that precede this operation. */
-  readonly oldBefore: number;
-  readonly newBefore: number;
+  /** How many lines of the original and of the formatted content precede this operation. */
+  readonly oldLinesBefore: number;
+  readonly newLinesBefore: number;
 }
 
-/** Match the lines two versions share, keeping the longest shared subsequence in order. */
+/**
+ * Find the fewest removed and added lines that turn `before` into `after` (Myers' O(ND)
+ * algorithm), so cost follows how much changed rather than how far apart the changes are.
+ * Returns `undefined` when more than `MAX_EDIT_DISTANCE` lines differ.
+ */
 function diffMiddle(
   before: readonly string[],
   after: readonly string[],
-  oldStart: number,
-  newStart: number,
+  linesBefore: number,
 ): DiffOperation[] | undefined {
-  const width = after.length + 1;
-  if ((before.length + 1) * width > MAX_MATCH_CELLS) return undefined;
-  // lengths[i * width + j] is the longest shared subsequence of before[i..] and after[j..].
-  const lengths = new Uint32Array((before.length + 1) * width);
-  for (let row = before.length - 1; row >= 0; row--) {
-    for (let column = after.length - 1; column >= 0; column--) {
-      lengths[row * width + column] =
-        before[row] === after[column]
-          ? (lengths[(row + 1) * width + column + 1] ?? 0) + 1
-          : Math.max(
-              lengths[(row + 1) * width + column] ?? 0,
-              lengths[row * width + column + 1] ?? 0,
-            );
+  const limit = Math.min(before.length + after.length, MAX_EDIT_DISTANCE);
+  const center = limit + 1;
+  // reach[center + k] is the furthest `before` index reached on diagonal k = before index - after index.
+  let reach = new Int32Array(2 * limit + 3);
+  const history: Int32Array[] = [];
+  let distance = 0;
+  search: for (; distance <= limit; distance++) {
+    history.push(reach.slice());
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const down =
+        diagonal === -distance ||
+        (diagonal !== distance &&
+          (reach[center + diagonal - 1] ?? 0) < (reach[center + diagonal + 1] ?? 0));
+      let x = down ? (reach[center + diagonal + 1] ?? 0) : (reach[center + diagonal - 1] ?? 0) + 1;
+      let y = x - diagonal;
+      while (x < before.length && y < after.length && before[x] === after[y]) {
+        x++;
+        y++;
+      }
+      reach[center + diagonal] = x;
+      if (x >= before.length && y >= after.length) break search;
     }
   }
-  const operations: DiffOperation[] = [];
-  let row = 0;
-  let column = 0;
-  while (row < before.length || column < after.length) {
-    const oldBefore = oldStart + row;
-    const newBefore = newStart + column;
-    const oldLine = before[row];
-    const newLine = after[column];
-    if (oldLine !== undefined && oldLine === newLine) {
-      operations.push({ marker: " ", line: oldLine, oldBefore, newBefore });
-      row++;
-      column++;
-    } else if (
-      oldLine !== undefined &&
-      (newLine === undefined ||
-        (lengths[(row + 1) * width + column] ?? 0) >= (lengths[row * width + column + 1] ?? 0))
-    ) {
-      operations.push({ marker: "-", line: oldLine, oldBefore, newBefore });
-      row++;
-    } else if (newLine !== undefined) {
-      operations.push({ marker: "+", line: newLine, oldBefore, newBefore });
-      column++;
+  if (distance > limit) return undefined;
+  // Walk back from the end of both versions to the start, newest operation first.
+  const backwards: DiffOperation[] = [];
+  let x = before.length;
+  let y = after.length;
+  for (let step = distance; step >= 0; step--) {
+    const earlier = history[step] ?? reach;
+    const diagonal = x - y;
+    const down =
+      diagonal === -step ||
+      (diagonal !== step &&
+        (earlier[center + diagonal - 1] ?? 0) < (earlier[center + diagonal + 1] ?? 0));
+    const previousDiagonal = down ? diagonal + 1 : diagonal - 1;
+    const previousX = step === 0 ? 0 : (earlier[center + previousDiagonal] ?? 0);
+    const previousY = step === 0 ? 0 : previousX - previousDiagonal;
+    while (x > previousX && y > previousY) {
+      x--;
+      y--;
+      backwards.push({
+        marker: " ",
+        line: before[x] ?? "",
+        oldLinesBefore: linesBefore + x,
+        newLinesBefore: linesBefore + y,
+      });
+    }
+    if (step === 0) break;
+    if (down) {
+      y--;
+      backwards.push({
+        marker: "+",
+        line: after[y] ?? "",
+        oldLinesBefore: linesBefore + x,
+        newLinesBefore: linesBefore + y,
+      });
+    } else {
+      x--;
+      backwards.push({
+        marker: "-",
+        line: before[x] ?? "",
+        oldLinesBefore: linesBefore + x,
+        newLinesBefore: linesBefore + y,
+      });
     }
   }
-  return operations;
+  return backwards.reverse();
 }
 
 function hunkRange(start: number, count: number): string {
@@ -106,8 +148,8 @@ function renderHunk(operations: readonly DiffOperation[]): string[] {
   const oldCount = operations.filter(({ marker }) => marker !== "+").length;
   const newCount = operations.filter(({ marker }) => marker !== "-").length;
   // Git numbers an empty range by the line it follows, and a non-empty one by its first line.
-  const oldStart = oldCount === 0 ? first.oldBefore : first.oldBefore + 1;
-  const newStart = newCount === 0 ? first.newBefore : first.newBefore + 1;
+  const oldStart = oldCount === 0 ? first.oldLinesBefore : first.oldLinesBefore + 1;
+  const newStart = newCount === 0 ? first.newLinesBefore : first.newLinesBefore + 1;
   const lines = [`@@ -${hunkRange(oldStart, oldCount)} +${hunkRange(newStart, newCount)} @@`];
   for (const { marker, line } of operations) {
     lines.push(`${marker}${line.replace(/\n$/, "")}`);
@@ -126,20 +168,10 @@ export function diffChangedLines(before: string, after: string): string[] | unde
   if (before === after) return undefined;
   const beforeLines = splitLines(before);
   const afterLines = splitLines(after);
-  const shared = Math.min(beforeLines.length, afterLines.length);
-  let prefix = 0;
-  while (prefix < shared && beforeLines[prefix] === afterLines[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < shared - prefix &&
-    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
+  const { prefix, suffix } = sharedEnds(beforeLines, afterLines);
   const middle = diffMiddle(
     beforeLines.slice(prefix, beforeLines.length - suffix),
     afterLines.slice(prefix, afterLines.length - suffix),
-    prefix,
     prefix,
   );
   if (middle === undefined) return undefined;
@@ -149,8 +181,8 @@ export function diffChangedLines(before: string, after: string): string[] | unde
     ...beforeLines.slice(prefix - leading, prefix).map((line, index) => ({
       marker: " " as const,
       line,
-      oldBefore: prefix - leading + index,
-      newBefore: prefix - leading + index,
+      oldLinesBefore: prefix - leading + index,
+      newLinesBefore: prefix - leading + index,
     })),
     ...middle,
     ...beforeLines
@@ -158,8 +190,8 @@ export function diffChangedLines(before: string, after: string): string[] | unde
       .map((line, index) => ({
         marker: " " as const,
         line,
-        oldBefore: beforeLines.length - suffix + index,
-        newBefore: afterLines.length - suffix + index,
+        oldLinesBefore: beforeLines.length - suffix + index,
+        newLinesBefore: afterLines.length - suffix + index,
       })),
   ];
   // Changes separated by more than twice the context start a new hunk.

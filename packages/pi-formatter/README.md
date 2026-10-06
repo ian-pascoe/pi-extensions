@@ -66,12 +66,13 @@ any warnings.
 
 Each `Formatted by` line is followed by a compact unified diff of what the formatters changed,
 measured against the content before any formatter ran: `-` lines are the original text, `+` lines
-are what is on disk now, and up to three unchanged lines surround each change. Copy the ` ` and
-`+` lines into an `edit`'s `oldText` to edit the formatted file without reading it again. The
-diff for all files of one mutation result shares a budget of 60 lines and 6,000 bytes; a file
-whose diff does not fit in what remains, or whose rewrite is too large to diff line by line,
-keeps only its `Formatted by` line, so a large reformat stays bounded and the agent re-reads the
-file.
+are what is on disk now, up to three unchanged lines (` `) surround each change, and
+`\ No newline at end of file` marks a line with no final newline. To edit the formatted file
+without reading it again, take the ` ` and `+` lines, drop their first character, and use them
+as `oldText`. The diffs of all files in one mutation result share a budget of 60 lines and
+6,000 bytes, not counting the `Formatted by` lines. A file whose diff does not fit in what
+remains, or whose formatter changed more than 100 lines, keeps only its `Formatted by` line, so a
+large reformat stays bounded and the agent re-reads the file.
 
 A timeout, spawn error, or non-zero exit appends a warning to the original tool result without
 changing that result's success state; later formatters still run. The warning ends with a pointer
