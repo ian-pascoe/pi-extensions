@@ -47,6 +47,7 @@ const DocumentDiagnosticsSchema = Type.Union([
     status: Type.Literal("timeout"),
     diagnostics: DiagnosticListSchema,
     waitedMs: Type.Number({ minimum: 0 }),
+    pushOnly: Type.Boolean(),
     remembered: Type.Boolean(),
   }),
 ]);
@@ -97,13 +98,19 @@ function waitText(waitedMs: number): string {
 }
 
 /**
- * State what a silent wait established: the server published nothing, which for a push-only
- * server is how a clean file looks. It is not a failure, and a remembered silence is not waited
- * for again until the file changes.
+ * State what a silent wait established. A push-only server publishing nothing is how a clean file
+ * looks, so that is reported as not a failure, and a remembered silence is not waited for again
+ * until the file changes. A pull-capable server's silence is a stalled request, reported as such.
  */
-function silenceText(serverId: string, waitedMs: number, remembered: boolean): string {
-  const wait = waitText(waitedMs);
-  return remembered
+function silenceText(
+  serverId: string,
+  silence: { readonly waitedMs: number; readonly pushOnly: boolean; readonly remembered: boolean },
+): string {
+  const wait = waitText(silence.waitedMs);
+  if (!silence.pushOnly) {
+    return `no diagnostics received from ${serverId} within ${wait} (the request stalled; the server may still be starting or indexing, so retry later)`;
+  }
+  return silence.remembered
     ? `no diagnostics published by ${serverId} for this unchanged file (an earlier wait of ${wait} saw none; not a failure, the file may be clean; edit the file to wait again)`
     : `no diagnostics published by ${serverId} within ${wait} (not a failure; a server that only pushes diagnostics stays silent for a clean file, so the file may be clean)`;
 }
@@ -118,7 +125,7 @@ function documentDiagnosticLines(
   if (!Value.Check(DocumentDiagnosticsSchema, value)) return [formatLspToolValue(value)];
   const path = lspDisplayPath(input.cwd, input.documentPath);
   if (value.status === "timeout") {
-    return [`${path}: ${silenceText(serverId, value.waitedMs, value.remembered)}`];
+    return [`${path}: ${silenceText(serverId, value)}`];
   }
   if (value.diagnostics.length === 0) return [`${path}: no diagnostics`];
   return value.diagnostics.map((diagnostic) =>

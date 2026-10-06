@@ -5231,6 +5231,7 @@ describe("registered LSP tool", () => {
         status: "timeout",
         diagnostics: [],
         waitedMs: 3000,
+        pushOnly: true,
         remembered: false,
       };
 
@@ -5246,10 +5247,37 @@ describe("registered LSP tool", () => {
         results: [
           {
             server_id: "typescript",
-            value: { status: "timeout", diagnostics: [], waitedMs: 3000, remembered: false },
+            value: {
+              status: "timeout",
+              diagnostics: [],
+              waitedMs: 3000,
+              pushOnly: true,
+              remembered: false,
+            },
           },
         ],
       });
+      await fixture.close();
+    });
+
+    test("reports a stalled pull-capable server as a stalled request, not as a clean file", async () => {
+      const fixture = await createToolFixture();
+      fixture.client.documentDiagnosticsResult = {
+        status: "timeout",
+        diagnostics: [],
+        waitedMs: 3000,
+        pushOnly: false,
+        remembered: false,
+      };
+
+      const result = await executeTool(fixture, {
+        operation: "diagnostics",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe(
+        "source.ts: no diagnostics received from typescript within 3s (the request stalled; the server may still be starting or indexing, so retry later)",
+      );
       await fixture.close();
     });
 
@@ -5259,6 +5287,7 @@ describe("registered LSP tool", () => {
         status: "timeout",
         diagnostics: [],
         waitedMs: 250,
+        pushOnly: true,
         remembered: true,
       };
 

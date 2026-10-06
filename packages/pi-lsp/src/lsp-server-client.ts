@@ -140,6 +140,8 @@ export type LspDocumentDiagnosticResult =
       readonly status: "timeout";
       readonly diagnostics: readonly [];
       readonly waitedMs: number;
+      /** The server has no document pull, so silence is how it reports a clean file. */
+      readonly pushOnly: boolean;
       readonly remembered: boolean;
     };
 
@@ -661,19 +663,18 @@ export class LspServerClient {
   }
 
   /**
-   * Synchronize a document, then wait for authoritative fresh push or pull diagnostics. A push
-   * counts only when it is newer than the last cached push for the file, so a caller that just
-   * changed a file on disk never receives diagnostics for unchanged content it already saw.
+   * Synchronize a document, then return fresh push or pull diagnostics for its version: a push
+   * received since that version was sent (so an unchanged, already-published file answers at
+   * once), otherwise a wait. A push for an earlier version never counts, so a caller that just
+   * changed a file on disk never receives diagnostics for content the server saw before.
    */
   async documentDiagnostics(
     filePath: string,
     languageId: string,
     signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult> {
-    const uri = pathToFileURL(resolve(filePath)).href;
-    const previousRevision = this.pushDiagnostics.get(uri)?.revision ?? 0;
     const document = await this.synchronizeDocument(filePath, languageId);
-    return this.awaitDocumentDiagnostics(document, previousRevision, signal);
+    return this.awaitDocumentDiagnostics(document, signal);
   }
 
   /**
@@ -687,31 +688,33 @@ export class LspServerClient {
   ): Promise<readonly Diagnostic[]> {
     const open = this.openDocuments.get(document.uri);
     if (open?.version !== document.version) return [];
-    const { synchronizedRevision } = open;
-    const cached = this.currentPushDiagnostics(
-      document.uri,
-      document.version,
-      synchronizedRevision,
-    );
-    if (cached !== undefined) return cached;
-    const result = await this.awaitDocumentDiagnostics(document, synchronizedRevision, signal);
+    const result = await this.awaitDocumentDiagnostics(document, signal);
     return result.diagnostics;
   }
 
   private async awaitDocumentDiagnostics(
     document: LspSynchronizedDocument,
-    previousRevision: number,
     signal: AbortSignal | undefined,
   ): Promise<LspDocumentDiagnosticResult> {
+    const open = this.openDocuments.get(document.uri);
+    // A superseded version has no revision to compare, so no push counts as fresh for it.
+    const synchronizedRevision =
+      open?.version === document.version ? open.synchronizedRevision : this.diagnosticsRevision;
+    const published = this.currentPushDiagnostics(
+      document.uri,
+      document.version,
+      synchronizedRevision,
+    );
+    if (published !== undefined) {
+      return { status: "fresh", source: "push", diagnostics: published };
+    }
     const registration = this.documentPullRegistration();
-    if (
-      registration === undefined &&
-      this.silentDocumentVersions.get(document.uri) === document.version
-    ) {
-      return this.silenceResult(true);
+    const pushOnly = registration === undefined;
+    if (pushOnly && this.silentDocumentVersions.get(document.uri) === document.version) {
+      return this.silentWaitResult(pushOnly, true);
     }
     const candidates: Array<Promise<LspDocumentDiagnosticResult>> = [
-      this.waitForPushDiagnostics(document.uri, document.version, previousRevision, signal),
+      this.waitForPushDiagnostics(document.uri, document.version, synchronizedRevision, signal),
     ];
     if (registration !== undefined) {
       candidates.push(this.pullDocumentDiagnostics(document.uri, registration.identifier, signal));
@@ -727,7 +730,7 @@ export class LspServerClient {
     } catch (cause) {
       if (cause instanceof LspServerClientError) {
         if (cause.kind === "cancelled") throw cause;
-        if (cause.kind === "timeout") return this.rememberSilence(document, registration);
+        if (cause.kind === "timeout") return this.rememberSilentWait(document, pushOnly);
       }
       if (cause instanceof AggregateError) {
         const cancellation = cause.errors.find(
@@ -740,7 +743,7 @@ export class LspServerClient {
             (error) => error instanceof LspServerClientError && error.kind === "timeout",
           )
         ) {
-          return this.rememberSilence(document, registration);
+          return this.rememberSilentWait(document, pushOnly);
         }
         const clientError = cause.errors.find((error) => error instanceof LspServerClientError);
         if (clientError instanceof LspServerClientError) throw clientError;
@@ -749,31 +752,30 @@ export class LspServerClient {
     }
   }
 
-  private silenceResult(remembered: boolean): LspDocumentDiagnosticResult {
+  private silentWaitResult(pushOnly: boolean, remembered: boolean): LspDocumentDiagnosticResult {
     return {
       status: "timeout",
       diagnostics: [],
       waitedMs: this.options.timeouts.diagnosticsMs,
+      pushOnly,
       remembered,
     };
   }
 
   /**
-   * Report a diagnostics wait that ended in silence. A server with no document pull publishes
-   * nothing for a clean file, so its silence stays valid for this document version until a push,
-   * a change, a close, or a restart; a pull-capable server's timeout may be transient and is retried.
+   * Report a diagnostics wait that ended in silence. A push-only server publishes nothing for a
+   * clean file, so its silence stays valid for this document version until a push, a change, a
+   * close, or a Server Instance restart; a pull-capable server's timeout may be a stalled request
+   * and is retried.
    */
-  private rememberSilence(
+  private rememberSilentWait(
     document: LspSynchronizedDocument,
-    registration: DynamicDiagnosticRegistration | undefined,
+    pushOnly: boolean,
   ): LspDocumentDiagnosticResult {
-    if (
-      registration === undefined &&
-      this.openDocuments.get(document.uri)?.version === document.version
-    ) {
+    if (pushOnly && this.openDocuments.get(document.uri)?.version === document.version) {
       this.silentDocumentVersions.set(document.uri, document.version);
     }
-    return this.silenceResult(false);
+    return this.silentWaitResult(pushOnly, false);
   }
 
   /**
