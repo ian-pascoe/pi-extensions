@@ -262,4 +262,54 @@ describe("one Todo List snapshot per tool group", () => {
     for (let index = 1; index < requests.length; index++)
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
   }, 30_000);
+
+  test("a batch update projects one snapshot and leaves the tool definitions and prefix untouched", async () => {
+    const { session, requests, responses } = await createFixture();
+    responses.push(
+      toolCalls(
+        fauxToolCall(
+          "todo",
+          { action: "add", tasks: [{ title: "Design" }, { title: "Build" }] },
+          { id: "batch-add" },
+        ),
+      ),
+      toolCalls(
+        fauxToolCall(
+          "todo",
+          {
+            action: "update",
+            updates: [
+              { id: 1, status: "completed" },
+              { id: 2, status: "active" },
+            ],
+          },
+          { id: "batch-update" },
+        ),
+      ),
+      fauxAssistantMessage("Progressed."),
+      fauxAssistantMessage("Unchanged."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(4);
+
+    // The add group and the update group each project exactly one snapshot, carrying that
+    // group's final state: the batch update does not fan out into one snapshot per Task.
+    expect(snapshotIndexes(requests[1]!.messages)).toHaveLength(1);
+    for (const request of requests.slice(2)) {
+      const indexes = snapshotIndexes(request.messages);
+      expect(indexes).toHaveLength(2);
+      expect(messageText(request.messages[indexes[0]!])).toBe(
+        `${SNAPSHOT_HEADER}\n[ ] #1 Design\n[ ] #2 Build`,
+      );
+      expect(messageText(request.messages[indexes[1]!])).toBe(
+        `${SNAPSHOT_HEADER}\n[x] #1 Design\n[>] #2 Build`,
+      );
+    }
+    // The schema is static for the session: every request carries the same tool definitions,
+    // including the `updates` parameter of `update`.
+    expect(requests[0]!.tools).toContain('"updates"');
+    for (let index = 1; index < requests.length; index++)
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
 });
