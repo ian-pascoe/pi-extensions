@@ -142,6 +142,10 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
   );
   const breakpointStop = await session.continue();
   expect(breakpointStop.snapshot).toMatchObject({ state: "stopped", stopReason: "breakpoint" });
+  expect(breakpointStop.stop?.topFrame).toMatchObject({
+    line: 3,
+    source: { path: programPath },
+  });
   expect(observerSnapshots).toContainEqual(
     expect.objectContaining({ state: "stopped", stopReason: "breakpoint" }),
   );

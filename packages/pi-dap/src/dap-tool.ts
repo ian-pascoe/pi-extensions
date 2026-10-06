@@ -45,6 +45,7 @@ import {
   type DapToolResultDetails,
 } from "./dap-tool-contract.js";
 import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js";
+import { formatDapToolText } from "./dap-tool-text.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
@@ -322,6 +323,10 @@ function toolResultDetails(
 }
 
 type DapBaseOutput = DapToolOutput<"status">;
+type DapStopOutput = Pick<
+  DapToolOutput<"status">,
+  "stop_description" | "hit_breakpoint_ids" | "top_frame"
+>;
 type DapVariableOutput = NonNullable<DapToolOutput<"variables">["variables"]>[number];
 type DapSourceOutput = Pick<
   DapVariableOutput & { source_name?: string; source_path?: string },
@@ -348,6 +353,24 @@ function variableOutput(
   if (variable.type !== undefined) row.type = variable.type;
   if (variable.evaluateName !== undefined) row.evaluate_name = variable.evaluateName;
   return row;
+}
+
+/** Why and where the Debuggee stopped, in the script-facing shape; empty unless it is stopped. */
+function stopOutput(result: DapSessionResult): DapStopOutput {
+  const fields: DapStopOutput = {};
+  const stop = result.stop;
+  if (stop?.description !== undefined) fields.stop_description = stop.description;
+  if (stop?.hitBreakpointIds !== undefined) fields.hit_breakpoint_ids = [...stop.hitBreakpointIds];
+  if (stop?.topFrame !== undefined) {
+    fields.top_frame = {
+      id: stop.topFrame.id,
+      name: stop.topFrame.name,
+      line: stop.topFrame.line,
+      column: stop.topFrame.column,
+      ...sourceOutput(stop.topFrame.source),
+    };
+  }
+  return fields;
 }
 
 /** Fields every script-facing result carries: state, drained Debuggee output, Desired Breakpoints. */
@@ -383,8 +406,10 @@ function toolOutput(
     case "continue":
     case "next":
     case "step_in":
-    case "step_out":
-      return executionWaitCancelled ? { ...base, execution_wait_cancelled: true } : base;
+    case "step_out": {
+      const output = { ...base, ...stopOutput(result) };
+      return executionWaitCancelled ? { ...output, execution_wait_cancelled: true } : output;
+    }
     case "set_breakpoints": {
       const output: DapToolOutput<"set_breakpoints"> = { ...base };
       if (warnings.length > 0) output.warnings = [...warnings];
@@ -443,38 +468,21 @@ function toolOutput(
     }
     case "pause":
     case "status":
+      return { ...base, ...stopOutput(result) };
     case "stop":
       return base;
   }
-}
-
-function formatDapToolResult(
-  operation: DapOperation,
-  result: DapSessionResult,
-  warnings: readonly string[],
-): string {
-  const { output, ...summary } = result;
-  // Warnings lead so that truncating a long result can never drop them.
-  const heading = [
-    ...warnings.map((warning) => `Warning: ${warning}`),
-    `DAP ${operation}: ${JSON.stringify(summary)}`,
-  ].join("\n");
-  if (output.length === 0) return heading;
-  const discardNotice =
-    result.discardedOutputBytes === 0
-      ? ""
-      : ` (${result.discardedOutputBytes} older bytes discarded)`;
-  return `${heading}\n\nDebuggee output${discardNotice}:\n${output}`;
 }
 
 async function createDapToolOutput(
   operation: DapOperation,
   result: DapSessionResult,
   sessionFiles: DapSessionFiles,
+  cwd: string,
   executionWaitCancelled: boolean,
   warnings: readonly string[],
 ): Promise<DapToolResult> {
-  const text = formatDapToolResult(operation, result, warnings);
+  const text = formatDapToolText({ operation, result, cwd, executionWaitCancelled, warnings });
   const details = toolResultDetails(operation, result, executionWaitCancelled);
   const structuredContent = toolOutput(operation, result, executionWaitCancelled, warnings);
   const truncation = truncateHead(text, {
@@ -650,6 +658,7 @@ async function executeDapOperation(
       operation,
       result,
       runtime.sessionFiles,
+      cwd,
       waits && signal?.aborted === true,
       warnings,
     );

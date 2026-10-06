@@ -409,11 +409,28 @@ const DapOutputBaseFields = {
     }),
   ),
 };
+/** Why and where the Debuggee stopped; set only while the Debuggee is stopped. */
+const DapStopOutputFields = {
+  stop_description: Type.Optional(
+    Type.String({ description: "The adapter's explanation of the stop, when it sent one." }),
+  ),
+  hit_breakpoint_ids: Type.Optional(
+    Type.Array(DapIdSchema, {
+      description: "Adapter ids of the Breakpoints that caused the stop (see dap_set_breakpoints).",
+    }),
+  ),
+  top_frame: Type.Optional(DapStackFrameSchema),
+};
 const DapExecutionOutputFields = {
+  ...DapStopOutputFields,
   execution_wait_cancelled: Type.Optional(Type.Boolean()),
 };
 
 const DapBaseOutputSchema = Type.Object(DapOutputBaseFields, { additionalProperties: false });
+const DapStoppedOutputSchema = Type.Object(
+  { ...DapOutputBaseFields, ...DapStopOutputFields },
+  { additionalProperties: false },
+);
 const DapExecutionOutputSchema = Type.Object(
   { ...DapOutputBaseFields, ...DapExecutionOutputFields },
   { additionalProperties: false },
@@ -442,7 +459,7 @@ export const DapToolOutputSchemas = {
   next: DapExecutionOutputSchema,
   step_in: DapExecutionOutputSchema,
   step_out: DapExecutionOutputSchema,
-  pause: DapBaseOutputSchema,
+  pause: DapStoppedOutputSchema,
   stack: Type.Object(
     {
       ...DapOutputBaseFields,
@@ -465,7 +482,7 @@ export const DapToolOutputSchemas = {
     { ...DapOutputBaseFields, evaluation: Type.Optional(DapEvaluationSchema) },
     { additionalProperties: false },
   ),
-  status: DapBaseOutputSchema,
+  status: DapStoppedOutputSchema,
   stop: DapBaseOutputSchema,
 } as const;
 

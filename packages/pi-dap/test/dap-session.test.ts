@@ -123,6 +123,10 @@ describe("DapSession", () => {
       threadId: 1,
     });
     expect(launched.output).toBe("launched\n");
+    expect(launched.stop).toEqual({
+      description: "Paused on entry",
+      topFrame: expect.objectContaining({ id: 10, name: "main", line: 4, column: 1 }),
+    });
     await expect(session.launch()).rejects.toThrow("launch requires no active Debug Session");
 
     const stack = await session.stack({ start: 0, count: 1 });
@@ -318,6 +322,36 @@ describe("DapSession", () => {
     expect(cancelled.snapshot.state).toBe("running");
 
     await session.stop();
+  });
+
+  test("reports the stop description, hit Breakpoint ids, and top frame of each stop", async () => {
+    const { session } = await createSession({ stopOnEntry: true, requireBreakpoint: false });
+    await session.launch();
+
+    const stopped = await session.continue();
+
+    expect(stopped.snapshot).toMatchObject({ state: "stopped", stopReason: "breakpoint" });
+    expect(stopped.stop).toEqual({
+      description: "Paused on breakpoint",
+      hitBreakpointIds: [7],
+      topFrame: expect.objectContaining({ name: "main", line: 4 }),
+    });
+    expect(session.status().stop).toEqual({
+      description: "Paused on breakpoint",
+      hitBreakpointIds: [7],
+    });
+    await session.shutdown();
+  });
+
+  test("a result that is not a stop carries no stop details", async () => {
+    const { session } = await createSession({ exitOnContinue: true, stopOnEntry: true });
+    await session.launch();
+
+    const exited = await session.continue();
+
+    expect(exited.snapshot.state).toBe("terminated");
+    expect(exited.stop).toBeUndefined();
+    await session.shutdown();
   });
 
   test("drops telemetry-category output events and keeps every other category", async () => {
