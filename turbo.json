@@ -23,6 +23,7 @@
         "packages/pi-lsp/**",
         "packages/pi-utils/**",
         "!**/node_modules/**",
+        "!**/dist/**",
         "!**/.turbo/**"
       ]
     },
