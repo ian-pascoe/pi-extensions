@@ -53,12 +53,16 @@ One assessment by an Advisor of new observed-agent context, optionally supported
 _Avoid_: Observed-agent turn
 
 **Review Evidence**:
-The observed agent's messages as its model received them, supplied to a Review or Consultation: roles, text, reasoning text, tool calls with arguments, tool-result text with error status, and image attachments. Replay signatures, display-only details, provider metadata, and native IDs are omitted.
+The observed agent's messages as its model received them, supplied to a Review or Consultation: roles, text, reasoning text, tool calls with arguments, tool-result text with error status, image attachments, and markers for redacted reasoning and responses that ended abnormally. Replay signatures, display-only details, provider metadata, and native IDs are omitted.
 _Avoid_: Transcript dump, raw session messages
 
 **Context Seed**:
-The first Review Evidence an Advisor Session receives: the observed system prompt, observed tool names with one-line summaries, and the current conversation. Later Reviews add only messages the Advisor has not yet seen, until the Advisor Session is rebuilt.
+The first Review Evidence an Advisor Session receives, in its first Review or Consultation: the Observed Setup plus the current conversation. Later Reviews and Consultations add only messages the Advisor has not yet seen, until the Advisor Session is rebuilt.
 _Avoid_: Snapshot
+
+**Observed Setup**:
+The part of a Context Seed that describes the observed agent rather than its conversation: the observed system prompt and each observed tool's name with a one-line summary, without full descriptions or schemas.
+_Avoid_: Context
 
 **Tool-Call Reference**:
 A compact identifier, derived from the native tool-call ID, that links an observed tool call to its result in Review Evidence and stays the same across projections.

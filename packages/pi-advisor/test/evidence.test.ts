@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { fauxAssistantMessage, type Context, type Message } from "@earendil-works/pi-ai";
-import { projectContextSeed, projectEvidence, toolCallRef } from "../src/advisor-evidence.js";
+import { projectEvidence, projectObservedSetup, toolCallRef } from "../src/advisor-evidence.js";
 
 const longCallId = `call_${"x".repeat(420)}|fc_${"y".repeat(40)}`;
 const image = { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" } as const;
@@ -48,7 +48,12 @@ const transcript: Context = {
         thinking: "I should read the parser first.",
         thinkingSignature: "S".repeat(1200),
       },
-      { type: "thinking", thinking: "", thinkingSignature: "E".repeat(800), redacted: true },
+      {
+        type: "thinking",
+        thinking: "[Reasoning redacted]",
+        thinkingSignature: "E".repeat(800),
+        redacted: true,
+      },
       { type: "text", text: "Reading the parser.", textSignature: "T".repeat(120) },
       {
         type: "toolCall",
@@ -77,7 +82,15 @@ const transcript: Context = {
       ...assistant([{ type: "text", text: "Partial" }]),
       stopReason: "error",
       errorMessage: "Provider overloaded",
+      diagnostics: [
+        {
+          type: "provider_retry",
+          timestamp: 1700000000003,
+          details: { transformations: ["~".repeat(500)] },
+        },
+      ],
     },
+    { ...assistant([{ type: "text", text: "Truncated answ" }]), stopReason: "length" },
   ],
 };
 
@@ -100,7 +113,7 @@ function legacySeed(context: Context): string {
 
 function projectedSeed(context: Context): string {
   return JSON.stringify({
-    context: projectContextSeed(context),
+    observedSetup: projectObservedSetup(context),
     messages: projectEvidence(context.messages).messages,
   });
 }
@@ -125,6 +138,7 @@ it("projects Review evidence to what the observed model received", () => {
       role: "assistant",
       content: [
         { type: "thinking", thinking: "I should read the parser first." },
+        { type: "thinking", redacted: true },
         { type: "text", text: "Reading the parser." },
         { type: "toolCall", ref, name: "read", arguments: { path: "src/parser.ts" } },
       ],
@@ -152,6 +166,11 @@ it("projects Review evidence to what the observed model received", () => {
       stopReason: "error",
       errorMessage: "Provider overloaded",
     },
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "Truncated answ" }],
+      stopReason: "length",
+    },
   ]);
   expect(images).toEqual([image, image]);
 });
@@ -163,8 +182,8 @@ it("keeps tool-call references compact and stable across projections", () => {
   expect(later).toMatchObject({ role: "toolResult", ref: toolCallRef(longCallId) });
 });
 
-it("seeds observed tools as names with one-line summaries", () => {
-  expect(projectContextSeed(transcript)).toEqual({
+it("presents the Observed Setup as tool names with one-line summaries", () => {
+  expect(projectObservedSetup(transcript)).toEqual({
     systemPrompt: transcript.systemPrompt,
     tools: [
       { name: "read", summary: "Read the contents of a file." },
@@ -191,6 +210,8 @@ it("drops signatures, display details and provider metadata from the seed", () =
     "toolCallId",
     "id",
     "parameters",
+    "diagnostics",
+    "transformations",
   ];
   expect([...keys(after)].filter((key) => forbidden.includes(key))).toEqual([]);
   const signatureAndDetails =
@@ -199,12 +220,38 @@ it("drops signatures, display details and provider metadata from the seed", () =
       transcript.messages.map((message) =>
         JSON.parse(
           JSON.stringify(message, (key, value) =>
-            /signature$/i.test(key) || key === "details" ? undefined : value,
+            /signature$/i.test(key) || key === "details" || key === "diagnostics"
+              ? undefined
+              : value,
           ),
         ),
       ),
     ).length;
   expect(before.length - after.length).toBeGreaterThanOrEqual(signatureAndDetails);
   // Recorded fixture sizes (characters of seed JSON), before and after #339.
-  expect({ before: before.length, after: after.length }).toEqual({ before: 10904, after: 934 });
+  expect({ before: before.length, after: after.length }).toEqual({ before: 11914, after: 1071 });
+});
+
+it("omits unknown future content and tolerates malformed tool-call IDs", () => {
+  const future: Message[] = JSON.parse(
+    JSON.stringify([
+      {
+        role: "assistant",
+        content: [
+          { type: "serverToolUse", payload: "opaque" },
+          { type: "toolCall", name: "read" },
+        ],
+        stopReason: "toolUse",
+      },
+      { role: "user", content: [{ type: "audio", data: "opaque" }] },
+      { role: "futureRole", content: "opaque" },
+    ]),
+  );
+  expect(projectEvidence(future).messages).toEqual([
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", ref: expect.stringMatching(/^[\w-]{8}$/), name: "read" }],
+    },
+    { role: "user", content: [] },
+  ]);
 });
