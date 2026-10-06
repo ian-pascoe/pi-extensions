@@ -1617,10 +1617,12 @@ it("prioritizes consultation after the active Review and promptly cancels queued
 it("cancels an on-demand consultation without pausing later advice", async () => {
   const consultationStarted = Promise.withResolvers<void>();
   let consultations = 0;
+  const consultationPrompts: string[] = [];
   globalThis.advisorObserverTest = {
     stream(model, context, options) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
       const prompt = JSON.stringify(context.messages.at(-1));
+      if (privateRole && prompt.includes("Consultation request")) consultationPrompts.push(prompt);
       const message = {
         ...fauxAssistantMessage("Done"),
         model: model.id,
@@ -1690,10 +1692,26 @@ it("cancels an on-demand consultation without pausing later advice", async () =>
   await expect(cancelled).rejects.toThrow("User stopped the main turn");
   expect(observer.status).toMatchObject({ state: "armed", lastError: null, backlog: 0 });
   await expect(observer.consult("Try again")).resolves.toBe("Recovered advice");
+  // Cancellation discarded the Advisor Session, so its replacement starts from a Context Seed.
+  expect(consultationPrompts.at(-1)).toContain("observedSetup");
+  expect(consultationPrompts.at(-1)).toContain("Seed context");
 });
 
-/** A long observed session: each request runs its listed number of large-result tool batches. */
-function longSessionStream(batches: Record<string, number>, privateRequests: string[]) {
+/** One private Advisor request: its full context and the prompt text it ends with. */
+interface PrivateRequest {
+  messages: Context["messages"];
+  text: string;
+}
+
+/**
+ * A long observed session: each request runs its listed number of tool batches, whose results
+ * `result` writes. Private requests are recorded in order.
+ */
+function longSessionStream(
+  batches: Record<string, number>,
+  privateRequests: PrivateRequest[],
+  result: (id: string) => string = (id) => `result ${id} ${"x".repeat(8_000)}`,
+) {
   return {
     stream(model: Model<Api>, context: Context) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
@@ -1712,7 +1730,7 @@ function longSessionStream(batches: Record<string, number>, privateRequests: str
                 .flatMap((block) => (block.type === "text" ? [block.text] : []))
                 .join("")
             : "";
-        privateRequests.push(text);
+        privateRequests.push({ messages: structuredClone(context.messages), text });
         if (!text.startsWith("Consultation request")) {
           message.content = [
             { type: "toolCall", id: "report", name: "advisor_report", arguments: { findings: [] } },
@@ -1747,51 +1765,81 @@ function longSessionStream(batches: Record<string, number>, privateRequests: str
       return stream;
     },
     toolResult: (event: ToolResultEvent) => ({
-      content: [{ type: "text" as const, text: `result ${event.toolCallId} ${"x".repeat(8_000)}` }],
+      content: [{ type: "text" as const, text: result(event.toolCallId) }],
     }),
   };
 }
 
-/** The Review prompt's header line and its JSON evidence. */
-function seedPayload(text: string | undefined) {
-  const newline = text?.indexOf("\n") ?? -1;
+/** A private prompt's header line and its JSON payload, exactly as sent. */
+function seedPayload(request: PrivateRequest | undefined) {
+  const text = request?.text ?? "";
+  const newline = text.indexOf("\n");
+  const json = text.slice(newline + 1);
   return {
-    header: text?.slice(0, newline) ?? "",
-    json: text?.slice(newline + 1) ?? "{}",
-    evidence: JSON.parse(text?.slice(newline + 1) ?? "{}"),
+    header: text.slice(0, newline),
+    /** Pi's chars/4 estimate of the payload the Advisor received. */
+    tokens: Math.ceil(json.length / 4),
+    evidence: JSON.parse(json || "{}"),
   };
 }
 
+/** Advisor prompt-cache proof: a later request extends the earlier context unchanged. */
+function expectPrefix(later: PrivateRequest | undefined, earlier: PrivateRequest | undefined) {
+  expect(earlier?.messages.length).toBeGreaterThan(0);
+  expect(later?.messages.slice(0, earlier?.messages.length)).toEqual(earlier?.messages);
+}
+
+const code = (id: string) =>
+  `export function parse(input: string): Node {\n  if (input === "\\n") return { "kind": "newline", "id": "${id}" };\n\treturn parseExpression(input, { "strict": true });\n}\n`;
+
 it.each([
-  ["auto", 50_000, 51],
-  [8_000, 8_000, 7],
+  ["auto", "large results", 60, (id: string) => `result ${id} ${"x".repeat(8_000)}`],
+  [8_000, "many small turns", 400, (id: string) => `ok ${id}`],
+  [8_000, "code-heavy results", 60, (id: string) => code(id).repeat(40)],
 ] as const)(
-  "bounds the first Review of a long session by seedBudgetTokens %s",
-  async (seedBudgetTokens, budget, recordedAfter) => {
-    const privateRequests: string[] = [];
-    globalThis.advisorObserverTest = longSessionStream({ "Original request": 60 }, privateRequests);
+  "bounds the first Review of a long session by seedBudgetTokens %s with %s",
+  async (seedBudgetTokens, _fixture, batches, result) => {
+    const privateRequests: PrivateRequest[] = [];
+    globalThis.advisorObserverTest = longSessionStream(
+      { "Original request": batches },
+      privateRequests,
+      result,
+    );
     const session = await activeFixture();
     await session.prompt("Original request: refactor the parser.");
-    const observer = new AdvisorObserver(
-      session,
-      {
-        ...readAdvisorSettings(session).settings,
-        enabled: true,
-        catchUpThreshold: 1,
-        seedBudgetTokens,
-      },
-      "headless-root",
-    );
+    const config = {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: 1,
+      seedBudgetTokens,
+    };
+    const observer = new AdvisorObserver(session, config, "headless-root");
     globalThis.advisorObserverTest.settled = () => observer.settled();
     onTestFinished(() => observer.dispose());
     await session.prompt("Final check");
     expect(observer.status.lastError).toBeNull();
 
+    // The fixture model's window is 200k tokens, so `auto` is a 50k budget.
+    const budget = seedBudgetTokens === "auto" ? 50_000 : seedBudgetTokens;
     const observedMessages = conversation(session.messages);
     const seed = seedPayload(privateRequests[0]);
-    const omitted = Number(/omits (\d+) of the (\d+) observed messages/.exec(seed.header)?.[1]);
+    const full = Math.ceil(
+      JSON.stringify({
+        observedSetup: seed.evidence.observedSetup,
+        messages: projectEvidence(convertToLlm(observedMessages)).messages,
+      }).length / 4,
+    );
+    // Recorded seed sizes: the unbounded seed exceeds the budget; the sent prompt payload fits.
+    expect(full).toBeGreaterThan(budget * 1.5);
+    expect(seed.tokens).toBeLessThanOrEqual(budget);
+    expect(seed.tokens).toBeGreaterThan(budget * 0.75);
     expect(seed.header).toContain("Current context seed.");
-    expect(seed.header).toContain(`omits ${omitted} of the ${observedMessages.length} observed`);
+    expect(seed.header).toContain(`seedBudgetTokens (${budget} tokens)`);
+    expect(seed.header).toMatch(
+      new RegExp(
+        `keeps observed messages 1, \\d+–${observedMessages.length} of ${observedMessages.length} and omits the other \\d+`,
+      ),
+    );
     expect(seed.header).toContain(session.sessionManager.getSessionFile());
     expect(seed.evidence.observedSetup.systemPrompt).toBe(session.systemPrompt);
     expect(seed.evidence.messages[0]).toEqual({
@@ -1802,22 +1850,6 @@ it.each([
       { role: "user", content: [{ type: "text", text: "Final check" }] },
       { role: "assistant", content: [{ type: "text", text: "Done" }] },
     ]);
-    expect(seed.evidence.messages[1]).toMatchObject({ role: "assistant" });
-    expect(seed.evidence.messages.length + omitted).toBe(observedMessages.length);
-    expect(omitted).toBeGreaterThan(0);
-    // Pi's chars/4 estimate of the seed stays within the budget plus the JSON framing.
-    const full = JSON.stringify({
-      observedSetup: seed.evidence.observedSetup,
-      messages: projectEvidence(observedMessages.flatMap((message) => convertToLlm([message])))
-        .messages,
-    });
-    const tokens = (json: string) => Math.ceil(json.length / 4);
-    expect(tokens(seed.json)).toBeLessThanOrEqual(budget * 1.02);
-    // Recorded seed sizes (thousands of estimated tokens), before and after the budget.
-    expect({
-      before: Math.round(tokens(full) / 1_000),
-      after: Math.round(tokens(seed.json) / 1_000),
-    }).toEqual({ before: 125, after: recordedAfter });
 
     // Later Reviews add only new messages; the omitted history is not re-sent.
     await session.prompt("Follow-up");
@@ -1829,11 +1861,89 @@ it.each([
       { role: "user", content: [{ type: "text", text: "Follow-up" }] },
       { role: "assistant", content: [{ type: "text", text: "Done" }] },
     ]);
+    expectPrefix(privateRequests[1], privateRequests[0]);
   },
 );
 
-it("seeds the compaction summary and the first request after it as the original request", async () => {
-  const privateRequests: string[] = [];
+it("re-seeds with a changed seedBudgetTokens and keeps each Advisor context a stable prefix", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ "Original request": 40 }, privateRequests);
+  const session = await activeFixture();
+  await session.prompt("Original request: refactor the parser.");
+  const config = {
+    ...readAdvisorSettings(session).settings,
+    enabled: true,
+    catchUpThreshold: 1,
+    seedBudgetTokens: 12_000,
+  };
+  const observer = new AdvisorObserver(session, config, "headless-root");
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  onTestFinished(() => observer.dispose());
+  await session.prompt("First");
+  await session.prompt("Second");
+  observer.configure({ ...config, seedBudgetTokens: 4_000 });
+  await session.prompt("Third");
+  await session.prompt("Fourth");
+  expect(observer.status.lastError).toBeNull();
+  const [first, second, third, fourth] = privateRequests.map(seedPayload);
+  expect(privateRequests).toHaveLength(4);
+  expect(first?.header).toContain("seedBudgetTokens (12000 tokens)");
+  expect(first?.tokens).toBeLessThanOrEqual(12_000);
+  expect(second?.header).toContain("Incremental update.");
+  expect(third?.header).toContain("seedBudgetTokens (4000 tokens)");
+  expect(third?.tokens).toBeLessThanOrEqual(4_000);
+  expect(third?.evidence.messages.slice(-2)).toEqual([
+    { role: "user", content: [{ type: "text", text: "Third" }] },
+    { role: "assistant", content: [{ type: "text", text: "Done" }] },
+  ]);
+  expect(fourth?.header).toContain("Incremental update.");
+  expectPrefix(privateRequests[1], privateRequests[0]);
+  expectPrefix(privateRequests[3], privateRequests[2]);
+  // The rebuilt Advisor Session starts fresh rather than extending the old one.
+  expect(privateRequests[2]?.messages).toHaveLength(1);
+});
+
+it("keeps the newest turn when its tool result alone exceeds the seed budget", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Original request": 20, "Read the big log": 1 },
+    privateRequests,
+    // Batch IDs start with the index of their request; the first request is message 0.
+    (id) => (id.startsWith("0-") ? `ok ${id}` : "L".repeat(200_000)),
+  );
+  const session = await activeFixture();
+  await session.prompt("Original request: refactor the parser.");
+  const observer = new AdvisorObserver(
+    session,
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: 1,
+      seedBudgetTokens: 3_000,
+    },
+    "headless-root",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  onTestFinished(() => observer.dispose());
+  await session.prompt("Read the big log");
+  expect(observer.status.lastError).toBeNull();
+  const seed = seedPayload(privateRequests[0]);
+  expect(seed.tokens).toBeLessThanOrEqual(3_000);
+  expect(seed.header).toMatch(/1 kept messages are shortened where marked/);
+  // The Review starts after the tool batch, which is then the newest turn.
+  expect(seed.evidence.messages).toHaveLength(4);
+  const [request, prompt, call, result] = seed.evidence.messages;
+  expect(request).toMatchObject({ content: [{ text: "Original request: refactor the parser." }] });
+  expect(prompt).toMatchObject({ content: [{ text: "Read the big log" }] });
+  expect(call).toMatchObject({ role: "assistant", content: [{ type: "toolCall", name: "read" }] });
+  expect(result).toMatchObject({ role: "toolResult", ref: call.content[0].ref });
+  expect(result.content[0].text).toMatch(
+    /^L+\n\[… \d+ characters omitted from the Context Seed\]$/,
+  );
+});
+
+it("seeds the compaction summary and the first user request after it, not findings or commands", async () => {
+  const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream(
     { "Original request": 30, "Now also add tests.": 6 },
     privateRequests,
@@ -1841,6 +1951,21 @@ it("seeds the compaction summary and the first request after it as the original 
   const session = await activeFixture();
   await session.prompt("Original request: refactor the parser.");
   await session.compact();
+  await session.sendCustomMessage(
+    {
+      customType: "pi-advisor",
+      content: "Advisor nit: rename the helper.",
+      display: true,
+      details: { severity: "nit", message: "rename the helper." },
+    },
+    { triggerTurn: false },
+  );
+  session.recordBashResult("ls", {
+    output: "src",
+    exitCode: 0,
+    cancelled: false,
+    truncated: false,
+  });
   await session.prompt("Now also add tests.");
   const observer = new AdvisorObserver(
     session,
@@ -1857,7 +1982,7 @@ it("seeds the compaction summary and the first request after it as the original 
   await session.prompt("Continue");
   expect(observer.status.lastError).toBeNull();
   const seed = seedPayload(privateRequests[0]);
-  expect(seed.header).toMatch(/omits [1-9]\d* of the \d+ observed messages/);
+  expect(seed.header).toMatch(/keeps observed messages 1, \d+, \d+–\d+ of \d+ and omits the other/);
   const [summary, request] = seed.evidence.messages;
   expect(JSON.stringify(summary)).toContain("Summary: the user asked to refactor the parser.");
   expect(request).toEqual({

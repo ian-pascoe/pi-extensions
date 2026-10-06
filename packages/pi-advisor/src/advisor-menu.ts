@@ -100,7 +100,7 @@ const descriptions = {
   maxCorrectiveTurns: "Automatic Corrective Turns per request",
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
   seedBudgetTokens:
-    "Token budget for the first Review's history; auto is a quarter of the Advisor model's context window",
+    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
 const inputHints = {

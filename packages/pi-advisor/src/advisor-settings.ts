@@ -82,7 +82,8 @@ export function seedBudget(
   setting: AdvisorConfig["seedBudgetTokens"],
   contextWindow: number | undefined,
 ): number {
-  if (setting !== "auto") return setting;
+  // An explicit budget never exceeds the window of a model that declares one.
+  if (setting !== "auto") return contextWindow ? Math.min(setting, contextWindow) : setting;
   // Pi's branch summarization uses the same fallback for models without a declared window.
   return Math.floor((contextWindow || 128_000) / 4);
 }
