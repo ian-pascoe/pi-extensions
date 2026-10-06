@@ -1,5 +1,0 @@
----
-"@ian-pascoe/pi-formatter": minor
----
-
-Formatters that change a file now say so. After a successful `edit`, `write`, `apply_patch`, or applied Workspace Edit Preview (`lsp_apply`), the result gains one line per changed file naming every formatter that changed it, such as `Formatted by ruff-fix, ruff-format: lines 3–13 changed`, so the agent knows its copy of the file is stale; before, formatting was silent and the next `edit` reusing the just-written text failed with "Could not find the exact text". The line numbers describe the formatted file, as one span from the first to the last line that differs from the content before formatting, and nothing is added when the content is unchanged. Changes by a formatter that exits non-zero or times out are reported too, after the failure warnings. A formatter failure whose stderr reports a syntax error in the changed file, which Post-edit Diagnostics already reports, no longer ends with the troubleshooting Skill pointer; spawn errors, timeouts, configuration errors, and other failures keep it.
