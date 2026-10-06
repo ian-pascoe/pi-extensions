@@ -91,9 +91,8 @@ every call to the function stops again with reason `entry`, which looks like a
 stale stop reason or an ignored breakpoint condition. Without `stopOnEntry`,
 `dap_launch` runs to your first breakpoint and each stop is reason
 `breakpoint`. To tell the two apart when it does happen, read the stop text:
-your breakpoint lists `hit breakpoint ids` that match the `id` values
-`dap_set_breakpoints` returned (`hit_breakpoint_ids` in `structuredContent`),
-while an entry stop has none. The stop `description` is the same
+your breakpoint lists `hit breakpoint ids` (`hit_breakpoint_ids` in
+`structuredContent`), while an entry stop has none. The stop `description` is the same
 (`Paused on breakpoint`) for both, so rely on the reason and the ids.
 
 ## Tools
@@ -194,8 +193,9 @@ Tool text is a few compact lines, never a raw JSON dump. A stop reads
 file, line, column, and function come with every result that waits for a stop
 (and with `dap_status` once one has), so no separate `dap_stack` call is needed.
 Further lines carry the adapter's stop `description` and the `hitBreakpointIds`
-(matching the `id` values `dap_set_breakpoints` reports), so you can tell your
-breakpoint from an adapter's entry stop. Only `dap_set_breakpoints` lists
+(matching the `id` values `dap_set_breakpoints` reports for a live Debug
+Session). Your breakpoint lists ids and an adapter's entry stop has none, so the
+reason and the ids tell them apart. Only `dap_set_breakpoints` lists
 Desired Breakpoints in text, since it is the only call that changes them. A call
 that waits and ends still `running` says `(wait timed out)`.
 
