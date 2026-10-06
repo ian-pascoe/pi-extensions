@@ -173,14 +173,13 @@ const SLOW_TRIM_SCRIPT =
   "const fs=require('node:fs');const p=process.argv[1];const t=fs.readFileSync(p,'utf8');fs.writeFileSync('formatter-read','');setTimeout(()=>fs.writeFileSync(p,t.replace(/ +$/gm,'')),300)";
 
 /**
- * A formatter that hangs, while a child it started still writes the file 400 ms later, as the
- * formatter behind an `npx` wrapper would after the wrapper is killed.
+ * A formatter that hangs after starting a child that shares its stderr, as the formatter behind an
+ * `npx` wrapper would. The child marks that it started, waits for the wrapper to die, then writes
+ * the file 200 ms later.
  */
-const WRAPPER_SCRIPT = [
-  "require('node:child_process').spawn(process.execPath,",
-  "['-e',\"setTimeout(()=>require('node:fs').writeFileSync(process.argv[1],'late\\\\n'),400)\",process.argv[1]],",
-  "{stdio:['ignore','ignore','inherit']});setInterval(()=>{},1000)",
-].join("");
+const WRAPPER_CHILD_SCRIPT =
+  "const fs=require('node:fs');fs.writeFileSync('child-started','');const parent=process.ppid;const poll=setInterval(()=>{try{process.kill(parent,0)}catch{clearInterval(poll);setTimeout(()=>fs.writeFileSync(process.argv[1],'late\\n'),200)}},20)";
+const WRAPPER_SCRIPT = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(WRAPPER_CHILD_SCRIPT)},process.argv[1]],{stdio:['ignore','ignore','inherit']});setInterval(()=>{},1000)`;
 
 async function waitForPath(path: string, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -787,6 +786,59 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(await readFile(second, "utf8")).toBe("b = 20\n");
   });
 
+  test("takes the locks of mixed-case paths in Pi LSP's order, so a concurrent Workspace Edit apply cannot deadlock", async () => {
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: {
+          trim: formatterDefinition([
+            "-e",
+            "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').trimEnd()+'\\n')",
+            "$FILE",
+          ]),
+        },
+      },
+    });
+    // Code-unit order puts `Button.txt` first; Pi LSP's `localeCompare` order puts `app.txt` first.
+    const lower = resolve(harness.cwd, "app.txt");
+    const upper = resolve(harness.cwd, "Button.txt");
+    await Promise.all([writeFile(lower, "app  \n"), writeFile(upper, "Button  \n")]);
+    const locked = (path: string, operation: () => Promise<void>) =>
+      withFileMutationQueue(path, operation);
+    // An edit holds `app.txt`; a Workspace Edit apply queues behind it, taking its paths the way
+    // Pi LSP's `applyPreview` does, sorted with `localeCompare`.
+    let releaseEdit = (): void => undefined;
+    const edit = locked(lower, () => new Promise<void>((release) => (releaseEdit = release)));
+    const [first, second] = [upper, lower].sort((left, right) => left.localeCompare(right));
+    if (first === undefined || second === undefined) throw new Error("expected two paths");
+    const workspaceEditApply = locked(first, () => locked(second, async () => undefined));
+
+    const formatted = harness.runner.emitToolResult(
+      toolResultEvent("apply_patch", {
+        input: {},
+        details: {
+          status: "success",
+          result: {
+            changedFiles: [lower, upper],
+            createdFiles: [],
+            deletedFiles: [],
+            movedFiles: [],
+          },
+        },
+      }),
+    );
+    // Formatting has queued for its locks behind the Workspace Edit apply.
+    await delay(200);
+    releaseEdit();
+
+    const outcome = await Promise.race([
+      Promise.all([edit, workspaceEditApply, formatted]).then(() => "settled"),
+      delay(5_000).then(() => "deadlocked"),
+    ]);
+    expect(outcome).toBe("settled");
+    expect(await readFile(lower, "utf8")).toBe("app\n");
+    expect(await readFile(upper, "utf8")).toBe("Button\n");
+  });
+
   test("skips a file that a mutation queued ahead of formatting deleted", async () => {
     const workspaceScript = "require('node:fs').writeFileSync('workspace-runs','1')";
     const harness = await createFormatterHarness({
@@ -828,7 +880,8 @@ describe("Pi Formatter extension lifecycle", () => {
   test("keeps the file locked until a timed-out formatter's process tree lets go of it", async () => {
     const harness = await createFormatterHarness({
       formatter: {
-        timeoutMs: 100,
+        // Long enough for the wrapper to start its child on a loaded machine.
+        timeoutMs: 1_500,
         formatters: { wrapper: formatterDefinition(["-e", WRAPPER_SCRIPT, "$FILE"]) },
       },
     });
@@ -841,7 +894,7 @@ describe("Pi Formatter extension lifecycle", () => {
 
     expect(await readFile(filePath, "utf8")).toBe("late\n");
     expect(lastText(result)).toMatch(
-      /Pi Formatter: wrapper failed .*late\.txt \(timeout after 100ms\)/,
+      /Pi Formatter: wrapper failed .*late\.txt \(timeout after 1500ms\)/,
     );
     expect(lastText(result)).toContain("Formatted by wrapper: line 1 changed");
   });
@@ -865,7 +918,7 @@ describe("Pi Formatter extension lifecycle", () => {
     const result = harness.runner.emitToolResult(
       toolResultEvent("write", { input: { path: filePath }, details: undefined }),
     );
-    await delay(150);
+    await waitForPath(resolve(harness.cwd, "child-started"));
     controller.abort();
 
     expect(lastText(await result)).toMatch(

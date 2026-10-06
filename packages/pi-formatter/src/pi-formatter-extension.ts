@@ -387,15 +387,17 @@ async function mutationQueueKey(path: string): Promise<string> {
 /**
  * Run `operation` while holding Pi's file mutation queue for every path, so no native `edit` or
  * `write`, and no other formatting, changes those files meanwhile. Pi's queue is not reentrant, so
- * paths sharing a key are queued once. Keys are taken in code-unit order, so two formattings of
- * overlapping files cannot wait on each other.
+ * paths sharing a key are queued once. Keys are taken in Pi LSP's Workspace Edit apply order,
+ * `localeCompare`, with ties broken by code unit, so neither another formatting nor an `lsp_apply`
+ * of overlapping files can wait on this one while it waits on them. Pi LSP sorts the paths it was
+ * given rather than real paths, so a symlinked path can still be ordered differently.
  */
 async function withMutationLocks<T>(
   paths: readonly string[],
   operation: () => Promise<T>,
 ): Promise<T> {
-  const keys = [...new Set(await Promise.all(paths.map(mutationQueueKey)))].sort((left, right) =>
-    left < right ? -1 : left > right ? 1 : 0,
+  const keys = [...new Set(await Promise.all(paths.map(mutationQueueKey)))].sort(
+    (left, right) => left.localeCompare(right) || (left < right ? -1 : left > right ? 1 : 0),
   );
   const acquire = (index: number): Promise<T> => {
     const key = keys[index];
