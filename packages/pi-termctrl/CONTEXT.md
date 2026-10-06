@@ -16,3 +16,7 @@ _Avoid_: Background shell, detached process, task
 **Exit notification**:
 A message telling the agent that a Terminal or Background job ended, which it had not already seen through a tool call.
 _Avoid_: Completion event, callback
+
+**Call queue**:
+The order in which the agent's `terminal_start`, `terminal_send` and `terminal_stop` calls to one Terminal run: each types, presses keys, and settles (or stops the Terminal) before the next starts. Each Terminal has its own queue; `terminal_list` and `terminal_wait` do not use it.
+_Avoid_: Lock, serialization

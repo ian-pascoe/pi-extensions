@@ -13,7 +13,7 @@ import type { TerminalViewport } from "./pi-termctrl-settings.js";
 /** The `globalThis` key every registry version shares. Its value always satisfies {@link RegistrySlot}. */
 export const REGISTRY_KEY = Symbol.for("@ian-pascoe/pi-termctrl/registry");
 /** Bump on any change to the state's shape: a reloaded module must not adopt an older shape. */
-export const REGISTRY_VERSION = 4;
+export const REGISTRY_VERSION = 5;
 
 /** Live Terminals plus Background jobs allowed across the whole process. */
 export const LIVE_ENTRY_CAP = 16;
@@ -71,8 +71,10 @@ export interface TerminalEntry extends EntryBase {
   readonly cwd: string;
   /** The screen captured when the Terminal exited. */
   finalScreen: string | undefined;
-  /** Number of agent tool calls currently driving this Terminal; the exit watcher skips them. */
+  /** Number of agent tool calls running or queued to drive this Terminal; the exit watcher skips them. */
   activeCalls: number;
+  /** The agent's calls to this Terminal: one runs at a time and the rest wait in arrival order. */
+  readonly callQueue: { running: boolean; readonly waiting: (() => void)[] };
   /** The screen the agent last received, for `changed: false`. */
   lastScreen: string | undefined;
   /** Count of log lines that scrolled off before the agent's last result. */
@@ -457,6 +459,7 @@ export class TermctrlRegistry {
         generation: slot.generation,
         finalScreen: undefined,
         activeCalls: 0,
+        callQueue: { running: false, waiting: [] },
         lastScreen: undefined,
         logCursor: 0,
         logAnchor: [],
