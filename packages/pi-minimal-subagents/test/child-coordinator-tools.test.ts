@@ -1,79 +1,35 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCurrentTools, type Message, type Model } from "@earendil-works/pi-ai";
-import { afterEach, expect, it } from "vitest";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+import { afterEach, expect, test } from "vitest";
+import { DEFAULT_MAX_SUBAGENT_DEPTH } from "../src/minimal-subagents-capabilities.js";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import { PiAgentSessionFactory } from "../src/minimal-subagents-sessions.js";
 import { createCoordinatorToolSchemas } from "../src/minimal-subagents-tool-schemas.js";
 import { createCoordinatorToolDefinitions } from "../src/minimal-subagents-tools.js";
+import { OFFLINE_TEST_MODEL, writeOfflineProvider } from "./fixtures/offline-provider.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true });
 });
 
-const TEST_MODEL: Model<"openai-completions"> = {
-  id: "model",
-  name: "Child coordinator tools test model",
-  api: "openai-completions",
-  provider: "provider",
-  baseUrl: "http://127.0.0.1:1/v1",
-  reasoning: false,
-  input: ["text"],
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 128_000,
-  maxTokens: 8_192,
-};
+const ALL_SIX = [
+  "read",
+  "subagent",
+  "agent_message",
+  "subagent_wait",
+  "subagent_status",
+  "subagent_cancel",
+  "subagent_delete",
+];
 
-const ZERO_USAGE = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  totalTokens: 0,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-};
-
-it("sends children that cannot spawn only agent_message while fanout children keep all six coordinator tools", async () => {
+/** Real child sessions against an offline provider, mirroring production coordinator-tool grants. */
+function createFixture(maxSubagentDepth = DEFAULT_MAX_SUBAGENT_DEPTH) {
   const directory = mkdtempSync(join(tmpdir(), "minimal-subagents-child-coordinator-"));
   temporaryDirectories.push(directory);
-  const requestsPath = join(directory, "requests.jsonl");
-  const providerPath = join(directory, "offline-provider.ts");
-  writeFileSync(requestsPath, "");
-  writeFileSync(
-    providerPath,
-    `import { appendFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-export default function (pi) {
-  pi.registerProvider("provider", {
-    api: "openai-completions",
-    baseUrl: "http://127.0.0.1:1/v1",
-    apiKey: "offline-test-key",
-    models: [${JSON.stringify(TEST_MODEL)}],
-    streamSimple(model, context) {
-      appendFileSync(${JSON.stringify(requestsPath)}, JSON.stringify(context) + "\\n");
-      const message = {
-        role: "assistant", api: model.api, provider: model.provider, model: model.id,
-        timestamp: Date.now(), usage: ${JSON.stringify(ZERO_USAGE)},
-        content: [{ type: "text", text: "done" }], stopReason: "stop",
-      };
-      const stream = createAssistantMessageEventStream();
-      queueMicrotask(() => stream.push({ type: "done", reason: "stop", message }));
-      return stream;
-    },
-  });
-}
-`,
-  );
-  writeFileSync(
-    join(directory, "settings.json"),
-    JSON.stringify({
-      extensions: [providerPath],
-      compaction: { enabled: false },
-      retry: { enabled: false },
-    }),
-  );
+  const { readRequests } = writeOfflineProvider(directory);
   const schemas = createCoordinatorToolSchemas(["provider/model"]);
   const createCoordinator = () => {
     const coordinator: MinimalSubagentsCoordinator = new MinimalSubagentsCoordinator({
@@ -83,12 +39,12 @@ export default function (pi) {
         sessionDir: directory,
         rootSessionId: "root",
         extensionEntrypoint: join(directory, "minimal-subagents.ts"),
-        models: [TEST_MODEL],
+        models: [OFFLINE_TEST_MODEL],
         eligibleModelIds: ["provider/model"],
         modelScopeRestricted: false,
         availableToolNames: ["read"],
         projectTrusted: true,
-        // Mirrors production: only agents that may still spawn get the fanout tools.
+        maxSubagentDepth,
         getCoordinatorTools: (callerId) =>
           createCoordinatorToolDefinitions({
             coordinator,
@@ -107,12 +63,17 @@ export default function (pi) {
         hasDeliveryEvidence: () => false,
       },
       automaticDeliveryGraceMs: 0,
+      maxSubagentDepth,
     });
     return coordinator;
   };
-  let coordinator = createCoordinator();
-  const spawn = (agentId: string, delegation: "none" | "fanout") =>
-    coordinator.spawn(
+  /** Spawn one root child and wait for its first turn. */
+  const runChild = async (
+    coordinator: MinimalSubagentsCoordinator,
+    agentId: string,
+    delegation: "none" | "fanout",
+  ) => {
+    await coordinator.spawn(
       "root",
       { agent_id: agentId, task: "Say done", tools: "read", delegation, project_context: "omit" },
       {
@@ -124,49 +85,116 @@ export default function (pi) {
         spawnEntryId: "entry",
       },
     );
-  const requestTools = () =>
-    // SAFETY: the offline provider above writes one JSON-serialized Context per request.
-    (
-      readFileSync(requestsPath, "utf8")
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line)) as { messages: Message[] }[]
-    ).map((request) => getCurrentTools(request.messages));
-  try {
-    await spawn("leaf", "none");
-    await coordinator.wait("root", "leaf", 10_000);
-    await spawn("lead", "fanout");
-    await coordinator.wait("root", "lead", 10_000);
-    const [leaf, lead] = requestTools();
-    expect(leaf?.map((tool) => tool.name)).toEqual(["read", "agent_message"]);
-    expect(lead?.map((tool) => tool.name)).toEqual([
-      "read",
-      "subagent",
-      "agent_message",
-      "subagent_wait",
-      "subagent_status",
-      "subagent_cancel",
-      "subagent_delete",
-    ]);
-    // The shared agent_message definition is byte-equal in both modes.
-    expect(JSON.stringify(leaf?.find((tool) => tool.name === "agent_message"))).toBe(
-      JSON.stringify(lead?.find((tool) => tool.name === "agent_message")),
-    );
-
-    // Restoration derives the grant from the persisted contract, so a reopened child matches.
+    await coordinator.wait("root", agentId, 10_000);
+  };
+  /** Ordered tool definitions and system prompt of one recorded request. */
+  const requestAt = (index: number) => {
+    const request = readRequests().at(index);
+    if (!request) throw new Error(`No model request at ${index}`);
+    return {
+      tools: getCurrentTools(request.messages),
+      systemPrompt: getCurrentSystemPrompt(request.messages),
+    };
+  };
+  /** Reopen children from a snapshot in a fresh coordinator and send one more message. */
+  const restoreAndMessage = async (
+    coordinator: MinimalSubagentsCoordinator,
+    agentId: string,
+  ): Promise<MinimalSubagentsCoordinator> => {
     const snapshot = coordinator.snapshot();
     await coordinator.shutdown();
-    coordinator = createCoordinator();
-    await coordinator.restore(snapshot);
-    await coordinator.sendAgentMessage(
+    const restored = createCoordinator();
+    await restored.restore(snapshot);
+    await restored.sendAgentMessage(
       "root",
-      { agent_id: "leaf", message: "Again" },
+      { agent_id: agentId, message: "Again" },
       "root:restored",
     );
-    await coordinator.waitForSettledOperations();
-    const restored = requestTools().at(-1);
-    expect(JSON.stringify(restored)).toBe(JSON.stringify(leaf));
+    await restored.waitForSettledOperations();
+    return restored;
+  };
+  return { directory, createCoordinator, runChild, requestAt, restoreAndMessage };
+}
+
+test("sends children that cannot spawn only agent_message while fanout children keep all six coordinator tools", async () => {
+  const { createCoordinator, runChild, requestAt, restoreAndMessage } = createFixture();
+  let coordinator = createCoordinator();
+  try {
+    await runChild(coordinator, "leaf", "none");
+    await runChild(coordinator, "lead", "fanout");
+    const leaf = requestAt(0);
+    const lead = requestAt(1);
+    expect(leaf.tools.map((tool) => tool.name)).toEqual(["read", "agent_message"]);
+    expect(lead.tools.map((tool) => tool.name)).toEqual(ALL_SIX);
+    // The shared agent_message definition is byte-equal in both modes.
+    expect(JSON.stringify(leaf.tools.find((tool) => tool.name === "agent_message"))).toBe(
+      JSON.stringify(lead.tools.find((tool) => tool.name === "agent_message")),
+    );
+    expect(leaf.systemPrompt).toContain("Coordinator tools support only agent_message");
+    expect(lead.systemPrompt).toContain("Coordinator tools support subagent, agent_message");
+
+    // Restoration derives the grant from the persisted contract, so a reopened child matches.
+    coordinator = await restoreAndMessage(coordinator, "leaf");
+    const restored = requestAt(-1);
+    expect(JSON.stringify(restored.tools)).toBe(JSON.stringify(leaf.tools));
+    expect(restored.systemPrompt).toBe(leaf.systemPrompt);
   } finally {
     await coordinator.shutdown();
+  }
+}, 30_000);
+
+test("treats a fanout child at the depth cap like a child that cannot spawn", async () => {
+  const { createCoordinator, runChild, requestAt } = createFixture(1);
+  const coordinator = createCoordinator();
+  try {
+    await runChild(coordinator, "capped", "fanout");
+    const capped = requestAt(0);
+    expect(capped.tools.map((tool) => tool.name)).toEqual(["read", "agent_message"]);
+    expect(capped.systemPrompt).toContain("Coordinator tools support only agent_message");
+  } finally {
+    await coordinator.shutdown();
+  }
+}, 30_000);
+
+test("restores a child whose history declared the legacy three-tool set with only agent_message", async () => {
+  const { createCoordinator, runChild, requestAt, restoreAndMessage } = createFixture();
+  const coordinator = createCoordinator();
+  let restored: MinimalSubagentsCoordinator | undefined;
+  try {
+    await runChild(coordinator, "legacy", "none");
+    const original = requestAt(0);
+    const sessionFile = coordinator.snapshot().agents[0]?.session_file;
+    if (!sessionFile) throw new Error("Expected a persisted child session file");
+    // Rewrite the child's declared tools as the previous release recorded them.
+    const template = original.tools.find((tool) => tool.name === "agent_message");
+    if (!template) throw new Error("Expected the agent_message definition");
+    const legacyTools = ["agent_message", "subagent_wait", "subagent_status"].map((name) => ({
+      ...template,
+      name,
+    }));
+    let rewrote = false;
+    const lines = readFileSync(sessionFile, "utf8")
+      .split("\n")
+      .map((line) => {
+        if (!line.includes('"toolsAdded"')) return line;
+        const entry = JSON.parse(line);
+        if (entry.message?.role !== "system") return line;
+        rewrote = true;
+        entry.message.toolsAdded = [
+          ...entry.message.toolsAdded.filter(
+            (tool: { name: string }) => tool.name !== "agent_message",
+          ),
+          ...legacyTools,
+        ];
+        return JSON.stringify(entry);
+      });
+    expect(rewrote).toBe(true);
+    writeFileSync(sessionFile, lines.join("\n"));
+
+    restored = await restoreAndMessage(coordinator, "legacy");
+    const after = requestAt(-1);
+    expect(after.tools.map((tool) => tool.name)).toEqual(["read", "agent_message"]);
+  } finally {
+    await (restored ?? coordinator).shutdown();
   }
 }, 30_000);

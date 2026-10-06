@@ -44,7 +44,7 @@ import type {
 } from "./minimal-subagents-types.js";
 
 /** A child that cannot spawn can never have children, so only adjacent messaging is useful. */
-const ORDINARY_CHILD_COORDINATOR_TOOL_NAMES = new Set(["agent_message"]);
+const NON_SPAWNING_CHILD_COORDINATOR_TOOL_NAMES = new Set(["agent_message"]);
 
 /** Coordinator operations consumed by the six public coordinator tool definitions. */
 export type CoordinatorToolOperations = Pick<
@@ -499,5 +499,5 @@ export function createCoordinatorToolDefinitions(
   const allowFanoutTools = options.allowFanoutTools ?? options.callerId === "root";
   return allowFanoutTools
     ? coordinatorTools
-    : coordinatorTools.filter((tool) => ORDINARY_CHILD_COORDINATOR_TOOL_NAMES.has(tool.name));
+    : coordinatorTools.filter((tool) => NON_SPAWNING_CHILD_COORDINATOR_TOOL_NAMES.has(tool.name));
 }
