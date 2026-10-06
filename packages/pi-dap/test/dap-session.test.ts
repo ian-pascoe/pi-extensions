@@ -320,6 +320,15 @@ describe("DapSession", () => {
     await session.stop();
   });
 
+  test("drops telemetry-category output events and keeps every other category", async () => {
+    const { session } = await createSession({ outputCategories: true, stopOnEntry: true });
+
+    const launched = await session.launch();
+
+    expect(launched.output).toBe("warned\nconsole\nimportant\nuncategorized\nlaunched\n");
+    await session.shutdown();
+  });
+
   test("natural exit retains a terminal snapshot and drains remaining Debuggee output", async () => {
     const { session } = await createSession({ exitOnContinue: true, stopOnEntry: true });
 

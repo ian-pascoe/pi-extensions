@@ -169,7 +169,9 @@ current state with an `error` field instead of rejecting.
 
 ## Output and lifecycle
 
-Each successful tool call drains currently unread Debuggee output. Pi DAP
+Each successful tool call drains currently unread Debuggee output. Adapter
+`output` events with the `telemetry` category are dropped; every other category
+(including `important` and uncategorized output) is kept. Pi DAP
 retains at most 1 MiB of unread output, reporting discarded older bytes. Tool
 text follows Pi's 2,000-line/50-KB visible limit; when truncated, the retained
 complete result is written to a Result Spill and its path appears in the
