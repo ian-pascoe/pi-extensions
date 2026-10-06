@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/observer-extension.js";
 import { createSdkHarness } from "../../pi-context-management/test/sdk-harness.js";
+import { toolCallRef } from "../src/advisor-evidence.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 
@@ -1100,6 +1101,111 @@ it("keeps observed reasoning and native image attachments without base64 text ex
   );
   expect(text).toContain("Available observed reasoning");
   expect(text).not.toContain(image);
+});
+
+it("seeds a Review with observed-model evidence, not stored signatures, details or metadata", async () => {
+  const callId = `call_${"x".repeat(200)}`;
+  const reviewPrompts: string[] = [];
+  let mainCalls = 0;
+  globalThis.advisorObserverTest = {
+    stream(model, context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+        responseId: "resp_fixture",
+      };
+      if (privateRole) {
+        const request = context.messages.at(-1);
+        if (request?.role === "user" && Array.isArray(request.content))
+          for (const block of request.content)
+            if (block.type === "text") reviewPrompts.push(block.text);
+        message.content = [
+          { type: "toolCall", id: "report", name: "advisor_report", arguments: { findings: [] } },
+        ];
+        message.stopReason = "toolUse";
+      } else if (++mainCalls === 1) {
+        message.content = [
+          {
+            type: "thinking",
+            thinking: "Check the missing file first.",
+            thinkingSignature: "SIG".repeat(500),
+          },
+          {
+            type: "toolCall",
+            id: callId,
+            name: "read",
+            arguments: { path: "/no-advisor-evidence-file" },
+            thoughtSignature: "THOUGHT".repeat(100),
+          },
+        ];
+        message.stopReason = "toolUse";
+      }
+      queueMicrotask(() =>
+        stream.push({
+          type: "done",
+          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+          message,
+        }),
+      );
+      return stream;
+    },
+    toolResult: () => ({ details: { screen: "#".repeat(5000) } }),
+  };
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 },
+    "headless-root",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  onTestFinished(() => observer.dispose());
+  await session.prompt("Read the missing file");
+  expect(observer.status.lastError).toBeNull();
+  const stored = session.messages.find((message) => message.role === "toolResult");
+  expect(stored).toMatchObject({ isError: true, details: { screen: "#".repeat(5000) } });
+  const seed = reviewPrompts.find((prompt) => prompt.includes("Current context seed."));
+  const payload = seed?.slice(seed.indexOf("\n") + 1) ?? "{}";
+  const keys = new Set<string>();
+  const evidence = JSON.parse(payload, (key, value) => {
+    keys.add(key);
+    return value;
+  });
+  for (const field of [
+    "thinkingSignature",
+    "thoughtSignature",
+    "signature",
+    "details",
+    "responseId",
+    "api",
+  ])
+    expect(keys).not.toContain(field);
+  expect(payload).not.toContain(callId);
+  const ref = toolCallRef(callId);
+  expect(evidence.context.tools).toContainEqual({
+    name: "read",
+    summary: expect.stringMatching(/^\S.{0,159}$/),
+  });
+  expect(evidence.messages).toEqual([
+    { role: "user", content: [{ type: "text", text: "Read the missing file" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Check the missing file first." },
+        { type: "toolCall", ref, name: "read", arguments: { path: "/no-advisor-evidence-file" } },
+      ],
+    },
+    {
+      role: "toolResult",
+      ref,
+      toolName: "read",
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining("no-advisor-evidence-file") }],
+    },
+  ]);
 });
 
 it("preserves a captured model request when review configuration changes mid-turn", async () => {

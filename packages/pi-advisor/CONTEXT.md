@@ -52,6 +52,18 @@ _Avoid_: User turn, execution veto
 One assessment by an Advisor of new observed-agent context, optionally supported by independent investigation using its Tool Grant. A Review may cover several observed-agent turns and produce a bounded set of findings.
 _Avoid_: Observed-agent turn
 
+**Review Evidence**:
+The observed agent's messages as its model received them, supplied to a Review or Consultation: roles, text, reasoning text, tool calls with arguments, tool-result text with error status, and image attachments. Replay signatures, display-only details, provider metadata, and native IDs are omitted.
+_Avoid_: Transcript dump, raw session messages
+
+**Context Seed**:
+The first Review Evidence an Advisor Session receives: the observed system prompt, observed tool names with one-line summaries, and the current conversation. Later Reviews add only messages the Advisor has not yet seen, until the Advisor Session is rebuilt.
+_Avoid_: Snapshot
+
+**Tool-Call Reference**:
+A compact identifier, derived from the native tool-call ID, that links an observed tool call to its result in Review Evidence and stays the same across projections.
+_Avoid_: Tool-call ID
+
 **Consultation**:
 An on-demand exchange in which the main Observed Agent asks its existing Advisor for analysis or a second opinion. A Consultation returns advice directly, does not complete a Review, and does not create an Intervention or Corrective Turn.
 _Avoid_: Delegation, manual Review

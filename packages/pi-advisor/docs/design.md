@@ -93,6 +93,8 @@ Persist the native Advisor journal; do not create an additional transcript-dump 
 
 Seed review with the observed agent's current model-visible conversation, standing instructions, and available reasoning. Deliver incremental updates afterward. Do not independently reconstruct unrelated sessions or the entire pre-compaction archive.
 
+Project Review Evidence to what the observed model received: each message's role, text, non-empty reasoning text, tool-call names and arguments, and tool-result text with `isError`. Images travel as native attachments referenced by index. Omit replay signatures, display-only tool `details`, nested-call records, provider/response metadata, timestamps, and native message or tool-call IDs; a tool call and its result instead share a compact Tool-Call Reference derived from the native call ID. Errored or aborted observed responses keep only their stop reason and error message as markers. The Context Seed lists observed tools by name and one-line summary rather than full descriptions and schemas. `src/advisor-evidence.ts` owns this projection; Reviews and Consultations both use it.
+
 Rebuild the Advisor's active review context from the current observed context after resume, compaction, or branch changes. Persisted journals do not authorize stale context from an abandoned branch to influence a new Review.
 
 Observe completed native turns: one model response plus its associated tool calls. Enabling arms observation; it does not itself start work in the observed agent.
