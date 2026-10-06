@@ -1155,7 +1155,7 @@ describe("registered LSP tool", () => {
       { ...fixture.dependencies, manager },
     );
 
-    const warning = `typescript searched only its workspace root ${join("packages", "a")}, but other typescript workspace roots exist: ${join("packages", "b")}. Files outside ${join("packages", "a")} may not have been considered; query a file under each other root or search for importers before relying on this result.`;
+    const warning = `typescript searched only ${join("packages", "a")}; 1 other typescript root exists (${join("packages", "b")}), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`;
     expect(resultText(result)).toBe(
       [
         `Query position: ${join("packages", "a", "source.ts")}:1:14 ("helper")`,
@@ -1221,7 +1221,7 @@ describe("registered LSP tool", () => {
     for (const result of [references, rename]) {
       expect(result.structuredContent).toMatchObject({
         warnings: [
-          expect.stringContaining(`other typescript workspace roots exist: ${others.join(", ")}.`),
+          `typescript searched only ${searchedRoot}; 2 other typescript roots exist (${others.join(", ")}), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`,
         ],
       });
     }
@@ -1229,6 +1229,56 @@ describe("registered LSP tool", () => {
       results: [{ root_path: searchedRoot, server_id: "typescript" }],
     });
     expect(rename.structuredContent).toMatchObject({ root_path: searchedRoot });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("names at most three other workspace roots and counts the rest on one line", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    const sourcePath = resolve(cwd, "packages/a/source.ts");
+    for (const name of ["a", "b", "c", "d", "e", "f"]) {
+      await mkdir(resolve(cwd, "packages", name), { recursive: true });
+      await writeFile(resolve(cwd, "packages", name, "package.json"), "{}\n");
+    }
+    await writeFile(sourcePath, "export const helper = 1;\n");
+    fixture.client.responseByMethod.set("textDocument/references", []);
+    fixture.client.responseByMethod.set("textDocument/rename", {
+      changes: {
+        [pathToFileURL(sourcePath).href]: [
+          {
+            range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
+            newText: "renamed",
+          },
+        ],
+      },
+    });
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+    const position = { file_path: sourcePath, line: 1, character: 14 };
+
+    const references = await executeTool(
+      fixture,
+      { operation: "find_references", ...position },
+      dependencies,
+    );
+    const rename = await executeTool(
+      fixture,
+      { operation: "rename", ...position, new_name: "renamed" },
+      dependencies,
+    );
+
+    const names = ["b", "c", "d"].map((name) => join("packages", name)).join(", ");
+    const warning = `typescript searched only ${join("packages", "a")}; 5 other typescript roots exist (${names}, +2 more), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`;
+    expect(warning).not.toContain("\n");
+    expect(references.structuredContent).toMatchObject({ warnings: [warning] });
+    expect(rename.structuredContent).toMatchObject({ warnings: [warning] });
+    if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
+    expect(rename.details.summary).toContain(`Warning: ${warning}\n`);
     await manager.shutdown();
     await fixture.close();
   });
@@ -1266,7 +1316,7 @@ describe("registered LSP tool", () => {
     );
 
     if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
-    const warning = `typescript searched only its workspace root ${join("packages", "a")}, but other typescript workspace roots exist: ${join("packages", "b")}. Files outside ${join("packages", "a")} may not have been considered; query a file under each other root or search for importers before relying on this result.`;
+    const warning = `typescript searched only ${join("packages", "a")}; 1 other typescript root exists (${join("packages", "b")}), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`;
     const scope = `Searched typescript workspace root: ${join("packages", "a")}\nWarning: ${warning}`;
     expect(rename.details.summary.startsWith(`${scope}\n\n`)).toBe(true);
     expect(rename.details.summary).toContain("+export const renamed = 1;");
@@ -1307,7 +1357,7 @@ describe("registered LSP tool", () => {
 
     expect(result.structuredContent).toMatchObject({
       warnings: [
-        `typescript searched only its workspace root ${cwd}, but other typescript workspace roots may exist in directories that were not checked. Files outside ${cwd} may not have been considered; query a file under each other root or search for importers before relying on this result.`,
+        `typescript searched only ${cwd}; other typescript roots may exist in directories that were not checked (discovery stopped early), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`,
       ],
     });
     await manager.shutdown();
@@ -1353,12 +1403,13 @@ describe("registered LSP tool", () => {
     const references = () =>
       executeTool(fixture, { operation: "find_references", ...position }, dependencies);
     const unloadedWarning = (names: string) =>
-      `typescript has not loaded files from ${names} under ${cwd}; their references may be missing. Run any LSP tool on a file there (for example lsp_document_symbols), then retry.`;
+      `typescript has not loaded ${names} under ${cwd}; references there may be missing. Run any LSP tool on a file in the missing package, then retry. (see ${TROUBLESHOOTING_SKILL_PATH})`;
     const packagePaths = (names: readonly string[]) =>
       names.map((name) => join("packages", name)).join(", ");
 
     const first = await references();
-    const firstWarning = unloadedWarning(`${packagePaths(["b", "c", "d", "e", "f"])}, and 2 more`);
+    const firstWarning = unloadedWarning(`7 packages (${packagePaths(["b", "c", "d"])}, +4 more)`);
+    expect(firstWarning).not.toContain("\n");
     expect(resultText(first)).toContain(
       `Searched typescript workspace root: ${cwd}\nWarning: ${firstWarning}`,
     );
@@ -1382,7 +1433,7 @@ describe("registered LSP tool", () => {
       dependencies,
     );
     expect((await references()).structuredContent).toMatchObject({
-      warnings: [unloadedWarning(`${packagePaths(["c", "d", "e", "f", "g"])}, and 1 more`)],
+      warnings: [unloadedWarning(`6 packages (${packagePaths(["c", "d", "e"])}, +3 more)`)],
     });
     for (const name of packageNames.slice(2)) {
       await executeTool(
@@ -1447,12 +1498,12 @@ describe("registered LSP tool", () => {
     // directories leave every package unchecked; five reach packages/b but not the src directories.
     expect(await warningsWithLimit(3)).toMatchObject({
       warnings: [
-        `typescript may not have loaded every package under ${cwd} (discovery stopped early); references in unloaded packages may be missing.`,
+        `typescript may not have loaded every package under ${cwd} (discovery stopped early); references in unloaded packages may be missing. Run any LSP tool on a file in the missing package, then retry. (see ${TROUBLESHOOTING_SKILL_PATH})`,
       ],
     });
     expect(await warningsWithLimit(5)).toMatchObject({
       warnings: [
-        `typescript has not loaded files from ${join("packages", "b")} under ${cwd} (discovery stopped early; others may exist); their references may be missing. Run any LSP tool on a file there (for example lsp_document_symbols), then retry.`,
+        `typescript has not loaded at least 1 package (${join("packages", "b")}; discovery stopped early) under ${cwd}; references there may be missing. Run any LSP tool on a file in the missing package, then retry. (see ${TROUBLESHOOTING_SKILL_PATH})`,
       ],
     });
     // Without root markers there are no packages to name, even when the walk is cut short.

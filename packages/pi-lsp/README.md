@@ -83,10 +83,10 @@ A server searches only the code it has loaded: the TypeScript server loads a pac
 `tsconfig.json` project when a file in that package is opened, so references in a package where
 the server has no open file can be missing. `lsp_find_references` and `lsp_rename` therefore warn
 about packages in the workspace (directories holding one of the server's `rootMarkers`) where it
-has no open file yet, naming up to five, for example `typescript has not loaded files from
-packages/b, packages/c under /work/repo; their references may be missing. Run any LSP tool on a
-file there (for example lsp_document_symbols), then retry.` Pi LSP never opens files to load
-them. A package stops being named once any LSP tool has opened one of its files with that server
+has no open file yet, as one line that counts them and names up to three, for example `typescript has not loaded 7
+packages (packages/b, packages/c, packages/d, +4 more) under /work/repo; references there may be
+missing. Run any LSP tool on a file in the missing package, then retry. (see <path to the pi-lsp
+troubleshooting Skill>)`. Pi LSP never opens files to load them. A package stops being named once any LSP tool has opened one of its files with that server
 in the session; the server keeps at most 100 files open, so a package whose files were all closed
 again is named again. The packages are found by the same bounded search as other workspace roots
 (below); when it stops early, the warning says so instead of claiming other roots outside the
@@ -285,7 +285,10 @@ only the workspace root of the queried file. In a monorepo where every package h
 `package.json`, renaming a helper exported by one package finds no importers in the others,
 unless the server sets `workspaceRootMarkers` (see [Settings](#settings)). Both
 tools name the root they searched (`Searched typescript workspace root: packages/a`). When the same
-server has other roots, they add a warning listing them. Those roots are its running or known
+server has other roots, they add a one-line warning that counts them and names up to three
+(`typescript searched only packages/a; 5 other typescript roots exist (packages/b, packages/c,
+packages/d, +2 more), so importers there may be missed. ...`); both warnings end with the path of
+the pi-lsp troubleshooting Skill. Those roots are its running or known
 servers and the roots of directories that contain one of its root or workspace root markers; a
 package inside the searched workspace root is not another root. They are found by searching down
 from the outermost ancestor of the searched root that contains either kind of marker (or Pi's working directory,

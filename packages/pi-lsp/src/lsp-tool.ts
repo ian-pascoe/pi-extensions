@@ -161,7 +161,7 @@ import {
   type LspWorkspaceEditApplyResult,
   type LspWorkspaceEditStore,
 } from "./lsp-workspace-edit.js";
-import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
+import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "./troubleshooting-skill.js";
 
 /** The `lsp_workspace_diagnostics` value of a server that publishes no workspace diagnostics. */
 const UnpublishedWorkspaceDiagnosticsSchema = Type.Object({
@@ -312,8 +312,29 @@ interface ServerInstanceScope {
   readonly warnings: readonly string[];
 }
 
-/** Most unloaded packages one warning names. */
-const UNLOADED_PACKAGE_NAME_LIMIT = 5;
+/** Most paths one warning names; the rest are counted. */
+const WARNING_NAME_LIMIT = 3;
+
+interface CountedPaths {
+  readonly count: string;
+  readonly names: string;
+}
+
+/** Count paths the way a compact warning states them: `2 roots (a, b)`, or `+N more` past the limit. */
+function countedPaths(paths: readonly string[], noun: string, hasMore: boolean): CountedPaths {
+  const named = paths.slice(0, WARNING_NAME_LIMIT);
+  const more = paths.length - named.length;
+  const stoppedEarly = hasMore ? "discovery stopped early" : undefined;
+  return {
+    count: `${hasMore ? "at least " : ""}${paths.length} ${noun}${paths.length === 1 ? "" : "s"}`,
+    names:
+      [...named, ...(more > 0 ? [`+${more} more`] : [])].join(", ") +
+      (stoppedEarly ? `; ${stoppedEarly}` : ""),
+  };
+}
+
+/** Trailing pointer shared by the scope warnings to the user-invoked troubleshooting Skill. */
+const SCOPE_WARNING_SKILL = `(see ${TROUBLESHOOTING_SKILL_PATH})`;
 
 /**
  * Disclose the single workspace root a references or rename request searched. Each root of a
@@ -350,18 +371,18 @@ function unloadedWorkspacePackagesWarning(
   { packageRoots, hasMore }: LspUnloadedWorkspacePackages,
   cwd: string,
 ): string | undefined {
+  const retry = `Run any LSP tool on a file in the missing package, then retry. ${SCOPE_WARNING_SKILL}`;
   if (packageRoots.length === 0) {
     return hasMore
-      ? `${serverId} may not have loaded every package under ${root} (discovery stopped early); references in unloaded packages may be missing.`
+      ? `${serverId} may not have loaded every package under ${root} (discovery stopped early); references in unloaded packages may be missing. ${retry}`
       : undefined;
   }
-  const named = packageRoots
-    .slice(0, UNLOADED_PACKAGE_NAME_LIMIT)
-    .map((path) => lspDisplayPath(cwd, path));
-  const more = packageRoots.length - named.length;
-  const packages = [...named, ...(more > 0 ? [`and ${more} more`] : [])].join(", ");
-  const stoppedEarly = hasMore ? " (discovery stopped early; others may exist)" : "";
-  return `${serverId} has not loaded files from ${packages} under ${root}${stoppedEarly}; their references may be missing. Run any LSP tool on a file there (for example lsp_document_symbols), then retry.`;
+  const { count, names } = countedPaths(
+    packageRoots.map((path) => lspDisplayPath(cwd, path)),
+    "package",
+    hasMore,
+  );
+  return `${serverId} has not loaded ${count} (${names}) under ${root}; references there may be missing. ${retry}`;
 }
 
 function otherWorkspaceRootsWarning(
@@ -371,14 +392,16 @@ function otherWorkspaceRootsWarning(
   cwd: string,
 ): string | undefined {
   if (others.rootPaths.length === 0 && !others.hasMore) return undefined;
-  const otherRoots =
+  const { count, names } = countedPaths(
+    others.rootPaths.map((path) => lspDisplayPath(cwd, path)),
+    `other ${serverId} root`,
+    others.hasMore,
+  );
+  const existing =
     others.rootPaths.length === 0
-      ? `other ${serverId} workspace roots may exist in directories that were not checked`
-      : `other ${serverId} workspace roots exist: ${[
-          ...others.rootPaths.map((path) => lspDisplayPath(cwd, path)),
-          ...(others.hasMore ? ["and more"] : []),
-        ].join(", ")}`;
-  return `${serverId} searched only its workspace root ${root}, but ${otherRoots}. Files outside ${root} may not have been considered; query a file under each other root or search for importers before relying on this result.`;
+      ? `other ${serverId} roots may exist in directories that were not checked (discovery stopped early)`
+      : `${count} ${others.rootPaths.length === 1 && !others.hasMore ? "exists" : "exist"} (${names})`;
+  return `${serverId} searched only ${root}; ${existing}, so importers there may be missed. Query a file there or search for importers. ${SCOPE_WARNING_SKILL}`;
 }
 
 function serverInstanceScopeLines(scopes: readonly ServerInstanceScope[]): string[] {
