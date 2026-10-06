@@ -1176,7 +1176,7 @@ describe("Web Fetch main content on large pages", () => {
   // Several MiB of HTML; extraction must stay linear because it runs synchronously and a request
   // timeout cannot interrupt it. Each page is built from an item count so the same shape can be
   // fetched at two sizes: the guard compares the two timings instead of an absolute duration,
-  // which depends on runner load.
+  // which depends on runner speed.
   const LARGE_PAGES = {
     "paragraphs in <main>": {
       items: 120_000,
@@ -1247,14 +1247,17 @@ describe("Web Fetch main content on large pages", () => {
   } satisfies Record<string, { items: number; build: (items: number) => string }>;
 
   // Linear extraction takes about SCALE times as long on SCALE times the items; quadratic takes
-  // about SCALE² times as long. Runner load slows both timings alike, so the limit sits between
-  // the two without depending on absolute speed. A single run still varies by up to 2×, so the
-  // small page takes the best of two and the large page is retimed once when the first ratio
-  // reaches the limit, keeping the lower large timing. The ratio only reaches the limit once the
-  // quadratic part is several times the linear part; a milder or smaller regression passes, and
-  // the 30 s test timeout catches a severe one.
-  const SCALE = 4;
-  const MAX_RATIO = 10;
+  // about SCALE² times as long. The guard compares CPU time (user + system) of the two runs rather
+  // than wall time: extraction is synchronous, so a busy runner mostly adds wall-clock time while
+  // descheduled, which CPU time excludes, and the remaining noise (cache contention, GC, frequency
+  // scaling) slows both runs alike. A wide SCALE puts the limit well between the two curves:
+  // linear is 8×, quadratic 64×, and the limit of 24× tolerates 3× noise on top of linear while a
+  // quadratic regression still exceeds it by 2.6×. The small page takes the best of two and the
+  // large page is retimed once when the first ratio reaches the limit, keeping the lower timing.
+  // The 90 s test timeout leaves room for slow, loaded runners and still catches a severe
+  // regression.
+  const SCALE = 8;
+  const MAX_RATIO = 24;
 
   for (const [name, { items, build }] of Object.entries(LARGE_PAGES)) {
     for (const format of ["text", "markdown"] as const) {
@@ -1262,9 +1265,10 @@ describe("Web Fetch main content on large pages", () => {
         const time = async (html: string) => {
           const fetch: typeof globalThis.fetch = async () =>
             new Response(html, { headers: { "content-type": "text/html" } });
-          const started = performance.now();
+          const started = process.cpuUsage();
           const result = await executeFetch({ fetch }, { url: "https://example.com/big", format });
-          const elapsed = performance.now() - started;
+          const used = process.cpuUsage(started);
+          const elapsed = (used.user + used.system) / 1000;
           const spill = result.details.truncation?.fullOutputPath;
           if (spill !== undefined) spillDirectories.push(dirname(spill));
           return { elapsed, result };
@@ -1290,7 +1294,7 @@ describe("Web Fetch main content on large pages", () => {
         expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).not.toContain(
           "NavAlpha",
         );
-      }, 30_000);
+      }, 90_000);
     }
   }
 });

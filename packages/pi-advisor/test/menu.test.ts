@@ -25,6 +25,7 @@ const defaults = {
   maxToolCalls: 8,
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
+  seedBudgetTokens: "auto",
 } satisfies AdvisorOptions;
 
 /** In-memory scoped settings with the same precedence as the extension. */
@@ -261,6 +262,24 @@ describe("Advisor settings menu", () => {
     expect(applied.map(({ change }) => change)).toEqual([
       { action: "set", key: "catchUpThreshold", patch: { catchUpThreshold: "off" } },
       { action: "inherit", key: "catchUpThreshold" },
+    ]);
+  });
+
+  it("accepts auto or a token count for the Context Seed budget", async () => {
+    const { goTo, press, type, applied, settle } = createMenu();
+    goTo("seedBudgetTokens");
+    press(keys.enter);
+    type("24000");
+    press(keys.enter);
+    await settle();
+    goTo("seedBudgetTokens");
+    press(keys.enter);
+    type("auto");
+    press(keys.enter);
+    await settle();
+    expect(applied.map(({ change }) => change)).toEqual([
+      { action: "set", key: "seedBudgetTokens", patch: { seedBudgetTokens: 24_000 } },
+      { action: "set", key: "seedBudgetTokens", patch: { seedBudgetTokens: "auto" } },
     ]);
   });
 
