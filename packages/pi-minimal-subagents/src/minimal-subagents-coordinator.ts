@@ -69,6 +69,7 @@ import type {
   StatusResult,
   TurnResult,
   WaitMessageResult,
+  WaitDeliveredTurnResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
 
@@ -145,16 +146,20 @@ function terminalWaitResult(result: TurnResult, messages: WaitMessageResult[] = 
   return messages.length === 0 ? terminal : { ...terminal, messages: structuredClone(messages) };
 }
 
-/** A terminal Wait Event naming a result automatic fallback already handed, without its output. */
-function alreadyDeliveredWaitResult(result: TurnResult, messages: WaitMessageResult[]): WaitResult {
-  const delivered = {
-    event: "turn" as const,
+/** A terminal Wait Event naming an already delivered result without repeating its output. */
+function alreadyDeliveredWaitResult(
+  result: TurnResult,
+  messages: WaitMessageResult[],
+): WaitDeliveredTurnResult {
+  const delivered: WaitDeliveredTurnResult = {
+    event: "turn",
     agent_id: result.agent_id,
     turn_id: result.turn_id,
     status: result.status,
-    already_delivered: true as const,
+    already_delivered: true,
   };
-  return messages.length === 0 ? delivered : { ...delivered, messages: structuredClone(messages) };
+  if (messages.length > 0) delivered.messages = structuredClone(messages);
+  return delivered;
 }
 
 /** The message ID of an automatic result message, which is also its Delivery Evidence key. */
@@ -503,9 +508,9 @@ export class MinimalSubagentsCoordinator {
       (agent.latest_result?.turn_id === turnId ? agent.latest_result : undefined);
     if (retainedResult) {
       const messages = this.drainPendingParentMessages(callerId, agentId, turnId);
-      // A default wait falls back to the latest turn, which automatic fallback may already have
-      // handed; repeating its output would deliver it twice. An explicit turn_id rereads it.
-      if (requestedTurnId === undefined && this.wasHandedAutomatically(callerId, retainedResult)) {
+      // A default wait falls back to the latest turn, whose result may already have been delivered
+      // automatically; repeating its output would deliver it twice. An explicit turn_id rereads it.
+      if (requestedTurnId === undefined && this.wasAlreadyDelivered(callerId, retainedResult)) {
         return Promise.resolve(alreadyDeliveredWaitResult(retainedResult, messages));
       }
       this.claimTerminalDelivery(callerId, retainedResult);
@@ -1760,10 +1765,10 @@ export class MinimalSubagentsCoordinator {
   }
 
   /**
-   * Whether automatic fallback handed this result to the caller: it is queued or sent now, or the
+   * Whether this result was already delivered to the caller automatically: it is handed, or the
    * caller's branch holds its automatic result message. A wait's own tool result does not count.
    */
-  private wasHandedAutomatically(callerId: string, result: TurnResult): boolean {
+  private wasAlreadyDelivered(callerId: string, result: TurnResult): boolean {
     return (
       this.handedTerminalKeys.has(deliveryTurnKey(result.agent_id, result.turn_id)) ||
       this.hasRecipientDeliveryEvidence(

@@ -374,11 +374,11 @@ export function createCoordinatorToolDefinitions(
             source_agent_id: result.agent_id,
             source_turn_id: result.turn_id,
           };
-          const toolResult = structuredToolResult(result);
           return {
-            ...toolResult,
             content:
-              "already_delivered" in result ? alreadyDeliveredContent(result) : toolResult.content,
+              "already_delivered" in result
+                ? alreadyDeliveredContent(result)
+                : structuredToolResult(result).content,
             details,
             structuredContent: JSON.parse(JSON.stringify(details)),
           };

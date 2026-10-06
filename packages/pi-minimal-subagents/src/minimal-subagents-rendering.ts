@@ -582,7 +582,7 @@ function renderWaitProgress(
   return container;
 }
 
-/** Shown instead of the output of a result automatic fallback already handed to the parent. */
+/** Shown instead of the output of a result already delivered to the parent automatically. */
 const ALREADY_DELIVERED_TEXT = "Already delivered automatically; wait with turn_id to reread it.";
 
 /** The collapsed body of a settled wait: what the child said, or why it stopped. */

@@ -302,10 +302,8 @@ export const CoordinatorToolOutputSchemas = {
       ...CoordinatorWaitSourceOutputSchema,
     }),
     Type.Object({
+      ...Type.Pick(CoordinatorTurnOutputSchema, ["agent_id", "turn_id", "status"]).properties,
       event: Type.Literal("turn"),
-      agent_id: Type.String(),
-      turn_id: Type.String(),
-      status: CoordinatorTurnStatusOutputSchema,
       already_delivered: Type.Literal(true),
       messages: Type.Optional(Type.Array(CoordinatorWaitMessageOutputSchema)),
       ...CoordinatorWaitSourceOutputSchema,

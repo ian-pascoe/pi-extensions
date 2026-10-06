@@ -99,14 +99,14 @@ export interface WaitTurnResult extends TurnResult {
 }
 
 /**
- * Reports that a default wait selected a terminal turn whose result automatic fallback already
- * handed to the caller, so the result is not repeated; an explicit `turn_id` rereads it.
+ * Reports that a default wait selected a terminal turn whose result was already delivered
+ * automatically, handed or settled, so the output is not repeated; an explicit `turn_id` rereads it.
  */
-export interface WaitDeliveredTurnResult {
+export interface WaitDeliveredTurnResult extends Pick<
+  TurnResult,
+  "agent_id" | "turn_id" | "status"
+> {
   event: "turn";
-  agent_id: string;
-  turn_id: string;
-  status: TurnResult["status"];
   already_delivered: true;
   messages?: WaitMessageResult[];
 }
