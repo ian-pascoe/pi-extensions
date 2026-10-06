@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, matchesGlob, relative, resolve } from "node:path";
 import {
   getAgentDir,
@@ -7,6 +7,7 @@ import {
   type ExtensionFactory,
   type ToolResultEvent,
   type ToolResultEventResult,
+  withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -351,40 +352,57 @@ function withDiff(
   return `${summary}\n${text}`;
 }
 
-async function formatMutationPaths(
+/**
+ * The key Pi's file mutation queue uses for a path: its real path, or the resolved path when it
+ * cannot be resolved. Pi does not export its own key function.
+ */
+async function mutationQueueKey(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Run `operation` while holding Pi's file mutation queue for every path, so no native `edit` or
+ * `write`, and no other formatting, changes those files meanwhile. Pi's queue is not reentrant, so
+ * paths sharing a key are queued once; keys are taken in sorted order, as Pi LSP applies a
+ * Workspace Edit, so two holders of overlapping paths cannot wait on each other.
+ */
+async function withFileMutationQueues<T>(
+  paths: readonly string[],
+  operation: () => Promise<T>,
+): Promise<T> {
+  const keys = [...new Set(await Promise.all(paths.map(mutationQueueKey)))].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const acquire = (index: number): Promise<T> => {
+    const key = keys[index];
+    if (key === undefined) return operation();
+    return withFileMutationQueue(key, () => acquire(index + 1));
+  };
+  return acquire(0);
+}
+
+interface FormatterInvocation {
+  readonly definition: FormatterDefinition;
+  /** The changed file a File Formatter runs for; undefined for a Workspace Formatter. */
+  readonly path: string | undefined;
+  readonly root: string;
+  readonly matchingPaths: readonly string[];
+}
+
+/** Every formatter command to run for the changed files, in Formatter Definition order. */
+async function planFormatterInvocations(
   paths: readonly string[],
   cwd: string,
   settings: ResolvedFormatterSettings,
-  signal: AbortSignal | undefined,
-): Promise<readonly FormatterNote[]> {
-  const existing = await existingFormatterPaths(cwd, paths);
-  const notes: FormatterNote[] = existing.warnings.map((text) => ({ text, diagnosable: true }));
-  const original = new Map<string, string | undefined>();
-  const current = new Map<string, string | undefined>();
-  const changedBy = new Map<string, string[]>();
-  for (const path of existing.paths) {
-    const content = await readTextFile(path);
-    original.set(path, content);
-    current.set(path, content);
-  }
-  /**
-   * Record which formatters changed each mutation path, comparing against the content the last run
-   * left. Every path is checked because a Workspace Formatter can rewrite files it was not run for.
-   */
-  const recordChanges = async (definition: FormatterDefinition): Promise<void> => {
-    for (const path of existing.paths) {
-      const content = await readTextFile(path);
-      if (content === current.get(path)) continue;
-      current.set(path, content);
-      const formatters = changedBy.get(path) ?? [];
-      if (!formatters.includes(definition.id)) formatters.push(definition.id);
-      changedBy.set(path, formatters);
-    }
-  };
+): Promise<readonly FormatterInvocation[]> {
+  const invocations: FormatterInvocation[] = [];
   for (const definition of settings.formatters.values()) {
-    const matchingPaths = existing.paths.filter((path) => formatterMatchesPath(definition, path));
+    const matchingPaths = paths.filter((path) => formatterMatchesPath(definition, path));
     if (matchingPaths.length === 0) continue;
-    const usesFile = isFileFormatter(definition);
     const discoveredRoots = await Promise.all(
       matchingPaths.map(async (path) => ({
         path,
@@ -399,40 +417,95 @@ async function formatMutationPaths(
     const pathsAndRoots = discoveredRoots.flatMap(({ path, root }) =>
       root === undefined ? [] : [{ path, root }],
     );
-    const invocations = usesFile
-      ? pathsAndRoots
-      : [...new Set(pathsAndRoots.map(({ root }) => root))].map((root) => ({
-          path: undefined,
-          root,
-        }));
-    for (const { path, root } of invocations) {
-      const args = definition.args.map((argument) =>
-        path === undefined ? argument : argument.replaceAll("$FILE", path),
-      );
-      const failure = await runFormatterCommand(definition, args, root, settings.timeoutMs, signal);
-      if (failure !== undefined) {
-        notes.push({
-          text: formatFormatterFailure(
-            definition,
-            path ?? `workspace ${root} triggered by ${matchingPaths.join(", ")}`,
-            failure,
-          ),
-          diagnosable: !isInputFailure(definition, failure, path),
-        });
+    if (isFileFormatter(definition)) {
+      for (const { path, root } of pathsAndRoots) {
+        invocations.push({ definition, path, root, matchingPaths });
       }
-      // Formatters such as `eslint --fix` exit non-zero after writing fixes, so compare regardless.
-      await recordChanges(definition);
+    } else {
+      for (const root of new Set(pathsAndRoots.map(({ root }) => root))) {
+        invocations.push({ definition, path: undefined, root, matchingPaths });
+      }
     }
   }
+  return invocations;
+}
+
+async function formatMutationPaths(
+  paths: readonly string[],
+  cwd: string,
+  settings: ResolvedFormatterSettings,
+  signal: AbortSignal | undefined,
+): Promise<readonly FormatterNote[]> {
+  const existing = await existingFormatterPaths(cwd, paths);
+  const notes = existing.warnings.map((text) => ({ text, diagnosable: true }));
+  const invocations = await planFormatterInvocations(existing.paths, cwd, settings);
+  if (invocations.length === 0) return notes;
+  // Inside the queue, the snapshot holds every change made before formatting, and the diff only
+  // the formatters' changes; a mutation arriving meanwhile waits rather than being overwritten.
+  const formatted = await withFileMutationQueues(existing.paths, () =>
+    runFormatterInvocations(existing.paths, invocations, cwd, settings, signal),
+  );
+  return [...notes, ...formatted];
+}
+
+/** Run the invocations in order and describe what failed and what each changed file became. */
+async function runFormatterInvocations(
+  paths: readonly string[],
+  invocations: readonly FormatterInvocation[],
+  cwd: string,
+  settings: ResolvedFormatterSettings,
+  signal: AbortSignal | undefined,
+): Promise<readonly FormatterNote[]> {
+  const notes: FormatterNote[] = [];
+  const original = new Map<string, string | undefined>();
+  const current = new Map<string, string | undefined>();
+  const changedBy = new Map<string, string[]>();
+  for (const path of paths) {
+    const content = await readTextFile(path);
+    original.set(path, content);
+    current.set(path, content);
+  }
+  /**
+   * Record which formatters changed each mutation path, comparing against the content the last run
+   * left. Every path is checked because a Workspace Formatter can rewrite files it was not run for.
+   */
+  const recordChanges = async (definition: FormatterDefinition): Promise<void> => {
+    for (const path of paths) {
+      const content = await readTextFile(path);
+      if (content === current.get(path)) continue;
+      current.set(path, content);
+      const formatters = changedBy.get(path) ?? [];
+      if (!formatters.includes(definition.id)) formatters.push(definition.id);
+      changedBy.set(path, formatters);
+    }
+  };
+  for (const { definition, path, root, matchingPaths } of invocations) {
+    const args = definition.args.map((argument) =>
+      path === undefined ? argument : argument.replaceAll("$FILE", path),
+    );
+    const failure = await runFormatterCommand(definition, args, root, settings.timeoutMs, signal);
+    if (failure !== undefined) {
+      notes.push({
+        text: formatFormatterFailure(
+          definition,
+          path ?? `workspace ${root} triggered by ${matchingPaths.join(", ")}`,
+          failure,
+        ),
+        diagnosable: !isInputFailure(definition, failure, path),
+      });
+    }
+    // Formatters such as `eslint --fix` exit non-zero after writing fixes, so compare regardless.
+    await recordChanges(definition);
+  }
   const diffBudget = { lines: MAX_DIFF_LINES, bytes: MAX_DIFF_BYTES };
-  for (const path of existing.paths) {
+  for (const path of paths) {
     const formatters = changedBy.get(path);
     const before = original.get(path);
     const after = current.get(path);
     if (formatters === undefined || before === undefined || after === undefined) continue;
     const changedLines = describeChangedLines(before, after);
     if (changedLines === undefined) continue;
-    const file = existing.paths.length > 1 ? `${relative(cwd, path)}: ` : "";
+    const file = paths.length > 1 ? `${relative(cwd, path)}: ` : "";
     const summary = `Formatted by ${formatters.join(", ")}: ${file}${changedLines}`;
     notes.push({
       text: withDiff(summary, diffChangedLines(before, after), diffBudget),

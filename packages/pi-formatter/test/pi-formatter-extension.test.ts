@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   createEditTool,
   createWriteTool,
@@ -159,6 +161,31 @@ function toolResultEvent(toolName: string, result: FormatterTestToolResult): Too
     details: result.details,
     isError: false,
   };
+}
+
+/**
+ * A File Formatter that strips trailing spaces. It reads the file, marks that it has read it, and
+ * writes the result 300 ms later, so a change made to the file in between would be overwritten.
+ */
+const SLOW_TRIM_SCRIPT =
+  "const fs=require('node:fs');const p=process.argv[1];const t=fs.readFileSync(p,'utf8');fs.writeFileSync('formatter-read','');setTimeout(()=>fs.writeFileSync(p,t.replace(/ +$/gm,'')),300)";
+
+async function waitForPath(path: string): Promise<void> {
+  for (;;) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      await delay(10);
+    }
+  }
+}
+
+/** The text blocks Pi Formatter appended to a mutation result whose tool reported one block. */
+function formatterNotes(result: { content?: ToolResultEvent["content"] } | undefined): string[] {
+  return (result?.content ?? [])
+    .slice(1)
+    .flatMap((block) => (block.type === "text" ? [block.text] : []));
 }
 
 function lastText(result: { content?: ToolResultEvent["content"] } | undefined): string {
@@ -575,6 +602,92 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(await readFile(filePath, "utf8")).toBe(
       "export function f(a: number) {\n  return a + 2;\n}\n",
     );
+  });
+
+  test("formats parallel edits to one file after every edit, reporting only the formatter's changes", async () => {
+    const harness = await createFormatterHarness({
+      formatter: { formatters: { trim: formatterDefinition(["-e", SLOW_TRIM_SCRIPT, "$FILE"]) } },
+    });
+    const filePath = resolve(harness.cwd, "values.txt");
+    await writeFile(filePath, "a = 1\nb = 2\nc = 3\n");
+    // Every write waits first, as on a slow disk, so the edits of one batch finish one by one.
+    const editTool = createEditTool(harness.cwd, {
+      operations: {
+        access: (path) => access(path, constants.R_OK | constants.W_OK),
+        readFile: (path) => readFile(path),
+        writeFile: async (path, content) => {
+          await delay(100);
+          await writeFile(path, content);
+        },
+      },
+    });
+    const edits = [
+      { oldText: "a = 1", newText: "a = 10  " },
+      { oldText: "b = 2", newText: "b = 20  " },
+      { oldText: "c = 3", newText: "c = 30  " },
+    ];
+
+    // As in Pi's parallel tool execution: every edit starts at once, and each result passes
+    // through `tool_result` as soon as its own edit finishes.
+    const results = await Promise.all(
+      edits.map(async (edit, index) => {
+        const edited = await editTool.execute(`edit-${index}`, {
+          path: filePath,
+          edits: [edit],
+        });
+        return harness.runner.emitToolResult({
+          ...toolResultEvent("edit", { input: { path: filePath }, details: edited.details }),
+          toolCallId: `edit-${index}`,
+          content: edited.content,
+        });
+      }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe("a = 10\nb = 20\nc = 30\n");
+    expect(results.flatMap((result) => formatterNotes(result))).toEqual([
+      [
+        "Formatted by trim: lines 1–3 changed",
+        "@@ -1,3 +1,3 @@",
+        "-a = 10  ",
+        "-b = 20  ",
+        "-c = 30  ",
+        "+a = 10",
+        "+b = 20",
+        "+c = 30",
+      ].join("\n"),
+    ]);
+  });
+
+  test("applies an edit that arrives while a formatter rewrites the same file after the formatter", async () => {
+    const harness = await createFormatterHarness({
+      formatter: { formatters: { trim: formatterDefinition(["-e", SLOW_TRIM_SCRIPT, "$FILE"]) } },
+    });
+    const filePath = resolve(harness.cwd, "values.txt");
+    const marker = resolve(harness.cwd, "formatter-read");
+    await writeFile(filePath, "a = 1  \nb = 2\n");
+
+    const written = harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+    // The formatter has read the file and is about to overwrite it.
+    await waitForPath(marker);
+    const edited = await createEditTool(harness.cwd).execute("edit-1", {
+      path: filePath,
+      edits: [{ oldText: "b = 2", newText: "b = 20" }],
+    });
+
+    expect(formatterNotes(await written)).toEqual([
+      ["Formatted by trim: line 1 changed", "@@ -1,2 +1,2 @@", "-a = 1  ", "+a = 1", " b = 2"].join(
+        "\n",
+      ),
+    ]);
+    // Checked before the edit's own result is formatted, which could otherwise repair a lost edit.
+    expect(await readFile(filePath, "utf8")).toBe("a = 1\nb = 20\n");
+    const editResult = await harness.runner.emitToolResult({
+      ...toolResultEvent("edit", { input: { path: filePath }, details: edited.details }),
+      content: edited.content,
+    });
+    expect(editResult).toBeUndefined();
   });
 
   test("falls back to the changed-line summary when the diff exceeds the line limit", async () => {

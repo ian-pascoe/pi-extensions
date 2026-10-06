@@ -13,6 +13,9 @@
 
 Pi Formatter runs matching Formatter Definitions sequentially after a Supported Mutation Tool
 reports changed destination files. Formatting completes before later tool-result middleware runs.
+Formatting holds Pi's file mutation queue for the mutation's files, from the snapshot taken before
+the first formatter runs to the read after the last, so concurrent mutations of those files land
+before or after it and the reported changes are the formatters' own.
 A successful mutation remains successful when formatting fails. Deleted and vanished files are
 not formatter targets. Formatter changes to a file are reported on the mutation result as a
 `Formatted by` line followed by a compact unified diff, within a fixed line and byte budget shared

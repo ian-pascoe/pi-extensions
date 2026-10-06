@@ -136,6 +136,14 @@ Formatting runs after successful native `edit` and `write` operations, Codex-sty
 results, and applied Pi LSP Workspace Edit Previews. Changed and created files plus rename
 destinations are formatted; deleted or vanished files are skipped.
 
+Formatting holds Pi's file mutation queue for the mutation's files, the same queue native `edit`
+and `write` use. When a batch of parallel tool calls edits one file, each edit lands before or
+after formatting, never during it: the first formatting covers every edit that landed before it,
+and its diff shows only the formatters' changes. Later results of the batch usually find nothing
+left to format, so only one of them carries the `Formatted by` line. An edit that arrives while a formatter runs waits
+for it instead of being overwritten. Pi's `read` does not join the queue, so a parallel `read` can
+still see the file before it is formatted.
+
 When the Git collection is installed, Pi Formatter loads before Pi LSP so Post-edit Diagnostics
 observe formatted content. Separately installed extensions depend on Pi's configured extension
 order.

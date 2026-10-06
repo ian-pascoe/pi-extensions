@@ -14,7 +14,8 @@
  * result, the `Formatted by <id>: …` line, and Post-edit Diagnostics computed on the formatted
  * file. The fake formatter prepends a header line, so a diagnostic's line and message show which
  * content the language server saw. The swapped order is asserted too, to document what changes if
- * the collection order is reversed.
+ * the collection order is reversed. Parallel edits to one file in one tool batch pin that formatting
+ * waits in Pi's file mutation queue without deadlocking Pi's own tool execution, and keeps the order.
  */
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -110,6 +111,8 @@ afterEach(async () => {
 });
 
 type ToolName = "edit" | "lsp_apply";
+/** A mutation tool, or `parallel_edit`: three `edit` calls to one file in one tool batch. */
+type Scenario = ToolName | "parallel_edit";
 type ScriptedResponse = (context: Context) => AssistantMessage;
 
 interface ContentBlockSummary {
@@ -118,21 +121,31 @@ interface ContentBlockSummary {
 }
 
 interface MutationRun {
+  /** The newest result of the scenario's tool; for `parallel_edit`, the first edit's result. */
   readonly blocks: readonly ContentBlockSummary[];
+  /** Every result of the scenario's tool in the final model request, in tool-call order. */
+  readonly results: readonly (readonly ContentBlockSummary[])[];
   readonly file: string;
   readonly filePath: string;
 }
 
-/** Every content block of the newest tool result the model received for a tool; `text` is empty for non-text blocks. */
-function resultBlocks(context: Context, toolName: string): readonly ContentBlockSummary[] {
-  const message = context.messages.findLast(
-    (candidate) => candidate.role === "toolResult" && candidate.toolName === toolName,
+/** The content blocks of every tool result the model received for a tool; `text` is empty for non-text blocks. */
+function resultBlocks(
+  context: Context,
+  toolName: string,
+): readonly (readonly ContentBlockSummary[])[] {
+  const results = context.messages.flatMap((message) =>
+    message.role === "toolResult" && message.toolName === toolName
+      ? [
+          message.content.map((block) => ({
+            type: block.type,
+            text: block.type === "text" ? block.text : "",
+          })),
+        ]
+      : [],
   );
-  if (message?.role !== "toolResult") throw new Error(`No ${toolName} tool result`);
-  return message.content.map((block) => ({
-    type: block.type,
-    text: block.type === "text" ? block.text : "",
-  }));
+  if (results.length === 0) throw new Error(`No ${toolName} tool result`);
+  return results;
 }
 
 const PreviewDetailsSchema = Type.Object({ preview_id: Type.String() });
@@ -152,7 +165,8 @@ function previewIdOf(context: Context): string {
  * given order. The model stream is the only scripted collaborator; the formatter and the language
  * server are fake child processes configured through Pi settings.
  */
-async function runMutation(toolName: ToolName, order: readonly string[]): Promise<MutationRun> {
+async function runMutation(scenario: Scenario, order: readonly string[]): Promise<MutationRun> {
+  const toolName: ToolName = scenario === "parallel_edit" ? "edit" : scenario;
   const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-formatter-lsp-combined-")));
   directories.push(cwd);
   const agentDir = join(cwd, "agent");
@@ -242,30 +256,40 @@ async function runMutation(toolName: ToolName, order: readonly string[]): Promis
     return () => fauxAssistantMessage(fauxToolCall(name, input), { stopReason: "toolUse" });
   };
   const done: ScriptedResponse = () => fauxAssistantMessage("Done.");
-  const responses: ScriptedResponse[] =
-    toolName === "edit"
-      ? [
-          toolUse("edit", { path: filePath, edits: [{ oldText: "=   1;", newText: "=   2;" }] }),
-          done,
-        ]
-      : [
-          toolUse("lsp_rename", {
-            file_path: filePath,
-            line: 1,
-            character: 9,
-            new_name: "newName",
-          }),
-          (context) =>
-            fauxAssistantMessage(fauxToolCall("lsp_apply", { preview_id: previewIdOf(context) }), {
-              stopReason: "toolUse",
-            }),
-          done,
-        ];
-  let blocks: readonly ContentBlockSummary[] | undefined;
+  const edit = (oldText: string, newText: string) =>
+    fauxToolCall("edit", { path: filePath, edits: [{ oldText, newText }] });
+  const scripts = {
+    edit: () => [
+      () => fauxAssistantMessage(edit("=   1;", "=   2;"), { stopReason: "toolUse" }),
+      done,
+    ],
+    lsp_apply: () => [
+      toolUse("lsp_rename", { file_path: filePath, line: 1, character: 9, new_name: "newName" }),
+      (context) =>
+        fauxAssistantMessage(fauxToolCall("lsp_apply", { preview_id: previewIdOf(context) }), {
+          stopReason: "toolUse",
+        }),
+      done,
+    ],
+    parallel_edit: () => [
+      () =>
+        fauxAssistantMessage(
+          [
+            edit("const   oldName", "let   oldName"),
+            edit("=   1;", "=   2;"),
+            edit("TODO later", "TODO   sooner"),
+          ],
+          { stopReason: "toolUse" },
+        ),
+      done,
+    ],
+  } satisfies Record<Scenario, () => ScriptedResponse[]>;
+  const responses = scripts[scenario]();
+  let results: readonly (readonly ContentBlockSummary[])[] | undefined;
   session.agent.streamFunction = (currentModel, context) => {
     const scripted = responses.shift();
     if (scripted === undefined) throw new Error("Unexpected model request");
-    if (responses.length === 0) blocks = resultBlocks(context, toolName);
+    if (responses.length === 0) results = resultBlocks(context, toolName);
     const next = scripted(context);
     const message: AssistantMessage = {
       ...next,
@@ -283,8 +307,11 @@ async function runMutation(toolName: ToolName, order: readonly string[]): Promis
   };
   await session.bindExtensions({ mode: "rpc" });
   await session.prompt("Mutate it");
-  if (blocks === undefined) throw new Error("The session never reached its final model request");
-  return { blocks, file: await readFile(filePath, "utf8"), filePath };
+  const blocks = scenario === "parallel_edit" ? results?.[0] : results?.at(-1);
+  if (results === undefined || blocks === undefined) {
+    throw new Error("The session never reached its final model request");
+  }
+  return { blocks, results, file: await readFile(filePath, "utf8"), filePath };
 }
 
 const DIAGNOSTICS_HEADING = "\n\nLSP diagnostics\n";
@@ -353,6 +380,32 @@ describe("Pi Formatter and Pi LSP loaded as the Git collection loads them", () =
       ]);
     },
   );
+
+  // Pi runs the edits of one batch concurrently, and each result's `tool_result` handlers as soon as
+  // its own edit finishes. Pi Formatter formats inside Pi's file mutation queue, so it formats once
+  // every edit has landed and its diff shows only the formatter's changes.
+  test("parallel edits to one file: one formatter line with only formatter changes, and Post-edit Diagnostics of the formatted file on every result", async () => {
+    const run = await runMutation("parallel_edit", collectionOrder);
+    expect(run.file).toBe("// formatted\nlet oldName = 2;\n// TODO sooner\n");
+    const original = expectedOriginalResult("edit", run.filePath);
+    const formatterNote = [
+      "Formatted by fakefmt: lines 1–3 changed",
+      "@@ -1,2 +1,3 @@",
+      "-let   oldName   =   2;",
+      "-// TODO   sooner",
+      "+// formatted",
+      "+let oldName = 2;",
+      "+// TODO sooner",
+    ].join("\n");
+    const texts = run.results.map((blocks) => blocks.map(({ text }) => text));
+    // Which result carries the formatter line depends on which handler takes the queue first.
+    expect(texts.flat().filter((text) => text.startsWith("Formatted by"))).toEqual([formatterNote]);
+    expect(texts).toContainEqual([original, formatterNote, formattedDiagnostic]);
+    expect(texts.filter((blocks) => !blocks.includes(formatterNote))).toEqual([
+      [original, formattedDiagnostic],
+      [original, formattedDiagnostic],
+    ]);
+  });
 
   // Documents the failure mode the collection order prevents: with pi-lsp first, diagnostics come
   // from the pre-format file and precede the formatter line, so line numbers disagree with disk.
