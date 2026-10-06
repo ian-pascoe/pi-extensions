@@ -336,10 +336,8 @@ describe("DapSession", () => {
       hitBreakpointIds: [7],
       topFrame: expect.objectContaining({ name: "main", line: 4 }),
     });
-    expect(session.status().stop).toEqual({
-      description: "Paused on breakpoint",
-      hitBreakpointIds: [7],
-    });
+    // dap_status reuses the top frame the stop already read, and drops it on resume.
+    expect(session.status().stop).toEqual(stopped.stop);
     await session.shutdown();
   });
 

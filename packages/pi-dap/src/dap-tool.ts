@@ -659,7 +659,7 @@ async function executeDapOperation(
       result,
       runtime.sessionFiles,
       cwd,
-      waits && signal?.aborted === true,
+      waits && signal?.aborted === true && result.snapshot.state !== "stopped",
       warnings,
     );
     notifyDapToolObserver(() => runtime.observer?.onToolSuccess(parameters, result));

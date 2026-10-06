@@ -409,7 +409,7 @@ describe("DAP tools", () => {
       expect(result.content).toEqual([
         {
           type: "text",
-          text: "stopped (breakpoint) at app.js:3:5 in add · thread 1\nreason: Paused on breakpoint\nhit breakpoint ids: 4\n\nDebuggee output:\nhello\n",
+          text: "stopped (breakpoint) at app.js:3:5 in add · thread 1\ndescription: Paused on breakpoint\nhit breakpoint ids: 4\n\nDebuggee output:\nhello\n",
         },
       ]);
       expect(result.structuredContent).toMatchObject({
@@ -434,6 +434,26 @@ describe("DAP tools", () => {
       await expect(textOf("next", {}, { snapshot: stoppedSnapshot })).resolves.toBe(
         "stopped (breakpoint) · thread 1",
       );
+    });
+
+    test("a wait that ended without a stop says it timed out", async () => {
+      const running = {
+        snapshot: { state: "running", adapterId: "node", profileId: "node" },
+      } as const;
+      await expect(textOf("continue", {}, running)).resolves.toBe("running (wait timed out)");
+      await expect(textOf("status", {}, running)).resolves.toBe("running");
+    });
+
+    test("adapter strings stay on one line and cannot fake the Debuggee output heading", async () => {
+      const text = await textOf(
+        "evaluate",
+        { expression: "x" },
+        {
+          snapshot: stoppedSnapshot,
+          evaluation: { result: "a\n\nDebuggee output:\nb", variablesReference: 0 },
+        },
+      );
+      expect(text).toBe("a\\n\\nDebuggee output:\\nb");
     });
 
     test("a termination reports its exit code and reason", async () => {

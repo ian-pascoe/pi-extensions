@@ -306,6 +306,10 @@ interface ActiveDapSession {
   stopReason: string | undefined;
   stopDescription: string | undefined;
   hitBreakpointIds: readonly number[] | undefined;
+  /** Top Stack Frame of the current stop, once an operation has read it. */
+  topFrame: DebugProtocol.StackFrame | undefined;
+  /** Counts stopped events, so a frame read for an earlier stop is never attached to a later one. */
+  stopSequence: number;
   threadId: number | undefined;
   exitCode: number | undefined;
   cleanupPromise?: Promise<void>;
@@ -475,6 +479,8 @@ export class DapSession {
         stopReason: undefined,
         stopDescription: undefined,
         hitBreakpointIds: undefined,
+        topFrame: undefined,
+        stopSequence: 0,
         threadId: undefined,
         exitCode: undefined,
         stopping: false,
@@ -542,7 +548,7 @@ export class DapSession {
         await wait.promise;
       }
       await active.cleanupPromise;
-      return await this.stoppedResult(active, signal);
+      return await this.stoppedResult(active);
     } catch (cause) {
       if (active !== undefined) {
         await this.finishActiveSession(active, "launch failed");
@@ -692,8 +698,7 @@ export class DapSession {
 
   /** Return the current lifecycle snapshot and drain currently unread Debuggee output. */
   status(): DapSessionResult {
-    const stop = this.stopDetails();
-    return this.result(stop === undefined ? {} : { stop });
+    return this.result(this.stopPayload());
   }
 
   /** Idempotently stop the active Debug Session and preserve Desired Breakpoints. */
@@ -791,34 +796,40 @@ export class DapSession {
     }
     await wait.promise;
     await active.cleanupPromise;
-    return this.stoppedResult(active, signal);
+    return this.stoppedResult(active);
   }
 
   /** Result that, when the Debuggee is stopped, says where and why without a separate stack call. */
-  private async stoppedResult(
-    active: ActiveDapSession,
-    signal: AbortSignal | undefined,
-  ): Promise<DapSessionResult> {
-    const topFrame =
-      this.isCurrentActive(active) && active.phase === "stopped"
-        ? await this.readTopFrame(active, signal)
-        : undefined;
-    const stop = this.stopDetails(topFrame);
-    return this.result(stop === undefined ? {} : { stop });
+  private async stoppedResult(active: ActiveDapSession): Promise<DapSessionResult> {
+    if (this.isCurrentActive(active) && active.phase === "stopped") {
+      const stopSequence = active.stopSequence;
+      const topFrame = await this.readTopFrame(active);
+      if (
+        topFrame !== undefined &&
+        this.isCurrentActive(active) &&
+        active.phase === "stopped" &&
+        active.stopSequence === stopSequence
+      ) {
+        active.topFrame = topFrame;
+      }
+    }
+    return this.result(this.stopPayload());
   }
 
-  /** Best effort: a stop is still reported when the adapter cannot give its top frame. */
+  /**
+   * Best effort: a stop is still reported when the adapter cannot give its top Stack Frame. The read
+   * ignores the tool's cancellation signal so a cancel after the stop cannot discard the location.
+   */
   private async readTopFrame(
     active: ActiveDapSession,
-    signal: AbortSignal | undefined,
   ): Promise<DebugProtocol.StackFrame | undefined> {
     try {
       const body = parseDapBody(
         DapStackTraceBodySchema,
         await active.client.request(
           "stackTrace",
-          { threadId: await this.resolveThreadId(active, signal), startFrame: 0, levels: 1 },
-          dapRequestOptions(signal),
+          { threadId: await this.resolveThreadId(active, undefined), startFrame: 0, levels: 1 },
+          dapRequestOptions(undefined),
         ),
         "stackTrace",
       );
@@ -828,14 +839,14 @@ export class DapSession {
     }
   }
 
-  private stopDetails(topFrame?: DebugProtocol.StackFrame): DapStopDetails | undefined {
+  private stopPayload(): Pick<DapSessionResult, "stop"> {
     const active = this.currentActive();
-    if (active === undefined || active.phase !== "stopped") return undefined;
-    const details: Mutable<DapStopDetails> = {};
-    if (active.stopDescription !== undefined) details.description = active.stopDescription;
-    if (active.hitBreakpointIds !== undefined) details.hitBreakpointIds = active.hitBreakpointIds;
-    if (topFrame !== undefined) details.topFrame = topFrame;
-    return details;
+    if (active === undefined || active.phase !== "stopped") return {};
+    const stop: Mutable<DapStopDetails> = {};
+    if (active.stopDescription !== undefined) stop.description = active.stopDescription;
+    if (active.hitBreakpointIds !== undefined) stop.hitBreakpointIds = active.hitBreakpointIds;
+    if (active.topFrame !== undefined) stop.topFrame = active.topFrame;
+    return { stop };
   }
 
   private async resolveThreadId(
@@ -900,6 +911,8 @@ export class DapSession {
           active.stopReason = body.reason;
           active.stopDescription = body.description;
           active.hitBreakpointIds = body.hitBreakpointIds;
+          active.topFrame = undefined;
+          active.stopSequence++;
           active.threadId = body.threadId;
           this.publishSnapshot();
           this.settleExecutionWaiters();
@@ -1137,6 +1150,7 @@ export class DapSession {
     active.stopReason = undefined;
     active.stopDescription = undefined;
     active.hitBreakpointIds = undefined;
+    active.topFrame = undefined;
     if (changed) this.publishSnapshot();
   }
 
