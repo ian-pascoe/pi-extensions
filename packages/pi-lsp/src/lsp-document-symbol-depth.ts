@@ -148,8 +148,11 @@ function pruneFlat(
   depth: number,
 ): LspDepthLimitedSymbols {
   const byName = new Map<string, number[]>();
-  for (const [index, { name }] of entries.entries())
-    byName.set(name, [...(byName.get(name) ?? []), index]);
+  for (const [index, { name }] of entries.entries()) {
+    const sameName = byName.get(name);
+    if (sameName === undefined) byName.set(name, [index]);
+    else sameName.push(index);
+  }
   const parents = entries.map((_, index) => containerIndex(entries, byName, index));
   /** The budget available to the children of each entry. */
   const available = new Map<number, number>();
