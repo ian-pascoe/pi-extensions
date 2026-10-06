@@ -198,6 +198,50 @@ describe("real TypeScript 7 language server client", () => {
     if (processId !== undefined) expect(processExists(processId)).toBe(false);
   }, 60_000);
 
+  test("shows a documented function's hover signature fenced and apart from its documentation", async () => {
+    const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
+    temporaryDirectories.push(projectDirectory);
+    await writeFile(
+      resolve(projectDirectory, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
+    );
+    const filePath = resolve(projectDirectory, "example.ts");
+    await writeFile(
+      filePath,
+      "/** Doc text. */\nexport function f(a: number): boolean {\n  return a > 0;\n}\n",
+      "utf8",
+    );
+    const sessionFiles = await createLspSessionFiles(projectDirectory);
+    const manager = createTypeScriptManager(
+      projectDirectory,
+      typescriptDefinition(["tsconfig.json"]),
+    );
+    try {
+      const result = await createLspToolDefinition("hover", () => ({
+        manager,
+        workspaceEdits: new LspWorkspaceEditStore(),
+        sessionFiles,
+      })).execute(
+        "hover",
+        // `f` is at one-based character 17 on line 2.
+        { file_path: filePath, line: 2, character: 17 },
+        undefined,
+        undefined,
+        // SAFETY: Tool execution only reads cwd from ExtensionContext.
+        { cwd: projectDirectory } as ExtensionToolContext,
+      );
+      const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
+      const lines = text.split("\n");
+      expect(lines).toContain("```typescript");
+      expect(text).toContain("function f(a: number): boolean");
+      expect(lines).toContain("Doc text.");
+      expect(lines.indexOf("Doc text.")).toBeGreaterThan(lines.indexOf("```"));
+    } finally {
+      await manager.shutdown();
+      await sessionFiles.close();
+    }
+  }, 60_000);
+
   test("returns a diagnostic-dependent quick fix as a Workspace Edit Preview", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);
