@@ -35,24 +35,31 @@ export interface LspHoverReadTextInput {
   readonly emptyMessage: (read: LspRead) => string;
 }
 
+/** One server's hover lines, or undefined when it has no hover contents at the position. */
+function hoverLines(read: LspRead): readonly string[] | undefined {
+  if (read.value === null || read.value === undefined) return undefined;
+  if (!Value.Check(HoverSchema, read.value)) return [formatLspToolValue(read.value)];
+  const text = hoverContentsText(read.value.contents);
+  return text === "" ? undefined : text.split("\n");
+}
+
 /**
  * Render a hover read as its markdown or plaintext contents only. Results are grouped by server
- * only when more than one server answered, and server failures follow as warnings. A response
- * that is not hover-shaped is shown as compact JSON instead.
+ * only when more than one server answered, and server failures follow as warnings. When no server
+ * has hover contents, the result says so once. A response that is not hover-shaped is shown as
+ * compact JSON instead.
  */
 export function formatLspHoverReadText(input: LspHoverReadTextInput): string {
-  const blocks = input.reads.map((read): LspReadTextBlock => {
-    if (read.value === null || read.value === undefined) {
-      return { server_id: read.server_id, lines: [input.emptyMessage(read)] };
-    }
-    if (!Value.Check(HoverSchema, read.value)) {
-      return { server_id: read.server_id, lines: [formatLspToolValue(read.value)] };
-    }
-    const text = hoverContentsText(read.value.contents);
-    return {
-      server_id: read.server_id,
-      lines: text === "" ? [input.emptyMessage(read)] : text.split("\n"),
-    };
-  });
+  const hovers = input.reads.map((read) => ({ read, lines: hoverLines(read) }));
+  if (hovers.every(({ lines }) => lines === undefined)) {
+    return assembleLspReadText({
+      blocks: [{ server_id: "", lines: [...new Set(input.reads.map(input.emptyMessage))] }],
+      warnings: input.warnings,
+    });
+  }
+  const blocks = hovers.map(({ read, lines }): LspReadTextBlock => ({
+    server_id: read.server_id,
+    lines: lines ?? [input.emptyMessage(read)],
+  }));
   return assembleLspReadText({ blocks, warnings: input.warnings, scope: input.scope });
 }

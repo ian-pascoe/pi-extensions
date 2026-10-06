@@ -250,9 +250,10 @@ matching items.
 Diagnostics, hover, status, code actions, and apply results are compact text too:
 
 - `lsp_diagnostics` and `lsp_workspace_diagnostics` list one
-  `path:line:col severity source(code): message` line per LSP Diagnostic. A file without any reads
-  `path: no diagnostics`, and a server whose diagnostics timed out says so. Workspace diagnostics
-  start with the server's coverage message, if any.
+  `path:line:col severity source(code): message` line per LSP Diagnostic. A queried file without
+  any reads `path: no diagnostics`, and a server whose diagnostics timed out says so. Workspace
+  diagnostics start with the server's coverage message, if any, and count clean files on one
+  `N files: no diagnostics` line. A malformed diagnostic is shown as JSON on its own line.
 - `lsp_hover` shows only the hover's markdown or plaintext contents, under the `Query position:`
   line.
 - `lsp_status` lists one `server_id state [root] language(extensions,...) [error: ...]` line per

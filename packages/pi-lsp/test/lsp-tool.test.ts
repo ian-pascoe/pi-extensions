@@ -2648,7 +2648,7 @@ describe("registered LSP tool", () => {
       [
         "Server typescript publishes no workspace diagnostics; these are the diagnostics it pushed for 2 files opened in this session. Use lsp_diagnostics for other files.",
         "source.ts:1:1: problem",
-        "source.ts.clean.ts: no diagnostics",
+        "1 file: no diagnostics",
       ].join("\n"),
     );
     await fixture.close();
@@ -4497,6 +4497,87 @@ describe("registered LSP tool", () => {
         deleted_files: [join(cwd, "deleted.ts")],
         moved_files: [{ from: join(cwd, "old.ts"), to: join(cwd, "new.ts") }],
       });
+      await fixture.close();
+    });
+
+    test("summarizes clean files of a workspace read as one count per server", async () => {
+      const fixture = await createToolFixture();
+      const cwd = fixture.context.cwd;
+      for (const name of ["a.ts", "b.ts", "c.ts", "d.ts"]) {
+        await writeFile(join(cwd, name), "x\n".repeat(3));
+      }
+      fixture.client.workspaceDiagnosticsResult = {
+        status: "fresh",
+        source: "workspace_pull",
+        diagnosticsByUri: new Map([
+          [pathToFileURL(join(cwd, "a.ts")).href, []],
+          [
+            pathToFileURL(join(cwd, "b.ts")).href,
+            [{ range: protocolRange(2, 0, 1), severity: 1, message: "broken" }],
+          ],
+          [pathToFileURL(join(cwd, "c.ts")).href, []],
+          [pathToFileURL(join(cwd, "d.ts")).href, []],
+        ]),
+      };
+
+      const result = await executeTool(fixture, {
+        operation: "workspace_diagnostics",
+        server_id: "typescript",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe(
+        ["b.ts:3:1 error: broken", "3 files: no diagnostics"].join("\n"),
+      );
+      await fixture.close();
+    });
+
+    test("renders well-formed diagnostics compactly beside a malformed one", async () => {
+      const fixture = await createToolFixture();
+      const malformed = { severity: 1, message: "no range" };
+      // Servers send diagnostics that break the protocol's types, as a decoded wire message would.
+      const diagnostics: Diagnostic[] = JSON.parse(
+        JSON.stringify([
+          { range: protocolRange(0, 6, 5), severity: 2, source: "ts", message: "first" },
+          malformed,
+          {
+            range: protocolRange(0, 0, 5),
+            severity: 1,
+            source: null,
+            code: null,
+            message: "nulls",
+          },
+        ]),
+      );
+      fixture.client.documentDiagnosticsResult = { status: "fresh", source: "push", diagnostics };
+
+      const result = await executeTool(fixture, {
+        operation: "diagnostics",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe(
+        [
+          "source.ts:1:7 warning ts: first",
+          formatLspToolValue(malformed),
+          "source.ts:1:1 error: nulls",
+        ].join("\n"),
+      );
+      await fixture.close();
+    });
+
+    test("states once that no server has hover information", async () => {
+      const fixture = await createToolFixture(["typescript", "oxlint"]);
+      fixture.client.responderByMethod.set("textDocument/hover", () => null);
+
+      const result = await executeTool(fixture, {
+        operation: "hover",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 7,
+      });
+
+      expect(resultText(result)).toBe('No hover information at source.ts:1:7 ("emoji").');
       await fixture.close();
     });
 
