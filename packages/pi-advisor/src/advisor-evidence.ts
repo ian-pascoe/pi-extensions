@@ -90,20 +90,34 @@ export function messageOrigins(
   messages: readonly Message[],
   sources: AgentSession["messages"],
 ): string[] {
-  const byTime = Map.groupBy(sources, (source) => source.timestamp);
-  return messages.map((message) => {
-    if (message.role !== "user") return message.role;
-    const candidates = byTime.get(message.timestamp) ?? [];
-    // Messages may share a timestamp; prefer the source whose conversion this message is.
-    const match = candidates.find((source) =>
-      isDeepStrictEqual(convertToLlm([source])[0]?.content, message.content),
-    );
-    return (
-      match?.role ??
-      candidates.find((source) => source.role !== "user")?.role ??
-      (candidates.length ? "user" : "unknown")
-    );
-  });
+  // Sources that reach the model as user messages, in order, grouped by timestamp.
+  const byTime = Map.groupBy(
+    sources.flatMap((source) => {
+      const [converted] = convertToLlm([source]);
+      return converted?.role === "user" ? [{ source, content: converted.content }] : [];
+    }),
+    ({ source }) => source.timestamp,
+  );
+  const used = new Set<object>();
+  const origins = messages.map((message): string | undefined =>
+    message.role === "user" ? undefined : message.role,
+  );
+  const claim = (index: number, matches: (content: Message["content"]) => boolean) => {
+    const message = messages[index];
+    if (message?.role !== "user" || origins[index]) return;
+    const match = byTime
+      .get(message.timestamp)
+      ?.find(({ source, content }) => !used.has(source) && matches(content));
+    if (!match) return;
+    used.add(match.source);
+    origins[index] = match.source.role;
+  };
+  // Exact conversions first; then, within a timestamp, the k-th unmatched message pairs with the
+  // k-th unused source (a message a context hook rewrote, such as with images removed).
+  for (const [index, message] of messages.entries())
+    claim(index, (content) => isDeepStrictEqual(content, message.content));
+  for (const index of messages.keys()) claim(index, () => true);
+  return origins.map((origin) => origin ?? "unknown");
 }
 
 /** A Context Seed: the Observed Setup and the observed messages that fit its token budget. */
@@ -206,8 +220,12 @@ export function selectContextSeed(
     } = projectEvidence([message]);
     return only ? [{ message: only, images }] : [];
   });
-  // Without any recognized user origin, fall back to the converted role.
-  const origins = options.origins?.includes("user") ? options.origins : undefined;
+  // Fall back to the converted role only when no converted user message has a known origin.
+  const origins = options.origins?.some(
+    (origin, index) => messages[index]?.role === "user" && origin !== "unknown",
+  )
+    ? options.origins
+    : undefined;
   const isRequest = (index: number) =>
     origins ? origins[index] === "user" : messages[index]?.role === "user";
   // Units: a message, with any tool results that follow it.

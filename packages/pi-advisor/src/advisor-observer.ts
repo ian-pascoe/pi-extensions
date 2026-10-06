@@ -623,7 +623,7 @@ export class AdvisorObserver {
     }
     const file = this.observed.sessionManager.getSessionFile();
     return [
-      ` To fit seedBudgetTokens (${budget} tokens), it keeps observed messages ${ranges.join(", ") || "none"} of ${total}`,
+      ` To fit seedBudgetTokens (${budget} tokens), it keeps the messages at positions ${ranges.join(", ") || "none"} of the ${total} in the observed context`,
       omitted ? ` and omits the other ${omitted}` : "",
       seed.shortened ? `; ${seed.shortened} kept messages are shortened where marked` : "",
       file

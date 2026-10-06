@@ -1837,7 +1837,7 @@ it.each([
     expect(seed.header).toContain(`seedBudgetTokens (${budget} tokens)`);
     expect(seed.header).toMatch(
       new RegExp(
-        `keeps observed messages 1, \\d+–${observedMessages.length} of ${observedMessages.length} and omits the other \\d+`,
+        `keeps the messages at positions 1, \\d+–${observedMessages.length} of the ${observedMessages.length} in the observed context and omits the other \\d+`,
       ),
     );
     expect(seed.header).toContain(session.sessionManager.getSessionFile());
@@ -1982,7 +1982,9 @@ it("seeds the compaction summary and the first user request after it, not findin
   await session.prompt("Continue");
   expect(observer.status.lastError).toBeNull();
   const seed = seedPayload(privateRequests[0]);
-  expect(seed.header).toMatch(/keeps observed messages 1, \d+, \d+–\d+ of \d+ and omits the other/);
+  expect(seed.header).toMatch(
+    /keeps the messages at positions 1, \d+, \d+–\d+ of the \d+ in the observed context and omits the other/,
+  );
   const [summary, request] = seed.evidence.messages;
   expect(JSON.stringify(summary)).toContain("Summary: the user asked to refactor the parser.");
   expect(request).toEqual({

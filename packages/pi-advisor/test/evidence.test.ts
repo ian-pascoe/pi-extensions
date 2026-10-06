@@ -437,6 +437,59 @@ it("takes the original request from real user requests, not converted summaries 
   expect(uncompacted.messages[0]).toEqual({ role: "user", content: request.content });
 });
 
+it("pairs messages that share a timestamp in order when a context hook rewrote one", () => {
+  const typed = [
+    { type: "text", text: "Describe this screenshot." },
+    { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+  ] as const;
+  // Image blocking rewrote the request, and a before_agent_start message shares its timestamp.
+  const messages: Message[] = [
+    { role: "user", content: [typed[0]], timestamp: 5 },
+    { role: "user", content: [{ type: "text", text: "Injected reminder" }], timestamp: 5 },
+  ];
+  expect(
+    messageOrigins(messages, [
+      { role: "user", content: [...typed], timestamp: 5 },
+      {
+        role: "custom",
+        customType: "reminder",
+        content: "Injected reminder",
+        display: false,
+        timestamp: 5,
+      },
+    ]),
+  ).toEqual(["user", "custom"]);
+});
+
+it("keeps no original request when compaction cut the turn that held it", () => {
+  const summary: Message = { role: "user", content: "Compacted: parser goal.", timestamp: 1 };
+  const concern: Message = {
+    role: "user",
+    content: "Advisor concern: tests skipped.",
+    timestamp: 2,
+  };
+  const messages: Message[] = [
+    summary,
+    concern,
+    ...conversation(1, () => "L".repeat(50_000)).slice(1),
+  ];
+  const origins = messageOrigins(messages, [
+    { role: "compactionSummary", summary: "parser goal.", tokensBefore: 1, timestamp: 1 },
+    {
+      role: "custom",
+      customType: "pi-advisor",
+      content: "Advisor concern: tests skipped.",
+      display: true,
+      timestamp: 2,
+    },
+  ]);
+  expect(origins.slice(0, 2)).toEqual(["compactionSummary", "custom"]);
+  const seed = selectContextSeed({ ...transcript, messages }, { budgetTokens: 800, origins });
+  // The summary is the original request; the delivered concern is not, so it is omitted.
+  expect(seed.kept).toEqual([0, 2, 3, 4]);
+  expect(seed.messages[0]).toEqual({ role: "user", content: summary.content });
+});
+
 it("derives the automatic seed budget from the Advisor model's context window", () => {
   expect(seedBudget("auto", 200_000)).toBe(50_000);
   expect(seedBudget("auto", 1_000_000)).toBe(250_000);
