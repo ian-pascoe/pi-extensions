@@ -141,6 +141,7 @@ import {
   type MutationManifest,
   type ServerOperationOutcome,
 } from "./lsp-tool-contract.js";
+import { lspStructuredResultValue } from "./lsp-structured-positions.js";
 import {
   createLspToolOutput as createBaseLspToolOutput,
   formatLspToolValue,
@@ -536,8 +537,26 @@ function readTextContext(filePath: string, context: ExtensionContext): ReadTextC
 }
 
 /**
+ * The Structured Result fields of a read: each server's normalized response with its locations and
+ * symbols extended by flat positions, and the warnings.
+ */
+function structuredReadFields(
+  operation: LspOperationName,
+  reads: readonly { readonly value: unknown }[],
+  warnings: readonly string[],
+  documentPath: string,
+): LspStructuredFields {
+  const results = reads.map((read) => ({
+    ...read,
+    value: lspStructuredResultValue(operation, read.value, documentPath),
+  }));
+  return lspStructuredFields(formatLspToolValue({ results, warnings }));
+}
+
+/**
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
- * response; location, symbol, hierarchy, range, diagnostics, and hover reads derive readable
+ * response, each location and symbol extended with flat one-based `path`, `line`, and `character`
+ * and each symbol with a `kind_name`; location, symbol, hierarchy, range, diagnostics, and hover reads derive readable
  * model-visible text from the same data (ADR-0003), and other reads show that JSON. References also name each searched
  * workspace root and warn when other roots of the same Server Definition exist or, in a workspace
  * root, when packages there have no document synchronized with the server. A position-based
@@ -580,7 +599,10 @@ async function readOutput(
   const details = operationDetails(operation, readOperationOutcomes(resolved));
   const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   const queried = queriedPositionText(operation, textContext.queried, textContext, resultCount);
-  const structured = { ...queried?.structured, ...lspStructuredFields(json) };
+  const structured = {
+    ...queried?.structured,
+    ...structuredReadFields(operation, results, warnings, textContext.documentPath),
+  };
   let text: string;
   if (isLspLocationOperation(operation)) {
     text = await formatLspLocationReadText({
@@ -697,7 +719,6 @@ async function itemListOutput(
     ...resultPositionWarnings(resolved, textContext.cwd),
     ...resolved.failures.map(({ message }) => message),
   ];
-  const json = formatLspToolValue({ results, warnings });
   const resultCount = results.reduce((count, read) => count + semanticLspValueCount(read.value), 0);
   const query = resolved.successes[0]?.value.query;
   const queried = queriedPositionText(
@@ -718,7 +739,10 @@ async function itemListOutput(
   return createLspToolOutput(
     text,
     { ...operationDetails(operation, readOperationOutcomes(resolved)), result_count: resultCount },
-    { ...queried?.structured, ...lspStructuredFields(json) },
+    {
+      ...queried?.structured,
+      ...structuredReadFields(operation, results, warnings, textContext.documentPath),
+    },
     dependencies,
   );
 }
@@ -992,6 +1016,11 @@ const LISTED_STATES: ReadonlySet<LspServerStatusEntry["state"]> = new Set([
   "unavailable",
 ]);
 
+/** The entries `lsp_status` lists, in text and in its Structured Result: all, or the `LISTED_STATES`. */
+function listedStatusServers(status: LspServerManagerStatus, all: boolean) {
+  return all ? status.servers : status.servers.filter(({ state }) => LISTED_STATES.has(state));
+}
+
 /**
  * Render status as one `server_id state [root] language(extensions,...)... [error: ...]` line per
  * Server Definition or Server Instance, followed by settings warnings. Unless `all` is set, only
@@ -999,9 +1028,7 @@ const LISTED_STATES: ReadonlySet<LspServerStatusEntry["state"]> = new Set([
  * are counted in one summary line.
  */
 function formatStatusText(status: LspServerManagerStatus, cwd: string, all: boolean): string {
-  const listed = all
-    ? status.servers
-    : status.servers.filter(({ state }) => LISTED_STATES.has(state));
+  const listed = listedStatusServers(status, all);
   const lines = listed.map((server) => {
     const languages = Object.entries(statusLanguages(server.languages)).map(
       ([languageId, patterns]) => `${languageId}(${patterns.join(",")})`,
@@ -1896,18 +1923,21 @@ async function executeLspOperation(
         if (server.error === undefined) return outcome;
         return { ...outcome, message: server.error };
       });
+      const all = parameters.all === true;
+      const listed = listedStatusServers(status, all);
       const json = formatLspToolValue({
-        servers: status.servers.map((server) => ({
+        servers: listed.map((server) => ({
           error: server.error,
           languages: statusLanguages(server.languages),
           root_path: server.rootPath,
           server_id: server.serverId,
           state: server.state,
         })),
+        not_started: status.servers.length - listed.length,
         warnings: status.warnings,
       });
       return createLspToolOutput(
-        formatStatusText(status, context.cwd, parameters.all === true),
+        formatStatusText(status, context.cwd, all),
         { ...operationDetails("status", outcomes), result_count: status.servers.length },
         lspStructuredFields(json),
         dependencies,

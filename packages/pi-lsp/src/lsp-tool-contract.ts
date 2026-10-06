@@ -611,7 +611,16 @@ export const LspStatusOutputSchema = Type.Object({
           "Language ID to the file extensions and exact filenames the Server Definition handles",
       }),
     }),
+    {
+      description:
+        "Server Instances and Disabled Server Definitions, or every configured server with all: true",
+    },
   ),
+  not_started: Type.Integer({
+    minimum: 0,
+    description:
+      "Enabled Server Definitions without a Server Instance, left out of servers (0 with all: true)",
+  }),
   warnings: Type.Array(Type.String()),
   ...StructuredResultEnvelope,
 });

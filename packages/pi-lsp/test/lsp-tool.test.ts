@@ -716,6 +716,9 @@ describe("registered LSP tool", () => {
             {
               uri: fixture.filePath,
               range: { start: { line: 1, character: 7 }, end: { line: 1, character: 12 } },
+              path: fixture.filePath,
+              line: 1,
+              character: 7,
             },
           ],
         },
@@ -748,6 +751,7 @@ describe("registered LSP tool", () => {
     };
     expect(status.structuredContent).toEqual({
       servers: [runningServer],
+      not_started: 0,
       warnings: [],
       structured_truncated: false,
       truncated: false,
@@ -863,7 +867,15 @@ describe("registered LSP tool", () => {
       end: { character: character + 5, line },
       start: { character, line },
     });
-    // The compact JSON these reads returned as text before, plus the queried position.
+    const location = (path: string, line: number, character: number) => ({
+      character,
+      line,
+      path,
+      range: oneBasedRange(line, character),
+      uri: path,
+    });
+    // The compact JSON these reads returned as text before, plus the queried position and each
+    // location's flat one-based `path`, `line`, and `character`.
     expect(JSON.stringify(result.structuredContent)).toBe(
       JSON.stringify({
         position: {
@@ -878,10 +890,10 @@ describe("registered LSP tool", () => {
             root_path: cwd,
             server_id: "typescript",
             value: [
-              { range: oneBasedRange(1, 7), uri: fixture.filePath },
-              { range: oneBasedRange(1, 10), uri: otherPath },
-              { range: oneBasedRange(2, 14), uri: otherPath },
-              { range: oneBasedRange(1, 1), uri: outsidePath },
+              location(fixture.filePath, 1, 7),
+              location(otherPath, 1, 10),
+              location(otherPath, 2, 14),
+              location(outsidePath, 1, 1),
             ],
           },
         ],
@@ -899,7 +911,7 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("renders document symbols as an outline over unchanged structured data", async () => {
+  test("renders document symbols as an outline over their structured data", async () => {
     const fixture = await createToolFixture();
     const protocolRange = (start: number, end: number) => ({
       start: { line: 0, character: start },
@@ -925,7 +937,8 @@ describe("registered LSP tool", () => {
       end: { character: end, line: 1 },
       start: { character: start, line: 1 },
     });
-    // Byte-identical to the compact JSON these reads returned as text before.
+    // The compact JSON these reads returned as text before, plus each symbol's flat one-based
+    // `path`, `line`, and `character` (its selection start) and its readable `kind_name`.
     expect(JSON.stringify(result.structuredContent)).toBe(
       JSON.stringify({
         results: [
@@ -934,9 +947,13 @@ describe("registered LSP tool", () => {
             server_id: "typescript",
             value: [
               {
+                character: 7,
                 children: [],
                 kind: 14,
+                kind_name: "constant",
+                line: 1,
                 name: "emoji",
+                path: fixture.filePath,
                 range: oneBasedRange(1, 15),
                 selectionRange: oneBasedRange(7, 12),
               },
@@ -954,6 +971,129 @@ describe("registered LSP tool", () => {
       server_outcomes: [{ server_id: "typescript", outcome: "success" }],
       result_count: 1,
     });
+    await fixture.close();
+  });
+
+  test("lets a script pass any structured symbol or location straight to a position tool", async () => {
+    const fixture = await createToolFixture();
+    await writeFile(fixture.filePath, "class Outer {\n  inner() {}\n}\nconst target = 1;\n");
+    const uri = pathToFileURL(fixture.filePath).href;
+    const protocolRange = (line: number, start: number, end: number) => ({
+      start: { line, character: start },
+      end: { line, character: end },
+    });
+    fixture.client.responseByMethod.set("textDocument/documentSymbol", [
+      {
+        name: "Outer",
+        kind: 5,
+        range: protocolRange(0, 0, 3),
+        selectionRange: protocolRange(0, 6, 11),
+        children: [
+          {
+            name: "inner",
+            kind: 6,
+            range: protocolRange(1, 2, 20),
+            selectionRange: protocolRange(1, 2, 7),
+          },
+        ],
+      },
+    ]);
+    fixture.client.responseByMethod.set("workspace/symbol", [
+      { name: "emoji", kind: 13, location: { uri, range: protocolRange(0, 6, 11) } },
+      { name: "unlocated", kind: 99, location: { uri } },
+    ]);
+    fixture.client.responseByMethod.set("textDocument/definition", [
+      {
+        originSelectionRange: protocolRange(0, 0, 1),
+        targetUri: uri,
+        targetRange: protocolRange(3, 0, 17),
+        targetSelectionRange: protocolRange(3, 6, 12),
+      },
+    ]);
+    fixture.client.responseByMethod.set("textDocument/documentHighlight", [
+      { range: protocolRange(0, 6, 11), kind: 3 },
+    ]);
+    const values = async (input: Parameters<typeof executeTool>[1]) => {
+      const result = await executeTool(fixture, input);
+      return Value.Parse(LspReadOutputSchema, result.structuredContent).results.map(
+        ({ value }) => value,
+      );
+    };
+
+    expect(
+      await values({ operation: "document_symbols", file_path: fixture.filePath }),
+    ).toMatchObject([
+      [
+        {
+          name: "Outer",
+          kind_name: "class",
+          path: fixture.filePath,
+          line: 1,
+          character: 7,
+          children: [
+            { name: "inner", kind_name: "method", path: fixture.filePath, line: 2, character: 3 },
+          ],
+        },
+      ],
+    ]);
+    const [workspace] = await values({
+      operation: "workspace_symbols",
+      query: "e",
+      file_path: fixture.filePath,
+    });
+    expect(workspace).toMatchObject([
+      { name: "emoji", kind_name: "variable", path: fixture.filePath, line: 1, character: 7 },
+      { name: "unlocated", kind_name: "kind 99", path: fixture.filePath },
+    ]);
+    // A symbol whose server named no range has a path, but no position to invent.
+    expect(workspace).toEqual([
+      expect.anything(),
+      expect.not.objectContaining({ line: expect.anything() }),
+    ]);
+    const position = { file_path: fixture.filePath, line: 1, character: 7 };
+    expect(await values({ operation: "goto_definition", ...position })).toMatchObject([
+      [{ targetUri: fixture.filePath, path: fixture.filePath, line: 4, character: 7 }],
+    ]);
+    expect(await values({ operation: "document_highlights", ...position })).toMatchObject([
+      [{ kind: 3, path: fixture.filePath, line: 1, character: 7 }],
+    ]);
+    await fixture.close();
+  });
+
+  test("adds the same flat position and kind name to hierarchy items", async () => {
+    const fixture = await createToolFixture();
+    await writeFile(fixture.filePath, "class Outer {\n  constructor() {}\n}\n");
+    const uri = pathToFileURL(fixture.filePath).href;
+    const item = {
+      name: "constructor",
+      kind: 9,
+      uri,
+      range: { start: { line: 1, character: 2 }, end: { line: 1, character: 49 } },
+      selectionRange: { start: { line: 1, character: 2 }, end: { line: 1, character: 13 } },
+      data: { kind: 9, name: "private" },
+    };
+    fixture.client.responseByMethod.set("textDocument/prepareCallHierarchy", [item]);
+    fixture.client.responseByMethod.set("callHierarchy/incomingCalls", [
+      { from: item, fromRanges: [item.selectionRange] },
+    ]);
+
+    const result = await executeTool(fixture, {
+      operation: "incoming_calls",
+      file_path: fixture.filePath,
+      line: 2,
+      character: 3,
+    });
+
+    const { results } = Value.Parse(LspReadOutputSchema, result.structuredContent);
+    expect(results[0]?.value).toMatchObject([
+      {
+        from: { name: "constructor", kind_name: "constructor", line: 2, character: 3 },
+        fromRanges: [{ start: { line: 2, character: 3 } }],
+      },
+    ]);
+    // The server-private `data` of an item is never rewritten.
+    expect(results[0]?.value).toMatchObject([{ from: { data: item.data } }]);
+    expect(JSON.stringify(results[0]?.value)).toContain(`"data":${JSON.stringify(item.data)}`);
     await fixture.close();
   });
 
@@ -4520,8 +4660,34 @@ describe("registered LSP tool", () => {
           "Warning: Project lsp.servers.bad: command is required",
         ].join("\n"),
       );
-      expect(full.structuredContent).toEqual(status.structuredContent);
+      // The structured result applies the same filter as the text, and all: true opts out.
       expect(structured).toEqual({
+        servers: [
+          {
+            server_id: "typescript",
+            root_path: cwd,
+            state: "running",
+            languages: { typescript: [".ts", ".tsx"], javascript: [".js"] },
+          },
+          {
+            server_id: "broken",
+            root_path: cwd,
+            state: "unavailable",
+            error: broken?.error,
+            languages: { typescript: [".ts", ".tsx"], javascript: [".js"] },
+          },
+          {
+            server_id: "dormant",
+            state: "disabled",
+            languages: { python: [".py", "SConstruct"] },
+          },
+        ],
+        not_started: 2,
+        warnings: ["Project lsp.servers.bad: command is required"],
+        structured_truncated: false,
+        truncated: false,
+      });
+      expect(Value.Parse(LspStatusOutputSchema, full.structuredContent)).toEqual({
         servers: [
           {
             server_id: "typescript",
@@ -4552,11 +4718,13 @@ describe("registered LSP tool", () => {
             languages: { ruby: [".rb"] },
           },
         ],
+        not_started: 0,
         warnings: ["Project lsp.servers.bad: command is required"],
         structured_truncated: false,
         truncated: false,
       });
       expect(status.details).toMatchObject({ operation: "status", result_count: 5 });
+      expect(full.details).toMatchObject({ operation: "status", result_count: 5 });
       await manager.shutdown();
       await fixture.close();
     });

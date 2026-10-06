@@ -154,7 +154,8 @@ interface RenderContext {
   readonly sources: LspSourceLines;
 }
 
-function symbolKindName(kind: number): string {
+/** Name a protocol `SymbolKind`, or `kind N` for a number outside its named values. */
+export function lspSymbolKindName(kind: number): string {
   return SYMBOL_KIND_NAMES[kind - 1] ?? `kind ${kind}`;
 }
 
@@ -162,8 +163,8 @@ function symbolKindName(kind: number): string {
 function symbolLine(symbol: SymbolFields, location: string, suffix?: string | null): string {
   const deprecated = symbol.deprecated === true || symbol.tags?.includes(DEPRECATED_SYMBOL_TAG);
   const kind = deprecated
-    ? `${symbolKindName(symbol.kind)}, deprecated`
-    : symbolKindName(symbol.kind);
+    ? `${lspSymbolKindName(symbol.kind)}, deprecated`
+    : lspSymbolKindName(symbol.kind);
   const head = `${compactLspText(symbol.name)} (${kind}) ${location}`;
   const extra = suffix === undefined || suffix === null ? "" : compactLspText(suffix);
   return extra === "" ? head : `${head}  ${extra}`;

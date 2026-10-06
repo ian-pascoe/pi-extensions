@@ -118,6 +118,7 @@ const BOUNDED_OUTPUT_CASES = [
         error: big(2000),
         languages: { typescript: [".ts", ".mts", ".cts"] },
       })),
+      not_started: 27,
       warnings: [big(5000)],
     },
   },

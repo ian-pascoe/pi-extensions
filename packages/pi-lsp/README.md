@@ -261,7 +261,8 @@ Diagnostics, hover, status, code actions, and apply results are compact text too
   Server Instance (running, starting, unavailable, or stopped) and per Disabled Server Definition.
   One `+N configured, not started (pass all: true to list)` line counts the other Server
   Definitions, followed by settings warnings. Pass `all: true` to list every configured Server
-  Definition. Its structured result always lists every one.
+  Definition. Its structured result applies the same filter, reports the omitted count as
+  `not_started`, and lists everything with `all: true`.
 - `lsp_code_actions` lists each action as `title (kind): preview <preview_id>` with the preview's
   diff indented below, or says why it cannot be applied.
 - `lsp_apply` lists the files it modified, created, deleted, or renamed.
@@ -317,7 +318,7 @@ reports that the operation is unsupported. `lsp_rename` and the `lsp_format_*` t
 
 `lsp_status` lists each Server Definition's languages with the file extensions and filenames each
 handles (a map from language ID in its structured result). The routing of Server Definitions that
-have not started shows in the structured result, or in the text with `all: true`.
+have not started shows with `all: true`, in the structured result as in the text.
 
 `lsp_workspace_diagnostics` uses the server's workspace diagnostics pull when it has one, and
 otherwise the diagnostics it has pushed for files opened in this session. A server that answers only
@@ -386,7 +387,13 @@ server. No tool is open-world, because all of them talk only to configured local
 Every tool declares an output schema and returns matching `structuredContent`, which codemode
 scripts receive instead of the text. Reads resolve to
 `{ results: { server_id, root_path, value }[], warnings, truncated, structured_truncated, spill_path? }`, where `value` is
-the server's response with one-based positions and file paths instead of `file:` URIs. Position
+the server's response with one-based positions and file paths instead of `file:` URIs. Every
+location, symbol, and hierarchy item in a location, symbol, or hierarchy read also carries flat
+`path`, `line`, and `character` fields (a symbol's name start, a location's range start), and every
+symbol a `kind_name` such as `"class"` beside its numeric `kind`, so a script passes
+`{ file_path: item.path, line: item.line, character: item.character }` straight to `lsp_hover`,
+`lsp_find_references`, or `lsp_rename`. The protocol fields stay, and a symbol whose server named no
+range has a `path` but no position. Model-visible text never shows these fields. Position
 tools add `position: { path, line, character, token?, line_text }`: the queried position, the
 identifier or punctuation run there (absent on whitespace), and its trimmed line. The
 model-visible text of a read is derived from the same data.
