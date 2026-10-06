@@ -95,6 +95,30 @@ const ItemLimitSchema = Type.Optional(
     description: `Most items per server (default ${DEFAULT_LSP_ITEM_LIMIT})`,
   }),
 );
+/** Depth of a `lsp_document_symbols` call that names none. */
+export const DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH = 1;
+/**
+ * `SymbolKind` numbers whose children are members of a declaration, and so stay at every depth.
+ * The children of any other kind (function, method, variable, property) are body content: locals,
+ * return-object properties, and callbacks. Servers report some containers unexpectedly; for
+ * example, rust-analyzer reports an `impl` block as `Object`.
+ */
+export const LSP_MEMBER_CONTAINER_SYMBOL_KINDS = {
+  class: 5,
+  interface: 11,
+  enum: 10,
+  namespace: 3,
+  module: 2,
+  package: 4,
+  object: 19,
+  struct: 23,
+} as const;
+const MEMBER_CONTAINER_NAMES = Object.keys(LSP_MEMBER_CONTAINER_SYMBOL_KINDS);
+const DocumentSymbolDepthSchema = Type.Union([Type.Integer({ minimum: 1 }), Type.Literal("all")], {
+  description: `Levels of nested symbols to list (default ${DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH}): top-level declarations plus the members of ${MEMBER_CONTAINER_NAMES.slice(0, -1).join(", ")}, and ${MEMBER_CONTAINER_NAMES.at(-1)} symbols, without locals, return-object properties, or callbacks inside function, method, or variable bodies. Each further level adds one level inside those bodies; "all" lists the full tree`,
+});
+/** How many levels of nested symbols `lsp_document_symbols` keeps: a count, or `"all"` for the full tree. */
+export type LspDocumentSymbolDepth = Static<typeof DocumentSymbolDepthSchema>;
 const OptionalServerIdSchema = Type.Optional(ServerIdSchema);
 const FormattingOptionsSchema = {
   tab_size: Type.Integer({ minimum: 1 }),
@@ -224,7 +248,14 @@ export const LspOperationParametersSchemas = {
     { additionalProperties: false },
   ),
   document_highlights: positionParametersSchema(),
-  document_symbols: fileParametersSchema(),
+  document_symbols: Type.Object(
+    {
+      file_path: FilePathSchema,
+      depth: Type.Optional(DocumentSymbolDepthSchema),
+      server_id: OptionalServerIdSchema,
+    },
+    { additionalProperties: false },
+  ),
   workspace_symbols: Type.Object(
     {
       query: Type.String(),
@@ -558,7 +589,11 @@ export const LspReadOutputSchema = Type.Object({
         Type.String({ description: "The prefix completions were filtered by" }),
       ),
       omitted: Type.Optional(
-        Type.Integer({ minimum: 0, description: "Matching items left out by the limit" }),
+        Type.Integer({
+          minimum: 0,
+          description:
+            "Matching items left out by the limit, or the nested symbols left out by the depth",
+        }),
       ),
     }),
   ),

@@ -242,6 +242,109 @@ describe("real TypeScript 7 language server client", () => {
     }
   }, 60_000);
 
+  test("lists a nested file's declarations as an outline by default and its full tree by depth", async () => {
+    const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
+    temporaryDirectories.push(projectDirectory);
+    await writeFile(
+      resolve(projectDirectory, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
+    );
+    const filePath = resolve(projectDirectory, "todo-list.ts");
+    await writeFile(
+      filePath,
+      [
+        'import { readFileSync } from "node:fs";',
+        "",
+        'export type Status = "open" | "done";',
+        "",
+        "export interface Task {",
+        "  id: number;",
+        "  status: Status;",
+        "}",
+        "",
+        "export class TodoList {",
+        "  readonly tasks: Task[] = [];",
+        "  add(id: number) {",
+        '    const task: Task = { id, status: "open" };',
+        "    this.tasks.push(task);",
+        "    return { ok: true, task };",
+        "  }",
+        "  find(id: number) {",
+        "    return this.tasks.find((candidate) => candidate.id === id);",
+        "  }",
+        "}",
+        "",
+        "export function summarize(list: TodoList) {",
+        '  const open = list.tasks.filter((task) => task.status === "open");',
+        "  return { open: open.length, source: readFileSync };",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const sessionFiles = await createLspSessionFiles(projectDirectory);
+    const manager = createTypeScriptManager(
+      projectDirectory,
+      typescriptDefinition(["tsconfig.json"]),
+    );
+    try {
+      const tool = createLspToolDefinition("document_symbols", () => ({
+        manager,
+        workspaceEdits: new LspWorkspaceEditStore(),
+        sessionFiles,
+      }));
+      const outline = async (parameters: { depth?: number | "all" }) => {
+        const result = await tool.execute(
+          "outline",
+          { file_path: filePath, ...parameters },
+          undefined,
+          undefined,
+          // SAFETY: Tool execution only reads cwd from ExtensionContext.
+          { cwd: projectDirectory } as ExtensionToolContext,
+        );
+        const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
+        return {
+          names: text.split("\n").map((line) => line.trim().split(" (")[0]),
+          structuredNames: JSON.stringify(result.structuredContent),
+        };
+      };
+
+      const byDefault = await outline({});
+      // Declarations and their members, but no locals, return-object properties, or callbacks.
+      expect(byDefault.names).toEqual(
+        expect.arrayContaining([
+          "Status",
+          "Task",
+          "id",
+          "TodoList",
+          "tasks",
+          "add",
+          "find",
+          "summarize",
+        ]),
+      );
+      for (const hidden of ["task", "ok", "open", "source", "candidate", "candidate.id === id"]) {
+        expect(byDefault.names).not.toContain(hidden);
+      }
+      expect(byDefault.names.some((name) => name?.includes("callback"))).toBe(false);
+      // The output says symbols were left out, and how to see them.
+      expect(byDefault.names.some((name) => name?.includes("nested symbols omitted"))).toBe(true);
+      expect(byDefault.structuredNames).not.toContain('"name":"ok"');
+      expect(byDefault.structuredNames).toContain('"name":"summarize"');
+
+      // The full tree stays reachable, by "all" and by a deep enough count.
+      for (const depth of ["all", 5] as const) {
+        const full = await outline({ depth });
+        expect(full.names).toEqual(expect.arrayContaining(["task", "ok", "open", "source"]));
+        expect(full.names.some((name) => name?.includes("callback"))).toBe(true);
+        expect(full.structuredNames).toContain('"name":"ok"');
+      }
+    } finally {
+      await manager.shutdown();
+      await sessionFiles.close();
+    }
+  }, 60_000);
+
   test("returns a diagnostic-dependent quick fix as a Workspace Edit Preview", async () => {
     const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
     temporaryDirectories.push(projectDirectory);

@@ -406,6 +406,22 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
       expect(hover.function.parameters.required).toEqual(["file_path", "line", "character"]);
     }
 
+    // `lsp_document_symbols` declares its optional `depth` as a property of the root object, with
+    // guidance, so the changed definition stays object-shaped and `file_path` stays the only
+    // required field.
+    const symbols = before.tools.find(({ function: tool }) => tool.name === "lsp_document_symbols");
+    if (symbols !== undefined) {
+      expect(symbols.function.parameters).toMatchObject({
+        required: ["file_path"],
+        properties: {
+          depth: {
+            anyOf: [{ type: "integer", minimum: 1 }, { const: "all" }],
+            description: expect.stringContaining("default 1"),
+          },
+        },
+      });
+    }
+
     // (b) Prefix stability across turns and reload: identical ordered tool definitions, system
     // prompt, and append-only history, both as Pi hands them over and as the provider serializes.
     expectStablePrefix(turns);

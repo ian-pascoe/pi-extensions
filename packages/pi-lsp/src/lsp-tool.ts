@@ -65,6 +65,7 @@ import {
   formatLspItemListText,
   type LspBoundedItems,
 } from "./lsp-item-list.js";
+import { limitLspDocumentSymbolDepth } from "./lsp-document-symbol-depth.js";
 import {
   assembleLspReadText,
   collapseLspWhitespace,
@@ -87,6 +88,7 @@ import {
 } from "./lsp-protocol-result.js";
 import { formatLspStructureReadText, isLspStructureOperation } from "./lsp-structure-text.js";
 import {
+  compareLspProtocolPositions,
   convertLspCodePointPosition,
   normalizeLspPositionEncoding,
   type LspCodePointPosition,
@@ -133,7 +135,9 @@ import {
   LspStatusOutputSchema,
   LspWorkspaceEditPreviewRecordSchema,
   MutationManifestSchema,
+  DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH,
   lspToolName,
+  type LspDocumentSymbolDepth,
   type LspOperationName,
   type LspOperationParameters,
   type LspToolParameters,
@@ -213,6 +217,8 @@ interface FileReadParameters {
   readonly operation: FileReadOperation;
   readonly file_path: string;
   readonly server_id?: string;
+  /** Levels of nested symbols `document_symbols` keeps; other operations take none. */
+  readonly depth?: LspDocumentSymbolDepth;
 }
 interface PositionReadParameters {
   readonly operation: PositionReadOperation;
@@ -279,7 +285,15 @@ export type LspToolDefinition<TOperation extends LspOperationName = LspOperation
 interface LspReadValue {
   readonly root_path: string;
   readonly server_id: string;
+  // oxlint-disable-next-line anti-slop/no-unknown-property-types -- Normalized server responses stay opaque until rendering checks their shape.
   readonly value: unknown;
+  /** Nested symbols a document-symbol read left out for its depth. */
+  readonly omitted?: number;
+}
+
+/** One server's normalized response, with the count of items a depth or limit left out. */
+interface LspBoundedProtocolResult extends LspNormalizedProtocolResult {
+  readonly omitted?: number;
 }
 
 interface PreparedDocument {
@@ -605,7 +619,7 @@ function structuredReadFields(
  */
 async function readOutput(
   operation: LspToolParameters["operation"],
-  result: Promise<LspServerReadResult<LspNormalizedProtocolResult>>,
+  result: Promise<LspServerReadResult<LspBoundedProtocolResult>>,
   dependencies: LspToolDependencies,
   textContext: ReadTextContext,
 ) {
@@ -615,7 +629,10 @@ async function readOutput(
     failures: normalized.failures,
     successes: normalized.successes.map((success) => ({ ...success, value: success.value.value })),
   };
-  const results = readOperationValue(resolved);
+  const results = readOperationValue(resolved).map((read, index) => {
+    const omitted = normalized.successes[index]?.value.omitted;
+    return omitted === undefined ? read : { ...read, omitted };
+  });
   const failureWarnings = [
     ...resultPositionWarnings(normalized, textContext.cwd),
     ...resolved.failures.map(({ message }) => message),
@@ -1338,7 +1355,7 @@ async function executeFileRead(
   parameters: FileReadParameters,
   context: ExtensionContext,
   signal: AbortSignal | undefined,
-): Promise<LspServerReadResult<LspNormalizedProtocolResult>> {
+): Promise<LspServerReadResult<LspBoundedProtocolResult>> {
   const filePath = await documentFilePath(parameters.file_path, context);
   const methodByOperation = {
     diagnostics: "diagnostics",
@@ -1366,6 +1383,16 @@ async function executeFileRead(
         { textDocument: { uri: prepared.document.uri } },
         signal,
       );
+      if (parameters.operation === "document_symbols") {
+        const limited = limitLspDocumentSymbolDepth(
+          value,
+          parameters.depth ?? DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH,
+        );
+        return {
+          ...(await normalizeProtocolResult(limited.value, prepared)),
+          omitted: limited.omitted,
+        };
+      }
       if (
         parameters.operation === "document_links" &&
         supportsResolveProvider(client.capabilities.documentLinkProvider)
@@ -1624,14 +1651,11 @@ async function executeRenamePreview(
   );
 }
 
-function comparePositions(left: Position, right: Position): number {
-  return left.line === right.line ? left.character - right.character : left.line - right.line;
-}
-
 /** Whether two protocol ranges share a position, counting touching endpoints. */
 function rangesOverlap(left: Range, right: Range): boolean {
   return (
-    comparePositions(left.start, right.end) <= 0 && comparePositions(right.start, left.end) <= 0
+    compareLspProtocolPositions(left.start, right.end) <= 0 &&
+    compareLspProtocolPositions(right.start, left.end) <= 0
   );
 }
 
@@ -2172,7 +2196,8 @@ const LSP_TOOL_DESCRIPTIONS = {
   find_references:
     "Find references to the symbol at a position. include_declaration defaults to true.",
   document_highlights: "Find the occurrences of the symbol at a position within its file.",
-  document_symbols: "List the symbols declared in a file.",
+  document_symbols:
+    "List the symbols declared in a file as an outline. By default only declarations and their members, not locals or callbacks; see `depth`.",
   workspace_symbols:
     "Search the workspace's symbols by name, one `name (kind) path:line:col` line each.",
   document_links: "List the links in a file.",

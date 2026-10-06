@@ -947,6 +947,7 @@ describe("registered LSP tool", () => {
       JSON.stringify({
         results: [
           {
+            omitted: 0,
             root_path: fixture.context.cwd,
             server_id: "typescript",
             value: [
@@ -975,6 +976,89 @@ describe("registered LSP tool", () => {
       server_outcomes: [{ server_id: "typescript", outcome: "success" }],
       result_count: 1,
     });
+    await fixture.close();
+  });
+
+  test("cuts document symbols to the requested depth in both the text and the structured result", async () => {
+    const fixture = await createToolFixture();
+    await writeFile(fixture.filePath, `${"0123456789\n".repeat(6)}`);
+    const protocolRange = (line: number) => ({
+      start: { line, character: 0 },
+      end: { line, character: 10 },
+    });
+    const symbol = (name: string, kind: number, line: number, children: unknown[] = []) => ({
+      name,
+      kind,
+      range: protocolRange(line),
+      selectionRange: protocolRange(line),
+      children,
+    });
+    fixture.client.responseByMethod.set("textDocument/documentSymbol", [
+      symbol("Store", 5, 0, [symbol("add", 6, 1, [symbol("draft", 13, 2)])]),
+      symbol("create", 12, 3, [symbol("state", 13, 4), symbol("callback", 12, 5)]),
+    ]);
+    const outline = async (parameters: { depth?: number | "all" }) => {
+      const result = await executeTool(fixture, {
+        operation: "document_symbols",
+        file_path: fixture.filePath,
+        ...parameters,
+      });
+      const structured = Value.Parse(LspReadOutputSchema, result.structuredContent);
+      return {
+        text: resultText(result)
+          .split("\n")
+          .map((line) => line.trim().split(" (")[0]),
+        structured: JSON.stringify(structured.results.map(({ value }) => value)),
+        omitted: structured.results.map((read) => read.omitted),
+      };
+    };
+
+    const byDefault = await outline({});
+    // The hint names the symbols the depth left out, and the structured result counts them.
+    expect(byDefault.text).toEqual([
+      "Store",
+      "add",
+      "create",
+      '3 nested symbols omitted; raise depth or pass depth: "all" to see them.',
+    ]);
+    expect(byDefault.omitted).toEqual([3]);
+    expect(byDefault.structured).toContain('"name":"add"');
+    for (const hidden of ["draft", "state", "callback"]) {
+      expect(byDefault.structured).not.toContain(`"name":"${hidden}"`);
+    }
+    expect((await outline({ depth: 1 })).text).toEqual(byDefault.text);
+    expect((await outline({ depth: 2 })).omitted).toEqual([0]);
+    expect((await outline({ depth: 2 })).text).toEqual([
+      "Store",
+      "add",
+      "draft",
+      "create",
+      "state",
+      "callback",
+    ]);
+    expect((await outline({ depth: "all" })).text).toEqual([
+      "Store",
+      "add",
+      "draft",
+      "create",
+      "state",
+      "callback",
+    ]);
+    await expect(
+      executeTool(fixture, {
+        operation: "document_symbols",
+        file_path: fixture.filePath,
+        depth: 0,
+      }),
+    ).rejects.toThrow("Pi LSP: invalid tool arguments");
+    await expect(
+      executeTool(fixture, {
+        operation: "document_symbols",
+        file_path: fixture.filePath,
+        // @ts-expect-error -- The tool rejects a depth that is neither a count nor "all".
+        depth: "deep",
+      }),
+    ).rejects.toThrow("Pi LSP: invalid tool arguments");
     await fixture.close();
   });
 
