@@ -1,4 +1,10 @@
-import type { ExtensionAPI, ToolInfo, TurnEndEvent } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ToolInfo,
+  ToolResultEvent,
+  ToolResultEventResult,
+  TurnEndEvent,
+} from "@earendil-works/pi-coding-agent";
 import type {
   Context,
   Model,
@@ -17,6 +23,8 @@ declare global {
     ) => AssistantMessageEventStream;
     beforeTask?: () => void;
     turnEnd?: (event: TurnEndEvent) => Promise<void>;
+    /** Observed tool-result rewrite, such as display-only `details`. */
+    toolResult?: (event: ToolResultEvent) => ToolResultEventResult | undefined;
     settled?: () => Promise<void>;
     privateSettled?: () => Promise<void>;
     privateShutdown?: () => Promise<void>;
@@ -55,6 +63,9 @@ export default function observerFixture(pi: ExtensionAPI): void {
   });
   pi.on("turn_end", (event) =>
     privateRole ? undefined : globalThis.advisorObserverTest.turnEnd?.(event),
+  );
+  pi.on("tool_result", (event) =>
+    privateRole ? undefined : globalThis.advisorObserverTest.toolResult?.(event),
   );
   pi.on("session_shutdown", () =>
     privateRole ? globalThis.advisorObserverTest.privateShutdown?.() : undefined,
