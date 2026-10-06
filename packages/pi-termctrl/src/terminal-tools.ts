@@ -751,10 +751,6 @@ class InputToExitedError extends Error {
   }
 }
 
-function inputToExited(id: string, exit: TerminalExit | null): Error {
-  return new InputToExitedError(id, exit);
-}
-
 /** `terminal_send`: type text and keys into a Terminal, or poll it, and wait for it to settle. */
 export function createTerminalSendTool(runtime: TerminalToolRuntime) {
   return defineTool<typeof SendParameters, TerminalResult>({
@@ -792,7 +788,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
           if (!hasInput) return terminalResult(runtime.registry, entry, undefined, "exited");
           // The error tells the agent about the exit, so a deferred Exit notification is redundant.
           runtime.registry.markSeen(entry.id);
-          throw inputToExited(entry.id, entry.exit);
+          throw new InputToExitedError(entry.id, entry.exit);
         }
         const matches =
           params.wait_for_text === undefined ? undefined : parseWaitPattern(params.wait_for_text);
@@ -802,7 +798,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
           // The exit watcher has not noticed this exit yet.
           const exit = before.exit ?? { code: null, signal: null };
           runtime.registry.terminalExited(entry.id, exit, before.screen, true);
-          throw inputToExited(entry.id, exit);
+          throw new InputToExitedError(entry.id, exit);
         }
         const baseline = matches === undefined ? undefined : before?.screen;
         const startedAt = Date.now();
