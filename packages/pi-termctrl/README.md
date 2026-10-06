@@ -126,8 +126,8 @@ Each terminal tool declares MCP-style `annotations`, which Pi reports through `p
 With `termctrl.replaceBash` (default `true`), Pi Termctrl replaces Pi's `bash`
 tool with Pi's own definition plus one parameter, `background?: boolean`.
 Commands still run on pipes through Pi's local `exec`, so Pi keeps spawning,
-process-tree kills, truncation and rendering, and foreground results are
-unchanged. A command becomes a Background job in two ways:
+process-tree kills and rendering, and foreground results differ from Pi's only
+by the shorter tail below. A command becomes a Background job in two ways:
 
 - **`background: true`** waits 2 s. A command that finishes first returns an
   ordinary result; otherwise the call returns a background result. If the cap
@@ -145,6 +145,16 @@ the log path, and tells the agent not to poll the log but to wait for the Exit
 notification or call `terminal_wait`; read the log with `read` and stop the job
 with `terminal_stop`. Its structured result follows Pi's `bash` output schema, except
 that `exit_code` is absent and `background: { id, log_path }` is present.
+
+**Output tail.** With `termctrl.bashTail` (default `{ lines: 300, bytes: 16384 }`),
+the output the model sees from a foreground `bash` call, and the "output so far" of
+a backgrounding result, is cut to the last 300 lines or 16 KB, whichever is hit
+first, instead of Pi's 2,000 lines or 50 KB. The cut keeps Pi's notice, for example
+`[Showing lines 4701-5000 of 5000 (16.0KB or 300 line limit). Full output: /tmp/pi-bash-….log]`,
+and names the limits actually used. The named file always holds every line: Pi's own
+full-output file when Pi also cut the output, otherwise one Pi Termctrl writes beside
+it in `$TMPDIR` (like Pi's, it is not deleted). The tool description names the limits in force. Set `bashTail` to `false`
+or `0` to restore Pi's limits. Values above Pi's limits are rejected.
 
 A Background job's log is deleted when the job is stopped, when the user
 removes it in `/ps`, or when its session shuts down for any reason except
@@ -203,16 +213,18 @@ by field:
   "termctrl": {
     "replaceBash": true,
     "defaultViewport": { "cols": 120, "rows": 40 },
-    "exitTailLines": 20
+    "exitTailLines": 20,
+    "bashTail": { "lines": 300, "bytes": 16384 }
   }
 }
 ```
 
-| Setting           | Default                   | Meaning                                         |
-| ----------------- | ------------------------- | ----------------------------------------------- |
-| `replaceBash`     | `true`                    | Replace `bash` to enable Background jobs        |
-| `defaultViewport` | `{ cols: 120, rows: 40 }` | Terminal size; each dimension 1 to 1000         |
-| `exitTailLines`   | `20`                      | Lines of output in an Exit notification, 0–1000 |
+| Setting           | Default                        | Meaning                                                                                                |
+| ----------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `replaceBash`     | `true`                         | Replace `bash` to enable Background jobs                                                               |
+| `defaultViewport` | `{ cols: 120, rows: 40 }`      | Terminal size; each dimension 1 to 1000                                                                |
+| `exitTailLines`   | `20`                           | Lines of output in an Exit notification, 0–1000                                                        |
+| `bashTail`        | `{ lines: 300, bytes: 16384 }` | Model-visible `bash` output tail: `lines` 1–2000, `bytes` 1–51200; `false` or `0` restores Pi's limits |
 
 Invalid values keep the lower layer and unknown keys produce warnings at session
 start. Use `/reload` after editing settings.

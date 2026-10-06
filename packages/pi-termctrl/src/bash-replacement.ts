@@ -1,4 +1,6 @@
-import { createWriteStream, mkdirSync, openSync, type WriteStream } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { createWriteStream, mkdirSync, openSync, writeFileSync, type WriteStream } from "node:fs";
+import { tmpdir } from "node:os";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -9,13 +11,16 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   type BashOperations,
+  type BashToolDetails,
   type BashToolOptions,
   type ExtensionToolContext,
   type ExtensionUIContext,
+  type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { KILLED_EXIT, TermctrlRegistry } from "./termctrl-registry.js";
+import type { BashTailLimits } from "./pi-termctrl-settings.js";
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { TerminalExit } from "./terminal-driver.js";
 
@@ -72,6 +77,13 @@ class BashCall {
     this.backgrounded = new Promise((resolve) => {
       this.resolveBackground = resolve;
     });
+  }
+
+  /** Everything the foreground call printed that is still buffered, for the model-visible tail. */
+  foregroundOutput(): { readonly text: string; readonly raw: Buffer } | undefined {
+    if (this.isBackgrounded) return undefined;
+    const raw = Buffer.concat(this.chunks);
+    return { text: new TextDecoder().decode(raw), raw };
   }
 
   /** The `BashOperations.exec` Pi's `execute` calls. */
@@ -244,6 +256,11 @@ export interface BashReplacementOptions {
   readonly shellPath: string | undefined;
   readonly registry: () => TermctrlRegistry;
   readonly calls: RunningBashCalls;
+  /**
+   * Limits on the model-visible tail of a result and of "output so far"; undefined keeps Pi's own
+   * limits. Pi's `bash` accepts no limits, so the replacement tightens what Pi returns.
+   */
+  readonly bashTail?: BashTailLimits | undefined;
   /** Builds Pi's `bash` definition; tests wrap it to observe what reaches Pi's accumulator. */
   readonly definitionFactory?: typeof createBashToolDefinition;
 }
@@ -269,11 +286,73 @@ function backgroundOutputSchema(builtin: TSchema | undefined) {
   });
 }
 
-function backgroundResult(outcome: BackgroundOutcome, startedAt: number) {
-  const truncation = truncateTail(outcome.output);
+/** The notice after a cut tail, naming the limits that cut it and where every line is. */
+function tailNotice(truncation: TruncationResult, fullOutput: string, logPath: string): string {
+  const lastLine = truncation.totalLines;
+  if (truncation.lastLinePartial) {
+    const lineBytes = Buffer.byteLength(fullOutput.slice(fullOutput.lastIndexOf("\n") + 1));
+    return `[Showing last ${formatSize(truncation.outputBytes)} of line ${lastLine} (line is ${formatSize(lineBytes)}). Full output: ${logPath}]`;
+  }
+  const first = truncation.totalLines - truncation.outputLines + 1;
+  return `[Showing lines ${first}-${lastLine} of ${truncation.totalLines} (${formatSize(truncation.maxBytes)} or ${truncation.maxLines} line limit). Full output: ${logPath}]`;
+}
+
+/** The pieces of Pi's `bash` text after its output: the exit, abort, or timeout status. */
+const PI_STATUS =
+  /\n\n(Command exited with code -?\d+|Command aborted|Command timed out after [^\n]+|Command terminated without an exit code)$/u;
+const PI_NOTICE_PATH = /\[Showing [^\n]*Full output: ([^\]\n]+)\]/gu;
+
+function piFullOutputPath(text: string, details: BashToolDetails | undefined): string | undefined {
+  return details?.fullOutputPath ?? [...text.matchAll(PI_NOTICE_PATH)].at(-1)?.[1];
+}
+
+/** Save the whole output beside Pi's own `pi-bash-*.log` files. */
+function saveFullOutput(raw: Buffer): string | undefined {
+  const path = join(tmpdir(), `pi-bash-${randomBytes(8).toString("hex")}.log`);
+  try {
+    writeFileSync(path, raw, { mode: 0o600, flag: "wx" });
+    return path;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Cut a foreground result's text to `limits`. Returns undefined when the output already fits, which
+ * leaves Pi's text as it is: Pi's limits are never tighter than `limits`.
+ */
+function limitForegroundText(
+  call: BashCall,
+  piText: string,
+  piDetails: BashToolDetails | undefined,
+  limits: BashTailLimits,
+) {
+  const output = call.foregroundOutput();
+  if (output === undefined) return undefined;
+  const truncation = truncateTail(output.text, { maxLines: limits.lines, maxBytes: limits.bytes });
+  if (!truncation.truncated) return undefined;
+  const logPath = piFullOutputPath(piText, piDetails) ?? saveFullOutput(output.raw);
+  const notice = tailNotice(truncation, output.text, logPath ?? "(could not be saved)");
+  const status = PI_STATUS.exec(piText);
+  const suffix = status === null ? "" : `\n\n${status[1] ?? ""}`;
+  return {
+    text: `${truncation.content}\n\n${notice}${suffix}`,
+    details: logPath === undefined ? { truncation } : { truncation, fullOutputPath: logPath },
+  };
+}
+
+function backgroundResult(
+  outcome: BackgroundOutcome,
+  startedAt: number,
+  limits: BashTailLimits | undefined,
+) {
+  const truncation = truncateTail(
+    outcome.output,
+    limits === undefined ? {} : { maxLines: limits.lines, maxBytes: limits.bytes },
+  );
   let text = truncation.content;
   if (truncation.truncated) {
-    text += `\n\n[Showing lines ${truncation.totalLines - truncation.outputLines + 1}-${truncation.totalLines} of ${truncation.totalLines} (${formatSize(DEFAULT_MAX_BYTES)} or ${DEFAULT_MAX_LINES} line limit). Full output: ${outcome.logPath}]`;
+    text += `\n\n${tailNotice(truncation, outcome.output, outcome.logPath)}`;
   }
   const status = `Command moved to the background as ${outcome.id}. Its output so far and all later output go to ${outcome.logPath}. You will get an Exit notification when it ends, so do not poll the log in a loop; to block until it ends, call terminal_wait. Stop it with terminal_stop {"id": "${outcome.id}"}.`;
   return {
@@ -286,6 +365,32 @@ function backgroundResult(outcome: BackgroundOutcome, startedAt: number) {
       background: { id: outcome.id, log_path: outcome.logPath },
     },
   };
+}
+
+type BashResult = Awaited<ReturnType<ReturnType<typeof createBashToolDefinition>["execute"]>>;
+
+function limitResult(call: BashCall, result: BashResult, limits: BashTailLimits): BashResult {
+  const [first] = result.content;
+  if (first?.type !== "text") return result;
+  const limited = limitForegroundText(call, first.text, result.details, limits);
+  if (limited === undefined) return result;
+  return {
+    ...result,
+    content: [{ type: "text", text: limited.text }],
+    details: limited.details,
+  };
+}
+
+function limitError(call: BashCall, error: Error, limits: BashTailLimits): Error {
+  const limited = limitForegroundText(call, error.message, undefined, limits);
+  return limited === undefined ? error : new Error(limited.text, { cause: error });
+}
+
+/** Pi's description names its own limits; name the ones in force instead. */
+function describeTail(description: string, limits: BashTailLimits | undefined): string {
+  if (limits === undefined) return description;
+  const piLimits = `${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB`;
+  return description.replace(piLimits, `${limits.lines} lines or ${formatSize(limits.bytes)}`);
 }
 
 /** Pi's `bash` definition plus `background`, executed through Pi's own pipes. */
@@ -308,6 +413,7 @@ export function createBashReplacement(options: BashReplacementOptions) {
   });
   return {
     ...builtin,
+    description: describeTail(builtin.description, options.bashTail),
     parameters,
     outputSchema: backgroundOutputSchema(builtin.outputSchema),
     async execute(
@@ -333,7 +439,8 @@ export function createBashReplacement(options: BashReplacementOptions) {
               if (!backgrounded) onUpdate(update);
             };
       const startedAt = performance.now();
-      const running = inner.execute(
+      const limits = options.bashTail;
+      const piRunning = inner.execute(
         toolCallId,
         params.timeout === undefined
           ? { command: params.command }
@@ -342,6 +449,17 @@ export function createBashReplacement(options: BashReplacementOptions) {
         forwardUpdate,
         context,
       );
+      const running =
+        limits === undefined
+          ? piRunning
+          : piRunning.then(
+              (result) => limitResult(call, result, limits),
+              (error: Error) => {
+                // Pi's `bash` rejects only with Errors; anything else passes through unchanged.
+                if (!(error instanceof Error)) throw error;
+                throw limitError(call, error, limits);
+              },
+            );
       running.catch(() => {});
       options.calls.add(call, context.ui);
       const yieldTimer =
@@ -361,7 +479,7 @@ export function createBashReplacement(options: BashReplacementOptions) {
         ]);
         if (winner.kind === "finished") return winner.result;
         backgrounded = true;
-        return backgroundResult(winner.outcome, startedAt);
+        return backgroundResult(winner.outcome, startedAt, options.bashTail);
       } finally {
         clearTimeout(yieldTimer);
         options.calls.delete(call);

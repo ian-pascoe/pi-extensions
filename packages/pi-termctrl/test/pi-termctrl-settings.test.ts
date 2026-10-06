@@ -20,6 +20,7 @@ describe("resolveTermctrlSettings", () => {
       replaceBash: true,
       defaultViewport: { cols: 120, rows: 40 },
       exitTailLines: 20,
+      bashTail: { lines: 300, bytes: 16_384 },
       warnings: [],
     });
   });
@@ -35,6 +36,7 @@ describe("resolveTermctrlSettings", () => {
       replaceBash: false,
       defaultViewport: { cols: 80, rows: 50 },
       exitTailLines: 5,
+      bashTail: { lines: 300, bytes: 16_384 },
       warnings: [],
     });
   });
@@ -82,5 +84,62 @@ describe("resolveTermctrlSettings", () => {
     const settings = resolveTermctrlSettings(reader({ termctrl: { defaultViewport: [80, 24] } }));
     expect(settings.defaultViewport).toEqual({ cols: 120, rows: 40 });
     expect(settings.warnings).toEqual(["global termctrl.defaultViewport: expected a JSON object"]);
+  });
+
+  describe("bashTail", () => {
+    const tail = (
+      termctrl: TermctrlSettingsDocumentInput,
+      project?: TermctrlSettingsDocumentInput,
+    ) => resolveTermctrlSettings(reader(termctrl, project));
+
+    test("layers lines and bytes field by field", () => {
+      const settings = tail(
+        { termctrl: { bashTail: { lines: 100, bytes: 4096 } } },
+        { termctrl: { bashTail: { lines: 50 } } },
+      );
+      expect(settings.bashTail).toEqual({ lines: 50, bytes: 4096 });
+      expect(settings.warnings).toEqual([]);
+    });
+
+    test.each([0, false])("%j opts out and restores Pi's limits", (optOut) => {
+      const settings = tail({ termctrl: { bashTail: optOut } });
+      expect(settings.bashTail).toBeNull();
+      expect(settings.warnings).toEqual([]);
+    });
+
+    test("a project opt-out beats a global tail, and true re-enables the defaults", () => {
+      expect(
+        tail({ termctrl: { bashTail: { lines: 10 } } }, { termctrl: { bashTail: false } }).bashTail,
+      ).toBeNull();
+      expect(
+        tail({ termctrl: { bashTail: false } }, { termctrl: { bashTail: true } }).bashTail,
+      ).toEqual({ lines: 300, bytes: 16_384 });
+    });
+
+    test("warns for invalid values and keeps the lower layer", () => {
+      const settings = tail(
+        { termctrl: { bashTail: { lines: 120 } } },
+        {
+          termctrl: {
+            bashTail: { lines: 0, bytes: 2.5, depth: 1 },
+          },
+        },
+      );
+      expect(settings.bashTail).toEqual({ lines: 120, bytes: 16_384 });
+      expect(settings.warnings).toEqual([
+        "project termctrl.bashTail.lines: expected an integer from 1 to 2000",
+        "project termctrl.bashTail.bytes: expected an integer from 1 to 51200",
+        "project termctrl.bashTail.depth: unknown field",
+      ]);
+      expect(tail({ termctrl: { bashTail: "small" } }).warnings).toEqual([
+        "global termctrl.bashTail: expected a boolean, 0, or a JSON object",
+      ]);
+      expect(tail({ termctrl: { bashTail: 5 } }).warnings).toEqual([
+        "global termctrl.bashTail: expected a boolean, 0, or a JSON object",
+      ]);
+      expect(tail({ termctrl: { bashTail: { lines: 5000 } } }).warnings).toEqual([
+        "global termctrl.bashTail.lines: expected an integer from 1 to 2000",
+      ]);
+    });
   });
 });

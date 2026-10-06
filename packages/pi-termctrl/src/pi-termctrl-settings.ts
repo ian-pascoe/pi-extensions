@@ -1,4 +1,8 @@
-import type { SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  type SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
@@ -15,11 +19,19 @@ export interface TerminalViewport {
   readonly rows: number;
 }
 
+/** The most lines and bytes of a foreground `bash` result the model sees. */
+export interface BashTailLimits {
+  readonly lines: number;
+  readonly bytes: number;
+}
+
 /** The effective `settings.termctrl` values after layering global and trusted project settings. */
 export interface ResolvedTermctrlSettings {
   readonly replaceBash: boolean;
   readonly defaultViewport: TerminalViewport;
   readonly exitTailLines: number;
+  /** Limits on the model-visible `bash` tail; null restores Pi's own limits. */
+  readonly bashTail: BashTailLimits | null;
   readonly warnings: readonly string[];
 }
 
@@ -39,18 +51,26 @@ interface TermctrlLayer {
   cols?: number;
   rows?: number;
   exitTailLines?: number;
+  bashTailEnabled?: boolean;
+  bashTailLines?: number;
+  bashTailBytes?: number;
 }
 
-export const DEFAULT_TERMCTRL_SETTINGS: Omit<ResolvedTermctrlSettings, "warnings"> = {
+export const DEFAULT_TERMCTRL_SETTINGS: Omit<ResolvedTermctrlSettings, "warnings" | "bashTail"> & {
+  readonly bashTail: BashTailLimits;
+} = {
   replaceBash: true,
   defaultViewport: { cols: 120, rows: 40 },
   exitTailLines: 20,
+  bashTail: { lines: 300, bytes: 16 * 1024 },
 };
 
 const JsonObjectSchema = Type.Record(Type.String(), Type.Any());
 const SettingsDocumentSchema = Type.Object({ termctrl: Type.Optional(Type.Any()) });
 const BooleanSchema = Type.Boolean();
 const ViewportDimensionSchema = Type.Integer({ minimum: 1, maximum: VIEWPORT_LIMIT });
+const BashTailLinesSchema = Type.Integer({ minimum: 1, maximum: DEFAULT_MAX_LINES });
+const BashTailBytesSchema = Type.Integer({ minimum: 1, maximum: DEFAULT_MAX_BYTES });
 const ExitTailLinesSchema = Type.Integer({ minimum: 0, maximum: EXIT_TAIL_LIMIT });
 
 function isJsonObject(value: JsonValue): value is JsonObject {
@@ -84,6 +104,9 @@ function readLayer(
         if (Value.Check(ExitTailLinesSchema, value)) layer.exitTailLines = value;
         else warnings.push(`${path}: expected an integer from 0 to ${EXIT_TAIL_LIMIT}`);
         break;
+      case "bashTail":
+        readBashTail(value, path, layer, warnings);
+        break;
       case "defaultViewport":
         readViewport(value, path, layer, warnings);
         break;
@@ -109,6 +132,33 @@ function readViewport(value: JsonValue, path: string, layer: TermctrlLayer, warn
   }
 }
 
+function readBashTail(value: JsonValue, path: string, layer: TermctrlLayer, warnings: string[]) {
+  if (Value.Check(BooleanSchema, value)) {
+    layer.bashTailEnabled = value;
+    return;
+  }
+  if (value === 0) {
+    layer.bashTailEnabled = false;
+    return;
+  }
+  if (!isJsonObject(value)) {
+    warnings.push(`${path}: expected a boolean, 0, or a JSON object`);
+    return;
+  }
+  layer.bashTailEnabled = true;
+  for (const [key, limit] of Object.entries(value)) {
+    if (key === "lines") {
+      if (Value.Check(BashTailLinesSchema, limit)) layer.bashTailLines = limit;
+      else warnings.push(`${path}.lines: expected an integer from 1 to ${DEFAULT_MAX_LINES}`);
+    } else if (key === "bytes") {
+      if (Value.Check(BashTailBytesSchema, limit)) layer.bashTailBytes = limit;
+      else warnings.push(`${path}.bytes: expected an integer from 1 to ${DEFAULT_MAX_BYTES}`);
+    } else {
+      warnings.push(`${path}.${key}: unknown field`);
+    }
+  }
+}
+
 /** Resolve global and trusted-project `termctrl` settings, keeping valid fields around warnings. */
 export function resolveTermctrlSettings(reader: TermctrlSettingsReader): ResolvedTermctrlSettings {
   const warnings: string[] = [];
@@ -123,6 +173,15 @@ export function resolveTermctrlSettings(reader: TermctrlSettingsReader): Resolve
     },
     exitTailLines:
       projectLayer.exitTailLines ?? globalLayer.exitTailLines ?? defaults.exitTailLines,
+    bashTail:
+      (projectLayer.bashTailEnabled ?? globalLayer.bashTailEnabled ?? true)
+        ? {
+            lines:
+              projectLayer.bashTailLines ?? globalLayer.bashTailLines ?? defaults.bashTail.lines,
+            bytes:
+              projectLayer.bashTailBytes ?? globalLayer.bashTailBytes ?? defaults.bashTail.bytes,
+          }
+        : null,
     warnings,
   };
 }

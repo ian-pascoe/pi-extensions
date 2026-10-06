@@ -80,7 +80,10 @@ async function outcome(run: Promise<Result>) {
   }
 }
 
-function replacement(definitionFactory?: typeof createBashToolDefinition) {
+function replacement(
+  definitionFactory?: typeof createBashToolDefinition,
+  bashTail?: { readonly lines: number; readonly bytes: number },
+) {
   const calls = new RunningBashCalls(() => registry);
   const options: Parameters<typeof createBashReplacement>[0] = {
     cwd: directory,
@@ -88,6 +91,7 @@ function replacement(definitionFactory?: typeof createBashToolDefinition) {
     shellPath: undefined,
     registry: () => registry,
     calls,
+    bashTail,
   };
   return {
     calls,
@@ -178,6 +182,145 @@ describe("foreground parity with Pi's bash", () => {
     );
     expect(actual).toEqual(expected);
     expect(registry.entries()).toEqual([]);
+  });
+});
+
+describe("bashTail", () => {
+  const tail = { lines: 300, bytes: 16_384 };
+  const run = (command: string, extra: { timeout?: number } = {}, signal?: AbortSignal) =>
+    replacement(undefined, tail).tool.execute(
+      "call",
+      { command, ...extra },
+      signal,
+      undefined,
+      context(),
+    );
+  const rejection = async (run: Promise<unknown>): Promise<string> => {
+    try {
+      await run;
+    } catch (error) {
+      if (error instanceof Error) return error.message;
+    }
+    throw new Error("expected the call to reject with an Error");
+  };
+  const noticePath = (text: string) => /Full output: ([^\]\n]+)\]/u.exec(text)?.[1] ?? "";
+
+  test("5000 lines return the configured tail, the notice with its limits, and a full log", async () => {
+    const result = await run("seq 1 5000");
+    const text = textOf(result);
+    const [body = "", notice = ""] = text.split("\n\n");
+    expect(body.split("\n")).toHaveLength(300);
+    expect(body.split("\n")[0]).toBe("4701");
+    expect(body.split("\n").at(-1)).toBe("5000");
+    expect(notice).toMatch(
+      /^\[Showing lines 4701-5000 of 5000 \(16\.0KB or 300 line limit\)\. Full output: .+\]$/u,
+    );
+    const log = await readFile(noticePath(text), "utf8");
+    expect(log.trimEnd().split("\n")).toHaveLength(5000);
+    expect(result.details).toMatchObject({
+      fullOutputPath: noticePath(text),
+      truncation: { maxLines: 300, maxBytes: 16_384, outputLines: 300 },
+    });
+    await rm(noticePath(text));
+  });
+
+  test("a tail that Pi would not cut still gets a log, and the byte limit is reported", async () => {
+    const text = textOf(
+      await run(
+        "seq 1 250 | sed 's/$/ ................................................................/'",
+      ),
+    );
+    expect(text).toMatch(/\(16\.0KB or 300 line limit\)/u);
+    const log = await readFile(noticePath(text), "utf8");
+    expect(log.trimEnd().split("\n")).toHaveLength(250);
+    await rm(noticePath(text));
+  });
+
+  test("output within the limits is Pi's result untouched", async () => {
+    const params = { command: "seq 1 300" };
+    const expected = await outcome(
+      createBashToolDefinition(directory).execute("a", params, undefined, undefined, context()),
+    );
+    expect(await outcome(run(params.command))).toEqual(expected);
+  });
+
+  test("a failing command keeps its status after the cut tail", async () => {
+    const result = await run("seq 1 1000; exit 3");
+    expect(result).toMatchObject({ isError: true });
+    const text = textOf(result);
+    expect(text).toMatch(/^701\n/u);
+    expect(text).toMatch(
+      /\(16\.0KB or 300 line limit\)\. Full output: .+\]\n\nCommand exited with code 3$/u,
+    );
+    await rm(noticePath(text));
+  });
+
+  test("a timeout and an abort keep their messages after the cut tail", async () => {
+    const timeoutText = await rejection(run("seq 1 1000; sleep 5", { timeout: 0.5 }));
+    expect(timeoutText).toMatch(/^701\n/u);
+    expect(timeoutText).toMatch(/Full output: .+\]\n\nCommand timed out after 0\.5 seconds$/u);
+    await rm(noticePath(timeoutText));
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 500);
+    const abortedText = await rejection(run("seq 1 1000; sleep 5", {}, controller.signal));
+    expect(abortedText).toMatch(/Full output: .+\]\n\nCommand aborted$/u);
+    await rm(noticePath(abortedText));
+  });
+
+  test("when Pi also cut the output, its full-output file is the one named", async () => {
+    const result = await run("seq 1 3000");
+    const text = textOf(result);
+    const path = noticePath(text);
+    expect(path).toMatch(/pi-bash-/u);
+    expect(text.match(/Full output/gu)).toHaveLength(1);
+    expect((await readFile(path, "utf8")).trimEnd().split("\n")).toHaveLength(3000);
+    await rm(path);
+  });
+
+  test("the byte limit cuts a single long line and says so", async () => {
+    const text = textOf(await run("head -c 40000 /dev/zero | tr '\\0' x"));
+    expect(text).toMatch(
+      /^x{16384}\n\n\[Showing last 16\.0KB of line 1 \(line is 39\.1KB\)\. Full output: /u,
+    );
+    await rm(noticePath(text));
+  });
+
+  test("the tool description names the limits in force", () => {
+    const { tool } = replacement(undefined, { lines: 123, bytes: 4096 });
+    expect(tool.description).toContain("last 123 lines or 4.0KB");
+    expect(tool.description).not.toContain("2000 lines");
+    expect(replacement().tool.description).toBe(createBashToolDefinition(directory).description);
+  });
+
+  test("output so far in a backgrounding result uses the same limit", async () => {
+    const { tool } = replacement(undefined, tail);
+    const result = await tool.execute(
+      "call",
+      { command: "seq 1 1000; sleep 3", background: true },
+      undefined,
+      undefined,
+      context(),
+    );
+    const text = textOf(result);
+    expect(text).toMatch(/^701\n/u);
+    expect(text).toMatch(
+      /\[Showing lines 701-1000 of 1000 \(16\.0KB or 300 line limit\)\. Full output: .+b1\.log\]/u,
+    );
+    expect(result.structuredContent).toMatchObject({ truncated: true });
+  });
+
+  test("without limits, output so far keeps Pi's limits", async () => {
+    const { tool } = replacement();
+    const result = await tool.execute(
+      "call",
+      { command: "seq 1 3000; sleep 3", background: true },
+      undefined,
+      undefined,
+      context(),
+    );
+    expect(textOf(result)).toMatch(/^1001\n/u);
+    expect(textOf(result)).toContain("(50.0KB or 2000 line limit)");
   });
 });
 
