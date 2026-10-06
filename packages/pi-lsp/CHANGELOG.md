@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-lsp
 
+## 0.7.0
+
+### Minor Changes
+
+- d76f5bd: `lsp_diagnostics`, `lsp_workspace_diagnostics`, `lsp_hover`, `lsp_status`, `lsp_code_actions`, and `lsp_apply` now show the model compact text (such as one `path:line:col severity source(code): message` line per diagnostic) instead of a JSON envelope, while scripts still receive the unchanged structured result.
+- 4fbfa6c: `lsp_status` now lists only Server Instances and Disabled Server Definitions and counts the other configured Server Definitions; pass `all: true` to list every configured server.
+
+### Patch Changes
+
+- 70b3ebc: `lsp_find_references` and `lsp_rename` now report other workspace roots and unloaded packages as one compact line with counts, at most three names, and the troubleshooting Skill path.
+- fad9d49: Post-edit Diagnostics no longer add a "not checked (no configured server)" line: files no Server Definition covers stay silent, and no diagnostics section is appended when none of the edited files is covered, while a failure or timeout from a covering Server Definition's Server Instance is still reported.
+
 ## 0.6.0
 
 ### Minor Changes
