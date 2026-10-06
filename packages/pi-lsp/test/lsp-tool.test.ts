@@ -4315,35 +4315,35 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("lists one compact line per server, failed or not yet started, with settings warnings", async () => {
+    test("lists Server Instances and Disabled Server Definitions, counts the other Server Definitions, and lists everything with all: true", async () => {
       const fixture = await createToolFixture();
       const cwd = fixture.context.cwd;
-      const typescript = {
-        command: "fake",
-        args: [],
-        environment: {},
-        languages: [
-          { extensions: [".ts", ".tsx"], fileNames: [], languageId: "typescript" },
-          { extensions: [".js"], fileNames: [], languageId: "javascript" },
-        ],
-        requireRootMarker: false,
-        rootMarkers: [],
-      };
+      const base = resolvedSettings(["typescript", "broken", "python", "dormant", "ruby"]);
+      const typescriptLanguages = [
+        { extensions: [".ts", ".tsx"], fileNames: [], languageId: "typescript" },
+        { extensions: [".js"], fileNames: [], languageId: "javascript" },
+      ];
+      const pythonLanguages = [
+        { extensions: [".py"], fileNames: ["SConstruct"], languageId: "python" },
+      ];
+      const rubyLanguages = [{ extensions: [".rb"], fileNames: [], languageId: "ruby" }];
+      const languagesById = new Map([
+        ["typescript", typescriptLanguages],
+        ["broken", typescriptLanguages],
+        ["python", pythonLanguages],
+        ["dormant", pythonLanguages],
+        ["ruby", rubyLanguages],
+      ]);
       const settings: ResolvedLspSettings = {
-        ...resolvedSettings([]),
+        ...base,
+        enablement: new Map([["dormant", { enabled: false, scope: "global" }]]),
         warnings: ["Project lsp.servers.bad: command is required"],
-        servers: new Map([
-          ["typescript", { ...typescript, id: "typescript" }],
-          ["broken", { ...typescript, id: "broken" }],
-          [
-            "python",
-            {
-              ...typescript,
-              id: "python",
-              languages: [{ extensions: [".py"], fileNames: ["SConstruct"], languageId: "python" }],
-            },
-          ],
-        ]),
+        servers: new Map(
+          [...base.servers].map(([id, definition]) => [
+            id,
+            { ...definition, languages: languagesById.get(id) ?? [] },
+          ]),
+        ),
       };
       const manager = new LspServerManager<LspToolServerClient>({
         cwd,
@@ -4361,19 +4361,34 @@ describe("registered LSP tool", () => {
       );
 
       const status = await executeTool(fixture, { operation: "status" }, dependencies);
+      const full = await executeTool(fixture, { operation: "status", all: true }, dependencies);
 
       const structured = Value.Parse(LspStatusOutputSchema, status.structuredContent);
       const [, broken] = structured.servers;
       expect(broken?.error).toContain("spawn broken ENOENT");
+      const errorLine = `broken unavailable ${cwd} typescript(.ts,.tsx) javascript(.js) error: ${broken?.error?.replaceAll(/\s+/gu, " ")}`;
       expect(resultText(status)).toBe(
         [
           `typescript running ${cwd} typescript(.ts,.tsx) javascript(.js)`,
-          `broken unavailable ${cwd} typescript(.ts,.tsx) javascript(.js) error: ${broken?.error?.replaceAll(/\s+/gu, " ")}`,
-          "python configured python(.py,SConstruct)",
+          errorLine,
+          "dormant disabled python(.py,SConstruct)",
+          "+2 configured, not started (pass all: true to list)",
           "",
           "Warning: Project lsp.servers.bad: command is required",
         ].join("\n"),
       );
+      expect(resultText(full)).toBe(
+        [
+          `typescript running ${cwd} typescript(.ts,.tsx) javascript(.js)`,
+          errorLine,
+          "python configured python(.py,SConstruct)",
+          "dormant disabled python(.py,SConstruct)",
+          "ruby configured ruby(.rb)",
+          "",
+          "Warning: Project lsp.servers.bad: command is required",
+        ].join("\n"),
+      );
+      expect(full.structuredContent).toEqual(status.structuredContent);
       expect(structured).toEqual({
         servers: [
           {
@@ -4394,12 +4409,83 @@ describe("registered LSP tool", () => {
             state: "configured",
             languages: { python: [".py", "SConstruct"] },
           },
+          {
+            server_id: "dormant",
+            state: "disabled",
+            languages: { python: [".py", "SConstruct"] },
+          },
+          {
+            server_id: "ruby",
+            state: "configured",
+            languages: { ruby: [".rb"] },
+          },
         ],
         warnings: ["Project lsp.servers.bad: command is required"],
         structured_truncated: false,
         truncated: false,
       });
-      expect(status.details).toMatchObject({ operation: "status", result_count: 3 });
+      expect(status.details).toMatchObject({ operation: "status", result_count: 5 });
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("lists a stopped Server Instance without counting it among the not started Server Definitions", async () => {
+      const fixture = await createToolFixture();
+      const cwd = fixture.context.cwd;
+      const base = resolvedSettings(["typescript", "python"]);
+      const settings: ResolvedLspSettings = {
+        ...base,
+        servers: new Map(
+          [...base.servers].map(([id, definition]) => [
+            id,
+            id === "python"
+              ? {
+                  ...definition,
+                  languages: [{ extensions: [".py"], fileNames: [], languageId: "python" }],
+                }
+              : definition,
+          ]),
+        ),
+      };
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd,
+        settings,
+        startClient: async () => fixture.client,
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+      await executeTool(
+        fixture,
+        { operation: "diagnostics", file_path: fixture.filePath },
+        dependencies,
+      );
+      await manager.stopServer("typescript", cwd);
+
+      const status = await executeTool(fixture, { operation: "status" }, dependencies);
+
+      expect(resultText(status)).toBe(
+        [
+          `typescript stopped ${cwd} typescript(.ts)`,
+          "+1 configured, not started (pass all: true to list)",
+        ].join("\n"),
+      );
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("says no Server Instance started when every enabled Server Definition is not started", async () => {
+      const fixture = await createToolFixture();
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd: fixture.context.cwd,
+        settings: resolvedSettings(["python"]),
+        startClient: async () => fixture.client,
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+
+      const status = await executeTool(fixture, { operation: "status" }, dependencies);
+
+      expect(resultText(status)).toBe(
+        "No Server Instances started.\n+1 configured, not started (pass all: true to list)",
+      );
       await manager.shutdown();
       await fixture.close();
     });

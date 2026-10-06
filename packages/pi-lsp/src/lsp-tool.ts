@@ -106,6 +106,7 @@ import {
   type LspServerLanguage,
   type LspServerManager,
   type LspServerManagerStatus,
+  type LspServerStatusEntry,
   type LspServerReadResult,
   type LspServerRoute,
   type LspUnloadedWorkspacePackages,
@@ -963,11 +964,29 @@ function statusLanguages(languages: readonly LspServerLanguage[]) {
 }
 
 /**
- * Render status as one `server_id state [root] language(extensions,...)... [error: ...]` line per
- * Server Definition or Server Instance, followed by settings warnings.
+ * The states `lsp_status` lists by default: every Server Instance (running, starting,
+ * unavailable, stopped) and every Disabled Server Definition. Only a Server Definition that has
+ * no Server Instance and is enabled (state `configured`) is counted instead.
  */
-function formatStatusText(status: LspServerManagerStatus, cwd: string): string {
-  const lines = status.servers.map((server) => {
+const LISTED_STATES: ReadonlySet<LspServerStatusEntry["state"]> = new Set([
+  "disabled",
+  "running",
+  "starting",
+  "stopped",
+  "unavailable",
+]);
+
+/**
+ * Render status as one `server_id state [root] language(extensions,...)... [error: ...]` line per
+ * Server Definition or Server Instance, followed by settings warnings. Unless `all` is set, only
+ * the `LISTED_STATES` get a line, and the enabled Server Definitions without a Server Instance
+ * are counted in one summary line.
+ */
+function formatStatusText(status: LspServerManagerStatus, cwd: string, all: boolean): string {
+  const listed = all
+    ? status.servers
+    : status.servers.filter(({ state }) => LISTED_STATES.has(state));
+  const lines = listed.map((server) => {
     const languages = Object.entries(statusLanguages(server.languages)).map(
       ([languageId, patterns]) => `${languageId}(${patterns.join(",")})`,
     );
@@ -979,9 +998,16 @@ function formatStatusText(status: LspServerManagerStatus, cwd: string): string {
       ...(server.error === undefined ? [] : [`error: ${collapseLspWhitespace(server.error)}`]),
     ].join(" ");
   });
+  // Every omitted entry is a Server Definition without a Server Instance, so extra roots and
+  // stopped Server Instances never inflate the count.
+  const notStarted = status.servers.length - listed.length;
+  const summary =
+    notStarted === 0 ? [] : [`+${notStarted} configured, not started (pass all: true to list)`];
   const warnings = status.warnings.map((warning) => `Warning: ${warning}`);
   return [
-    ...(lines.length === 0 ? ["No configured Server Definitions."] : lines),
+    ...(status.servers.length === 0
+      ? ["No configured Server Definitions."]
+      : [...(lines.length === 0 ? ["No Server Instances started."] : lines), ...summary]),
     ...(warnings.length === 0 ? [] : ["", ...warnings]),
   ].join("\n");
 }
@@ -1865,7 +1891,7 @@ async function executeLspOperation(
         warnings: status.warnings,
       });
       return createLspToolOutput(
-        formatStatusText(status, context.cwd),
+        formatStatusText(status, context.cwd, parameters.all === true),
         { ...operationDetails("status", outcomes), result_count: status.servers.length },
         lspStructuredFields(json),
         dependencies,
@@ -2034,7 +2060,7 @@ const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
 
 const LSP_TOOL_DESCRIPTIONS = {
   status:
-    "Report each configured language server's state, workspace root, last error, and the file extensions it handles per language ID.",
+    "Report language servers' state, workspace root, last error, and the file extensions each handles per language ID. Lists Server Instances (running, starting, unavailable, stopped) and disabled Server Definitions, and counts the other configured Server Definitions; pass all: true to list every configured server.",
   capabilities: "Start a server for a workspace and report its negotiated capabilities.",
   restart:
     "Restart a server for a workspace, clearing its unavailable state, and report its capabilities.",
