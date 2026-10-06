@@ -711,6 +711,61 @@ describe("Web Fetch main content", () => {
     expect(unclosed).toContain("Real content");
   });
 
+  test.each(["markdown", "text"] as const)(
+    "keeps a role=navigation content column that holds most of the text in %s format",
+    async (format) => {
+      const specification = Array.from(
+        { length: 40 },
+        (_, index) => `<h2>Section ${index}</h2><p>Specification paragraph ${index} body text.</p>`,
+      ).join("");
+      const html = `<html><head><title>Specification</title></head><body>
+<div class="container"><div class="row">
+<div class="col-lg-3" role="navigation" aria-label="Sidebar"><ul><li><a href="#s0">SidebarToc</a></li></ul></div>
+<div class="col-lg-7" role="navigation" aria-label="Main">${specification}</div>
+</div></div><footer>FooterLegal</footer></body></html>`;
+      const output = await fetchHtmlPage(html, format);
+
+      expect(output).toContain("Specification paragraph 0 body text.");
+      expect(output).toContain("Specification paragraph 39 body text.");
+      expect(output).not.toContain("SidebarToc");
+      expect(output).not.toContain("FooterLegal");
+      expect(output).toContain("Site chrome outside the main content was removed");
+      expect(output).not.toContain("use format: html");
+    },
+  );
+
+  test("converts the whole page when cutting chrome would remove most of the text", async () => {
+    const links = (prefix: string) =>
+      Array.from({ length: 80 }, (_, index) => `<li>${prefix} link ${index}</li>`).join("");
+    const html = `<html><body><nav><ul>${links("Alpha")}</ul></nav>
+<div role="navigation"><ul>${links("Gamma")}</ul></div><p>Short body.</p></body></html>`;
+    const output = await fetchHtmlPage(html, "text");
+
+    expect(output).toContain("Short body.");
+    expect(output).toContain("Alpha link 0");
+    expect(output).toContain("Gamma link 79");
+    expect(output).not.toContain("Site chrome");
+  });
+
+  test.each(["markdown", "text"] as const)(
+    "says how much text chrome removal dropped, and how to see it, in %s format",
+    async (format) => {
+      const links = Array.from(
+        { length: 120 },
+        (_, index) => `<a href="/${index}">Nav item ${index}</a>`,
+      );
+      const html = `<html><head><title>Docs</title></head><body><nav>${links.join(" ")}</nav>
+<main><h1>Widgets</h1><p>Short body.</p></main></body></html>`;
+      const output = await fetchHtmlPage(html, format);
+
+      expect(output).toContain("Short body.");
+      expect(output).not.toContain("Nav item 0");
+      expect(output).toMatch(
+        /Site chrome outside the main content was removed \(\d+% of page text\); use format: html for the full page\./,
+      );
+    },
+  );
+
   test("keeps a <main> that is the whole page without claiming chrome was removed", async () => {
     const output = await fetchHtmlPage(
       "<html><head><title>Solo</title></head><body><main><p>Only main.</p></main></body></html>",

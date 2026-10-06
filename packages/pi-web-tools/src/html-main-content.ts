@@ -8,6 +8,11 @@ export type HtmlMainContent = {
   readonly title: string | undefined;
   /** Whether visible text outside the selected content was dropped. */
   readonly chromeRemoved: boolean;
+  /**
+   * Whole percent of the page's visible text dropped as chrome, set only when the drop is large
+   * enough that the reader should be warned and told how to get the full page.
+   */
+  readonly largeRemovalPercent: number | undefined;
 };
 
 type Span = { readonly start: number; readonly end: number };
@@ -25,7 +30,17 @@ type ParsedElement = {
   end: number | undefined;
 };
 
-type ParsedText = { readonly start: number };
+type ParsedText = {
+  readonly start: number;
+  /** Characters of trimmed visible text before this chunk, so a span's length is a difference. */
+  readonly charsBefore: number;
+};
+
+/**
+ * Removing more than half of a page's visible text is large, but only from this many characters
+ * up, so a tiny page with a link bar is not flagged.
+ */
+const LARGE_REMOVAL_CHARS = 1000;
 
 /** Elements whose text is never page content. */
 const HIDDEN_ELEMENTS = new Set([
@@ -50,6 +65,8 @@ type ParsedPage = {
   readonly elements: readonly ParsedElement[];
   readonly texts: readonly ParsedText[];
   readonly title: string | undefined;
+  /** Characters of trimmed visible text on the whole page. */
+  readonly totalChars: number;
 };
 
 function parsePage(html: string): ParsedPage {
@@ -61,6 +78,7 @@ function parsePage(html: string): ParsedPage {
   let title: string | undefined;
   let titleDone = false;
   let titleText = "";
+  let totalChars = 0;
   const hiddenOpen = new Set<number>();
   const parser = new Parser({
     onopentag(name, attributes) {
@@ -102,8 +120,10 @@ function parsePage(html: string): ParsedPage {
     },
     ontext(value) {
       if (titleDepth > 0) titleText += value;
-      else if (hiddenDepth === 0 && value.trim().length > 0)
-        texts.push({ start: parser.startIndex });
+      else if (hiddenDepth === 0 && value.trim().length > 0) {
+        texts.push({ start: parser.startIndex, charsBefore: totalChars });
+        totalChars += value.trim().length;
+      }
     },
     onclosetag(name, isImplied) {
       const index = open.pop();
@@ -122,7 +142,7 @@ function parsePage(html: string): ParsedPage {
   });
   parser.write(html);
   parser.end();
-  return { elements, texts, title };
+  return { elements, texts, title, totalChars };
 }
 
 function isMainElement(element: ParsedElement): boolean {
@@ -155,6 +175,12 @@ function lowerBound(items: readonly { readonly start: number }[], offset: number
 /** Visible text chunks that start inside `span`. */
 function countTexts(texts: readonly ParsedText[], span: Span): number {
   return lowerBound(texts, span.end) - lowerBound(texts, span.start);
+}
+
+/** Characters of visible text that start inside `span`. */
+function countChars(page: ParsedPage, span: Span): number {
+  const charsAt = (index: number) => page.texts[index]?.charsBefore ?? page.totalChars;
+  return charsAt(lowerBound(page.texts, span.end)) - charsAt(lowerBound(page.texts, span.start));
 }
 
 function hasText(texts: readonly ParsedText[], span: Span): boolean {
@@ -257,16 +283,30 @@ function droppedVisibleText(
   return countTexts(texts, within) < texts.length || cuts.some((cut) => hasText(texts, cut));
 }
 
+/** Whether dropping `removedChars` of `totalChars` leaves a large page mostly gone. */
+function isLargeRemoval(removedChars: number, totalChars: number): boolean {
+  return removedChars >= LARGE_REMOVAL_CHARS && removedChars * 2 > totalChars;
+}
+
+function sum(values: readonly number[]): number {
+  return values.reduce((total, value) => total + value, 0);
+}
+
 function select(
   page: ParsedPage,
   html: string,
   within: Span,
   cuts: readonly Span[],
 ): HtmlMainContent {
+  const keptChars = countChars(page, within) - sum(cuts.map((cut) => countChars(page, cut)));
+  const removedChars = page.totalChars - keptChars;
   return {
     html: sliceWithout(html, within, cuts),
     title: page.title,
     chromeRemoved: droppedVisibleText(page.texts, within, cuts),
+    largeRemovalPercent: isLargeRemoval(removedChars, page.totalChars)
+      ? Math.floor((removedChars / page.totalChars) * 100)
+      : undefined,
   };
 }
 
@@ -276,8 +316,10 @@ function select(
  * footer does not count), and otherwise strips navigation, `<aside>`, and `<header>` and `<footer>`
  * that belong to the page rather than to a section. Navigation is `<nav>` or a navigation or search
  * role. Selected content also loses its navigation, and a `<header>` that belongs to `<main>` itself
- * keeps only its headings. Returns `undefined` when nothing qualifies or nothing would be removed, so the caller
- * converts the whole page. Only elements with an end tag are selected or cut, so an unclosed tag
+ * keeps only its headings. A fallback landmark that holds most of the body text is kept, and when
+ * the remaining cuts would still drop most of a large page (see `LARGE_REMOVAL_CHARS`) the whole
+ * page is kept. Returns `undefined` when nothing qualifies or nothing would be removed, so the
+ * caller converts the whole page. Only elements with an end tag are selected or cut, so an unclosed tag
  * never swallows the rest of the page. Work is linear in the page size apart from sorted lookups.
  */
 export function extractMainContent(html: string): HtmlMainContent | undefined {
@@ -308,12 +350,19 @@ export function extractMainContent(html: string): HtmlMainContent | undefined {
 
   const body = elements.find((element) => element.name === "body" && element.end !== undefined);
   const bodySpan = (body === undefined ? undefined : closedSpan(body)) ?? everything;
+  const bodyChars = countChars(page, bodySpan);
+  // A landmark holding most of the body text is the content column in chrome's clothing, as on
+  // sites that mark the page body `role="navigation"`; keep it and look for chrome inside it.
+  const holdsMostText = (span: Span) => countChars(page, span) * 2 > bodyChars;
   const chrome = outermostSpans(elements, bodySpan, (element) => {
+    const span = closedSpan(element);
+    if (span === undefined || holdsMostText(span)) return false;
     if (isNavigation(element) || element.name === "aside") return true;
     return (element.name === "header" || element.name === "footer") && element.section < 0;
   });
+  const cutChars = sum(chrome.map((cut) => countChars(page, cut)));
+  // When cuts would drop most of the text, the page has no recognizable content column.
+  if (chrome.length === 0 || isLargeRemoval(cutChars, bodyChars)) return undefined;
   const stripped = select(page, html, bodySpan, chrome);
-  const keptTexts =
-    countTexts(texts, bodySpan) - chrome.reduce((total, cut) => total + countTexts(texts, cut), 0);
-  return chrome.length > 0 && stripped.chromeRemoved && keptTexts > 0 ? stripped : undefined;
+  return stripped.chromeRemoved && bodyChars > cutChars ? stripped : undefined;
 }
