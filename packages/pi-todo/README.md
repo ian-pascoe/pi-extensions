@@ -25,7 +25,7 @@ The `todo` tool supports five actions:
 | `remove` | `id`                                                  | Removes one Task                  |
 | `clear`  | —                                                     | Removes every Task and resets IDs |
 
-A batch `add` creates every Task in `tasks` atomically, with sequential IDs, and the result lists them. It writes one Todo List state entry, so it adds one Todo List Snapshot. If any title or description is empty, or the Task IDs would run out, it creates no Task. `tasks` must hold at least one entry and replaces `title`/`description`: a request that gives both `tasks` and `title` or `description` is rejected rather than guessed at. A top-level `status` applies to every new Task.
+A batch `add` creates every Task in `tasks` atomically, with sequential IDs, and the result lists them. It writes one `pi-todo-state` session entry, so the tool group that made it projects a single Todo List Snapshot. If any title or description is empty, or the Task IDs would run out, it creates no Task. `tasks` must hold at least one entry and replaces `title`/`description`: a request that gives both `tasks` and `title` or a non-null `description` is rejected rather than guessed at. Per-Task fields other than `title` and `description` are rejected too. A top-level `status` applies to every new Task.
 
 A Pi `codemode` script receives the result as an object (the tool declares an `outputSchema`) instead of the text (its field names are already single words, so they match Pi's snake_case convention); the model still reads the same text, and failures still throw:
 

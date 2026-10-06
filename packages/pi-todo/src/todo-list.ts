@@ -49,9 +49,10 @@ export type TodoActionInput = {
 };
 
 /**
- * Render details and the tool's structured result. The action discriminates the list from the
- * Task a mutation added or updated, the ID it removed, and the count it cleared. A batch `add`
- * returns the Tasks it created as `tasks`; a single `add` returns `task`.
+ * Render details and the tool's structured result. The action, plus `tasks` versus `task` for
+ * `add`, discriminates the list from the Task(s) a mutation added or updated, the ID it removed,
+ * and the count it cleared. A batch `add` returns the Tasks it created as `tasks`; a single `add`
+ * returns `task`.
  */
 export type TodoToolDetails =
   | { readonly action: "list" | "add"; readonly tasks: readonly TodoTask[] }
@@ -72,8 +73,8 @@ const TodoTaskRecord = Type.Object({
 
 /**
  * JSON Schema of the `todo` tool's `structuredContent`, which codemode scripts receive instead of
- * the model-facing text. Flat so Pi's one-line script declaration stays compact; `action` says
- * which other field is present.
+ * the model-facing text. Flat so Pi's one-line script declaration stays compact; `action` (and, for
+ * `add`, whether the request carried `tasks`) says which other field is present.
  */
 export const TodoToolOutputSchema = Type.Object(
   {
@@ -176,18 +177,42 @@ function newTodoTask(
   return description ? { id, title, description, status } : { id, title, status };
 }
 
-function addTask(state: TodoStateSnapshot, input: TodoActionInput): TodoActionResult {
-  const title = input.title?.trim();
-  if (!title) return todoOperationFailure("add", "Todo add failed: title must not be empty");
-  const description = input.description?.trim();
-  if (input.description !== undefined && input.description !== null && !description) {
-    return todoOperationFailure("add", "Todo add failed: description must not be empty");
+/** Counts Tasks in model-facing text: "1 Task", "3 Tasks". */
+export function formatTaskCount(count: number): string {
+  return `${count} ${count === 1 ? "Task" : "Tasks"}`;
+}
+
+type ParsedTodoDraft = { readonly title: string; readonly description: string | undefined };
+
+/** Trims and validates one Task to add; `field` prefixes the field name in the failure message. */
+function parseTodoDraft(
+  title: string | undefined,
+  description: string | null | undefined,
+  field: string,
+): ParsedTodoDraft | TodoActionResult {
+  const trimmedTitle = title?.trim();
+  if (!trimmedTitle) {
+    return todoOperationFailure("add", `Todo add failed: ${field}title must not be empty`);
   }
+  const trimmedDescription = description?.trim();
+  if (description !== undefined && description !== null && !trimmedDescription) {
+    return todoOperationFailure("add", `Todo add failed: ${field}description must not be empty`);
+  }
+  return { title: trimmedTitle, description: trimmedDescription };
+}
+
+function isTodoActionResult(value: ParsedTodoDraft | TodoActionResult): value is TodoActionResult {
+  return "ok" in value;
+}
+
+function addTask(state: TodoStateSnapshot, input: TodoActionInput): TodoActionResult {
+  const draft = parseTodoDraft(input.title, input.description, "");
+  if (isTodoActionResult(draft)) return draft;
   const id = parseTodoTaskId(state.nextId);
   if (id === undefined || state.nextId === Number.MAX_SAFE_INTEGER) {
     return todoOperationFailure("add", "Todo add failed: Task ID limit reached");
   }
-  const task = newTodoTask(id, title, description, input.status ?? "pending");
+  const task = newTodoTask(id, draft.title, draft.description, input.status ?? "pending");
   return {
     ok: true,
     state: { nextId: state.nextId + 1, tasks: [...state.tasks, task] },
@@ -199,39 +224,28 @@ function addTask(state: TodoStateSnapshot, input: TodoActionInput): TodoActionRe
 /** Validates every draft before creating any Task, so a batch is all-or-nothing. */
 function addTasks(
   state: TodoStateSnapshot,
-  drafts: readonly TodoTaskDraft[],
-  input: TodoActionInput,
+  input: TodoActionInput & { readonly tasks: readonly TodoTaskDraft[] },
 ): TodoActionResult {
-  if (input.title !== undefined || input.description !== undefined) {
+  // A null description is "absent" for add, as it is for a single Task.
+  if (input.title !== undefined || (input.description ?? undefined) !== undefined) {
     return todoOperationFailure("add", "Todo add failed: provide either title or tasks, not both");
   }
-  if (drafts.length === 0) {
+  if (input.tasks.length === 0) {
     return todoOperationFailure("add", "Todo add failed: tasks must not be empty");
   }
-  const parsed: Array<{ title: string; description: string | undefined }> = [];
-  for (const [index, draft] of drafts.entries()) {
-    const title = draft.title.trim();
-    if (!title) {
-      return todoOperationFailure(
-        "add",
-        `Todo add failed: tasks[${index}].title must not be empty`,
-      );
-    }
-    const description = draft.description?.trim();
-    if (draft.description !== undefined && !description) {
-      return todoOperationFailure(
-        "add",
-        `Todo add failed: tasks[${index}].description must not be empty`,
-      );
-    }
-    parsed.push({ title, description });
+  const drafts: ParsedTodoDraft[] = [];
+  for (const [index, task] of input.tasks.entries()) {
+    const draft = parseTodoDraft(task.title, task.description, `tasks[${index}].`);
+    if (isTodoActionResult(draft)) return draft;
+    drafts.push(draft);
   }
+  // The last Task's successor ID must stay a safe integer so the saved state restores.
+  const exceedsIdLimit = state.nextId + drafts.length > Number.MAX_SAFE_INTEGER;
   const status = input.status ?? "pending";
   const added: TodoTask[] = [];
-  for (const [index, { title, description }] of parsed.entries()) {
+  for (const [index, { title, description }] of drafts.entries()) {
     const id = parseTodoTaskId(state.nextId + index);
-    // The last Task's successor ID must stay a safe integer so the saved state restores.
-    if (id === undefined || state.nextId + parsed.length > Number.MAX_SAFE_INTEGER) {
+    if (id === undefined || exceedsIdLimit) {
       return todoOperationFailure("add", "Todo add failed: Task ID limit reached");
     }
     added.push(newTodoTask(id, title, description, status));
@@ -239,7 +253,7 @@ function addTasks(
   return {
     ok: true,
     state: { nextId: state.nextId + added.length, tasks: [...state.tasks, ...added] },
-    message: `Added ${added.length} ${added.length === 1 ? "Task" : "Tasks"}\n${formatTodoList(added)}`,
+    message: `Added ${formatTaskCount(added.length)}\n${formatTodoList(added)}`,
     details: { action: "add", tasks: added },
   };
 }
@@ -261,7 +275,7 @@ export function applyTodoAction(
     case "add":
       return input.tasks === undefined
         ? addTask(state, input)
-        : addTasks(state, input.tasks, input);
+        : addTasks(state, { ...input, tasks: input.tasks });
 
     case "update":
     case "remove": {
@@ -334,7 +348,7 @@ export function applyTodoAction(
       return {
         ok: true,
         state: count > 0 || state.nextId !== 1 ? createEmptyTodoState() : state,
-        message: `Cleared ${count} ${count === 1 ? "Task" : "Tasks"}`,
+        message: `Cleared ${formatTaskCount(count)}`,
         details: { action: "clear", cleared: count },
       };
     }

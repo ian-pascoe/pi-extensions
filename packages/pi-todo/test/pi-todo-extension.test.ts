@@ -356,7 +356,32 @@ describe("Pi Todo extension", () => {
       false,
     );
     expect(Value.Check(parameters, { action: "add", tasks: ["A"] })).toBe(false);
-    if (!harness.tool.renderCall) throw new Error("todo declares no renderCall");
+    // A per-Task status is rejected rather than silently dropped.
+    expect(
+      Value.Check(parameters, { action: "add", tasks: [{ title: "A", status: "active" }] }),
+    ).toBe(false);
+    if (!harness.tool.renderCall || !harness.tool.renderResult) {
+      throw new Error("todo declares no transcript renderers");
+    }
+    const batch = await harness.execute(
+      {
+        action: "add",
+        tasks: [
+          { title: "B1", description: "Only expanded." },
+          ...[2, 3, 4, 5, 6].map((n) => ({ title: `B${n}` })),
+        ],
+      },
+      harness.context(),
+    );
+    const renderBatch = (expanded: boolean) =>
+      renderTodoComponent(
+        harness.tool.renderResult!(batch, { expanded, isPartial: false }, createTodoTestTheme()),
+        80,
+      ).join("\n");
+    expect(renderBatch(false)).toBe(
+      "Added 6 Tasks:\n[ ] #1 B1\n[ ] #2 B2\n[ ] #3 B3\n[ ] #4 B4\n[ ] #5 B5\n… 1 more",
+    );
+    expect(renderBatch(true)).toContain("[ ] #1 B1\n    Only expanded.");
     expect(
       renderTodoComponent(
         harness.tool.renderCall(
@@ -410,6 +435,16 @@ describe("Pi Todo extension", () => {
       ),
     ).rejects.toThrow("Todo add failed: provide either title or tasks, not both");
     expect(harness.entries).toHaveLength(0);
+
+    // A null description means "absent", as it does for a single Task.
+    expect(
+      resultText(
+        await harness.execute(
+          { action: "add", description: null, tasks: [{ title: "Batch" }] },
+          context,
+        ),
+      ),
+    ).toBe("Added 1 Task\n[ ] #1 Batch");
   });
 
   test("batch add rejects exhausting the Task ID space without persisting", async () => {

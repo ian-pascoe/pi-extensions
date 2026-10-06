@@ -6,6 +6,7 @@ import { projectTodoContext, todoStateFromEntry } from "./todo-context.js";
 import {
   applyTodoAction,
   createEmptyTodoState,
+  formatTaskCount,
   TODO_ACTIONS,
   TODO_STATUSES,
   TodoToolOutputSchema,
@@ -55,14 +56,17 @@ const TodoParameters = Type.Object({
   ),
   tasks: Type.Optional(
     Type.Array(
-      Type.Object({
-        title: Type.String({ description: "Task title" }),
-        description: Type.Optional(Type.String({ description: "Optional Task description" })),
-      }),
+      Type.Object(
+        {
+          title: Type.String({ description: "Task title" }),
+          description: Type.Optional(Type.String({ description: "Optional Task description" })),
+        },
+        { additionalProperties: false },
+      ),
       {
         minItems: 1,
         description:
-          "add several Tasks in one call, all or none, with sequential IDs; use instead of title",
+          "Tasks to add in one call, all or none, with sequential IDs; use instead of title and description",
       },
     ),
   ),
@@ -212,7 +216,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
       if (params.action === "add" && params.title) text += theme.fg("dim", ` "${params.title}"`);
       if (params.action === "add" && params.tasks) {
         const count = params.tasks.length;
-        text += theme.fg("dim", ` ${count} ${count === 1 ? "Task" : "Tasks"}`);
+        text += theme.fg("dim", ` ${formatTaskCount(count)}`);
       }
       return new Text(text, 0, 0);
     },
@@ -221,13 +225,12 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
       if (!result.details) {
         return new Text(theme.fg("error", text?.text ?? "Todo operation failed"), 0, 0);
       }
-      if (result.details.action === "list") {
-        const tasks = result.details.tasks;
+      if ("tasks" in result.details) {
+        const { action, tasks } = result.details;
         if (tasks.length === 0) return new Text(theme.fg("dim", "Todo List is empty"), 0, 0);
         const visibleTasks = expanded ? tasks : tasks.slice(0, TODO_COLLAPSED_TASK_LIMIT);
-        const lines = [
-          theme.fg("muted", `${tasks.length} ${tasks.length === 1 ? "Task" : "Tasks"}:`),
-        ];
+        const heading = `${action === "add" ? "Added " : ""}${formatTaskCount(tasks.length)}:`;
+        const lines = [theme.fg("muted", heading)];
         for (const task of visibleTasks) {
           lines.push(renderTodoTaskLine(task, theme));
           if (expanded && task.description) {
@@ -266,7 +269,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
       }
       const confirmed = await context.ui.confirm(
         "Clear Todo List",
-        `Remove all ${state.tasks.length} ${state.tasks.length === 1 ? "Task" : "Tasks"}?`,
+        `Remove all ${formatTaskCount(state.tasks.length)}?`,
       );
       if (!confirmed) return;
       const result = runTodoAction({ action: "clear" }, context);
