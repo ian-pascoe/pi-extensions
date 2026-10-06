@@ -113,6 +113,8 @@ directory. A Debug Session is single-active: launching while one is active
 fails. Desired Breakpoints are complete per-file lists and survive `dap_stop`
 and later launches in the same Pi conversation session; `[]` clears a file.
 Relative breakpoint paths also resolve from Pi's project working directory.
+A breakpoint file that does not exist yet is still stored, with a `warnings` entry
+that the breakpoints will not bind until it exists.
 
 Execution and inspection require a stopped Debuggee: `dap_continue`,
 `dap_next`, `dap_step_in`, `dap_step_out`, `dap_stack`, `dap_variables`, and

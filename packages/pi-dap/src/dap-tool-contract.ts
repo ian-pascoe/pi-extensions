@@ -426,7 +426,16 @@ const DapExecutionOutputSchema = Type.Object(
 export const DapToolOutputSchemas = {
   launch: DapExecutionOutputSchema,
   set_breakpoints: Type.Object(
-    { ...DapOutputBaseFields, breakpoints: Type.Optional(Type.Array(DapBreakpointSchema)) },
+    {
+      ...DapOutputBaseFields,
+      breakpoints: Type.Optional(Type.Array(DapBreakpointSchema)),
+      warnings: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Set when the call was applied but may not take effect, such as a source file that does not exist.",
+        }),
+      ),
+    },
     { additionalProperties: false },
   ),
   continue: DapExecutionOutputSchema,
