@@ -154,7 +154,13 @@ const WaitTimeoutDetailsSchema = Type.Object({
   agent_id: Type.String(),
   turn_id: Type.String(),
   timeout_ms: Type.Number(),
-  agent: RenderStatusAgentSchema,
+  state: Type.Optional(Type.String()),
+  elapsed_ms: Type.Optional(Type.Number()),
+  latest_activity_at: Type.Optional(Type.String()),
+  total_tokens: Type.Optional(Type.Number()),
+  recent_activity_labels: Type.Optional(Type.Array(Type.String())),
+  /** Pre-compact timeout results carried the full child status. */
+  agent: Type.Optional(RenderStatusAgentSchema),
 });
 const StatusDetailsSchema = Type.Union([
   Type.Object({
@@ -313,7 +319,11 @@ export const CoordinatorToolOutputSchemas = {
       agent_id: Type.String(),
       turn_id: Type.String(),
       timeout_ms: Type.Number(),
-      agent: CoordinatorAgentDetailOutputSchema,
+      state: Type.Union([Type.Literal("running"), Type.Literal("idle")]),
+      elapsed_ms: Type.Optional(Type.Number()),
+      latest_activity_at: Type.Optional(Type.String()),
+      total_tokens: Type.Optional(Type.Number()),
+      recent_activity_labels: Type.Array(Type.String()),
       ...CoordinatorWaitSourceOutputSchema,
     }),
   ]),

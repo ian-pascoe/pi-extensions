@@ -111,15 +111,20 @@ export interface WaitDeliveredTurnResult extends Pick<
   messages?: WaitMessageResult[];
 }
 
-/** Reports an observational wait timeout with the current detailed child status. */
+/** Reports an observational wait timeout with a compact, bounded child progress snapshot. */
 export interface WaitTimeoutResult {
   event: "timeout";
   agent_id: string;
   turn_id: string;
   /** Requested timeout duration that expired. */
   timeout_ms: number;
-  /** Detailed child status captured when the timeout callback won. */
-  agent: AgentDetail;
+  state: AgentState;
+  elapsed_ms?: number;
+  latest_activity_at?: string;
+  /** Total tokens the child has used, when usage is known. */
+  total_tokens?: number;
+  /** Labels of the child's last few Recent Activity items, oldest first. */
+  recent_activity_labels: string[];
 }
 
 /** Reports one message, terminal turn, or timeout returned by subagent_wait. */

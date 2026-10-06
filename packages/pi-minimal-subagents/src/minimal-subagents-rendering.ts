@@ -585,6 +585,16 @@ function renderWaitProgress(
 /** Shown instead of the output of a result already delivered to the parent automatically. */
 const ALREADY_DELIVERED_TEXT = "Already delivered automatically; wait with turn_id to reread it.";
 
+/** The activity labels of a timeout result, including pre-compact results that carried the full status. */
+function timeoutActivityLabels(
+  details: Extract<WaitRenderDetails, { event: "timeout" }>,
+): readonly string[] {
+  return (
+    details.recent_activity_labels ??
+    latestProgressActivity(details.agent?.recent_activity ?? []).map((entry) => entry.label)
+  );
+}
+
 /** The collapsed body of a settled wait: what the child said, or why it stopped. */
 function collapsedWaitBody(
   details: WaitRenderDetails,
@@ -593,8 +603,10 @@ function collapsedWaitBody(
 ): Component | undefined {
   if (details.event === "message") return collapsedTextPreview(details.message, theme);
   if (details.event === "timeout") {
-    const activity = latestProgressActivity(details.agent.recent_activity ?? []);
-    return activity.length > 0 ? new ActivityLines(activity, theme) : undefined;
+    const labels = timeoutActivityLabels(details);
+    return labels.length > 0
+      ? collapsedTextPreview(theme.fg("dim", labels.join(" \u00b7 ")), theme)
+      : undefined;
   }
   if (details.already_delivered) {
     return collapsedTextPreview(theme.fg("muted", ALREADY_DELIVERED_TEXT), theme);
@@ -627,7 +639,9 @@ function renderWaitResult(
     details.event === "timeout" ? details.timeout_ms : details.elapsed_ms,
   );
   const usage = details.event === "timeout" ? undefined : details.usage;
-  const tokens = formatSubagentTokenCount(usage?.totalTokens);
+  const tokens = formatSubagentTokenCount(
+    details.event === "timeout" ? details.total_tokens : usage?.totalTokens,
+  );
   const drainedMessageCount =
     details.event === "message" || details.event === "timeout"
       ? 0
@@ -658,12 +672,15 @@ function renderWaitResult(
     return container;
   }
   if (details.event === "timeout") {
-    appendComponentSection(
-      container,
-      theme,
-      "Child status",
-      renderDetailedStatusAgent(details.agent, options, theme),
+    container.addChild(
+      renderLabelValue(theme, "State", details.state ?? details.agent?.state ?? "unknown"),
     );
+    if (details.latest_activity_at) {
+      container.addChild(renderLabelValue(theme, "Latest activity", details.latest_activity_at));
+    }
+    const labels = timeoutActivityLabels(details);
+    if (labels.length > 0)
+      appendTextSection(container, theme, "Recent activity", labels.join("\n"));
     return container;
   }
   if (details.messages && details.messages.length > 0) {
