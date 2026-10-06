@@ -334,8 +334,9 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     const pid = Number(await readFile(pidFile, "utf8"));
     expect(() => process.kill(pid, 0)).not.toThrow();
     const stopped = await tools.stop.execute("stop", { id: "t1" }, undefined, undefined, context);
-    expect(stopped.details).toMatchObject({ id: "t1", state: "exited" });
-    expect(stopped.details.screen).toContain("stubborn");
+    // untilScreenShows already returned the screen, so the stop result does not repeat it.
+    expect(stopped.details).toMatchObject({ id: "t1", state: "exited", changed: false });
+    expect(stopped.details).not.toHaveProperty("screen");
     expect(tools.registry.entries()).toEqual([]);
     expect(() => process.kill(pid, 0)).toThrow();
   });

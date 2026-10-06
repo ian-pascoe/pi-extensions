@@ -140,7 +140,7 @@ const StopResultSchema = Type.Object({
   screen: Type.Optional(
     Type.String({
       description:
-        "Terminal only: the final screen; omitted for an exited Terminal whose screen is unchanged since your previous result",
+        "Terminal only: the final screen; omitted when unchanged since your previous result",
     }),
   ),
   scrolled_off: Type.Optional(
@@ -815,10 +815,11 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       const parts = [header];
       if (entry.kind === "terminal") {
         const screen = entry.finalScreen ?? "";
-        // An exited Terminal's screen the agent already saw is not repeated.
-        const repeated = !wasRunning && previousScreen === screen;
+        const changed = previousScreen !== screen;
+        // A screen the agent already saw is not repeated, whether the Terminal was running or exited.
+        const repeated = !changed;
         const output = await fitOutput(registry, entry, repeated ? "" : screen, scrolled);
-        result.changed = previousScreen !== screen;
+        result.changed = changed;
         if (!repeated) result.screen = output.screen;
         if (!repeated || output.scrolledOff !== "") result.scrolled_off = output.scrolledOff;
         if (output.gap) result.output_missing = true;
