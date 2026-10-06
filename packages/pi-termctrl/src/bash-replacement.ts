@@ -378,6 +378,7 @@ function limitForegroundText(
   piText: string,
   piDetails: BashToolDetails | undefined,
   limits: BashTailLimits,
+  hasStatus: boolean,
 ) {
   const output = call.foregroundOutput();
   if (output === undefined) return undefined;
@@ -390,7 +391,8 @@ function limitForegroundText(
   const logPath =
     (piCut ? piFullOutputPath(piText, piDetails) : undefined) ?? saveFullOutput(output.raw);
   const notice = tailNotice(truncation, output.text, logPath ?? "(could not be saved)");
-  const status = PI_STATUS.exec(piText);
+  // Pi appends a status only to a failure; a successful command's output may merely look like one.
+  const status = hasStatus ? PI_STATUS.exec(piText) : null;
   const suffix = status === null ? "" : `\n\n${status[1] ?? ""}`;
   return {
     text: `${truncation.content}\n\n${notice}${suffix}`,
@@ -428,7 +430,13 @@ type BashResult = Awaited<ReturnType<ReturnType<typeof createBashToolDefinition>
 function limitResult(call: BashCall, result: BashResult, limits: BashTailLimits): BashResult {
   const [first] = result.content;
   if (first?.type !== "text") return result;
-  const limited = limitForegroundText(call, first.text, result.details, limits);
+  const limited = limitForegroundText(
+    call,
+    first.text,
+    result.details,
+    limits,
+    result.isError === true,
+  );
   if (limited === undefined) return result;
   return {
     ...result,
@@ -440,7 +448,7 @@ function limitResult(call: BashCall, result: BashResult, limits: BashTailLimits)
 function limitError(call: BashCall, error: Error, limits: BashTailLimits): Error {
   // Only Pi's output-plus-status messages are rewritten; any other error passes through.
   if (!PI_STATUS.test(error.message)) return error;
-  const limited = limitForegroundText(call, error.message, undefined, limits);
+  const limited = limitForegroundText(call, error.message, undefined, limits, true);
   return limited === undefined ? error : new Error(limited.text, { cause: error });
 }
 

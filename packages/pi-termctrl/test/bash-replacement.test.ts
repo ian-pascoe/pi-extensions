@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
@@ -57,7 +57,13 @@ function textOf(result: { readonly content: readonly (TextContent | ImageContent
 }
 
 /** Strip values that legitimately differ between two runs: temp paths and wall time. */
+/** Pi's full-output files named by results; Pi never deletes them, so the tests do. */
+const fullOutputFiles: string[] = [];
+
 function comparable(result: Result) {
+  fullOutputFiles.push(
+    ...(JSON.stringify(result).match(/\/[^\s\]"\\]*pi-bash-[^\s\]"\\]*/gu) ?? []),
+  );
   const normalize = (text: string) => text.replaceAll(/\/[^\s\]]*pi-bash-[^\s\]]*/gu, "<temp>");
   const structured = result.structuredContent;
   const structuredText = JSON.stringify(structured ?? null).replaceAll(
@@ -124,6 +130,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  for (const file of fullOutputFiles.splice(0)) await rm(file, { force: true });
   await TermctrlRegistry.teardownForTests();
   await rm(directory, { recursive: true, force: true });
 });
@@ -313,6 +320,15 @@ describe("bashTail", () => {
     await rm(timedOutPath);
   });
 
+  test("a successful command's status-shaped output is not repeated as a status", async () => {
+    const result = await run("seq 1 400; printf '\\n\\nCommand exited with code 3'");
+    const text = textOf(result);
+    expect(result).not.toMatchObject({ isError: true });
+    expect(text).toMatch(/Full output: [^\]\n]+\]$/u);
+    expect(text.match(/Command exited with code/gu)).toHaveLength(1);
+    await rm(noticePath(text));
+  });
+
   test("output beyond the in-memory buffer still reports its true line totals", async () => {
     const result = await run("seq 1 3000000");
     const text = textOf(result);
@@ -361,6 +377,8 @@ describe("bashTail", () => {
 
   test("without limits, output so far keeps Pi's limits", async () => {
     const { tool } = replacement();
+    // Pi's own accumulator saves its full output once the call is past its limits.
+    const before = new Set(await readdir(tmpdir()));
     const result = await tool.execute(
       "call",
       { command: "seq 1 3000; sleep 3", background: true },
@@ -370,6 +388,9 @@ describe("bashTail", () => {
     );
     expect(textOf(result)).toMatch(/^1001\n/u);
     expect(textOf(result)).toContain("(50.0KB or 2000 line limit)");
+    for (const name of await readdir(tmpdir())) {
+      if (!before.has(name) && name.startsWith("pi-bash-")) await rm(join(tmpdir(), name));
+    }
   });
 });
 

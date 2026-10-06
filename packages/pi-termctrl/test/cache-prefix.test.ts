@@ -6,6 +6,7 @@
  * transcript must be a prefix of the next, and no mid-conversation system message (which would
  * add, remove or patch tools or prompt sections) may appear.
  */
+import { rm } from "node:fs/promises";
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
@@ -52,6 +53,13 @@ function expectStablePrefix(turns: readonly CapturedTurn[], minimumTurns: number
       `transcript prefix of turn ${index}`,
     ).toBe(JSON.stringify(previous.messages));
     expect(systemMessageCount(turn.messages), `system messages in turn ${index}`).toBe(1);
+  }
+}
+
+/** Delete the `pi-bash-*.log` files a result names; Pi and Pi Termctrl never do. */
+async function removeFullOutputs(text: string): Promise<void> {
+  for (const [, path = ""] of text.matchAll(/Full output: ([^\]\\\n"]+)\]/gu)) {
+    await rm(path, { force: true });
   }
 }
 
@@ -259,6 +267,7 @@ describe("configurations", () => {
     expect(text).toContain("4701\\n4702");
     expect(text).not.toContain("4700\\n");
     expect(text).toContain("of 5000 (16.0KB or 300 line limit). Full output: ");
+    await removeFullOutputs(text);
   });
 
   test("bashTail: false declares Pi's built-in bash description and keeps Pi's limits", async () => {
@@ -279,6 +288,7 @@ describe("configurations", () => {
     );
     expect(text).toContain("3001\\n3002");
     expect(text).toContain("Showing lines 3001-5000 of 5000.");
+    await removeFullOutputs(text);
   });
 
   test("codemode's declaration of bash is stable across turns, a job and reload", async () => {
