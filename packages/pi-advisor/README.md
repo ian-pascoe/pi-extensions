@@ -26,6 +26,7 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 /advisor set includeSubagents true
 /advisor set model "provider/model-id"
 /advisor set maxFindingsPerReview 4
+/advisor set maxNitsPerRequest 3
 /advisor set seedBudgetTokens 40000
 /advisor set reviewEvery "request"
 /advisor set maxSessionTokens 150000
@@ -49,7 +50,7 @@ The tool is absent while Advisor is disabled. A paused Advisor keeps it visible 
 
 Consultation authorizes analysis and investigation, not implementation or other side effects. The configured Advisor Prompt remains authoritative. Tool Grants still expose each granted tool's full native interface, so exclude mutating tools when a prompt-level boundary is insufficient.
 
-`prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range); `maxFindingsPerReview` accepts an integer from 1 through 32; `seedBudgetTokens` and `maxSessionTokens` accept any positive safe integer or `"auto"`; `reviewEvery` accepts `"turn"`, `"request"`, or any positive safe integer number of turns.
+`prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range); `maxFindingsPerReview` accepts an integer from 1 through 32; `maxNitsPerRequest` accepts any non-negative safe integer, where `0` delivers no Nits; `seedBudgetTokens` and `maxSessionTokens` accept any positive safe integer or `"auto"`; `reviewEvery` accepts `"turn"`, `"request"`, or any positive safe integer number of turns.
 
 `advisor_ask` declares MCP-style `annotations` (read-only, non-destructive, idempotent, closed-world) that Pi reports through `pi.getAllTools()` for permission extensions; Pi does not send them to model providers. They describe the consultation itself, not the tools granted to the Advisor. The Advisor Session's internal `advisor_report` tool, which extensions inherited by that session can see, declares non-destructive, closed-world annotations and is not read-only, because it records the Review's findings.
 
@@ -64,6 +65,7 @@ Consultation authorizes analysis and investigation, not implementation or other 
 | Review deadline                | 120 seconds                                                    |
 | Investigative calls per Review | 8                                                              |
 | Findings per Review            | 4                                                              |
+| Nits per request               | 3                                                              |
 | Context Seed budget            | `auto` (¼ of the Advisor model's context window, at most 100k) |
 | Review Cadence (`reviewEvery`) | `turn`                                                         |
 | Advisor Session size           | `auto` (½ of the Advisor model's context window, at most 200k) |
@@ -102,6 +104,14 @@ Under `N` or `"request"`, a turn whose tool call failed still starts a Review at
 ## Scheduling and safety
 
 Reviews combine completed observed turns (one model response plus its tool batches), as often as `reviewEvery` allows, and use bounded catch-up waits of at most 30 seconds. Each Review has its own deadline, investigative-call budget, and configurable finding limit. One terminating report returns findings in severity order. Formatting-equivalent findings retain their highest severity within a Review; later escalation from Nit to Concern to Blocker remains deliverable. Distinct Concerns are delivered together when eligible or retained together for re-evaluation during the three-turn cooldown.
+
+## Finding quality
+
+Each finding must name a concrete defect in work the observed agent has already done and cite its evidence: the short `ref` that Review Evidence gives each tool call and its result, or a short verbatim quote. Advice about what to do, test, or say next belongs in a consultation (`advisor_ask`), not in an Intervention. The default Advisor Prompt asks for this, and `advisor_report` requires an `evidence` object with `refs`, a `quote`, or both on every finding, so a replaced Advisor Prompt keeps the requirement. Advisor drops a finding that cites no evidence, or cites a `ref` it never supplied to that Advisor Session, and tells the Advisor which findings it dropped; quotes are not checked against the evidence. A report in the older single-finding form cites no evidence, so its finding is dropped too. Delivered Interventions keep their evidence in the journaled message details; the observed agent sees only the severity and message.
+
+A Review judges the turns completed when it started. If the observed agent completes more turns before the Review's findings are delivered, those findings are superseded: they may already be fixed or explained, so none of them is delivered. Instead, the next Review receives them alongside the newer turns, re-validates them, and reports again only those that still apply; this adds no model call. Under `reviewEvery: "turn"` that Review is already due. Under `N` or `"request"` it waits for the next cadence point, at the latest the Review when the request completes, which has no newer turns to supersede it. While the agent keeps outrunning Reviews, findings keep being re-validated rather than delivered; `catchUpThreshold: 1` makes the agent wait for each Review, so findings arrive before it moves on. Superseded findings still waiting when Advisor is disabled, reconfigured, paused, or moved to another branch or session are dropped with the rest of its stale review state, and so are those whose re-validating Review does not finish within a headless or Child Agent final drain.
+
+`maxNitsPerRequest` (default 3) limits the Nits delivered per request; further Nits are dropped. Concerns and Blockers are never capped. A request runs from a user prompt (or a Minimal Subagents task) through its completion, including the Review at its completion and any Corrective Turn; the count restarts with the next request. Superseded Nits are kept for re-validation only while the request has room for them. `/advisor status` shows how many findings await re-validation and how many were dropped over the Nit cap or for missing or unknown evidence since Advisor was loaded.
 
 Nits are non-interrupting and enter context at the next natural step boundary without starting a Corrective Turn. Running work receives native steering for eligible Concerns and Blockers. A Blocker after normal interactive completion may receive a tracked corrective continuation within the configured budget; aborted, uncertain, deliberately interrupted, and headless-completed work is preserved without a hidden restart. Child corrections stay inside Minimal's owned operation. Headless root shutdown allows only a bounded final drain and never starts hidden corrective work.
 
