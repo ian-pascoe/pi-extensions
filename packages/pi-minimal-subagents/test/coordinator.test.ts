@@ -1361,7 +1361,9 @@ describe("minimal subagents coordinator", () => {
       source_agent_id: "worker",
       source_turn_id: turnId,
       destination_agent_id: "root",
-      // "wait" keeps restore from handing the results to the parent automatically.
+      // "wait" keeps restore from handing the results to the parent automatically. Production never
+      // produces a "wait" delivery without a claim; it only stands in for a result that is still
+      // inside the grace period or whose delivery failed.
       path: "wait" as const,
       settled: false,
       sequence,
@@ -1561,6 +1563,34 @@ describe("minimal subagents coordinator", () => {
       ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
     },
   );
+
+  it("leaves no handed marker when Delivery Evidence settles a result inside its delivery", async () => {
+    const { coordinator, root } = coordinatorFixture(childRuntime(), 0);
+    let recorded = false;
+    root.hasDeliveryEvidence.mockImplementation(() => recorded);
+    root.queueCoordinatorMessage.mockImplementation(async () => {
+      recorded = true;
+      void coordinator.reconcileDeliveries();
+    });
+
+    await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await coordinator.waitForSettledOperations();
+
+    expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
+    expect(coordinator.snapshot().deliveries).toEqual([]);
+    expect(coordinator["handedTerminalKeys"].size).toBe(0);
+  });
+
+  it("drops the handed marker when the automatic delivery fails", async () => {
+    const { coordinator, root } = coordinatorFixture(childRuntime(), 0);
+    root.queueCoordinatorMessage.mockRejectedValue(new Error("queue unavailable"));
+
+    await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await coordinator.waitForSettledOperations();
+
+    expect(coordinator.snapshot().deliveries).toHaveLength(1);
+    expect(coordinator["handedTerminalKeys"].size).toBe(0);
+  });
 
   it("targets a cancelled new turn after a claimed turn", async () => {
     const runtime = childRuntime();

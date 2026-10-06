@@ -45,18 +45,19 @@ export interface AddedCoordinationDelivery extends DeliveryLedgerTransition {
   delivery: PersistedCoordinationDelivery;
 }
 
-/** Describes caller-visible inputs used to select the oldest unclaimed observable source turn. */
+/** Describes caller-visible inputs used to select the oldest observable source turn the destination has neither claimed nor received. */
 export interface SelectObservableDeliveryTurnOptions {
   sourceAgentId: string;
   destinationAgentId: string;
   waitHandedDeliveryIds: ReadonlySet<string>;
-  /** Whether the turn's terminal result was already queued to the destination automatically. */
-  isTurnHandedOff?: (turnId: string) => boolean;
+  /** `deliveryTurnKey`s of terminal results already queued to the destination automatically. */
+  handedTurnKeys?: ReadonlySet<string>;
   activeTurnId?: string;
   latestResultTurnId?: string;
 }
 
-function deliveryTurnKey(sourceAgentId: string, sourceTurnId: string): string {
+/** Compound source-agent and source-turn key shared by claims and process-local handed markers. */
+export function deliveryTurnKey(sourceAgentId: string, sourceTurnId: string): string {
   return `${sourceAgentId}\u0000${sourceTurnId}`;
 }
 
@@ -432,8 +433,8 @@ export function selectObservableDeliveryTurn(
 ): string | undefined {
   const candidates = new Map<string, number>();
   const addCandidate = (turnId: string, sequence: number) => {
-    if (ledger.waitClaimedTurns.includes(deliveryTurnKey(options.sourceAgentId, turnId))) return;
-    if (options.isTurnHandedOff?.(turnId)) return;
+    const turnKey = deliveryTurnKey(options.sourceAgentId, turnId);
+    if (ledger.waitClaimedTurns.includes(turnKey) || options.handedTurnKeys?.has(turnKey)) return;
     const existing = candidates.get(turnId);
     if (existing === undefined || sequence < existing) candidates.set(turnId, sequence);
   };

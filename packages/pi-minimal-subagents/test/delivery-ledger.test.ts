@@ -5,6 +5,7 @@ import {
   claimDeliveryLedgerTurn,
   createDeliveryLedger,
   deliveryLedgerSnapshot,
+  deliveryTurnKey,
   pruneDeliveryLedgerAgents,
   selectObservableDeliveryTurn,
   settleCoordinationDelivery,
@@ -137,7 +138,7 @@ describe("minimal subagents delivery ledger", () => {
         sourceAgentId: "child",
         destinationAgentId: "root",
         waitHandedDeliveryIds: new Set(),
-        isTurnHandedOff: (turnId) => turnId === "child:handed",
+        handedTurnKeys: new Set([deliveryTurnKey("child", "child:handed")]),
         activeTurnId: "child:active",
       }),
     ).toBe("child:pending");
