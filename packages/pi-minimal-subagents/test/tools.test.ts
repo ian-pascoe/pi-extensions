@@ -226,6 +226,66 @@ describe("minimal subagents coordinator tools", () => {
     expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
   });
 
+  it("reports an already-delivered result in one line with its declared output shape", async () => {
+    const options = toolOptions("root", true);
+    const alreadyDelivered = {
+      event: "turn",
+      agent_id: "child",
+      turn_id: "child:turn-1",
+      status: "completed",
+      already_delivered: true,
+    } as const;
+    const drainedMessage = {
+      event: "message",
+      agent_id: "child",
+      turn_id: "child:turn-1",
+      message_id: "message-1",
+      delivery_id: "delivery-1",
+      message: "progress 1",
+    } as const;
+    options.recordedWait
+      .mockResolvedValueOnce(alreadyDelivered)
+      .mockResolvedValueOnce({ ...alreadyDelivered, messages: [drainedMessage] });
+    const waitTool = requireTool(options, "subagent_wait");
+    const context = await createToolExecutionContext();
+
+    const notice = await waitTool.execute(
+      "wait-call",
+      { agent_id: "child" },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(notice.content).toEqual([
+      {
+        type: "text",
+        text: 'Result of child turn child:turn-1 (completed) was already delivered automatically; call subagent_wait with turn_id "child:turn-1" to reread it.',
+      },
+    ]);
+    expect(notice.structuredContent).toEqual({
+      ...alreadyDelivered,
+      source_agent_id: "child",
+      source_turn_id: "child:turn-1",
+    });
+    expect(Value.Check(CoordinatorToolOutputSchemas.subagent_wait, notice.structuredContent)).toBe(
+      true,
+    );
+
+    // Coordination Messages the wait drained follow the notice, since the parent has not seen them.
+    const withMessages = await waitTool.execute(
+      "wait-call",
+      { agent_id: "child" },
+      undefined,
+      undefined,
+      context,
+    );
+    expect(JSON.stringify(withMessages.content)).toContain("progress 1");
+    expect(withMessages.structuredContent).toMatchObject({ messages: [drainedMessage] });
+    expect(
+      Value.Check(CoordinatorToolOutputSchemas.subagent_wait, withMessages.structuredContent),
+    ).toBe(true);
+  });
+
   it("streams the waited-on child's running-turn progress in partial wait updates", async () => {
     const options = toolOptions("root", true);
     const progress: ActiveTurnProgress = { turn_id: "child:turn-1", tool_calls: 2 };
