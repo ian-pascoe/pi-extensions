@@ -34,6 +34,7 @@ describe("Advisor commands through the native SDK", () => {
       "set maxToolCalls",
       "set maxCorrectiveTurns",
       "set maxFindingsPerReview",
+      "set maxNitsPerRequest",
       "set seedBudgetTokens",
       "set reviewEvery",
       "set maxSessionTokens",
@@ -446,6 +447,19 @@ describe("Advisor commands through the native SDK", () => {
         data: { error: expect.stringContaining("maxFindingsPerReview") },
       });
     }
+    expect(status()).toMatchObject({ data: { settings: { maxNitsPerRequest: 3 } } });
+    for (const value of [0, 5]) {
+      await session.prompt(`/advisor set maxNitsPerRequest ${value}`);
+      expect(status()).toMatchObject({
+        data: { settings: { maxNitsPerRequest: value }, sources: { maxNitsPerRequest: "session" } },
+      });
+    }
+    for (const value of ["-1", "1.5", '"all"']) {
+      await session.prompt(`/advisor set maxNitsPerRequest ${value}`);
+      expect(status()).toMatchObject({
+        data: { error: expect.stringContaining("maxNitsPerRequest") },
+      });
+    }
     expect(status()).toMatchObject({ data: { settings: { seedBudgetTokens: "auto" } } });
     await session.prompt("/advisor set seedBudgetTokens 40000");
     expect(status()).toMatchObject({
@@ -562,6 +576,7 @@ describe("Advisor commands through the native SDK", () => {
           maxToolCalls: 8,
           maxCorrectiveTurns: 1,
           maxFindingsPerReview: 4,
+          maxNitsPerRequest: 3,
         },
         sources: { enabled: "default", allowedTools: "default" },
         backlog: 0,

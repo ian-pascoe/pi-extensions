@@ -58,6 +58,15 @@ export function toolCallRef(toolCallId: string): string {
   return createHash("sha256").update(String(toolCallId)).digest("base64url").slice(0, 8);
 }
 
+/** Every Tool-Call Reference in projected Review Evidence, from calls and their results. */
+export function evidenceRefs(messages: readonly EvidenceMessage[]): string[] {
+  return messages.flatMap((message) => {
+    if (message.role === "toolResult") return [message.ref];
+    if (message.role !== "assistant") return [];
+    return message.content.flatMap((block) => (block.type === "toolCall" ? [block.ref] : []));
+  });
+}
+
 const summaryLimit = 160;
 
 /** First sentence of a tool description's first line, bounded for the Observed Setup. */

@@ -110,7 +110,11 @@ it("lets a slow whole-request Review finish within the headless final drain", as
   globalThis.advisorObserverTest = longSessionStream({ "Slow review": 4 }, privateRequests, {
     ...ok,
     reviewDelayMs: 40_000,
-    report: () => ({ findings: [{ severity: "concern", message: "Verify the slow path." }] }),
+    report: () => ({
+      findings: [
+        { severity: "concern", message: "Verify the slow path.", evidence: { quote: "Done" } },
+      ],
+    }),
   });
   const { session, observer } = await observe({ reviewEvery: "request" });
   onTestFinished(() => {
@@ -144,7 +148,10 @@ it("finishes a request's Review across observed compaction after the request, th
     {
       isError: () => false,
       report: (review) => ({
-        findings: review === 1 ? [{ severity: "nit", message: "Name the parser helper." }] : [],
+        findings:
+          review === 1
+            ? [{ severity: "nit", message: "Name the parser helper.", evidence: { quote: "Done" } }]
+            : [],
       }),
     },
   );
@@ -256,10 +263,12 @@ it.each([
     const parser: AdvisorFinding = {
       severity: "concern",
       message: "The parser change lacks a test.",
+      evidence: { quote: "Done" },
     };
     const lexer: AdvisorFinding = {
       severity: "concern",
       message: "The lexer change lacks a test.",
+      evidence: { quote: "Done" },
     };
     // The second Review's Concern falls within the three-turn cooldown, so it is deferred; the
     // third blindly repeats the delivered one, which stays suppressed.
@@ -305,7 +314,7 @@ it.each([
     expect(thirdMessages[0]).toBe("user:Request 3.");
     expect(thirdMessages.at(-1)).toBe("assistant:Done");
     // The deferred Concern survives compaction and is re-evaluated.
-    expect(third.evidence.deferredConcerns.findings).toEqual([lexer]);
+    expect(third.evidence.deferredFindings.findings).toEqual([lexer]);
     // Prior findings survive: the repeated Concern is not delivered twice.
     const delivered = session.messages.flatMap((message) =>
       message.role === "custom" && message.customType === "pi-advisor" ? [message.content] : [],

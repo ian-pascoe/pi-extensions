@@ -25,6 +25,7 @@ const defaults = {
   maxToolCalls: 8,
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
+  maxNitsPerRequest: 3,
   seedBudgetTokens: "auto",
   reviewEvery: "turn",
   maxSessionTokens: "auto",
@@ -285,7 +286,7 @@ describe("Advisor settings menu", () => {
     ]);
   });
 
-  it("accepts a Review cadence and an Advisor Session size", async () => {
+  it("accepts a Review cadence, an Advisor Session size, and a Nit cap", async () => {
     const { goTo, press, type, applied, settle } = createMenu();
     for (const value of ["request", "4", "turn"]) {
       goTo("reviewEvery");
@@ -299,11 +300,17 @@ describe("Advisor settings menu", () => {
     type("120000");
     press(keys.enter);
     await settle();
+    goTo("maxNitsPerRequest");
+    press(keys.enter);
+    type("0");
+    press(keys.enter);
+    await settle();
     expect(applied.map(({ change }) => change)).toEqual([
       { action: "set", key: "reviewEvery", patch: { reviewEvery: "request" } },
       { action: "set", key: "reviewEvery", patch: { reviewEvery: 4 } },
       { action: "set", key: "reviewEvery", patch: { reviewEvery: "turn" } },
       { action: "set", key: "maxSessionTokens", patch: { maxSessionTokens: 120_000 } },
+      { action: "set", key: "maxNitsPerRequest", patch: { maxNitsPerRequest: 0 } },
     ]);
   });
 

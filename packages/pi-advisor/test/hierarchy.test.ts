@@ -8,6 +8,7 @@ import {
   InMemoryModelsStore,
   createAssistantMessageEventStream,
   fauxAssistantMessage,
+  type ToolCall,
 } from "@earendil-works/pi-ai";
 import {
   AgentSessionRuntime,
@@ -87,7 +88,7 @@ it.each([false, true])(
           provider: model.provider,
           model: model.id,
         };
-        const call = (name: string, args: Record<string, string | number>) => {
+        const call = (name: string, args: ToolCall["arguments"]) => {
           message.content = [
             { type: "toolCall", id: `${role}-${mainCalls}-${childReviews}`, name, arguments: args },
           ];
@@ -137,7 +138,15 @@ it.each([false, true])(
           call(
             "advisor_report",
             childReviews === 1
-              ? { severity: "blocker", message: "Verify the result before completing." }
+              ? {
+                  findings: [
+                    {
+                      severity: "blocker",
+                      message: "Verify the result before completing.",
+                      evidence: { quote: "Done" },
+                    },
+                  ],
+                }
               : { severity: "none" },
           );
         } else if (role === "review-main") call("advisor_report", { severity: "none" });

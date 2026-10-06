@@ -124,7 +124,15 @@ describe("Interventions", () => {
             toolCall(
               "advisor_report",
               reviews === 1
-                ? { findings: [{ severity: "concern", message: "Re-run the failing test" }] }
+                ? {
+                    findings: [
+                      {
+                        severity: "concern",
+                        message: "Re-run the failing test",
+                        evidence: { quote: "Done" },
+                      },
+                    ],
+                  }
                 : { findings: [] },
             ),
             options,

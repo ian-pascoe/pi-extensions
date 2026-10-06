@@ -99,6 +99,7 @@ const descriptions = {
   maxToolCalls: "Investigative tool calls per Review",
   maxCorrectiveTurns: "Automatic Corrective Turns per request",
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
+  maxNitsPerRequest: "Nits delivered per request; further Nits are dropped (0 delivers none)",
   seedBudgetTokens:
     "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 100k",
   reviewEvery:
@@ -113,6 +114,7 @@ const inputHints = {
   maxToolCalls: "a number, or inherit",
   maxCorrectiveTurns: "a number, or inherit",
   maxFindingsPerReview: "a number from 1 to 32, or inherit",
+  maxNitsPerRequest: "a number, or inherit",
   seedBudgetTokens: "a token count, auto, or inherit",
   reviewEvery: "turn, request, a number of turns, or inherit",
   maxSessionTokens: "a token count, auto, or inherit",
@@ -153,6 +155,7 @@ function parseAdvisorMenuValue(
       case "maxToolCalls":
       case "maxCorrectiveTurns":
       case "maxFindingsPerReview":
+      case "maxNitsPerRequest":
         return { [key]: Number(value) };
       default:
         return { [key]: value };

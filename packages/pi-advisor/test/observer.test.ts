@@ -52,7 +52,15 @@ it.each(["none", "blocker"] as const)(
               arguments:
                 severity === "none"
                   ? { severity }
-                  : { severity, message: "Completion lacks a verification run." },
+                  : {
+                      findings: [
+                        {
+                          severity,
+                          message: "Completion lacks a verification run.",
+                          evidence: { quote: "Done" },
+                        },
+                      ],
+                    },
             },
           ];
           message.stopReason = "toolUse";
@@ -116,7 +124,15 @@ it("queues a streaming nit without steering the active agent", async () => {
             name: "advisor_report",
             arguments: {
               findings:
-                reviews === 1 ? [{ severity: "nit", message: "Use the shorter expression." }] : [],
+                reviews === 1
+                  ? [
+                      {
+                        severity: "nit",
+                        message: "Use the shorter expression.",
+                        evidence: { quote: "Done" },
+                      },
+                    ]
+                  : [],
             },
           },
         ];
@@ -190,9 +206,21 @@ it("records an idle multi-finding Review in report order without waking for a ni
             name: "advisor_report",
             arguments: {
               findings: [
-                { severity: "nit", message: "Prefer the shorter expression." },
-                { severity: "concern", message: "Cover the missing edge case." },
-                { severity: "blocker", message: "Run the required verification." },
+                {
+                  severity: "nit",
+                  message: "Prefer the shorter expression.",
+                  evidence: { quote: "Done" },
+                },
+                {
+                  severity: "concern",
+                  message: "Cover the missing edge case.",
+                  evidence: { quote: "Done" },
+                },
+                {
+                  severity: "blocker",
+                  message: "Run the required verification.",
+                  evidence: { quote: "Done" },
+                },
               ],
             },
           },
@@ -233,9 +261,9 @@ it("records an idle multi-finding Review in report order without waking for a ni
       .filter((message) => message.role === "custom" && message.customType === "pi-advisor")
       .map((message) => message.role === "custom" && message.details),
   ).toEqual([
-    { severity: "nit", message: "Prefer the shorter expression." },
-    { severity: "concern", message: "Cover the missing edge case." },
-    { severity: "blocker", message: "Run the required verification." },
+    { severity: "nit", message: "Prefer the shorter expression.", evidence: { quote: "Done" } },
+    { severity: "concern", message: "Cover the missing edge case.", evidence: { quote: "Done" } },
+    { severity: "blocker", message: "Run the required verification.", evidence: { quote: "Done" } },
   ]);
   expect(mainCalls).toBe(1);
 });
@@ -267,9 +295,21 @@ it("records every finding before starting one Corrective Turn", async () => {
               reviews === 1
                 ? {
                     findings: [
-                      { severity: "nit", message: "Simplify the helper." },
-                      { severity: "blocker", message: "Verify the first invariant." },
-                      { severity: "blocker", message: "Verify the second invariant." },
+                      {
+                        severity: "nit",
+                        message: "Simplify the helper.",
+                        evidence: { quote: "Done" },
+                      },
+                      {
+                        severity: "blocker",
+                        message: "Verify the first invariant.",
+                        evidence: { quote: "Done" },
+                      },
+                      {
+                        severity: "blocker",
+                        message: "Verify the second invariant.",
+                        evidence: { quote: "Done" },
+                      },
                     ],
                   }
                 : { findings: [] },
@@ -340,14 +380,30 @@ it("deduplicates a Review at its highest severity and permits later escalation",
               findings:
                 reviews === 1
                   ? [
-                      { severity: "nit", message: "Check `foo_bar`." },
-                      { severity: "concern", message: "**Check foo_bar.**" },
-                      { severity: "nit", message: "Lower priority first Review." },
+                      { severity: "nit", message: "Check `foo_bar`.", evidence: { quote: "Done" } },
+                      {
+                        severity: "concern",
+                        message: "**Check foo_bar.**",
+                        evidence: { quote: "Done" },
+                      },
+                      {
+                        severity: "nit",
+                        message: "Lower priority first Review.",
+                        evidence: { quote: "Done" },
+                      },
                     ]
                   : [
-                      { severity: "nit", message: "Check foo_bar." },
-                      { severity: "blocker", message: "Check foo_bar." },
-                      { severity: "concern", message: "Lower priority second Review." },
+                      { severity: "nit", message: "Check foo_bar.", evidence: { quote: "Done" } },
+                      {
+                        severity: "blocker",
+                        message: "Check foo_bar.",
+                        evidence: { quote: "Done" },
+                      },
+                      {
+                        severity: "concern",
+                        message: "Lower priority second Review.",
+                        evidence: { quote: "Done" },
+                      },
                     ],
             },
           },
@@ -380,8 +436,12 @@ it("deduplicates a Review at its highest severity and permits later escalation",
       .filter((message) => message.role === "custom" && message.customType === "pi-advisor")
       .map((message) => message.role === "custom" && JSON.stringify(message.details)),
   ).toEqual([
-    JSON.stringify({ severity: "concern", message: "**Check foo_bar.**" }),
-    JSON.stringify({ severity: "blocker", message: "Check foo_bar." }),
+    JSON.stringify({
+      severity: "concern",
+      message: "**Check foo_bar.**",
+      evidence: { quote: "Done" },
+    }),
+    JSON.stringify({ severity: "blocker", message: "Check foo_bar.", evidence: { quote: "Done" } }),
   ]);
 });
 
@@ -404,12 +464,12 @@ it("defers every distinct Concern during one cooldown and re-evaluates the set",
         const findings =
           reviews === 1
             ? [
-                { severity: "concern", message: "First concern." },
-                { severity: "concern", message: "Second concern." },
+                { severity: "concern", message: "First concern.", evidence: { quote: "Done" } },
+                { severity: "concern", message: "Second concern.", evidence: { quote: "Done" } },
               ]
             : [
-                { severity: "concern", message: "Third concern." },
-                { severity: "concern", message: "Fourth concern." },
+                { severity: "concern", message: "Third concern.", evidence: { quote: "Done" } },
+                { severity: "concern", message: "Fourth concern.", evidence: { quote: "Done" } },
               ];
         message.content = [
           {
@@ -591,7 +651,15 @@ it("keeps configurable child correction and final reviews inside the owner await
             type: "toolCall",
             id: `report-${reviewCalls}`,
             name: "advisor_report",
-            arguments: { severity: "blocker", message: `Verify failure ${reviewCalls}.` },
+            arguments: {
+              findings: [
+                {
+                  severity: "blocker",
+                  message: `Verify failure ${reviewCalls}.`,
+                  evidence: { quote: "Done" },
+                },
+              ],
+            },
           },
         ];
         message.stopReason = "toolUse";
@@ -668,7 +736,9 @@ it.each([
             type: "toolCall",
             id: `report-${index}`,
             name: "advisor_report",
-            arguments: finding ? { severity, message: finding } : { severity: "none" },
+            arguments: finding
+              ? { findings: [{ severity, message: finding, evidence: { quote: "Done" } }] }
+              : { severity: "none" },
           },
         ];
         message.stopReason = "toolUse";
@@ -714,7 +784,11 @@ it("disabling an in-flight review discards its late finding", async () => {
             type: "toolCall",
             id: "late",
             name: "advisor_report",
-            arguments: { severity: "blocker", message: "Stale advice" },
+            arguments: {
+              findings: [
+                { severity: "blocker", message: "Stale advice", evidence: { quote: "Done" } },
+              ],
+            },
           },
         ];
         message.stopReason = "toolUse";
@@ -762,7 +836,15 @@ it.each(["aborted", "error"] as const)(
               type: "toolCall",
               id: "report",
               name: "advisor_report",
-              arguments: { severity: "blocker", message: "Run verification." },
+              arguments: {
+                findings: [
+                  {
+                    severity: "blocker",
+                    message: "Run verification.",
+                    evidence: { quote: "Done" },
+                  },
+                ],
+              },
             },
           ];
           message.stopReason = "toolUse";
@@ -1264,8 +1346,13 @@ it("restores the concern cooldown from the selected native branch after configur
             id: `report-${reviews}`,
             name: "advisor_report",
             arguments: {
-              severity: "concern",
-              message: reviews === 1 ? "First concern" : "Second concern",
+              findings: [
+                {
+                  severity: "concern",
+                  message: reviews === 1 ? "First concern" : "Second concern",
+                  evidence: { quote: "Done" },
+                },
+              ],
             },
           },
         ];
@@ -1323,7 +1410,15 @@ it("does not finish a review on its report before native extension settlement", 
             type: "toolCall",
             id: "report",
             name: "advisor_report",
-            arguments: { severity: "blocker", message: "Verify this finding" },
+            arguments: {
+              findings: [
+                {
+                  severity: "blocker",
+                  message: "Verify this finding",
+                  evidence: { quote: "Done" },
+                },
+              ],
+            },
           },
         ];
         message.stopReason = "toolUse";
@@ -1378,7 +1473,15 @@ it("bounds late interactive corrections across native before_agent_start hooks",
             name: "advisor_report",
             arguments:
               reviews < 5
-                ? { severity: "blocker", message: `Blocker ${reviews}` }
+                ? {
+                    findings: [
+                      {
+                        severity: "blocker",
+                        message: `Blocker ${reviews}`,
+                        evidence: { quote: "Done" },
+                      },
+                    ],
+                  }
                 : { severity: "none" },
           },
         ];

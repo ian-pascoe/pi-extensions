@@ -34,7 +34,11 @@ it("invalidates unconsumed Advisor steering on disable without removing unrelate
       if (context.tools?.some((tool) => tool.name === "advisor_report"))
         return response(
           model,
-          toolCall("advisor_report", { severity: "blocker", message: "Stale queued finding" }),
+          toolCall("advisor_report", {
+            findings: [
+              { severity: "blocker", message: "Stale queued finding", evidence: { quote: "Done" } },
+            ],
+          }),
           options,
         );
       mainCalls++;
@@ -88,7 +92,15 @@ it("rejects abandoned-branch findings before later session_tree handlers receive
       reviewStarted.resolve();
       return response(
         model,
-        toolCall("advisor_report", { severity: "blocker", message: "Abandoned-branch finding" }),
+        toolCall("advisor_report", {
+          findings: [
+            {
+              severity: "blocker",
+              message: "Abandoned-branch finding",
+              evidence: { quote: "Done" },
+            },
+          ],
+        }),
         options,
         releaseReview.promise,
       );
@@ -138,7 +150,15 @@ it("never starts an automatic Corrective Turn inside native manual compaction", 
           toolCall(
             "advisor_report",
             reviews === 1
-              ? { severity: "blocker", message: "Late corrective finding" }
+              ? {
+                  findings: [
+                    {
+                      severity: "blocker",
+                      message: "Late corrective finding",
+                      evidence: { quote: "Done" },
+                    },
+                  ],
+                }
               : { severity: "none" },
           ),
           options,
@@ -194,7 +214,15 @@ it("starts a pending interactive correction only after the observed native run s
           toolCall(
             "advisor_report",
             reviews === 1
-              ? { severity: "blocker", message: "Correct after settlement" }
+              ? {
+                  findings: [
+                    {
+                      severity: "blocker",
+                      message: "Correct after settlement",
+                      evidence: { quote: "Done" },
+                    },
+                  ],
+                }
               : { severity: "none" },
           ),
           options,
@@ -229,7 +257,15 @@ it("retracts queued owned-child findings after a model-only change while preserv
           toolCall(
             "advisor_report",
             reviews === 1
-              ? { severity: "blocker", message: "Finding from the child's previous model" }
+              ? {
+                  findings: [
+                    {
+                      severity: "blocker",
+                      message: "Finding from the child's previous model",
+                      evidence: { quote: "Done" },
+                    },
+                  ],
+                }
               : { severity: "none" },
           ),
           options,

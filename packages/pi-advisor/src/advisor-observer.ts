@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
   advisorFindingSchema,
+  advisorReportFindingSchema,
   type AdvisorFinding,
   type AdvisorObserverState,
   type AdvisorReviewCost,
@@ -14,6 +15,7 @@ import {
 } from "./advisor-contract.js";
 import {
   evidenceTokens,
+  evidenceRefs,
   messageOrigins,
   projectEvidence,
   selectContextSeed,
@@ -74,7 +76,7 @@ interface ObservedSnapshot extends Context {
 }
 /** Prompt fields after the evidence, which the seed budget also covers. */
 type PromptExtras =
-  | { deferredConcerns: { instruction: string; findings: AdvisorFinding[] } | null }
+  | { deferredFindings: { instruction: string; findings: AdvisorFinding[] } | null }
   | { question: string };
 
 function observationBoundary(session: AgentSession) {
@@ -209,7 +211,17 @@ export class AdvisorObserver {
   private error: string | undefined;
   private closed = false;
   private disposing: Promise<void> | undefined;
+  /**
+   * Findings withheld for the next Review to re-validate: Superseded Findings, and Concerns
+   * during the cooldown. A reset drops them with the rest of the stale review state.
+   */
   private deferred: AdvisorFinding[] = [];
+  /** Tool-Call References supplied to the current Advisor Session. */
+  private readonly suppliedRefs = new Set<string>();
+  /** Nits delivered since the current request began (`beforeTask`). */
+  private requestNits = 0;
+  /** Findings dropped for this observer's lifetime, by reason. */
+  private readonly dropped = { overNitCap: 0, unsupported: 0 };
   private readonly delivered = new Map<string, number>();
   private lastConcern = -3;
   private unsafeEnding = false;
@@ -337,6 +349,8 @@ export class AdvisorObserver {
           ? stats.cost
           : null,
       reviewCost: this.reviewCost && { ...this.reviewCost },
+      deferredFindings: this.deferred.length,
+      droppedFindings: { ...this.dropped },
       usage: stats?.assistantMessages ? stats.tokens : null,
       lastError: this.error ?? null,
       unavailableTools: this.runtime
@@ -493,6 +507,7 @@ export class AdvisorObserver {
     this.runtime = undefined;
     this.supplied = undefined;
     this.suppliedBoundary = undefined;
+    this.suppliedRefs.clear();
     return runtime;
   }
 
@@ -538,7 +553,7 @@ export class AdvisorObserver {
       const runtimeEpoch = operation.epoch;
       const reportSchema = Type.Object(
         {
-          findings: Type.Array(advisorFindingSchema, {
+          findings: Type.Array(advisorReportFindingSchema, {
             maxItems: 32,
             description: `Up to ${this.config.maxFindingsPerReview} distinct findings in priority order; use an empty array when there are none`,
           }),
@@ -548,7 +563,7 @@ export class AdvisorObserver {
       const adviceTool = piSdk.defineTool({
         name: "advisor_report",
         label: "Advisor report",
-        description: `Finish the Review with up to ${this.config.maxFindingsPerReview} concise, actionable findings. Prioritize blockers, then concerns, then worthwhile nits.`,
+        description: `Finish the Review with up to ${this.config.maxFindingsPerReview} concise findings, each naming a concrete defect in completed work and citing its evidence: a Tool-Call Reference (\`ref\`) from the supplied evidence or a verbatim quote. Findings that cite no evidence or an unknown reference are dropped. Prioritize blockers, then concerns, then worthwhile nits.`,
         parameters: reportSchema,
         annotations: {
           readOnlyHint: false,
@@ -563,12 +578,10 @@ export class AdvisorObserver {
           if (arguments_.severity === "none") return { findings: [] };
           if (!arguments_.message?.trim())
             throw new Error("Each Advisor finding requires an actionable message");
+          // Legacy reports predate evidence, so their finding cites none and is dropped.
           return {
             findings: [
-              {
-                severity: arguments_.severity,
-                message: arguments_.message,
-              },
+              { severity: arguments_.severity, message: arguments_.message, evidence: {} },
             ],
           };
         },
@@ -584,9 +597,14 @@ export class AdvisorObserver {
           if (active.findings) throw new Error("Advisor already reported for this Review");
           if (report.findings.some((finding) => !finding.message.trim()))
             throw new Error("Each Advisor finding requires an actionable message");
-          active.findings = selectFindings(report.findings, this.config.maxFindingsPerReview);
+          const { supported, unsupported } = this.checkEvidence(report.findings);
+          active.findings = selectFindings(supported, this.config.maxFindingsPerReview);
+          this.dropped.unsupported += unsupported.length;
+          const text = unsupported.length
+            ? `Review recorded. Dropped ${unsupported.length} ${unsupported.length === 1 ? "finding" : "findings"} citing no evidence or a Tool-Call Reference absent from the supplied evidence: ${unsupported.map((finding) => JSON.stringify(finding.message.slice(0, 120))).join("; ")}. Cite a \`ref\` from the evidence or a verbatim quote.`
+            : "Review recorded";
           return {
-            content: [{ type: "text", text: "Review recorded" }],
+            content: [{ type: "text", text }],
             details: {},
             terminate: true,
           };
@@ -651,6 +669,7 @@ export class AdvisorObserver {
       const { messages, images } = projectEvidence(
         snapshot.messages.slice(this.supplied.messages.length),
       );
+      for (const ref of evidenceRefs(messages)) this.suppliedRefs.add(ref);
       return { note: "", images, json: JSON.stringify({ messages, ...extras }) };
     }
     const budget = seedBudget(this.config.seedBudgetTokens, runtime.session.model?.contextWindow);
@@ -659,6 +678,7 @@ export class AdvisorObserver {
       origins: snapshot.origins,
     });
     const { observedSetup, messages, images } = seed;
+    for (const ref of evidenceRefs(messages)) this.suppliedRefs.add(ref);
     return {
       note: this.seedNote(seed, snapshot.messages.length, budget),
       images,
@@ -698,10 +718,10 @@ export class AdvisorObserver {
     const before = runtime.session.messages.length;
     review.usage = { runtime, costBefore: runtime.session.getSessionStats().cost };
     const { note, images, json } = this.pendingEvidence(runtime, snapshot, stable, {
-      deferredConcerns: this.deferred.length
+      deferredFindings: this.deferred.length
         ? {
             instruction:
-              "Re-evaluate these concerns against current evidence; do not repeat blindly",
+              "Earlier findings that were not delivered, because newer turns completed before delivery or during the Concern cooldown. Re-validate each against all evidence, including newer turns; report it again only if it still applies.",
             findings: this.deferred,
           }
         : null,
@@ -728,7 +748,7 @@ export class AdvisorObserver {
       this.suppliedBoundary = review.boundary;
       if (!review.findings) throw new Error("Advisor Review did not call advisor_report");
       this.reviewed = through;
-      await this.deliver(review.findings, review);
+      await this.deliver(review.findings, review, through);
     } finally {
       review.cancellation.signal.removeEventListener("abort", abort);
     }
@@ -738,7 +758,7 @@ export class AdvisorObserver {
    * After a completed Review, compact the Advisor Session with Pi's native compaction once it
    * exceeds `maxSessionTokens`. Only the Advisor's own history is summarized: what it was
    * supplied stays recorded, so later Reviews continue with incremental evidence, and deferred
-   * Concerns and delivered findings live in this observer. Compaction keeps Pi's
+   * and delivered findings live in this observer. Compaction keeps Pi's
    * `keepRecentTokens`, so a lower cap is raised to it. Context Management replaces native
    * compaction with its own Rollover, so it is left to manage a session where it is loaded.
    *
@@ -924,16 +944,74 @@ export class AdvisorObserver {
     }
   }
 
-  private async deliver(findings: readonly AdvisorFinding[], review: Review): Promise<void> {
+  /**
+   * Split reported findings by their evidence: each must cite a Tool-Call Reference or a quote,
+   * and every cited reference must have been supplied to this Advisor Session (or cited by a
+   * deferred finding it is re-validating). Quotes are not checked against the evidence.
+   */
+  private checkEvidence(findings: readonly AdvisorFinding[]) {
+    const known = new Set(this.suppliedRefs);
+    for (const finding of this.deferred)
+      for (const ref of finding.evidence?.refs ?? []) known.add(ref);
+    const supported: AdvisorFinding[] = [];
+    const unsupported: AdvisorFinding[] = [];
+    for (const finding of findings) {
+      const refs = (finding.evidence?.refs ?? []).map((ref) =>
+        ref.trim().replace(/^`(.*)`$/, "$1"),
+      );
+      const quote = finding.evidence?.quote?.trim();
+      if ((!refs.length && !quote) || refs.some((ref) => !known.has(ref))) {
+        unsupported.push(finding);
+        continue;
+      }
+      const evidence: NonNullable<AdvisorFinding["evidence"]> = {};
+      if (refs.length) evidence.refs = refs;
+      if (quote) evidence.quote = quote;
+      supported.push({ severity: finding.severity, message: finding.message, evidence });
+    }
+    return { supported, unsupported };
+  }
+
+  /** Keep Nits while the current request has room under `maxNitsPerRequest`; count the rest. */
+  private capNits(findings: readonly AdvisorFinding[]): AdvisorFinding[] {
+    let room = Math.max(0, this.config.maxNitsPerRequest - this.requestNits);
+    return findings.filter((finding) => {
+      if (finding.severity !== "nit") return true;
+      if (room > 0) {
+        room--;
+        return true;
+      }
+      this.dropped.overNitCap++;
+      return false;
+    });
+  }
+
+  /**
+   * Deliver a Review's findings unless observed turns completed after its evidence cutoff
+   * (`through`): those Superseded Findings may already be fixed or explained, so they are
+   * deferred for the next Review, which every cadence starts by request completion at the
+   * latest, to re-validate against the newer turns without another model call.
+   */
+  private async deliver(
+    findings: readonly AdvisorFinding[],
+    review: Review,
+    through: number,
+  ): Promise<void> {
     const fresh = findings.filter((finding) => {
       const deliveredRank = this.delivered.get(normalized(finding.message)) ?? 0;
       return severityRank[finding.severity] > deliveredRank;
     });
+    if (this.completed > through) {
+      this.deferred = this.capNits(fresh);
+      this.changed();
+      return;
+    }
     const coolingDown = this.completed - this.lastConcern < 3;
     this.deferred = coolingDown ? fresh.filter((finding) => finding.severity === "concern") : [];
-    const deliverable = coolingDown
-      ? fresh.filter((finding) => finding.severity !== "concern")
-      : fresh;
+    const deliverable = this.capNits(
+      coolingDown ? fresh.filter((finding) => finding.severity !== "concern") : fresh,
+    );
+    this.requestNits += deliverable.filter((finding) => finding.severity === "nit").length;
     if (!coolingDown && deliverable.some((finding) => finding.severity === "concern"))
       this.lastConcern = this.completed;
     for (const finding of deliverable) {
@@ -1024,6 +1102,7 @@ export class AdvisorObserver {
   /** New external request only; never call for a corrective continuation. */
   beforeTask(): void {
     this.corrections = 0;
+    this.requestNits = 0;
     this.unsafeEnding = false;
     this.pendingCorrection = false;
   }

@@ -102,8 +102,14 @@ export interface LongSessionOptions {
   result?: (id: string) => string;
   /** Whether an observed tool result is an error; unset keeps the native (missing-file) error. */
   isError?: (id: string) => boolean;
-  /** Arguments of the `advisor_report` call answering each Review request, in order. */
-  report?: (review: number, request: PrivateRequest) => { findings: AdvisorFinding[] };
+  /**
+   * Arguments of the `advisor_report` call answering each Review request, in order, or a
+   * legacy single-finding report.
+   */
+  report?: (
+    review: number,
+    request: PrivateRequest,
+  ) => { findings: AdvisorFinding[] } | { severity: string; message?: string };
   /** Usage recorded on every private Advisor response, such as a priced cost. */
   usage?: AssistantMessage["usage"];
   /** Report each private response's input as Pi's chars/4 estimate of its context. */
@@ -118,6 +124,8 @@ export interface LongSessionOptions {
   hangSummaries?: boolean;
   /** Error message for the first observed response, such as a retryable provider error. */
   firstError?: string;
+  /** Delay the response to a Review request, such as until the observed agent moves on. */
+  hold?: (review: number) => Promise<void> | undefined;
 }
 
 /**
@@ -139,6 +147,7 @@ export function longSessionStream(
     reviewDelayMs,
     summaryDelayMs,
     hangSummaries,
+    hold,
   } = options;
   let { firstError } = options;
   let reviews = 0;
@@ -147,6 +156,7 @@ export function longSessionStream(
     stream(model: Model<Api>, context: Context, streamOptions?: SimpleStreamOptions) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
       const stream = createAssistantMessageEventStream();
+      let held: Promise<void> | undefined;
       const message = {
         ...fauxAssistantMessage("Done"),
         model: model.id,
@@ -188,6 +198,7 @@ export function longSessionStream(
             },
           ];
           message.stopReason = "toolUse";
+          held = hold?.(reviews);
         }
       } else if (!context.tools?.length) {
         summaryCount++;
@@ -241,7 +252,8 @@ export function longSessionStream(
           message,
         });
       const delay = privateRole ? reviewDelayMs : context.tools?.length ? 0 : summaryDelayMs;
-      if (delay) setTimeout(done, delay);
+      if (held) void held.then(done);
+      else if (delay) setTimeout(done, delay);
       else queueMicrotask(done);
       return stream;
     },
