@@ -1,5 +1,18 @@
 # @ian-pascoe/pi-dap
 
+## 0.5.0
+
+### Minor Changes
+
+- 6f0db92: DAP tool results are now compact multi-line text instead of a raw JSON dump, and a stop result names the top Stack Frame's file, line, and function plus the stop description and hit Breakpoint ids, so no separate `dap_stack` call is needed. Desired Breakpoints appear in text only after `dap_set_breakpoints`; `structuredContent` keeps its fields and gains `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
+
+### Patch Changes
+
+- e486153: Debuggee output no longer includes adapter `telemetry` output events such as vscode-js-debug's `js-debug/dap/operation` lines.
+- 38200f4: Failed DAP requests such as `dap_evaluate` now report the adapter's error message instead of only pointing at an empty stderr log.
+- 697c5d9: Document that `stopOnEntry` with vscode-js-debug re-stops inside a program's first function with reason `entry`, and how `hit breakpoint ids` tell that stop from your breakpoint, in the README and the troubleshooting skill; the README's example profile no longer sets `stopOnEntry`.
+- 1236064: `dap_variables` with `frame_id` now lists expensive scopes such as js-debug's Global without expanding them, so locals stay visible without reading a Result Spill, and over-limit text is always cut at line boundaries so the visible part is never empty.
+
 ## 0.4.1
 
 ### Patch Changes

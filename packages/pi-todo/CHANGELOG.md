@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-todo
 
+## 0.4.0
+
+### Minor Changes
+
+- 6aff6f2: The `todo` tool's `add` action now accepts `tasks: [{ title, description? }]` to create several Tasks atomically in one call.
+
 ## 0.3.0
 
 ### Minor Changes

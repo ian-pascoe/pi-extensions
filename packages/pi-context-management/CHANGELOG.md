@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-context-management
 
+## 0.4.0
+
+### Minor Changes
+
+- afd1bcc: `context_history` list previews now describe each entry's content, search previews are readable text, and `list`/`search` accept optional `type` and `role` filters.
+
 ## 0.3.0
 
 ### Minor Changes
