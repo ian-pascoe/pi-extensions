@@ -32,21 +32,29 @@ export type TodoStateSnapshot = {
   readonly tasks: readonly TodoTask[];
 };
 
+/** One Task to create within a batch `add`. */
+export type TodoTaskDraft = {
+  readonly title: string;
+  readonly description?: string;
+};
+
 /** Boundary input shared by the Todo tool's five operations. */
 export type TodoActionInput = {
   readonly action: TodoAction;
   readonly id?: number;
   readonly title?: string;
   readonly description?: string | null;
+  readonly tasks?: readonly TodoTaskDraft[];
   readonly status?: TodoStatus;
 };
 
 /**
  * Render details and the tool's structured result. The action discriminates the list from the
- * Task a mutation added or updated, the ID it removed, and the count it cleared.
+ * Task a mutation added or updated, the ID it removed, and the count it cleared. A batch `add`
+ * returns the Tasks it created as `tasks`; a single `add` returns `task`.
  */
 export type TodoToolDetails =
-  | { readonly action: "list"; readonly tasks: readonly TodoTask[] }
+  | { readonly action: "list" | "add"; readonly tasks: readonly TodoTask[] }
   | { readonly action: "add" | "update"; readonly task: TodoTask }
   | { readonly action: "remove"; readonly id: TodoTaskId }
   | { readonly action: "clear"; readonly cleared: number };
@@ -71,7 +79,9 @@ export const TodoToolOutputSchema = Type.Object(
   {
     action: StringEnum(TODO_ACTIONS, { description: "The operation that ran" }),
     tasks: Type.Optional(
-      Type.Array(TodoTaskRecord, { description: "list: every Task in ID order" }),
+      Type.Array(TodoTaskRecord, {
+        description: "list: every Task in ID order; add with tasks: the Tasks created, in ID order",
+      }),
     ),
     task: Type.Optional(TodoTaskRecord),
     id: Type.Optional(
@@ -157,6 +167,83 @@ function todoOperationFailure(action: TodoAction, message: string): TodoActionRe
   return { ok: false, error: new TodoOperationError(action, message) };
 }
 
+function newTodoTask(
+  id: TodoTaskId,
+  title: string,
+  description: string | undefined,
+  status: TodoStatus,
+): TodoTask {
+  return description ? { id, title, description, status } : { id, title, status };
+}
+
+function addTask(state: TodoStateSnapshot, input: TodoActionInput): TodoActionResult {
+  const title = input.title?.trim();
+  if (!title) return todoOperationFailure("add", "Todo add failed: title must not be empty");
+  const description = input.description?.trim();
+  if (input.description !== undefined && input.description !== null && !description) {
+    return todoOperationFailure("add", "Todo add failed: description must not be empty");
+  }
+  const id = parseTodoTaskId(state.nextId);
+  if (id === undefined || state.nextId === Number.MAX_SAFE_INTEGER) {
+    return todoOperationFailure("add", "Todo add failed: Task ID limit reached");
+  }
+  const task = newTodoTask(id, title, description, input.status ?? "pending");
+  return {
+    ok: true,
+    state: { nextId: state.nextId + 1, tasks: [...state.tasks, task] },
+    message: `Added Task #${task.id}`,
+    details: { action: "add", task },
+  };
+}
+
+/** Validates every draft before creating any Task, so a batch is all-or-nothing. */
+function addTasks(
+  state: TodoStateSnapshot,
+  drafts: readonly TodoTaskDraft[],
+  input: TodoActionInput,
+): TodoActionResult {
+  if (input.title !== undefined || input.description !== undefined) {
+    return todoOperationFailure("add", "Todo add failed: provide either title or tasks, not both");
+  }
+  if (drafts.length === 0) {
+    return todoOperationFailure("add", "Todo add failed: tasks must not be empty");
+  }
+  const parsed: Array<{ title: string; description: string | undefined }> = [];
+  for (const [index, draft] of drafts.entries()) {
+    const title = draft.title.trim();
+    if (!title) {
+      return todoOperationFailure(
+        "add",
+        `Todo add failed: tasks[${index}].title must not be empty`,
+      );
+    }
+    const description = draft.description?.trim();
+    if (draft.description !== undefined && !description) {
+      return todoOperationFailure(
+        "add",
+        `Todo add failed: tasks[${index}].description must not be empty`,
+      );
+    }
+    parsed.push({ title, description });
+  }
+  const status = input.status ?? "pending";
+  const added: TodoTask[] = [];
+  for (const [index, { title, description }] of parsed.entries()) {
+    const id = parseTodoTaskId(state.nextId + index);
+    // The last Task's successor ID must stay a safe integer so the saved state restores.
+    if (id === undefined || state.nextId + parsed.length > Number.MAX_SAFE_INTEGER) {
+      return todoOperationFailure("add", "Todo add failed: Task ID limit reached");
+    }
+    added.push(newTodoTask(id, title, description, status));
+  }
+  return {
+    ok: true,
+    state: { nextId: state.nextId + added.length, tasks: [...state.tasks, ...added] },
+    message: `Added ${added.length} ${added.length === 1 ? "Task" : "Tasks"}\n${formatTodoList(added)}`,
+    details: { action: "add", tasks: added },
+  };
+}
+
 /** Applies one validated-by-schema tool request without performing session or UI effects. */
 export function applyTodoAction(
   state: TodoStateSnapshot,
@@ -171,27 +258,10 @@ export function applyTodoAction(
         details: { action: "list", tasks: state.tasks },
       };
 
-    case "add": {
-      const title = input.title?.trim();
-      if (!title) return todoOperationFailure("add", "Todo add failed: title must not be empty");
-      const description = input.description?.trim();
-      if (input.description !== undefined && input.description !== null && !description) {
-        return todoOperationFailure("add", "Todo add failed: description must not be empty");
-      }
-      const id = parseTodoTaskId(state.nextId);
-      if (id === undefined || state.nextId === Number.MAX_SAFE_INTEGER) {
-        return todoOperationFailure("add", "Todo add failed: Task ID limit reached");
-      }
-      const task: TodoTask = description
-        ? { id, title, description, status: input.status ?? "pending" }
-        : { id, title, status: input.status ?? "pending" };
-      return {
-        ok: true,
-        state: { nextId: state.nextId + 1, tasks: [...state.tasks, task] },
-        message: `Added Task #${task.id}`,
-        details: { action: "add", task },
-      };
-    }
+    case "add":
+      return input.tasks === undefined
+        ? addTask(state, input)
+        : addTasks(state, input.tasks, input);
 
     case "update":
     case "remove": {

@@ -44,13 +44,31 @@ const TodoParameters = Type.Object({
       description: "Task ID for update or remove",
     }),
   ),
-  title: Type.Optional(Type.String({ description: "Task title for add or update" })),
+  title: Type.Optional(
+    Type.String({ description: "Task title for add or update; not allowed with tasks" }),
+  ),
   description: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {
-      description: "Optional Task description; null removes it during update",
+      description:
+        "Optional Task description; null removes it during update; not allowed with tasks",
     }),
   ),
-  status: Type.Optional(StringEnum(TODO_STATUSES)),
+  tasks: Type.Optional(
+    Type.Array(
+      Type.Object({
+        title: Type.String({ description: "Task title" }),
+        description: Type.Optional(Type.String({ description: "Optional Task description" })),
+      }),
+      {
+        minItems: 1,
+        description:
+          "add several Tasks in one call, all or none, with sequential IDs; use instead of title",
+      },
+    ),
+  ),
+  status: Type.Optional(
+    StringEnum(TODO_STATUSES, { description: "Task status; for add, applies to every new Task" }),
+  ),
 });
 
 function restoreTodoState(context: ExtensionContext): TodoStateSnapshot {
@@ -192,6 +210,10 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
       let text = theme.fg("toolTitle", theme.bold("todo")) + theme.fg("muted", ` ${params.action}`);
       if (params.id !== undefined) text += theme.fg("accent", ` #${params.id}`);
       if (params.action === "add" && params.title) text += theme.fg("dim", ` "${params.title}"`);
+      if (params.action === "add" && params.tasks) {
+        const count = params.tasks.length;
+        text += theme.fg("dim", ` ${count} ${count === 1 ? "Task" : "Tasks"}`);
+      }
       return new Text(text, 0, 0);
     },
     renderResult: (result, { expanded }, theme) => {
