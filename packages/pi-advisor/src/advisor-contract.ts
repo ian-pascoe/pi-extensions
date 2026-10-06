@@ -18,6 +18,19 @@ export const advisorFindingSchema = Type.Object(
 );
 export type AdvisorFinding = Static<typeof advisorFindingSchema>;
 
+const knownCost = Type.Union([Type.Number(), Type.Null()]);
+/**
+ * Native usage cost of Reviews since the Advisor was loaded, across Advisor Session rebuilds:
+ * the number of Reviews, the last one's cost, and their total. A cost is null when unknown;
+ * the total stays null once any Review's cost was unknown.
+ */
+export const advisorReviewCostSchema = Type.Object({
+  reviews: Type.Number(),
+  last: knownCost,
+  total: knownCost,
+});
+export type AdvisorReviewCost = Static<typeof advisorReviewCostSchema>;
+
 /** Observer lifecycle state reported by its `status`. */
 export const advisorObserverStateSchema = Type.Union([
   Type.Literal("disabled"),

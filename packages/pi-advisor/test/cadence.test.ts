@@ -1,4 +1,4 @@
-import { onTestFinished, expect, it } from "vitest";
+import { onTestFinished, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/pi-ai";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
@@ -11,7 +11,7 @@ import {
   type PrivateRequest,
 } from "./fixtures/observer-harness.js";
 import type { AdvisorFinding } from "../src/advisor-contract.js";
-import { AdvisorObserver } from "../src/advisor-observer.js";
+import { AdvisorObserver, type AdvisorMode } from "../src/advisor-observer.js";
 import { readAdvisorSettings, type AdvisorConfig } from "../src/advisor-settings.js";
 
 /** Short, successful observed tool results unless a test marks some as errors. */
@@ -21,14 +21,16 @@ async function observe(
   config: Partial<AdvisorConfig>,
   settings: Parameters<typeof activeFixture>[0] = {},
   extensions: string[] = [],
+  mode: AdvisorMode = "headless-root",
 ) {
   const session = await activeFixture(settings, extensions);
   const observer = new AdvisorObserver(
     session,
     { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1, ...config },
-    "headless-root",
+    mode,
   );
-  globalThis.advisorObserverTest.settled = () => observer.settled();
+  // An interactive observer here sees only native agent events, not the settled hook.
+  if (mode === "headless-root") globalThis.advisorObserverTest.settled = () => observer.settled();
   onTestFinished(() => observer.dispose());
   return { session, observer };
 }
@@ -67,6 +69,136 @@ it('reviews a multi-turn request once, at its completion, under reviewEvery "req
   expect(second).toHaveLength(8);
   expect(second[0]).toBe("user:Second request: add tests.");
   expectPrefix(privateRequests[1], privateRequests[0]);
+});
+
+it("reviews a request at native request completion alone, without the settled hook", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Interactive task": 3 },
+    privateRequests,
+    ok,
+  );
+  const { session, observer } = await observe({ reviewEvery: "request" }, {}, [], "interactive");
+  await session.prompt("Interactive task");
+  await vi.waitFor(() => expect(observer.status).toMatchObject({ state: "armed", backlog: 0 }));
+  expect(observer.status.lastError).toBeNull();
+  expect(privateRequests).toHaveLength(1);
+  expect(received(privateRequests[0])).toHaveLength(8);
+});
+
+it("waits for Pi's automatic retry before reviewing the request", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ "Retried task": 2 }, privateRequests, {
+    ...ok,
+    firstError: "529 overloaded_error: Overloaded",
+  });
+  const { session, observer } = await observe(
+    { reviewEvery: "request" },
+    { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
+  );
+  await session.prompt("Retried task");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+  // The failed attempt ended a run that Pi retried, so only the retried run's end is reviewed.
+  expect(privateRequests).toHaveLength(1);
+  const messages = received(privateRequests[0]);
+  expect(messages[0]).toBe("user:Retried task");
+  expect(messages.at(-1)).toBe("assistant:Done");
+});
+
+it("lets a slow whole-request Review finish within the headless final drain", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ "Slow review": 4 }, privateRequests, {
+    ...ok,
+    reviewDelayMs: 40_000,
+    report: () => ({ findings: [{ severity: "concern", message: "Verify the slow path." }] }),
+  });
+  const { session, observer } = await observe({ reviewEvery: "request" });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let finished = false;
+  const prompt = session.prompt("Slow review").then(() => {
+    finished = true;
+  });
+  await vi.waitFor(() => expect(privateRequests).toHaveLength(1));
+  // Past the 30-second Catch-up Wait ceiling, the final drain still waits for the Review.
+  await vi.advanceTimersByTimeAsync(35_000);
+  expect(finished).toBe(false);
+  await vi.advanceTimersByTimeAsync(5_000);
+  await prompt;
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+  expect(received(privateRequests[0])).toHaveLength(10);
+  expect(session.messages.at(-1)).toMatchObject({
+    role: "custom",
+    customType: "pi-advisor",
+    content: "Advisor concern: Verify the slow path.",
+  });
+});
+
+it("finishes a request's Review across observed compaction after the request, then reseeds", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Big request": 3, "Next request": 1 },
+    privateRequests,
+    {
+      isError: () => false,
+      report: (review) => ({
+        findings: review === 1 ? [{ severity: "nit", message: "Name the parser helper." }] : [],
+      }),
+    },
+  );
+  const { session, observer } = await observe(
+    { reviewEvery: "request" },
+    { compaction: { enabled: false, keepRecentTokens: 1_000 } },
+    [],
+    "interactive",
+  );
+  await session.prompt("Big request");
+  // The observed session compacts while the Review its request's end started is in flight.
+  expect(observer.status.state).toBe("reviewing");
+  await session.compact();
+  await vi.waitFor(() => expect(observer.status.state).toBe("armed"));
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+  // That Review still covers the whole request and delivers its finding.
+  expect(privateRequests).toHaveLength(1);
+  expect(received(privateRequests[0])).toHaveLength(8);
+  expect(
+    session.sessionManager
+      .getBranch()
+      .some((entry) => entry.type === "custom_message" && entry.customType === "pi-advisor"),
+  ).toBe(true);
+  // The next Review rebuilds the Advisor Session from the compacted observed context.
+  await session.prompt("Next request");
+  await vi.waitFor(() => expect(privateRequests).toHaveLength(2));
+  await vi.waitFor(() => expect(observer.status.state).toBe("armed"));
+  expect(observer.status.lastError).toBeNull();
+  const next = seedPayload(privateRequests[1]);
+  expect(next.header).toContain("Current context seed.");
+  expect(JSON.stringify(next.evidence.messages)).toContain(
+    "Summary: the user asked to refactor the parser.",
+  );
+});
+
+it("reseeds within the Context Seed budget when a coarse Review's new evidence would exceed it", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Small request": 1, "Large request": 6 },
+    privateRequests,
+    { isError: () => false, result: (id) => `result ${id} ${"x".repeat(4_000)}` },
+  );
+  const { session, observer } = await observe({ reviewEvery: "request", seedBudgetTokens: 4_000 });
+  await session.prompt("Small request");
+  await session.prompt("Large request");
+  expect(observer.status.lastError).toBeNull();
+  expect(privateRequests).toHaveLength(2);
+  // Six new tool batches exceed the budget, so the Advisor Session is rebuilt from a seed.
+  const second = seedPayload(privateRequests[1]);
+  expect(second.header).toContain("Current context seed.");
+  expect(second.header).toContain("seedBudgetTokens (4000 tokens)");
+  expect(second.tokens).toBeLessThanOrEqual(4_000);
+  expect(received(privateRequests[1]).at(-1)).toBe("assistant:Done");
+  expect(privateRequests[1]?.messages).toHaveLength(1);
 });
 
 it.each(["request", 4] as const)(
@@ -179,6 +311,116 @@ it.each([
       message.role === "custom" && message.customType === "pi-advisor" ? [message.content] : [],
     );
     expect(delivered).toEqual(["Advisor concern: The parser change lacks a test."]);
+    expectStableAcrossCompaction(privateRequests);
+  },
+);
+
+/**
+ * Advisor cache proof across compaction: every request keeps the system prompt and tools, and
+ * each Review without a compaction since the previous one extends its history unchanged.
+ * Returns how many consecutive pairs were compared as prefixes and how many spanned compaction.
+ */
+function expectStableAcrossCompaction(privateRequests: PrivateRequest[]) {
+  let prefixes = 0;
+  let compactions = 0;
+  for (const [index, request] of privateRequests.entries()) {
+    const previous = privateRequests[index - 1];
+    if (!previous) continue;
+    expect(request.systemPrompt).toEqual(previous.systemPrompt);
+    expect(request.tools).toEqual(previous.tools);
+    if (request.summariesBefore === previous.summariesBefore) {
+      expectPrefix(request, previous);
+      prefixes++;
+    } else compactions++;
+  }
+  return { prefixes, compactions };
+}
+
+it("keeps the Advisor prompt and tools across compaction, and its history a prefix between compactions", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  const summaries: Context[] = [];
+  const requests = Array.from({ length: 12 }, (_, index) => `Request ${index + 1}.`);
+  globalThis.advisorObserverTest = longSessionStream(
+    Object.fromEntries(requests.map((request) => [request, 1])),
+    privateRequests,
+    { isError: () => false, summaries },
+  );
+  const { session, observer } = await observe(
+    { reviewEvery: "request", maxSessionTokens: 9_000 },
+    { compaction: { enabled: false, keepRecentTokens: 1_000 } },
+  );
+  for (const request of requests) await session.prompt(request);
+  expect(observer.status.lastError).toBeNull();
+  expect(privateRequests).toHaveLength(12);
+  const { prefixes, compactions } = expectStableAcrossCompaction(privateRequests);
+  expect(prefixes).toBeGreaterThanOrEqual(4);
+  expect(compactions).toBeGreaterThanOrEqual(2);
+  // Every Review after the first stays incremental, across compaction too.
+  for (const request of privateRequests.slice(1))
+    expect(seedPayload(request).header).toContain("Incremental update.");
+});
+
+it("keeps the Advisor Session when Pi declines to compact a session that is all recent history", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  const summaries: Context[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Request 1.": 1, "Request 2.": 1 },
+    privateRequests,
+    { isError: () => false, summaries },
+  );
+  // The first Review's Context Seed alone exceeds the cap, but Pi keeps it as recent history.
+  const { session, observer } = await observe(
+    { reviewEvery: "request", maxSessionTokens: 1_000 },
+    { compaction: { enabled: false, keepRecentTokens: 1_000 } },
+  );
+  await session.prompt("Request 1.");
+  expect(observer.status.lastError).toBeNull();
+  expect(seedPayload(privateRequests[0]).tokens).toBeGreaterThan(1_000);
+  expect(summaries).toEqual([]);
+  await session.prompt("Request 2.");
+  expect(observer.status.lastError).toBeNull();
+  // Declining is not a failure: the same Advisor Session continues incrementally.
+  expect(seedPayload(privateRequests[1]).header).toContain("Incremental update.");
+  expectPrefix(privateRequests[1], privateRequests[0]);
+});
+
+it.each([
+  ["times out", { hangSummaries: true }, {}],
+  ["is cancelled by an inherited extension", {}, { cancel: true }],
+])(
+  "reseeds instead of pausing when Advisor Session compaction %s",
+  async (_failure, streamOptions, beforeCompact) => {
+    const privateRequests: PrivateRequest[] = [];
+    const summaries: Context[] = [];
+    const requests = ["Request 1.", "Request 2.", "Request 3."];
+    globalThis.advisorObserverTest = longSessionStream(
+      Object.fromEntries(requests.map((request) => [request, 1])),
+      privateRequests,
+      { isError: () => false, summaries, ...streamOptions },
+    );
+    globalThis.advisorObserverTest.privateBeforeCompact = () =>
+      "cancel" in beforeCompact ? { cancel: true } : undefined;
+    // Without a headless final drain, only the compaction deadline can end a hung compaction.
+    const { session, observer } = await observe(
+      { reviewEvery: "request", maxSessionTokens: 4_000, reviewTimeoutMs: 1_000 },
+      { compaction: { enabled: false, keepRecentTokens: 1_000 } },
+      [],
+      "interactive",
+    );
+    for (const request of requests) {
+      await session.prompt(request);
+      await vi.waitFor(() => expect(observer.status.state).toBe("armed"), { timeout: 5_000 });
+    }
+    expect(observer.status.lastError).toBeNull();
+    expect(privateRequests).toHaveLength(3);
+    // The second Review's compaction failed after its findings were delivered.
+    expect(seedPayload(privateRequests[1]).header).toContain("Incremental update.");
+    expect(summaries).toHaveLength("cancel" in beforeCompact ? 0 : 1);
+    // The next Review starts a fresh Advisor Session from a budgeted Context Seed.
+    const third = seedPayload(privateRequests[2]);
+    expect(third.header).toContain("Current context seed.");
+    expect(privateRequests[2]?.messages).toHaveLength(1);
+    expect(observer.status.reviewCost?.reviews).toBe(3);
   },
 );
 
@@ -255,6 +497,14 @@ it("reports the last Review's cost and the running total in status", async () =>
   expect(observer.status.lastError).toBeNull();
   expect(observer.status.reviewCost).toMatchObject({ reviews: 2, last: 0.0045 });
   expect(observer.status.reviewCost?.total).toBeCloseTo(0.009);
+});
+
+it("reports a Review without usage on a priced model as a known $0", async () => {
+  globalThis.advisorObserverTest = longSessionStream({}, [], ok);
+  const { session, observer } = await observe({ model: "observer-fixture/priced" });
+  await session.prompt("First");
+  expect(observer.status.lastError).toBeNull();
+  expect(observer.status.reviewCost).toEqual({ reviews: 1, last: 0, total: 0 });
 });
 
 it("reports unknown Review cost as unknown, not zero", async () => {

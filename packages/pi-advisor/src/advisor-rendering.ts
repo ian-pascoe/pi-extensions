@@ -10,8 +10,10 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
   advisorFindingSchema,
+  advisorReviewCostSchema,
   advisorSeveritySchema,
   advisorStateSchema,
+  type AdvisorReviewCost,
   type AdvisorSeverity,
   type AdvisorState,
 } from "./advisor-contract.js";
@@ -49,16 +51,7 @@ const statusSchema = Type.Object({
   effectiveThinkingLevel: Type.Optional(nullableString),
   usage: Type.Optional(Type.Union([Type.Object({ total: Type.Number() }), Type.Null()])),
   cost: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
-  reviewCost: Type.Optional(
-    Type.Union([
-      Type.Object({
-        reviews: Type.Number(),
-        last: Type.Union([Type.Number(), Type.Null()]),
-        total: Type.Union([Type.Number(), Type.Null()]),
-      }),
-      Type.Null(),
-    ]),
-  ),
+  reviewCost: Type.Optional(Type.Union([advisorReviewCostSchema, Type.Null()])),
   unavailableTools: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
   children: Type.Optional(
     Type.Array(
@@ -66,6 +59,7 @@ const statusSchema = Type.Object({
         agentId: Type.String(),
         state: Type.Optional(advisorStateSchema),
         backlog: Type.Optional(Type.Number()),
+        reviewCost: Type.Optional(Type.Union([advisorReviewCostSchema, Type.Null()])),
       }),
     ),
   ),
@@ -209,7 +203,7 @@ function formatCost(cost: number | null | undefined): string {
 }
 
 /** Running Review total, then the last Review alone; unknown stays unknown. */
-function formatReviewCost({ reviews, last, total }: NonNullable<AdvisorStatusEntry["reviewCost"]>) {
+function formatReviewCost({ reviews, last, total }: AdvisorReviewCost) {
   const amount = (cost: number | null) => (cost === null ? "cost unknown" : formatMoney(cost));
   return `${reviews} ${reviews === 1 ? "Review" : "Reviews"} ${amount(total)} · last Review ${amount(last)}`;
 }
@@ -319,6 +313,7 @@ function detailLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): stri
           `  ${theme.fg("accent", `↳ ${child.agentId}`)}`,
           child.state ? badge(child.state, theme) : undefined,
           child.backlog ? `backlog ${child.backlog}` : undefined,
+          child.reviewCost?.reviews ? formatReviewCost(child.reviewCost) : undefined,
         ],
         "  ",
       ),

@@ -12,6 +12,7 @@ import {
   type AssistantMessage,
   type Context,
   type Model,
+  type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import {
   createAgentSessionServices,
@@ -91,6 +92,8 @@ export interface PrivateRequest {
   tools: { name: string; description: string; parameters: unknown }[];
   messages: Context["messages"];
   text: string;
+  /** Private compaction summaries requested before this request. */
+  summariesBefore: number;
 }
 
 /** Fixture behavior beyond the observed tool batches. */
@@ -107,6 +110,12 @@ export interface LongSessionOptions {
   reportContextTokens?: boolean;
   /** Private compaction summary requests, recorded in order. */
   summaries?: Context[];
+  /** Milliseconds each Review response is held, by timer, before it completes. */
+  reviewDelayMs?: number;
+  /** Hold every compaction summary until its request is aborted. */
+  hangSummaries?: boolean;
+  /** Error message for the first observed response, such as a retryable provider error. */
+  firstError?: string;
 }
 
 /**
@@ -125,10 +134,14 @@ export function longSessionStream(
     usage,
     reportContextTokens,
     summaries,
+    reviewDelayMs,
+    hangSummaries,
   } = options;
+  let { firstError } = options;
   let reviews = 0;
+  let summaryCount = 0;
   return {
-    stream(model: Model<Api>, context: Context) {
+    stream(model: Model<Api>, context: Context, streamOptions?: SimpleStreamOptions) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
       const stream = createAssistantMessageEventStream();
       const message = {
@@ -154,6 +167,7 @@ export function longSessionStream(
           })),
           messages: structuredClone(context.messages),
           text,
+          summariesBefore: summaryCount,
         };
         privateRequests.push(structuredClone(recorded));
         if (usage) message.usage = structuredClone(usage);
@@ -173,11 +187,36 @@ export function longSessionStream(
           message.stopReason = "toolUse";
         }
       } else if (!context.tools?.length) {
+        summaryCount++;
         summaries?.push(structuredClone(context));
+        if (hangSummaries) {
+          streamOptions?.signal?.addEventListener(
+            "abort",
+            () =>
+              stream.push({
+                type: "error",
+                reason: "aborted",
+                error: { ...message, stopReason: "aborted" },
+              }),
+            { once: true },
+          );
+          return stream;
+        }
         if (usage) message.usage = structuredClone(usage);
         message.content = [
           { type: "text", text: "Summary: the user asked to refactor the parser." },
         ];
+      } else if (firstError) {
+        const errorMessage = firstError;
+        firstError = undefined;
+        queueMicrotask(() =>
+          stream.push({
+            type: "error",
+            reason: "error",
+            error: { ...message, stopReason: "error", errorMessage },
+          }),
+        );
+        return stream;
       } else {
         const start = context.messages.findLastIndex((entry) => entry.role === "user");
         const request = context.messages[start];
@@ -192,13 +231,14 @@ export function longSessionStream(
           message.stopReason = "toolUse";
         }
       }
-      queueMicrotask(() =>
+      const done = () =>
         stream.push({
           type: "done",
           reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
           message,
-        }),
-      );
+        });
+      if (privateRole && reviewDelayMs) setTimeout(done, reviewDelayMs);
+      else queueMicrotask(done);
       return stream;
     },
     toolResult: (event: ToolResultEvent): ToolResultEventResult => {

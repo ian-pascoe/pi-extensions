@@ -795,7 +795,7 @@ it.each(["aborted", "error"] as const)(
   },
 );
 
-it("stops unfinished headless review work at the separate 30-second drain ceiling", async () => {
+it("bounds the headless final drain by the Review deadline, not the 30-second Catch-up ceiling", async () => {
   const started = Promise.withResolvers<void>();
   globalThis.advisorObserverTest = {
     stream(model, context, options) {
@@ -825,7 +825,12 @@ it("stops unfinished headless review work at the separate 30-second drain ceilin
   const session = await activeFixture();
   const observer = new AdvisorObserver(
     session,
-    { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: "off" },
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: "off",
+      reviewTimeoutMs: 45_000,
+    },
     "headless-root",
   );
   globalThis.advisorObserverTest.settled = () => observer.settled();
@@ -834,11 +839,17 @@ it("stops unfinished headless review work at the separate 30-second drain ceilin
     await observer.dispose();
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const prompt = session.prompt("Finish");
+  let finished = false;
+  const prompt = session.prompt("Finish").then(() => {
+    finished = true;
+  });
   await started.promise;
-  await vi.advanceTimersByTimeAsync(30000);
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(finished).toBe(false);
+  await vi.advanceTimersByTimeAsync(15_000);
   await prompt;
-  expect(observer.status.backlog).toBe(0);
+  // The Review began before the drain, so its own deadline ends it first, as for any Review.
+  expect(observer.status.lastError).toBe("Advisor review deadline exceeded");
   expect(conversation(session.messages)).toHaveLength(2);
 });
 

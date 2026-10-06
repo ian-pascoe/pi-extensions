@@ -142,6 +142,11 @@ const imageTokens =
     timestamp: 0,
   }) + 1;
 
+/** Pi's chars/4 estimate of projected evidence messages, plus Pi's per-image estimate. */
+export function evidenceTokens({ messages, images }: Evidence): number {
+  return Math.ceil(JSON.stringify(messages).length / 4) + images.length * imageTokens;
+}
+
 /** Tokens a projected message adds to the seed JSON, by Pi's chars/4 heuristic. */
 function cost(items: readonly Projected[]): number {
   return items.reduce(

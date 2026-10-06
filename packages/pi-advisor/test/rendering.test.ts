@@ -157,6 +157,24 @@ describe("Advisor status", () => {
     expect(status({ ...snapshot, reviewCost: null })).not.toContain("Review $");
   });
 
+  it("shows each Child Agent's Review cost when expanded", () => {
+    const text = status(
+      {
+        ...snapshot,
+        children: [
+          {
+            agentId: "worker",
+            state: "armed",
+            backlog: 0,
+            reviewCost: { reviews: 2, last: 0.02, total: 0.05 },
+          },
+        ],
+      },
+      true,
+    );
+    expect(text).toMatch(/↳ worker\s+● armed\s+2 Reviews \$0\.05 · last Review \$0\.02/);
+  });
+
   it("never presents unknown cost as zero and omits empty problem lines", () => {
     const text = status({
       ...snapshot,
