@@ -49,6 +49,16 @@ const statusSchema = Type.Object({
   effectiveThinkingLevel: Type.Optional(nullableString),
   usage: Type.Optional(Type.Union([Type.Object({ total: Type.Number() }), Type.Null()])),
   cost: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+  reviewCost: Type.Optional(
+    Type.Union([
+      Type.Object({
+        reviews: Type.Number(),
+        last: Type.Union([Type.Number(), Type.Null()]),
+        total: Type.Union([Type.Number(), Type.Null()]),
+      }),
+      Type.Null(),
+    ]),
+  ),
   unavailableTools: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
   children: Type.Optional(
     Type.Array(
@@ -189,9 +199,19 @@ function formatTokens(total: number): string {
   return `${(total / 1_000_000).toFixed(1)}M`;
 }
 
+function formatMoney(cost: number): string {
+  return `$${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+}
+
 function formatCost(cost: number | null | undefined): string {
   if (cost === null || cost === undefined) return "cost unknown";
-  return `cost $${cost.toFixed(cost < 0.01 ? 4 : 2)}`;
+  return `cost ${formatMoney(cost)}`;
+}
+
+/** Running Review total, then the last Review alone; unknown stays unknown. */
+function formatReviewCost({ reviews, last, total }: NonNullable<AdvisorStatusEntry["reviewCost"]>) {
+  const amount = (cost: number | null) => (cost === null ? "cost unknown" : formatMoney(cost));
+  return `${reviews} ${reviews === 1 ? "Review" : "Reviews"} ${amount(total)} · last Review ${amount(last)}`;
 }
 
 /** Human-readable option value; an absent value inherits. */
@@ -265,6 +285,7 @@ function summaryLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): str
     [
       entry.usage ? `tokens ${formatTokens(entry.usage.total)}` : undefined,
       entry.usage ? formatCost(entry.cost) : undefined,
+      entry.reviewCost?.reviews ? formatReviewCost(entry.reviewCost) : undefined,
       children ? `${children} ${children === 1 ? "child" : "children"}` : undefined,
     ],
     " · ",

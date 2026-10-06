@@ -34,6 +34,10 @@ export const advisorOptionsSchema = Type.Object(
     ),
     maxFindingsPerReview: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 })),
     seedBudgetTokens: Type.Optional(Type.Union([positiveInteger, Type.Literal("auto")])),
+    reviewEvery: Type.Optional(
+      Type.Union([Type.Literal("turn"), Type.Literal("request"), positiveInteger]),
+    ),
+    maxSessionTokens: Type.Optional(Type.Union([positiveInteger, Type.Literal("auto")])),
   },
   { additionalProperties: false },
 );
@@ -71,6 +75,8 @@ const defaults = {
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
   seedBudgetTokens: "auto" as const,
+  reviewEvery: "turn" as const,
+  maxSessionTokens: "auto" as const,
 };
 
 /**
@@ -86,6 +92,21 @@ export function seedBudget(
   if (setting !== "auto") return contextWindow ? Math.min(setting, contextWindow) : setting;
   // Pi's branch summarization uses the same fallback for models without a declared window.
   return Math.floor((contextWindow || 128_000) / 4);
+}
+
+/**
+ * Advisor Session size above which a completed Review compacts it. `auto` takes half the Advisor
+ * model's context window: room for an `auto` Context Seed (a quarter) plus as much again for
+ * incremental Reviews, so a full seed alone never forces compaction, while staying far below
+ * Pi's own threshold (the window less its reserve), where every Review re-reads almost a full
+ * window. Compaction re-sends the history it summarizes, so a much lower cap compacts often.
+ */
+export function sessionTokenLimit(
+  setting: AdvisorConfig["maxSessionTokens"],
+  contextWindow: number | undefined,
+): number {
+  if (setting !== "auto") return contextWindow ? Math.min(setting, contextWindow) : setting;
+  return Math.floor((contextWindow || 128_000) / 2);
 }
 
 const sessionSchema = Type.Object(

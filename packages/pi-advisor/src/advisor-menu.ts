@@ -101,6 +101,10 @@ const descriptions = {
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
   seedBudgetTokens:
     "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window",
+  reviewEvery:
+    "When Reviews run: every turn, every N turns, or once per request; a tool error reviews at once",
+  maxSessionTokens:
+    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
 const inputHints = {
@@ -110,6 +114,8 @@ const inputHints = {
   maxCorrectiveTurns: "a number, or inherit",
   maxFindingsPerReview: "a number from 1 to 32, or inherit",
   seedBudgetTokens: "a token count, auto, or inherit",
+  reviewEvery: "turn, request, a number of turns, or inherit",
+  maxSessionTokens: "a token count, auto, or inherit",
 } as const;
 const listActions = [
   "tui.select.up",
@@ -138,6 +144,12 @@ function parseAdvisorMenuValue(
         return { reviewTimeoutMs: Math.round(Number(value) * 1_000) };
       case "seedBudgetTokens":
         return { seedBudgetTokens: value === "auto" ? value : Number(value) };
+      case "maxSessionTokens":
+        return { maxSessionTokens: value === "auto" ? value : Number(value) };
+      case "reviewEvery":
+        return {
+          reviewEvery: value === "turn" || value === "request" ? value : Number(value),
+        };
       case "maxToolCalls":
       case "maxCorrectiveTurns":
       case "maxFindingsPerReview":

@@ -29,7 +29,7 @@ Unset means inherit, not disabled. Prompt overrides replace the whole value rath
 
 Use native Pi settings files and native session entries, not a separate configuration store. Session overrides follow the selected branch, survive resume, and inherit through forks; abandoned branch state is excluded.
 
-Provide commands for on/off/inherit, scoped configuration, and status. In the interactive TUI, a bare `/advisor` opens a settings menu built from Pi's native settings list and shown in the editor area, as `/settings` is, rather than a bespoke dashboard; prompt editing uses Pi's native editor component. Menu edits apply immediately at the selected scope, and closing the menu records one status entry listing them. Without the TUI, a bare `/advisor` records status. Status shows effective settings and their sources, review state, backlog, usage/cost, and the last error. Unknown cost must not be presented as zero. Status entries render as a compact summary that expands to the full settings table; an enabled Advisor also shows its state and backlog in the footer. Rendering is UI-only and never changes model-visible Intervention content.
+Provide commands for on/off/inherit, scoped configuration, and status. In the interactive TUI, a bare `/advisor` opens a settings menu built from Pi's native settings list and shown in the editor area, as `/settings` is, rather than a bespoke dashboard; prompt editing uses Pi's native editor component. Menu edits apply immediately at the selected scope, and closing the menu records one status entry listing them. Without the TUI, a bare `/advisor` records status. Status shows effective settings and their sources, review state, backlog, usage/cost, the last Review's cost and the running total of Reviews (from the Advisor Session's native usage, including any compaction a Review ran), and the last error. Unknown cost must not be presented as zero. Status entries render as a compact summary that expands to the full settings table; an enabled Advisor also shows its state and backlog in the footer. Rendering is UI-only and never changes model-visible Intervention content.
 
 Changes affect the current watched hierarchy immediately when its effective configuration changes. Other Pi processes pick up persisted global/project changes on startup or reload; there is no cross-process remote-control mechanism.
 
@@ -42,6 +42,8 @@ Changes affect the current watched hierarchy immediately when its effective conf
 | Advisor thinking level         | Inherit the observed agent's thinking level  |
 | Allowed tools (`allowedTools`) | `read`, `grep`, `find`, `ls`                 |
 | Catch-up threshold             | `3`; any positive integer or `off`           |
+| Review Cadence (`reviewEvery`) | `turn`; `request` or any positive integer N  |
+| Advisor Session size cap       | `auto` (½ the Advisor model's window)        |
 | Per-review deadline            | 120 seconds; configurable                    |
 | Investigative tool-call limit  | 8 per Review; configurable                   |
 | Findings per Review            | 4; configurable from 1 through 32            |
@@ -81,6 +83,8 @@ When granted, these tools operate on the Advisor's own Notes, History, and Conte
 
 Pi owns the agent loop, session journal, compaction policy, context accounting, and retention of recent conversation. Without Context Management, use ordinary native compaction. When loaded, Context Management replaces native summarization with Notes/Handoff preparation and durable native Context Checkpoints. Do not add another compaction policy or bypass its durability guards.
 
+Every Review re-reads the whole Advisor Session, so its size sets the cost of each Review. `maxSessionTokens` (default `auto`: half the Advisor model's context window, Pi's 128k fallback; explicit values capped at the window) adds one trigger and nothing else: after a Review, when Pi's context usage for the Advisor Session (or Pi's per-message estimate when no usage is reported yet) exceeds the larger of the cap and `compaction.keepRecentTokens`, call the session's native `compact()` with instructions to keep the observed request, reported findings, open concerns, and verified facts. Pi chooses the cut point, retention, and summary; there is no custom summarizer or rollover. `auto` leaves room for an `auto` Context Seed plus as much again, so a full seed alone never forces compaction, and sits well below Pi's own threshold of the window less its reserve; `compaction.reserveTokens` cannot express the cap because it also sizes the summary output, and native auto-compaction could fire mid-Review. Pi declining because nothing precedes its kept recent history is not a failure; any other compaction failure pauses the Advisor like a failed Review. The Advisor's own record of what it was supplied is unaffected, so the next Review stays incremental, and delivered findings and deferred Concerns live outside the Advisor Session. When Context Management is loaded in the Advisor Session, its Rollover replaces native compaction, so the cap is not applied there.
+
 If Context Management is loaded but any of its three required tools is excluded by `allowedTools`, pause the Advisor before reviewing and report a configuration error listing the missing grants. Do not silently grant tools, suppress the extension's hooks, bypass its compaction behavior, or wait for preparation to fail later.
 
 Native compaction preparation may require additional model turns. A saved Handoff or an early assistant answer does not prove that preparation or the Review has finished. Respect native settlement, checkpoint completion, and the standalone direct-call requirement for `context_rollover` when that extension is present.
@@ -107,12 +111,16 @@ Reviewer cleanup must use the proper native shutdown lifecycle. Raw SDK disposal
 
 Reviews run in the background. A Review may combine multiple pending observed turns; do not build an unbounded queue of individual inference requests.
 
+The Review Cadence, `reviewEvery`, decides when a Review is due: `turn` (default) after every completed turn; `N` after every N turns and at request completion; `request` at request completion only. Request completion is the core agent loop's `agent_end`, after its steering and follow-up messages; the root `agent_settled` hook, headless final drain, and Minimal Subagents task completion also review any remainder. A turn with an errored tool result is due at once under every cadence. A due Review covers every unreviewed turn, using the same incremental evidence as per-turn Reviews. The default stays `turn`: most Review cost comes from Advisor Session size, which `maxSessionTokens` bounds, and coarser cadences delay findings until the agent has finished, so Concerns can no longer steer the run.
+
 Review Backlog counts completed observed turns not yet fully reviewed, including those under review. The catch-up threshold accepts `off` or any positive integer `N`, defaulting to `3`:
 
 - `off`: never wait for catch-up.
 - `N`: wait while backlog is at least `N`; falling below `N` releases the wait. Each wait is capped at 30 seconds.
 
 A threshold of one waits for an empty backlog; larger thresholds do not require a complete flush to zero. Reject zero, negative, and fractional thresholds. Failure, cancellation, disablement, or timeout releases the wait. Catch-up is not an approval gate.
+
+A Catch-up Wait only waits for a running Review. Under a coarser Review Cadence, turns waiting for their cadence point count toward the backlog but never start a wait themselves, and a wait ends when the running Review finishes unless another Review was already due. A Review's compaction runs inside that Review, under its deadline.
 
 Enforce the configurable Review deadline and investigative-call limit independently of the Catch-up Wait ceiling.
 

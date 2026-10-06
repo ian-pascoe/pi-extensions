@@ -27,13 +27,15 @@ Advisor is **disabled by default**. Configuration precedence is session, trusted
 /advisor set model "provider/model-id"
 /advisor set maxFindingsPerReview 4
 /advisor set seedBudgetTokens 40000
+/advisor set reviewEvery "request"
+/advisor set maxSessionTokens 150000
 ```
 
 Argument autocomplete suggests command names, settings keys, and valid trailing scope flags.
 
 In the interactive TUI, `/advisor` alone opens a settings menu built from Pi's native settings list, like `/settings`. A Scope row chooses where edits are written (session, trusted project, or global), and each setting shows its effective value with any non-default source. `enabled`, `includeSubagents`, and `thinkingLevel` cycle the selected scope's own value in place (`inherit → on → off`, or through each thinking level); while that scope has none, the row shows what it inherits, such as `inherit (on · project)`, and a value overridden by a higher-precedence scope is marked. Model, tools, numbers, and the prompt open submenus, and the prompt uses Pi's own editor component. Every edit is validated and applied immediately; a paused Advisor shows its reason and a Resume row. Closing the menu records one status entry listing the changes it applied, or nothing if none were. Without the TUI, `/advisor` records the status entry instead.
 
-`/advisor status` and the other subcommands each record a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the changes it applied. While enabled, the footer shows `advisor` when idle, `advisor: reviewing`/`consulting` with any `backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused. `advisor_ask` renders its question and a Markdown answer preview, and Child Agent findings carry a `↳ <agentId>` label.
+`/advisor status` and the other subcommands each record a status entry in the transcript. Collapsed, it shows state, model, backlog, usage and cost, the number of Reviews with their running cost and the last Review's cost, unavailable tools, and the last error; expanded, it lists every setting with its source and each watched Child Agent. A mutating command's entry starts with the changes it applied. While enabled, the footer shows `advisor` when idle, `advisor: reviewing`/`consulting` with any `backlog N`, or `advisor: paused`, plus Child Agents that are reviewing or paused. `advisor_ask` renders its question and a Markdown answer preview, and Child Agent findings carry a `↳ <agentId>` label.
 
 Interventions render with their severity and Advisor attribution. Long Nits collapse until expanded; Concerns and Blockers always show in full.
 
@@ -47,7 +49,7 @@ The tool is absent while Advisor is disabled. A paused Advisor keeps it visible 
 
 Consultation authorizes analysis and investigation, not implementation or other side effects. The configured Advisor Prompt remains authoritative. Tool Grants still expose each granted tool's full native interface, so exclude mutating tools when a prompt-level boundary is insufficient.
 
-`prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range); `maxFindingsPerReview` accepts an integer from 1 through 32; `seedBudgetTokens` accepts any positive safe integer or `"auto"`.
+`prompt` opens Pi's native editor and replaces the whole Advisor Prompt. `inherit` removes an override at the selected scope. Invalid keys and values are rejected. Lists, including `allowedTools`, replace the inherited list rather than merge. `catchUpThreshold` accepts any positive safe integer or `"off"`; `reviewTimeoutMs` accepts 1–2,147,483,647 milliseconds (the native timer range); `maxFindingsPerReview` accepts an integer from 1 through 32; `seedBudgetTokens` and `maxSessionTokens` accept any positive safe integer or `"auto"`; `reviewEvery` accepts `"turn"`, `"request"`, or any positive safe integer number of turns.
 
 `advisor_ask` declares MCP-style `annotations` (read-only, non-destructive, idempotent, closed-world) that Pi reports through `pi.getAllTools()` for permission extensions; Pi does not send them to model providers. They describe the consultation itself, not the tools granted to the Advisor. The Advisor Session's internal `advisor_report` tool, which extensions inherited by that session can see, declares non-destructive, closed-world annotations and is not read-only, because it records the Review's findings.
 
@@ -63,6 +65,8 @@ Consultation authorizes analysis and investigation, not implementation or other 
 | Investigative calls per Review | 8                                                |
 | Findings per Review            | 4                                                |
 | Context Seed budget            | `auto` (¼ of the Advisor model's context window) |
+| Review cadence (`reviewEvery`) | `turn`                                           |
+| Advisor Session size           | `auto` (½ of the Advisor model's context window) |
 | Automatic Corrective Turns     | 1 per request/task                               |
 
 A Tool Grant names tools; it does not sandbox their full native interfaces. Explicitly granting `bash`, for example, permits any command, including mutations. Unavailable names are ignored and reported; status reflects the Advisor Session at that moment, so a granted tool that registers later, such as an MCP tool after its server connects, is reported until it does. Advisor never autogrants missing tools. Granted tools with `codemode` or `deferred` exposure (such as tools from Pi's built-in MCP) are not declared to the Advisor model; they stay callable from granted `codemode` scripts, and a granted `tool_search` can declare them, as in the observed agent. Granting `codemode` lets the Advisor script its other granted tools; it inherits the observed `codemode.mode`, so under `"only"` the Advisor calls `advisor_report` from a script. It also inherits whether scripts get the `models` API: Minimal Subagents Child Agents have none, so neither do their Advisors.
@@ -79,12 +83,28 @@ The current conversation is already bounded by the observed session's native com
 
 Context Management is optional. If loaded and its tools are granted, `context_notes`, `context_history`, and `context_rollover` operate on the Advisor's private context. If any of those three tools is excluded, the Advisor pauses before reviewing. There is no autogrant or hook bypass.
 
+## Review cadence and cost
+
+Each Review is a new prompt in the same private Advisor Session, so its input is the whole Advisor Session so far: mostly prompt-cache reads, but billed on every Review. Two settings bound that cost.
+
+`reviewEvery` sets when Reviews run. Whatever the cadence, a Review covers every turn not yet reviewed, and only messages the Advisor has not yet seen are added.
+
+- `"turn"`, the default, reviews after every turn (one model response and its tool batch). Findings arrive soonest, and Concerns and Blockers can steer the agent while it still runs; cost grows with the number of turns.
+- `N` reviews after every `N` turns and again when the request completes, for any turns left over.
+- `"request"` reviews once when the request completes: the agent's run has ended, including its steering and follow-up messages. This is the cheapest cadence, but findings arrive only after the agent has finished, so a Concern waits for the next continuation and a Blocker can only prompt a Corrective Turn.
+
+Under `N` or `"request"`, a turn whose tool call failed still starts a Review at once. A Catch-up Wait waits only for a running Review: turns waiting for the next cadence point count toward the backlog but never start a Catch-up Wait themselves, and the wait ends when that Review finishes. Headless final drains and Minimal Subagents task completion review whatever turns remain.
+
+`maxSessionTokens` bounds the Advisor Session itself. After a Review, when the Advisor Session's context exceeds the cap, Advisor compacts it with Pi's native compaction (`compact()`, as `/compact` does), which summarizes older Advisor history with the Advisor model and keeps Pi's `compaction.keepRecentTokens` of recent history; a cap below `keepRecentTokens` acts as `keepRecentTokens`. The summary is asked to keep the observed request, findings already reported, open concerns, and what the Advisor verified. Observed evidence continues incrementally afterwards, and delivered findings and deferred Concerns are kept by Advisor itself. Compaction is one extra Advisor model call that re-reads the history it summarizes without cache hits, counted in that Review's cost and within its deadline. `auto` takes half the Advisor model's context window (Pi's 128k fallback when a model declares none): room for an `auto` Context Seed plus as much again for later Reviews, so a full seed alone never forces compaction, and far below Pi's own threshold (the window less `compaction.reserveTokens`), where each Review would re-read almost a full window. For models with very large windows, a lower cap such as `150000` makes each Review cheaper at the price of more frequent compaction. When Context Management is loaded in the Advisor Session, its Rollover manages that context instead, and `maxSessionTokens` is not applied.
+
+`/advisor status` shows the cost of the last Review, including any compaction it ran, and the running total of Reviews since the session started or Advisor was reloaded, from the native usage the Advisor Session records. Consultations are not included. Unknown cost, such as for a model without prices, is shown as unknown.
+
 ## Scheduling and safety
 
-Reviews combine completed observed turns (one model response plus its tool batches) and use bounded catch-up waits of at most 30 seconds. Each Review has its own deadline, investigative-call budget, and configurable finding limit. One terminating report returns findings in severity order. Formatting-equivalent findings retain their highest severity within a Review; later escalation from Nit to Concern to Blocker remains deliverable. Distinct Concerns are delivered together when eligible or retained together for re-evaluation during the three-turn cooldown.
+Reviews combine completed observed turns (one model response plus its tool batches), as often as `reviewEvery` allows, and use bounded catch-up waits of at most 30 seconds. Each Review has its own deadline, investigative-call budget, and configurable finding limit. One terminating report returns findings in severity order. Formatting-equivalent findings retain their highest severity within a Review; later escalation from Nit to Concern to Blocker remains deliverable. Distinct Concerns are delivered together when eligible or retained together for re-evaluation during the three-turn cooldown.
 
 Nits are non-interrupting and enter context at the next natural step boundary without starting a Corrective Turn. Running work receives native steering for eligible Concerns and Blockers. A Blocker after normal interactive completion may receive a tracked corrective continuation within the configured budget; aborted, uncertain, deliberately interrupted, and headless-completed work is preserved without a hidden restart. Child corrections stay inside Minimal's owned operation. Headless root shutdown allows only a bounded final drain and never starts hidden corrective work.
 
-Status reports effective settings, sources, review or consultation state, backlog, usage/cost, and the last error. Unknown cost is shown as unknown, never zero. Review failure pauses Advisor while leaving the observed agent running; changing configuration, branch, or session identity invalidates stale in-flight work.
+Status reports effective settings, sources, review or consultation state, backlog, usage/cost, per-Review cost, and the last error. Unknown cost is shown as unknown, never zero. Review failure pauses Advisor while leaving the observed agent running; changing configuration, branch, or session identity invalidates stale in-flight work.
 
 Advisor is privileged extension code. Review inherited extensions and granted tools before installing it in a session with access to local files, credentials, or mutating APIs.

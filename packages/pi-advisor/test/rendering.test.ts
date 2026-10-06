@@ -94,6 +94,8 @@ const settings = {
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
   seedBudgetTokens: "auto",
+  reviewEvery: "turn",
+  maxSessionTokens: "auto",
 };
 const snapshot = {
   state: "reviewing",
@@ -111,6 +113,8 @@ const snapshot = {
     maxCorrectiveTurns: "default",
     maxFindingsPerReview: "default",
     seedBudgetTokens: "default",
+    reviewEvery: "default",
+    maxSessionTokens: "default",
   },
   backlog: 2,
   effectiveModel: "anthropic/claude-sonnet",
@@ -139,6 +143,18 @@ describe("Advisor status", () => {
     expect(text).toContain("\u26a0 unavailable tools: lsp_diagnostics");
     expect(text).toContain("\u2716 Model unavailable");
     expect(text).not.toContain("maxToolCalls");
+  });
+
+  it("shows the last Review's cost and the running total across Reviews", () => {
+    const text = status({ ...snapshot, reviewCost: { reviews: 3, last: 0.0045, total: 0.0123 } });
+    expect(text).toContain("3 Reviews $0.01 \u00b7 last Review $0.0045");
+    expect(status({ ...snapshot, reviewCost: { reviews: 1, last: 0.25, total: 0.25 } })).toContain(
+      "1 Review $0.25 \u00b7 last Review $0.25",
+    );
+    expect(status({ ...snapshot, reviewCost: { reviews: 2, last: null, total: null } })).toContain(
+      "2 Reviews cost unknown \u00b7 last Review cost unknown",
+    );
+    expect(status({ ...snapshot, reviewCost: null })).not.toContain("Review $");
   });
 
   it("never presents unknown cost as zero and omits empty problem lines", () => {

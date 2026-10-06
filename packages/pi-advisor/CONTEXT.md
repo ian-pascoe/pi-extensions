@@ -13,7 +13,7 @@ The agent whose work an Advisor reviews, whether the main Pi agent or a particip
 _Avoid_: Advisor
 
 **Advisor Session**:
-The private, durable session in which an Advisor conducts Reviews and manages its own context. When Context Management is available, its Notes, History, and Context Checkpoints belong to the Advisor, not to the observed agent.
+The private, durable session in which an Advisor conducts Reviews and manages its own context. Past a configured size, Pi's native compaction summarizes its older history; when Context Management is available, its Notes, History, and Context Checkpoints belong to the Advisor, not to the observed agent.
 _Avoid_: Observed session, shared memory
 
 **Paused Advisor**:
@@ -52,6 +52,10 @@ _Avoid_: User turn, execution veto
 One assessment by an Advisor of new observed-agent context, optionally supported by independent investigation using its Tool Grant. A Review may cover several observed-agent turns and produce a bounded set of findings.
 _Avoid_: Observed-agent turn
 
+**Review Cadence**:
+When Reviews start: after every turn (the default), after every N turns and at request completion, or once at request completion. A turn with a failed tool call starts a Review under any cadence. Whatever the cadence, a Review covers the whole Review Backlog.
+_Avoid_: Review frequency, polling interval
+
 **Review Evidence**:
 The observed agent's messages as its model received them, supplied to a Review or Consultation: roles, text, reasoning text, tool calls with arguments, tool-result text with error status, image attachments, and markers for redacted reasoning and responses that ended abnormally. Replay signatures, display-only details, provider metadata, and native IDs are omitted.
 _Avoid_: Transcript dump, raw session messages
@@ -77,5 +81,5 @@ Completed turns of the observed agent that have not yet received a completed Adv
 _Avoid_: Message count, pending advice
 
 **Catch-up Wait**:
-A bounded pause in the observed agent's progress while the Advisor reduces its Review Backlog. It is not an approval gate and does not require the Advisor to endorse the work.
+A bounded pause in the observed agent's progress while the Advisor reduces its Review Backlog. It waits only for a running Review, never for turns that are waiting for their Review Cadence. It is not an approval gate and does not require the Advisor to endorse the work.
 _Avoid_: Lockstep review, approval wait

@@ -26,6 +26,8 @@ const defaults = {
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
   seedBudgetTokens: "auto",
+  reviewEvery: "turn",
+  maxSessionTokens: "auto",
 } satisfies AdvisorOptions;
 
 /** In-memory scoped settings with the same precedence as the extension. */
@@ -280,6 +282,28 @@ describe("Advisor settings menu", () => {
     expect(applied.map(({ change }) => change)).toEqual([
       { action: "set", key: "seedBudgetTokens", patch: { seedBudgetTokens: 24_000 } },
       { action: "set", key: "seedBudgetTokens", patch: { seedBudgetTokens: "auto" } },
+    ]);
+  });
+
+  it("accepts a Review cadence and an Advisor Session size", async () => {
+    const { goTo, press, type, applied, settle } = createMenu();
+    for (const value of ["request", "4", "turn"]) {
+      goTo("reviewEvery");
+      press(keys.enter);
+      type(value);
+      press(keys.enter);
+      await settle();
+    }
+    goTo("maxSessionTokens");
+    press(keys.enter);
+    type("120000");
+    press(keys.enter);
+    await settle();
+    expect(applied.map(({ change }) => change)).toEqual([
+      { action: "set", key: "reviewEvery", patch: { reviewEvery: "request" } },
+      { action: "set", key: "reviewEvery", patch: { reviewEvery: 4 } },
+      { action: "set", key: "reviewEvery", patch: { reviewEvery: "turn" } },
+      { action: "set", key: "maxSessionTokens", patch: { maxSessionTokens: 120_000 } },
     ]);
   });
 

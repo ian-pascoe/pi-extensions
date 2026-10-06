@@ -189,7 +189,14 @@ it.each(["none", "on", "only"] as const)(
         runtime.session.sessionManager
           .getBranch()
           .findLast((entry) => entry.type === "custom" && entry.customType === "pi-advisor-status"),
-      ).toMatchObject({ data: { state: enabled ? "armed" : "disabled", backlog: 0 } });
+      ).toMatchObject({
+        data: {
+          state: enabled ? "armed" : "disabled",
+          backlog: 0,
+          // The offline model is unpriced, so the completed Review's cost is unknown, not zero.
+          reviewCost: enabled ? { reviews: 1, last: null, total: null } : null,
+        },
+      });
     }
     expect(reviewRequests).toHaveLength(1);
     expect(mainRequests).toHaveLength(2);
