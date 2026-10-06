@@ -55,7 +55,7 @@ import {
   type ServerCapabilities,
   type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
-import { formatLspDiagnosticsReadText } from "./lsp-diagnostics-text.js";
+import { formatLspDiagnosticsReadText, isLspDiagnosticsOperation } from "./lsp-diagnostics-text.js";
 import { formatLspHoverReadText } from "./lsp-hover-text.js";
 import { LspInputError } from "./lsp-input-error.js";
 import {
@@ -67,6 +67,7 @@ import {
 } from "./lsp-item-list.js";
 import {
   assembleLspReadText,
+  collapseLspWhitespace,
   formatLspLocationReadText,
   isLspLocationOperation,
   lspDisplayPath,
@@ -586,7 +587,7 @@ async function readOutput(
       scope: queried?.headline ?? [],
       emptyMessage: queried?.emptyMessage,
     });
-  } else if (operation === "diagnostics" || operation === "workspace_diagnostics") {
+  } else if (isLspDiagnosticsOperation(operation)) {
     text = formatLspDiagnosticsReadText({
       operation,
       cwd: textContext.cwd,
@@ -975,9 +976,7 @@ function formatStatusText(status: LspServerManagerStatus, cwd: string): string {
       server.state,
       ...(server.rootPath === undefined ? [] : [lspDisplayPath(cwd, server.rootPath)]),
       ...languages,
-      ...(server.error === undefined
-        ? []
-        : [`error: ${server.error.replaceAll(/\s+/gu, " ").trim()}`]),
+      ...(server.error === undefined ? [] : [`error: ${collapseLspWhitespace(server.error)}`]),
     ].join(" ");
   });
   const warnings = status.warnings.map((warning) => `Warning: ${warning}`);
@@ -1725,7 +1724,7 @@ async function executeCodeActions(
  */
 function codeActionLines(action: CodeActionResult): string[] {
   const title =
-    action.title === undefined ? "Untitled action" : action.title.replaceAll(/\s+/gu, " ").trim();
+    action.title === undefined ? "Untitled action" : collapseLspWhitespace(action.title);
   const head = action.kind === undefined ? title : `${title} (${action.kind})`;
   if (action.preview_id !== undefined) {
     const summary = (action.summary ?? "").trimEnd();
@@ -2077,7 +2076,7 @@ const LSP_TOOL_DESCRIPTIONS = {
   rename:
     "Preview renaming the symbol at a position across the workspace. Apply the preview with lsp_apply.",
   code_actions:
-    "List code actions for a range from every matching server, each naming its server_id. Each action with an edit gets a Workspace Edit Preview to apply with lsp_apply; command-only actions cannot be applied.",
+    "List code actions for a range from every matching server, grouped by server when several answer. Each action with an edit gets a Workspace Edit Preview to apply with lsp_apply; command-only actions cannot be applied.",
   apply:
     "Apply a Workspace Edit Preview by preview_id. Nothing changes if its files changed since the preview.",
 } as const satisfies Record<LspOperationName, string>;
