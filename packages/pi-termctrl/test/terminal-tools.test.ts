@@ -801,6 +801,20 @@ describe("terminal_stop and terminal_list", () => {
     expect(harness.runtime.registry.entries()).toEqual([]);
   });
 
+  test("stopping a running Terminal with an unchanged screen still reports lines that scrolled off unseen", async () => {
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["one", "two"];
+      self.screen = "two";
+    });
+    await timed(harness.send.execute("call", { id: "t1" }, undefined, undefined, root));
+    terminal.logLines = ["one", "two", "three"];
+    const { value } = await timed(
+      harness.stop.execute("call", { id: "t1" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({ changed: false, scrolled_off: "two" });
+    expect(value.structuredContent).not.toHaveProperty("screen");
+  });
+
   test("stopping an exited Terminal whose screen the agent saw omits the screen", async () => {
     const { terminal } = await startTerminal();
     terminal.screen = "bye";

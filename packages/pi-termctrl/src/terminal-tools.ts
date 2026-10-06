@@ -815,10 +815,11 @@ export function createTerminalStopTool(registry: TermctrlRegistry) {
       const parts = [header];
       if (entry.kind === "terminal") {
         const screen = entry.finalScreen ?? "";
-        // A screen the agent already saw is not repeated.
-        const repeated = previousScreen === screen;
+        const changed = previousScreen !== screen;
+        // A screen the agent already saw is not repeated, whether the Terminal was running or exited.
+        const repeated = !changed;
         const output = await fitOutput(registry, entry, repeated ? "" : screen, scrolled);
-        result.changed = previousScreen !== screen;
+        result.changed = changed;
         if (!repeated) result.screen = output.screen;
         if (!repeated || output.scrolledOff !== "") result.scrolled_off = output.scrolledOff;
         if (output.gap) result.output_missing = true;
