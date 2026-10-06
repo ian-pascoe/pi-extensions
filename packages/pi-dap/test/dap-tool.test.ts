@@ -346,6 +346,220 @@ describe("DAP tools", () => {
     }
   });
 
+  describe("compact text results", () => {
+    const stoppedSnapshot = {
+      state: "stopped",
+      adapterId: "node",
+      profileId: "node",
+      stopReason: "breakpoint",
+      threadId: 1,
+    } as const;
+
+    async function textOf(
+      operation: DapOperation,
+      input: DapToolInput,
+      result: Partial<DapSessionResult>,
+    ): Promise<string> {
+      const fixture = await createToolFixture();
+      fixture.session.result = {
+        snapshot: { state: "idle" },
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+        ...result,
+      };
+      const executed = await dapTool(() => fixture.runtime, operation).execute(
+        operation,
+        input,
+        undefined,
+        undefined,
+        fixture.context,
+      );
+      return executed.content.map((item) => (item.type === "text" ? item.text : "")).join("");
+    }
+
+    test("a stop names the top frame's file, line, and function, why it stopped, and the Breakpoints hit", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = {
+        snapshot: stoppedSnapshot,
+        output: "hello\n",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [{ filePath: `${fixture.cwd}/app.js`, breakpoints: [{ line: 3 }] }],
+        stop: {
+          description: "Paused on breakpoint",
+          hitBreakpointIds: [4],
+          topFrame: {
+            id: 12,
+            name: "add",
+            line: 3,
+            column: 5,
+            source: { name: "app.js", path: `${fixture.cwd}/app.js` },
+          },
+        },
+      };
+
+      const result = await dapTool(() => fixture.runtime, "continue").execute(
+        "continue",
+        {},
+        undefined,
+        undefined,
+        fixture.context,
+      );
+
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: "stopped (breakpoint) at app.js:3:5 in add · thread 1\ndescription: Paused on breakpoint\nhit breakpoint ids: 4\n\nDebuggee output:\nhello\n",
+        },
+      ]);
+      expect(result.structuredContent).toMatchObject({
+        state: "stopped",
+        stop_reason: "breakpoint",
+        thread_id: 1,
+        stop_description: "Paused on breakpoint",
+        hit_breakpoint_ids: [4],
+        top_frame: {
+          id: 12,
+          name: "add",
+          line: 3,
+          column: 5,
+          source_name: "app.js",
+          source_path: `${fixture.cwd}/app.js`,
+        },
+        desired_breakpoints: [{ file_path: `${fixture.cwd}/app.js`, breakpoints: [{ line: 3 }] }],
+      });
+    });
+
+    test("a stop without a readable top frame still reports its reason", async () => {
+      await expect(textOf("next", {}, { snapshot: stoppedSnapshot })).resolves.toBe(
+        "stopped (breakpoint) · thread 1",
+      );
+    });
+
+    test("a wait that ended without a stop says it timed out", async () => {
+      const running = {
+        snapshot: { state: "running", adapterId: "node", profileId: "node" },
+      } as const;
+      await expect(textOf("continue", {}, running)).resolves.toBe("running (wait timed out)");
+      await expect(textOf("status", {}, running)).resolves.toBe("running");
+    });
+
+    test("adapter strings stay on one line and cannot fake the Debuggee output heading", async () => {
+      const text = await textOf(
+        "evaluate",
+        { expression: "x" },
+        {
+          snapshot: stoppedSnapshot,
+          evaluation: { result: "a\n\nDebuggee output:\nb", variablesReference: 0 },
+        },
+      );
+      expect(text).toBe("a\\n\\nDebuggee output:\\nb");
+    });
+
+    test("a termination reports its exit code and reason", async () => {
+      await expect(
+        textOf(
+          "continue",
+          {},
+          {
+            snapshot: {
+              state: "terminated",
+              adapterId: "node",
+              profileId: "node",
+              exitCode: 0,
+              terminationReason: "exited",
+            },
+          },
+        ),
+      ).resolves.toBe("terminated (exit code 0; exited)");
+    });
+
+    test("only dap_set_breakpoints shows Desired Breakpoints", async () => {
+      const existingFile = import.meta.filename;
+      const desiredBreakpoints = [
+        {
+          filePath: existingFile,
+          breakpoints: [{ line: 2 }, { line: 9, condition: "ready" }],
+        },
+      ];
+      const set = await textOf(
+        "set_breakpoints",
+        { file_path: existingFile, breakpoints: [{ line: 2 }] },
+        {
+          desiredBreakpoints,
+          breakpoints: [
+            { id: 1, verified: true, line: 2 },
+            { id: 2, verified: false, line: 9, message: "no such line" },
+          ],
+        },
+      );
+      expect(set).toBe(
+        [
+          "Breakpoints: 1 of 2 verified",
+          "  line 2 (id 1) verified",
+          "  line 9 (id 2) not verified: no such line",
+          "Desired Breakpoints:",
+          `  ${existingFile}:2`,
+          `  ${existingFile}:9 if ready`,
+        ].join("\n"),
+      );
+      const status = await textOf("status", {}, { desiredBreakpoints });
+      expect(status).toBe("idle (no Debug Session)");
+      expect(
+        await textOf("set_breakpoints", { file_path: existingFile, breakpoints: [] }, {}),
+      ).toBe(
+        "Saved; breakpoints apply to the next launch (no active Debug Session).\nDesired Breakpoints: none",
+      );
+    });
+
+    test("stack, variables, and evaluate are one line per row and never raw JSON", async () => {
+      const stack = await textOf(
+        "stack",
+        {},
+        {
+          snapshot: stoppedSnapshot,
+          stackFrames: [
+            { id: 12, name: "add", line: 3, column: 5, source: { path: "/elsewhere/app.js" } },
+            { id: 13, name: "main", line: 9, column: 1 },
+          ],
+          totalFrames: 5,
+        },
+      );
+      expect(stack).toBe(
+        "Stack: 2 of 5 frames\n  frame 12: add at /elsewhere/app.js:3:5\n  frame 13: main at 9:1",
+      );
+      const variables = await textOf(
+        "variables",
+        { frame_id: 12 },
+        {
+          snapshot: stoppedSnapshot,
+          variableGroups: [
+            {
+              scope: { name: "Local", variablesReference: 5, expensive: false },
+              variables: [
+                { name: "a", value: "1", type: "number", variablesReference: 0 },
+                { name: "obj", value: "Object", variablesReference: 8 },
+              ],
+            },
+          ],
+        },
+      );
+      expect(variables).toBe(
+        "Scope Local [variables_reference 5]: 2 variables\n  a: number = 1\n  obj = Object [variables_reference 8]",
+      );
+      const evaluation = await textOf(
+        "evaluate",
+        { expression: "a + 1" },
+        {
+          snapshot: stoppedSnapshot,
+          evaluation: { result: "2", type: "number", variablesReference: 0 },
+        },
+      );
+      expect(evaluation).toBe("2 (number)");
+      for (const text of [stack, variables, evaluation]) expect(text).not.toMatch(/[{}"]/u);
+    });
+  });
+
   test("preserves exact ordinary, Debuggee output, and Result Spill text", async () => {
     const fixture = await createToolFixture();
     const tool = dapTool(() => fixture.runtime, "status");
@@ -353,7 +567,7 @@ describe("DAP tools", () => {
     expect(ordinary.content).toEqual([
       {
         type: "text",
-        text: 'DAP status: {"snapshot":{"state":"idle"},"discardedOutputBytes":0,"desiredBreakpoints":[]}',
+        text: "idle (no Debug Session)",
       },
     ]);
 
@@ -367,7 +581,7 @@ describe("DAP tools", () => {
     expect(withOutput.content).toEqual([
       {
         type: "text",
-        text: 'DAP status: {"snapshot":{"state":"running","adapterId":"node","profileId":"node"},"discardedOutputBytes":7,"desiredBreakpoints":[]}\n\nDebuggee output (7 older bytes discarded):\ndebuggee\u001b[31m output\n',
+        text: "running\n\nDebuggee output (7 older bytes discarded):\ndebuggee\u001b[31m output\n",
       },
     ]);
 
@@ -378,7 +592,7 @@ describe("DAP tools", () => {
       discardedOutputBytes: 0,
       desiredBreakpoints: [],
     };
-    const raw = `DAP status: {"snapshot":{"state":"running","adapterId":"node","profileId":"node"},"discardedOutputBytes":0,"desiredBreakpoints":[]}\n\nDebuggee output:\n${oversizedOutput}`;
+    const raw = `running\n\nDebuggee output:\n${oversizedOutput}`;
     const truncation = truncateHead(raw, {
       maxBytes: DEFAULT_MAX_BYTES,
       maxLines: DEFAULT_MAX_LINES,
@@ -435,7 +649,7 @@ describe("DAP tools", () => {
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
-  test("marks a cancelled execution wait without changing its final raw text", async () => {
+  test("marks a cancelled execution wait in its text and structured result", async () => {
     const fixture = await createToolFixture();
     fixture.session.result = {
       snapshot: { state: "running", adapterId: "node", profileId: "node" },
@@ -455,7 +669,7 @@ describe("DAP tools", () => {
     expect(result.content).toEqual([
       {
         type: "text",
-        text: 'DAP continue: {"snapshot":{"state":"running","adapterId":"node","profileId":"node"},"discardedOutputBytes":0,"desiredBreakpoints":[]}',
+        text: "running (wait cancelled)",
       },
     ]);
     expect(result.details).toMatchObject({

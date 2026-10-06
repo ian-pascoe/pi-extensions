@@ -190,7 +190,7 @@ export class DapObserverUiController implements DapToolObserver {
     if (this.disposed) return;
     this.activeToolCalls = Math.max(0, this.activeToolCalls - 1);
     if (this.snapshot.state === "stopped") {
-      const frame = result.stackFrames?.[0];
+      const frame = result.stop?.topFrame ?? result.stackFrames?.[0];
       const source = frame?.source?.path ?? frame?.source?.name;
       if (frame !== undefined && source !== undefined) {
         this.sourceLocation = `${workspaceRelativeDapPath(this.context.cwd, source)}:${frame.line}`;

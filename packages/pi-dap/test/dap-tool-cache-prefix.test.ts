@@ -255,9 +255,7 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
     expect(
       fixture.turns[0]?.systemPrompt.match(/Use the dap_\* tools to set source breakpoints/gu),
     ).toHaveLength(1);
-    expect(lastToolResultText(fixture.turns[3])).toContain(
-      `DAP status: {"snapshot":{"state":"idle"}`,
-    );
+    expect(lastToolResultText(fixture.turns[3])).toContain("idle (no Debug Session)");
   });
 
   test("with codemode: scripts reach every tool and declarations stay stable", async () => {

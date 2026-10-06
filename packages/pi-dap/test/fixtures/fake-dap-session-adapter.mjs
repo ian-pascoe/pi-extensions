@@ -39,7 +39,11 @@ function event(event, body) {
 }
 
 function stopped(reason = "breakpoint") {
-  event("stopped", { reason, threadId: 1, allThreadsStopped: true });
+  const hit =
+    reason === "breakpoint"
+      ? { description: "Paused on breakpoint", hitBreakpointIds: [7] }
+      : { description: "Paused on " + reason };
+  event("stopped", { reason, threadId: 1, allThreadsStopped: true, ...hit });
 }
 
 function executeAndStop(request, reason) {

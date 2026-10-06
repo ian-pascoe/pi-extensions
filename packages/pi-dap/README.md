@@ -171,15 +171,29 @@ current state with an `error` field instead of rejecting.
 
 Each successful tool call drains currently unread Debuggee output. Adapter
 `output` events with the `telemetry` category are dropped; every other category
-(including `important` and uncategorized output) is kept. Pi DAP
-retains at most 1 MiB of unread output, reporting discarded older bytes. Tool
-text follows Pi's 2,000-line/50-KB visible limit; when truncated, the retained
+(including `important` and uncategorized output) is kept. Pi DAP retains at most
+1 MiB of unread output, reporting discarded older bytes.
+
+Tool text is a few compact lines, never a raw JSON dump. A stop reads
+`stopped (breakpoint) at app.js:3:5 in add · thread 1`: the top Stack Frame's
+file, line, column, and function come with every result that waits for a stop
+(and with `dap_status` once one has), so no separate `dap_stack` call is needed.
+Further lines carry the adapter's stop `description` and the `hitBreakpointIds`
+(matching the `id` values `dap_set_breakpoints` reports), so you can tell your
+breakpoint from an adapter's entry stop. Only `dap_set_breakpoints` lists
+Desired Breakpoints in text, since it is the only call that changes them. Stack
+Frames, variables, and evaluations are one line per row; adapter strings are
+flattened onto one line with `\n` escapes, and drained Debuggee output follows
+under its own heading. The same stop details appear in `structuredContent` as
+`stop_description`, `hit_breakpoint_ids`, and `top_frame`, beside every field it
+had before, and strings there stay verbatim. A call that waits and ends still
+`running` says `(wait timed out)`. Tool text follows Pi's 2,000-line/50-KB visible limit; when truncated, the retained
 complete result is written to a Result Spill and its path appears in the
 result. Adapter stderr retains its newest 1 MiB in the session directory and
 process or protocol failures name that path. Failed requests report the
 adapter's own error text and name the path only when stderr has content. With
-`--no-session`, Pi provides no session directory, so these files use a private directory under the OS temporary
-directory instead. Normal session teardown removes it; forced termination may
+`--no-session`, Pi provides no session directory, so these files use a private
+directory under the OS temporary directory instead. Normal session teardown removes it; forced termination may
 leave temporary files behind.
 
 Adapters start lazily at `launch`, use the project working directory, and are
@@ -203,8 +217,8 @@ human debugger controls. Stopped source locations clear on resume. The terminal
 snapshot remains for ten seconds, while idle sessions have no widget. RPC, JSON,
 and print modes do not mount it.
 
-The model still receives the unchanged raw `DAP <operation>: <JSON>` text,
-Debuggee output, truncation, and Result Spill notice. Only the human-visible copy
+The model still receives the compact text, Debuggee output, truncation, and
+Result Spill notice described above. Only the human-visible copy
 of Debuggee output is stripped of terminal sequences and unsafe controls; the raw
 tool result and Result Spill retain the original bytes.
 

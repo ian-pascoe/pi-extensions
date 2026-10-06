@@ -134,6 +134,42 @@ describe("Pi DAP Observer UI", () => {
     controller.dispose();
   });
 
+  test("shows the stopped source location from a stop result's top Stack Frame", () => {
+    const fixture = createContext("tui");
+    const controller = new DapObserverUiController(fixture.context);
+    controller.onToolStart({ operation: "continue" });
+    const snapshot = {
+      state: "stopped",
+      adapterId: "node",
+      profileId: "node",
+      stopReason: "breakpoint",
+      threadId: 1,
+    } as const;
+    controller.onSessionSnapshot(snapshot);
+
+    controller.onToolSuccess(
+      { operation: "continue" },
+      {
+        snapshot,
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+        stop: {
+          topFrame: {
+            id: 1,
+            name: "add",
+            line: 3,
+            column: 5,
+            source: { path: "/workspace/src/app.ts" },
+          },
+        },
+      },
+    );
+
+    expect(fixture.component()?.render(80)[0]).toContain("src/app.ts:3");
+    controller.dispose();
+  });
+
   test("keeps termination for ten seconds and a new launch cancels the old cooldown", async () => {
     vi.useFakeTimers();
     const fixture = createContext("tui");
