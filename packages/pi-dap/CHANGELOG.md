@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-dap
 
+## 0.4.1
+
+### Patch Changes
+
+- 671d9b3: `dap_set_breakpoints` now keeps the Desired Breakpoints but warns, in the result text and in `structuredContent.warnings`, when the source file does not exist or is not a file.
+
 ## 0.4.0
 
 ### Minor Changes
