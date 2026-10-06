@@ -154,7 +154,7 @@ first, instead of Pi's 2,000 lines or 50 KB. The cut keeps Pi's notice, for exam
 and names the limits actually used. The named file always holds every line: Pi's own
 full-output file when Pi also cut the output, otherwise one Pi Termctrl writes beside
 it in `$TMPDIR` (like Pi's, it is not deleted). The tool description names the limits in force. Set `bashTail` to `false`
-or `0` to restore Pi's limits. Values above Pi's limits are rejected.
+or `0` to restore Pi's limits. Values above Pi's limits are rejected, and an object with no valid field leaves a lower layer's setting in place.
 
 A Background job's log is deleted when the job is stopped, when the user
 removes it in `/ps`, or when its session shuts down for any reason except

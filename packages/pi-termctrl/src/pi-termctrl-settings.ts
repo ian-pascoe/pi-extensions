@@ -2,6 +2,7 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   type SettingsManager,
+  type TruncationOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -19,19 +20,16 @@ export interface TerminalViewport {
   readonly rows: number;
 }
 
-/** The most lines and bytes of a foreground `bash` result the model sees. */
-export interface BashTailLimits {
-  readonly lines: number;
-  readonly bytes: number;
-}
+/** The most lines and bytes of the model-visible `bash` output: a foreground result or the output so far of a backgrounding one. */
+export type BashTailLimits = Readonly<Required<TruncationOptions>>;
 
 /** The effective `settings.termctrl` values after layering global and trusted project settings. */
 export interface ResolvedTermctrlSettings {
   readonly replaceBash: boolean;
   readonly defaultViewport: TerminalViewport;
   readonly exitTailLines: number;
-  /** Limits on the model-visible `bash` tail; null restores Pi's own limits. */
-  readonly bashTail: BashTailLimits | null;
+  /** Limits on the model-visible `bash` tail; undefined restores Pi's own limits. */
+  readonly bashTail: BashTailLimits | undefined;
   readonly warnings: readonly string[];
 }
 
@@ -62,7 +60,7 @@ export const DEFAULT_TERMCTRL_SETTINGS: Omit<ResolvedTermctrlSettings, "warnings
   replaceBash: true,
   defaultViewport: { cols: 120, rows: 40 },
   exitTailLines: 20,
-  bashTail: { lines: 300, bytes: 16 * 1024 },
+  bashTail: { maxLines: 300, maxBytes: 16 * 1024 },
 };
 
 const JsonObjectSchema = Type.Record(Type.String(), Type.Any());
@@ -145,18 +143,24 @@ function readBashTail(value: JsonValue, path: string, layer: TermctrlLayer, warn
     warnings.push(`${path}: expected a boolean, 0, or a JSON object`);
     return;
   }
-  layer.bashTailEnabled = true;
+  let valid = 0;
   for (const [key, limit] of Object.entries(value)) {
     if (key === "lines") {
-      if (Value.Check(BashTailLinesSchema, limit)) layer.bashTailLines = limit;
-      else warnings.push(`${path}.lines: expected an integer from 1 to ${DEFAULT_MAX_LINES}`);
+      if (Value.Check(BashTailLinesSchema, limit)) {
+        layer.bashTailLines = limit;
+        valid++;
+      } else warnings.push(`${path}.lines: expected an integer from 1 to ${DEFAULT_MAX_LINES}`);
     } else if (key === "bytes") {
-      if (Value.Check(BashTailBytesSchema, limit)) layer.bashTailBytes = limit;
-      else warnings.push(`${path}.bytes: expected an integer from 1 to ${DEFAULT_MAX_BYTES}`);
+      if (Value.Check(BashTailBytesSchema, limit)) {
+        layer.bashTailBytes = limit;
+        valid++;
+      } else warnings.push(`${path}.bytes: expected an integer from 1 to ${DEFAULT_MAX_BYTES}`);
     } else {
       warnings.push(`${path}.${key}: unknown field`);
     }
   }
+  // An object with only invalid fields must not override a lower layer's opt-out.
+  if (valid > 0 || Object.keys(value).length === 0) layer.bashTailEnabled = true;
 }
 
 /** Resolve global and trusted-project `termctrl` settings, keeping valid fields around warnings. */
@@ -176,12 +180,12 @@ export function resolveTermctrlSettings(reader: TermctrlSettingsReader): Resolve
     bashTail:
       (projectLayer.bashTailEnabled ?? globalLayer.bashTailEnabled ?? true)
         ? {
-            lines:
-              projectLayer.bashTailLines ?? globalLayer.bashTailLines ?? defaults.bashTail.lines,
-            bytes:
-              projectLayer.bashTailBytes ?? globalLayer.bashTailBytes ?? defaults.bashTail.bytes,
+            maxLines:
+              projectLayer.bashTailLines ?? globalLayer.bashTailLines ?? defaults.bashTail.maxLines,
+            maxBytes:
+              projectLayer.bashTailBytes ?? globalLayer.bashTailBytes ?? defaults.bashTail.maxBytes,
           }
-        : null,
+        : undefined,
     warnings,
   };
 }

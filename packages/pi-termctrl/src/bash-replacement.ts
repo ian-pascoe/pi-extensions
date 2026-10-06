@@ -15,6 +15,7 @@ import {
   type BashToolOptions,
   type ExtensionToolContext,
   type ExtensionUIContext,
+  type TruncationOptions,
   type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
@@ -34,6 +35,12 @@ const TAIL_LIMIT_CHARS = 64 * 1024;
 
 type ExecOptions = Parameters<BashOperations["exec"]>[2];
 
+function countNewlines(data: Buffer): number {
+  let count = 0;
+  for (let at = data.indexOf(10); at !== -1; at = data.indexOf(10, at + 1)) count++;
+  return count;
+}
+
 /** Path of a Background job's log. The pid keeps concurrent Pi processes apart. */
 export function backgroundLogPath(id: string): string {
   return join(termctrlTemporaryDirectory(), `${process.pid}-${id}.log`);
@@ -44,6 +51,14 @@ interface BackgroundOutcome {
   readonly id: string;
   readonly logPath: string;
   readonly output: string;
+  /** What the in-memory buffer dropped from the head of `output`. */
+  readonly dropped: DroppedOutput;
+}
+
+/** Output that left the in-memory buffer, which a tail's totals still have to count. */
+interface DroppedOutput {
+  readonly lines: number;
+  readonly bytes: number;
 }
 
 /**
@@ -55,6 +70,7 @@ class BashCall {
   private readonly chunks: Buffer[] = [];
   private bufferedBytes = 0;
   private droppedBytes = 0;
+  private droppedNewlines = 0;
   private recent = "";
   private readonly decoder = new TextDecoder();
   private log: WriteStream | undefined;
@@ -80,10 +96,14 @@ class BashCall {
   }
 
   /** Everything the foreground call printed that is still buffered, for the model-visible tail. */
-  foregroundOutput(): { readonly text: string; readonly raw: Buffer } | undefined {
+  foregroundOutput() {
     if (this.isBackgrounded) return undefined;
     const raw = Buffer.concat(this.chunks);
-    return { text: new TextDecoder().decode(raw), raw };
+    return { text: new TextDecoder().decode(raw), raw, dropped: this.dropped() };
+  }
+
+  private dropped(): DroppedOutput {
+    return { lines: this.droppedNewlines, bytes: this.droppedBytes };
   }
 
   /** The `BashOperations.exec` Pi's `execute` calls. */
@@ -148,6 +168,7 @@ class BashCall {
       const dropped = this.chunks.shift();
       this.bufferedBytes -= dropped?.length ?? 0;
       this.droppedBytes += dropped?.length ?? 0;
+      if (dropped !== undefined) this.droppedNewlines += countNewlines(dropped);
     }
     this.forwardData?.(data);
   }
@@ -202,7 +223,12 @@ class BashCall {
     const output = this.decoder.decode(Buffer.concat(this.chunks), { stream: true });
     this.chunks.length = 0;
     this.remember(output);
-    this.resolveBackground({ id: entry.id, logPath: entry.child.logPath, output });
+    this.resolveBackground({
+      id: entry.id,
+      logPath: entry.child.logPath,
+      output,
+      dropped: this.dropped(),
+    });
     return true;
   }
 }
@@ -297,13 +323,22 @@ function tailNotice(truncation: TruncationResult, fullOutput: string, logPath: s
   return `[Showing lines ${first}-${lastLine} of ${truncation.totalLines} (${formatSize(truncation.maxBytes)} or ${truncation.maxLines} line limit). Full output: ${logPath}]`;
 }
 
-/** The pieces of Pi's `bash` text after its output: the exit, abort, or timeout status. */
+/** The status Pi appends after the output on a failure, abort, or timeout. */
 const PI_STATUS =
   /\n\n(Command exited with code -?\d+|Command aborted|Command timed out after [^\n]+|Command terminated without an exit code)$/u;
-const PI_NOTICE_PATH = /\[Showing [^\n]*Full output: ([^\]\n]+)\]/gu;
+/** Pi's cut notice, as the last thing before its status. */
+const PI_NOTICE_AT_END = /\[Showing [^\n]*Full output: ([^\]\n]+)\]$/u;
 
+/**
+ * Where Pi saved the full output of a call whose output Pi itself cut. A command can print text
+ * that looks like Pi's notice, so this is consulted only when Pi's own limits were exceeded, and a
+ * rejection's text is read only at the notice Pi puts directly before its status.
+ */
 function piFullOutputPath(text: string, details: BashToolDetails | undefined): string | undefined {
-  return details?.fullOutputPath ?? [...text.matchAll(PI_NOTICE_PATH)].at(-1)?.[1];
+  if (details?.fullOutputPath !== undefined) return details.fullOutputPath;
+  const status = PI_STATUS.exec(text);
+  if (status === null) return undefined;
+  return PI_NOTICE_AT_END.exec(text.slice(0, status.index))?.[1];
 }
 
 /** Save the whole output beside Pi's own `pi-bash-*.log` files. */
@@ -315,6 +350,23 @@ function saveFullOutput(raw: Buffer): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** `truncateTail` over a buffer that dropped its head: the totals count the dropped output too. */
+function truncateBuffered(
+  output: string,
+  dropped: DroppedOutput,
+  limits: TruncationOptions,
+): TruncationResult {
+  const truncation = truncateTail(output, limits);
+  if (dropped.bytes === 0) return truncation;
+  return {
+    ...truncation,
+    truncated: true,
+    truncatedBy: truncation.truncatedBy ?? "bytes",
+    totalLines: truncation.totalLines + dropped.lines,
+    totalBytes: truncation.totalBytes + dropped.bytes,
+  };
 }
 
 /**
@@ -329,9 +381,14 @@ function limitForegroundText(
 ) {
   const output = call.foregroundOutput();
   if (output === undefined) return undefined;
-  const truncation = truncateTail(output.text, { maxLines: limits.lines, maxBytes: limits.bytes });
+  const truncation = truncateBuffered(output.text, output.dropped, {
+    maxLines: limits.maxLines,
+    maxBytes: limits.maxBytes,
+  });
   if (!truncation.truncated) return undefined;
-  const logPath = piFullOutputPath(piText, piDetails) ?? saveFullOutput(output.raw);
+  const piCut = truncateBuffered(output.text, output.dropped, {}).truncated;
+  const logPath =
+    (piCut ? piFullOutputPath(piText, piDetails) : undefined) ?? saveFullOutput(output.raw);
   const notice = tailNotice(truncation, output.text, logPath ?? "(could not be saved)");
   const status = PI_STATUS.exec(piText);
   const suffix = status === null ? "" : `\n\n${status[1] ?? ""}`;
@@ -346,21 +403,20 @@ function backgroundResult(
   startedAt: number,
   limits: BashTailLimits | undefined,
 ) {
-  const truncation = truncateTail(
-    outcome.output,
-    limits === undefined ? {} : { maxLines: limits.lines, maxBytes: limits.bytes },
-  );
+  const truncation = truncateBuffered(outcome.output, outcome.dropped, limits ?? {});
   let text = truncation.content;
   if (truncation.truncated) {
     text += `\n\n${tailNotice(truncation, outcome.output, outcome.logPath)}`;
   }
+  // Scripts get the same contract as a finished call's structured result: Pi's limits, not the tail.
+  const structured = truncateBuffered(outcome.output, outcome.dropped, {});
   const status = `Command moved to the background as ${outcome.id}. Its output so far and all later output go to ${outcome.logPath}. You will get an Exit notification when it ends, so do not poll the log in a loop; to block until it ends, call terminal_wait. Stop it with terminal_stop {"id": "${outcome.id}"}.`;
   return {
     content: [{ type: "text" as const, text: text === "" ? status : `${text}\n\n${status}` }],
     details: undefined,
     structuredContent: {
-      output: truncation.content,
-      truncated: truncation.truncated,
+      output: structured.content,
+      truncated: structured.truncated,
       wall_time_seconds: Math.round((performance.now() - startedAt) / 100) / 10,
       background: { id: outcome.id, log_path: outcome.logPath },
     },
@@ -382,6 +438,8 @@ function limitResult(call: BashCall, result: BashResult, limits: BashTailLimits)
 }
 
 function limitError(call: BashCall, error: Error, limits: BashTailLimits): Error {
+  // Only Pi's output-plus-status messages are rewritten; any other error passes through.
+  if (!PI_STATUS.test(error.message)) return error;
   const limited = limitForegroundText(call, error.message, undefined, limits);
   return limited === undefined ? error : new Error(limited.text, { cause: error });
 }
@@ -390,7 +448,10 @@ function limitError(call: BashCall, error: Error, limits: BashTailLimits): Error
 function describeTail(description: string, limits: BashTailLimits | undefined): string {
   if (limits === undefined) return description;
   const piLimits = `${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB`;
-  return description.replace(piLimits, `${limits.lines} lines or ${formatSize(limits.bytes)}`);
+  const ours = `${limits.maxLines} lines or ${formatSize(limits.maxBytes)}`;
+  // If Pi rewords its description, still tell the model the limits in force.
+  if (!description.includes(piLimits)) return `${description} Output is truncated to last ${ours}.`;
+  return description.replace(piLimits, ours);
 }
 
 /** Pi's `bash` definition plus `background`, executed through Pi's own pipes. */

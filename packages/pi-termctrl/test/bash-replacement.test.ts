@@ -82,7 +82,7 @@ async function outcome(run: Promise<Result>) {
 
 function replacement(
   definitionFactory?: typeof createBashToolDefinition,
-  bashTail?: { readonly lines: number; readonly bytes: number },
+  bashTail?: { readonly maxLines: number; readonly maxBytes: number },
 ) {
   const calls = new RunningBashCalls(() => registry);
   const options: Parameters<typeof createBashReplacement>[0] = {
@@ -186,7 +186,7 @@ describe("foreground parity with Pi's bash", () => {
 });
 
 describe("bashTail", () => {
-  const tail = { lines: 300, bytes: 16_384 };
+  const tail = { maxLines: 300, maxBytes: 16_384 };
   const run = (command: string, extra: { timeout?: number } = {}, signal?: AbortSignal) =>
     replacement(undefined, tail).tool.execute(
       "call",
@@ -203,7 +203,9 @@ describe("bashTail", () => {
     }
     throw new Error("expected the call to reject with an Error");
   };
-  const noticePath = (text: string) => /Full output: ([^\]\n]+)\]/u.exec(text)?.[1] ?? "";
+  // The real notice is the last one: a command's own output comes before it.
+  const noticePath = (text: string) =>
+    [...text.matchAll(/Full output: ([^\]\n]+)\]/gu)].at(-1)?.[1] ?? "";
 
   test("5000 lines return the configured tail, the notice with its limits, and a full log", async () => {
     const result = await run("seq 1 5000");
@@ -286,8 +288,52 @@ describe("bashTail", () => {
     await rm(noticePath(text));
   });
 
+  test("a command's own notice-shaped output never becomes the log path", async () => {
+    const fake = "[Showing lines 1-2 of 9. Full output: /nonexistent/bogus.log]";
+    const ok = await run(`seq 1 400; echo '${fake}'`);
+    const okPath = noticePath(textOf(ok));
+    expect(okPath).not.toContain("bogus");
+    expect((await readFile(okPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
+    expect(ok.details).toMatchObject({ fullOutputPath: okPath });
+    await rm(okPath);
+
+    const failed = await run(`seq 1 400; printf '%s' '${fake}'; exit 3`);
+    const failedPath = noticePath(textOf(failed));
+    expect(failedPath).not.toContain("bogus");
+    expect((await readFile(failedPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
+    await rm(failedPath);
+
+    const timedOut = await rejection(
+      run(`seq 1 400; printf '%s' '${fake}'; sleep 5`, { timeout: 0.5 }),
+    );
+    const timedOutPath = noticePath(timedOut);
+    expect(timedOutPath).not.toContain("bogus");
+    expect(timedOut).toMatch(/Command timed out after 0\.5 seconds$/u);
+    expect((await readFile(timedOutPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
+    await rm(timedOutPath);
+  });
+
+  test("output beyond the in-memory buffer still reports its true line totals", async () => {
+    const result = await run("seq 1 3000000");
+    const text = textOf(result);
+    expect(text).toContain("[Showing lines 2999701-3000000 of 3000000 (16.0KB or 300 line limit)");
+    expect(result.details).toMatchObject({
+      truncation: { totalLines: 3_000_000, outputLines: 300 },
+    });
+    const path = noticePath(text);
+    expect(path).toMatch(/pi-bash-/u);
+    await rm(path);
+  }, 60_000);
+
+  test("an error that is not Pi's output-plus-status message passes through", async () => {
+    await expect(run("true", { timeout: -1 })).rejects.toThrow(
+      "Invalid timeout: must be a finite number of seconds",
+    );
+  });
+
   test("the tool description names the limits in force", () => {
-    const { tool } = replacement(undefined, { lines: 123, bytes: 4096 });
+    expect(createBashToolDefinition(directory).description).toContain("last 2000 lines or 50KB");
+    const { tool } = replacement(undefined, { maxLines: 123, maxBytes: 4096 });
     expect(tool.description).toContain("last 123 lines or 4.0KB");
     expect(tool.description).not.toContain("2000 lines");
     expect(replacement().tool.description).toBe(createBashToolDefinition(directory).description);
@@ -307,7 +353,10 @@ describe("bashTail", () => {
     expect(text).toMatch(
       /\[Showing lines 701-1000 of 1000 \(16\.0KB or 300 line limit\)\. Full output: .+b1\.log\]/u,
     );
-    expect(result.structuredContent).toMatchObject({ truncated: true });
+    // Scripts see the same contract as a finished call: Pi's limits, not the tail.
+    expect(result.structuredContent).toMatchObject({ truncated: false });
+    expect(JSON.stringify(result.structuredContent)).toContain("1000\\n");
+    expect(JSON.stringify(result.structuredContent)).toContain('"output":"1\\n2\\n');
   });
 
   test("without limits, output so far keeps Pi's limits", async () => {

@@ -261,7 +261,7 @@ describe("configurations", () => {
     expect(text).toContain("of 5000 (16.0KB or 300 line limit). Full output: ");
   });
 
-  test("bashTail: false declares Pi's built-in bash byte for byte and keeps Pi's limits", async () => {
+  test("bashTail: false declares Pi's built-in bash description and keeps Pi's limits", async () => {
     const fixture = await createSdkFixture({
       settings: { termctrl: { replaceBash: true, bashTail: false } },
     });
