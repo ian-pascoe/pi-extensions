@@ -31,6 +31,7 @@ import {
   DapStackParametersSchema,
   DapToolOutputSchemas,
   DapToolResultDetailsSchema,
+  type DapBaseOutput,
   DapVariablesParametersSchema,
   DapVariablesStrictParametersSchema,
   type DapExecutionWaitOperation,
@@ -319,7 +320,7 @@ function toolResultDetails(
   return Value.Parse(DapToolResultDetailsSchema, details);
 }
 
-type DapBaseOutput = DapToolOutput<"status">;
+type DapDesiredBreakpointsOutput = Required<Pick<DapToolOutput<"status">, "desired_breakpoints">>;
 type DapStopOutput = Pick<
   DapToolOutput<"status">,
   "stop_description" | "hit_breakpoint_ids" | "top_frame"
@@ -370,12 +371,18 @@ function stopOutput(result: DapSessionResult): DapStopOutput {
   return fields;
 }
 
-/** Fields every script-facing result carries: state, drained Debuggee output, Desired Breakpoints. */
+/** Fields every script-facing result carries: state and drained Debuggee output. */
 function baseOutput(result: DapSessionResult): DapBaseOutput {
   return {
     ...snapshotFields(result.snapshot),
     output: result.output,
     output_discarded_bytes: result.discardedOutputBytes,
+  };
+}
+
+/** Desired Breakpoints, carried only by `dap_set_breakpoints`, `dap_launch`, and `dap_status`. */
+function desiredBreakpointsOutput(result: DapSessionResult): DapDesiredBreakpointsOutput {
+  return {
     desired_breakpoints: result.desiredBreakpoints.map((file) => ({
       file_path: file.filePath,
       breakpoints: file.breakpoints.map((breakpoint) =>
@@ -398,17 +405,25 @@ function toolOutput(
   warnings: readonly string[],
 ): DapToolOutput {
   const base = baseOutput(result);
+  const withWaitCancelled = <TOutput extends object>(output: TOutput) =>
+    executionWaitCancelled ? { ...output, execution_wait_cancelled: true } : output;
   switch (operation) {
     case "launch":
+      return withWaitCancelled({
+        ...base,
+        ...desiredBreakpointsOutput(result),
+        ...stopOutput(result),
+      });
     case "continue":
     case "next":
     case "step_in":
-    case "step_out": {
-      const output = { ...base, ...stopOutput(result) };
-      return executionWaitCancelled ? { ...output, execution_wait_cancelled: true } : output;
-    }
+    case "step_out":
+      return withWaitCancelled({ ...base, ...stopOutput(result) });
     case "set_breakpoints": {
-      const output: DapToolOutput<"set_breakpoints"> = { ...base };
+      const output: DapToolOutput<"set_breakpoints"> = {
+        ...base,
+        ...desiredBreakpointsOutput(result),
+      };
       if (warnings.length > 0) output.warnings = [...warnings];
       return result.breakpoints === undefined
         ? output
@@ -467,8 +482,9 @@ function toolOutput(
       return { ...base, evaluation };
     }
     case "pause":
-    case "status":
       return { ...base, ...stopOutput(result) };
+    case "status":
+      return { ...base, ...desiredBreakpointsOutput(result), ...stopOutput(result) };
     case "stop":
       return base;
   }
@@ -715,7 +731,7 @@ const RUNS_DEBUGGEE_CODE: ToolAnnotations = {
 const EXECUTION_WAIT =
   "and wait until the Debuggee stops, exits, or the execution timeout passes (then it is still running).";
 const STATE_FAILURE =
-  "A call the Debug Session state does not allow returns an error result with the current `state`.";
+  "A call the Debug Session state does not allow returns an error result with the current `state` and an `error` message.";
 
 type DapNoParametersOperation = Extract<
   DapToolParameters,
