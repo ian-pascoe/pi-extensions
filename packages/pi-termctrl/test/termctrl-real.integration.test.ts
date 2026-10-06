@@ -135,7 +135,11 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
       undefined,
       context,
     );
-    expect(started.details).toMatchObject({ state: "exited", exit_code: 4, settle_reason: "exit" });
+    expect(started.details).toMatchObject({
+      state: "exited",
+      exit_code: 4,
+      settle_reason: "exited",
+    });
     await expect(
       tools.send.execute("send", { id: "t1", text: "x" }, undefined, undefined, context),
     ).rejects.toThrow("t1 exited with code 4 and accepts no input");

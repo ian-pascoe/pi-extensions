@@ -192,7 +192,7 @@ describe("terminal_start", () => {
     );
     expect(elapsed).toBeLessThan(100);
     expect(value.structuredContent).toMatchObject({ state: "exited", exit_code: 3, screen: "bye" });
-    expect(textOf(value)).toContain("t1 exited with code 3 · settled: exit");
+    expect(textOf(value)).toContain("t1 exited with code 3 · settled: exited");
   });
 
   test("a Terminal seen running still sends an Exit notification when it exits later", async () => {
@@ -703,7 +703,7 @@ describe("settle reason", () => {
     expect(textOf(value)).toContain("settled: quiet");
   });
 
-  test("is exit when the process exits, including a poll of an exited Terminal", async () => {
+  test("is exited when the process exits, including a poll of an exited Terminal", async () => {
     const { terminal } = await startTerminal();
     terminal.onInput = (self) => {
       self.exitWith({ code: 0, signal: null });
@@ -719,15 +719,15 @@ describe("settle reason", () => {
     );
     expect(value.structuredContent).toMatchObject({
       state: "exited",
-      settle_reason: "exit",
+      settle_reason: "exited",
     });
-    expect(textOf(value)).toContain("t1 exited with code 0 · settled: exit");
+    expect(textOf(value)).toContain("t1 exited with code 0 · settled: exited");
 
     const poll = await timed(
       harness.send.execute("call", { id: "t1" }, undefined, undefined, root),
     );
     expect(poll.value.structuredContent).toMatchObject({
-      settle_reason: "exit",
+      settle_reason: "exited",
     });
   });
 

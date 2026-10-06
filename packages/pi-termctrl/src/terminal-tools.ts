@@ -78,7 +78,7 @@ export interface TerminalToolRuntime {
 const TerminalStateSchema = Type.Union([Type.Literal("running"), Type.Literal("exited")]);
 
 const SettleReasonSchema = Type.Union(
-  [Type.Literal("matched"), Type.Literal("timeout"), Type.Literal("quiet"), Type.Literal("exit")],
+  [Type.Literal("matched"), Type.Literal("timeout"), Type.Literal("quiet"), Type.Literal("exited")],
   {
     description:
       "Why the wait ended: wait_for_text matched, wait_ms ran out or the call was cancelled, the screen was quiet for 250 ms, or the Terminal exited",
@@ -318,7 +318,7 @@ export async function settleTerminal(
       snapshot.idleForMs === null ? lastChangeAt : Math.max(lastChangeAt, now - snapshot.idleForMs);
     if (outputAt > request.startedAt) sawOutput = true;
 
-    if (snapshot.state === "exited") return { snapshot, reason: "exit" };
+    if (snapshot.state === "exited") return { snapshot, reason: "exited" };
     if (request.matches !== undefined) {
       const stale =
         request.baseline !== undefined &&
@@ -724,7 +724,7 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
           runtime.registry.markSeen(entry.id);
           throw inputToExited(entry.id, entry.exit);
         }
-        return terminalResult(runtime.registry, entry, undefined, "exit");
+        return terminalResult(runtime.registry, entry, undefined, "exited");
       }
       return driveTerminal(runtime.registry, entry, async () => {
         const matches =
