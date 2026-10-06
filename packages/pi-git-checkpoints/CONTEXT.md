@@ -8,6 +8,9 @@ Git Checkpoints relates Pi conversation positions to explicitly restorable workt
 The restorable contents and filesystem modes of checkpoint-eligible paths associated with a Pi session position. It excludes the source repository's index, `HEAD`, commits, refs, stash, and current branch.
 _Avoid_: Snapshot, Git stash
 
+**Restore-Excluded Path**:
+A path Restore leaves untouched because it is not checkpoint-eligible: git-ignored at the Target Checkpoint, a crossed checkpoint, or now; skipped at capture (oversized, submodule, nested repository, special file); or inside a nested repository now.
+
 **Model Step**:
 One LLM response together with its complete tool batch. Parallel tool results in the same Model Step share one resulting Worktree Checkpoint.
 

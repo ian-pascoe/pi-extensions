@@ -154,7 +154,7 @@ describe("Worktree Checkpoint capture", () => {
     expect(await readlink(join(repository, "linked.txt"))).toBe("tracked.txt");
   });
 
-  test("keeps reporting real capture skips while deriving ignored paths at Restore time", async () => {
+  test("keeps reporting real capture skips while reporting ignored paths separately", async () => {
     const { repository, store } = await initializeRepositoryStore();
     await writeFile(join(repository, ".gitignore"), "ignored.txt\n");
     await writeFile(join(repository, "ignored.txt"), "ignored\n");
@@ -174,7 +174,7 @@ describe("Worktree Checkpoint capture", () => {
 
     expect(capture.skippedPaths).toEqual(["large.bin", "nested", "submodule"]);
     expect(
-      await store.restoreExcludedPaths([
+      await store.pathsExcludedFromRestore([
         "ignored.txt",
         "nested/nested.txt",
         "tracked.txt",
@@ -198,6 +198,8 @@ describe("Worktree Checkpoint capture", () => {
 
     expect(first.skippedPaths).toEqual([]);
     expect(second.skippedPaths).toEqual([]);
+    expect(first.ignoredPaths).toEqual([".husky/_/.gitignore", ".husky/_/husky.sh"]);
+    expect(second.ignoredPaths).toEqual(first.ignoredPaths);
     const tree = await git(
       store.storeDirectory,
       `--git-dir=${join(store.storeDirectory, "git")}`,

@@ -2,4 +2,4 @@
 "@ian-pascoe/pi-git-checkpoints": patch
 ---
 
-Stop recording git-ignored paths in each checkpoint's `skipped_paths`, which bloated session entries with every unchanged ignored file (for example `.husky/_/*`). Ignored paths are now derived from live ignore rules at Restore time and still left untouched; real capture skips (oversized untracked files, submodules, nested repositories, special files) are still reported.
+Stop every Model Step from re-listing unchanged git-ignored files (such as `.husky/_/*`) as skipped paths in the session. Each checkpoint now records its ignored set only when it changes, and Restore still leaves those paths untouched, including paths whose ignore rule was later removed. Oversized files, submodules, nested repositories, and special files are still reported as skipped.
