@@ -341,6 +341,22 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
     expect(() => process.kill(pid, 0)).toThrow();
   });
 
+  test("a closing driver fails a Terminal request instead of leaving it unanswered", async () => {
+    if (binary.kind !== "available") return;
+    const driver = await createTermctrlDriver(binary.path);
+    const handle = await driver.launch({
+      id: "closing",
+      command: ["/bin/sh", "-c", "exit 0"],
+      cwd: directory,
+      viewport: { cols: 40, rows: 5 },
+    });
+    // The registry closes an idle driver without waiting for it, as when its last Terminal exits,
+    // and a tool call can still read that exited Terminal, as terminal_stop does.
+    const closed = driver.close();
+    await expect(handle.logs()).rejects.toThrow("termctrl driver is closed");
+    await closed;
+  });
+
   test("SIGKILL escalation kills the Terminal's process group", { timeout: 20_000 }, async () => {
     if (binary.kind !== "available") return;
     const driver = await createTermctrlDriver(binary.path);

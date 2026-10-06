@@ -36,19 +36,38 @@ async function readPid(pidFile: string): Promise<number | undefined> {
   return undefined;
 }
 
+/**
+ * The requests made to one driver. termctrl answers every request sent before its shutdown request
+ * and none sent after it, and the SDK sends a request while its close is in flight without ever
+ * failing it, so that request would wait forever. The registry closes an idle driver without
+ * waiting, and a tool call may still read one of its exited Terminals, as `terminal_stop` does.
+ * Requests are therefore refused once closing starts, with the SDK's message for a closed driver.
+ */
+class DriverRequests {
+  private closing = false;
+
+  send<T>(request: () => Promise<T>): Promise<T> {
+    return this.closing ? Promise.reject(new Error("termctrl driver is closed")) : request();
+  }
+
+  close(shutdown: () => Promise<void>): Promise<void> {
+    this.closing = true;
+    return shutdown();
+  }
+}
+
 class TermctrlTerminal implements TerminalHandle {
   constructor(
     private readonly session: Session,
+    private readonly requests: DriverRequests,
     private readonly pid: number | undefined,
   ) {}
 
   async snapshot(): Promise<TerminalSnapshot> {
-    const status = await this.session.status();
-    const capture = await this.session.screen.capture({
-      allowIncomplete: true,
-      settleMs: 0,
-      deadlineMs: 0,
-    });
+    const status = await this.requests.send(() => this.session.status());
+    const capture = await this.requests.send(() =>
+      this.session.screen.capture({ allowIncomplete: true, settleMs: 0, deadlineMs: 0 }),
+    );
     return {
       screen: capture.text,
       state: status.state,
@@ -58,19 +77,19 @@ class TermctrlTerminal implements TerminalHandle {
   }
 
   logs(): Promise<string> {
-    return this.session.logs.text();
+    return this.requests.send(() => this.session.logs.text());
   }
 
   type(text: string): Promise<void> {
-    return this.session.keyboard.type(text);
+    return this.requests.send(() => this.session.keyboard.type(text));
   }
 
   press(keys: readonly Key[]): Promise<void> {
-    return this.session.keyboard.sequence(keys);
+    return this.requests.send(() => this.session.keyboard.sequence(keys));
   }
 
   stop(): Promise<void> {
-    return this.session.stop();
+    return this.requests.send(() => this.session.stop());
   }
 
   isAlive(): boolean {
@@ -98,6 +117,8 @@ class TermctrlTerminal implements TerminalHandle {
 }
 
 class TermctrlDriver implements TerminalDriver {
+  private readonly requests = new DriverRequests();
+
   constructor(private readonly control: TerminalControl) {}
 
   async launch(request: TerminalLaunchRequest): Promise<TerminalHandle> {
@@ -105,19 +126,21 @@ class TermctrlDriver implements TerminalDriver {
     await mkdir(directory, { recursive: true });
     const pidFile = join(directory, `${process.pid}-${request.id}.pid`);
     try {
-      const session = await this.control.launch({
-        command: ["/bin/sh", "-c", PID_WRAPPER, "pi-termctrl", pidFile, ...request.command],
-        cwd: request.cwd,
-        viewport: request.viewport,
-      });
-      return new TermctrlTerminal(session, await readPid(pidFile));
+      const session = await this.requests.send(() =>
+        this.control.launch({
+          command: ["/bin/sh", "-c", PID_WRAPPER, "pi-termctrl", pidFile, ...request.command],
+          cwd: request.cwd,
+          viewport: request.viewport,
+        }),
+      );
+      return new TermctrlTerminal(session, this.requests, await readPid(pidFile));
     } finally {
       await rm(pidFile, { force: true });
     }
   }
 
   close(): Promise<void> {
-    return this.control.close();
+    return this.requests.close(() => this.control.close());
   }
 }
 

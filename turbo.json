@@ -13,6 +13,81 @@
     "test": {
       "dependsOn": ["transit"]
     },
+    "@ian-pascoe/pi-advisor#test": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-context-management/**",
+        "$TURBO_ROOT$/packages/pi-minimal-subagents/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
+    "@ian-pascoe/pi-advisor#typecheck": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-context-management/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
+    "@ian-pascoe/pi-command-deck#test": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-minimal-subagents/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
+    "@ian-pascoe/pi-context-management#test": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-todo/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
+    "@ian-pascoe/pi-dap#test": {
+      "dependsOn": ["transit"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/.pi/settings.json"]
+    },
+    "@ian-pascoe/pi-lsp#test": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-dap/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
+    "@ian-pascoe/pi-minimal-subagents#test": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-context-management/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
+    "@ian-pascoe/pi-termctrl#test": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-minimal-subagents/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
     "//#test:root": {
       "inputs": [
         "test/**",
@@ -22,9 +97,9 @@
         "packages/pi-formatter/**",
         "packages/pi-lsp/**",
         "packages/pi-utils/**",
-        "!**/node_modules/**",
-        "!**/dist/**",
-        "!**/.turbo/**"
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
       ]
     },
     "//#typecheck:root": {
@@ -36,14 +111,14 @@
         "packages/**",
         "tools/**",
         ".oxfmtrc.json",
-        "!**/node_modules/**",
-        "!**/dist/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
         "!**/coverage/**",
         "!**/*.tgz",
         "!.pi/**",
         "!.repos/**",
         "!.scratch/**",
-        "!**/.turbo/**"
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
       ]
     },
     "//#lint": {
@@ -52,14 +127,14 @@
         "packages/**",
         "tools/**",
         ".oxlintrc.json",
-        "!**/node_modules/**",
-        "!**/dist/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
         "!**/coverage/**",
         "!**/*.tgz",
         "!.pi/**",
         "!.repos/**",
         "!.scratch/**",
-        "!**/.turbo/**"
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
       ]
     }
   }
