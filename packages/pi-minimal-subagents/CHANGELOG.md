@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.15.0
+
+### Minor Changes
+
+- 583f0ae: **Behavior change:** `subagent_wait` timeouts now return a compact progress snapshot (`state`, `elapsed_ms`, `latest_activity_at`, `total_tokens`, `recent_activity_labels`) instead of the full child `agent` status, and `latest_activity_at` advances while a child works.
+
+### Patch Changes
+
+- 8015e0e: The duplicate agent ID error now names the existing child's state and suggests `agent_message`, `subagent_delete`, or another `agent_id`.
+
 ## 0.14.1
 
 ### Patch Changes

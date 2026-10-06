@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.3.1
+
+### Patch Changes
+
+- ea46e80: Web Fetch no longer drops a page body whose content column has `role="navigation"`, and says how much text chrome removal dropped and how to get the full page.
+
 ## 0.3.0
 
 ### Minor Changes

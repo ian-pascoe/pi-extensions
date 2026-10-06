@@ -1,5 +1,12 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.4.1
+
+### Patch Changes
+
+- cc9bd12: `terminal_stop` no longer hangs on an exited Terminal while termctrl shuts down its idle driver, as right after the last running Terminal exits.
+- 1a9b525: `terminal_stop` now omits an unchanged final screen for running Terminals too, matching its description.
+
 ## 0.4.0
 
 ### Minor Changes

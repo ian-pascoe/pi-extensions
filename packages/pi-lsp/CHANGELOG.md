@@ -1,5 +1,16 @@
 # @ian-pascoe/pi-lsp
 
+## 0.8.0
+
+### Minor Changes
+
+- 6bd6781: References and rename now open one file in each unloaded workspace package (up to 20 packages, 10 seconds) in a workspace root before searching, so importers in packages not opened before are found, and only packages still unloaded are warned about.
+- b33e696: Structured results add flat one-based `path`, `line`, and `character` to locations and symbols, and `kind_name` to symbols, and structured `lsp_status` now lists only the servers its text lists, reporting the rest as `not_started`, unless `all: true`.
+
+### Patch Changes
+
+- 7a86863: Post-edit Diagnostics no longer list a file as "no diagnostics" when another server reported a finding for it.
+
 ## 0.7.0
 
 ### Minor Changes
