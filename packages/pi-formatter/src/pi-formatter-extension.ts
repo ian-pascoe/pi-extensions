@@ -16,7 +16,7 @@ import {
   type FormatterDefinition,
   type ResolvedFormatterSettings,
 } from "./pi-formatter-settings.js";
-import { describeChangedLines } from "./changed-lines.js";
+import { describeChangedLines, diffChangedLines } from "./changed-lines.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 const NativeMutationInputSchema = Type.Object(
@@ -72,6 +72,14 @@ const WorkspaceEditApplyDetailsSchema = Type.Object(
   { additionalProperties: true },
 );
 const MAX_FORMATTER_STDERR_CHARACTERS = 50_000;
+/**
+ * The most changed-hunk text, shared by every file of one mutation result and counted without the
+ * `Formatted by` lines: at most `MAX_DIFF_LINES` lines and `MAX_DIFF_BYTES` UTF-8 bytes. A file whose
+ * diff does not fit in what remains is reported by its changed-line summary alone, so a large
+ * reformat never floods the result.
+ */
+const MAX_DIFF_LINES = 60;
+const MAX_DIFF_BYTES = 6_000;
 /**
  * Pi LSP tools that apply a Workspace Edit Preview: `lsp_apply`, and the removed single `lsp` tool,
  * whose apply results remain in session history.
@@ -325,6 +333,24 @@ function formatFormatterFailure(
   return `Pi Formatter: ${definition.id} failed for ${target} (${status})${failure.stderr === "" ? "" : `: ${failure.stderr}`}`;
 }
 
+/**
+ * Append `diff` to `summary` and spend it from the budget the result's files share. When the diff
+ * is missing or does not fit in what remains, the summary stands alone.
+ */
+function withDiff(
+  summary: string,
+  diff: readonly string[] | undefined,
+  budget: { lines: number; bytes: number },
+): string {
+  if (diff === undefined) return summary;
+  const text = diff.join("\n");
+  const bytes = Buffer.byteLength(text);
+  if (diff.length > budget.lines || bytes > budget.bytes) return summary;
+  budget.lines -= diff.length;
+  budget.bytes -= bytes;
+  return `${summary}\n${text}`;
+}
+
 async function formatMutationPaths(
   paths: readonly string[],
   cwd: string,
@@ -398,17 +424,18 @@ async function formatMutationPaths(
       await recordChanges(definition);
     }
   }
+  const diffBudget = { lines: MAX_DIFF_LINES, bytes: MAX_DIFF_BYTES };
   for (const path of existing.paths) {
     const formatters = changedBy.get(path);
-    if (formatters === undefined) continue;
     const before = original.get(path);
     const after = current.get(path);
-    const changedLines =
-      before === undefined || after === undefined ? undefined : describeChangedLines(before, after);
+    if (formatters === undefined || before === undefined || after === undefined) continue;
+    const changedLines = describeChangedLines(before, after);
     if (changedLines === undefined) continue;
     const file = existing.paths.length > 1 ? `${relative(cwd, path)}: ` : "";
+    const summary = `Formatted by ${formatters.join(", ")}: ${file}${changedLines}`;
     notes.push({
-      text: `Formatted by ${formatters.join(", ")}: ${file}${changedLines}`,
+      text: withDiff(summary, diffChangedLines(before, after), diffBudget),
       diagnosable: false,
     });
   }

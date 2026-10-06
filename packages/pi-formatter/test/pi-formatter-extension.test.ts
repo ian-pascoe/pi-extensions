@@ -2,6 +2,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import {
+  createEditTool,
+  createWriteTool,
   DefaultResourceLoader,
   ExtensionRunner,
   ModelRegistry,
@@ -210,9 +212,20 @@ describe("Pi Formatter extension lifecycle", () => {
     );
 
     expect(result?.content?.at(-1)).toMatchObject({
-      text: expect.stringContaining(
-        "Formatted by perFile: first.txt: line 1 changed\nFormatted by perFile: second.txt: line 1 changed",
-      ),
+      text: [
+        "Formatted by perFile: first.txt: line 1 changed",
+        "@@ -1 +1 @@",
+        "-one",
+        "\\ No newline at end of file",
+        "+one:formatted",
+        "\\ No newline at end of file",
+        "Formatted by perFile: second.txt: line 1 changed",
+        "@@ -1 +1 @@",
+        "-two",
+        "\\ No newline at end of file",
+        "+two:formatted",
+        "\\ No newline at end of file",
+      ].join("\n"),
     });
     expect(await readFile(first, "utf8")).toBe("one:formatted");
     expect(await readFile(second, "utf8")).toBe("two:formatted");
@@ -332,7 +345,17 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(await readFile(filePath, "utf8")).toBe("FORMAT ME");
     expect(result?.content).toEqual([
       { type: "text", text: "changed" },
-      { type: "text", text: "Formatted by uppercase: line 1 changed" },
+      {
+        type: "text",
+        text: [
+          "Formatted by uppercase: line 1 changed",
+          "@@ -1 +1 @@",
+          "-format me",
+          "\\ No newline at end of file",
+          "+FORMAT ME",
+          "\\ No newline at end of file",
+        ].join("\n"),
+      },
     ]);
   });
 
@@ -487,8 +510,146 @@ describe("Pi Formatter extension lifecycle", () => {
     // `first` changed line 4, then `second` inserted lines above it. Only the final span is valid.
     expect(result?.content?.at(-1)).toEqual({
       type: "text",
-      text: "Formatted by first, second: lines 2–6 changed",
+      text: [
+        "Formatted by first, second: lines 2–6 changed",
+        "@@ -1,5 +1,7 @@",
+        " a",
+        "+new1",
+        "+new2",
+        " b",
+        " c",
+        "-d",
+        "+D",
+        " e",
+      ].join("\n"),
     });
+  });
+
+  test("lets the agent write an exact edit from the mutation result alone after a formatter rewrote the file", async () => {
+    const script =
+      "require('node:fs').writeFileSync(process.argv[1],'export function f(a: number) {\\n  return a + 1;\\n}\\n')";
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: {
+          prettier: {
+            command: process.execPath,
+            args: ["-e", script, "$FILE"],
+            files: { extensions: [".ts"] },
+          },
+        },
+      },
+    });
+    const filePath = resolve(harness.cwd, "f.ts");
+    const written = await createWriteTool(harness.cwd).execute("write-1", {
+      path: filePath,
+      content: "export function f( a:number ){return a+1}",
+    });
+    const formatted = await harness.runner.emitToolResult({
+      ...toolResultEvent("write", {
+        input: { path: filePath },
+        details: undefined,
+      }),
+      content: written.content,
+    });
+    const resultText = (formatted?.content ?? [])
+      .flatMap((block) => (block.type === "text" ? [block.text] : []))
+      .join("\n");
+
+    // Only the model-visible text is used: the formatted lines are its context and `+` lines.
+    const formattedLines = resultText
+      .split("\n")
+      .filter((line) => line.startsWith(" ") || line.startsWith("+"))
+      .map((line) => line.slice(1));
+    const oldText = formattedLines.find((line) => line.includes("return a + 1"));
+    expect(formattedLines).toEqual(["export function f(a: number) {", "  return a + 1;", "}"]);
+    if (oldText === undefined) throw new Error("expected the formatted return line in the result");
+    const edited = await createEditTool(harness.cwd).execute("edit-1", {
+      path: filePath,
+      edits: [{ oldText, newText: "  return a + 2;" }],
+    });
+
+    expect(edited.content[0]).toMatchObject({
+      type: "text",
+      text: expect.stringContaining("Successfully"),
+    });
+    expect(await readFile(filePath, "utf8")).toBe(
+      "export function f(a: number) {\n  return a + 2;\n}\n",
+    );
+  });
+
+  test("falls back to the changed-line summary when the diff exceeds the line limit", async () => {
+    const script =
+      "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').replaceAll('x','y'))";
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: { rewrite: formatterDefinition(["-e", script, "$FILE"]) },
+      },
+    });
+    const filePath = resolve(harness.cwd, "large.txt");
+    await writeFile(filePath, "x\n".repeat(40));
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("write", {
+        input: { path: filePath },
+        details: undefined,
+      }),
+    );
+
+    expect(lastText(result)).toBe("Formatted by rewrite: lines 1–40 changed");
+  });
+
+  test("falls back to the changed-line summary when the diff exceeds the byte limit", async () => {
+    const script =
+      "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').toUpperCase())";
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: { upper: formatterDefinition(["-e", script, "$FILE"]) },
+      },
+    });
+    const filePath = resolve(harness.cwd, "wide.txt");
+    await writeFile(filePath, `${"a".repeat(4_000)}\n`);
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("write", {
+        input: { path: filePath },
+        details: undefined,
+      }),
+    );
+
+    expect(lastText(result)).toBe("Formatted by upper: line 1 changed");
+  });
+
+  test("shares the diff limits across the files of one mutation result", async () => {
+    const script =
+      "const fs=require('node:fs');const p=process.argv[1];fs.writeFileSync(p,fs.readFileSync(p,'utf8').replaceAll('x','y'))";
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: { rewrite: formatterDefinition(["-e", script, "$FILE"]) },
+      },
+    });
+    const files = ["a.txt", "b.txt", "c.txt"].map((name) => resolve(harness.cwd, name));
+    await Promise.all(files.map((file) => writeFile(file, "x\n".repeat(10))));
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("apply_patch", {
+        input: {},
+        details: {
+          status: "success",
+          result: {
+            changedFiles: files,
+            createdFiles: [],
+            deletedFiles: [],
+            movedFiles: [],
+          },
+        },
+      }),
+    );
+
+    const text = lastText(result);
+    expect(text.split("\n").length).toBeLessThanOrEqual(60 + 3);
+    expect(text).toContain("Formatted by rewrite: a.txt: lines 1–10 changed\n@@ -1,10 +1,10 @@");
+    expect(text).toContain("Formatted by rewrite: c.txt: lines 1–10 changed");
+    expect(text).not.toContain("Formatted by rewrite: c.txt: lines 1–10 changed\n@@");
   });
 
   test("reports a Workspace Formatter that changed a file, and fixes by a formatter that exits non-zero", async () => {
@@ -855,7 +1016,16 @@ describe("Pi Formatter extension lifecycle", () => {
     );
 
     expect(lastText(result)).toBe(
-      "Formatted by workspace: a.md: line 1 changed\nFormatted by workspace: b.txt: line 1 changed",
+      [
+        "Formatted by workspace: a.md: line 1 changed",
+        "@@ -1 +1 @@",
+        "-a",
+        "+A",
+        "Formatted by workspace: b.txt: line 1 changed",
+        "@@ -1 +1 @@",
+        "-b",
+        "+B",
+      ].join("\n"),
     );
   });
 
