@@ -228,7 +228,7 @@ function findingCounts(entry: AdvisorStatusEntry): string[] {
       ? `${plural(dropped.unsupported, "finding", "findings")} without valid evidence dropped`
       : "",
     dropped?.superseded
-      ? `${plural(dropped.superseded, "Nit", "Nits")} superseded again dropped`
+      ? `${plural(dropped.superseded, "Nit", "Nits")} from a superseded re-validating Review dropped`
       : "",
     dropped?.invalidReviews
       ? `${plural(dropped.invalidReviews, "Review", "Reviews")} ended by invalid reports`

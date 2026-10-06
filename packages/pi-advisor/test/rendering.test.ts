@@ -187,7 +187,7 @@ describe("Advisor status", () => {
       "2 findings awaiting re-validation",
       "1 Nit over the request cap dropped",
       "3 findings without valid evidence dropped",
-      "2 Nits superseded again dropped",
+      "2 Nits from a superseded re-validating Review dropped",
       "1 Review ended by invalid reports",
     ])
       expect(text.replace(/\s+/g, " ")).toContain(count);

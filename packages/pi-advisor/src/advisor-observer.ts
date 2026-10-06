@@ -413,15 +413,21 @@ export class AdvisorObserver {
   }
   /**
    * Rebuild delivery bookkeeping from the selected branch: delivered findings for dedupe, the
-   * Concern cooldown, and the Nits delivered since the latest user request, plus Nits still
-   * queued for delivery.
+   * Concern cooldown, and the Nits delivered since the latest user message that started a run,
+   * plus Nits still queued for delivery.
    */
   private restoreDedupe(): void {
     this.delivered.clear();
     let turnsSinceConcern: number | undefined;
     let requestNits = 0;
+    let afterToolResult = false;
     for (const entry of this.observed.sessionManager.getBranch()) {
-      if (entry.type === "message" && entry.message.role === "user") requestNits = 0;
+      if (entry.type === "message") {
+        // A user message after a tool result is a steer inside a run, not a new request. A
+        // follow-up after a final answer cannot be told apart from one, so it restarts the count.
+        if (entry.message.role === "user" && !afterToolResult) requestNits = 0;
+        afterToolResult = entry.message.role === "toolResult";
+      }
       if (
         entry.type === "message" &&
         entry.message.role === "assistant" &&
