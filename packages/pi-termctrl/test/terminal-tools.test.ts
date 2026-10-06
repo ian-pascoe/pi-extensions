@@ -551,6 +551,29 @@ describe("terminal_send", () => {
     ).rejects.toThrow(`t1 was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`);
   });
 
+  test("input to a Terminal lost with its driver says it accepts no input, not that the driver failed", async () => {
+    await startTerminal();
+    harness.drivers.latest.die();
+    const first = harness.send.execute("call", { id: "t1", text: "a" }, undefined, undefined, root);
+    const second = harness.send.execute(
+      "call",
+      { id: "t1", text: "b" },
+      undefined,
+      undefined,
+      root,
+    );
+    await expect(first).rejects.toThrow("t1 was lost because the termctrl driver exited");
+    const error = await second.then(
+      () => undefined,
+      (cause: Error) => cause,
+    );
+    expect(error?.message).toContain("t1 ended by termctrl driver exited and accepts no input");
+    expect(error?.message).not.toContain(TROUBLESHOOTING_HINT);
+    await expect(
+      harness.send.execute("call", { id: "t1", text: "c" }, undefined, undefined, root),
+    ).rejects.toThrow("accepts no input");
+  });
+
   test("rejects unknown keys before sending anything", async () => {
     const { terminal } = await startTerminal();
     await expect(

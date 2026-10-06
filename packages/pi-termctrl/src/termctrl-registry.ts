@@ -13,7 +13,7 @@ import type { TerminalViewport } from "./pi-termctrl-settings.js";
 /** The `globalThis` key every registry version shares. Its value always satisfies {@link RegistrySlot}. */
 export const REGISTRY_KEY = Symbol.for("@ian-pascoe/pi-termctrl/registry");
 /** Bump on any change to the state's shape: a reloaded module must not adopt an older shape. */
-export const REGISTRY_VERSION = 4;
+export const REGISTRY_VERSION = 5;
 
 /** Live Terminals plus Background jobs allowed across the whole process. */
 export const LIVE_ENTRY_CAP = 16;

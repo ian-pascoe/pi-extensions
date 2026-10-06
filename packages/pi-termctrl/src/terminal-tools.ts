@@ -641,7 +641,11 @@ async function driveTerminal<T>(
     return await run();
   } catch (cause) {
     const error = cause instanceof Error ? cause : new Error(String(cause));
-    if (release !== undefined && registry.reportTerminalError(entry, error)) {
+    if (
+      release !== undefined &&
+      !(error instanceof InputToExitedError) &&
+      registry.reportTerminalError(entry, error)
+    ) {
       throw new Error(
         `${entry.id} was lost because the termctrl driver exited\n\n${TROUBLESHOOTING_HINT}`,
         { cause },
@@ -734,10 +738,21 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
   });
 }
 
+/**
+ * Input to a Terminal that exited. It is the agent's mistake, not a driver failure, even when the
+ * exit says the driver died: that loss was already reported.
+ */
+class InputToExitedError extends Error {
+  constructor(id: string, exit: TerminalExit | null) {
+    super(
+      `${id} ${describeExit(exit)} and accepts no input. Poll it with terminal_send for its final screen, or remove it with terminal_stop.`,
+    );
+    this.name = "InputToExitedError";
+  }
+}
+
 function inputToExited(id: string, exit: TerminalExit | null): Error {
-  return new Error(
-    `${id} ${describeExit(exit)} and accepts no input. Poll it with terminal_send for its final screen, or remove it with terminal_stop.`,
-  );
+  return new InputToExitedError(id, exit);
 }
 
 /** `terminal_send`: type text and keys into a Terminal, or poll it, and wait for it to settle. */
