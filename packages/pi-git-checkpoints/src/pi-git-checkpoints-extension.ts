@@ -16,6 +16,7 @@ import {
   GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
   createGitCheckpointPreview,
   planGitCheckpointNavigation,
+  gitCheckpointIgnoredPathsAt,
   replayGitCheckpointHistory,
   replayGitCheckpointUndo,
   ModelStepEndEntryPayloadSchema,
@@ -272,7 +273,14 @@ class PiGitCheckpointsLifecycle {
         context.signal,
       );
       const resultLeafId = context.sessionManager.getLeafId();
-      this.pi.appendEntry(GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE, {
+      const previousIgnoredPaths = gitCheckpointIgnoredPathsAt(
+        replayGitCheckpointHistory(context.sessionManager.getEntries(), identity),
+        resultLeafId,
+      );
+      const ignoredChanged =
+        previousIgnoredPaths.length !== capture.ignoredPaths.length ||
+        previousIgnoredPaths.some((path, index) => path !== capture.ignoredPaths[index]);
+      const payload: ModelStepEndEntryPayload = {
         version: 1,
         session_id: identity.sessionId,
         checkpoint_scope: identity.checkpointScope,
@@ -285,7 +293,9 @@ class PiGitCheckpointsLifecycle {
         changed_paths: [...new Set(changes.map(({ path }) => path))].toSorted(),
         skipped_paths: [...capture.skippedPaths],
         tool_call_ids: [...new Set(event.toolResults.map(({ toolCallId }) => toolCallId))],
-      } satisfies ModelStepEndEntryPayload);
+      };
+      if (ignoredChanged) payload.ignored_paths = [...capture.ignoredPaths];
+      this.pi.appendEntry(GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE, payload);
     } catch (cause) {
       this.disable(context, cause);
     }
@@ -303,13 +313,16 @@ class PiGitCheckpointsLifecycle {
         selectedTargetId: event.preparation.targetId,
       });
       if (plan.kind !== "ready" || plan.changedPaths.length === 0) return;
+      const pathsExcluded = await store.pathsExcludedFromRestore(plan.changedPaths, event.signal);
+      const restorePaths = plan.changedPaths.filter((path) => !pathsExcluded.has(path));
+      if (restorePaths.length === 0) return;
       const approvalCapture = await store.capture(event.signal);
       let differences;
       try {
         differences = await store.compareTrees(
           plan.targetCheckpoint.targetTreeId,
           approvalCapture.treeId,
-          plan.changedPaths,
+          restorePaths,
           event.signal,
         );
       } catch (cause) {
@@ -328,7 +341,7 @@ class PiGitCheckpointsLifecycle {
           ? `Repository HEAD differs from the Target Checkpoint (${liveHead.slice(0, 12)} vs ${targetHead.slice(0, 12)}); the branch will not change.`
           : undefined;
       const choice = await context.ui.select(
-        `${PACKAGE_PREFIX}: Restore Worktree Checkpoint?\n${previewText(differences, plan.skippedPaths.length, headWarning)}`,
+        `${PACKAGE_PREFIX}: Restore Worktree Checkpoint?\n${previewText(differences, plan.skippedPaths.length + pathsExcluded.size, headWarning)}`,
         [RESTORE_CHOICE, KEEP_CHOICE, CANCEL_CHOICE],
         { signal: event.signal },
       );

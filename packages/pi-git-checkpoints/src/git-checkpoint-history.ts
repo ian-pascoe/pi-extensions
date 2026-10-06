@@ -53,6 +53,8 @@ export const ModelStepEndEntryPayloadSchema = Type.Object(
     source_state: SourceStateSchema,
     changed_paths: CheckpointPathArraySchema,
     skipped_paths: CheckpointPathArraySchema,
+    // Full git-ignored set, written only when it differs from the previous checkpoint's.
+    ignored_paths: Type.Optional(CheckpointPathArraySchema),
     tool_call_ids: Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
   },
   strictObject,
@@ -105,6 +107,8 @@ export type ModelStepCheckpoint = {
   readonly targetTreeId: string;
   readonly changedPaths: readonly string[];
   readonly skippedPaths: readonly string[];
+  /** Git-ignored paths at this checkpoint, inherited from the nearest earlier checkpoint if unrecorded. */
+  readonly ignoredPaths: readonly string[];
   readonly toolCallIds: readonly string[];
 };
 
@@ -200,7 +204,8 @@ function isEndEntry(
     entry.customType === GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE &&
     Value.Check(ModelStepEndEntryPayloadSchema, entry.data) &&
     entry.data.changed_paths.every(isNormalizedCheckpointPath) &&
-    entry.data.skipped_paths.every(isNormalizedCheckpointPath)
+    entry.data.skipped_paths.every(isNormalizedCheckpointPath) &&
+    (entry.data.ignored_paths ?? []).every(isNormalizedCheckpointPath)
   );
 }
 
@@ -252,6 +257,8 @@ export function replayGitCheckpointHistory(
       starts.set(entry.id, entry.data);
   }
 
+  const entriesById = createEntryIndex(entries);
+  const ignoredByEndEntry = new Map<string, readonly string[]>();
   const pairedStarts = new Set<string>();
   const checkpoints: ModelStepCheckpoint[] = [];
   for (const entry of entries) {
@@ -266,6 +273,10 @@ export function replayGitCheckpointHistory(
       continue;
     }
     pairedStarts.add(entry.data.start_entry_id);
+    const ignoredPaths =
+      entry.data.ignored_paths ??
+      nearestIgnoredPaths(entry.parentId, entriesById, ignoredByEndEntry);
+    ignoredByEndEntry.set(entry.id, ignoredPaths);
     checkpoints.push({
       stepId: entry.data.step_id,
       startEntryId: entry.data.start_entry_id,
@@ -274,10 +285,37 @@ export function replayGitCheckpointHistory(
       targetTreeId: entry.data.tree_id,
       changedPaths: entry.data.changed_paths,
       skippedPaths: entry.data.skipped_paths,
+      ignoredPaths,
       toolCallIds: entry.data.tool_call_ids,
     });
   }
   return { checkpoints, entries: [...entries] };
+}
+
+function nearestIgnoredPaths(
+  positionId: string | null,
+  entriesById: ReadonlyMap<string, SessionEntry>,
+  ignoredByEndEntry: ReadonlyMap<string, readonly string[]>,
+): readonly string[] {
+  let currentId = positionId;
+  while (currentId !== null) {
+    const recorded = ignoredByEndEntry.get(currentId);
+    if (recorded !== undefined) return recorded;
+    currentId = entriesById.get(currentId)?.parentId ?? null;
+  }
+  return [];
+}
+
+/** Git-ignored paths recorded by the nearest checkpoint at or before a session position. */
+export function gitCheckpointIgnoredPathsAt(
+  history: GitCheckpointHistory,
+  positionId: string | null,
+): readonly string[] {
+  return nearestIgnoredPaths(
+    positionId,
+    createEntryIndex(history.entries),
+    new Map(history.checkpoints.map(({ endEntryId, ignoredPaths }) => [endEntryId, ignoredPaths])),
+  );
 }
 
 function selectedTargetPosition(entry: SessionEntry): string | null {
@@ -426,10 +464,12 @@ export function planGitCheckpointNavigation(
     history.checkpoints,
     entriesById,
   );
-  const skippedPaths = sortedUniquePaths([
-    ...crossedCheckpoints.flatMap(({ skippedPaths }) => skippedPaths),
-    ...targetCheckpoint.skippedPaths,
-  ]);
+  const skippedPaths = sortedUniquePaths(
+    [...crossedCheckpoints, targetCheckpoint].flatMap(({ ignoredPaths, skippedPaths }) => [
+      ...skippedPaths,
+      ...ignoredPaths,
+    ]),
+  );
   return {
     kind: "ready",
     selectedTargetId: input.selectedTargetId,

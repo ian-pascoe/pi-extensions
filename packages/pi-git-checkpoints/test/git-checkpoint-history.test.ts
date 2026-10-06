@@ -8,6 +8,7 @@ import {
   GIT_CHECKPOINT_UNDO_ENTRY_TYPE,
   createGitCheckpointPreview,
   planGitCheckpointNavigation,
+  gitCheckpointIgnoredPathsAt,
   replayGitCheckpointHistory,
   replayGitCheckpointUndo,
   type GitCheckpointHistoryIdentity,
@@ -105,6 +106,7 @@ function appendModelStep(
     endTree: string;
     changedPaths: string[];
     skippedPaths?: string[];
+    ignoredPaths?: string[];
     toolCallIds?: string[];
   },
 ) {
@@ -132,6 +134,7 @@ function appendModelStep(
     skipped_paths: options.skippedPaths ?? [],
     tool_call_ids: options.toolCallIds ?? [],
   };
+  if (options.ignoredPaths) endPayload.ignored_paths = options.ignoredPaths;
   const endEntryId = sessionManager.appendCustomEntry(
     GIT_CHECKPOINT_MODEL_STEP_END_ENTRY_TYPE,
     endPayload,
@@ -410,6 +413,51 @@ describe("Target Checkpoint mapping", () => {
         selectedTargetId: rootUserId,
       }),
     ).toMatchObject({ kind: "unavailable", reason: "target-checkpoint-missing" });
+  });
+});
+
+describe("ignored path inheritance", () => {
+  test("inherits unrecorded ignored sets along a branch and keeps them excluded from Restore", () => {
+    const { sessionManager, identity } = createHistorySession();
+    sessionManager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
+    const first = appendModelStep(sessionManager, identity, {
+      stepId: "first",
+      startTree: "tree-0",
+      endTree: "tree-1",
+      changedPaths: ["code.ts"],
+      ignoredPaths: [".env"],
+    });
+    sessionManager.appendMessage({ role: "user", content: "second", timestamp: Date.now() });
+    const second = appendModelStep(sessionManager, identity, {
+      stepId: "second",
+      startTree: "tree-1",
+      endTree: "tree-2",
+      changedPaths: [".env", ".gitignore", "code.ts"],
+      ignoredPaths: [],
+    });
+    sessionManager.appendMessage({ role: "user", content: "third", timestamp: Date.now() });
+    const third = appendModelStep(sessionManager, identity, {
+      stepId: "third",
+      startTree: "tree-2",
+      endTree: "tree-3",
+      changedPaths: ["code.ts"],
+    });
+    const history = replay(sessionManager, identity);
+
+    expect(history.checkpoints.map(({ ignoredPaths }) => ignoredPaths)).toEqual([[".env"], [], []]);
+    expect(gitCheckpointIgnoredPathsAt(history, first.endEntryId)).toEqual([".env"]);
+    expect(gitCheckpointIgnoredPathsAt(history, third.assistantId)).toEqual([]);
+    expect(gitCheckpointIgnoredPathsAt(history, null)).toEqual([]);
+    expect(
+      planGitCheckpointNavigation(history, {
+        oldLeafId: third.endEntryId,
+        selectedTargetId: first.assistantId,
+      }),
+    ).toMatchObject({
+      changedPaths: [".gitignore", "code.ts"],
+      skippedPaths: [".env"],
+    });
+    expect(gitCheckpointIgnoredPathsAt(history, second.endEntryId)).toEqual([]);
   });
 });
 
