@@ -442,8 +442,8 @@ Pi LSP appends fresh diagnostics to results from:
 - successful or partially applied LSP previews from `lsp_apply`, and from the removed `lsp` tool.
 
 Changed, created, and renamed destination files are diagnosed; deleted files are not. Every
-file a configured server covers gets an explicit outcome, including `no diagnostics`, timeout,
-unavailable server, or an `apply_patch` adapter-version warning. Findings read
+file a Server Definition covers gets an explicit outcome: findings, `no diagnostics`, timeout, or
+unavailable server. An unrecognized `apply_patch` result shape adds an adapter-version warning. Findings read
 `path:line:col severity [server]: message`, one line each, with paths relative to the working
 directory, named severities (`error`, `warning`, `info`, `hint`), and the whole message collapsed
 onto one line. When every changed file is clean, the section is one line:
@@ -454,8 +454,8 @@ Only servers that advertise document diagnostics participate; formatting-only se
 available for explicit LSP formatting operations without appearing in Post-edit Diagnostics. A
 file that no Server Definition covers, because none handles its language or every one that does
 fails its Activation Gate, is skipped silently, as is a file whose only matching Server
-Definitions are disabled; when no changed file has a covering server, no diagnostics section is
-appended at all.
+Definitions are disabled. When no changed file is covered by an enabled Server Definition, no
+diagnostics section is appended (an `apply_patch` adapter-version warning still is).
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. Its collapsed rendering shows the summary

@@ -295,7 +295,7 @@ test("groups clean files into one line after the findings and omits files with n
   );
 });
 
-test("lists only the matched file when a clean file is edited beside one with no configured server", async () => {
+test("drops a file with no configured server from the one-line clean result", async () => {
   await expect(
     appendedText([
       { kind: "no_diagnostics", path: "/work/a.ts" },

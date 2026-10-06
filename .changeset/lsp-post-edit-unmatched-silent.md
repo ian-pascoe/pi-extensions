@@ -2,4 +2,4 @@
 "@ian-pascoe/pi-lsp": patch
 ---
 
-Post-edit Diagnostics no longer add a "not checked (no configured server)" line: files no language server covers stay silent, and nothing is appended when no edited file has a server, while a matched server's failure or timeout is still reported.
+Post-edit Diagnostics no longer add a "not checked (no configured server)" line: files no Server Definition covers stay silent, and no diagnostics section is appended when none of the edited files is covered, while a failure or timeout from a covering Server Definition's Server Instance is still reported.

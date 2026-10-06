@@ -1089,8 +1089,8 @@ describe("Pi LSP extension lifecycle", () => {
       isError: false,
     } satisfies ToolResultEvent;
 
-    const unchecked = await harness.runner.emitToolResult(event);
-    expect(unchecked).toBeUndefined();
+    const withoutRootMarker = await harness.runner.emitToolResult(event);
+    expect(withoutRootMarker).toBeUndefined();
 
     await writeFile(resolve(cwd, "tsconfig.json"), "{}");
     const augmented = await harness.runner.emitToolResult(event);
@@ -1136,6 +1136,49 @@ describe("Pi LSP extension lifecycle", () => {
       isError: false,
     } satisfies ToolResultEvent);
     expect(result).toBeUndefined();
+    await shutdownExtension(harness);
+  });
+
+  test("still reports a failing Server Instance beside a file no Server Definition covers", async () => {
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        timeouts: { diagnosticsMs: 1_000, initializeMs: 5_000, shutdownMs: 1_000 },
+        servers: {
+          broken: {
+            command: resolve(tmpdir(), "pi-lsp-missing-server-binary"),
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+        },
+      },
+    });
+    await startExtension(harness);
+    const cwd = harness.sessionManager.getCwd();
+    const sourcePath = resolve(cwd, "source.ts");
+    const notesPath = resolve(cwd, "notes.md");
+    await writeFile(sourcePath, "const value = 1;\n");
+    await writeFile(notesPath, "notes\n");
+
+    const result = await harness.runner.emitToolResult({
+      type: "tool_result",
+      toolCallId: "failing-beside-unmatched",
+      toolName: "apply_patch",
+      input: {},
+      content: [{ type: "text", text: "Applied patch" }],
+      details: {
+        status: "success",
+        result: {
+          changedFiles: [sourcePath, notesPath],
+          createdFiles: [],
+          deletedFiles: [],
+          movedFiles: [],
+        },
+      },
+      isError: false,
+    } satisfies ToolResultEvent);
+    expect(result?.content?.at(-1)).toEqual({
+      type: "text",
+      text: "\n\nLSP diagnostics\nsource.ts: unavailable server (broken)",
+    });
     await shutdownExtension(harness);
   });
 });

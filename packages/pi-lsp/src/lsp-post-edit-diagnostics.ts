@@ -212,11 +212,15 @@ export function lspSeverityName(severity: number): string | undefined {
   return SEVERITY_NAMES.get(severity);
 }
 
-/** Outcomes the model sees; a file with no configured server is never shown, and clean files are grouped. */
-type ReportedOutcome = Exclude<
-  PostEditDiagnosticOutcome,
-  { kind: "no_diagnostics" | "no_configured_server" }
->;
+/** Outcomes shown to the model: a file no Server Definition covers is dropped before formatting. */
+type ShownOutcome = Exclude<PostEditDiagnosticOutcome, { kind: "no_configured_server" }>;
+
+/** Shown outcomes that take a line of their own; clean files are grouped instead. */
+type ReportedOutcome = Exclude<ShownOutcome, { kind: "no_diagnostics" }>;
+
+function isShownOutcome(outcome: PostEditDiagnosticOutcome): outcome is ShownOutcome {
+  return outcome.kind !== "no_configured_server";
+}
 
 function formatOutcome(outcome: ReportedOutcome, cwd: string): string {
   switch (outcome.kind) {
@@ -265,10 +269,7 @@ function cleanPathsLine(paths: readonly string[], cwd: string): readonly string[
  * diagnostics. Paths are relative to `cwd`. Findings and failures take one line each; clean files
  * are grouped on one line, and when every file is clean the section is a single line.
  */
-export function formatPostEditDiagnostics(
-  outcomes: readonly PostEditDiagnosticOutcome[],
-  cwd: string,
-): string {
+export function formatPostEditDiagnostics(outcomes: readonly ShownOutcome[], cwd: string): string {
   if (outcomes.every(({ kind }) => kind === "no_diagnostics")) {
     return "\n\nLSP diagnostics: no diagnostics";
   }
@@ -276,7 +277,7 @@ export function formatPostEditDiagnostics(
   const reported: ReportedOutcome[] = [];
   for (const outcome of outcomes) {
     if (outcome.kind === "no_diagnostics") clean.push(outcome.path);
-    else if (outcome.kind !== "no_configured_server") reported.push(outcome);
+    else reported.push(outcome);
   }
   const lines = [
     ...reported
@@ -295,13 +296,13 @@ export async function appendPostEditDiagnostics(
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
   const extracted = extractPostEditDiagnosticPaths(event);
   if (extracted === undefined) return undefined;
-  // A file no Server Definition covers is noise: only matched-server outcomes are worth appending.
-  const outcomes = [
-    ...extracted.warnings.map((message): PostEditDiagnosticOutcome => ({
+  // The one place a file no Server Definition covers is dropped: it is noise, not a finding.
+  const outcomes: ShownOutcome[] = [
+    ...extracted.warnings.map((message): ShownOutcome => ({
       kind: "warning",
       message,
     })),
-    ...(await diagnostics(extracted.paths)).filter(({ kind }) => kind !== "no_configured_server"),
+    ...(await diagnostics(extracted.paths)).filter(isShownOutcome),
   ];
   if (outcomes.length === 0) return undefined;
   const patch: PostEditDiagnosticsResultPatch = {
