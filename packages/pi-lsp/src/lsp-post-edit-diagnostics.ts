@@ -256,18 +256,24 @@ function compareOutcomes(left: ReportedOutcome, right: ReportedOutcome, cwd: str
   return formatOutcome(left, cwd).localeCompare(formatOutcome(right, cwd));
 }
 
-function cleanPathsLine(paths: readonly string[], cwd: string): readonly string[] {
-  if (paths.length === 0) return [];
-  const displayed = [...new Set(paths.map((path) => lspDisplayPath(cwd, path)))].sort(
-    (left, right) => left.localeCompare(right),
-  );
+/** One line naming the clean files; a file some server reported a finding for is never listed as clean. */
+function cleanPathsLine(
+  paths: readonly string[],
+  withFindings: ReadonlySet<string>,
+  cwd: string,
+): readonly string[] {
+  const displayed = [...new Set(paths.map((path) => lspDisplayPath(cwd, path)))]
+    .filter((path) => !withFindings.has(path))
+    .sort((left, right) => left.localeCompare(right));
+  if (displayed.length === 0) return [];
   return [`no diagnostics: ${displayed.join(", ")}`];
 }
 
 /**
  * Render one compact deterministic LSP section without deduplicating independent server
  * diagnostics. Paths are relative to `cwd`. Findings and failures take one line each; clean files
- * are grouped on one line, and when every file is clean the section is a single line.
+ * are grouped on one line, leaving out a file any server reported a finding for, and when every
+ * file is clean the section is a single line.
  */
 export function formatPostEditDiagnostics(outcomes: readonly ShownOutcome[], cwd: string): string {
   if (outcomes.every(({ kind }) => kind === "no_diagnostics")) {
@@ -279,11 +285,16 @@ export function formatPostEditDiagnostics(outcomes: readonly ShownOutcome[], cwd
     if (outcome.kind === "no_diagnostics") clean.push(outcome.path);
     else reported.push(outcome);
   }
+  const withFindings = new Set(
+    reported.flatMap((outcome) =>
+      outcome.kind === "diagnostic" ? [lspDisplayPath(cwd, outcome.diagnostic.path)] : [],
+    ),
+  );
   const lines = [
     ...reported
       .sort((left, right) => compareOutcomes(left, right, cwd))
       .map((outcome) => formatOutcome(outcome, cwd)),
-    ...cleanPathsLine(clean, cwd),
+    ...cleanPathsLine(clean, withFindings, cwd),
   ];
   return `\n\nLSP diagnostics\n${lines.join("\n")}`;
 }
