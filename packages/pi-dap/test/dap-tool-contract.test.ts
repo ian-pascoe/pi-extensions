@@ -6,6 +6,7 @@ import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import { DapSessionError, type DapSessionResult } from "../src/dap-session.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
+import { DESIRED_BREAKPOINT_OPERATIONS, NEVER_STATE_FAILING } from "./dap-tool-output.js";
 import {
   DAP_OPERATIONS,
   DapToolOutputSchemas,
@@ -187,15 +188,55 @@ describe("DAP tool family", () => {
     });
   });
 
+  test("only dap_launch, dap_set_breakpoints, and dap_status results carry desired_breakpoints", () => {
+    expect(DESIRED_BREAKPOINT_OPERATIONS).toEqual(["launch", "set_breakpoints", "status"]);
+  });
+
+  test("a dap_launch state failure returns isError and an error without desired_breakpoints", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dap-contract-"));
+    directories.push(directory);
+    // SAFETY: The proxy answers the two Debug Session methods dap_launch reaches on a state failure.
+    const session = new Proxy(
+      {},
+      {
+        get: (_target, method) => () =>
+          method === "snapshot"
+            ? EMPTY_RESULT.snapshot
+            : Promise.reject(
+                new DapSessionError("state", "launch requires no active Debug Session"),
+              ),
+      },
+    ) as DapToolRuntime["session"];
+    const runtime: DapToolRuntime = {
+      session,
+      sessionFiles: await createDapSessionFiles(directory),
+    };
+    const launch = createDapToolDefinitions(() => runtime).find(
+      ({ name }) => name === "dap_launch",
+    );
+    if (launch === undefined) throw new Error("Missing dap_launch");
+    // SAFETY: Tool execution only reads cwd.
+    const context = { cwd: directory } as ExtensionToolContext;
+    const result = await launch.execute("call", {}, undefined, undefined, context);
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({
+      state: "idle",
+      error: "Pi DAP: DAP Session: launch requires no active Debug Session",
+    });
+  });
+
   test("tells models and scripts about the state-failure result in each description", async () => {
-    // These never reject because of the Debug Session state.
-    const neverStateFailing: readonly DapOperation[] = ["set_breakpoints", "status", "stop"];
     for (const operation of DAP_OPERATIONS) {
-      if (neverStateFailing.includes(operation)) continue;
+      if (NEVER_STATE_FAILING.includes(operation)) continue;
       const { isError } = await methodsReachedBy(operation, "fail-state");
       expect(isError, `dap_${operation} returns a state-failure result`).toBe(true);
       expect(tool(`dap_${operation}`).description, `dap_${operation}`).toMatch(
-        /error result with the current `state`/u,
+        /error result with the current `state` and an `error` message/u,
+      );
+    }
+    for (const operation of NEVER_STATE_FAILING) {
+      expect(tool(`dap_${operation}`).description, `dap_${operation}`).not.toMatch(
+        /`error` message/u,
       );
     }
     for (const schema of Object.values(DapToolOutputSchemas)) {

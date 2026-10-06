@@ -35,6 +35,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { DAP_OPERATIONS } from "../src/dap-tool-contract.js";
+import { DESIRED_BREAKPOINT_OPERATIONS, NEVER_STATE_FAILING } from "./dap-tool-output.js";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";
 
 interface CapturedTurn {
@@ -65,6 +66,10 @@ type InlineExtension = NonNullable<
 >[number];
 
 const DAP_TOOLS = DAP_OPERATIONS.map((operation) => `dap_${operation}`);
+/** The only tools whose results, and so output schemas, carry `desired_breakpoints`. */
+const DESIRED_BREAKPOINT_TOOLS = DESIRED_BREAKPOINT_OPERATIONS.map(
+  (operation) => `dap_${operation}`,
+);
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
 
@@ -267,7 +272,7 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
           "const status = await tools.dap_status({});",
           "const paused = await tools.dap_pause({});",
           "const namespace = await describeNamespace('dap');",
-          "return { state: status.state, output: status.output, pausedState: paused.state, pausedError: paused.error, namespace, stackType: await describeTool('dap_stack') };",
+          "return { state: status.state, output: status.output, pausedState: paused.state, pausedError: paused.error, namespace, stackType: await describeTool('dap_stack'), launchType: await describeTool('dap_launch') };",
         ].join("\n"),
       }),
       fauxAssistantMessage("Done."),
@@ -290,6 +295,16 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
         `Codemode: \`tools.${name}(args)\` resolves to \`{ state, `,
       );
       expect(declared?.description, name).toMatch(/\berror\?[,\s]/u);
+      // Tools that can fail on the Debug Session state say so, naming the `error` field.
+      const mentionsErrorMessage = /`error` message/u.test(declared?.description ?? "");
+      expect(mentionsErrorMessage, `${name} names the error message`).toBe(
+        !NEVER_STATE_FAILING.some((operation) => `dap_${operation}` === name),
+      );
+      // Only the tools that set, begin, or report the Debug Session declare Desired Breakpoints.
+      const declaresDesired = /\bdesired_breakpoints\?[,\s]/u.test(declared?.description ?? "");
+      expect(declaresDesired, `${name} declares desired_breakpoints`).toBe(
+        DESIRED_BREAKPOINT_TOOLS.includes(name),
+      );
     }
 
     // Scripts receive the structured result, including state for a state failure.

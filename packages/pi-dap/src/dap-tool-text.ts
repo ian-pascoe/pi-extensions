@@ -118,7 +118,6 @@ function desiredBreakpointLines(
   return rows.length === 0 ? ["Desired Breakpoints: none"] : ["Desired Breakpoints:", ...rows];
 }
 
-/** The only operation that shows Desired Breakpoints: it is the only one that changes them. */
 const setBreakpointsLines: DapTextFormatter = ({ result, cwd }) => {
   const rows = result.breakpoints;
   const lines: string[] = [];
@@ -136,6 +135,17 @@ const setBreakpointsLines: DapTextFormatter = ({ result, cwd }) => {
   }
   return [...lines, ...desiredBreakpointLines(result.desiredBreakpoints, cwd)];
 };
+
+/**
+ * Desired Breakpoints show in `dap_set_breakpoints` (which changes them), `dap_launch`, and
+ * `dap_status`. An empty list adds no line to a state report.
+ */
+const stateWithDesiredBreakpointsLines: DapTextFormatter = (context) => [
+  ...stateLines(context),
+  ...(context.result.desiredBreakpoints.some((file) => file.breakpoints.length > 0)
+    ? desiredBreakpointLines(context.result.desiredBreakpoints, context.cwd)
+    : []),
+];
 
 const stackLines: DapTextFormatter = ({ result, cwd }) => {
   const frames = result.stackFrames ?? [];
@@ -186,7 +196,7 @@ const evaluateLines: DapTextFormatter = ({ result }) => {
 };
 
 const DAP_TEXT_FORMATTERS = {
-  launch: stateLines,
+  launch: stateWithDesiredBreakpointsLines,
   set_breakpoints: setBreakpointsLines,
   continue: stateLines,
   next: stateLines,
@@ -196,7 +206,7 @@ const DAP_TEXT_FORMATTERS = {
   stack: stackLines,
   variables: variablesLines,
   evaluate: evaluateLines,
-  status: stateLines,
+  status: stateWithDesiredBreakpointsLines,
   stop: stateLines,
 } satisfies Record<DapOperation, DapTextFormatter>;
 

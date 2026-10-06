@@ -406,13 +406,19 @@ const DapOutputBaseFields = {
     Type.String({ description: "Complete unread Debuggee output this call drained." }),
   ),
   output_discarded_bytes: Type.Optional(Type.Integer({ minimum: 0 })),
-  desired_breakpoints: Type.Optional(Type.Array(DapDesiredBreakpointFileSchema)),
   error: Type.Optional(
     Type.String({
       description:
         "Set when the Debug Session state did not allow the call; the other fields are the current state.",
     }),
   ),
+};
+/**
+ * Complete per-file Desired Breakpoints. Only the tools that set them or begin or report a Debug
+ * Session carry this: `dap_set_breakpoints`, `dap_launch`, and `dap_status`.
+ */
+const DapDesiredBreakpointsOutputFields = {
+  desired_breakpoints: Type.Optional(Type.Array(DapDesiredBreakpointFileSchema)),
 };
 /** Why and where the Debuggee stopped; set only while the Debuggee is stopped. */
 const DapStopOutputFields = {
@@ -430,8 +436,19 @@ const DapExecutionOutputFields = {
   ...DapStopOutputFields,
   execution_wait_cancelled: Type.Optional(Type.Boolean()),
 };
+const DapLaunchOutputSchema = Type.Object(
+  { ...DapOutputBaseFields, ...DapDesiredBreakpointsOutputFields, ...DapExecutionOutputFields },
+  { additionalProperties: false },
+);
+const DapStatusOutputSchema = Type.Object(
+  { ...DapOutputBaseFields, ...DapDesiredBreakpointsOutputFields, ...DapStopOutputFields },
+  { additionalProperties: false },
+);
 
 const DapBaseOutputSchema = Type.Object(DapOutputBaseFields, { additionalProperties: false });
+
+/** Fields every script-facing result carries; see {@link DapToolOutputSchemas}. */
+export type DapBaseOutput = Static<typeof DapBaseOutputSchema>;
 const DapStoppedOutputSchema = Type.Object(
   { ...DapOutputBaseFields, ...DapStopOutputFields },
   { additionalProperties: false },
@@ -446,10 +463,11 @@ const DapExecutionOutputSchema = Type.Object(
  * Observer UI details, it carries every row, full values, and all drained Debuggee output.
  */
 export const DapToolOutputSchemas = {
-  launch: DapExecutionOutputSchema,
+  launch: DapLaunchOutputSchema,
   set_breakpoints: Type.Object(
     {
       ...DapOutputBaseFields,
+      ...DapDesiredBreakpointsOutputFields,
       breakpoints: Type.Optional(Type.Array(DapBreakpointSchema)),
       warnings: Type.Optional(
         Type.Array(Type.String(), {
@@ -487,7 +505,7 @@ export const DapToolOutputSchemas = {
     { ...DapOutputBaseFields, evaluation: Type.Optional(DapEvaluationSchema) },
     { additionalProperties: false },
   ),
-  status: DapStoppedOutputSchema,
+  status: DapStatusOutputSchema,
   stop: DapBaseOutputSchema,
 } as const;
 

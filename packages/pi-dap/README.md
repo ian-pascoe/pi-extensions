@@ -174,10 +174,11 @@ Replacing a file's breakpoints with the same list changes nothing more, so it is
 idempotent.
 
 Each tool declares an output schema. Codemode scripts receive a structured
-result: the Debug Session state, all drained Debuggee output, Desired
-Breakpoints, and the operation's complete data (`breakpoints`, `stack_frames`
-and `total_frames`, `scopes` or `variables`, or `evaluation`). These results are
-not truncated to the transcript limits; the one exception is that `dap_variables`
+result: the Debug Session state, all drained Debuggee output, and the
+operation's complete data (`breakpoints`, `stack_frames` and `total_frames`,
+`scopes` or `variables`, or `evaluation`). `dap_set_breakpoints`, `dap_launch`,
+and `dap_status` also carry `desired_breakpoints`; no other tool does. These
+results are not truncated to the transcript limits; the one exception is that `dap_variables`
 with `frame_id` leaves expensive scopes unexpanded. A state failure resolves to the
 current state with an `error` field instead of rejecting.
 
@@ -195,13 +196,14 @@ file, line, column, and function come with every result that waits for a stop
 Further lines carry the adapter's stop `description` and the `hitBreakpointIds`
 (matching the `id` values `dap_set_breakpoints` reports for a live Debug
 Session). Your breakpoint lists ids and an adapter's entry stop has none, so the
-reason and the ids tell them apart. Only `dap_set_breakpoints` lists
-Desired Breakpoints in text, since it is the only call that changes them. A call
+reason and the ids tell them apart. Only `dap_set_breakpoints`, `dap_launch`, and
+`dap_status` list Desired Breakpoints in text (the latter two only when some
+exist), so a stepping result never repeats them. A call
 that waits and ends still `running` says `(wait timed out)`.
 
 Stack Frames, variables, and evaluations are one line per row. Adapter strings
 are flattened onto one line with `\n` escapes. Drained Debuggee output follows
-under its own heading. `structuredContent` keeps every existing field with strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
+under its own heading. `structuredContent` keeps its fields' strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
 `dap_variables` with `frame_id` lists scopes the adapter marks expensive, such
 as js-debug's Global, by name and `variables_reference` without expanding them;
 pass that reference to expand one. In `structuredContent` such a scope has no
