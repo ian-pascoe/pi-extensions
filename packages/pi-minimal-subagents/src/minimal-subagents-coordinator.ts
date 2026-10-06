@@ -69,12 +69,15 @@ import type {
   StatusResult,
   TurnResult,
   WaitMessageResult,
+  WaitTimeoutResult,
   WaitDeliveredTurnResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
 
 const FRIENDLY_AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const RESERVED_AGENT_IDS = new Set(["root", "parent"]);
+/** Recent Activity labels a timed-out wait reports. */
+const WAIT_TIMEOUT_ACTIVITY_LIMIT = 3;
 const RECENT_MESSAGE_LIMIT = 20;
 const DEFAULT_AUTOMATIC_DELIVERY_GRACE_MS = 1_000;
 
@@ -481,7 +484,7 @@ export class MinimalSubagentsCoordinator {
     }
   }
 
-  /** Wait for one exact turn, returning detailed child status if the waiter times out. */
+  /** Wait for one exact turn, returning compact child progress if the waiter times out. */
   wait(
     callerId: string,
     agentId: string,
@@ -546,7 +549,7 @@ export class MinimalSubagentsCoordinator {
             agent_id: agentId,
             turn_id: turnId,
             timeout_ms: timeoutMs,
-            agent: this.buildAgentDetail(agent, false),
+            ...this.buildWaitTimeoutProgress(agent),
           });
         }, timeoutMs);
       }
@@ -1874,7 +1877,7 @@ export class MinimalSubagentsCoordinator {
       ...runtimeProfile,
       tools: runtime?.getActiveToolNames?.() ?? [...agent.launch_contract.ordinary_tools],
       elapsed_ms: elapsed ?? agent.latest_result?.elapsed_ms,
-      latest_activity_at: agent.latest_activity_at ?? agent.created_at,
+      latest_activity_at: this.latestActivityAt(agent, runtime),
       task: agent.task,
       child_count: directChildren.length,
     };
@@ -1882,6 +1885,40 @@ export class MinimalSubagentsCoordinator {
       summary.children = directChildren.map((child) => this.buildAgentSummary(child));
     }
     return summary;
+  }
+
+  /**
+   * The persisted activity time, advanced by the timestamps of the messages and tool results a
+   * running child has produced since. Only running children can have newer unpersisted activity.
+   */
+  private latestActivityAt(agent: PersistedAgent, runtime: ChildAgentRuntime | undefined): string {
+    const persisted = agent.latest_activity_at ?? agent.created_at;
+    if (!agent.active_turn_id || !runtime) return persisted;
+    const latestMessage = runtime.snapshotActivityMessages().at(-1)?.timestamp;
+    if (latestMessage === undefined || !Number.isFinite(latestMessage)) return persisted;
+    return latestMessage > Date.parse(persisted)
+      ? new Date(latestMessage).toISOString()
+      : persisted;
+  }
+
+  /** The compact progress a timed-out wait reports; `subagent_status` has the full detail. */
+  private buildWaitTimeoutProgress(
+    agent: PersistedAgent,
+  ): Omit<WaitTimeoutResult, "event" | "agent_id" | "turn_id" | "timeout_ms"> {
+    const summary = this.buildAgentSummary(agent, false);
+    const runtime = this.runtimes.get(agent.agent_id);
+    const messages =
+      runtime?.snapshotActivityMessages() ?? this.inspectTranscript(agent.agent_id).messages;
+    const usage = runtime?.getUsage() ?? agent.latest_result?.usage;
+    return {
+      state: summary.state,
+      elapsed_ms: summary.elapsed_ms,
+      latest_activity_at: summary.latest_activity_at,
+      total_tokens: usage?.totalTokens,
+      recent_activity: buildRecentAgentActivity(messages)
+        .slice(-WAIT_TIMEOUT_ACTIVITY_LIMIT)
+        .map((activity) => activity.label),
+    };
   }
 
   private buildAgentDetail(agent: PersistedAgent, includeDescendants = true): AgentDetail {

@@ -593,8 +593,10 @@ function collapsedWaitBody(
 ): Component | undefined {
   if (details.event === "message") return collapsedTextPreview(details.message, theme);
   if (details.event === "timeout") {
-    const activity = latestProgressActivity(details.agent.recent_activity ?? []);
-    return activity.length > 0 ? new ActivityLines(activity, theme) : undefined;
+    const labels = details.recent_activity ?? [];
+    return labels.length > 0
+      ? collapsedTextPreview(theme.fg("dim", labels.join(" \u00b7 ")), theme)
+      : undefined;
   }
   if (details.already_delivered) {
     return collapsedTextPreview(theme.fg("muted", ALREADY_DELIVERED_TEXT), theme);
@@ -627,7 +629,9 @@ function renderWaitResult(
     details.event === "timeout" ? details.timeout_ms : details.elapsed_ms,
   );
   const usage = details.event === "timeout" ? undefined : details.usage;
-  const tokens = formatSubagentTokenCount(usage?.totalTokens);
+  const tokens = formatSubagentTokenCount(
+    details.event === "timeout" ? details.total_tokens : usage?.totalTokens,
+  );
   const drainedMessageCount =
     details.event === "message" || details.event === "timeout"
       ? 0
@@ -658,12 +662,13 @@ function renderWaitResult(
     return container;
   }
   if (details.event === "timeout") {
-    appendComponentSection(
-      container,
-      theme,
-      "Child status",
-      renderDetailedStatusAgent(details.agent, options, theme),
-    );
+    container.addChild(renderLabelValue(theme, "State", details.state ?? "unknown"));
+    if (details.latest_activity_at) {
+      container.addChild(renderLabelValue(theme, "Latest activity", details.latest_activity_at));
+    }
+    if (details.recent_activity && details.recent_activity.length > 0) {
+      appendTextSection(container, theme, "Recent activity", details.recent_activity.join("\n"));
+    }
     return container;
   }
   if (details.messages && details.messages.length > 0) {

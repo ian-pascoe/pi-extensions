@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
@@ -81,7 +81,7 @@ function childRuntime(
     hasDeliveryEvidence: vi.fn<
       (sourceAgentId: string, sourceTurnId: string, deliveryId?: string) => boolean
     >(() => false),
-    getUsage: vi.fn(() => undefined),
+    getUsage: vi.fn<() => Usage | undefined>(() => undefined),
   } satisfies ChildAgentRuntime;
 }
 
@@ -1029,7 +1029,47 @@ describe("minimal subagents coordinator", () => {
     expect(coordinator.inspectActiveTurnTranscript("root", "worker")).toBeUndefined();
   });
 
-  it("returns detailed child status when one waiter times out without cancelling", async () => {
+  it("moves latest_activity_at forward as a running child produces messages and tool work", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator } = coordinatorFixture(runtime);
+    await coordinator.spawn("root", { task: "Work", agent_id: "worker" }, caller);
+    const latest = () => {
+      const status = coordinator.status("root", "worker");
+      return "agent" in status ? status.agent.latest_activity_at : undefined;
+    };
+    expect(latest()).toBe("2026-01-01T00:00:00.000Z");
+
+    const toolResultAt = (timestamp: number) => ({
+      role: "toolResult" as const,
+      toolCallId: "call",
+      toolName: "read",
+      content: [{ type: "text" as const, text: "ok" }],
+      isError: false,
+      timestamp,
+    });
+    runtime.snapshotActivityMessages.mockReturnValue([
+      toolResultAt(Date.parse("2026-01-01T00:02:00.000Z")),
+    ]);
+    expect(latest()).toBe("2026-01-01T00:02:00.000Z");
+    expect(coordinator.inspectStatus()).toMatchObject({
+      agents: [{ latest_activity_at: "2026-01-01T00:02:00.000Z" }],
+    });
+    runtime.snapshotActivityMessages.mockReturnValue([
+      toolResultAt(Date.parse("2026-01-01T00:07:00.000Z")),
+    ]);
+    expect(latest()).toBe("2026-01-01T00:07:00.000Z");
+    const timedOut = await coordinator.wait("root", "worker", 1);
+    expect(timedOut).toMatchObject({ latest_activity_at: "2026-01-01T00:07:00.000Z" });
+    finishPrompt({ status: "completed", output: "done" });
+    await coordinator.wait("root", "worker", 1_000);
+    await coordinator.shutdown();
+  });
+
+  it("returns a compact bounded status when one waiter times out without cancelling", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
     runtime.runPrompt.mockImplementation(
@@ -1038,20 +1078,40 @@ describe("minimal subagents coordinator", () => {
     runtime.abort.mockImplementation(async (): Promise<void> => {
       finishPrompt({ status: "cancelled", output: "" });
     });
+    runtime.getUsage.mockReturnValue({
+      input: 10,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 15,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    });
+    runtime.snapshotActivityMessages.mockReturnValue(
+      ["a", "b", "c", "d"].map((name, index) => ({
+        role: "toolResult" as const,
+        toolCallId: `call-${name}`,
+        toolName: `tool_${name}`,
+        content: [{ type: "text" as const, text: "x".repeat(5_000) }],
+        isError: false,
+        timestamp: index,
+      })),
+    );
     const { coordinator } = coordinatorFixture(runtime);
-    const spawned = await coordinator.spawn("root", { task: "Wait", agent_id: "worker" }, caller);
-    await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+    const longTask = "Investigate the whole repository. ".repeat(100);
+    const spawned = await coordinator.spawn("root", { task: longTask, agent_id: "worker" }, caller);
+    const timedOut = await coordinator.wait("root", "worker", 1);
+    expect(timedOut).toEqual({
       event: "timeout",
       agent_id: "worker",
       turn_id: spawned.turn_id,
       timeout_ms: 1,
-      agent: {
-        agent_id: "worker",
-        state: "running",
-        active_turn_id: spawned.turn_id,
-        launch_contract: { model: "provider/model" },
-      },
+      state: "running",
+      elapsed_ms: 0,
+      latest_activity_at: "2026-01-01T00:00:00.000Z",
+      total_tokens: 15,
+      recent_activity: ["tool result tool_b", "tool result tool_c", "tool result tool_d"],
     });
+    expect(JSON.stringify(timedOut).length).toBeLessThan(1_024);
     expect(runtime.abort).not.toHaveBeenCalled();
     finishPrompt({ status: "completed", output: "completed after timeout" });
     await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
@@ -1805,7 +1865,7 @@ describe("minimal subagents coordinator", () => {
     const timedOut = await again.coordinator.wait("root", "worker", 1);
     expect(timedOut).toMatchObject({
       event: "timeout",
-      agent: { latest_turn: { turn_id: started.turn_id, status: "interrupted" } },
+      state: "running",
     });
     expect(timedOut.turn_id).not.toBe(first.turn_id);
     expect(timedOut.turn_id).not.toBe(started.turn_id);

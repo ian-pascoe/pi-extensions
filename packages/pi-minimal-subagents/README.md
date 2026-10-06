@@ -283,8 +283,8 @@ and `subagent_status`.
 
 Targeted `subagent_status` includes `recent_activity`, a bounded tail of message
 text, reasoning, tool calls, and tool results. It includes the current streaming
-assistant message but omits image data. Timeout Wait Events include the same
-detailed status snapshot. Children target only direct children; the Root Agent
+assistant message but omits image data. Timeout Wait Events carry only a compact
+progress snapshot. Children target only direct children; the Root Agent
 may inspect any descendant. Model-facing status reports a `child_count` but no
 nested `children` summaries. Reported `usage` always includes `cacheWrite1h`
 and `reasoning`, as `0` when the provider reports none. `subagent_cancel`
@@ -353,8 +353,12 @@ not claim the turn, and `turn_id` rereads the full result. A
 caller may have only one outstanding wait for the same source turn; a
 concurrent duplicate is rejected instead of competing for one Wait Event.
 When `timeout_ms` expires, the wait returns an observational `event: "timeout"`
-with the requested turn identity and the same detailed Child Agent status used
-by targeted `subagent_status`. It removes only the waiter, leaving the child
+with the requested turn identity and a compact, bounded progress snapshot
+(`state`, `elapsed_ms`, `latest_activity_at`, `total_tokens`, and the labels of
+the last three Recent Activity items), under about 1 KB. It omits the task and
+Launch Contract; targeted `subagent_status` returns the full detail.
+`latest_activity_at` advances while a child works, following the timestamps of
+its latest messages and tool results. It removes only the waiter, leaving the child
 running and all pending delivery unclaimed. Abort signals remain errors.
 
 The persisted Delivery Ledger records Coordination Messages, terminal results,
