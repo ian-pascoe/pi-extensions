@@ -101,7 +101,7 @@ export const WebFetchOutputSchema = Type.Object(
       }),
     ),
     next_offset: Type.Optional(
-      Type.Number({
+      Type.Integer({
         description:
           "Offset of the first line after the offset/limit window; present when lines remain after it",
       }),
@@ -578,7 +578,8 @@ export function createWebFetchTool(
       };
       if (selected.requested) {
         structuredContent.total_lines = selected.window.totalLines;
-        if (selected.lastLine < selected.window.totalLines) {
+        // A cut `content` ends inside the window, so the next line after the window would skip lines.
+        if (!structured.truncated && selected.lastLine < selected.window.totalLines) {
           structuredContent.next_offset = selected.lastLine + 1;
         }
       }

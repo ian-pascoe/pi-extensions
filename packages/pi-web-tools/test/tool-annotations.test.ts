@@ -159,11 +159,17 @@ test("reports explicit read-only, open-world annotations without changing the pr
 test("keeps ordered tool definitions, prompt, and history stable across sessions for both Search Providers", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-tools-budgets-"));
   directories.push(cwd);
-  // Pi picks the provider from the session id, so a handful of fresh sessions spans both.
+  // Pi picks the provider from the session id; keep opening sessions until both are covered.
   const turns = [];
-  for (let run = 0; run < 6; run++) turns.push(await captureTurn(piWebToolsExtension, cwd));
-  const providers = new Set(turns.map(({ sessionId }) => selectSearchProvider(sessionId)));
+  const providers = new Set<string>();
+  while (providers.size < 2 && turns.length < 40) {
+    const turn = await captureTurn(piWebToolsExtension, cwd);
+    turns.push(turn);
+    providers.add(selectSearchProvider(turn.sessionId));
+  }
   expect(providers).toEqual(new Set(["exa", "parallel"]));
+  // Compare at least a few sessions even when both providers appear straight away.
+  while (turns.length < 4) turns.push(await captureTurn(piWebToolsExtension, cwd));
   const [first, ...rest] = turns;
   if (first === undefined) throw new Error("Expected a captured turn");
 

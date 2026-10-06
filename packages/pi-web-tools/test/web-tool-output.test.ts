@@ -132,4 +132,33 @@ describe("Web Tool output", () => {
 
     expect(result.content).not.toContain("Use offset=");
   });
+
+  test("keeps output within the byte limit when the note's remaining count has more digits than the window end's", async () => {
+    // The first line's length shifts where the byte cut falls, so every alignment is covered.
+    for (let pad = 1; pad <= 45; pad++) {
+      const complete = [
+        "x".repeat(pad),
+        ...Array.from({ length: 1_499 }, () => "y".repeat(40)),
+      ].join("\n");
+      const result = await createWebToolOutput(complete, {
+        window: { firstLine: 8_000, totalLines: 9_499 },
+      });
+      await recordSpill(result);
+
+      expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+      expect(result.content).toContain("Use offset=");
+    }
+  });
+
+  test("points past a first line too long to show", async () => {
+    const result = await createWebToolOutput(`${"x".repeat(DEFAULT_MAX_BYTES)}\nnext`, {
+      window: { firstLine: 7, totalLines: 20 },
+    });
+    const path = await recordSpill(result);
+
+    expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+    expect(result.content).toContain(`Full output saved to: ${path}`);
+    expect(result.content.endsWith("use offset=8 to continue after it.]")).toBe(true);
+    expect(result.content).toContain("Line 7 exceeds the 50 KiB output limit");
+  });
 });

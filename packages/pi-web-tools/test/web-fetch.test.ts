@@ -442,6 +442,23 @@ describe("Web Fetch", () => {
       }
     });
 
+    test("omits next_offset when script content was cut at 1 MiB, so scripts never skip lines", async () => {
+      const page = Array.from({ length: 40_000 }, (_, index) => `${"é".repeat(30)} ${index}`).join(
+        "\n",
+      );
+      const result = await executeFetch(
+        { fetch: fetchPlain(page) },
+        { url: "https://example.com/w", format: "text", limit: 39_000 },
+      );
+      const spill = result.details.truncation?.fullOutputPath;
+      if (spill !== undefined) spillDirectories.push(dirname(spill));
+      expect(result.structuredContent).toMatchObject({
+        structured_truncated: true,
+        total_lines: 40_000,
+      });
+      expect(result.structuredContent).not.toHaveProperty("next_offset");
+    });
+
     test("says '1 line remains' for a single remaining line", async () => {
       const result = await executeFetch(
         { fetch: fetchPlain(numbered(3)) },

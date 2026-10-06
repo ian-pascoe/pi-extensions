@@ -79,17 +79,39 @@ export type WebToolOutputOptions = {
 /** Lines a continuation note adds: a blank line and the note itself. */
 const CONTINUATION_NOTE_LINES = 2;
 
-function continuationNote(window: WebToolLineWindow, shownLines: number): string {
+/**
+ * The note after `shownLines` lines of the text. `remaining` is derived from the lines shown unless
+ * a caller sizing the worst case passes the largest figure it could be.
+ */
+function continuationNote(
+  window: WebToolLineWindow,
+  shownLines: number,
+  remaining = window.totalLines - (window.firstLine + shownLines - 1),
+): string {
   const lastLine = window.firstLine + shownLines - 1;
-  const remaining = window.totalLines - lastLine;
   return `[Showing lines ${window.firstLine}-${lastLine} of ${window.totalLines}. ${remaining} ${remaining === 1 ? "line remains" : "lines remain"}. Use offset=${lastLine + 1} to continue.]`;
 }
 
-/** The continuation note after `shownLines` lines of the text, or nothing when no source line remains. */
+/** The note for a first line too long to show: where to read it and how to move past it. */
+function oversizedLineNote(window: WebToolLineWindow): string {
+  return `[Line ${window.firstLine} exceeds the ${DEFAULT_MAX_BYTES / 1024} KiB output limit and is not shown; read it from the saved output file, or use offset=${window.firstLine + 1} to continue after it.]`;
+}
+
+/** The note after `shownLines` lines of the text, or nothing when no source line remains. */
 function continuationSuffix(window: WebToolLineWindow | undefined, shownLines: number): string {
-  if (window === undefined || shownLines === 0) return "";
-  if (window.firstLine + shownLines - 1 >= window.totalLines) return "";
-  return `\n\n${continuationNote(window, shownLines)}`;
+  if (window === undefined) return "";
+  // Without a shown line, the oversized one itself is line `firstLine`; only later lines remain.
+  if (window.firstLine + Math.max(shownLines, 1) - 1 >= window.totalLines) return "";
+  return `\n\n${shownLines === 0 ? oversizedLineNote(window) : continuationNote(window, shownLines)}`;
+}
+
+/** Bytes that reserve room for the longest note any amount of shown text can need. */
+function largestSuffixBytes(window: WebToolLineWindow | undefined, textLines: number): number {
+  if (window === undefined) return 0;
+  // Fewer shown lines leave more remaining, so the most remaining lines is every one after the first.
+  // A first line too long to show leaves the whole budget free for its note, so it needs no reserve.
+  const worst = `\n\n${continuationNote(window, textLines, window.totalLines - window.firstLine)}`;
+  return Buffer.byteLength(worst);
 }
 
 /**
@@ -104,8 +126,7 @@ export async function createWebToolOutput(
 ): Promise<WebToolOutput> {
   const window = options.window;
   const textLines = text.split("\n").length;
-  // Every figure in a note for fewer shown lines is no longer than in this one.
-  const largestSuffix = window === undefined ? "" : `\n\n${continuationNote(window, textLines)}`;
+  const suffixBytes = largestSuffixBytes(window, textLines);
   const initial = truncateHead(`${text}${continuationSuffix(window, textLines)}`, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
@@ -127,8 +148,7 @@ export async function createWebToolOutput(
   }
 
   const largestNotice = `[Output truncated: showing ${initial.totalLines} of ${initial.totalLines} lines (${initial.totalBytes} of ${initial.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
-  const visibleBytes =
-    DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2 - Buffer.byteLength(largestSuffix);
+  const visibleBytes = DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2 - suffixBytes;
   if (visibleBytes < 0) {
     await removeTemporaryDirectory(directory);
     throw new Error("Web Tool truncation notice exceeds Pi output limit");
@@ -138,7 +158,7 @@ export async function createWebToolOutput(
     maxLines:
       DEFAULT_MAX_LINES -
       TRUNCATION_NOTICE_LINES -
-      (largestSuffix === "" ? 0 : CONTINUATION_NOTE_LINES),
+      (suffixBytes === 0 ? 0 : CONTINUATION_NOTE_LINES),
   });
   const truncation: WebToolTruncationDetails = {
     outputLines: visible.outputLines,
