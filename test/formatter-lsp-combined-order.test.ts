@@ -41,7 +41,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import rootManifest from "../package.json" with { type: "json" };
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -61,6 +61,37 @@ const SOURCE = "const   oldName   =   1;\n// TODO later\n";
 
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
+
+/**
+ * Pi compiles an extension's TypeScript with jiti when it loads it, and jiti caches the output on
+ * disk under the OS temporary directory. A fresh CI runner starts with an empty cache, so the first
+ * load of pi-formatter and pi-lsp compiles every source file of both: about 2 s on an idle machine,
+ * and past the 20 s test timeout under a cold `pnpm verify`. Every other step of a test, including the fake
+ * language server's start, takes well under a second. Loading both once here keeps that one-time
+ * cost out of the first test; each test still loads them afresh, from the cache. The hook timeout
+ * only guards against a hang.
+ */
+beforeAll(async () => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-formatter-lsp-warm-up-")));
+  try {
+    const loader = new DefaultResourceLoader({
+      cwd,
+      agentDir: cwd,
+      settingsManager: SettingsManager.inMemory(),
+      additionalExtensionPaths: collectionOrder.map((entrypoint) =>
+        resolve(repositoryRoot, entrypoint),
+      ),
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+    });
+    await loader.reload();
+    expect(loader.getExtensions().errors).toEqual([]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}, 120_000);
 
 afterEach(async () => {
   vi.unstubAllEnvs();
