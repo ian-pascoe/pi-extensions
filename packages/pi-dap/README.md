@@ -49,8 +49,7 @@ project `.pi/settings.json`:
         "adapter": "node",
         "arguments": {
           "type": "pwa-node",
-          "console": "internalConsole",
-          "stopOnEntry": true
+          "console": "internalConsole"
         }
       }
     }
@@ -81,6 +80,21 @@ workflow. For example, set the Node adapter command to `node` and point its TCP
 arguments at `dapDebugServer.js` followed by `$PORT`, as above. Other
 standards-based adapters are Experimental: they may work through DAP but have
 no compatibility promise.
+
+#### `stopOnEntry` re-stops inside the first function
+
+Leave `stopOnEntry` out of a `vscode-js-debug` profile unless you need the
+entry stop. For that stop js-debug sets a breakpoint at line 0, column 0 of the
+program and never removes it. When the program starts with a function
+declaration, V8 moves that breakpoint to the function's first statement, so
+every call to the function stops again with reason `entry`, which looks like a
+stale stop reason or an ignored breakpoint condition. Without `stopOnEntry`,
+`dap_launch` runs to your first breakpoint and each stop is reason
+`breakpoint`. To tell the two apart when it does happen, read the stop text:
+your breakpoint lists `hit breakpoint ids` that match the `id` values
+`dap_set_breakpoints` returned (`hit_breakpoint_ids` in `structuredContent`),
+while an entry stop has none. The stop `description` is the same
+(`Paused on breakpoint`) for both, so rely on the reason and the ids.
 
 ## Tools
 

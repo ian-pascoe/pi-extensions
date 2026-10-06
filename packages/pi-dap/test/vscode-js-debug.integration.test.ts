@@ -212,3 +212,117 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
   await session.stop();
   await waitForProcessesToExit(new Set([...secondAdapterProcesses, ...secondDebuggeeProcesses]));
 }, 30_000);
+
+const FUNCTION_FIRST_PROGRAM = [
+  "function add(a, b) {",
+  "  const sum = a + b;",
+  "  return sum;",
+  "}",
+  "let total = 0;",
+  "for (let i = 0; i < 3; i++) total = add(total, i);",
+  "console.log(`total=${total}`);",
+].join("\n");
+
+/** A Supported vscode-js-debug Debug Session whose program starts with a function declaration. */
+async function startFunctionFirstSession(profileArguments: Record<string, string | boolean>) {
+  const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-dap-js-debug-function-"));
+  const piSessionDirectory = await mkdtemp(resolve(tmpdir(), "pi-dap-js-debug-function-session-"));
+  temporaryDirectories.push(projectDirectory, piSessionDirectory);
+  const programPath = resolve(projectDirectory, "program.js");
+  await writeFile(programPath, FUNCTION_FIRST_PROGRAM);
+  const adapterPath = resolve(
+    import.meta.dirname,
+    "../../../tools/pi-dap-vscode-js-debug/node_modules/vscode-js-debug/src/dapDebugServer.js",
+  );
+  const files = await createDapSessionFiles(piSessionDirectory);
+  sessionFileStores.push(files);
+  const settings: ResolvedDapSettings = {
+    adapters: new Map([
+      [
+        "node",
+        {
+          id: "node",
+          command: process.execPath,
+          args: [adapterPath, "$PORT", "127.0.0.1"],
+          environment: { ...process.env, PI_DAP_SUPPORTED_ADAPTER_TEST: "1" },
+          transport: { type: "tcp", host: "127.0.0.1", port: 0 },
+        },
+      ],
+    ]),
+    profiles: new Map([["node", { id: "node", adapterId: "node", arguments: profileArguments }]]),
+    timeouts: { startupMs: 10_000, requestMs: 10_000, executionMs: 10_000, shutdownMs: 3_000 },
+    warnings: [],
+  };
+  const session = new DapSession({ cwd: projectDirectory, settings, sessionFiles: files });
+  return { programPath, projectDirectory, session };
+}
+
+test("with the repo's node profile, a breakpoint inside a function stops as a breakpoint every call, never as an entry stop", async () => {
+  const repoSettings: {
+    dap: { profiles: { node: { arguments: Record<string, string | boolean> } } };
+  } = JSON.parse(
+    await readFile(resolve(import.meta.dirname, "../../../.pi/settings.json"), "utf8"),
+  );
+  const repoProfile = repoSettings.dap.profiles.node.arguments;
+  // js-debug's entry breakpoint (stopOnEntry) would re-stop inside add() on every call.
+  expect(repoProfile).not.toHaveProperty("stopOnEntry");
+  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
+    request: "launch",
+    name: "Pi DAP function-first test",
+    ...repoProfile,
+  });
+  await session.setBreakpoints({ filePath: programPath, breakpoints: [{ line: 3 }] });
+
+  const stops = [
+    await session.launch({ profile: "node", program: programPath, cwd: projectDirectory }),
+  ];
+  for (let call = 1; call < 3; call++) stops.push(await session.continue());
+
+  for (const stop of stops) {
+    expect(stop.snapshot).toMatchObject({ state: "stopped", stopReason: "breakpoint" });
+    expect(stop.stop?.hitBreakpointIds?.length).toBeGreaterThan(0);
+    expect(stop.stop?.topFrame).toMatchObject({ name: "global.add", line: 3 });
+  }
+  const finished = await session.continue();
+  expect(finished.snapshot.state).toBe("terminated");
+  expect(finished.output).toContain("total=3");
+  await session.stop();
+}, 30_000);
+
+test("stopOnEntry leaves js-debug's entry breakpoint inside a function-first program, and hitBreakpointIds tells that stop from the user's", async () => {
+  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
+    type: "pwa-node",
+    request: "launch",
+    name: "Pi DAP function-first stopOnEntry test",
+    console: "internalConsole",
+    stopOnEntry: true,
+  });
+  await session.setBreakpoints({ filePath: programPath, breakpoints: [{ line: 3 }] });
+
+  const stops = [
+    await session.launch({ profile: "node", program: programPath, cwd: projectDirectory }),
+  ];
+  while (stops.length < 8 && stops.at(-1)?.snapshot.state === "stopped") {
+    stops.push(await session.continue());
+  }
+  await session.stop();
+
+  const entryStops = stops.filter(
+    (stop) => stop.stop && "stopReason" in stop.snapshot && stop.snapshot.stopReason === "entry",
+  );
+  const breakpointStops = stops.filter(
+    (stop) => "stopReason" in stop.snapshot && stop.snapshot.stopReason === "breakpoint",
+  );
+  // The entry breakpoint moved into add() and fires on every call, not only at launch.
+  expect(entryStops.length).toBeGreaterThan(1);
+  for (const stop of entryStops) {
+    expect(stop.stop?.hitBreakpointIds ?? []).toEqual([]);
+    expect(stop.stop?.topFrame).toMatchObject({ name: "global.add", line: 2 });
+  }
+  // Only the user's breakpoint reports the id Pi DAP returned from dap_set_breakpoints.
+  expect(breakpointStops.length).toBeGreaterThan(0);
+  for (const stop of breakpointStops) {
+    expect(stop.stop?.hitBreakpointIds?.length).toBeGreaterThan(0);
+    expect(stop.stop?.topFrame).toMatchObject({ line: 3 });
+  }
+}, 30_000);

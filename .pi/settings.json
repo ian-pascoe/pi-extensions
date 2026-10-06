@@ -144,8 +144,7 @@
         "adapter": "node",
         "arguments": {
           "type": "pwa-node",
-          "console": "internalConsole",
-          "stopOnEntry": true
+          "console": "internalConsole"
         }
       }
     }

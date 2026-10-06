@@ -14,4 +14,6 @@ disable-model-invocation: true
 5. For a requested change, edit one settings layer, validate JSON, and reload Pi.
 6. With approval, run one representative launch. Finish when it reaches the expected Debug Session state or one exact adapter or protocol failure remains.
 
+For `vscode-js-debug`, a stop with reason `entry` that repeats inside the program's first function, with no `hit breakpoint ids`, means the profile sets `stopOnEntry` and js-debug's entry breakpoint moved into that function. Remove `stopOnEntry` from the Launch Profile; your own breakpoint stops list ids that match `dap_set_breakpoints`.
+
 Ask before starting, pausing, stopping, or otherwise changing a Debuggee. An execution timeout may leave it running, so inspect `dap_status` first.
