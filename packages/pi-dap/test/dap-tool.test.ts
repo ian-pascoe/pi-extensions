@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -260,6 +260,7 @@ describe("DAP tools", () => {
 
   test("project every operation-specific result into its typed output", async () => {
     const fixture = await createToolFixture();
+    await writeFile(resolve(fixture.cwd, "app.ts"), "");
     const base = {
       snapshot: { state: "stopped", adapterId: "a", profileId: "p", stopReason: "step" },
       output: "",
@@ -644,6 +645,65 @@ describe("DAP tools", () => {
       );
       expect(data, operation).toEqual(expectedData(operation));
     }
+  });
+
+  describe("dap_set_breakpoints for a source file that does not exist", () => {
+    async function setBreakpoints(
+      fixture: Awaited<ReturnType<typeof createToolFixture>>,
+      input: DapToolInput,
+    ) {
+      return dapTool(() => fixture.runtime, "set_breakpoints").execute(
+        "set-breakpoints",
+        input,
+        undefined,
+        undefined,
+        fixture.context,
+      );
+    }
+
+    test("keeps the Desired Breakpoints and warns the model that they will not bind", async () => {
+      const fixture = await createToolFixture();
+      const missing = resolve(fixture.cwd, "src/missing.ts");
+      const result = await setBreakpoints(fixture, {
+        file_path: "src/missing.ts",
+        breakpoints: [{ line: 3 }],
+      });
+      const warning = `file not found: ${missing}; breakpoints will not bind until it exists`;
+      expect(fixture.session.calls).toEqual([
+        {
+          name: "setBreakpoints",
+          input: { filePath: missing, breakpoints: [{ line: 3 }] },
+        },
+      ]);
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0]).toMatchObject({ text: expect.stringContaining(warning) });
+      expect(result.structuredContent).toMatchObject({ warnings: [warning] });
+    });
+
+    test("does not warn when the file exists", async () => {
+      const fixture = await createToolFixture();
+      await writeFile(resolve(fixture.cwd, "app.ts"), "");
+      const result = await setBreakpoints(fixture, {
+        file_path: "app.ts",
+        breakpoints: [{ line: 1 }],
+      });
+      expect(result.content[0]).toMatchObject({
+        text: expect.not.stringContaining("file not found"),
+      });
+      expect(result.structuredContent).not.toHaveProperty("warnings");
+    });
+
+    test("does not warn when clearing its breakpoints", async () => {
+      const fixture = await createToolFixture();
+      const result = await setBreakpoints(fixture, {
+        file_path: "src/missing.ts",
+        breakpoints: [],
+      });
+      expect(result.content[0]).toMatchObject({
+        text: expect.not.stringContaining("file not found"),
+      });
+      expect(result.structuredContent).not.toHaveProperty("warnings");
+    });
   });
 
   test("dispatches all operations, maps paths, forwards cancellation, and validates details", async () => {

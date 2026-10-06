@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
@@ -374,6 +375,7 @@ function toolOutput(
   operation: DapOperation,
   result: DapSessionResult,
   executionWaitCancelled: boolean,
+  warnings: readonly string[],
 ): DapToolOutput {
   const base = baseOutput(result);
   switch (operation) {
@@ -383,11 +385,13 @@ function toolOutput(
     case "step_in":
     case "step_out":
       return executionWaitCancelled ? { ...base, execution_wait_cancelled: true } : base;
-    case "set_breakpoints":
+    case "set_breakpoints": {
+      const output: DapToolOutput<"set_breakpoints"> = { ...base };
+      if (warnings.length > 0) output.warnings = [...warnings];
       return result.breakpoints === undefined
-        ? base
+        ? output
         : {
-            ...base,
+            ...output,
             breakpoints: result.breakpoints.map((breakpoint) => {
               const row: NonNullable<DapToolOutput<"set_breakpoints">["breakpoints"]>[number] = {
                 verified: breakpoint.verified,
@@ -400,6 +404,7 @@ function toolOutput(
               return row;
             }),
           };
+    }
     case "stack":
       return result.stackFrames === undefined
         ? base
@@ -443,9 +448,16 @@ function toolOutput(
   }
 }
 
-function formatDapToolResult(operation: DapOperation, result: DapSessionResult): string {
+function formatDapToolResult(
+  operation: DapOperation,
+  result: DapSessionResult,
+  warnings: readonly string[],
+): string {
   const { output, ...summary } = result;
-  const heading = `DAP ${operation}: ${JSON.stringify(summary)}`;
+  const heading = [
+    `DAP ${operation}: ${JSON.stringify(summary)}`,
+    ...warnings.map((warning) => `Warning: ${warning}`),
+  ].join("\n");
   if (output.length === 0) return heading;
   const discardNotice =
     result.discardedOutputBytes === 0
@@ -459,10 +471,11 @@ async function createDapToolOutput(
   result: DapSessionResult,
   sessionFiles: DapSessionFiles,
   executionWaitCancelled: boolean,
+  warnings: readonly string[],
 ): Promise<DapToolResult> {
-  const text = formatDapToolResult(operation, result);
+  const text = formatDapToolResult(operation, result, warnings);
   const details = toolResultDetails(operation, result, executionWaitCancelled);
-  const structuredContent = toolOutput(operation, result, executionWaitCancelled);
+  const structuredContent = toolOutput(operation, result, executionWaitCancelled, warnings);
   const truncation = truncateHead(text, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
@@ -498,6 +511,21 @@ function stateFailureResult(error: Error, snapshot: DapSessionSnapshot): DapTool
     structuredContent: { ...state, error: error.message },
     isError: true,
   };
+}
+
+/** A Desired Breakpoint can precede its source file, but it cannot bind until the file exists. */
+async function dapOperationWarnings(
+  parameters: DapToolParameters,
+  cwd: string,
+): Promise<readonly string[]> {
+  if (parameters.operation !== "set_breakpoints" || parameters.breakpoints.length === 0) return [];
+  const filePath = resolve(cwd, parameters.file_path);
+  try {
+    await stat(filePath);
+    return [];
+  } catch {
+    return [`file not found: ${filePath}; breakpoints will not bind until it exists`];
+  }
 }
 
 async function dispatchDapOperation(
@@ -598,6 +626,7 @@ async function executeDapOperation(
       result,
       runtime.sessionFiles,
       waits && signal?.aborted === true,
+      await dapOperationWarnings(parameters, cwd),
     );
     notifyDapToolObserver(() => runtime.observer?.onToolSuccess(parameters, result));
     return output;
