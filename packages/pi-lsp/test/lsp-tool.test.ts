@@ -1690,7 +1690,7 @@ describe("registered LSP tool", () => {
   });
 
   describe("workspace warm-up before references and rename", () => {
-    /** A pnpm-style workspace of packages a..h, each with a `src/index.ts`, and one manager. */
+    /** A pnpm-style workspace of packages a..e by default, each with a `src/index.ts`, and one manager. */
     async function createWorkspace(packageNames: readonly string[] = ["a", "b", "c", "d", "e"]) {
       const fixture = await createToolFixture();
       const cwd = fixture.context.cwd;
@@ -1846,6 +1846,53 @@ describe("registered LSP tool", () => {
 
       expect(resultText(result)).toContain("has not loaded 1 package");
       await close();
+    });
+
+    test("opens nothing for a request that is already cancelled", async () => {
+      const { fixture, cwd, manager, sourcePath, close } = await createWorkspace();
+      const controller = new AbortController();
+      controller.abort();
+      const tool = createLspToolDefinition("find_references", () => ({
+        ...fixture.dependencies,
+        manager,
+      }));
+
+      await tool.execute(
+        "tool-call",
+        { file_path: sourcePath, line: 1, character: 14 },
+        controller.signal,
+        undefined,
+        fixture.context,
+      );
+
+      expect([...fixture.client.synchronizedPaths]).toEqual([
+        resolve(cwd, "packages/a/src/index.ts"),
+      ]);
+      await close();
+    });
+
+    test("opens nothing outside a workspace root", async () => {
+      const fixture = await createToolFixture();
+      const cwd = fixture.context.cwd;
+      await writeFile(resolve(cwd, "package.json"), "{}\n");
+      await mkdir(resolve(cwd, "packages/b"), { recursive: true });
+      await writeFile(resolve(cwd, "packages/b/package.json"), "{}\n");
+      await writeFile(resolve(cwd, "packages/b/index.ts"), "export {};\n");
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd,
+        settings: resolvedSettings(["typescript"], ["package.json"]),
+        startClient: async () => fixture.client,
+      });
+
+      await executeTool(
+        fixture,
+        { operation: "find_references", file_path: fixture.filePath, line: 1, character: 7 },
+        { ...fixture.dependencies, manager },
+      );
+
+      expect([...fixture.client.synchronizedPaths]).toEqual([fixture.filePath]);
+      await manager.shutdown();
+      await fixture.close();
     });
 
     test("picks a source file under src over declaration, test, and configuration files", async () => {

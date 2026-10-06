@@ -13,10 +13,14 @@ import type {
  * loads a package's project when a file there is opened, so the cap bounds the memory and
  * start-up work one query can cause; packages beyond it are still named in the result's warning.
  */
-export const LSP_WARM_UP_PACKAGE_LIMIT = 20;
+const LSP_WARM_UP_PACKAGE_LIMIT = 20;
 
-/** Longest one request spends choosing and opening warm-up files before it queries. */
-export const LSP_WARM_UP_TIMEOUT_MS = 10_000;
+/**
+ * Longest one request spends choosing files and sending their open notifications before it
+ * queries. A server loads the opened files' projects during the request that follows, under its
+ * own request timeout.
+ */
+const LSP_WARM_UP_TIMEOUT_MS = 10_000;
 
 /** Most directories searched in one package for its warm-up file. */
 const WARM_UP_DIRECTORY_LIMIT = 64;
@@ -31,7 +35,7 @@ const SKIPPED_DIRECTORY_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /** A file other than a package's own source, which its project may not include. */
-const NON_SOURCE_FILE = /\.(?:d|test|spec|config|setup|stories)\.[^.]+$/u;
+const NON_SOURCE_FILE = /\.(?:d|test|spec|bench|config|setup|stories)\.[^.]+$/u;
 
 /** The bounds of one request's automatic warm-up. */
 export interface LspWarmUpLimits {
@@ -48,7 +52,7 @@ export const LSP_WARM_UP_LIMITS: LspWarmUpLimits = {
 };
 
 /** A file to open so a language server loads the package holding it. */
-export interface LspWarmUpFile {
+interface LspWarmUpFile {
   readonly filePath: string;
   readonly languageId: string;
 }
@@ -60,7 +64,7 @@ export interface LspWarmUpFile {
  * only when nothing else is found, because a package's project often excludes them. Returns
  * undefined when no handled file is found within the search limit.
  */
-export async function findLspWarmUpFile(
+async function findLspWarmUpFile(
   packageRoot: string,
   languageIdForFile: (filePath: string) => string | undefined,
 ): Promise<LspWarmUpFile | undefined> {
@@ -124,26 +128,26 @@ async function beforeDeadline<T>(promise: Promise<T>, deadline: number): Promise
  * the ones `findWorkspaceScope` reports unloaded. Warm-up opens at most `limits.packageLimit`
  * files and stops at `limits.timeoutMs`; packages it did not reach, or that hold no handled file,
  * stay unloaded and are still named in the request's warning. It never fails the request: a
- * package it cannot open is skipped. Only a cancellation of `signal` rejects.
+ * package it cannot open is skipped, and a cancelled `signal` ends it quietly, because the request
+ * that follows reports the cancellation. Work that outlives the deadline is not cancelled, but no
+ * file is opened once the deadline has passed.
  */
 export async function warmUpUnloadedPackages<TClient extends LspWarmUpClient>(input: {
   readonly manager: LspServerManager<TClient>;
   readonly client: TClient;
   readonly serverId: string;
   readonly rootPath: string;
-  /** The file the request is for, which already counts as loaded. */
-  readonly queriedFilePath: string;
+  /** The documents that count as loaded, beginning with the file the request is for. */
+  readonly loaded: LspLoadedDocuments<TClient>;
   readonly limits: LspWarmUpLimits;
   readonly signal: AbortSignal | undefined;
 }): Promise<void> {
-  const { manager, client, serverId, limits, signal } = input;
+  const { manager, client, serverId, loaded, limits, signal } = input;
   const deadline = Date.now() + limits.timeoutMs;
-  const loaded: LspLoadedDocuments<TClient> = {
-    queriedFilePath: input.queriedFilePath,
-    synchronizedFilePaths: (instance) => instance.synchronizedDocumentPaths(),
-  };
   let scope: LspWorkspaceScope | undefined;
   try {
+    // Only a workspace root has packages to load; skip the directory walk elsewhere.
+    if (!(await manager.isWorkspaceRoot(serverId, input.rootPath))) return;
     scope = await beforeDeadline(
       manager.findWorkspaceScope(serverId, input.rootPath, loaded),
       deadline,
@@ -153,20 +157,21 @@ export async function warmUpUnloadedPackages<TClient extends LspWarmUpClient>(in
   }
   const packageRoots = scope?.unloadedPackages?.packageRoots ?? [];
   for (const packageRoot of packageRoots.slice(0, limits.packageLimit)) {
-    signal?.throwIfAborted();
-    if (Date.now() >= deadline) return;
+    if (signal?.aborted === true || Date.now() >= deadline) return;
     try {
-      const opened = await beforeDeadline(
+      const completed = await beforeDeadline(
         (async () => {
           const file = await findLspWarmUpFile(packageRoot, (filePath) =>
             manager.languageIdForFile(serverId, filePath),
           );
-          if (file !== undefined) await client.synchronizeDocument(file.filePath, file.languageId);
+          if (file !== undefined && Date.now() < deadline) {
+            await client.synchronizeDocument(file.filePath, file.languageId);
+          }
           return true;
         })(),
         deadline,
       );
-      if (opened === undefined) return;
+      if (completed === undefined) return;
     } catch {
       // A package that cannot be opened stays unloaded and is named in the request's warning.
     }

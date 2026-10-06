@@ -109,6 +109,7 @@ import {
   type LspServerStatusEntry,
   type LspServerReadResult,
   type LspServerRoute,
+  type LspLoadedDocuments,
   type LspUnloadedWorkspacePackages,
 } from "./lsp-server-manager.js";
 import {
@@ -349,10 +350,11 @@ async function serverInstanceScope(
   queriedFilePath: string,
 ): Promise<ServerInstanceScope> {
   const root = lspDisplayPath(cwd, rootPath);
-  const scope = await dependencies.manager.findWorkspaceScope(serverId, rootPath, {
-    queriedFilePath,
-    synchronizedFilePaths: (client) => client.synchronizedDocumentPaths(),
-  });
+  const scope = await dependencies.manager.findWorkspaceScope(
+    serverId,
+    rootPath,
+    loadedDocuments(queriedFilePath),
+  );
   return {
     line: `Searched ${serverId} workspace root: ${root}`,
     warnings: [
@@ -361,6 +363,14 @@ async function serverInstanceScope(
         ? undefined
         : unloadedWorkspacePackagesWarning(serverId, root, scope.unloadedPackages, cwd),
     ].filter((warning): warning is string => warning !== undefined),
+  };
+}
+
+/** The documents a Server Instance has loaded: the file queried and its synchronized documents. */
+function loadedDocuments(queriedFilePath: string): LspLoadedDocuments<LspToolServerClient> {
+  return {
+    queriedFilePath,
+    synchronizedFilePaths: (client) => client.synchronizedDocumentPaths(),
   };
 }
 
@@ -381,7 +391,7 @@ function warmUpWorkspace(
     client,
     serverId: route.serverId,
     rootPath: route.rootPath,
-    queriedFilePath,
+    loaded: loadedDocuments(queriedFilePath),
     limits: dependencies.warmUp ?? LSP_WARM_UP_LIMITS,
     signal,
   });

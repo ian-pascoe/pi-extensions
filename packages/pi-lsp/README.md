@@ -90,8 +90,8 @@ the request; a package it cannot open, or does not reach, is not loaded. Those p
 disclosed as one line that counts them and names up to three, for example
 `typescript has not loaded 7 packages (packages/b, packages/c, packages/d, +4 more) under
 /work/repo; references there may be missing. Run any LSP tool on a file in each missing package,
-then retry. (pi-lsp troubleshooting Skill: <path>)`. Pi LSP opens files only for these two
-operations and only in a workspace root. A package stops being named once any LSP tool has opened one of its files with that server
+then retry. (pi-lsp troubleshooting Skill: <path>)`. Pi LSP opens files it was not asked
+about only for these two operations, and only in a workspace root. A package stops being named once any LSP tool has opened one of its files with that server
 in the session; the server keeps at most 100 files open, so a package whose files were all closed
 again is named again. The packages are found by the same bounded search as other workspace roots
 (below); when it stops early, the warning says so instead of claiming other roots outside the
