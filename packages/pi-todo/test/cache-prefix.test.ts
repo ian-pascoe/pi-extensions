@@ -231,4 +231,35 @@ describe("one Todo List snapshot per tool group", () => {
     for (let index = 1; index < requests.length; index++)
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
   }, 30_000);
+
+  test("a batch add projects one snapshot and leaves the tool definitions and prefix untouched", async () => {
+    const { session, requests, responses } = await createFixture();
+    responses.push(
+      toolCalls(
+        fauxToolCall(
+          "todo",
+          { action: "add", tasks: [{ title: "Design" }, { title: "Build" }, { title: "Ship" }] },
+          { id: "batch-1" },
+        ),
+      ),
+      fauxAssistantMessage("Planned."),
+      fauxAssistantMessage("Unchanged."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(3);
+
+    for (const request of requests.slice(1)) {
+      const indexes = snapshotIndexes(request.messages);
+      expect(indexes).toHaveLength(1);
+      expect(messageText(request.messages[indexes[0]!])).toBe(
+        `${SNAPSHOT_HEADER}\n[ ] #1 Design\n[ ] #2 Build\n[ ] #3 Ship`,
+      );
+    }
+    // The schema is static for the session: every request carries the same tool definitions,
+    // including the `tasks` parameter of `add`.
+    expect(requests[0]!.tools).toContain('"tasks"');
+    for (let index = 1; index < requests.length; index++)
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
 });

@@ -16,13 +16,16 @@ pi -e ./src/index.ts
 
 The `todo` tool supports five actions:
 
-| Action   | Input                                        | Result                            |
-| -------- | -------------------------------------------- | --------------------------------- |
-| `list`   | —                                            | Lists every Task                  |
-| `add`    | `title`, optional `description` and `status` | Adds a Task                       |
-| `update` | `id`, plus fields to change                  | Updates a Task                    |
-| `remove` | `id`                                         | Removes one Task                  |
-| `clear`  | —                                            | Removes every Task and resets IDs |
+| Action   | Input                                                 | Result                            |
+| -------- | ----------------------------------------------------- | --------------------------------- |
+| `list`   | —                                                     | Lists every Task                  |
+| `add`    | `title`, optional `description` and `status`          | Adds a Task                       |
+| `add`    | `tasks: [{ title, description? }]`, optional `status` | Adds several Tasks at once        |
+| `update` | `id`, plus fields to change                           | Updates a Task                    |
+| `remove` | `id`                                                  | Removes one Task                  |
+| `clear`  | —                                                     | Removes every Task and resets IDs |
+
+A batch `add` creates every Task in `tasks` atomically, with sequential IDs, and the result lists them. It writes one `pi-todo-state` session entry, so the tool group that made it projects a single Todo List Snapshot. If any title or description is empty, or the Task IDs would run out, it creates no Task. `tasks` must hold at least one entry and replaces `title`/`description`: a request that gives both `tasks` and `title` or a non-null `description` is rejected rather than guessed at. Per-Task fields other than `title` and `description` are rejected too. A top-level `status` applies to every new Task.
 
 A Pi `codemode` script receives the result as an object (the tool declares an `outputSchema`) instead of the text (its field names are already single words, so they match Pi's snake_case convention); the model still reads the same text, and failures still throw:
 
@@ -30,6 +33,7 @@ A Pi `codemode` script receives the result as an object (the tool declares an `o
 | ---------------- | ---------------------------------------------------------------------------- |
 | `list`           | `{ action: "list", tasks }`, each Task `{ id, title, description?, status }` |
 | `add` / `update` | `{ action, task }` with the resulting Task                                   |
+| batch `add`      | `{ action: "add", tasks }` with the created Tasks in ID order                |
 | `remove`         | `{ action: "remove", id }`                                                   |
 | `clear`          | `{ action: "clear", cleared }` with the number of Tasks removed              |
 

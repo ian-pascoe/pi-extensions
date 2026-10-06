@@ -30,6 +30,7 @@ type ExtensionMode = ExtensionContext["mode"];
 type RegisteredTodoTool = {
   readonly name: string;
   readonly outputSchema?: TSchema;
+  readonly parameters: TSchema;
   execute(
     toolCallId: string,
     params: TodoActionInput,
@@ -304,6 +305,168 @@ describe("Pi Todo extension", () => {
     expect(resultText(await harness.execute({ action: "add", title: "Again" }, context))).toBe(
       "Added Task #1",
     );
+  });
+
+  test("batch add creates every Task atomically with sequential IDs and one state entry", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+    const outputSchema = harness.tool.outputSchema;
+    if (outputSchema === undefined) throw new Error("todo declares no outputSchema");
+    await harness.execute({ action: "add", title: "Existing" }, context);
+
+    const added = await harness.execute(
+      {
+        action: "add",
+        tasks: [
+          { title: "  First  ", description: "  Details  " },
+          { title: "Second" },
+          { title: "Third" },
+        ],
+        status: "active",
+      },
+      context,
+    );
+
+    expect(resultText(added)).toBe(
+      "Added 3 Tasks\n[>] #2 First\n    Details\n[>] #3 Second\n[>] #4 Third",
+    );
+    const batch = [
+      { id: 2, title: "First", description: "Details", status: "active" },
+      { id: 3, title: "Second", status: "active" },
+      { id: 4, title: "Third", status: "active" },
+    ];
+    expect(added.details).toEqual({ action: "add", tasks: batch });
+    expect(added.structuredContent).toEqual({ action: "add", tasks: batch });
+    expect(Value.Check(outputSchema, added.structuredContent)).toBe(true);
+    expect(harness.entries).toHaveLength(2);
+    expect(harness.entries.at(-1)?.data).toEqual({
+      nextId: 5,
+      tasks: [{ id: 1, title: "Existing", status: "pending" }, ...batch],
+    });
+  });
+
+  test("tool schema accepts batch add and the transcript labels it", async () => {
+    const harness = new TodoExtensionHarness();
+    const { parameters } = harness.tool;
+    expect(
+      Value.Check(parameters, { action: "add", tasks: [{ title: "A", description: "B" }] }),
+    ).toBe(true);
+    expect(Value.Check(parameters, { action: "add", tasks: [] })).toBe(false);
+    expect(Value.Check(parameters, { action: "add", tasks: [{ description: "No title" }] })).toBe(
+      false,
+    );
+    expect(Value.Check(parameters, { action: "add", tasks: ["A"] })).toBe(false);
+    // A per-Task status is rejected rather than silently dropped.
+    expect(
+      Value.Check(parameters, { action: "add", tasks: [{ title: "A", status: "active" }] }),
+    ).toBe(false);
+    if (!harness.tool.renderCall || !harness.tool.renderResult) {
+      throw new Error("todo declares no transcript renderers");
+    }
+    const batch = await harness.execute(
+      {
+        action: "add",
+        tasks: [
+          { title: "B1", description: "Only expanded." },
+          ...[2, 3, 4, 5, 6].map((n) => ({ title: `B${n}` })),
+        ],
+      },
+      harness.context(),
+    );
+    const renderBatch = (expanded: boolean) =>
+      renderTodoComponent(
+        harness.tool.renderResult!(batch, { expanded, isPartial: false }, createTodoTestTheme()),
+        80,
+      ).join("\n");
+    expect(renderBatch(false)).toBe(
+      "Added 6 Tasks:\n[ ] #1 B1\n[ ] #2 B2\n[ ] #3 B3\n[ ] #4 B4\n[ ] #5 B5\n… 1 more",
+    );
+    expect(renderBatch(true)).toContain("[ ] #1 B1\n    Only expanded.");
+    expect(
+      renderTodoComponent(
+        harness.tool.renderCall(
+          { action: "add", tasks: [{ title: "A" }, { title: "B" }] },
+          createTodoTestTheme(),
+        ),
+        80,
+      ),
+    ).toEqual(["todo add 2 Tasks"]);
+  });
+
+  test("batch add creates nothing when any Task is invalid", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+    await harness.execute({ action: "add", title: "Existing" }, context);
+
+    await expect(
+      harness.execute(
+        { action: "add", tasks: [{ title: "Valid" }, { title: "   " }, { title: "Also valid" }] },
+        context,
+      ),
+    ).rejects.toThrow("Todo add failed: tasks[1].title must not be empty");
+    await expect(
+      harness.execute(
+        { action: "add", tasks: [{ title: "Valid" }, { title: "Bad", description: " " }] },
+        context,
+      ),
+    ).rejects.toThrow("Todo add failed: tasks[1].description must not be empty");
+    await expect(harness.execute({ action: "add", tasks: [] }, context)).rejects.toThrow(
+      "Todo add failed: tasks must not be empty",
+    );
+
+    expect(harness.entries).toHaveLength(1);
+    expect(resultText(await harness.execute({ action: "list" }, context))).toBe("[ ] #1 Existing");
+    expect(resultText(await harness.execute({ action: "add", title: "Next" }, context))).toBe(
+      "Added Task #2",
+    );
+  });
+
+  test("add rejects a request that combines tasks with title or description", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context();
+
+    await expect(
+      harness.execute({ action: "add", title: "Single", tasks: [{ title: "Batch" }] }, context),
+    ).rejects.toThrow("Todo add failed: provide either title or tasks, not both");
+    await expect(
+      harness.execute(
+        { action: "add", description: "Loose", tasks: [{ title: "Batch" }] },
+        context,
+      ),
+    ).rejects.toThrow("Todo add failed: provide either title or tasks, not both");
+    expect(harness.entries).toHaveLength(0);
+
+    // A null description means "absent", as it does for a single Task.
+    expect(
+      resultText(
+        await harness.execute(
+          { action: "add", description: null, tasks: [{ title: "Batch" }] },
+          context,
+        ),
+      ),
+    ).toBe("Added 1 Task\n[ ] #1 Batch");
+  });
+
+  test("batch add rejects exhausting the Task ID space without persisting", async () => {
+    const harness = new TodoExtensionHarness();
+    const context = harness.context([
+      {
+        type: "custom",
+        id: "limit",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        customType: "pi-todo-state",
+        data: { nextId: Number.MAX_SAFE_INTEGER - 1, tasks: [] },
+      },
+    ]);
+    await harness.emit("session_start", { type: "session_start", reason: "resume" }, context);
+    await expect(
+      harness.execute({ action: "add", tasks: [{ title: "Fits" }, { title: "Too far" }] }, context),
+    ).rejects.toThrow("Task ID limit reached");
+    expect(harness.entries).toHaveLength(0);
+    expect(
+      resultText(await harness.execute({ action: "add", tasks: [{ title: "Fits" }] }, context)),
+    ).toBe("Added 1 Task\n[ ] #9007199254740990 Fits");
   });
 
   test("clear resets IDs after every Task was individually removed", async () => {
