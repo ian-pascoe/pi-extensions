@@ -18,9 +18,10 @@
         "test/**",
         "vitest.config.ts",
         "package.json",
+        "pnpm-lock.yaml",
         "packages/pi-formatter/**",
         "packages/pi-lsp/**",
-        "packages/pi-utils/src/**",
+        "packages/pi-utils/**",
         "!**/node_modules/**",
         "!**/.turbo/**"
       ]
