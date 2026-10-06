@@ -82,7 +82,10 @@ async function createTemporaryDirectory(): Promise<string> {
 }
 
 async function waitForStderrTail(filePath: string): Promise<Buffer> {
-  for (let attempt = 0; attempt < 50; attempt++) {
+  // The stderr tail is flushed asynchronously by the client; poll until a generous deadline so a
+  // loaded runner does not fail the test, while the happy path returns on the first match.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     const contents = await readFile(filePath);
     if (contents.subarray(-3).toString() === "END") return contents;
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
