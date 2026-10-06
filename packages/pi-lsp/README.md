@@ -247,6 +247,25 @@ logger (variable)  ./logger
 Scripts receive each server's bounded response with its `prefix` and the count of `omitted`
 matching items.
 
+Diagnostics, hover, status, code actions, and apply results are compact text too:
+
+- `lsp_diagnostics` and `lsp_workspace_diagnostics` list one
+  `path:line:col severity source(code): message` line per LSP Diagnostic. A file without any reads
+  `path: no diagnostics`, and a server whose diagnostics timed out says so. Workspace diagnostics
+  start with the server's coverage message, if any.
+- `lsp_hover` shows only the hover's markdown or plaintext contents, under the `Query position:`
+  line.
+- `lsp_status` lists one `server_id state [root] language(extensions,...) [error: ...]` line per
+  server, followed by settings warnings.
+- `lsp_code_actions` lists each action as `title (kind): preview <preview_id>` with the preview's
+  diff indented below, or says why it cannot be applied.
+- `lsp_apply` lists the files it modified, created, deleted, or renamed.
+
+```text
+src/a.ts:3:7 error ts(2304): Cannot find name 'valeu'.
+src/a.ts:5:1 warning oxlint(eslint(no-unused-vars)): Variable 'x' is declared but never used.
+```
+
 Other reads show the server's response as compact JSON, as does a response of an unexpected shape.
 
 Every position tool's result starts by naming the queried position and the token there, so an
@@ -284,9 +303,9 @@ incapable servers and fail once if none are capable; explicitly selecting an inc
 reports that the operation is unsupported. `lsp_rename` and the `lsp_format_*` tools may omit
 `server_id` only when exactly one matching capable server exists.
 
-`lsp_status` lists each Server Definition's languages as a map from language ID to the file
-extensions and filenames it handles, so it shows which servers a file routes to before any has
-started.
+`lsp_status` lists each Server Definition's languages with the file extensions and filenames each
+handles (a map from language ID in its structured result), so it shows which servers a file routes
+to before any has started.
 
 `lsp_workspace_diagnostics` uses the server's workspace diagnostics pull when it has one, and
 otherwise the diagnostics it has pushed for files opened in this session. A server that answers only

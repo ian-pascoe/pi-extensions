@@ -519,8 +519,8 @@ function readTextContext(filePath: string, context: ExtensionContext): ReadTextC
 
 /**
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
- * response; location, symbol, hierarchy, and range reads derive readable model-visible text from
- * the same data (ADR-0003), and other reads show that JSON. References also name each searched
+ * response; location, symbol, hierarchy, range, diagnostics, and hover reads derive readable
+ * model-visible text from the same data (ADR-0003), and other reads show that JSON. References also name each searched
  * workspace root and warn when other roots of the same Server Definition exist or, in a workspace
  * root, when packages there have no document synchronized with the server. A position-based
  * query also reports its queried position: in the Structured Result, as the opening line of a result
@@ -2039,7 +2039,8 @@ const LSP_TOOL_DESCRIPTIONS = {
   capabilities: "Start a server for a workspace and report its negotiated capabilities.",
   restart:
     "Restart a server for a workspace, clearing its unavailable state, and report its capabilities.",
-  diagnostics: "Get fresh LSP Diagnostics for a file from every matching server.",
+  diagnostics:
+    "Get fresh LSP Diagnostics for a file from every matching server, one `path:line:col severity source(code): message` line each.",
   workspace_diagnostics:
     "Get a server's diagnostics for its whole workspace, from workspace pull or cached push diagnostics. A server that publishes none reports status unsupported; use lsp_diagnostics per file.",
   completion:
