@@ -360,6 +360,55 @@ it("keeps the Advisor prompt and tools across compaction, and its history a pref
     expect(seedPayload(request).header).toContain("Incremental update.");
 });
 
+it.each(["headless-root", "owned-child"] as const)(
+  "lets the %s final drain wait for a running Advisor Session compaction",
+  async (mode) => {
+    const privateRequests: PrivateRequest[] = [];
+    const summaries: Context[] = [];
+    globalThis.advisorObserverTest = longSessionStream(
+      { "Request 1.": 0, "Request 2.": 0, "Request 3.": 0 },
+      privateRequests,
+      {
+        isError: () => false,
+        summaries,
+        summaryDelayMs: 300,
+      },
+    );
+    // No Catch-up Wait, so only the final drain can wait for the compaction.
+    const { session, observer } = await observe(
+      { maxSessionTokens: 1_000, catchUpThreshold: "off" },
+      { compaction: { enabled: false, keepRecentTokens: 1_000 } },
+      [],
+      mode,
+    );
+    // The drain starts once the Review itself has finished, while its compaction still runs.
+    const reviewed = () => vi.waitFor(() => expect(observer.status.backlog).toBe(0));
+    globalThis.advisorObserverTest.settled = async () => {
+      if (mode !== "headless-root") return;
+      await reviewed();
+      await observer.settled();
+    };
+    const finish = async (request: string) => {
+      await session.prompt(request);
+      if (mode !== "owned-child") return;
+      await reviewed();
+      await observer.finishOwnedTurn();
+    };
+    // Each request is one turn, reviewed at once; padding makes the second compact.
+    await finish("Request 1.");
+    await finish(`Request 2. ${"pad ".repeat(1_500)}`);
+    expect(summaries).toHaveLength(1);
+    await finish("Request 3.");
+    expect(observer.status.lastError).toBeNull();
+    expect(privateRequests).toHaveLength(3);
+    // The drain waited, so the compacted Advisor Session continues rather than being discarded.
+    expect(seedPayload(privateRequests[2]).header).toContain("Incremental update.");
+    expect(JSON.stringify(privateRequests[2]?.messages)).toContain(
+      "Summary: the user asked to refactor the parser.",
+    );
+  },
+);
+
 it("keeps the Advisor Session when Pi declines to compact a session that is all recent history", async () => {
   const privateRequests: PrivateRequest[] = [];
   const summaries: Context[] = [];

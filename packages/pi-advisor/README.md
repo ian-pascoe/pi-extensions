@@ -87,7 +87,7 @@ Context Management is optional. If loaded and its tools are granted, `context_no
 
 Each Review is a new prompt in the same private Advisor Session, so its input is the whole Advisor Session so far: mostly prompt-cache reads, but billed on every Review. Two settings bound that cost.
 
-`reviewEvery` sets the Review Cadence: when Reviews run. Whatever the cadence, a Review covers every turn not yet reviewed, and only messages the Advisor has not yet seen are added. When those messages would exceed `seedBudgetTokens`, as a coarse cadence can gather, Advisor instead rebuilds the Advisor Session from a Context Seed within that budget.
+`reviewEvery` sets the Review Cadence: when Reviews run. Whatever the cadence, a Review covers every turn not yet reviewed, and only messages the Advisor has not yet seen are added. When those messages would exceed `seedBudgetTokens`, as a coarse cadence can gather or, under any cadence, a single very large turn, Advisor instead rebuilds the Advisor Session from a Context Seed within that budget. Like any rebuild, this withdraws earlier Concerns and Blockers that were queued to steer the observed agent but not yet consumed; findings already in its context stay.
 
 - `"turn"`, the default, reviews after every turn (one model response and its tool batch). Findings arrive soonest, and Concerns and Blockers can steer the agent while it still runs; cost grows with the number of turns.
 - `N` reviews after every `N` turns and again when the request completes, for any turns left over.

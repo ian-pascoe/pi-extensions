@@ -111,7 +111,7 @@ Reviewer cleanup must use the proper native shutdown lifecycle. Raw SDK disposal
 
 Reviews run in the background. A Review may combine multiple pending observed turns; do not build an unbounded queue of individual inference requests.
 
-The Review Cadence, `reviewEvery`, decides when a Review is due: `turn` (default) after every completed turn; `N` after every N turns and at request completion; `request` at request completion only. Request completion is the session's `agent_end` that Pi will not automatically retry, after its steering and follow-up messages; the root `agent_settled` hook, headless final drain, and Minimal Subagents task completion also review any remainder. A turn with an errored tool result is due at once under every cadence. A due Review covers every unreviewed turn, using the same incremental evidence as per-turn Reviews; when that evidence would exceed `seedBudgetTokens`, the Advisor Session is rebuilt from a Context Seed instead. The default stays `turn`: most Review cost comes from Advisor Session size, which `maxSessionTokens` bounds, and coarser cadences delay findings until the agent has finished, so Concerns can no longer steer the run.
+The Review Cadence, `reviewEvery`, decides when a Review is due: `turn` (default) after every completed turn; `N` after every N turns and at request completion; `request` at request completion only. Request completion is the session's `agent_end` that Pi will not automatically retry, after its steering and follow-up messages; the root `agent_settled` hook, headless final drain, and Minimal Subagents task completion also review any remainder. A turn with an errored tool result is due at once under every cadence. A due Review covers every unreviewed turn, using the same incremental evidence as per-turn Reviews; when that evidence would exceed `seedBudgetTokens`, under any cadence, the Advisor Session is rebuilt from a Context Seed instead. As with every rebuild, earlier findings queued for steering but not yet consumed are invalidated and retracted. The default stays `turn`: most Review cost comes from Advisor Session size, which `maxSessionTokens` bounds, and coarser cadences delay findings until the agent has finished, so Concerns can no longer steer the run.
 
 Review Backlog counts completed observed turns not yet fully reviewed, including those under review. The catch-up threshold accepts `off` or any positive integer `N`, defaulting to `3`:
 
@@ -120,7 +120,7 @@ Review Backlog counts completed observed turns not yet fully reviewed, including
 
 A threshold of one waits for an empty backlog; larger thresholds do not require a complete flush to zero. Reject zero, negative, and fractional thresholds. Failure, cancellation, disablement, or timeout releases the wait. Catch-up is not an approval gate.
 
-A Catch-up Wait only waits for a running Review. Under a coarser Review Cadence, turns waiting for their cadence point count toward the backlog but never start a wait themselves, and a wait ends when the running Review finishes unless another Review was already due. A Review's compaction runs after it, under its own deadline; a Catch-up Wait also waits for it, within the wait's ceiling.
+A Catch-up Wait only waits for a running Review. Under a coarser Review Cadence, turns waiting for their cadence point count toward the backlog but never start a wait themselves, and a wait ends when the running Review finishes unless another Review was already due. A Review's compaction runs after it, under its own deadline. A Catch-up Wait waits for that compaction only while unreviewed turns remain at or above its threshold, within the wait's ceiling. The final drain waits for both, up to one Review deadline, and then stops only a Review still under way: a compaction left running keeps its own deadline, the Advisor Session, and deferred Concerns.
 
 Enforce the configurable Review deadline and investigative-call limit independently of the Catch-up Wait ceiling.
 
@@ -139,6 +139,8 @@ Pi does not expose every abort cause distinctly. Conservatively preserve advice 
 Accept at most the configured number of findings from one terminating report, ordered Blocker, Concern, then Nit. Within a Review, retain only the highest-severity copy of formatting-equivalent advice. Across Reviews, suppress equal or lower-severity repeats while permitting `Nit → Concern → Blocker` escalation.
 
 Evaluate the three-completed-turn Concern cooldown once per Review. Deliver all eligible Concerns together; while the cooldown is active, retain the bounded distinct set for re-evaluation. Nits and Blockers bypass this cooldown. Nits never steer or start Corrective Turns. If an asynchronous Review finishes after Pi has begun a turn boundary, native context-only delivery records its Nits at the following safe boundary rather than delaying or waking the Observed Agent.
+
+Known limit: a Blocker delivered while the observed session runs a manual `/compact` does not start a Corrective Turn, because the session is not idle and no later settlement re-checks it; it stays visible for the next continuation.
 
 Allow one automatic Corrective Turn per observed request/task by default, with a configurable limit. Further Blockers remain visible until externally continued. This limit does not prevent steering an already-running turn.
 

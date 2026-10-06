@@ -112,6 +112,8 @@ export interface LongSessionOptions {
   summaries?: Context[];
   /** Milliseconds each Review response is held, by timer, before it completes. */
   reviewDelayMs?: number;
+  /** Milliseconds each compaction summary is held, by timer, before it completes. */
+  summaryDelayMs?: number;
   /** Hold every compaction summary until its request is aborted. */
   hangSummaries?: boolean;
   /** Error message for the first observed response, such as a retryable provider error. */
@@ -135,6 +137,7 @@ export function longSessionStream(
     reportContextTokens,
     summaries,
     reviewDelayMs,
+    summaryDelayMs,
     hangSummaries,
   } = options;
   let { firstError } = options;
@@ -237,7 +240,8 @@ export function longSessionStream(
           reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
           message,
         });
-      if (privateRole && reviewDelayMs) setTimeout(done, reviewDelayMs);
+      const delay = privateRole ? reviewDelayMs : context.tools?.length ? 0 : summaryDelayMs;
+      if (delay) setTimeout(done, delay);
       else queueMicrotask(done);
       return stream;
     },

@@ -1038,15 +1038,22 @@ export class AdvisorObserver {
       await this.drain();
       await this.preservePendingFindings();
     }
-    if (this.running) this.reset();
+    this.stopUnfinishedReview();
   }
   /**
-   * Final drain before completion: wait for every completed turn's Review, for at most one
-   * Review deadline rather than the Catch-up Wait ceiling, so a Review covering a whole request
-   * can finish.
+   * Final drain before completion: wait for every completed turn's Review and any compaction
+   * after it, for at most one Review deadline rather than the Catch-up Wait ceiling, so a Review
+   * covering a whole request can finish.
    */
   private drain(): Promise<void> {
-    return this.wait(1, undefined, this.config.reviewTimeoutMs);
+    return this.wait(0, undefined, this.config.reviewTimeoutMs);
+  }
+  /**
+   * After the final drain, stop a Review still under way. A compaction left running keeps its
+   * own deadline, so the Advisor Session and deferred Concerns survive it.
+   */
+  private stopUnfinishedReview(): void {
+    if (this.running && this.completed > this.reviewed) this.reset();
   }
   private async wait(threshold: number, signal?: AbortSignal, ceilingMs = 30_000): Promise<void> {
     const { promise: expired, resolve } = Promise.withResolvers<void>();
@@ -1079,7 +1086,7 @@ export class AdvisorObserver {
     this.scheduleCorrection();
     if (this.mode !== "headless-root") return;
     await this.drain();
-    if (this.running) this.reset();
+    this.stopUnfinishedReview();
   }
   /** Invalidate old context synchronously; native private shutdown remains tracked. */
   reset(): void {
