@@ -43,6 +43,7 @@ import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import { addCoordinatorMessageEnvelope } from "./minimal-subagents-message-envelope.js";
 import { unavailableAgent } from "./minimal-subagents-sessions.js";
 import { createRegistryEvent } from "./minimal-subagents-registry.js";
+import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
 import type {
   ActiveTurnProgress,
   AgentDetail,
@@ -225,8 +226,10 @@ export class MinimalSubagentsCoordinator {
 
     const sessionContext = parameters.session_context ?? "omit";
     const projectContext = parameters.project_context ?? "inherit";
-    const model = parameters.model ?? caller.model;
-    const requestedThinking = parameters.thinking_level ?? caller.thinkingLevel;
+    const role = parameters.role === undefined ? undefined : this.requireModelRole(parameters.role);
+    const model = parameters.model ?? role?.model ?? caller.model;
+    const requestedThinking =
+      parameters.thinking_level ?? role?.thinkingLevel ?? caller.thinkingLevel;
     const thinkingLevel = this.dependencies.sessions.resolveThinkingLevel(model, requestedThinking);
     const {
       ordinaryTools,
@@ -271,6 +274,8 @@ export class MinimalSubagentsCoordinator {
       missing_dependencies: [],
       recent_messages: [],
     };
+    // Added after `delegation`, matching the key order of replayed Launch Contracts.
+    if (role) agent.launch_contract.role = role.name;
     this.pendingAgentIds.add(agentId);
     let identity: ReturnType<AgentSessionFactory["createIdentity"]>;
     try {
@@ -353,6 +358,19 @@ export class MinimalSubagentsCoordinator {
     };
     if (warnings.length > 0) result.warnings = warnings;
     return result;
+  }
+
+  private requireModelRole(name: string): MinimalSubagentsModelRole {
+    const roles = this.dependencies.modelRoles ?? [];
+    const role = roles.find((candidate) => candidate.name === name);
+    if (role) return role;
+    throw new Error(
+      `Minimal subagents spawn validation: unknown role ${JSON.stringify(name)}; ${
+        roles.length === 0
+          ? "no model roles are configured"
+          : `configured roles: ${roles.map((candidate) => candidate.name).join(", ")}`
+      }`,
+    );
   }
 
   /** Capture immutable launch defaults for a nested caller from its active child runtime. */

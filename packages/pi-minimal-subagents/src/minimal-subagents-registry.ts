@@ -1,6 +1,7 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
 import { Value } from "typebox/value";
 import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
+import { isModelRoleName } from "./minimal-subagents-config.js";
 import { normalizeMinimalSubagentsUsage } from "./minimal-subagents-usage.js";
 import {
   createDeliveryLedger,
@@ -304,6 +305,7 @@ function parseRegistryLaunchContract(
 ): LaunchContract | undefined {
   if (
     !isCanonicalModelId(value.model) ||
+    (value.role !== undefined && !isModelRoleName(value.role)) ||
     !isUniqueNonEmptyStringArray(value.ordinary_tools) ||
     !excludesCoordinatorToolNames(value.ordinary_tools) ||
     (Array.isArray(value.tools) &&
@@ -320,6 +322,7 @@ function parseRegistryLaunchContract(
     ordinary_tools: [...value.ordinary_tools],
   };
   if (value.delegation !== undefined) launchContract.delegation = value.delegation;
+  if (value.role !== undefined) launchContract.role = value.role;
   return launchContract;
 }
 

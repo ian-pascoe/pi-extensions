@@ -26,6 +26,13 @@ const ToolSelectionSchema = Type.Union(
       'Configurable presets: "read" adds readToolset; "modify" adds readToolset plus modifyToolset. Defaults: read, grep, find, ls; modify additionally grants bash, edit, write. Configured baseToolset applies to all selections, including "none" and exact arrays. Omit to inherit the caller\'s active ordinary tools plus base. All grants stay within the caller\'s capability ceiling; coordinator tools are injected separately.',
   },
 );
+// Deliberately a plain string rather than an enum of the configured roles: settings can change, and
+// the tool definition must stay byte-identical for the session so provider prompt caches survive.
+const ModelRoleSchema = Type.String({
+  minLength: 1,
+  description:
+    "Name of a configured model role (minimalSubagents.modelRoles) listed in the Subagent tool guidelines. Resolves to the role's model and, when the role has one, its thinking level. An explicit model or thinking_level overrides the role's value. An unknown role is rejected with the configured role names.",
+});
 const FRIENDLY_AGENT_ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$";
 const CANONICAL_AGENT_ID_PATTERN =
   "^(?:root\\.)?[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:\\.[A-Za-z0-9][A-Za-z0-9_-]{0,63})*$";
@@ -55,6 +62,7 @@ export function createCoordinatorToolSchemas(modelIds: readonly string[]) {
       ),
       session_context: Type.Optional(SessionContextSchema),
       project_context: Type.Optional(ProjectContextSchema),
+      role: Type.Optional(ModelRoleSchema),
       model: Type.Optional(explicitModelSchema),
       thinking_level: Type.Optional(ThinkingLevelSchema),
       tools: Type.Optional(ToolSelectionSchema),

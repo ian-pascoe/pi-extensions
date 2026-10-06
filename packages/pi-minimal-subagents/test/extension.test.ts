@@ -665,6 +665,52 @@ describe("minimal subagents extension lifecycle", () => {
     }
   });
 
+  it("resolves a role through the registered subagent tool from the session's roles", async () => {
+    const cwd = await createTemporaryDirectory("minimal-subagents-role-launch-");
+    const settingsPath = join(cwd, ".pi", "settings.json");
+    await mkdir(join(cwd, ".pi"));
+    const writeRoles = (modelRoles: Record<string, string>) =>
+      writeFile(settingsPath, JSON.stringify({ minimalSubagents: { modelRoles } }));
+    await writeRoles({ explore: "lifecycle-test/model:low", plain: "lifecycle-test/model" });
+    const sessionManager = await createPersistedSession(cwd, cwd);
+    const harness = await createExtensionHarness(sessionManager);
+    try {
+      await harness.runner.emit(sessionStartEvent());
+      await writeRoles({ reviewer: "lifecycle-test/model:high" });
+
+      const spawn = harness.runner.getToolDefinition("subagent")!;
+      const context = toToolContext(harness.runner.createContext());
+      await expect(
+        spawn.execute(
+          "unknown-role",
+          { task: "Review", role: "reviewer" },
+          undefined,
+          undefined,
+          context,
+        ),
+      ).rejects.toThrow('unknown role "reviewer"; configured roles: explore, plain');
+      const launched = await spawn.execute(
+        "known-role",
+        { task: "Look", agent_id: "scout", role: "explore" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(launched.details).toMatchObject({
+        agent: {
+          launch_contract: {
+            role: "explore",
+            model: "lifecycle-test/model",
+            thinking_level: "low",
+          },
+        },
+      });
+      expect(harness.extensionErrors).toEqual([]);
+    } finally {
+      await emitSessionShutdown(harness, "quit");
+    }
+  });
+
   it("registers both renderers and all six real coordinator tools, then hands off only a confirmed fork", async () => {
     const cwd = await createTemporaryDirectory("minimal-subagents-lifecycle-cwd-");
     const sessionDirectory = await createTemporaryDirectory(
