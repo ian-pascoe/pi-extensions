@@ -36,6 +36,7 @@ interface GitCheckpointsHarness {
   readonly sessionManager: SessionManager;
   failNextUndoAppend(): void;
   selectChoice: string | undefined;
+  readonly selectPrompts: string[];
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {
@@ -157,13 +158,17 @@ async function createHarness(
     runner,
     sessionManager,
     selectChoice: undefined,
+    selectPrompts: [],
   };
   if (hasUI) {
     runner.setUIContext(
       {
         ...runner.getUIContext(),
         notify: (message) => notifications.push(message),
-        select: async () => harness.selectChoice,
+        select: async (prompt) => {
+          harness.selectPrompts.push(prompt);
+          return harness.selectChoice;
+        },
         confirm: async () => true,
       },
       "rpc",
@@ -177,6 +182,7 @@ async function completeModelStep(
   harness: GitCheckpointsHarness,
   turnIndex: number,
   content: string,
+  duringStep?: () => Promise<void>,
 ): Promise<{ readonly assistantId: string; readonly endEntryId: string }> {
   await harness.runner.emit({
     type: "turn_start",
@@ -184,6 +190,7 @@ async function completeModelStep(
     timestamp: Date.now(),
   } satisfies TurnStartEvent);
   await writeFile(resolve(harness.cwd, "code.txt"), content);
+  await duringStep?.();
   const message = assistantMessage(`step ${turnIndex}`);
   const assistantId = harness.sessionManager.appendMessage(message);
   await harness.runner.emitBoundary(
@@ -307,6 +314,39 @@ describe("Pi Git Checkpoints lifecycle", () => {
         expect.stringContaining("undo state remains active in memory"),
       ]),
     );
+  });
+
+  test("leaves paths that became git-ignored out of the Restore preview and untouched", async () => {
+    const harness = await createHarness();
+    await writeFile(resolve(harness.cwd, "code.txt"), "one\n");
+    await writeFile(resolve(harness.cwd, "secret.txt"), "checkpoint secret\n");
+    harness.sessionManager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
+    const first = await completeModelStep(harness, 0, "two\n");
+    harness.sessionManager.appendMessage({
+      role: "user",
+      content: "second",
+      timestamp: Date.now(),
+    });
+    const second = await completeModelStep(harness, 1, "three\n", async () => {
+      await writeFile(resolve(harness.cwd, ".gitignore"), "secret.txt\n");
+      await writeFile(resolve(harness.cwd, "secret.txt"), "live secret\n");
+    });
+
+    harness.selectChoice = "Restore code and navigate";
+    await harness.runner.emit(beforeTreeEvent(second.endEntryId, first.assistantId));
+    expect(harness.selectPrompts).toHaveLength(1);
+    expect(harness.selectPrompts[0]).not.toContain("secret.txt");
+    expect(harness.selectPrompts[0]).toContain("code.txt");
+    expect(harness.selectPrompts[0]).toContain("1 skipped path(s) remain untouched");
+    harness.sessionManager.branch(first.assistantId);
+    await harness.runner.emit({
+      type: "session_tree",
+      oldLeafId: second.endEntryId,
+      newLeafId: first.assistantId,
+    } satisfies SessionTreeEvent);
+
+    expect(await readFile(resolve(harness.cwd, "code.txt"), "utf8")).toBe("two\n");
+    expect(await readFile(resolve(harness.cwd, "secret.txt"), "utf8")).toBe("live secret\n");
   });
 
   test("skips an approved Restore when a path changes before session_tree", async () => {

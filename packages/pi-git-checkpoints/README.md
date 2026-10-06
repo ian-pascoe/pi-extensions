@@ -39,7 +39,7 @@ User `!` and `!!` changes enter the next Model Step baseline because Pi exposes 
 
 Repository mode includes tracked files regardless of size and nonignored untracked files up to 2 MiB. Standalone mode initially treats every path as untracked, so the same 2-MiB limit applies on the first successful capture; captured paths then behave as private-index tracked files even after growth.
 
-Regular files, deletions, symbolic links, and executable modes are supported. Ignored paths, oversized untracked paths, submodules, nested repositories, sockets, devices, and unsupported entries remain untouched and are reported as skipped. Git Checkpoints rejects lexical path escapes and destinations whose existing ancestors escape through symbolic links.
+Regular files, deletions, symbolic links, and executable modes are supported. Git-ignored paths are never captured or restored, and are not recorded as skipped; they are checked against current ignore rules at Restore time. Oversized untracked paths, submodules, nested repositories, sockets, devices, and unsupported entries remain untouched and are reported as skipped. Git Checkpoints rejects lexical path escapes and destinations whose existing ancestors escape through symbolic links.
 
 ## Settings
 

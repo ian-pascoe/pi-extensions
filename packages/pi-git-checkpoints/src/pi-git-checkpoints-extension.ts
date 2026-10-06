@@ -303,13 +303,16 @@ class PiGitCheckpointsLifecycle {
         selectedTargetId: event.preparation.targetId,
       });
       if (plan.kind !== "ready" || plan.changedPaths.length === 0) return;
+      const excludedPaths = await store.restoreExcludedPaths(plan.changedPaths, event.signal);
+      const restorePaths = plan.changedPaths.filter((path) => !excludedPaths.has(path));
+      if (restorePaths.length === 0) return;
       const approvalCapture = await store.capture(event.signal);
       let differences;
       try {
         differences = await store.compareTrees(
           plan.targetCheckpoint.targetTreeId,
           approvalCapture.treeId,
-          plan.changedPaths,
+          restorePaths,
           event.signal,
         );
       } catch (cause) {
@@ -328,7 +331,7 @@ class PiGitCheckpointsLifecycle {
           ? `Repository HEAD differs from the Target Checkpoint (${liveHead.slice(0, 12)} vs ${targetHead.slice(0, 12)}); the branch will not change.`
           : undefined;
       const choice = await context.ui.select(
-        `${PACKAGE_PREFIX}: Restore Worktree Checkpoint?\n${previewText(differences, plan.skippedPaths.length, headWarning)}`,
+        `${PACKAGE_PREFIX}: Restore Worktree Checkpoint?\n${previewText(differences, plan.skippedPaths.length + excludedPaths.size, headWarning)}`,
         [RESTORE_CHOICE, KEEP_CHOICE, CANCEL_CHOICE],
         { signal: event.signal },
       );

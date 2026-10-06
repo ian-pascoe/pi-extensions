@@ -129,7 +129,7 @@ describe("Worktree Checkpoint capture", () => {
     await writeFile(join(nested, "nested.txt"), "nested\n");
 
     const before = await store.capture();
-    expect(before.skippedPaths).toEqual(["excluded.txt", "ignored.txt", "large.bin", "nested"]);
+    expect(before.skippedPaths).toEqual(["large.bin", "nested"]);
 
     await writeFile(join(repository, "tracked.txt"), "two\n");
     await rm(join(repository, "binary.bin"));
@@ -141,7 +141,7 @@ describe("Worktree Checkpoint capture", () => {
       { path: "binary.bin", status: "D" },
       { path: "tracked.txt", status: "M" },
     ]);
-    expect(after.skippedPaths).toEqual(["excluded.txt", "ignored.txt", "large.bin", "nested"]);
+    expect(after.skippedPaths).toEqual(["large.bin", "nested"]);
 
     const modeTree = await git(
       store.storeDirectory,
@@ -152,6 +152,61 @@ describe("Worktree Checkpoint capture", () => {
     );
     expect(modeTree.startsWith("100755 blob ")).toBe(true);
     expect(await readlink(join(repository, "linked.txt"))).toBe("tracked.txt");
+  });
+
+  test("keeps reporting real capture skips while deriving ignored paths at Restore time", async () => {
+    const { repository, store } = await initializeRepositoryStore();
+    await writeFile(join(repository, ".gitignore"), "ignored.txt\n");
+    await writeFile(join(repository, "ignored.txt"), "ignored\n");
+    await writeFile(join(repository, "large.bin"), Buffer.alloc(2 * 1024 * 1024 + 1, 1));
+    await mkdir(join(repository, "nested"));
+    await git(join(repository, "nested"), "init", "--quiet");
+    await writeFile(join(repository, "nested", "nested.txt"), "nested\n");
+    await git(
+      repository,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${await git(repository, "rev-parse", "HEAD")},submodule`,
+    );
+
+    const capture = await store.capture();
+
+    expect(capture.skippedPaths).toEqual(["large.bin", "nested", "submodule"]);
+    expect(
+      await store.restoreExcludedPaths([
+        "ignored.txt",
+        "nested/nested.txt",
+        "tracked.txt",
+        ".gitignore",
+      ]),
+    ).toEqual(new Set(["ignored.txt", "nested/nested.txt"]));
+  });
+
+  test("does not report git-ignored paths, including self-ignoring directories, as skipped", async () => {
+    const { repository, store } = await initializeRepositoryStore();
+    await mkdir(join(repository, ".husky", "_"), { recursive: true });
+    await writeFile(join(repository, ".husky", "_", ".gitignore"), "*\n");
+    await writeFile(join(repository, ".husky", "_", "husky.sh"), "#!/bin/sh\n");
+    await writeFile(join(repository, ".husky", "pre-commit"), "true\n");
+    await mkdir(join(repository, "node_modules", "dep"), { recursive: true });
+    await writeFile(join(repository, ".gitignore"), "node_modules/\n");
+    await writeFile(join(repository, "node_modules", "dep", "index.js"), "dep\n");
+
+    const first = await store.capture();
+    const second = await store.capture();
+
+    expect(first.skippedPaths).toEqual([]);
+    expect(second.skippedPaths).toEqual([]);
+    const tree = await git(
+      store.storeDirectory,
+      `--git-dir=${join(store.storeDirectory, "git")}`,
+      "ls-tree",
+      "-r",
+      "--name-only",
+      first.treeId,
+    );
+    expect(tree.split("\n")).toEqual([".gitignore", ".husky/pre-commit", "tracked.txt"]);
   });
 });
 
@@ -483,10 +538,10 @@ describe("checkpoint scope and retention safety", () => {
       startingDirectory: standalone,
     });
     const first = await store.capture();
-    expect(first.skippedPaths).toEqual(["ignored.txt", "skipped.bin"]);
+    expect(first.skippedPaths).toEqual(["skipped.bin"]);
     await writeFile(join(standalone, "captured.bin"), Buffer.alloc(2 * 1024 * 1024 + 1, 2));
     const second = await store.capture();
-    expect(second.skippedPaths).toEqual(["ignored.txt", "skipped.bin"]);
+    expect(second.skippedPaths).toEqual(["skipped.bin"]);
     expect(await store.compareTrees(first.treeId, second.treeId)).toEqual([
       { path: "captured.bin", status: "M" },
     ]);

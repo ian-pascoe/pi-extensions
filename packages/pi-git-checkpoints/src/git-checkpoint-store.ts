@@ -759,7 +759,8 @@ export class GitCheckpointStore {
       (checkpointPath) => !sourceTracked.has(checkpointPath),
     );
     const ignored = await this.ignoredPaths(privateOnly, signal);
-    const skipped = new Set([...scan.skipped, ...ignored]);
+    // Git-ignored paths are derived from live ignore rules at Restore time, not recorded.
+    const skipped = new Set(scan.skipped);
     const allowed: string[] = [];
 
     for (const checkpointPath of candidates) {
@@ -1100,6 +1101,21 @@ export class GitCheckpointStore {
       const record = await this.readLegacyUndo();
       if (record && saveUndoRecord) await saveUndoRecord(record);
       await rm(this.legacyUndoPath(), { force: true });
+    });
+  }
+
+  /**
+   * Returns the paths a Restore would leave untouched because they are git-ignored or inside a
+   * nested repository now. Ignore state is derived from live rules, not from recorded checkpoints.
+   */
+  restoreExcludedPaths(
+    paths: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ReadonlySet<string>> {
+    return this.serialize(async () => {
+      this.assertEnabled("restore");
+      const normalized = [...new Set(paths.map((path) => this.validatePath(path)))];
+      return this.restoreSkippedPaths(normalized, signal);
     });
   }
 
