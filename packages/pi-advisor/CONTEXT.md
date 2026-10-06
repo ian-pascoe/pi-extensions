@@ -45,7 +45,7 @@ An urgent Intervention identifying materially unsound work that needs immediate 
 _Avoid_: Execution veto
 
 **Superseded Finding**:
-A finding from a Review whose observed agent completed more turns before the finding could be delivered. It is withheld and re-validated by the next Review against the newer turns rather than delivered.
+A finding from a Review whose observed agent completed more turns before the finding could be delivered. It is withheld and re-validated by the next Review against the newer turns rather than delivered, at most once: if that Review is superseded too, its re-reported Concerns and Blockers are delivered and its Nits dropped.
 _Avoid_: Stale advice, retracted finding
 
 **Corrective Turn**:

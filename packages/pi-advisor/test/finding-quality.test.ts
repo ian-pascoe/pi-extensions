@@ -1,4 +1,4 @@
-import { onTestFinished, expect, it } from "vitest";
+import { onTestFinished, expect, it, vi } from "vitest";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   activeFixture,
@@ -116,6 +116,66 @@ it("withholds a Superseded Finding and has the next Review re-validate it", asyn
   expectStableAdvisorPrefix(privateRequests);
 });
 
+it("defers a Superseded Finding only once, so turns arriving faster than Reviews never starve a Concern", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  let turns = 0;
+  const waiting: { turn: number; resolve: () => void }[] = [];
+  /** Resolves once the observed agent has completed `turn` turns, after its handlers settle. */
+  const untilTurn = (turn: number) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    waiting.push({ turn, resolve });
+    return promise;
+  };
+  const concern: AdvisorFinding = {
+    severity: "concern",
+    message: "The parser fix was not verified.",
+    evidence: { quote: "ok 0-0" },
+  };
+  const nit: AdvisorFinding = {
+    severity: "nit",
+    message: "Name the parser helper consistently.",
+    evidence: { quote: "ok 0-0" },
+  };
+  let revalidating: unknown;
+  globalThis.advisorObserverTest = longSessionStream({ "Fix the parser": 4 }, privateRequests, {
+    ...ok,
+    // The first two Reviews answer only after the observed agent completed another turn.
+    hold: (review) => (review <= 2 ? untilTurn(review + 1) : undefined),
+    report: (review, request) => {
+      if (review === 2) revalidating = seedPayload(request).evidence.deferredFindings?.findings;
+      // The re-validating Review still finds both, worded slightly differently.
+      if (review === 1) return { findings: [concern, nit] };
+      if (review === 2)
+        return {
+          findings: [{ ...concern, message: "The parser fix is still unverified." }, nit],
+        };
+      return { findings: [] };
+    },
+  });
+  const { session, observer } = await observe({ catchUpThreshold: "off" });
+  session.subscribe((event) => {
+    if (event.type !== "turn_end") return;
+    turns++;
+    for (const waiter of waiting.filter((entry) => entry.turn <= turns))
+      setTimeout(waiter.resolve, 0);
+  });
+  await session.prompt("Fix the parser");
+  await vi.waitFor(() => expect(observer.status).toMatchObject({ state: "armed", backlog: 0 }));
+  expect(observer.status).toMatchObject({
+    lastError: null,
+    deferredFindings: 0,
+    droppedFindings: { superseded: 1 },
+  });
+  // The second Review was superseded as well, but it re-checked the Concern against newer
+  // turns, so the Concern was delivered while the agent was still working; the Nit was not.
+  expect(revalidating).toEqual([concern, nit]);
+  expect(delivered(session)).toEqual(["Advisor concern: The parser fix is still unverified."]);
+  const intervention = session.messages.findIndex((message) => message.role === "custom");
+  const final = session.messages.findLastIndex((message) => message.role === "assistant");
+  expect(intervention).toBeGreaterThan(0);
+  expect(intervention).toBeLessThan(final);
+});
+
 it('re-validates a superseded tool-error Review at request completion under reviewEvery "request"', async () => {
   const privateRequests: PrivateRequest[] = [];
   let release: Promise<void> | undefined;
@@ -228,7 +288,7 @@ it("delivers at most maxNitsPerRequest Nits per request, never capping Concerns"
   observer.beforeTask();
   await session.prompt("Second request");
   expect(delivered(session).at(-1)).toBe("Advisor nit: Nit E.");
-  expect(observer.status.droppedFindings).toEqual({ overNitCap: 2, unsupported: 0 });
+  expect(observer.status.droppedFindings).toMatchObject({ overNitCap: 2, unsupported: 0 });
 });
 
 it("drops findings that cite no evidence or a Tool-Call Reference the Advisor was not given", async () => {
@@ -273,6 +333,56 @@ it("drops findings that cite no evidence or a Tool-Call Reference the Advisor wa
     'Dropped 2 findings citing no evidence or a Tool-Call Reference absent from the supplied evidence: \\"Invented reference.\\"; \\"Uncited finding.\\"',
   );
   expectStableAdvisorPrefix(privateRequests);
+});
+
+it("ends a Review without findings after two invalid advisor_report calls instead of looping", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({}, privateRequests, {
+    ...ok,
+    // Every call omits the required evidence.
+    report: () => ({ findings: [{ severity: "concern", message: "Unsupported." }] }),
+  });
+  const { session, observer } = await observe({});
+  await session.prompt("Answer");
+  expect(observer.status).toMatchObject({
+    state: "armed",
+    lastError: null,
+    backlog: 0,
+    droppedFindings: { invalid: 1 },
+  });
+  expect(privateRequests).toHaveLength(2);
+  // The first rejection explains the problem so the Advisor can correct its report.
+  expect(JSON.stringify(privateRequests[1]?.messages.at(-1))).toContain(
+    "Call advisor_report again with a valid report.",
+  );
+  expect(delivered(session)).toEqual([]);
+});
+
+it("accepts a corrected advisor_report after one invalid call without pausing", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({}, privateRequests, {
+    ...ok,
+    report: (call) => ({
+      findings: [
+        call === 1
+          ? { severity: "concern", message: "Corrected." }
+          : { severity: "concern", message: "Corrected.", evidence: { quote: "Answer" } },
+      ],
+    }),
+  });
+  const { session, observer } = await observe({});
+  await session.prompt("Answer");
+  expect(observer.status).toMatchObject({
+    lastError: null,
+    droppedFindings: { invalid: 0 },
+  });
+  // The second Advisor call retried within the first Review, after the rejected report.
+  expect(privateRequests[1]?.messages.at(-1)).toMatchObject({
+    role: "toolResult",
+    toolName: "advisor_report",
+    isError: true,
+  });
+  expect(delivered(session)).toEqual(["Advisor concern: Corrected."]);
 });
 
 it("drops a legacy single-finding report, which cites no evidence", async () => {

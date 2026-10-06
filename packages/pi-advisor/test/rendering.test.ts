@@ -181,11 +181,16 @@ describe("Advisor status", () => {
     const text = status({
       ...snapshot,
       deferredFindings: 2,
-      droppedFindings: { overNitCap: 1, unsupported: 3 },
+      droppedFindings: { overNitCap: 1, unsupported: 3, superseded: 2, invalid: 1 },
     });
-    expect(text).toContain(
-      "2 findings awaiting re-validation \u00b7 1 Nit over the request cap dropped \u00b7 3 findings without valid evidence dropped",
-    );
+    for (const count of [
+      "2 findings awaiting re-validation",
+      "1 Nit over the request cap dropped",
+      "3 findings without valid evidence dropped",
+      "2 Nits superseded again dropped",
+      "1 Review ended by invalid reports",
+    ])
+      expect(text.replace(/\s+/g, " ")).toContain(count);
     expect(
       status({
         ...snapshot,

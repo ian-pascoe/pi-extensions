@@ -373,7 +373,12 @@ export default function advisor(pi: ExtensionAPI): void {
       cost: live?.cost ?? null,
       reviewCost: live?.reviewCost ?? null,
       deferredFindings: live?.deferredFindings ?? 0,
-      droppedFindings: live?.droppedFindings ?? { overNitCap: 0, unsupported: 0 },
+      droppedFindings: live?.droppedFindings ?? {
+        overNitCap: 0,
+        unsupported: 0,
+        superseded: 0,
+        invalid: 0,
+      },
       unavailableTools: live?.unavailableTools ?? null,
       children: [...children.values()].map((child) => ({
         agentId: child.agentId,
