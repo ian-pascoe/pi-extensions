@@ -4319,9 +4319,21 @@ describe("registered LSP tool", () => {
       const fixture = await createToolFixture();
       const cwd = fixture.context.cwd;
       const base = resolvedSettings(["typescript", "broken", "python", "dormant", "ruby"]);
+      const typescriptLanguages = [
+        { extensions: [".ts", ".tsx"], fileNames: [], languageId: "typescript" },
+        { extensions: [".js"], fileNames: [], languageId: "javascript" },
+      ];
       const pythonLanguages = [
         { extensions: [".py"], fileNames: ["SConstruct"], languageId: "python" },
       ];
+      const rubyLanguages = [{ extensions: [".rb"], fileNames: [], languageId: "ruby" }];
+      const languagesById = new Map([
+        ["typescript", typescriptLanguages],
+        ["broken", typescriptLanguages],
+        ["python", pythonLanguages],
+        ["dormant", pythonLanguages],
+        ["ruby", rubyLanguages],
+      ]);
       const settings: ResolvedLspSettings = {
         ...base,
         enablement: new Map([["dormant", { enabled: false, scope: "global" }]]),
@@ -4329,15 +4341,7 @@ describe("registered LSP tool", () => {
         servers: new Map(
           [...base.servers].map(([id, definition]) => [
             id,
-            id === "typescript" || id === "broken"
-              ? {
-                  ...definition,
-                  languages: [
-                    { extensions: [".ts", ".tsx"], fileNames: [], languageId: "typescript" },
-                    { extensions: [".js"], fileNames: [], languageId: "javascript" },
-                  ],
-                }
-              : { ...definition, languages: pythonLanguages },
+            { ...definition, languages: languagesById.get(id) ?? [] },
           ]),
         ),
       };
@@ -4379,7 +4383,7 @@ describe("registered LSP tool", () => {
           errorLine,
           "python configured python(.py,SConstruct)",
           "dormant disabled python(.py,SConstruct)",
-          "ruby configured python(.py,SConstruct)",
+          "ruby configured ruby(.rb)",
           "",
           "Warning: Project lsp.servers.bad: command is required",
         ].join("\n"),
@@ -4413,7 +4417,7 @@ describe("registered LSP tool", () => {
           {
             server_id: "ruby",
             state: "configured",
-            languages: { python: [".py", "SConstruct"] },
+            languages: { ruby: [".rb"] },
           },
         ],
         warnings: ["Project lsp.servers.bad: command is required"],
