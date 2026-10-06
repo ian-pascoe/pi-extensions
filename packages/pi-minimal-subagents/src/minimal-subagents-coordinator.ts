@@ -260,7 +260,7 @@ export class MinimalSubagentsCoordinator {
       );
     }
     if (this.agents.has(agentId) || this.pendingAgentIds.has(agentId)) {
-      throw new Error(`Minimal subagents duplicate agent ID: ${agentId}`);
+      throw new Error(this.duplicateAgentIdMessage(agentId));
     }
 
     const sessionContext = parameters.session_context ?? "omit";
@@ -1836,6 +1836,20 @@ export class MinimalSubagentsCoordinator {
       }),
     );
     this.removeSettledEmptyTurnClaim(delivery.source_agent_id, delivery.source_turn_id);
+  }
+
+  /** Name an existing agent ID's state and the next steps that are valid for that state. */
+  private duplicateAgentIdMessage(agentId: string): string {
+    const prefix = `Minimal subagents duplicate agent ID: ${agentId}`;
+    const existing = this.agents.get(agentId);
+    if (!existing) {
+      return `${prefix} is still being created; retry shortly or choose another agent_id`;
+    }
+    if (existing.availability === "unavailable") {
+      return `${prefix} already exists (unavailable). Use subagent_delete to remove it (a deleted ID cannot be reused), or choose another agent_id.`;
+    }
+    const state = existing.active_turn_id ? "running" : "idle";
+    return `${prefix} already exists (${state}). Use agent_message to continue it, subagent_delete to remove it (a deleted ID cannot be reused), or choose another agent_id.`;
   }
 
   private buildAgentSummary(agent: PersistedAgent, includeDescendants = true): AgentSummary {
