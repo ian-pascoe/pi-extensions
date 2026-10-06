@@ -59,9 +59,9 @@ export type TodoActionInput = {
 
 /**
  * Render details and the tool's structured result. The action, plus `tasks` versus `task` for
- * `add` and `update`, discriminates the list from the Task(s) a mutation added or updated, the ID it removed,
- * and the count it cleared. A batch `add` returns the Tasks it created as `tasks`; a single `add`
- * returns `task`; likewise a batch `update` returns the Tasks it changed as `tasks`.
+ * `add` and `update`, discriminates the list from the Task(s) a mutation added or updated, the ID
+ * it removed, and the count it cleared. A batch `add` returns the Tasks it created as `tasks`; a
+ * single `add` returns `task`; likewise a batch `update` returns the Tasks it changed as `tasks`.
  */
 export type TodoToolDetails =
   | { readonly action: "list" | "add" | "update"; readonly tasks: readonly TodoTask[] }
@@ -321,8 +321,8 @@ function updateTasks(
   state: TodoStateSnapshot,
   input: TodoActionInput & { readonly updates: readonly TodoTaskChange[] },
 ): TodoActionResult {
-  // Pi normalises an omitted optional field to null, so a null description is treated as absent,
-  // as it is for a batch add.
+  // Models often send null for omitted fields; Pi strips those except where null is valid, so a
+  // null description here is treated as absent, as for a batch add.
   if (
     input.id !== undefined ||
     input.title !== undefined ||
