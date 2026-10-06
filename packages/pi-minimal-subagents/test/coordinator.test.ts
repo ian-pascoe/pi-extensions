@@ -1,7 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
+import { findDeliveryEvidence } from "../src/minimal-subagents-sessions.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
   REGISTRY_ENTRY_TYPE,
@@ -1346,45 +1348,269 @@ describe("minimal subagents coordinator", () => {
     ]);
   });
 
-  it("selects the oldest retained turn by default and supports an exact turn ID", async () => {
+  it("selects the oldest unclaimed retained turn by default and supports an exact turn ID", async () => {
     const fixture = coordinatorFixture(childRuntime(), 200);
     const agent = persistedAgent("worker", "root");
     agent.latest_result = {
       agent_id: "worker",
-      turn_id: "worker:newer",
+      turn_id: "worker:newest",
       status: "completed",
-      output: "newer result",
+      output: "newest result",
     };
+    const delivery = (turnId: string, sequence: number) => ({
+      source_agent_id: "worker",
+      source_turn_id: turnId,
+      destination_agent_id: "root",
+      // "wait" keeps restore from handing the results to the parent automatically. Production never
+      // produces a "wait" delivery without a claim; it only stands in for a result that is still
+      // inside the grace period or whose delivery failed.
+      path: "wait" as const,
+      settled: false,
+      sequence,
+      result: {
+        agent_id: "worker",
+        turn_id: turnId,
+        status: "completed" as const,
+        output: `${turnId} result`,
+      },
+    });
     await fixture.coordinator.restore({
       agents: [agent],
       tombstones: [],
       deliveries: [
-        {
-          source_agent_id: "worker",
-          source_turn_id: "worker:older",
-          destination_agent_id: "root",
-          path: "wait",
-          settled: false,
-          sequence: 1,
-          result: {
-            agent_id: "worker",
-            turn_id: "worker:older",
-            status: "completed",
-            output: "older result",
-          },
-        },
+        delivery("worker:claimed", 1),
+        delivery("worker:older", 2),
+        delivery("worker:newer", 3),
       ],
-      wait_claimed_turns: ["worker\u0000worker:older"],
-      next_delivery_sequence: 2,
+      wait_claimed_turns: ["worker\u0000worker:claimed"],
+      next_delivery_sequence: 4,
     });
 
     await expect(fixture.coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
       turn_id: "worker:older",
-      output: "older result",
+      output: "worker:older result",
     });
     await expect(
-      fixture.coordinator.wait("root", "worker", 1_000, undefined, "worker:newer"),
-    ).resolves.toMatchObject({ turn_id: "worker:newer", output: "newer result" });
+      fixture.coordinator.wait("root", "worker", 1_000, undefined, "worker:claimed"),
+    ).resolves.toMatchObject({ turn_id: "worker:claimed", output: "worker:claimed result" });
+    await expect(
+      fixture.coordinator.wait("root", "worker", 1_000, undefined, "worker:newest"),
+    ).resolves.toMatchObject({ turn_id: "worker:newest", output: "newest result" });
+  });
+
+  it("targets the new turn after a claimed turn and an agent_message start", async () => {
+    let finishSecondTurn!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runMessage.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishSecondTurn = resolve)),
+    );
+    const { coordinator } = coordinatorFixture(runtime, 200);
+    const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      event: "turn",
+      turn_id: first.turn_id,
+      output: "done",
+    });
+    const started = await coordinator.sendAgentMessage(
+      "root",
+      { agent_id: "worker", message: "Second" },
+      "root:turn",
+    );
+    if (started.disposition !== "started-turn" || !started.turn_id) {
+      throw new Error("expected agent_message to start a turn");
+    }
+
+    await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+      event: "timeout",
+      turn_id: started.turn_id,
+    });
+    await expect(
+      coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
+    ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
+
+    finishSecondTurn({ status: "completed", output: "second done" });
+    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+      event: "turn",
+      turn_id: started.turn_id,
+      output: "second done",
+    });
+  });
+
+  it("still delivers a result automatically after a wait on its turn timed out", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator, root, queuedMessages } = coordinatorFixture(runtime, 0);
+    const spawned = await coordinator.spawn("root", { task: "Slow", agent_id: "worker" }, caller);
+    const timedOut = await coordinator.wait("root", "worker", 1);
+    expect(timedOut).toMatchObject({ event: "timeout", turn_id: spawned.turn_id });
+    // The root session now holds the timeout's wait tool result, exactly as Pi appends it.
+    const entries: SessionEntry[] = [
+      {
+        type: "message",
+        id: "timeout-result",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "subagent_wait",
+          content: [{ type: "text", text: "timeout" }],
+          details: {
+            event: "timeout",
+            source_agent_id: timedOut.agent_id,
+            source_turn_id: timedOut.turn_id,
+          },
+          isError: false,
+          timestamp: 1,
+        },
+      },
+    ];
+    root.hasDeliveryEvidence.mockImplementation((agentId, turnId, deliveryId) =>
+      findDeliveryEvidence(entries, agentId, turnId, deliveryId),
+    );
+
+    finishPrompt({ status: "completed", output: "late result" });
+
+    await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
+    expect(queuedMessages[0]).toMatchObject({
+      customType: "minimal-subagents.result",
+      content: expect.stringContaining("late result"),
+    });
+  });
+
+  it("keeps skipping a claimed turn after a reload", async () => {
+    const source = coordinatorFixture(childRuntime(), 200);
+    const first = await source.coordinator.spawn(
+      "root",
+      { task: "First", agent_id: "worker" },
+      caller,
+    );
+    await source.coordinator.wait("root", "worker", 1_000);
+    const unsettled = childRuntime();
+    unsettled.runMessage.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
+    const restored = coordinatorFixture(unsettled, 200);
+    await restored.coordinator.restore(source.coordinator.snapshot());
+    const started = await restored.coordinator.sendAgentMessage(
+      "root",
+      { agent_id: "worker", message: "Second" },
+      "root:turn",
+    );
+    if (started.disposition !== "started-turn" || !started.turn_id) {
+      throw new Error("expected agent_message to start a turn");
+    }
+
+    const reloaded = restored.coordinator.snapshot();
+    const again = coordinatorFixture(unsettled, 200);
+    await again.coordinator.restore(reloaded);
+
+    expect(reloaded.wait_claimed_turns).toContain(`worker\u0000${first.turn_id}`);
+    // The reload interrupts the second turn. Its unsettled message restarts as a newer turn only
+    // because this fixture records no Delivery Evidence in the child session; in production that
+    // evidence settles the message.
+    const timedOut = await again.coordinator.wait("root", "worker", 1);
+    expect(timedOut).toMatchObject({
+      event: "timeout",
+      agent: { latest_turn: { turn_id: started.turn_id, status: "interrupted" } },
+    });
+    expect(timedOut.turn_id).not.toBe(first.turn_id);
+    expect(timedOut.turn_id).not.toBe(started.turn_id);
+    await expect(
+      again.coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
+    ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
+  });
+
+  it.each([
+    { name: "after its Delivery Evidence was reconciled", reconcile: true },
+    { name: "before its Delivery Evidence was reconciled", reconcile: false },
+  ])(
+    "targets the new turn after an automatically delivered result $name",
+    async ({ reconcile }) => {
+      const runtime = childRuntime();
+      runtime.runMessage.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
+      const { coordinator, root, queuedMessages } = coordinatorFixture(runtime, 0);
+      const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+      // Nobody waits, so the result reaches the parent as an automatic custom message.
+      await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
+      expect(queuedMessages[0]).toMatchObject({
+        customType: "minimal-subagents.result",
+        details: { source_turn_id: first.turn_id },
+      });
+      if (reconcile) {
+        root.hasDeliveryEvidence.mockImplementation(
+          (agentId, turnId) => agentId === "worker" && turnId === first.turn_id,
+        );
+        await coordinator.reconcileDeliveries();
+        expect(coordinator.snapshot().deliveries).toEqual([]);
+      }
+      const started = await coordinator.sendAgentMessage(
+        "root",
+        { agent_id: "worker", message: "Second" },
+        "root:turn",
+      );
+      if (started.disposition !== "started-turn" || !started.turn_id) {
+        throw new Error("expected agent_message to start a turn");
+      }
+
+      await expect(coordinator.wait("root", "worker", 1)).resolves.toMatchObject({
+        event: "timeout",
+        turn_id: started.turn_id,
+      });
+      await expect(
+        coordinator.wait("root", "worker", 1_000, undefined, first.turn_id),
+      ).resolves.toMatchObject({ event: "turn", turn_id: first.turn_id, output: "done" });
+    },
+  );
+
+  it("leaves no handed marker when Delivery Evidence settles a result inside its delivery", async () => {
+    const { coordinator, root } = coordinatorFixture(childRuntime(), 0);
+    let recorded = false;
+    root.hasDeliveryEvidence.mockImplementation(() => recorded);
+    root.queueCoordinatorMessage.mockImplementation(async () => {
+      recorded = true;
+      void coordinator.reconcileDeliveries();
+    });
+
+    await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await coordinator.waitForSettledOperations();
+
+    expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
+    expect(coordinator.snapshot().deliveries).toEqual([]);
+    expect(coordinator["handedTerminalKeys"].size).toBe(0);
+  });
+
+  it("drops the handed marker when the automatic delivery fails", async () => {
+    const { coordinator, root } = coordinatorFixture(childRuntime(), 0);
+    root.queueCoordinatorMessage.mockRejectedValue(new Error("queue unavailable"));
+
+    await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await coordinator.waitForSettledOperations();
+
+    expect(coordinator.snapshot().deliveries).toHaveLength(1);
+    expect(coordinator["handedTerminalKeys"].size).toBe(0);
+  });
+
+  it("targets a cancelled new turn after a claimed turn", async () => {
+    const runtime = childRuntime();
+    runtime.runMessage.mockImplementation(() => new Promise<RuntimeTurnOutcome>(() => undefined));
+    const { coordinator } = coordinatorFixture(runtime, 200);
+    const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await coordinator.wait("root", "worker", 1_000);
+    const started = await coordinator.sendAgentMessage(
+      "root",
+      { agent_id: "worker", message: "Second" },
+      "root:turn",
+    );
+    if (started.disposition !== "started-turn" || !started.turn_id) {
+      throw new Error("expected agent_message to start a turn");
+    }
+    await coordinator.cancel("root", "worker");
+
+    const waited = await coordinator.wait("root", "worker", 1_000);
+    expect(waited).toMatchObject({ turn_id: started.turn_id, status: "cancelled" });
+    expect(waited.turn_id).not.toBe(first.turn_id);
   });
 
   it("lets an idle terminal wait claim and suppress scheduled automatic delivery", async () => {

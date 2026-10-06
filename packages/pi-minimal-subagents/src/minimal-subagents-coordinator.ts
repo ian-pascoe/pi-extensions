@@ -23,6 +23,7 @@ import {
   claimDeliveryLedgerTurn,
   createDeliveryLedger,
   deliveryLedgerSnapshot,
+  deliveryTurnKey,
   findCoordinationDelivery,
   findTerminalDelivery,
   isDeliveryLedgerTurnClaimed,
@@ -165,6 +166,8 @@ export class MinimalSubagentsCoordinator {
   private readonly automaticDeliveryKeys = new Set<string>();
   private readonly automaticCoordinationDeliveryIds = new Set<string>();
   private readonly waitHandedDeliveryIds = new Set<string>();
+  /** Terminal results already queued to their parent, until Delivery Evidence settles them. */
+  private readonly handedTerminalKeys = new Set<string>();
   private readonly backgroundOperations = new Set<Promise<void>>();
   private acceptingOperations = true;
   private lifecycleEpoch = 0;
@@ -456,7 +459,7 @@ export class MinimalSubagentsCoordinator {
     if (agent.active_turn_id !== turnId) {
       return Promise.reject(
         new Error(
-          `Minimal subagents wait: turn ${turnId} is unknown or no longer retained for ${agentId}; omit turn_id to wait for its oldest observable turn`,
+          `Minimal subagents wait: turn ${turnId} is unknown or no longer retained for ${agentId}; omit turn_id to wait for its oldest observable turn you have neither claimed nor received`,
         ),
       );
     }
@@ -720,6 +723,7 @@ export class MinimalSubagentsCoordinator {
     this.waiters.clear();
     this.waitHandedDeliveryIds.clear();
     this.automaticDeliveryKeys.clear();
+    this.handedTerminalKeys.clear();
     this.automaticCoordinationDeliveryIds.clear();
     this.deliveryLedger = createDeliveryLedger({
       deliveries: snapshot.deliveries,
@@ -1162,6 +1166,7 @@ export class MinimalSubagentsCoordinator {
     delivery: PersistedDelivery,
   ): Promise<void> {
     const deliveryKey = agentDeliveryKey(delivery.source_agent_id, delivery.source_turn_id);
+    const handedKey = deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id);
     if (this.automaticDeliveryKeys.has(deliveryKey)) return;
     this.automaticDeliveryKeys.add(deliveryKey);
     const graceMs = this.deliveryGraceMs();
@@ -1200,6 +1205,8 @@ export class MinimalSubagentsCoordinator {
         for (const batchedDelivery of batchedCoordinationDeliveries) {
           this.waitHandedDeliveryIds.add(batchedDelivery.delivery_id);
         }
+        // Installed before delivery so a settlement inside it removes the marker.
+        this.handedTerminalKeys.add(handedKey);
         await this.deliverToRecipient(
           delivery.destination_agent_id,
           combineCoordinatorMessages([
@@ -1212,6 +1219,7 @@ export class MinimalSubagentsCoordinator {
         );
       });
     } catch (error) {
+      this.handedTerminalKeys.delete(handedKey);
       for (const batchedDelivery of batchedCoordinationDeliveries) {
         this.waitHandedDeliveryIds.delete(batchedDelivery.delivery_id);
       }
@@ -1317,6 +1325,7 @@ export class MinimalSubagentsCoordinator {
       sourceAgentId,
       destinationAgentId,
       waitHandedDeliveryIds: this.waitHandedDeliveryIds,
+      handedTurnKeys: this.handedTerminalKeys,
       activeTurnId: agent?.active_turn_id,
       latestResultTurnId: agent?.latest_result?.turn_id,
     });
@@ -1532,6 +1541,19 @@ export class MinimalSubagentsCoordinator {
         }),
       );
     }
+    this.dropStaleHandedTerminalKeys();
+  }
+
+  /** Forget handed markers whose terminal delivery left the ledger by settlement, pruning, or deletion. */
+  private dropStaleHandedTerminalKeys(): void {
+    const pending = new Set(
+      this.deliveryLedger.terminalDeliveries.map((delivery) =>
+        deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id),
+      ),
+    );
+    for (const key of this.handedTerminalKeys) {
+      if (!pending.has(key)) this.handedTerminalKeys.delete(key);
+    }
   }
 
   private isTerminalDeliveryCurrent(delivery: PersistedDelivery): boolean {
@@ -1607,6 +1629,7 @@ export class MinimalSubagentsCoordinator {
       delivery.source_agent_id,
       delivery.source_turn_id,
     ).ledger;
+    this.dropStaleHandedTerminalKeys();
     this.dependencies.registry.append(
       createRegistryEvent(this.dependencies.registry.rootSessionId, "delivery-settled", {
         source_agent_id: delivery.source_agent_id,
@@ -1672,6 +1695,7 @@ export class MinimalSubagentsCoordinator {
   private pruneDeliveryStateForDeletedAgent(agentId: string): void {
     const previousCoordinationDeliveries = this.deliveryLedger.coordinationDeliveries;
     this.deliveryLedger = pruneDeliveryLedgerAgents(this.deliveryLedger, [agentId]).ledger;
+    this.dropStaleHandedTerminalKeys();
     for (const delivery of previousCoordinationDeliveries) {
       if (!this.isCoordinationDeliveryCurrent(delivery)) {
         this.waitHandedDeliveryIds.delete(delivery.delivery_id);

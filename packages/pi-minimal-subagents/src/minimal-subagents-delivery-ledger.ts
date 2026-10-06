@@ -45,16 +45,19 @@ export interface AddedCoordinationDelivery extends DeliveryLedgerTransition {
   delivery: PersistedCoordinationDelivery;
 }
 
-/** Describes caller-visible inputs used to select the oldest observable source turn. */
+/** Describes caller-visible inputs used to select the oldest observable source turn the destination has neither claimed nor received. */
 export interface SelectObservableDeliveryTurnOptions {
   sourceAgentId: string;
   destinationAgentId: string;
   waitHandedDeliveryIds: ReadonlySet<string>;
+  /** `deliveryTurnKey`s of terminal results already queued to the destination automatically. */
+  handedTurnKeys?: ReadonlySet<string>;
   activeTurnId?: string;
   latestResultTurnId?: string;
 }
 
-function deliveryTurnKey(sourceAgentId: string, sourceTurnId: string): string {
+/** Compound source-agent and source-turn key shared by claims and process-local handed markers. */
+export function deliveryTurnKey(sourceAgentId: string, sourceTurnId: string): string {
   return `${sourceAgentId}\u0000${sourceTurnId}`;
 }
 
@@ -420,19 +423,20 @@ export function releaseEmptyDeliveryLedgerTurn(
     : releaseDeliveryLedgerTurn(ledger, sourceAgentId, sourceTurnId);
 }
 
-/** Select the oldest claimed, then oldest sequenced, observable source turn. */
+/**
+ * Select the oldest sequenced observable source turn whose terminal result the caller has neither
+ * claimed nor been handed automatically, falling back to the active, then latest, turn.
+ */
 export function selectObservableDeliveryTurn(
   ledger: DeliveryLedger,
   options: SelectObservableDeliveryTurnOptions,
 ): string | undefined {
-  const candidates = new Map<string, { claimed: boolean; sequence: number }>();
+  const candidates = new Map<string, number>();
   const addCandidate = (turnId: string, sequence: number) => {
-    const candidate = {
-      claimed: ledger.waitClaimedTurns.includes(deliveryTurnKey(options.sourceAgentId, turnId)),
-      sequence,
-    };
+    const turnKey = deliveryTurnKey(options.sourceAgentId, turnId);
+    if (ledger.waitClaimedTurns.includes(turnKey) || options.handedTurnKeys?.has(turnKey)) return;
     const existing = candidates.get(turnId);
-    if (!existing || sequence < existing.sequence) candidates.set(turnId, candidate);
+    if (existing === undefined || sequence < existing) candidates.set(turnId, sequence);
   };
   for (const delivery of ledger.coordinationDeliveries) {
     if (
@@ -451,10 +455,7 @@ export function selectObservableDeliveryTurn(
       addCandidate(delivery.source_turn_id, delivery.sequence ?? Number.MAX_SAFE_INTEGER);
     }
   }
-  const retained = [...candidates.entries()].sort((left, right) => {
-    if (left[1].claimed !== right[1].claimed) return left[1].claimed ? -1 : 1;
-    return left[1].sequence - right[1].sequence;
-  })[0]?.[0];
+  const retained = [...candidates.entries()].sort((left, right) => left[1] - right[1])[0]?.[0];
   return retained ?? options.activeTurnId ?? options.latestResultTurnId;
 }
 
