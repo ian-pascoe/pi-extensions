@@ -29,7 +29,7 @@ const DapCapabilitiesSchema = Type.Object(
   { additionalProperties: true },
 );
 const DapOutputEventBodySchema = Type.Object(
-  { output: Type.String() },
+  { output: Type.String(), category: Type.Optional(Type.String()) },
   { additionalProperties: true },
 );
 const DapStoppedEventBodySchema = Type.Object(
@@ -826,11 +826,12 @@ export class DapSession {
     if (!this.isCurrentActive(active)) return;
     try {
       switch (event.event) {
-        case "output":
-          this.output.append(
-            parseDapBody(DapOutputEventBodySchema, event.body, "output event").output,
-          );
+        case "output": {
+          const body = parseDapBody(DapOutputEventBodySchema, event.body, "output event");
+          // Adapters such as vscode-js-debug send diagnostics with category "telemetry".
+          if (body.category !== "telemetry") this.output.append(body.output);
           return;
+        }
         case "stopped": {
           const body = parseDapBody(DapStoppedEventBodySchema, event.body, "stopped event");
           active.phase = "stopped";

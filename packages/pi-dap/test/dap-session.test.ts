@@ -122,7 +122,8 @@ describe("DapSession", () => {
       stopReason: "entry",
       threadId: 1,
     });
-    expect(launched.output).toBe("launched\n");
+    // Telemetry-category output events are adapter diagnostics, not Debuggee output.
+    expect(launched.output).toBe("launched\nwarned\nconsole\nimportant\nuncategorized\n");
     await expect(session.launch()).rejects.toThrow("launch requires no active Debug Session");
 
     const stack = await session.stack({ start: 0, count: 1 });

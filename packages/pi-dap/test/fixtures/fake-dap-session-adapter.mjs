@@ -137,7 +137,12 @@ function handleRequest(request) {
       if (pendingLaunch !== undefined) {
         respond(pendingLaunch);
         pendingLaunch = undefined;
+        event("output", { category: "telemetry", output: "js-debug/dap/operation" });
         event("output", { category: "stdout", output: "launched\n" });
+        event("output", { category: "stderr", output: "warned\n" });
+        event("output", { category: "console", output: "console\n" });
+        event("output", { category: "important", output: "important\n" });
+        event("output", { output: "uncategorized\n" });
         if (launchArguments.stopOnEntry !== false) setTimeout(() => stopped("entry"), 5);
       }
       return;
