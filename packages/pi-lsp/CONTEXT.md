@@ -4,6 +4,7 @@
 
 - **Activation Gate** — an optional requirement that at least one configured root marker be present for a Server Definition to apply to a candidate file. Workspace root markers never satisfy it.
 - **LSP Diagnostic** — a source-code problem reported by a language server. This is distinct from Pi's resource-loading diagnostics.
+- **Push-only Server Instance** — a Server Instance that advertises no document diagnostics pull, so it reports LSP Diagnostics only by `publishDiagnostics`, and publishes nothing for a clean file (marksman). A diagnostics wait that ends in silence is remembered for that document version, so a repeat query answers at once, until a push, a change, a close, or a Server Instance restart.
 - **Post-edit Diagnostics** — LSP Diagnostics for affected files appended to a Supported Mutation Tool result, including a partial failure that changed files.
 - **Post-edit Diagnostics Entry** — a model-invisible session transcript summary of reportable Post-edit Diagnostic outcomes from one assistant tool batch. It complements, but does not duplicate in model context, the diagnostics appended to mutation results.
 - **Supported Mutation Tool** — a file-modifying Pi tool whose affected paths the extension can identify exactly. Native `edit`, native `write`, Codex-style `apply_patch`, and LSP preview application are the initial Supported Mutation Tools.
