@@ -353,6 +353,8 @@ async function buildAdvisorSession(
       resourceLoaderOptions: {
         noExtensions: true,
         noContextFiles: true,
+        // A Review never loads skills; the catalogue would only bloat and destabilize the prompt.
+        noSkills: true,
         additionalExtensionPaths: extensionPaths,
         extensionFactories: [
           ...builtins,

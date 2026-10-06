@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -127,6 +127,31 @@ function entry(session: AgentSessionRuntime["session"], customType: string) {
 }
 
 describe("private Advisor native sessions", () => {
+  it("omits the skills catalogue so skill changes keep the Advisor system prompt stable", async () => {
+    const prompts: string[] = [];
+    for (const skill of [undefined, "alpha", "beta"]) {
+      const { observed, dir } = await observedFixture();
+      if (skill) {
+        await mkdir(join(dir, "skills", skill), { recursive: true });
+        await writeFile(
+          join(dir, "skills", skill, "SKILL.md"),
+          `---\nname: ${skill}\ndescription: Observed ${skill} skill\n---\nBody\n`,
+        );
+      }
+      const runtime = await createAdvisorSession(observed, {
+        config: readAdvisorSettings(observed).settings,
+        adviceTool,
+      });
+      onTestFinished(() => disposeAdvisorSession(runtime));
+      expect(runtime.session.getActiveToolNames()).toContain("read");
+      expect(runtime.session.resourceLoader.getSkills().skills).toEqual([]);
+      prompts.push(runtime.session.systemPrompt.replaceAll(dir, "<dir>"));
+    }
+    expect(prompts[0]).not.toContain("<skills>");
+    expect(prompts[1]).toBe(prompts[0]);
+    expect(prompts[2]).toBe(prompts[0]);
+  });
+
   it("recreates the native built-in llama extension with fresh handlers through private reload", async () => {
     const { default: factory } = await import(
       pathToFileURL(join(getPackageDir(), "dist", "extensions", "llama", "index.js")).href
