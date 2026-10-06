@@ -1,6 +1,13 @@
 import { expect, it } from "vitest";
 import { fauxAssistantMessage, type Context, type Message } from "@earendil-works/pi-ai";
-import { projectEvidence, projectObservedSetup, toolCallRef } from "../src/advisor-evidence.js";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import {
+  projectEvidence,
+  projectObservedSetup,
+  selectContextSeed,
+  toolCallRef,
+} from "../src/advisor-evidence.js";
+import { seedBudget } from "../src/advisor-settings.js";
 
 const longCallId = `call_${"x".repeat(420)}|fc_${"y".repeat(40)}`;
 const image = { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" } as const;
@@ -254,4 +261,112 @@ it("omits unknown future content and tolerates malformed tool-call IDs", () => {
     },
     { role: "user", content: [] },
   ]);
+});
+
+/** A long observed conversation: one request, then many tool batches with large results. */
+function longConversation(batches: number): Message[] {
+  const messages: Message[] = [
+    { role: "user", content: "Original request: refactor the parser.", timestamp: 1 },
+  ];
+  for (let index = 0; index < batches; index++) {
+    messages.push(
+      assistant([
+        { type: "toolCall", id: `call-${index}`, name: "read", arguments: { path: `f${index}` } },
+      ]),
+      {
+        role: "toolResult",
+        toolCallId: `call-${index}`,
+        toolName: "read",
+        content: [{ type: "text", text: `result ${index} ${"x".repeat(4000)}` }],
+        isError: false,
+        timestamp: 2,
+      },
+    );
+  }
+  messages.push({ ...assistant([{ type: "text", text: "Refactor done." }]), stopReason: "stop" });
+  return messages;
+}
+
+const seedTokens = (seed: ReturnType<typeof selectContextSeed>) =>
+  estimateTokens({ role: "user", content: JSON.stringify(seed.observedSetup), timestamp: 0 }) +
+  seed.messages.reduce((total, message) => total + estimateTokens(message), 0);
+
+it("bounds the Context Seed by its token budget, keeping the setup, request and newest tool batches", () => {
+  const messages = longConversation(40);
+  const seed = selectContextSeed({ ...transcript, messages }, { budgetTokens: 6_000 });
+  expect(seedTokens(seed)).toBeLessThanOrEqual(6_000);
+  expect(seed.observedSetup).toEqual(projectObservedSetup(transcript));
+  expect(seed.messages[0]).toBe(messages[0]);
+  expect(seed.messages.at(-1)).toBe(messages.at(-1));
+  // The newest messages form one contiguous tail that starts at a whole tool batch.
+  const tail = seed.messages.slice(1);
+  const start = messages.findIndex((message) => message === tail[0]);
+  expect(tail).toEqual(messages.slice(start));
+  expect(messages[start]?.role).toBe("assistant");
+  expect(tail.length).toBeGreaterThan(2);
+  expect(seed.omitted).toBe(messages.length - seed.messages.length);
+  expect(seed.omitted).toBeGreaterThan(0);
+});
+
+it("seeds the whole conversation when it fits the budget", () => {
+  const messages = longConversation(3);
+  const seed = selectContextSeed({ ...transcript, messages }, { budgetTokens: 1_000_000 });
+  expect(seed.messages).toEqual(messages);
+  expect(seed.omitted).toBe(0);
+});
+
+it("never splits a tool call from its result, even when only part of a batch would fit", () => {
+  const messages = longConversation(4);
+  const parallel = assistant([
+    { type: "toolCall", id: "a", name: "read", arguments: { path: "a" } },
+    { type: "toolCall", id: "b", name: "read", arguments: { path: "b" } },
+  ]);
+  const result = (id: string): Message => ({
+    role: "toolResult",
+    toolCallId: id,
+    toolName: "read",
+    content: [{ type: "text", text: "y".repeat(4000) }],
+    isError: false,
+    timestamp: 3,
+  });
+  const reply = messages.pop();
+  if (!reply) throw new Error("Missing final reply");
+  messages.push(parallel, result("a"), result("b"), reply);
+  // Room for the final reply and one of the two results, but not the whole batch.
+  const budget =
+    seedTokens(
+      selectContextSeed({ ...transcript, messages: messages.slice(0, 1) }, { budgetTokens: 0 }),
+    ) +
+    estimateTokens(reply) +
+    estimateTokens(result("b")) +
+    estimateTokens(parallel);
+  const seed = selectContextSeed({ ...transcript, messages }, { budgetTokens: budget });
+  expect(seed.messages).toEqual([messages[0], reply]);
+});
+
+it("keeps the compaction summary and the first request after it as the original request", () => {
+  const summary: Message = {
+    role: "user",
+    content:
+      "The conversation history before this point was compacted: goal is the parser refactor.",
+    timestamp: 1,
+  };
+  const followUp: Message = { role: "user", content: "Now also add tests.", timestamp: 4 };
+  const kept = longConversation(6).slice(1);
+  const messages = [summary, ...kept.slice(0, 6), followUp, ...kept.slice(6)];
+  const seed = selectContextSeed({ ...transcript, messages }, { budgetTokens: 0, compacted: true });
+  expect(seed.messages).toEqual([summary, followUp]);
+  expect(seed.omitted).toBe(messages.length - 2);
+  // Without compaction only the first user message is the original request.
+  expect(selectContextSeed({ ...transcript, messages }, { budgetTokens: 0 }).messages).toEqual([
+    summary,
+  ]);
+});
+
+it("derives the automatic seed budget from the Advisor model's context window", () => {
+  expect(seedBudget("auto", 200_000)).toBe(50_000);
+  expect(seedBudget("auto", 1_000_000)).toBe(250_000);
+  // Models without a declared window use Pi's 128k fallback.
+  expect(seedBudget("auto", 0)).toBe(32_000);
+  expect(seedBudget(12_345, 200_000)).toBe(12_345);
 });

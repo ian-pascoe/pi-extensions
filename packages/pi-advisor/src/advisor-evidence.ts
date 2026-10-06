@@ -7,6 +7,7 @@ import type {
   Tool,
   ToolCall,
 } from "@earendil-works/pi-ai";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
 /**
  * Review Evidence: the observed model's view of its context, without what Pi stores only for
@@ -76,6 +77,61 @@ export function projectObservedSetup(
       name: tool.name,
       summary: toolSummary(tool.description),
     })),
+  };
+}
+
+/** A Context Seed before projection: the native messages it keeps and how many it omits. */
+export interface ContextSeed {
+  observedSetup: ObservedSetup;
+  messages: Message[];
+  /** Messages between the original request and the newest kept messages that did not fit. */
+  omitted: number;
+}
+
+/**
+ * Fit a Context Seed to a token budget, estimated with Pi's compaction heuristic. The Observed
+ * Setup and the original request are always kept: the first user message, or after compaction
+ * the summary (which carries the earlier goal) and the first user message after it. The rest of
+ * the budget takes the newest whole turns, so a tool call is never separated from its result.
+ */
+export function selectContextSeed(
+  context: Pick<Context, "systemPrompt" | "tools" | "messages">,
+  options: { budgetTokens: number; compacted?: boolean },
+): ContextSeed {
+  const { messages } = context;
+  const observedSetup = projectObservedSetup(context);
+  const anchors = new Set(
+    messages
+      .flatMap((message, index) => (message.role === "user" ? [index] : []))
+      .slice(0, options.compacted ? 2 : 1),
+  );
+  let remaining =
+    options.budgetTokens -
+    estimateTokens({ role: "user", content: JSON.stringify(observedSetup), timestamp: 0 }) -
+    messages.reduce(
+      (total, message, index) => (anchors.has(index) ? total + estimateTokens(message) : total),
+      0,
+    );
+  const kept = new Set(anchors);
+  // Walk back one unit at a time: a user message, or an assistant message and its results.
+  let end = messages.length;
+  for (let start = end - 1; start >= 0; start--) {
+    if (messages[start]?.role === "toolResult") continue;
+    const unit = messages.slice(start, end);
+    const cost = unit.reduce(
+      (total, message, offset) =>
+        anchors.has(start + offset) ? total : total + estimateTokens(message),
+      0,
+    );
+    if (cost > remaining) break;
+    remaining -= cost;
+    for (let index = start; index < end; index++) kept.add(index);
+    end = start;
+  }
+  return {
+    observedSetup,
+    messages: messages.filter((_message, index) => kept.has(index)),
+    omitted: messages.length - kept.size,
   };
 }
 

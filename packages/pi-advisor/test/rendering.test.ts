@@ -93,6 +93,7 @@ const settings = {
   maxToolCalls: 8,
   maxCorrectiveTurns: 1,
   maxFindingsPerReview: 4,
+  seedBudgetTokens: "auto",
 };
 const snapshot = {
   state: "reviewing",
@@ -109,6 +110,7 @@ const snapshot = {
     maxToolCalls: "default",
     maxCorrectiveTurns: "default",
     maxFindingsPerReview: "default",
+    seedBudgetTokens: "default",
   },
   backlog: 2,
   effectiveModel: "anthropic/claude-sonnet",
@@ -163,6 +165,7 @@ describe("Advisor status", () => {
     expect(text).toMatch(/allowedTools\s+read, grep\s+\[project\]/);
     expect(text).toMatch(/catchUpThreshold\s+3\s+\[default\]/);
     expect(text).toMatch(/reviewTimeoutMs\s+120s\s+\[default\]/);
+    expect(text).toMatch(/seedBudgetTokens\s+auto\s+\[default\]/);
     expect(text).toMatch(
       /prompt\s+Review carefully for scope drift and un\u2026 \(69 chars\)\s+\[default\]/,
     );

@@ -57,7 +57,7 @@ The observed agent's messages as its model received them, supplied to a Review o
 _Avoid_: Transcript dump, raw session messages
 
 **Context Seed**:
-The first Review Evidence an Advisor Session receives, in its first Review or Consultation: the Observed Setup plus the current conversation. Later Reviews and Consultations add only messages the Advisor has not yet seen, until the Advisor Session is rebuilt.
+The first Review Evidence an Advisor Session receives, in its first Review or Consultation: the Observed Setup plus the current conversation, fitted to a token budget. It always keeps the original request (the first user message, or after compaction the summary plus the first user message after it), then the newest whole turns that fit, and states how many messages it omitted. Omitted messages count as seen. Later Reviews and Consultations add only messages the Advisor has not yet seen, until the Advisor Session is rebuilt.
 _Avoid_: Snapshot
 
 **Observed Setup**:
