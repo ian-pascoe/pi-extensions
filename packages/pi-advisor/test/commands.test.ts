@@ -34,6 +34,7 @@ describe("Advisor commands through the native SDK", () => {
       "set maxToolCalls",
       "set maxCorrectiveTurns",
       "set maxFindingsPerReview",
+      "set seedBudgetTokens",
     ]);
     expect(await values("inherit c")).toEqual(["inherit catchUpThreshold"]);
     expect(await values("set  allowedT")).toEqual(["set  allowedTools"]);
@@ -443,6 +444,19 @@ describe("Advisor commands through the native SDK", () => {
         data: { error: expect.stringContaining("maxFindingsPerReview") },
       });
     }
+    expect(status()).toMatchObject({ data: { settings: { seedBudgetTokens: "auto" } } });
+    await session.prompt("/advisor set seedBudgetTokens 40000");
+    expect(status()).toMatchObject({
+      data: { settings: { seedBudgetTokens: 40_000 }, sources: { seedBudgetTokens: "session" } },
+    });
+    for (const value of ["0", "1.5", '"half"']) {
+      await session.prompt(`/advisor set seedBudgetTokens ${value}`);
+      expect(status()).toMatchObject({
+        data: { error: expect.stringContaining("seedBudgetTokens") },
+      });
+    }
+    await session.prompt('/advisor set seedBudgetTokens "auto"');
+    expect(status()).toMatchObject({ data: { settings: { seedBudgetTokens: "auto" } } });
     await session.prompt("/advisor set catchUpThreshold 0 --global");
     expect(status()).toMatchObject({
       data: { error: expect.stringContaining("Invalid global Advisor settings") },

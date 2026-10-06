@@ -8,7 +8,9 @@ import {
   InMemoryModelsStore,
   createAssistantMessageEventStream,
   fauxAssistantMessage,
+  type Api,
   type Context,
+  type Model,
 } from "@earendil-works/pi-ai";
 import {
   createAgentSessionServices,
@@ -17,10 +19,12 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  convertToLlm,
+  type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/observer-extension.js";
 import { createSdkHarness } from "../../pi-context-management/test/sdk-harness.js";
-import { toolCallRef } from "../src/advisor-evidence.js";
+import { projectEvidence, toolCallRef } from "../src/advisor-evidence.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 
@@ -1613,10 +1617,12 @@ it("prioritizes consultation after the active Review and promptly cancels queued
 it("cancels an on-demand consultation without pausing later advice", async () => {
   const consultationStarted = Promise.withResolvers<void>();
   let consultations = 0;
+  const consultationPrompts: string[] = [];
   globalThis.advisorObserverTest = {
     stream(model, context, options) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report") ?? false;
       const prompt = JSON.stringify(context.messages.at(-1));
+      if (privateRole && prompt.includes("Consultation request")) consultationPrompts.push(prompt);
       const message = {
         ...fauxAssistantMessage("Done"),
         model: model.id,
@@ -1686,4 +1692,307 @@ it("cancels an on-demand consultation without pausing later advice", async () =>
   await expect(cancelled).rejects.toThrow("User stopped the main turn");
   expect(observer.status).toMatchObject({ state: "armed", lastError: null, backlog: 0 });
   await expect(observer.consult("Try again")).resolves.toBe("Recovered advice");
+  // Cancellation discarded the Advisor Session, so its replacement starts from a Context Seed.
+  expect(consultationPrompts.at(-1)).toContain("observedSetup");
+  expect(consultationPrompts.at(-1)).toContain("Seed context");
+});
+
+/** One private Advisor request: its full context and the prompt text it ends with. */
+interface PrivateRequest {
+  messages: Context["messages"];
+  text: string;
+}
+
+/**
+ * A long observed session: each request runs its listed number of tool batches, whose results
+ * `result` writes. Private requests are recorded in order.
+ */
+function longSessionStream(
+  batches: Record<string, number>,
+  privateRequests: PrivateRequest[],
+  result: (id: string) => string = (id) => `result ${id} ${"x".repeat(8_000)}`,
+) {
+  return {
+    stream(model: Model<Api>, context: Context) {
+      const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        ...fauxAssistantMessage("Done"),
+        model: model.id,
+        provider: model.provider,
+        api: model.api,
+      };
+      if (privateRole) {
+        const request = context.messages.at(-1);
+        const text =
+          request?.role === "user" && Array.isArray(request.content)
+            ? request.content
+                .flatMap((block) => (block.type === "text" ? [block.text] : []))
+                .join("")
+            : "";
+        privateRequests.push({ messages: structuredClone(context.messages), text });
+        if (!text.startsWith("Consultation request")) {
+          message.content = [
+            { type: "toolCall", id: "report", name: "advisor_report", arguments: { findings: [] } },
+          ];
+          message.stopReason = "toolUse";
+        }
+      } else if (!context.tools?.length) {
+        message.content = [
+          { type: "text", text: "Summary: the user asked to refactor the parser." },
+        ];
+      } else {
+        const start = context.messages.findLastIndex((entry) => entry.role === "user");
+        const request = context.messages[start];
+        const text = request?.role === "user" ? JSON.stringify(request.content) : "";
+        const done = context.messages.slice(start).filter((entry) => entry.role === "toolResult");
+        const planned = Object.entries(batches).find(([prompt]) => text.includes(prompt))?.[1];
+        if (done.length < (planned ?? 0)) {
+          const id = `${start}-${done.length}`;
+          message.content = [
+            { type: "toolCall", id, name: "read", arguments: { path: `/missing-advisor-${id}` } },
+          ];
+          message.stopReason = "toolUse";
+        }
+      }
+      queueMicrotask(() =>
+        stream.push({
+          type: "done",
+          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+          message,
+        }),
+      );
+      return stream;
+    },
+    toolResult: (event: ToolResultEvent) => ({
+      content: [{ type: "text" as const, text: result(event.toolCallId) }],
+    }),
+  };
+}
+
+/** A private prompt's header line and its JSON payload, exactly as sent. */
+function seedPayload(request: PrivateRequest | undefined) {
+  const text = request?.text ?? "";
+  const newline = text.indexOf("\n");
+  const json = text.slice(newline + 1);
+  return {
+    header: text.slice(0, newline),
+    /** Pi's chars/4 estimate of the payload the Advisor received. */
+    tokens: Math.ceil(json.length / 4),
+    evidence: JSON.parse(json || "{}"),
+  };
+}
+
+/** Advisor prompt-cache proof: a later request extends the earlier context unchanged. */
+function expectPrefix(later: PrivateRequest | undefined, earlier: PrivateRequest | undefined) {
+  expect(earlier?.messages.length).toBeGreaterThan(0);
+  expect(later?.messages.slice(0, earlier?.messages.length)).toEqual(earlier?.messages);
+}
+
+const code = (id: string) =>
+  `export function parse(input: string): Node {\n  if (input === "\\n") return { "kind": "newline", "id": "${id}" };\n\treturn parseExpression(input, { "strict": true });\n}\n`;
+
+it.each([
+  ["auto", "large results", 60, (id: string) => `result ${id} ${"x".repeat(8_000)}`],
+  [8_000, "many small turns", 400, (id: string) => `ok ${id}`],
+  [8_000, "code-heavy results", 60, (id: string) => code(id).repeat(40)],
+] as const)(
+  "bounds the first Review of a long session by seedBudgetTokens %s with %s",
+  async (seedBudgetTokens, _fixture, batches, result) => {
+    const privateRequests: PrivateRequest[] = [];
+    globalThis.advisorObserverTest = longSessionStream(
+      { "Original request": batches },
+      privateRequests,
+      result,
+    );
+    const session = await activeFixture();
+    await session.prompt("Original request: refactor the parser.");
+    const config = {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: 1,
+      seedBudgetTokens,
+    };
+    const observer = new AdvisorObserver(session, config, "headless-root");
+    globalThis.advisorObserverTest.settled = () => observer.settled();
+    onTestFinished(() => observer.dispose());
+    await session.prompt("Final check");
+    expect(observer.status.lastError).toBeNull();
+
+    // The fixture model's window is 200k tokens, so `auto` is a 50k budget.
+    const budget = seedBudgetTokens === "auto" ? 50_000 : seedBudgetTokens;
+    const observedMessages = conversation(session.messages);
+    const seed = seedPayload(privateRequests[0]);
+    const full = Math.ceil(
+      JSON.stringify({
+        observedSetup: seed.evidence.observedSetup,
+        messages: projectEvidence(convertToLlm(observedMessages)).messages,
+      }).length / 4,
+    );
+    // Recorded seed sizes: the unbounded seed exceeds the budget; the sent prompt payload fits.
+    expect(full).toBeGreaterThan(budget * 1.5);
+    expect(seed.tokens).toBeLessThanOrEqual(budget);
+    expect(seed.tokens).toBeGreaterThan(budget * 0.75);
+    expect(seed.header).toContain("Current context seed.");
+    expect(seed.header).toContain(`seedBudgetTokens (${budget} tokens)`);
+    expect(seed.header).toMatch(
+      new RegExp(
+        `keeps the messages at positions 1, \\d+–${observedMessages.length} of the ${observedMessages.length} in the observed context and omits the other \\d+`,
+      ),
+    );
+    expect(seed.header).toContain(session.sessionManager.getSessionFile());
+    expect(seed.evidence.observedSetup.systemPrompt).toBe(session.systemPrompt);
+    expect(seed.evidence.messages[0]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "Original request: refactor the parser." }],
+    });
+    expect(seed.evidence.messages.slice(-2)).toEqual([
+      { role: "user", content: [{ type: "text", text: "Final check" }] },
+      { role: "assistant", content: [{ type: "text", text: "Done" }] },
+    ]);
+
+    // Later Reviews add only new messages; the omitted history is not re-sent.
+    await session.prompt("Follow-up");
+    expect(observer.status.lastError).toBeNull();
+    const update = seedPayload(privateRequests[1]);
+    expect(update.header).toContain("Incremental update.");
+    expect(update.evidence.observedSetup).toBeUndefined();
+    expect(update.evidence.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "Follow-up" }] },
+      { role: "assistant", content: [{ type: "text", text: "Done" }] },
+    ]);
+    expectPrefix(privateRequests[1], privateRequests[0]);
+  },
+);
+
+it("re-seeds with a changed seedBudgetTokens and keeps each Advisor context a stable prefix", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ "Original request": 40 }, privateRequests);
+  const session = await activeFixture();
+  await session.prompt("Original request: refactor the parser.");
+  const config = {
+    ...readAdvisorSettings(session).settings,
+    enabled: true,
+    catchUpThreshold: 1,
+    seedBudgetTokens: 12_000,
+  };
+  const observer = new AdvisorObserver(session, config, "headless-root");
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  onTestFinished(() => observer.dispose());
+  await session.prompt("First");
+  await session.prompt("Second");
+  observer.configure({ ...config, seedBudgetTokens: 4_000 });
+  await session.prompt("Third");
+  await session.prompt("Fourth");
+  expect(observer.status.lastError).toBeNull();
+  const [first, second, third, fourth] = privateRequests.map(seedPayload);
+  expect(privateRequests).toHaveLength(4);
+  expect(first?.header).toContain("seedBudgetTokens (12000 tokens)");
+  expect(first?.tokens).toBeLessThanOrEqual(12_000);
+  expect(second?.header).toContain("Incremental update.");
+  expect(third?.header).toContain("seedBudgetTokens (4000 tokens)");
+  expect(third?.tokens).toBeLessThanOrEqual(4_000);
+  expect(third?.evidence.messages.slice(-2)).toEqual([
+    { role: "user", content: [{ type: "text", text: "Third" }] },
+    { role: "assistant", content: [{ type: "text", text: "Done" }] },
+  ]);
+  expect(fourth?.header).toContain("Incremental update.");
+  expectPrefix(privateRequests[1], privateRequests[0]);
+  expectPrefix(privateRequests[3], privateRequests[2]);
+  // The rebuilt Advisor Session starts fresh rather than extending the old one.
+  expect(privateRequests[2]?.messages).toHaveLength(1);
+});
+
+it("keeps the newest turn when its tool result alone exceeds the seed budget", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Original request": 20, "Read the big log": 1 },
+    privateRequests,
+    // Batch IDs start with the index of their request; the first request is message 0.
+    (id) => (id.startsWith("0-") ? `ok ${id}` : "L".repeat(200_000)),
+  );
+  const session = await activeFixture();
+  await session.prompt("Original request: refactor the parser.");
+  const observer = new AdvisorObserver(
+    session,
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: 1,
+      seedBudgetTokens: 3_000,
+    },
+    "headless-root",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  onTestFinished(() => observer.dispose());
+  await session.prompt("Read the big log");
+  expect(observer.status.lastError).toBeNull();
+  const seed = seedPayload(privateRequests[0]);
+  expect(seed.tokens).toBeLessThanOrEqual(3_000);
+  expect(seed.header).toMatch(/1 kept messages are shortened where marked/);
+  // The Review starts after the tool batch, which is then the newest turn.
+  expect(seed.evidence.messages).toHaveLength(4);
+  const [request, prompt, call, result] = seed.evidence.messages;
+  expect(request).toMatchObject({ content: [{ text: "Original request: refactor the parser." }] });
+  expect(prompt).toMatchObject({ content: [{ text: "Read the big log" }] });
+  expect(call).toMatchObject({ role: "assistant", content: [{ type: "toolCall", name: "read" }] });
+  expect(result).toMatchObject({ role: "toolResult", ref: call.content[0].ref });
+  expect(result.content[0].text).toMatch(
+    /^L+\n\[… \d+ characters omitted from the Context Seed\]$/,
+  );
+});
+
+it("seeds the compaction summary and the first user request after it, not findings or commands", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream(
+    { "Original request": 30, "Now also add tests.": 6 },
+    privateRequests,
+  );
+  const session = await activeFixture();
+  await session.prompt("Original request: refactor the parser.");
+  await session.compact();
+  await session.sendCustomMessage(
+    {
+      customType: "pi-advisor",
+      content: "Advisor nit: rename the helper.",
+      display: true,
+      details: { severity: "nit", message: "rename the helper." },
+    },
+    { triggerTurn: false },
+  );
+  session.recordBashResult("ls", {
+    output: "src",
+    exitCode: 0,
+    cancelled: false,
+    truncated: false,
+  });
+  await session.prompt("Now also add tests.");
+  const observer = new AdvisorObserver(
+    session,
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: 1,
+      seedBudgetTokens: 4_000,
+    },
+    "headless-root",
+  );
+  globalThis.advisorObserverTest.settled = () => observer.settled();
+  onTestFinished(() => observer.dispose());
+  await session.prompt("Continue");
+  expect(observer.status.lastError).toBeNull();
+  const seed = seedPayload(privateRequests[0]);
+  expect(seed.header).toMatch(
+    /keeps the messages at positions 1, \d+, \d+–\d+ of the \d+ in the observed context and omits the other/,
+  );
+  const [summary, request] = seed.evidence.messages;
+  expect(JSON.stringify(summary)).toContain("Summary: the user asked to refactor the parser.");
+  expect(request).toEqual({
+    role: "user",
+    content: [{ type: "text", text: "Now also add tests." }],
+  });
+  expect(seed.evidence.messages.slice(-2)).toEqual([
+    { role: "user", content: [{ type: "text", text: "Continue" }] },
+    { role: "assistant", content: [{ type: "text", text: "Done" }] },
+  ]);
 });
