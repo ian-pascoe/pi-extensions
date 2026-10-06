@@ -11,6 +11,7 @@ import {
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  isFileFormatter,
   resolveFormatterSettings,
   type FormatterDefinition,
   type ResolvedFormatterSettings,
@@ -357,7 +358,7 @@ async function formatMutationPaths(
   for (const definition of settings.formatters.values()) {
     const matchingPaths = existing.paths.filter((path) => formatterMatchesPath(definition, path));
     if (matchingPaths.length === 0) continue;
-    const usesFile = definition.args.some((argument) => argument.includes("$FILE"));
+    const usesFile = isFileFormatter(definition);
     const discoveredRoots = await Promise.all(
       matchingPaths.map(async (path) => ({
         path,

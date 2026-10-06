@@ -10,12 +10,35 @@ import {
   type SessionStartEvent,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, test } from "vitest";
 import { createPiFormatterExtension } from "../src/pi-formatter-extension.js";
 import type { FormatterSettingsDocumentInput } from "../src/pi-formatter-settings.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 
 const temporaryDirectories: string[] = [];
+
+const ReadmeExampleSchema = Type.Object({
+  formatter: Type.Object({
+    formatters: Type.Record(Type.String(), Type.Object({ syntaxErrorPattern: Type.String() })),
+  }),
+});
+
+/** The `syntaxErrorPattern` values from the README's JSON example, so the docs stay tested. */
+async function readmeSyntaxErrorPatterns(): Promise<Readonly<Record<string, string>>> {
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const example = /```json\n(\{\n {2}"formatter": \{\n {4}"formatters": [\s\S]*?)```/.exec(readme);
+  if (example?.[1] === undefined) throw new Error("README syntaxErrorPattern example not found");
+  const parsed: unknown = JSON.parse(example[1]);
+  if (!Value.Check(ReadmeExampleSchema, parsed)) throw new Error("unexpected README example shape");
+  return Object.fromEntries(
+    Object.entries(parsed.formatter.formatters).map(([id, { syntaxErrorPattern }]) => [
+      id,
+      syntaxErrorPattern,
+    ]),
+  );
+}
 
 interface FormatterHarness {
   readonly cwd: string;
@@ -594,6 +617,80 @@ describe("Pi Formatter extension lifecycle", () => {
       );
 
       expect(lastText(result)).toContain("Pi Formatter: ruff failed");
+      expect(lastText(result).includes(TROUBLESHOOTING_HINT)).toBe(hint);
+    },
+  );
+
+  test.each([
+    {
+      name: "oxfmt syntax error in a file whose source mentions configuration",
+      formatter: "oxfmt",
+      stderr:
+        "  x Unexpected token\n   ,-[vite.config.ts:1:34]\n 1 | export default defineConfig({ a: ,\n   :                                  ^\n   `----\nError occurred when checking code style in the above files.",
+      hint: false,
+    },
+    {
+      name: "oxfmt bad configuration file",
+      formatter: "oxfmt",
+      stderr: "Failed to load configuration file.\nkey must be a string at line 1 column 3",
+      hint: true,
+    },
+    {
+      name: "oxfmt with no target file",
+      formatter: "oxfmt",
+      stderr:
+        "Expected at least one target file. All matched files may have been excluded by ignore rules.",
+      hint: true,
+    },
+    {
+      name: "ruff syntax error",
+      formatter: "ruff-format",
+      stderr:
+        "error: Failed to parse bad.py:1:7: Expected a parameter or the end of the parameter list",
+      hint: false,
+    },
+    {
+      name: "ruff syntax error after warnings",
+      formatter: "ruff-format",
+      stderr:
+        "warning: `incorrect-blank-line-before-class` (D203) and `blank-line-before-class` (D211) are incompatible. Ignoring `incorrect-blank-line-before-class`.\nwarning: The following rule may cause conflicts when used with the formatter: `missing-trailing-comma` (`COM812`).\nerror: Failed to parse bad.py:1:7: Expected a parameter or the end of the parameter list",
+      hint: false,
+    },
+    {
+      name: "ruff bad configuration file",
+      formatter: "ruff-format",
+      stderr:
+        "ruff failed\n  Cause: Failed to parse /x/pyproject.toml\n  Cause: TOML parse error at line 1, column 11\n  |\n1 | [tool.ruff\n  |           ^\nunclosed table, expected `]`",
+      hint: true,
+    },
+  ])(
+    "applies the README's syntaxErrorPattern to recorded stderr for $name",
+    async ({ formatter, stderr, hint }) => {
+      const syntaxErrorPattern = (await readmeSyntaxErrorPatterns())[formatter];
+      if (syntaxErrorPattern === undefined) throw new Error(`README has no ${formatter} example`);
+      const harness = await createFormatterHarness({
+        formatter: {
+          formatters: {
+            [formatter]: {
+              ...formatterDefinition([
+                "-e",
+                "console.error(process.argv[2]);process.exit(2)",
+                "$FILE",
+                stderr,
+              ]),
+              syntaxErrorPattern,
+            },
+          },
+        },
+      });
+      const filePath = resolve(harness.cwd, "input.txt");
+      await writeFile(filePath, "original");
+
+      const result = await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+      );
+
+      expect(lastText(result)).toContain(`Pi Formatter: ${formatter} failed`);
       expect(lastText(result).includes(TROUBLESHOOTING_HINT)).toBe(hint);
     },
   );

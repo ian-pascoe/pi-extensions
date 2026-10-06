@@ -204,12 +204,12 @@ describe("resolveFormatterSettings", () => {
   });
 
   test.each([
-    { name: "an invalid regex", syntaxErrorPattern: "(unclosed" },
-    { name: "an empty pattern", syntaxErrorPattern: "" },
-    { name: "a non-string pattern", syntaxErrorPattern: 2 },
+    { name: "an invalid regex", syntaxErrorPattern: "(unclosed", reason: "Unterminated group" },
+    { name: "an empty pattern", syntaxErrorPattern: "", reason: "fewer than 1 characters" },
+    { name: "a non-string pattern", syntaxErrorPattern: 2, reason: "string" },
   ])(
     "quarantines a definition with $name and shadows the global one",
-    async ({ syntaxErrorPattern }) => {
+    async ({ syntaxErrorPattern, reason }) => {
       const settings = resolveFormatterSettings(
         await createSettingsReader(
           { formatter: { formatters: { shadowed: markdownFormatter("global") } } },
@@ -226,7 +226,11 @@ describe("resolveFormatterSettings", () => {
 
       expect([...settings.formatters.keys()]).toEqual(["healthy"]);
       expect(settings.warnings).toEqual([
-        expect.stringContaining("project formatter.formatters.shadowed.syntaxErrorPattern"),
+        expect.stringMatching(
+          new RegExp(
+            `^project formatter\\.formatters\\.shadowed\\.syntaxErrorPattern: .*${reason}`,
+          ),
+        ),
       ]);
     },
   );
@@ -251,7 +255,9 @@ describe("resolveFormatterSettings", () => {
 
     expect(settings.formatters.size).toBe(0);
     expect(settings.warnings).toEqual([
-      expect.stringContaining("global formatter.formatters.workspace.syntaxErrorPattern"),
+      expect.stringContaining(
+        "global formatter.formatters.workspace.syntaxErrorPattern: requires $FILE in args",
+      ),
     ]);
   });
 });

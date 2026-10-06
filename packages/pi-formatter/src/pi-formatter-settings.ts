@@ -87,16 +87,33 @@ export type FormatterSettingsDocumentInput =
   | { readonly formatter?: JsonValue };
 
 interface ParsedFormatterLayer {
-  readonly definitions: ReadonlyMap<string, FormatterDefinitionWire | null>;
+  readonly definitions: ReadonlyMap<string, FormatterDefinition | null>;
   readonly timeoutMs?: number;
   readonly warnings: readonly string[];
 }
 
-function compileSyntaxErrorPattern(source: string): RegExp | undefined {
+/** A File Formatter runs once per changed file because its arguments contain `$FILE`. */
+export function isFileFormatter(definition: { readonly args?: readonly string[] }): boolean {
+  return (definition.args ?? []).some((argument) => argument.includes("$FILE"));
+}
+
+/** Compile a declared syntax-error pattern, or explain why the definition must be quarantined. */
+function readSyntaxErrorPattern(
+  definition: FormatterDefinitionWire,
+): { readonly pattern?: RegExp } | { readonly problem: string } {
+  if (definition.syntaxErrorPattern === undefined) return {};
+  if (!isFileFormatter(definition)) {
+    return {
+      problem:
+        "requires $FILE in args because only a File Formatter has a changed file to report a syntax error in",
+    };
+  }
   try {
-    return new RegExp(source);
-  } catch {
-    return undefined;
+    return { pattern: new RegExp(definition.syntaxErrorPattern) };
+  } catch (cause) {
+    return {
+      problem: `expected a valid regular expression (${cause instanceof Error ? cause.message : String(cause)})`,
+    };
   }
 }
 
@@ -147,7 +164,7 @@ function readFormatterLayer(
     }
   }
 
-  const definitions = new Map<string, FormatterDefinitionWire | null>();
+  const definitions = new Map<string, FormatterDefinition | null>();
   if (formatter.formatters !== undefined) {
     if (!Value.Check(JsonObjectSchema, formatter.formatters)) {
       warnings.push(`${scope} formatter.formatters: expected an object`);
@@ -185,24 +202,19 @@ function readFormatterLayer(
             `${scope} formatter.formatters.${id}.rootMarkers: at least one root marker is required when requireRootMarker is true`,
           );
           definitions.set(id, null);
-        } else if (
-          definition.syntaxErrorPattern !== undefined &&
-          compileSyntaxErrorPattern(definition.syntaxErrorPattern) === undefined
-        ) {
-          warnings.push(
-            `${scope} formatter.formatters.${id}.syntaxErrorPattern: expected a valid regular expression`,
-          );
-          definitions.set(id, null);
-        } else if (
-          definition.syntaxErrorPattern !== undefined &&
-          !(definition.args ?? []).some((argument) => argument.includes("$FILE"))
-        ) {
-          warnings.push(
-            `${scope} formatter.formatters.${id}.syntaxErrorPattern: requires $FILE in args because only a File Formatter has a changed file to report a syntax error in`,
-          );
-          definitions.set(id, null);
         } else {
-          definitions.set(id, definition);
+          const syntaxErrorPattern = readSyntaxErrorPattern(definition);
+          if ("problem" in syntaxErrorPattern) {
+            warnings.push(
+              `${scope} formatter.formatters.${id}.syntaxErrorPattern: ${syntaxErrorPattern.problem}`,
+            );
+            definitions.set(id, null);
+          } else {
+            definitions.set(
+              id,
+              resolveFormatterDefinition(id, definition, syntaxErrorPattern.pattern),
+            );
+          }
         }
       }
     }
@@ -214,6 +226,7 @@ function readFormatterLayer(
 function resolveFormatterDefinition(
   id: string,
   definition: FormatterDefinitionWire,
+  syntaxErrorPattern: RegExp | undefined,
 ): FormatterDefinition {
   return {
     args: definition.args ?? [],
@@ -224,10 +237,7 @@ function resolveFormatterDefinition(
     id,
     requireRootMarker: definition.requireRootMarker ?? false,
     rootMarkers: definition.rootMarkers ?? [],
-    syntaxErrorPattern:
-      definition.syntaxErrorPattern === undefined
-        ? undefined
-        : compileSyntaxErrorPattern(definition.syntaxErrorPattern),
+    syntaxErrorPattern,
   };
 }
 
@@ -237,17 +247,13 @@ export function resolveFormatterSettings(
 ): ResolvedFormatterSettings {
   const globalLayer = readFormatterLayer(reader.getGlobalSettings(), "global");
   const projectLayer = readFormatterLayer(reader.getProjectSettings(), "project");
-  const definitions = new Map<string, FormatterDefinitionWire>();
+  const formatters = new Map<string, FormatterDefinition>();
   for (const [id, definition] of globalLayer.definitions) {
-    if (definition !== null) definitions.set(id, definition);
+    if (definition !== null) formatters.set(id, definition);
   }
   for (const [id, definition] of projectLayer.definitions) {
-    if (definition === null) definitions.delete(id);
-    else definitions.set(id, definition);
-  }
-  const formatters = new Map<string, FormatterDefinition>();
-  for (const [id, definition] of definitions) {
-    formatters.set(id, resolveFormatterDefinition(id, definition));
+    if (definition === null) formatters.delete(id);
+    else formatters.set(id, definition);
   }
   return {
     formatters,
