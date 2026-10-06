@@ -3,7 +3,12 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { fauxAssistantMessage, type JsonValue } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+  type JsonValue,
+} from "@earendil-works/pi-ai";
 import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +26,8 @@ interface ToolInput {
   query?: string;
   ref?: string;
   window?: string;
+  type?: string;
+  role?: string;
   offset?: number;
   limit?: number;
 }
@@ -372,6 +379,186 @@ describe("Context Notes tools", () => {
     ).toContain('"content":"Blue"');
     expect(await f.run("context_notes", { action: "list" })).toContain('"name":"task"');
     expect(f.tools.get("context_notes")?.executionMode).toBe("sequential");
+  });
+});
+
+describe("History previews and filters", () => {
+  function seeded() {
+    const f = harness();
+    f.manager.appendMessage({
+      role: "user",
+      content: "Where is the\nconfig?",
+      timestamp: 0,
+    });
+    f.manager.appendMessage(
+      fauxAssistantMessage([
+        fauxText("Checking the file."),
+        fauxToolCall("bash", { command: "cat config.json" }, { id: "call-a" }),
+      ]),
+    );
+    f.manager.appendMessage(
+      fauxAssistantMessage([fauxToolCall("read", { path: "src/a.ts" }, { id: "call-b" })]),
+    );
+    f.manager.appendMessage({
+      role: "toolResult",
+      toolCallId: "call-b",
+      toolName: "read",
+      content: [{ type: "text", text: "export const a = 1;" }],
+      isError: false,
+      timestamp: 1,
+    });
+    f.manager.appendThinkingLevelChange("high");
+    f.manager.appendCustomEntry("pi-todo-state", { tasks: [] });
+    return f;
+  }
+  async function previews(
+    f: ReturnType<typeof harness>,
+    input: Partial<ToolInput> = {},
+  ): Promise<string[]> {
+    const listed: { items: Array<{ preview: string }> } = JSON.parse(
+      await f.run("context_history", { action: "list", ...input }),
+    );
+    return listed.items.map((item) => item.preview);
+  }
+
+  test("list previews describe each entry's content instead of JSON boilerplate", async () => {
+    expect(await previews(seeded())).toEqual([
+      "user: Where is the config?",
+      "assistant: Checking the file. → bash(cat config.json)",
+      "assistant → read(src/a.ts)",
+      "toolResult(read): export const a = 1;",
+      "thinking_level_change(high)",
+      "custom(pi-todo-state)",
+    ]);
+  });
+
+  test("previews are bounded and stay on one line", async () => {
+    const f = harness();
+    f.manager.appendMessage({
+      role: "user",
+      content: `${"long text\n".repeat(100)}`,
+      timestamp: 0,
+    });
+    const [preview] = await previews(f);
+    expect(preview?.length).toBeLessThanOrEqual(120);
+    expect(preview).toMatch(/^user: long text long text/);
+    expect(preview).toMatch(/…$/);
+    expect(preview).not.toContain("\n");
+  });
+
+  test("type and role filters narrow list; the default returns every entry", async () => {
+    const f = seeded();
+    expect(await previews(f, { type: "message" })).toHaveLength(4);
+    expect(await previews(f, { type: "custom" })).toEqual(["custom(pi-todo-state)"]);
+    expect(await previews(f, { role: "assistant" })).toEqual([
+      "assistant: Checking the file. → bash(cat config.json)",
+      "assistant → read(src/a.ts)",
+    ]);
+    expect(await previews(f, { role: "toolResult" })).toEqual([
+      "toolResult(read): export const a = 1;",
+    ]);
+    expect(await previews(f, { type: "custom", role: "user" })).toEqual([]);
+    expect(await previews(f)).toHaveLength(6);
+    const filtered = await f.structured("context_history", {
+      action: "list",
+      type: "message",
+    });
+    expect(filtered).toMatchObject({ total: 4, next_offset: null });
+    const paged = await f.structured("context_history", {
+      action: "list",
+      type: "message",
+      limit: 3,
+    });
+    expect(paged).toMatchObject({ total: 4, next_offset: 3 });
+  });
+
+  test("filtered list refs and search offsets still address read", async () => {
+    const f = seeded();
+    const listed = JSON.parse(
+      await f.run("context_history", { action: "list", role: "toolResult" }),
+    );
+    const ref: string = listed.items[0].ref;
+    const read = JSON.parse(await f.run("context_history", { action: "read", ref }));
+    expect(read.content).toContain('"toolName":"read"');
+    const found = JSON.parse(
+      await f.run("context_history", {
+        action: "search",
+        query: "config.json",
+        type: "message",
+      }),
+    );
+    expect(found.matches.length).toBeGreaterThan(0);
+    for (const match of found.matches) {
+      const chunk = JSON.parse(
+        await f.run("context_history", {
+          action: "read",
+          ref: match.ref,
+          offset: match.offset,
+          limit: 11,
+        }),
+      );
+      expect(chunk.content).toBe("config.json");
+    }
+  });
+
+  test("search honours the filters", async () => {
+    const f = seeded();
+    f.manager.appendCustomEntry("note-keeper", {
+      text: "config.json lives here",
+    });
+    const refs = async (input: Partial<ToolInput>) =>
+      JSON.parse(
+        await f.run("context_history", {
+          action: "search",
+          query: "config",
+          ...input,
+        }),
+      ).matches.length;
+    const all = await refs({});
+    expect(await refs({ type: "message" })).toBeLessThan(all);
+    expect(await refs({ type: "custom" })).toBe(1);
+    expect(await refs({ role: "user" })).toBe(1);
+  });
+
+  test("search previews are readable text, not escaped JSON", async () => {
+    const f = harness();
+    f.manager.appendMessage({
+      role: "user",
+      content: '"hi"\nC:\\temp needle done',
+      timestamp: 0,
+    });
+    const found = JSON.parse(await f.run("context_history", { action: "search", query: "needle" }));
+    expect(found.matches[0].preview).toBe('"hi"\nC:\\temp needle done');
+  });
+
+  test("search skips the in-flight call that ran it but finds the same text elsewhere", async () => {
+    const f = harness();
+    f.manager.appendMessage({
+      role: "user",
+      content: "needle earlier",
+      timestamp: 0,
+    });
+    f.manager.appendMessage(
+      fauxAssistantMessage([
+        fauxText("Looking up needle"),
+        fauxToolCall("context_history", { action: "search", query: "needle" }, { id: "test-call" }),
+        fauxToolCall(
+          "context_history",
+          { action: "search", query: "needle" },
+          { id: "other-call" },
+        ),
+      ]),
+    );
+    const found = JSON.parse(await f.run("context_history", { action: "search", query: "needle" }));
+    // The earlier user text, the assistant prose, and the other call's query; not test-call's.
+    expect(found.matches).toHaveLength(3);
+    const own = JSON.parse(
+      await f.run("context_history", {
+        action: "search",
+        query: "test-call",
+      }),
+    );
+    expect(own.matches).toEqual([]);
   });
 });
 
