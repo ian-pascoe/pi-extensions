@@ -181,7 +181,7 @@ export const LspOperationParametersSchemas = {
       all: Type.Optional(
         Type.Boolean({
           description:
-            "List every configured Server Definition in the text; by default only Server Instances (running, starting, unavailable, stopped) and disabled Server Definitions are listed and the other Server Definitions are counted",
+            "List every configured Server Definition, in the text and in the structured result; by default only Server Instances (running, starting, unavailable, stopped) and disabled Server Definitions are listed and the other Server Definitions are counted",
         }),
       ),
     },
@@ -611,7 +611,16 @@ export const LspStatusOutputSchema = Type.Object({
           "Language ID to the file extensions and exact filenames the Server Definition handles",
       }),
     }),
+    {
+      description:
+        "Server Instances and Disabled Server Definitions, or every configured server with all: true",
+    },
   ),
+  not_started: Type.Integer({
+    minimum: 0,
+    description:
+      "Enabled Server Definitions without a Server Instance, left out of servers (0 with all: true)",
+  }),
   warnings: Type.Array(Type.String()),
   ...StructuredResultEnvelope,
 });

@@ -154,8 +154,13 @@ interface RenderContext {
   readonly sources: LspSourceLines;
 }
 
+/** Name a protocol `SymbolKind`, or undefined for a number outside its named values. */
+export function lspKnownSymbolKindName(kind: number): string | undefined {
+  return SYMBOL_KIND_NAMES[kind - 1];
+}
+
 function symbolKindName(kind: number): string {
-  return SYMBOL_KIND_NAMES[kind - 1] ?? `kind ${kind}`;
+  return lspKnownSymbolKindName(kind) ?? `kind ${kind}`;
 }
 
 /** Render `name (kind[, deprecated]) location[  suffix]`. */

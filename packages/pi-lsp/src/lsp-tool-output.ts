@@ -96,6 +96,7 @@ const IDENTIFYING_STRING_KEYS: ReadonlySet<string> = new Set([
   "state",
   "operation",
   "kind",
+  "kind_name",
   "outcome",
   "server_id",
   "preview_id",
