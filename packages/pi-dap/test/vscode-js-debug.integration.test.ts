@@ -154,6 +154,9 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
   );
   const evaluation = await session.evaluate({ expression: "answer" });
   expect(evaluation.evaluation?.result).toBe("42");
+  await expect(session.evaluate({ expression: "undefinedName" })).rejects.toThrow(
+    /undefinedName is not defined/,
+  );
 
   const adapterProcesses = new Set(
     [...(await processIdsContaining(adapterPath))].filter(

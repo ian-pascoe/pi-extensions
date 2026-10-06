@@ -174,8 +174,9 @@ retains at most 1 MiB of unread output, reporting discarded older bytes. Tool
 text follows Pi's 2,000-line/50-KB visible limit; when truncated, the retained
 complete result is written to a Result Spill and its path appears in the
 result. Adapter stderr retains its newest 1 MiB in the session directory and
-process or protocol failures name that path. With `--no-session`, Pi provides no
-session directory, so these files use a private directory under the OS temporary
+process or protocol failures name that path. Failed requests report the
+adapter's own error text and name the path only when stderr has content. With
+`--no-session`, Pi provides no session directory, so these files use a private directory under the OS temporary
 directory instead. Normal session teardown removes it; forced termination may
 leave temporary files behind.
 

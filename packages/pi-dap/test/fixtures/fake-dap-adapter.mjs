@@ -61,6 +61,20 @@ async function handleRequest(request) {
     case "fail":
       respond(request, false, { reason: "fixture" }, "fixture failure");
       return;
+    case "fail-error-format":
+      respond(request, false, {
+        error: {
+          id: 7,
+          format: "ReferenceError: {name} is not defined ({name}, {missing})",
+          variables: { name: "nope" },
+        },
+      });
+      return;
+    case "fail-with-stderr":
+      process.stderr.write("fixture stderr detail\n", () =>
+        setTimeout(() => respond(request, false, undefined, "fixture failure"), 200),
+      );
+      return;
     case "hang":
       return;
     case "fragment": {
@@ -199,7 +213,7 @@ if (tcpIndex >= 0) {
     setInterval(() => {}, 1000);
   } else {
     const server = createServer((socket) => {
-      server.close();
+      if (process.env.FAKE_MULTI_CONNECT !== "1") server.close();
       attach(socket, socket);
     });
     setTimeout(
