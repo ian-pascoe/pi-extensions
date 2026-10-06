@@ -259,7 +259,12 @@ describe("Pi LSP extension lifecycle", () => {
       fromExtension: false,
     });
     expect(await status()).toMatchObject({
-      content: [{ type: "text", text: expect.stringContaining("configured") }],
+      content: [
+        {
+          type: "text",
+          text: "No Server Instances started.\n+1 configured, not started (pass all: true to list)",
+        },
+      ],
     });
     if (disabledLeaf === null) throw new Error("Expected disabled entry");
     harness.sessionManager.branch(disabledLeaf);
@@ -277,7 +282,12 @@ describe("Pi LSP extension lifecycle", () => {
       data: { serverId: "typescript", enabled: true },
     });
     expect(await status()).toMatchObject({
-      content: [{ type: "text", text: expect.stringContaining("configured") }],
+      content: [
+        {
+          type: "text",
+          text: "No Server Instances started.\n+1 configured, not started (pass all: true to list)",
+        },
+      ],
     });
     const forkFile = harness.sessionManager.createBranchedSession(disabledLeaf);
     if (forkFile === undefined) throw new Error("Expected saved fork");
@@ -309,7 +319,11 @@ describe("Pi LSP extension lifecycle", () => {
       previousSessionFile: forkFile,
     });
     expect(await status()).toMatchObject({
-      content: [{ text: expect.stringContaining("configured") }],
+      content: [
+        {
+          text: "No Server Instances started.\n+1 configured, not started (pass all: true to list)",
+        },
+      ],
     });
     await shutdownExtension(harness);
   });

@@ -181,7 +181,7 @@ export const LspOperationParametersSchemas = {
       all: Type.Optional(
         Type.Boolean({
           description:
-            "List every configured server in the text; by default only running, starting, errored, and unavailable servers are listed and the rest are counted",
+            "List every configured Server Definition in the text; by default only Server Instances (running, starting, unavailable, stopped) and disabled Server Definitions are listed and the other Server Definitions are counted",
         }),
       ),
     },
