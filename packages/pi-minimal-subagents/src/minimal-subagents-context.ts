@@ -353,7 +353,7 @@ export function buildSubagentSystemPrompt(
 ): string {
   const coordinatorBoundary = options.canSpawn
     ? "Coordinator tools support subagent, agent_message, subagent_wait, subagent_status, subagent_cancel, and subagent_delete. Wait, status, cancel, and delete target direct children only; recursive cancel and delete may affect a child's subtree."
-    : "Coordinator tools support agent_message, subagent_wait, and subagent_status; wait and status target direct children only.";
+    : "Coordinator tools support only agent_message; you have no children to wait on or inspect.";
   const delegationBoundary = options.canSpawn
     ? [
         "You have explicit fanout responsibility for this assigned task.",

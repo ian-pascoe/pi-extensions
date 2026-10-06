@@ -277,9 +277,9 @@ is two levels beneath the interactive Root Agent.
 
 The extension registers six coordinator tools for the Root Agent and fanout
 children: `subagent`, `agent_message`, `subagent_wait`, `subagent_status`,
-`subagent_cancel`, and `subagent_delete`. Ordinary non-fanout children receive
-only the three adjacent-coordination tools: `agent_message`, `subagent_wait`,
-and `subagent_status`.
+`subagent_cancel`, and `subagent_delete`. Children that cannot spawn (delegation
+`none`, or fanout at the depth cap) have no children to wait on or inspect, so they
+receive only `agent_message`.
 
 A running child's `latest_activity_at` advances with the timestamps of its latest
 messages and tool results. Targeted `subagent_status` includes `recent_activity`, a bounded tail of message

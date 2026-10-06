@@ -102,10 +102,10 @@ async function createToolExecutionContext() {
 }
 
 describe("minimal subagents coordinator tools", () => {
-  it("gives ordinary children only the three adjacent-coordination tools", () => {
+  it("gives children that cannot spawn only agent_message", () => {
     expect(
       createCoordinatorToolDefinitions(toolOptions("child", false)).map(({ name }) => name),
-    ).toEqual(["agent_message", "subagent_wait", "subagent_status"]);
+    ).toEqual(["agent_message"]);
   });
 
   it("attaches each coordinator tool's final details schema", () => {

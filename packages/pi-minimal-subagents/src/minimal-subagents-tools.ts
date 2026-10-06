@@ -43,11 +43,8 @@ import type {
   WaitResult,
 } from "./minimal-subagents-types.js";
 
-const ORDINARY_CHILD_COORDINATOR_TOOL_NAMES = new Set([
-  "agent_message",
-  "subagent_wait",
-  "subagent_status",
-]);
+/** A child that cannot spawn can never have children, so only adjacent messaging is useful. */
+const ORDINARY_CHILD_COORDINATOR_TOOL_NAMES = new Set(["agent_message"]);
 
 /** Coordinator operations consumed by the six public coordinator tool definitions. */
 export type CoordinatorToolOperations = Pick<

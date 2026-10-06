@@ -338,4 +338,15 @@ describe("minimal subagents context", () => {
       buildSubagentSystemPrompt("child", "root", { canSpawn: false, remainingDepth: 0 }),
     ).toContain("Delegation is owned by your parent.");
   });
+
+  it("tells children their coordinator tools match what they were granted", () => {
+    const fanout = buildSubagentSystemPrompt("child", "root", {
+      canSpawn: true,
+      remainingDepth: 1,
+    });
+    const leaf = buildSubagentSystemPrompt("child", "root", { canSpawn: false, remainingDepth: 0 });
+    expect(fanout).toContain("Coordinator tools support subagent, agent_message, subagent_wait");
+    expect(leaf).toContain("Coordinator tools support only agent_message");
+    expect(leaf).not.toMatch(/subagent_wait|subagent_status/);
+  });
 });
