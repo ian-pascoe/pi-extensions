@@ -59,28 +59,58 @@ async function removeTemporaryDirectory(directory: string): Promise<void> {
   await rm(directory, { recursive: true, force: true }).catch(() => undefined);
 }
 
-/** Options for {@link createWebToolOutput}. */
-export type WebToolOutputOptions = {
-  /** One-line note that always stays visible after the text, and is not part of the spill. */
-  readonly footer?: string | undefined;
+/** Where a Web Tool's text sits within the longer text it was selected from, in 1-indexed lines. */
+export type WebToolLineWindow = {
+  /** Line of the source text that the first line of the output text came from. */
+  readonly firstLine: number;
+  /** Line count of the whole source text. */
+  readonly totalLines: number;
 };
 
+/** Options for {@link createWebToolOutput}. */
+export type WebToolOutputOptions = {
+  /**
+   * Source position of the text. When lines of the source remain after what the model can see, the
+   * output ends with a continuation note naming the `offset` to read next.
+   */
+  readonly window?: WebToolLineWindow | undefined;
+};
+
+/** Lines a continuation note adds: a blank line and the note itself. */
+const CONTINUATION_NOTE_LINES = 2;
+
+function continuationNote(window: WebToolLineWindow, shownLines: number): string {
+  const lastLine = window.firstLine + shownLines - 1;
+  const remaining = window.totalLines - lastLine;
+  return `[Showing lines ${window.firstLine}-${lastLine} of ${window.totalLines}. ${remaining} ${remaining === 1 ? "line remains" : "lines remain"}. Use offset=${lastLine + 1} to continue.]`;
+}
+
+/** The continuation note after `shownLines` lines of the text, or nothing when no source line remains. */
+function continuationSuffix(window: WebToolLineWindow | undefined, shownLines: number): string {
+  if (window === undefined || shownLines === 0) return "";
+  if (window.firstLine + shownLines - 1 >= window.totalLines) return "";
+  return `\n\n${continuationNote(window, shownLines)}`;
+}
+
 /**
- * Apply Pi's output limits and save complete truncated text to a private temporary file. The
- * footer, when given, is reserved inside the limits so it is never cut off.
+ * Apply Pi's output limits and save complete truncated text to a private temporary file. A
+ * continuation note, when the window has lines left after the visible ones, is reserved inside the
+ * limits and built from the lines actually shown, so it is never cut off or wrong; the spill holds
+ * the text only.
  */
 export async function createWebToolOutput(
   text: string,
   options: WebToolOutputOptions = {},
 ): Promise<WebToolOutput> {
-  const footer = options.footer;
-  const footerText = footer === undefined ? "" : `\n\n${footer}`;
-  const withFooter = `${text}${footerText}`;
-  const initial = truncateHead(withFooter, {
+  const window = options.window;
+  const textLines = text.split("\n").length;
+  // Every figure in a note for fewer shown lines is no longer than in this one.
+  const largestSuffix = window === undefined ? "" : `\n\n${continuationNote(window, textLines)}`;
+  const initial = truncateHead(`${text}${continuationSuffix(window, textLines)}`, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  if (!initial.truncated) return { content: withFooter };
+  if (!initial.truncated) return { content: initial.content };
 
   let directory: string | undefined;
   let fullOutputPath: string;
@@ -98,14 +128,17 @@ export async function createWebToolOutput(
 
   const largestNotice = `[Output truncated: showing ${initial.totalLines} of ${initial.totalLines} lines (${initial.totalBytes} of ${initial.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
   const visibleBytes =
-    DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2 - Buffer.byteLength(footerText);
+    DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2 - Buffer.byteLength(largestSuffix);
   if (visibleBytes < 0) {
     await removeTemporaryDirectory(directory);
     throw new Error("Web Tool truncation notice exceeds Pi output limit");
   }
   const visible = truncateHead(text, {
     maxBytes: visibleBytes,
-    maxLines: DEFAULT_MAX_LINES - TRUNCATION_NOTICE_LINES - footerText.split("\n").length + 1,
+    maxLines:
+      DEFAULT_MAX_LINES -
+      TRUNCATION_NOTICE_LINES -
+      (largestSuffix === "" ? 0 : CONTINUATION_NOTE_LINES),
   });
   const truncation: WebToolTruncationDetails = {
     outputLines: visible.outputLines,
@@ -115,8 +148,9 @@ export async function createWebToolOutput(
     fullOutputPath,
   };
   const notice = `[Output truncated: showing ${visible.outputLines} of ${visible.totalLines} lines (${visible.outputBytes} of ${visible.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
+  const shown = `${visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`}`;
   return {
-    content: `${visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`}${footerText}`,
+    content: `${shown}${continuationSuffix(window, visible.outputLines)}`,
     truncation,
   };
 }

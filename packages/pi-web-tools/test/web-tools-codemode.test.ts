@@ -235,7 +235,7 @@ describe("Web Tools through Pi codemode", () => {
       /web_search\(args\)` resolves to `\{ provider, content, full_output_path\? \}`/,
     );
     expect(text).toMatch(
-      /web_fetch\(args\)` resolves to `\{ url, content_type, format, content, truncated, structured_truncated, full_output_path\? \}`/,
+      /web_fetch\(args\)` resolves to `\{ url, content_type, format, content, truncated, structured_truncated, full_output_path\?, total_lines\?, next_offset\? \}`/,
     );
     for (const turn of fixture.turns) {
       expect(turn.systemPrompt).toBe(first?.systemPrompt);

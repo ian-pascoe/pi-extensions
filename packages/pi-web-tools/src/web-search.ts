@@ -19,8 +19,12 @@ const DEFAULT_EXA_URL = "https://mcp.exa.ai/mcp";
 const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
 const DEFAULT_NUM_RESULTS = 8;
 /** Default total budget for Search Provider text, in Unicode code points. */
-export const WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS = 6_000;
+const WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS = 6_000;
 const MAX_CONTEXT_MAX_CHARACTERS = 50_000;
+
+function formatCount(value: number): string {
+  return value.toLocaleString("en-US");
+}
 /** Longest `objective` Exa's `web_search_exa` schema accepts, in characters. */
 const EXA_OBJECTIVE_MAX_CHARACTERS = 4096;
 const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
@@ -84,20 +88,23 @@ export type WebSearchDetails = Static<typeof WebSearchDetailsSchema>;
 
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
- * `content` is the Search Provider's text answer (at most 256 KiB), which is free-form rather than
- * a result list. For Parallel it is the JSON result object trimmed to `numResults`. `contextMaxCharacters`
- * can cut it (and mark the cut), which can leave Parallel's JSON unparseable. `full_output_path` is
- * present when the model saw it truncated, and names a file with that same trimmed and cut text.
+ * `content` is the Search Provider's text answer (at most 256 KiB received), which is free-form
+ * rather than a result list. For Parallel it is the JSON result object trimmed to `numResults`.
+ * `contextMaxCharacters` (default 6,000) cuts it and marks the cut, which can leave Parallel's JSON
+ * unparseable. `full_output_path` is present when the model saw it truncated, and names a file with
+ * that same trimmed and cut text.
  */
 export const WebSearchOutputSchema = Type.Object(
   {
     provider: SearchProviderSchema,
     content: Type.String({
-      description:
-        "Search Provider's text answer, trimmed to numResults (Parallel) and cut at contextMaxCharacters",
+      description: `Search Provider's text answer, trimmed to numResults (Parallel) and cut at contextMaxCharacters (default ${formatCount(WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS)})`,
     }),
     full_output_path: Type.Optional(
-      Type.String({ description: "Private file with the full text" }),
+      Type.String({
+        description:
+          "Private file with the trimmed and cut text when the model-visible text was truncated",
+      }),
     ),
   },
   { additionalProperties: false },
@@ -122,8 +129,7 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
         minimum: 1,
         maximum: MAX_CONTEXT_MAX_CHARACTERS,
         default: WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS,
-        description:
-          "Maximum characters of Search Provider text returned (1–50,000, default: 6,000). Longer text is cut at that many code points, then marked; raise it to read more.",
+        description: `Maximum characters of Search Provider text returned (1–${formatCount(MAX_CONTEXT_MAX_CHARACTERS)}, default: ${formatCount(WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS)}). Longer text is cut at that many code points, then marked; raise it to read more.`,
       }),
     ),
   },
@@ -167,8 +173,7 @@ const MCP_RESPONSE_SCHEMA = Type.Object(
   { additionalProperties: true },
 );
 
-const WEB_SEARCH_DESCRIPTION =
-  "Discover current public web information using Exa or Parallel. Results are textual, cut at 6,000 characters by default (see contextMaxCharacters), and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
+const WEB_SEARCH_DESCRIPTION = `Discover current public web information using Exa or Parallel. Results are textual, cut at ${formatCount(WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS)} characters by default (see contextMaxCharacters), and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.`;
 
 type ExaSearchArguments = {
   query: string;

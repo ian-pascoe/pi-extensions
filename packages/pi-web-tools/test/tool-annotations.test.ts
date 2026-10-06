@@ -24,6 +24,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test } from "vitest";
 import piWebToolsExtension from "../src/index.js";
+import { selectSearchProvider } from "../src/web-search.js";
 
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
@@ -117,7 +118,7 @@ async function captureTurn(factory: ExtensionFactory, cwd: string) {
   await session.bindExtensions({ mode: "rpc" });
   await session.prompt("Hello");
   if (captured === undefined) throw new Error("No model request was captured");
-  return { reported: session.getAllTools(), ...captured };
+  return { reported: session.getAllTools(), sessionId: session.sessionId, ...captured };
 }
 
 test("reports explicit read-only, open-world annotations without changing the provider prefix", async () => {
@@ -155,12 +156,14 @@ test("reports explicit read-only, open-world annotations without changing the pr
   expect(withoutTimestamps(annotated.messages)).toEqual(withoutTimestamps(plain.messages));
 });
 
-test("hands the model identical ordered tool definitions on every turn, whichever provider a session selects", async () => {
+test("keeps ordered tool definitions, prompt, and history stable across sessions for both Search Providers", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-tools-budgets-"));
   directories.push(cwd);
-  // Each session has its own id, so the runs span both Search Providers.
+  // Pi picks the provider from the session id, so a handful of fresh sessions spans both.
   const turns = [];
-  for (let run = 0; run < 4; run++) turns.push(await captureTurn(piWebToolsExtension, cwd));
+  for (let run = 0; run < 6; run++) turns.push(await captureTurn(piWebToolsExtension, cwd));
+  const providers = new Set(turns.map(({ sessionId }) => selectSearchProvider(sessionId)));
+  expect(providers).toEqual(new Set(["exa", "parallel"]));
   const [first, ...rest] = turns;
   if (first === undefined) throw new Error("Expected a captured turn");
 

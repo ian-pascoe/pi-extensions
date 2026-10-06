@@ -258,7 +258,7 @@ describe("Web Fetch", () => {
         { fetch: fetchPlain(numbered(100)) },
         { url: "https://example.com/w", format: "text", offset: 11, limit: 20 },
       );
-      const expected = `${Array.from({ length: 20 }, (_, index) => `line ${index + 11}`).join("\n")}\n\n[Showing lines 11-30 of 100. 70 lines remain; use offset=31 to continue.]`;
+      const expected = `${Array.from({ length: 20 }, (_, index) => `line ${index + 11}`).join("\n")}\n\n[Showing lines 11-30 of 100. 70 lines remain. Use offset=31 to continue.]`;
       expect(text(result)).toBe(expected);
       // Scripts receive the window text, without the note.
       expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).toBe(
@@ -273,7 +273,7 @@ describe("Web Fetch", () => {
         { url: "https://example.com/w", format: "text", limit: 3 },
       );
       expect(text(result)).toBe(
-        "line 1\nline 2\nline 3\n\n[Showing lines 1-3 of 10. 7 lines remain; use offset=4 to continue.]",
+        "line 1\nline 2\nline 3\n\n[Showing lines 1-3 of 10. 7 lines remain. Use offset=4 to continue.]",
       );
     });
 
@@ -298,7 +298,7 @@ describe("Web Fetch", () => {
         ),
       );
       expect(message).toBe(
-        "Unable to fetch https://example.com/w: offset 11 is beyond the end of the content (10 lines)",
+        "Unable to fetch https://example.com/w: Offset 11 is beyond end of content (10 lines total)",
       );
       expect(message).not.toContain(TROUBLESHOOTING_HINT);
     });
@@ -314,7 +314,7 @@ describe("Web Fetch", () => {
         { url: "https://example.com/h", offset: 3, limit: 4 },
       );
       expect(text(windowed)).toBe(
-        `${converted.slice(2, 6).join("\n")}\n\n[Showing lines 3-6 of ${converted.length}. ${converted.length - 6} lines remain; use offset=7 to continue.]`,
+        `${converted.slice(2, 6).join("\n")}\n\n[Showing lines 3-6 of ${converted.length}. ${converted.length - 6} lines remain. Use offset=7 to continue.]`,
       );
       // format: html windows the unconverted page.
       const rawHtml = await executeFetch(
@@ -324,8 +324,23 @@ describe("Web Fetch", () => {
       expect(text(rawHtml)).toBe(`${html}`);
     });
 
-    test("keeps the note visible and spills the window when the window itself exceeds the output budget", async () => {
-      const page = Array.from({ length: 5_000 }, (_, index) => `line ${index + 1}`).join("\n");
+    /** Last visible content line number, the note's range, and its next offset, read from the output. */
+    const continuation = (visible: string) => {
+      const note =
+        /\[Showing lines (\d+)-(\d+) of (\d+)\. (\d+) lines? remains?\. Use offset=(\d+) to continue\.\]$/.exec(
+          visible,
+        );
+      if (note === null) throw new Error(`No continuation note in ${visible.slice(-200)}`);
+      const [first = 0, last = 0, total = 0, remaining = 0, next = 0] = note.slice(1).map(Number);
+      const shown = visible
+        .split("\n")
+        .filter((line) => /^line \d+$/.test(line))
+        .map((line) => Number(line.slice(5)));
+      return { first, last, total, remaining, next, shown };
+    };
+
+    test("names the next unseen line when the window is cut at the output budget", async () => {
+      const page = numbered(5_000);
       const result = await executeFetch(
         { fetch: fetchPlain(page) },
         { url: "https://example.com/w", format: "text", offset: 11, limit: 3_000 },
@@ -333,18 +348,106 @@ describe("Web Fetch", () => {
       const path = result.details.truncation?.fullOutputPath;
       if (path === undefined) throw new Error("Expected Web Fetch spill");
       spillDirectories.push(dirname(path));
-      const note =
-        "[Showing lines 11-3010 of 5000. 1990 lines remain; use offset=3011 to continue.]";
       const visible = text(result);
-      expect(visible.endsWith(`\n\n${note}`)).toBe(true);
+      const note = continuation(visible);
+
+      // The model saw fewer than the 3,000 requested lines, and the note says exactly which.
+      expect(note.shown.length).toBeLessThan(3_000);
+      expect(note.shown[0]).toBe(11);
+      expect(note.last).toBe(note.shown.at(-1));
+      expect(note.next).toBe(note.last + 1);
+      expect(note.total).toBe(5_000);
+      expect(note.remaining).toBe(5_000 - note.last);
       expect(visible.split("\n").length).toBeLessThanOrEqual(2_000);
+      expect(Buffer.byteLength(visible)).toBeLessThanOrEqual(50 * 1024);
       expect(visible).toContain(`Full output saved to: ${path}`);
       expect(result.details.truncation).toMatchObject({ totalLines: 3_000 });
-      // The spill holds exactly the window the budget was applied to.
+      // The spill holds exactly the requested window, without the note.
       expect(await readFile(path, "utf8")).toBe(
         Array.from({ length: 3_000 }, (_, index) => `line ${index + 11}`).join("\n"),
       );
-      expect(result.structuredContent).toMatchObject({ truncated: true, full_output_path: path });
+      expect(result.structuredContent).toMatchObject({
+        truncated: true,
+        full_output_path: path,
+        total_lines: 5_000,
+        next_offset: 3_011,
+      });
+    });
+
+    test("continues past what the model saw, for an offset alone and for no window at all", async () => {
+      for (const parameters of [{ offset: 5 }, {}]) {
+        const result = await executeFetch(
+          { fetch: fetchPlain(numbered(5_000)) },
+          { url: "https://example.com/w", format: "text", ...parameters },
+        );
+        const path = result.details.truncation?.fullOutputPath;
+        if (path === undefined) throw new Error("Expected Web Fetch spill");
+        spillDirectories.push(dirname(path));
+        const note = continuation(text(result));
+        expect(note.first).toBe(parameters.offset ?? 1);
+        expect(note.shown[0]).toBe(note.first);
+        expect(note.next).toBe(note.shown.at(-1)! + 1);
+        expect(note.total).toBe(5_000);
+      }
+    });
+
+    test("pages through a long page with the note's offsets and sees every line exactly once", async () => {
+      const page = numbered(5_000);
+      const seen: number[] = [];
+      let offset: number | undefined;
+      for (let pass = 0; pass < 10; pass++) {
+        const result = await (offset === undefined
+          ? executeFetch(
+              { fetch: fetchPlain(page) },
+              { url: "https://example.com/w", format: "text" },
+            )
+          : executeFetch(
+              { fetch: fetchPlain(page) },
+              { url: "https://example.com/w", format: "text", offset },
+            ));
+        const spill = result.details.truncation?.fullOutputPath;
+        if (spill !== undefined) spillDirectories.push(dirname(spill));
+        const visible = text(result);
+        const lines = visible
+          .split("\n")
+          .filter((line) => /^line \d+$/.test(line))
+          .map((line) => Number(line.slice(5)));
+        seen.push(...lines);
+        if (!/Use offset=\d+ to continue/.test(visible)) break;
+        offset = continuation(visible).next;
+      }
+      expect(seen).toEqual(Array.from({ length: 5_000 }, (_, index) => index + 1));
+    });
+
+    test("tells scripts the total and the next offset only when a window was requested", async () => {
+      const windowed = await executeFetch(
+        { fetch: fetchPlain(numbered(100)) },
+        { url: "https://example.com/w", format: "text", offset: 11, limit: 20 },
+      );
+      expect(windowed.structuredContent).toMatchObject({ total_lines: 100, next_offset: 31 });
+      const toEnd = await executeFetch(
+        { fetch: fetchPlain(numbered(100)) },
+        { url: "https://example.com/w", format: "text", offset: 91 },
+      );
+      expect(toEnd.structuredContent).toMatchObject({ total_lines: 100 });
+      expect(toEnd.structuredContent).not.toHaveProperty("next_offset");
+      const whole = await executeFetch(
+        { fetch: fetchPlain(numbered(100)) },
+        { url: "https://example.com/w", format: "text" },
+      );
+      expect(whole.structuredContent).not.toHaveProperty("total_lines");
+      expect(whole.structuredContent).not.toHaveProperty("next_offset");
+      for (const result of [windowed, toEnd, whole]) {
+        expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+      }
+    });
+
+    test("says '1 line remains' for a single remaining line", async () => {
+      const result = await executeFetch(
+        { fetch: fetchPlain(numbered(3)) },
+        { url: "https://example.com/w", format: "text", limit: 2 },
+      );
+      expect(text(result)).toContain("1 line remains. Use offset=3 to continue.");
     });
 
     test("describes the window in the static parameter schema", () => {

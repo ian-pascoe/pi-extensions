@@ -1095,6 +1095,38 @@ describe("Web Search", () => {
       expect((await search("exa", "abcdef", { query: "q" })).text).toBe("abcdef");
     });
 
+    test("keeps a default 8-result search within the 6,000-character budget for both providers", async () => {
+      const excerpt = "highlight ".repeat(150);
+      const exa = Array.from(
+        { length: 8 },
+        (_, index) =>
+          `Title: Result ${index}\nURL: https://example.com/${index}\nHighlights:\n${excerpt}`,
+      ).join("\n\n");
+      const parallel = JSON.stringify(
+        {
+          results: Array.from({ length: 8 }, (_, index) => ({
+            url: `https://example.com/${index}`,
+            title: `Result ${index}`,
+            excerpts: [excerpt],
+          })),
+        },
+        null,
+        2,
+      );
+      for (const [provider, complete] of [
+        ["exa", exa],
+        ["parallel", parallel],
+      ] as const) {
+        expect(Array.from(complete).length).toBeGreaterThan(6_000);
+        const { result, text } = await search(provider, complete, { query: "q" });
+        const marker =
+          "\n\n[Search results cut at 6000 characters; pass contextMaxCharacters (up to 50000) for more]";
+        expect(text).toBe(`${Array.from(complete).slice(0, 6_000).join("")}${marker}`);
+        expect(Array.from(text).length).toBe(6_000 + Array.from(marker).length);
+        expect(result.structuredContent).toEqual({ provider, content: text });
+      }
+    });
+
     test("defaults contextMaxCharacters to 6,000 and says how to read more when it cuts", async () => {
       for (const provider of ["exa", "parallel"] as const) {
         const complete = "x".repeat(6_001);

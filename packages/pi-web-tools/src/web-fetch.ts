@@ -21,6 +21,7 @@ import {
   boundWebToolStructuredText,
   createWebToolOutput,
   WebToolTruncationDetailsSchema,
+  type WebToolLineWindow,
 } from "./web-tool-output.js";
 import { redactWebUrlUserinfo } from "./web-url.js";
 
@@ -63,28 +64,47 @@ export type WebFetchDetails = Static<typeof WebFetchDetailsSchema>;
 
 /**
  * JSON Schema of the `structuredContent` codemode scripts receive instead of the model-facing text.
- * `content` is the fetched text up to 1 MiB. Two separate cuts are reported, as in pi-lsp:
- * `truncated` means the model-visible output was cut at 50 KiB / 2,000 lines, and is true exactly
- * when `full_output_path` names the private file holding the complete text; `structured_truncated`
- * means `content` itself was cut at 1 MiB, so the page is longer than the script received. A
- * `structured_truncated` result is always also `truncated`, and `full_output_path` then holds the
- * text `content` lost.
+ * `content` is the converted text of the selected `offset`/`limit` window (the whole page when
+ * neither is given) up to 1 MiB, without the model's continuation note. Two separate cuts are
+ * reported, as in pi-lsp: `truncated` means the model-visible output was cut at 50 KiB / 2,000
+ * lines, and is true exactly when `full_output_path` names the private file holding the complete
+ * window; `structured_truncated` means `content` itself was cut at 1 MiB, so the window is longer
+ * than the script received. A `structured_truncated` result is always also `truncated`, and
+ * `full_output_path` then holds the text `content` lost. `total_lines` and `next_offset` let a
+ * script page; they are present only when `offset` or `limit` was passed.
  */
 export const WebFetchOutputSchema = Type.Object(
   {
     url: Type.String({ description: "Final URL after redirects, without credentials" }),
     content_type: Type.String({ description: "Response Content-Type header" }),
     format: WebFetchFormatSchema,
-    content: Type.String({ description: "Fetched text in the requested format" }),
+    content: Type.String({
+      description: "Fetched text in the requested format, limited to the offset/limit window",
+    }),
     truncated: Type.Boolean({
       description:
         "The model-visible output was cut at 50 KiB or 2,000 lines; true exactly when full_output_path is present",
     }),
     structured_truncated: Type.Boolean({
-      description: "content itself was cut at 1 MiB; full_output_path holds the complete text",
+      description:
+        "content itself was cut at 1 MiB; full_output_path holds the complete offset/limit window",
     }),
     full_output_path: Type.Optional(
-      Type.String({ description: "Private file with the complete text when truncated" }),
+      Type.String({
+        description:
+          "Private file with the complete offset/limit window (the whole text without one) when truncated",
+      }),
+    ),
+    total_lines: Type.Optional(
+      Type.Number({
+        description: "Lines in the whole converted text; present when offset or limit was passed",
+      }),
+    ),
+    next_offset: Type.Optional(
+      Type.Number({
+        description:
+          "Offset of the first line after the offset/limit window; present when lines remain after it",
+      }),
     ),
   },
   { additionalProperties: false },
@@ -442,36 +462,37 @@ async function fetchText(
   };
 }
 
-/** The lines of fetched text a call asked for, and the note on what is left. */
+/** The lines of fetched text a call asked for, and where they sit in the whole text. */
 type LineWindow = {
   readonly text: string;
-  readonly footer?: string;
+  readonly window: WebToolLineWindow;
+  /** Last source line `text` holds. */
+  readonly lastLine: number;
+  /** Whether the call asked for a window at all. */
+  readonly requested: boolean;
 };
 
 /**
- * Select `limit` lines from the 1-indexed `offset`, counted like Pi's `read` tool, and say how many
- * lines remain and where to continue. Without either argument the text is returned whole.
+ * Select `limit` lines from the 1-indexed `offset`, counted like Pi's `read` tool. Without either
+ * argument the text is returned whole.
  */
 function selectLineWindow(
   content: string,
   offset: number | undefined,
   limit: number | undefined,
 ): LineWindow {
-  if (offset === undefined && limit === undefined) return { text: content };
   const lines = content.split("\n");
   const start = (offset ?? 1) - 1;
   if (start >= lines.length) {
     throw new WebInputError(
-      `offset ${offset} is beyond the end of the content (${lines.length} lines)`,
+      `Offset ${offset} is beyond end of content (${lines.length} lines total)`,
     );
   }
   const end = limit === undefined ? lines.length : Math.min(start + limit, lines.length);
-  const text = lines.slice(start, end).join("\n");
-  if (end >= lines.length) return { text };
-  return {
-    text,
-    footer: `[Showing lines ${start + 1}-${end} of ${lines.length}. ${lines.length - end} lines remain; use offset=${end + 1} to continue.]`,
-  };
+  const window = { firstLine: start + 1, totalLines: lines.length };
+  const requested = offset !== undefined || limit !== undefined;
+  const text = requested ? lines.slice(start, end).join("\n") : content;
+  return { text, window, lastLine: end, requested };
 }
 
 function unableToFetch(safeUrl: string, failure: WebFailure): Error {
@@ -538,15 +559,15 @@ export function createWebFetchTool(
         // Dead links, blocked pages, bad input, and user cancellation are not failures the Skill diagnoses.
         throw unableToFetch(safeUrl, describeWebFailure(error, { callerSignal, timeoutMs }));
       }
-      let window: LineWindow;
+      let selected: LineWindow;
       try {
-        window = selectLineWindow(fetched.content, input.offset, input.limit);
+        selected = selectLineWindow(fetched.content, input.offset, input.limit);
       } catch (error) {
         throw unableToFetch(safeUrl, describeWebFailure(error));
       }
       // Spilling the full output is local work; its failures are not Web Fetch transport failures.
-      const output = await createWebToolOutput(window.text, { footer: window.footer });
-      const structured = boundWebToolStructuredText(window.text);
+      const output = await createWebToolOutput(selected.text, { window: selected.window });
+      const structured = boundWebToolStructuredText(selected.text);
       const structuredContent: WebFetchOutput = {
         url: fetched.finalUrl,
         content_type: fetched.contentType,
@@ -555,6 +576,12 @@ export function createWebFetchTool(
         truncated: output.truncation !== undefined,
         structured_truncated: structured.truncated,
       };
+      if (selected.requested) {
+        structuredContent.total_lines = selected.window.totalLines;
+        if (selected.lastLine < selected.window.totalLines) {
+          structuredContent.next_offset = selected.lastLine + 1;
+        }
+      }
       if (output.truncation !== undefined) {
         structuredContent.full_output_path = output.truncation.fullOutputPath;
       }

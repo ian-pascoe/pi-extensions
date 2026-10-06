@@ -75,36 +75,61 @@ describe("Web Tool output", () => {
     expect(await readFile(path, "utf8")).toBe(complete);
   });
 
-  test("appends a footer after fitting text within the limits", async () => {
-    const result = await createWebToolOutput("body", { footer: "[more at offset=3]" });
+  test("adds a continuation note after fitting text when source lines remain", async () => {
+    const result = await createWebToolOutput("a\nb", { window: { firstLine: 3, totalLines: 9 } });
 
-    expect(result).toEqual({ content: "body\n\n[more at offset=3]" });
+    expect(result).toEqual({
+      content: "a\nb\n\n[Showing lines 3-4 of 9. 5 lines remain. Use offset=5 to continue.]",
+    });
+    expect(await createWebToolOutput("a\nb", { window: { firstLine: 8, totalLines: 9 } })).toEqual({
+      content: "a\nb",
+    });
   });
 
-  test("keeps the footer visible and bounded when the text is truncated, spilling only the text", async () => {
+  test("builds the note from the lines shown when the line limit truncates, spilling only the text", async () => {
     const complete = Array.from(
       { length: DEFAULT_MAX_LINES + 20 },
       (_, index) => `line ${index}`,
     ).join("\n");
-    const footer = "[Showing lines 1-2020 of 5000. Use offset=2021 to continue.]";
-    const result = await createWebToolOutput(complete, { footer });
+    const result = await createWebToolOutput(complete, {
+      window: { firstLine: 11, totalLines: 5_000 },
+    });
     const path = await recordSpill(result);
+    const shown = result.truncation?.outputLines ?? 0;
 
-    expect(result.content.endsWith(`\n\n${footer}`)).toBe(true);
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(DEFAULT_MAX_LINES);
+    expect(
+      result.content.endsWith(
+        `\n\n[Showing lines 11-${10 + shown} of 5000. ${5_000 - 10 - shown} lines remain. Use offset=${11 + shown} to continue.]`,
+      ),
+    ).toBe(true);
     expect(result.content.split("\n").length).toBeLessThanOrEqual(DEFAULT_MAX_LINES);
     expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
-    expect(result.content).toContain(`Full output saved to: ${path}`);
     expect(await readFile(path, "utf8")).toBe(complete);
-    expect(result.truncation?.totalLines).toBe(DEFAULT_MAX_LINES + 20);
   });
 
-  test("keeps the footer within the byte limit when the text is byte-truncated", async () => {
-    const complete = "😀".repeat(DEFAULT_MAX_BYTES);
-    const footer = "[Showing lines 1-1 of 9. Use offset=2 to continue.]";
-    const result = await createWebToolOutput(complete, { footer });
+  test("keeps the note within the byte limit when the text is byte-truncated", async () => {
+    const complete = `${"x".repeat(100)}\n${"é".repeat(DEFAULT_MAX_BYTES)}`;
+    const result = await createWebToolOutput(complete, {
+      window: { firstLine: 1, totalLines: 2 },
+    });
     await recordSpill(result);
 
     expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
-    expect(result.content.endsWith(footer)).toBe(true);
+    expect(
+      result.content.endsWith(
+        "[Showing lines 1-1 of 2. 1 line remains. Use offset=2 to continue.]",
+      ),
+    ).toBe(true);
+  });
+
+  test("omits the note when not even one line fits", async () => {
+    const result = await createWebToolOutput("😀".repeat(DEFAULT_MAX_BYTES), {
+      window: { firstLine: 1, totalLines: 1 },
+    });
+    await recordSpill(result);
+
+    expect(result.content).not.toContain("Use offset=");
   });
 });
