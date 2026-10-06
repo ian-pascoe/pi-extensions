@@ -96,7 +96,7 @@ export const WebFetchOutputSchema = Type.Object(
       }),
     ),
     total_lines: Type.Optional(
-      Type.Number({
+      Type.Integer({
         description: "Lines in the whole converted text; present when offset or limit was passed",
       }),
     ),
