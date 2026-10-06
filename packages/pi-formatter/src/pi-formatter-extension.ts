@@ -73,6 +73,8 @@ const WorkspaceEditApplyDetailsSchema = Type.Object(
   { additionalProperties: true },
 );
 const MAX_FORMATTER_STDERR_CHARACTERS = 50_000;
+/** How long a killed formatter's process tree may keep its stderr open before formatting moves on. */
+const STOPPED_COMMAND_GRACE_MS = 2_000;
 /**
  * The most changed-hunk text, shared by every file of one mutation result and counted without the
  * `Formatted by` lines: at most `MAX_DIFF_LINES` lines and `MAX_DIFF_BYTES` UTF-8 bytes. A file whose
@@ -161,13 +163,7 @@ async function existingFormatterPaths(
     try {
       if ((await stat(path)).isFile()) existing.push(path);
     } catch (cause) {
-      if (
-        cause instanceof Error &&
-        "code" in cause &&
-        (cause.code === "ENOENT" || cause.code === "ENOTDIR")
-      ) {
-        continue;
-      }
+      if (isMissingPathError(cause)) continue;
       warnings.push(
         `Pi Formatter: unable to inspect ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
@@ -233,11 +229,14 @@ function runFormatterCommand(
   return new Promise((complete) => {
     let stderr = "";
     let finished = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    /** Why the command was stopped early; reported once its process tree lets go of stderr. */
+    let stopped: FormatterCommandFailure | undefined;
+    const timers: ReturnType<typeof setTimeout>[] = [];
     try {
       const child = spawn(definition.command, args, {
         cwd,
         env: formatterProcessEnvironment(definition.environment),
+        killSignal: "SIGKILL",
         shell: false,
         signal,
         stdio: ["ignore", "ignore", "pipe"],
@@ -245,22 +244,34 @@ function runFormatterCommand(
       const finish = (failure: FormatterCommandFailure | undefined): void => {
         if (finished) return;
         finished = true;
-        if (timer !== undefined) clearTimeout(timer);
+        for (const timer of timers) clearTimeout(timer);
         complete(failure);
       };
-      timer = setTimeout(() => {
+      /**
+       * Kill the command, then wait for `close`: a process it started, such as the formatter behind
+       * an `npx` wrapper, can still write the file until it exits and releases the inherited
+       * stderr. The wait is bounded because such a process may outlive the command indefinitely.
+       */
+      const stop = (failure: FormatterCommandFailure): void => {
+        if (stopped !== undefined) return;
+        stopped = failure;
         child.kill("SIGKILL");
-        finish({ kind: "timeout", timeoutMs });
-      }, timeoutMs);
+        timers.push(setTimeout(() => finish(failure), STOPPED_COMMAND_GRACE_MS));
+      };
+      timers.push(setTimeout(() => stop({ kind: "timeout", timeoutMs }), timeoutMs));
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => {
         stderr = (stderr + chunk).slice(-MAX_FORMATTER_STDERR_CHARACTERS);
       });
       child.on("error", (cause: Error) => {
-        finish({ kind: "spawn_error", message: cause.message });
+        const failure = { kind: "spawn_error", message: cause.message } as const;
+        // An abort kills a running command; a command that never started has nothing to wait for.
+        if (child.pid === undefined) finish(failure);
+        else stop(failure);
       });
       child.on("close", (exitCode, signalName) => {
-        if (exitCode === 0) finish(undefined);
+        if (stopped !== undefined) finish(stopped);
+        else if (exitCode === 0) finish(undefined);
         else {
           finish({
             kind: "exit_error",
@@ -352,30 +363,39 @@ function withDiff(
   return `${summary}\n${text}`;
 }
 
+function isMissingPathError(cause: unknown): boolean {
+  return (
+    cause instanceof Error &&
+    "code" in cause &&
+    (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+  );
+}
+
 /**
  * The key Pi's file mutation queue uses for a path: its real path, or the resolved path when it
- * cannot be resolved. Pi does not export its own key function.
+ * does not exist. Pi does not export its own key function.
  */
 async function mutationQueueKey(path: string): Promise<string> {
   try {
     return await realpath(path);
-  } catch {
-    return resolve(path);
+  } catch (cause) {
+    if (isMissingPathError(cause)) return resolve(path);
+    throw cause;
   }
 }
 
 /**
  * Run `operation` while holding Pi's file mutation queue for every path, so no native `edit` or
  * `write`, and no other formatting, changes those files meanwhile. Pi's queue is not reentrant, so
- * paths sharing a key are queued once; keys are taken in sorted order, as Pi LSP applies a
- * Workspace Edit, so two holders of overlapping paths cannot wait on each other.
+ * paths sharing a key are queued once. Keys are taken in code-unit order, so two formattings of
+ * overlapping files cannot wait on each other.
  */
-async function withFileMutationQueues<T>(
+async function withMutationLocks<T>(
   paths: readonly string[],
   operation: () => Promise<T>,
 ): Promise<T> {
   const keys = [...new Set(await Promise.all(paths.map(mutationQueueKey)))].sort((left, right) =>
-    left.localeCompare(right),
+    left < right ? -1 : left > right ? 1 : 0,
   );
   const acquire = (index: number): Promise<T> => {
     const key = keys[index];
@@ -439,12 +459,23 @@ async function formatMutationPaths(
   const existing = await existingFormatterPaths(cwd, paths);
   const notes = existing.warnings.map((text) => ({ text, diagnosable: true }));
   const invocations = await planFormatterInvocations(existing.paths, cwd, settings);
-  if (invocations.length === 0) return notes;
+  if (invocations.length === 0 || signal?.aborted === true) return notes;
   // Inside the queue, the snapshot holds every change made before formatting, and the diff only
   // the formatters' changes; a mutation arriving meanwhile waits rather than being overwritten.
-  const formatted = await withFileMutationQueues(existing.paths, () =>
-    runFormatterInvocations(existing.paths, invocations, cwd, settings, signal),
-  );
+  const formatted = await withMutationLocks(existing.paths, async () => {
+    // A mutation queued ahead of formatting may have deleted or renamed a file meanwhile.
+    const present = await existingFormatterPaths(cwd, existing.paths);
+    const runnable = invocations.filter(({ path, matchingPaths }) =>
+      path === undefined
+        ? matchingPaths.some((matchingPath) => present.paths.includes(matchingPath))
+        : present.paths.includes(path),
+    );
+    const presentNotes = present.warnings.map((text) => ({ text, diagnosable: true }));
+    return [
+      ...presentNotes,
+      ...(await runFormatterInvocations(existing.paths, runnable, cwd, settings, signal)),
+    ];
+  });
   return [...notes, ...formatted];
 }
 
@@ -480,6 +511,7 @@ async function runFormatterInvocations(
     }
   };
   for (const { definition, path, root, matchingPaths } of invocations) {
+    if (signal?.aborted === true) break;
     const args = definition.args.map((argument) =>
       path === undefined ? argument : argument.replaceAll("$FILE", path),
     );

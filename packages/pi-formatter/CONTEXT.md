@@ -17,7 +17,8 @@ Formatting holds Pi's file mutation queue for the mutation's files, from the sna
 the first formatter runs to the read after the last, so concurrent mutations of those files land
 before or after it and the reported changes are the formatters' own.
 A successful mutation remains successful when formatting fails. Deleted and vanished files are
-not formatter targets. Formatter changes to a file are reported on the mutation result as a
+not formatter targets, including files a mutation queued ahead of formatting deleted or renamed.
+Formatter changes to a file are reported on the mutation result as a
 `Formatted by` line followed by a compact unified diff, within a fixed line and byte budget shared
 by the result; a change too large for the budget keeps only the line. Formatter syntax-error
 failures are input outcomes without a troubleshooting hint. A File

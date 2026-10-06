@@ -13,6 +13,7 @@ import {
   SessionManager,
   type SessionStartEvent,
   type ToolResultEvent,
+  withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
@@ -63,6 +64,7 @@ async function makeTemporaryDirectory(prefix: string): Promise<string> {
 
 async function createFormatterHarness(
   globalSettings: FormatterSettingsDocumentInput,
+  signal?: AbortSignal,
 ): Promise<FormatterHarness> {
   const cwd = await makeTemporaryDirectory("pi-formatter-extension-cwd-");
   const agentDirectory = await makeTemporaryDirectory("pi-formatter-extension-agent-");
@@ -125,7 +127,7 @@ async function createFormatterHarness(
       getScopedModels: () => [],
       isIdle: () => true,
       isProjectTrusted: () => true,
-      getSignal: () => undefined,
+      getSignal: () => signal,
       abort: () => undefined,
       hasPendingMessages: () => false,
       shutdown: () => undefined,
@@ -170,15 +172,41 @@ function toolResultEvent(toolName: string, result: FormatterTestToolResult): Too
 const SLOW_TRIM_SCRIPT =
   "const fs=require('node:fs');const p=process.argv[1];const t=fs.readFileSync(p,'utf8');fs.writeFileSync('formatter-read','');setTimeout(()=>fs.writeFileSync(p,t.replace(/ +$/gm,'')),300)";
 
-async function waitForPath(path: string): Promise<void> {
+/**
+ * A formatter that hangs, while a child it started still writes the file 400 ms later, as the
+ * formatter behind an `npx` wrapper would after the wrapper is killed.
+ */
+const WRAPPER_SCRIPT = [
+  "require('node:child_process').spawn(process.execPath,",
+  "['-e',\"setTimeout(()=>require('node:fs').writeFileSync(process.argv[1],'late\\\\n'),400)\",process.argv[1]],",
+  "{stdio:['ignore','ignore','inherit']});setInterval(()=>{},1000)",
+].join("");
+
+async function waitForPath(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
       await access(path);
       return;
     } catch {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${path}`);
       await delay(10);
     }
   }
+}
+
+/** Pi's edit tool with every write delayed, as on a slow disk, so a batch's edits finish one by one. */
+function slowEditTool(cwd: string) {
+  return createEditTool(cwd, {
+    operations: {
+      access: (path) => access(path, constants.R_OK | constants.W_OK),
+      readFile: (path) => readFile(path),
+      writeFile: async (path, content) => {
+        await delay(100);
+        await writeFile(path, content);
+      },
+    },
+  });
 }
 
 /** The text blocks Pi Formatter appended to a mutation result whose tool reported one block. */
@@ -610,17 +638,7 @@ describe("Pi Formatter extension lifecycle", () => {
     });
     const filePath = resolve(harness.cwd, "values.txt");
     await writeFile(filePath, "a = 1\nb = 2\nc = 3\n");
-    // Every write waits first, as on a slow disk, so the edits of one batch finish one by one.
-    const editTool = createEditTool(harness.cwd, {
-      operations: {
-        access: (path) => access(path, constants.R_OK | constants.W_OK),
-        readFile: (path) => readFile(path),
-        writeFile: async (path, content) => {
-          await delay(100);
-          await writeFile(path, content);
-        },
-      },
-    });
+    const editTool = slowEditTool(harness.cwd);
     const edits = [
       { oldText: "a = 1", newText: "a = 10  " },
       { oldText: "b = 2", newText: "b = 20  " },
@@ -688,6 +706,173 @@ describe("Pi Formatter extension lifecycle", () => {
       content: edited.content,
     });
     expect(editResult).toBeUndefined();
+  });
+
+  test("formats parallel writes to one file once, after the last write", async () => {
+    const harness = await createFormatterHarness({
+      formatter: { formatters: { trim: formatterDefinition(["-e", SLOW_TRIM_SCRIPT, "$FILE"]) } },
+    });
+    const filePath = resolve(harness.cwd, "values.txt");
+    const writeTool = createWriteTool(harness.cwd, {
+      operations: {
+        mkdir: async (directory) => {
+          await mkdir(directory, { recursive: true });
+        },
+        writeFile: async (path, content) => {
+          await delay(100);
+          await writeFile(path, content);
+        },
+      },
+    });
+
+    const results = await Promise.all(
+      ["x  \n", "y  \n", "z  \n"].map(async (content, index) => {
+        const written = await writeTool.execute(`write-${index}`, { path: filePath, content });
+        return harness.runner.emitToolResult({
+          ...toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+          toolCallId: `write-${index}`,
+          content: written.content,
+        });
+      }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe("z\n");
+    expect(results.flatMap((result) => formatterNotes(result))).toEqual([
+      ["Formatted by trim: line 1 changed", "@@ -1 +1 @@", "-z  ", "+z"].join("\n"),
+    ]);
+  });
+
+  test("holds every file of a mutation until all of them are formatted", async () => {
+    const harness = await createFormatterHarness({
+      formatter: { formatters: { trim: formatterDefinition(["-e", SLOW_TRIM_SCRIPT, "$FILE"]) } },
+    });
+    const first = resolve(harness.cwd, "a.txt");
+    const second = resolve(harness.cwd, "b.txt");
+    await Promise.all([writeFile(first, "a = 1  \n"), writeFile(second, "b = 2  \n")]);
+
+    const patched = harness.runner.emitToolResult(
+      toolResultEvent("apply_patch", {
+        input: {},
+        details: {
+          status: "success",
+          result: {
+            changedFiles: [first, second],
+            createdFiles: [],
+            deletedFiles: [],
+            movedFiles: [],
+          },
+        },
+      }),
+    );
+    // The first file is being formatted; the second waits for its formatter.
+    await waitForPath(resolve(harness.cwd, "formatter-read"));
+    const edited = await createEditTool(harness.cwd).execute("edit-1", {
+      path: second,
+      edits: [{ oldText: "b = 2", newText: "b = 20" }],
+    });
+
+    expect(edited.content[0]).toMatchObject({ text: expect.stringContaining("Successfully") });
+    expect(formatterNotes(await patched)).toEqual([
+      [
+        "Formatted by trim: a.txt: line 1 changed",
+        "@@ -1 +1 @@",
+        "-a = 1  ",
+        "+a = 1",
+        "Formatted by trim: b.txt: line 1 changed",
+        "@@ -1 +1 @@",
+        "-b = 2  ",
+        "+b = 2",
+      ].join("\n"),
+    ]);
+    expect(await readFile(second, "utf8")).toBe("b = 20\n");
+  });
+
+  test("skips a file that a mutation queued ahead of formatting deleted", async () => {
+    const workspaceScript = "require('node:fs').writeFileSync('workspace-runs','1')";
+    const harness = await createFormatterHarness({
+      formatter: {
+        formatters: {
+          // Fails on a missing file, which would add a warning with the troubleshooting hint.
+          perFile: formatterDefinition([
+            "-e",
+            "require('node:fs').readFileSync(process.argv[1])",
+            "$FILE",
+          ]),
+          workspace: formatterDefinition(["-e", workspaceScript]),
+        },
+      },
+    });
+    const filePath = resolve(harness.cwd, "doomed.txt");
+    await writeFile(filePath, "doomed\n");
+    // A deletion that holds the file's mutation queue, as a queued rename or patch would.
+    let deleteNow = (): void => undefined;
+    const deletion = withFileMutationQueue(filePath, async () => {
+      await new Promise<void>((release) => {
+        deleteNow = release;
+      });
+      await rm(filePath);
+    });
+
+    const written = harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+    // Formatting has found the file and waits for the queue behind the deletion.
+    await delay(200);
+    deleteNow();
+    await deletion;
+
+    expect(await written).toBeUndefined();
+    await expect(access(resolve(harness.cwd, "workspace-runs"))).rejects.toThrow();
+  });
+
+  test("keeps the file locked until a timed-out formatter's process tree lets go of it", async () => {
+    const harness = await createFormatterHarness({
+      formatter: {
+        timeoutMs: 100,
+        formatters: { wrapper: formatterDefinition(["-e", WRAPPER_SCRIPT, "$FILE"]) },
+      },
+    });
+    const filePath = resolve(harness.cwd, "late.txt");
+    await writeFile(filePath, "early\n");
+
+    const result = await harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+
+    expect(await readFile(filePath, "utf8")).toBe("late\n");
+    expect(lastText(result)).toMatch(
+      /Pi Formatter: wrapper failed .*late\.txt \(timeout after 100ms\)/,
+    );
+    expect(lastText(result)).toContain("Formatted by wrapper: line 1 changed");
+  });
+
+  test("an abort stops the running formatter, waits for its process tree, and skips the rest", async () => {
+    const controller = new AbortController();
+    const harness = await createFormatterHarness(
+      {
+        formatter: {
+          formatters: {
+            wrapper: formatterDefinition(["-e", WRAPPER_SCRIPT, "$FILE"]),
+            after: formatterDefinition(["-e", "require('node:fs').writeFileSync('after-ran','')"]),
+          },
+        },
+      },
+      controller.signal,
+    );
+    const filePath = resolve(harness.cwd, "late.txt");
+    await writeFile(filePath, "early\n");
+
+    const result = harness.runner.emitToolResult(
+      toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+    );
+    await delay(150);
+    controller.abort();
+
+    expect(lastText(await result)).toMatch(
+      /Pi Formatter: wrapper failed .*late\.txt \(spawn error\)/,
+    );
+    expect(await readFile(filePath, "utf8")).toBe("late\n");
+    await expect(access(resolve(harness.cwd, "after-ran"))).rejects.toThrow();
   });
 
   test("falls back to the changed-line summary when the diff exceeds the line limit", async () => {

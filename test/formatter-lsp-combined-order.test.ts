@@ -121,7 +121,7 @@ interface ContentBlockSummary {
 }
 
 interface MutationRun {
-  /** The newest result of the scenario's tool; for `parallel_edit`, the first edit's result. */
+  /** The newest result of the scenario's tool. */
   readonly blocks: readonly ContentBlockSummary[];
   /** Every result of the scenario's tool in the final model request, in tool-call order. */
   readonly results: readonly (readonly ContentBlockSummary[])[];
@@ -307,7 +307,7 @@ async function runMutation(scenario: Scenario, order: readonly string[]): Promis
   };
   await session.bindExtensions({ mode: "rpc" });
   await session.prompt("Mutate it");
-  const blocks = scenario === "parallel_edit" ? results?.[0] : results?.at(-1);
+  const blocks = results?.at(-1);
   if (results === undefined || blocks === undefined) {
     throw new Error("The session never reached its final model request");
   }
