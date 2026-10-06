@@ -8,6 +8,7 @@ import { Value } from "typebox/value";
 import {
   advisorFindingSchema,
   advisorReportFindingSchema,
+  type AdvisorDroppedFindings,
   type AdvisorFinding,
   type AdvisorObserverState,
   type AdvisorReviewCost,
@@ -98,6 +99,10 @@ interface Review extends OperationBase {
   findings?: AdvisorFinding[];
   /** `advisor_report` calls rejected as invalid in this Review. */
   rejectedReports: number;
+  /** Set when rejected reports ended this Review; it then delivers and re-validates nothing. */
+  invalid?: boolean;
+  /** Whether this Review was given findings already withheld once as superseded. */
+  revalidates?: boolean;
   /** The Advisor Session this Review prompted and its native cost before it, once prompted. */
   usage?: { runtime: AgentSessionRuntime; costBefore: number };
 }
@@ -234,14 +239,22 @@ export class AdvisorObserver {
    * during the cooldown. A reset drops them with the rest of the stale review state.
    */
   private deferred: AdvisorFinding[] = [];
-  /** Deferred findings a superseded Review withheld, with how often each was deferred. */
-  private deferrals = new Map<AdvisorFinding, number>();
+  /**
+   * Deferred findings already withheld once as superseded, including Concerns a re-validating
+   * Review then deferred for the cooldown. A Review given any of them is not withheld again.
+   */
+  private withheld = new Set<AdvisorFinding>();
   /** Tool-Call References supplied to the current Advisor Session. */
   private readonly suppliedRefs = new Set<string>();
   /** Nits delivered since the current request began (`beforeTask`). */
   private requestNits = 0;
   /** Findings dropped for this observer's lifetime, by reason. */
-  private readonly dropped = { overNitCap: 0, unsupported: 0, superseded: 0, invalid: 0 };
+  private readonly dropped: AdvisorDroppedFindings = {
+    overNitCap: 0,
+    unsupported: 0,
+    superseded: 0,
+    invalidReviews: 0,
+  };
   private readonly delivered = new Map<string, number>();
   private lastConcern = -3;
   private unsafeEnding = false;
@@ -398,10 +411,17 @@ export class AdvisorObserver {
       this.error = `${message}; status delivery failed: ${String(cause)}`;
     }
   }
+  /**
+   * Rebuild delivery bookkeeping from the selected branch: delivered findings for dedupe, the
+   * Concern cooldown, and the Nits delivered since the latest user request, plus Nits still
+   * queued for delivery.
+   */
   private restoreDedupe(): void {
     this.delivered.clear();
     let turnsSinceConcern: number | undefined;
+    let requestNits = 0;
     for (const entry of this.observed.sessionManager.getBranch()) {
+      if (entry.type === "message" && entry.message.role === "user") requestNits = 0;
       if (
         entry.type === "message" &&
         entry.message.role === "assistant" &&
@@ -419,8 +439,12 @@ export class AdvisorObserver {
           Math.max(this.delivered.get(key) ?? 0, severityRank[entry.details.severity]),
         );
         if (entry.details.severity === "concern") turnsSinceConcern = 0;
+        if (entry.details.severity === "nit") requestNits++;
       }
     }
+    this.requestNits =
+      requestNits +
+      [...this.pendingFindings.keys()].filter(({ severity }) => severity === "nit").length;
     if (turnsSinceConcern !== undefined && this.observed.isStreaming)
       turnsSinceConcern = Math.max(0, turnsSinceConcern - 1);
     this.lastConcern = this.completed - (turnsSinceConcern ?? 3);
@@ -631,7 +655,8 @@ export class AdvisorObserver {
           if (active.findings) throw new Error("Advisor already reported for this Review");
           if (active.rejectedReports >= reportAttempts) {
             active.findings = [];
-            this.dropped.invalid++;
+            active.invalid = true;
+            this.dropped.invalidReviews++;
             return {
               content: [
                 {
@@ -763,6 +788,7 @@ export class AdvisorObserver {
     const { runtime, stable } = prepared;
     const before = runtime.session.messages.length;
     review.usage = { runtime, costBefore: runtime.session.getSessionStats().cost };
+    review.revalidates = this.deferred.some((finding) => this.withheld.has(finding));
     const { note, images, json } = this.pendingEvidence(runtime, snapshot, stable, {
       deferredFindings: this.deferred.length
         ? {
@@ -794,7 +820,8 @@ export class AdvisorObserver {
       this.suppliedBoundary = review.boundary;
       if (!review.findings) throw new Error("Advisor Review did not call advisor_report");
       this.reviewed = through;
-      await this.deliver(review.findings, review, through);
+      // A Review ended by invalid reports judged nothing, so withheld findings wait for the next.
+      if (!review.invalid) await this.deliver(review.findings, review, through);
     } finally {
       review.cancellation.signal.removeEventListener("abort", abort);
     }
@@ -1032,31 +1059,32 @@ export class AdvisorObserver {
     });
   }
 
-  /**
-   * How often the finding a Review reported again was already withheld as superseded: the
-   * deferred finding with the same message, or with the same severity and a shared Tool-Call
-   * Reference or quote, since a re-validating Review may reword it.
-   */
-  private deferralsOf(finding: AdvisorFinding): number {
-    const refs = new Set(finding.evidence?.refs);
-    for (const [deferred, count] of this.deferrals) {
-      if (normalized(deferred.message) === normalized(finding.message)) return count;
-      if (deferred.severity !== finding.severity) continue;
-      if (deferred.evidence?.refs?.some((ref) => refs.has(ref))) return count;
-      if (deferred.evidence?.quote && deferred.evidence.quote === finding.evidence?.quote)
-        return count;
+  /** Defer findings for the next Review to re-validate, marking them as withheld once. */
+  private withhold(findings: readonly AdvisorFinding[]): void {
+    for (const finding of this.capNits(findings)) {
+      this.deferred.push(finding);
+      this.withheld.add(finding);
     }
-    return 0;
+    this.changed();
+  }
+
+  /** Keep a superseded re-validating Review's Concerns and Blockers; drop and count its Nits. */
+  private dropSupersededNits(findings: readonly AdvisorFinding[]): AdvisorFinding[] {
+    return findings.filter((finding) => {
+      if (finding.severity !== "nit") return true;
+      this.dropped.superseded++;
+      return false;
+    });
   }
 
   /**
    * Deliver a Review's findings unless observed turns completed after its evidence cutoff
-   * (`through`): those Superseded Findings may already be fixed or explained, so they are
-   * deferred for the next Review, which every cadence starts by request completion at the
-   * latest, to re-validate against the newer turns without another model call. A finding is
-   * deferred so at most once: if its re-validating Review is superseded too, its Concerns and
-   * Blockers are delivered, having been re-checked against newer evidence, and its Nits are
-   * dropped, so findings arriving faster than Reviews never starve.
+   * (`through`), before or during delivery: those Superseded Findings may already be fixed or
+   * explained, so they are deferred for the next Review, which every cadence starts by request
+   * completion at the latest, to re-validate against the newer turns without another model
+   * call. Findings are withheld so at most once: a superseded Review that was itself given
+   * withheld findings delivers its Concerns and Blockers, which it checked against newer
+   * evidence, and drops its Nits, so findings arriving faster than Reviews never starve.
    */
   private async deliver(
     findings: readonly AdvisorFinding[],
@@ -1067,32 +1095,42 @@ export class AdvisorObserver {
       const deliveredRank = this.delivered.get(normalized(finding.message)) ?? 0;
       return severityRank[finding.severity] > deliveredRank;
     });
-    let candidates = fresh;
-    const withheld = new Map<AdvisorFinding, number>();
-    if (this.completed > through) {
-      candidates = [];
-      for (const finding of fresh) {
-        const deferrals = this.deferralsOf(finding);
-        if (!deferrals) withheld.set(finding, 1);
-        else if (finding.severity !== "nit") candidates.push(finding);
-        else this.dropped.superseded++;
-      }
+    const revalidates = Boolean(review.revalidates);
+    let superseded = this.completed > through;
+    this.deferred = [];
+    this.withheld = new Set();
+    if (superseded && !revalidates) {
+      this.withhold(fresh);
+      return;
     }
+    const candidates = superseded ? this.dropSupersededNits(fresh) : fresh;
     const coolingDown = this.completed - this.lastConcern < 3;
-    const cooled = coolingDown
-      ? candidates.filter((finding) => finding.severity === "concern")
-      : [];
-    const deliverable = this.capNits(
+    for (const finding of candidates) {
+      if (!coolingDown || finding.severity !== "concern") continue;
+      this.deferred.push(finding);
+      // A cooled Concern from a re-validating Review keeps its once-withheld mark.
+      if (revalidates) this.withheld.add(finding);
+    }
+    let pending = this.capNits(
       coolingDown ? candidates.filter((finding) => finding.severity !== "concern") : candidates,
     );
-    const kept = new Set(this.capNits([...withheld.keys()]));
-    this.deferrals = new Map([...withheld].filter(([finding]) => kept.has(finding)));
-    this.deferred = [...this.deferrals.keys(), ...cooled];
     this.changed();
-    this.requestNits += deliverable.filter((finding) => finding.severity === "nit").length;
-    if (!coolingDown && deliverable.some((finding) => finding.severity === "concern"))
-      this.lastConcern = this.completed;
-    for (const finding of deliverable) {
+    while (pending.length) {
+      // Turns can complete while earlier findings are being delivered.
+      if (!superseded && this.completed > through) {
+        superseded = true;
+        if (!revalidates) {
+          this.withhold(pending);
+          return;
+        }
+        pending = this.dropSupersededNits(pending);
+        continue;
+      }
+      const [finding, ...rest] = pending;
+      if (!finding) break;
+      pending = rest;
+      if (finding.severity === "nit") this.requestNits++;
+      if (!coolingDown && finding.severity === "concern") this.lastConcern = this.completed;
       const key = normalized(finding.message);
       this.delivered.set(key, severityRank[finding.severity]);
       const running = this.observed.isStreaming;
@@ -1207,7 +1245,7 @@ export class AdvisorObserver {
   }
   /**
    * After the final drain, stop a Review still under way. A compaction left running keeps its
-   * own deadline, so the Advisor Session and deferred Concerns survive it.
+   * own deadline, so the Advisor Session and deferred findings survive it.
    */
   private stopUnfinishedReview(): void {
     if (this.running && this.completed > this.reviewed) this.reset();
@@ -1259,7 +1297,7 @@ export class AdvisorObserver {
     this.dueThrough = 0;
     this.error = undefined;
     this.deferred = [];
-    this.deferrals.clear();
+    this.withheld.clear();
     this.pendingCorrection = false;
     this.lastConcern = -3;
     this.restoreDedupe();

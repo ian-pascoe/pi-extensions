@@ -50,6 +50,7 @@ it.each([false, true])(
           enabled: true,
           includeSubagents: true,
           catchUpThreshold: "off",
+          maxNitsPerRequest: 1,
           allowedTools: [
             "read",
             "grep",
@@ -135,19 +136,29 @@ it.each([false, true])(
             call("subagent_wait", { agent_id: "branch.nested", timeout_ms: 10000 });
         } else if (role === "review-child") {
           childReviews++;
+          const nit = (message: string) => ({
+            severity: "nit",
+            message,
+            evidence: { quote: "Done" },
+          });
           call(
             "advisor_report",
-            childReviews === 1
-              ? {
-                  findings: [
-                    {
-                      severity: "blocker",
-                      message: "Verify the result before completing.",
-                      evidence: { quote: "Done" },
-                    },
-                  ],
-                }
-              : { severity: "none" },
+            // Two Nits in one child task exceed maxNitsPerRequest; the next task gets its own.
+            childReviews === 3
+              ? { findings: [nit("First child Nit."), nit("Second child Nit.")] }
+              : childReviews === 4
+                ? { findings: [nit("Next task Nit.")] }
+                : childReviews === 1
+                  ? {
+                      findings: [
+                        {
+                          severity: "blocker",
+                          message: "Verify the result before completing.",
+                          evidence: { quote: "Done" },
+                        },
+                      ],
+                    }
+                  : { severity: "none" },
           );
         } else if (role === "review-main") call("advisor_report", { severity: "none" });
         const stream = createAssistantMessageEventStream();
@@ -259,12 +270,30 @@ it.each([false, true])(
     await runtime.session.prompt("Continue the worker created while disabled.");
     expect(childCalls).toBe(5);
     expect(childReviews).toBe(3);
+    // Minimal's beginTurn starts each child task's Nit allowance.
+    mainCalls = 0;
+    await runtime.session.prompt("Continue that worker once more.");
+    expect(childCalls).toBe(6);
+    expect(childReviews).toBe(4);
+    const childNits = runtime.session.sessionManager
+      .getBranch()
+      .flatMap((entry) =>
+        entry.type === "custom" &&
+        entry.customType === "pi-advisor-child" &&
+        JSON.stringify(entry.data).includes("Nit.")
+          ? [JSON.stringify(entry.data)]
+          : [],
+      );
+    expect(childNits).toEqual([
+      expect.stringContaining("First child Nit."),
+      expect.stringContaining("Next task Nit."),
+    ]);
 
     await runtime.session.prompt("/advisor set includeSubagents false");
     mainCalls = 0;
     await runtime.session.prompt("Continue with main-only coverage.");
-    expect(childCalls).toBe(6);
-    expect(childReviews).toBe(3);
+    expect(childCalls).toBe(7);
+    expect(childReviews).toBe(4);
     await runtime.session.prompt("/advisor status");
     expect(
       runtime.session.sessionManager
@@ -296,7 +325,7 @@ it.each([false, true])(
         ]),
       },
     });
-    expect(childReviews).toBeGreaterThanOrEqual(5);
+    expect(childReviews).toBeGreaterThanOrEqual(6);
   },
   30_000,
 );

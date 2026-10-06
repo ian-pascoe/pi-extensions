@@ -125,7 +125,7 @@ export interface LongSessionOptions {
   /** Error message for the first observed response, such as a retryable provider error. */
   firstError?: string;
   /** Delay the response to a Review request, such as until the observed agent moves on. */
-  hold?: (review: number) => Promise<void> | undefined;
+  hold?: (review: number, request: PrivateRequest) => Promise<void> | undefined;
 }
 
 /**
@@ -198,7 +198,7 @@ export function longSessionStream(
             },
           ];
           message.stopReason = "toolUse";
-          held = hold?.(reviews);
+          held = hold?.(reviews, recorded);
         }
       } else if (!context.tools?.length) {
         summaryCount++;

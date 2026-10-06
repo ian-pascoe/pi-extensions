@@ -10,6 +10,7 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
   advisorFindingSchema,
+  advisorDroppedFindingsSchema,
   advisorReviewCostSchema,
   advisorSeveritySchema,
   advisorStateSchema,
@@ -54,12 +55,8 @@ const statusSchema = Type.Object({
   reviewCost: Type.Optional(Type.Union([advisorReviewCostSchema, Type.Null()])),
   deferredFindings: Type.Optional(Type.Number()),
   droppedFindings: Type.Optional(
-    Type.Object({
-      overNitCap: Type.Number(),
-      unsupported: Type.Number(),
-      superseded: Type.Optional(Type.Number()),
-      invalid: Type.Optional(Type.Number()),
-    }),
+    // Entries recorded before a reason existed omit its count.
+    Type.Partial(advisorDroppedFindingsSchema),
   ),
   unavailableTools: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
   children: Type.Optional(
@@ -233,8 +230,8 @@ function findingCounts(entry: AdvisorStatusEntry): string[] {
     dropped?.superseded
       ? `${plural(dropped.superseded, "Nit", "Nits")} superseded again dropped`
       : "",
-    dropped?.invalid
-      ? `${plural(dropped.invalid, "Review", "Reviews")} ended by invalid reports`
+    dropped?.invalidReviews
+      ? `${plural(dropped.invalidReviews, "Review", "Reviews")} ended by invalid reports`
       : "",
   ].filter(Boolean);
 }

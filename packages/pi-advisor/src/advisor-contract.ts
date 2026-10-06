@@ -71,6 +71,19 @@ export const advisorReportFindingSchema = Type.Object(
   { additionalProperties: false },
 );
 
+/**
+ * Findings an Advisor dropped since it started, by reason: Nits over `maxNitsPerRequest`,
+ * findings citing no or unknown evidence, Nits of a re-validating Review that was superseded
+ * again, and Reviews ended without findings by invalid reports.
+ */
+export const advisorDroppedFindingsSchema = Type.Object({
+  overNitCap: Type.Number(),
+  unsupported: Type.Number(),
+  superseded: Type.Number(),
+  invalidReviews: Type.Number(),
+});
+export type AdvisorDroppedFindings = Static<typeof advisorDroppedFindingsSchema>;
+
 /** Observer lifecycle state reported by its `status`. */
 export const advisorObserverStateSchema = Type.Union([
   Type.Literal("disabled"),

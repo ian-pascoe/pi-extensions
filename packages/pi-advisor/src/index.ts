@@ -377,7 +377,7 @@ export default function advisor(pi: ExtensionAPI): void {
         overNitCap: 0,
         unsupported: 0,
         superseded: 0,
-        invalid: 0,
+        invalidReviews: 0,
       },
       unavailableTools: live?.unavailableTools ?? null,
       children: [...children.values()].map((child) => ({

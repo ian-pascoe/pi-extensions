@@ -181,7 +181,7 @@ describe("Advisor status", () => {
     const text = status({
       ...snapshot,
       deferredFindings: 2,
-      droppedFindings: { overNitCap: 1, unsupported: 3, superseded: 2, invalid: 1 },
+      droppedFindings: { overNitCap: 1, unsupported: 3, superseded: 2, invalidReviews: 1 },
     });
     for (const count of [
       "2 findings awaiting re-validation",
