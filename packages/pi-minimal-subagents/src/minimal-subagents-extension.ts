@@ -17,6 +17,7 @@ import {
   type SessionShutdownEvent,
   type SessionStartEvent,
   type SessionTreeEvent,
+  type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
 import {
@@ -182,9 +183,12 @@ function rootCallerSnapshot(pi: ExtensionAPI, context: ExtensionContext): Caller
 function createRootConversationEndpoint(
   pi: ExtensionAPI,
   context: ExtensionContext,
+  onSteer: () => void,
 ): RootConversationEndpoint {
   return {
     async queueCoordinatorMessage(message) {
+      // A running root takes the message as a clearable steer; an idle root starts a turn with it.
+      if (!context.isIdle()) onSteer();
       pi.sendMessage(
         {
           customType: message.customType,
@@ -517,6 +521,7 @@ export class MinimalSubagentsLifecycleController {
   private uiController: MinimalSubagentsUiController | undefined;
   private statusPanelController: MinimalSubagentsStatusPanelController | undefined;
   private viewerShortcut: ReturnType<typeof installViewerShortcut> | undefined;
+  private unwatchRootTurnEnds: (() => void) | undefined;
   private accessSession: ActiveSubagentAccessSession | undefined;
   private preparedFork:
     | { sourceSessionFile: string; selectedBranchSnapshot: RegistrySnapshot }
@@ -528,7 +533,10 @@ export class MinimalSubagentsLifecycleController {
     private readonly effects: MinimalSubagentsLifecycleEffects,
   ) {}
 
-  /** Register stable tools, renderers, and the six Pi lifecycle event handlers. */
+  /**
+   * Register stable tools, renderers, and the six static Pi lifecycle event handlers. `turn_end` is
+   * registered only while a result waits in the root's steer queue (`watchRootTurnEnds`).
+   */
   register(): void {
     const rootTools = createCoordinatorToolDefinitions({
       coordinator: this.coordinatorOperations,
@@ -552,6 +560,7 @@ export class MinimalSubagentsLifecycleController {
     this.pi.on("session_before_fork", (event, context) => this.prepareSessionFork(event, context));
     this.pi.on("session_tree", (event, context) => this.restoreSessionTree(event, context));
     this.pi.on("message_end", (event, context) => this.reconcileMessageDelivery(event, context));
+    this.pi.on("agent_start", () => this.deliverDiscardedRootResults());
     this.pi.on("session_shutdown", (event, context) => this.shutdownSession(event, context));
   }
 
@@ -645,7 +654,7 @@ export class MinimalSubagentsLifecycleController {
     });
     activeCoordinator = new MinimalSubagentsCoordinator({
       sessions: sessionFactory,
-      root: createRootConversationEndpoint(this.pi, context),
+      root: createRootConversationEndpoint(this.pi, context, () => this.watchRootTurnEnds()),
       maxSubagentDepth: minimalSubagentsConfig.maxSubagentDepth,
       toolsets: minimalSubagentsConfig.toolsets,
       modelRoles: minimalSubagentsConfig.modelRoles,
@@ -926,16 +935,63 @@ export class MinimalSubagentsLifecycleController {
     _context: ExtensionContext,
   ): Promise<void> {
     if (!this.coordinator) return;
+    this.coordinator.recordRootMessageEnd();
     if (event.message.role === "toolResult" || event.message.role === "custom") {
       await this.coordinator.reconcileDeliveries();
       this.uiController?.refresh();
     }
   }
 
+  /**
+   * Watch root turn boundaries while a result waits in the root's steer queue. Pi builds a boundary
+   * preview for every `turn_end` while any handler listens, so the handler is removed again once no
+   * queued result remains.
+   */
+  private watchRootTurnEnds(): void {
+    this.unwatchRootTurnEnds ??= this.pi.on("turn_end", (event, context) =>
+      this.requeueDiscardedRootResults(event, context),
+    );
+  }
+
+  private stopWatchingRootTurnEnds(): void {
+    this.unwatchRootTurnEnds?.();
+    this.unwatchRootTurnEnds = undefined;
+  }
+
+  /**
+   * Pi gives extensions no queue-cleared event, so Esc's discarded steers are found here: the turn
+   * boundary's pending-message preview is empty. Returns nothing, so the transcript, system prompt,
+   * and tools are unchanged.
+   *
+   * A queue clear without an abort (dequeue, RPC `clear_queue`) leaves the run going, so released
+   * results are steered back at once and Pi's poll after this boundary takes them in the same run.
+   * Esc aborts the run, so its released results wait for the root's next run.
+   */
+  private requeueDiscardedRootResults(event: TurnEndEvent, context: ExtensionContext): void {
+    if (!this.coordinator) {
+      this.stopWatchingRootTurnEnds();
+      return;
+    }
+    if (event.context.pendingMessages.length === 0) {
+      this.coordinator.requeueDiscardedRootResults();
+      if (context.signal && !context.signal.aborted) {
+        this.coordinator.deliverDiscardedRootResults();
+      }
+      this.uiController?.refresh();
+    }
+    if (!this.coordinator.hasQueuedRootHandOffs()) this.stopWatchingRootTurnEnds();
+  }
+
+  /** Re-send discarded results into a root run that just started; recovery never starts one. */
+  private deliverDiscardedRootResults(): void {
+    this.coordinator?.deliverDiscardedRootResults();
+  }
+
   private async shutdownSession(
     event: SessionShutdownEvent,
     context: ExtensionContext,
   ): Promise<void> {
+    this.stopWatchingRootTurnEnds();
     this.viewerShortcut?.dispose();
     this.viewerShortcut = undefined;
     this.statusPanelController?.dispose();
