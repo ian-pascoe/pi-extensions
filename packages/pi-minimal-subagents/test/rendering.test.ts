@@ -281,7 +281,7 @@ describe("minimal subagents collapsed previews", () => {
           event: "timeout",
           timeout_ms: 10,
           state: "running",
-          recent_activity: ["tool call read"],
+          recent_activity_labels: ["tool call read"],
         },
       ],
       ["subagent_status", { parent_id: "root", agents: [{ agent_id: "worker", state: "idle" }] }],
@@ -422,7 +422,7 @@ describe("minimal subagents rendering", () => {
           state: "running",
           latest_activity_at: "2026-01-01T00:00:00.000Z",
           total_tokens: 1_234,
-          recent_activity: ["tool call read", "tool result read"],
+          recent_activity_labels: ["tool call read", "tool result read"],
         },
         expected: "timed out",
       },
@@ -533,6 +533,46 @@ describe("minimal subagents rendering", () => {
     expect(lines).toContain("1 failed");
     expect(lines).toContain("child.leaf");
     expect(lines).toContain("disk full");
+  });
+
+  it("renders compact and pre-compact timeout results", () => {
+    const base = { event: "timeout", agent_id: "child", turn_id: "child:turn-1", timeout_ms: 10 };
+    const render = (
+      details: Parameters<typeof renderCoordinatorToolResult>[1]["details"],
+      expanded: boolean,
+    ) =>
+      renderLines(
+        renderCoordinatorToolResult(
+          "subagent_wait",
+          { content: [{ type: "text", text: "timeout" }], details },
+          { expanded, isPartial: false },
+          plainTheme,
+          { agent_id: "child" },
+        ),
+      );
+    const compact = {
+      ...base,
+      state: "running",
+      latest_activity_at: "2026-01-01T00:00:00.000Z",
+      total_tokens: 1_234,
+      recent_activity_labels: ["tool call read", "tool result read"],
+    };
+    expect(render(compact, false)).toContain("tool call read \u00b7 tool result read");
+    const expanded = render(compact, true);
+    expect(expanded).toContain("State: running");
+    expect(expanded).toContain("Latest activity: 2026-01-01T00:00:00.000Z");
+    expect(expanded).toContain("tool result read");
+
+    const legacy = {
+      ...base,
+      agent: {
+        agent_id: "child",
+        state: "running",
+        recent_activity: [{ label: "tool call grep", content: "{}", truncated: false }],
+      },
+    };
+    expect(render(legacy, false)).toContain("tool call grep");
+    expect(render(legacy, true)).toContain("State: running");
   });
 
   it("renders legacy details and falls back to historical text for malformed partial errors", () => {

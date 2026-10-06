@@ -19,7 +19,7 @@ import {
   type CoordinatorToolDefinitionOptions,
   type CoordinatorToolOperations,
 } from "../src/minimal-subagents-tools.js";
-import type { ActiveTurnProgress } from "../src/minimal-subagents-types.js";
+import type { ActiveTurnProgress, WaitTimeoutResult } from "../src/minimal-subagents-types.js";
 
 type RecordingWait = ReturnType<typeof vi.fn<CoordinatorToolOperations["wait"]>>;
 
@@ -224,6 +224,37 @@ describe("minimal subagents coordinator tools", () => {
     // Script callers receive the declared object shape.
     expect(result.structuredContent).toEqual(result.details);
     expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
+  });
+
+  it("returns a timeout in its declared compact output shape", async () => {
+    const options = toolOptions("root", true);
+    const timeout = {
+      event: "timeout",
+      agent_id: "child",
+      turn_id: "child:turn-1",
+      timeout_ms: 50,
+      state: "running",
+      elapsed_ms: 60,
+      latest_activity_at: "2026-01-01T00:00:00.000Z",
+      total_tokens: 15,
+      recent_activity_labels: ["tool call read"],
+    } satisfies WaitTimeoutResult;
+    options.recordedWait.mockResolvedValue(timeout);
+    const result = await requireTool(options, "subagent_wait").execute(
+      "wait-call",
+      { agent_id: "child", timeout_ms: 50 },
+      undefined,
+      undefined,
+      await createToolExecutionContext(),
+    );
+    expect(result.structuredContent).toEqual({
+      ...timeout,
+      source_agent_id: "child",
+      source_turn_id: "child:turn-1",
+    });
+    expect(Value.Check(CoordinatorToolOutputSchemas.subagent_wait, result.structuredContent)).toBe(
+      true,
+    );
   });
 
   it("reports an already-delivered result in one line with its declared output shape", async () => {

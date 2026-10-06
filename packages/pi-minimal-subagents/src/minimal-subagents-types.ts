@@ -124,7 +124,7 @@ export interface WaitTimeoutResult {
   /** Total tokens the child has used, when usage is known. */
   total_tokens?: number;
   /** Labels of the child's last few Recent Activity items, oldest first. */
-  recent_activity: string[];
+  recent_activity_labels: string[];
 }
 
 /** Reports one message, terminal turn, or timeout returned by subagent_wait. */

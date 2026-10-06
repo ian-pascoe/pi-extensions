@@ -78,6 +78,8 @@ const FRIENDLY_AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const RESERVED_AGENT_IDS = new Set(["root", "parent"]);
 /** Recent Activity labels a timed-out wait reports. */
 const WAIT_TIMEOUT_ACTIVITY_LIMIT = 3;
+/** Characters kept of each label so a timed-out wait stays bounded whatever a tool is named. */
+const WAIT_TIMEOUT_LABEL_MAX_LENGTH = 80;
 const RECENT_MESSAGE_LIMIT = 20;
 const DEFAULT_AUTOMATIC_DELIVERY_GRACE_MS = 1_000;
 
@@ -1894,11 +1896,12 @@ export class MinimalSubagentsCoordinator {
   private latestActivityAt(agent: PersistedAgent, runtime: ChildAgentRuntime | undefined): string {
     const persisted = agent.latest_activity_at ?? agent.created_at;
     if (!agent.active_turn_id || !runtime) return persisted;
-    const latestMessage = runtime.snapshotActivityMessages().at(-1)?.timestamp;
-    if (latestMessage === undefined || !Number.isFinite(latestMessage)) return persisted;
-    return latestMessage > Date.parse(persisted)
-      ? new Date(latestMessage).toISOString()
-      : persisted;
+    const persistedMs = Date.parse(persisted);
+    let latestMs = persistedMs;
+    for (const { timestamp } of runtime.snapshotActivityMessages()) {
+      if (Number.isFinite(timestamp) && timestamp > latestMs) latestMs = timestamp;
+    }
+    return latestMs > persistedMs ? new Date(latestMs).toISOString() : persisted;
   }
 
   /** The compact progress a timed-out wait reports; `subagent_status` has the full detail. */
@@ -1915,9 +1918,9 @@ export class MinimalSubagentsCoordinator {
       elapsed_ms: summary.elapsed_ms,
       latest_activity_at: summary.latest_activity_at,
       total_tokens: usage?.totalTokens,
-      recent_activity: buildRecentAgentActivity(messages)
+      recent_activity_labels: buildRecentAgentActivity(messages)
         .slice(-WAIT_TIMEOUT_ACTIVITY_LIMIT)
-        .map((activity) => activity.label),
+        .map((activity) => activity.label.slice(0, WAIT_TIMEOUT_LABEL_MAX_LENGTH)),
     };
   }
 

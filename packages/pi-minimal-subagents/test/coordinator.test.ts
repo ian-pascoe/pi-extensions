@@ -1062,6 +1062,12 @@ describe("minimal subagents coordinator", () => {
       toolResultAt(Date.parse("2026-01-01T00:07:00.000Z")),
     ]);
     expect(latest()).toBe("2026-01-01T00:07:00.000Z");
+    // A later message stamped earlier (such as a queued coordination message) never moves it back.
+    runtime.snapshotActivityMessages.mockReturnValue([
+      toolResultAt(Date.parse("2026-01-01T00:07:00.000Z")),
+      toolResultAt(Date.parse("2026-01-01T00:06:00.000Z")),
+    ]);
+    expect(latest()).toBe("2026-01-01T00:07:00.000Z");
     const timedOut = await coordinator.wait("root", "worker", 1);
     expect(timedOut).toMatchObject({ latest_activity_at: "2026-01-01T00:07:00.000Z" });
     finishPrompt({ status: "completed", output: "done" });
@@ -1069,7 +1075,7 @@ describe("minimal subagents coordinator", () => {
     await coordinator.shutdown();
   });
 
-  it("returns a compact bounded status when one waiter times out without cancelling", async () => {
+  it("returns a compact bounded progress snapshot when one waiter times out without cancelling", async () => {
     let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const runtime = childRuntime();
     runtime.runPrompt.mockImplementation(
@@ -1109,9 +1115,23 @@ describe("minimal subagents coordinator", () => {
       elapsed_ms: 0,
       latest_activity_at: "2026-01-01T00:00:00.000Z",
       total_tokens: 15,
-      recent_activity: ["tool result tool_b", "tool result tool_c", "tool result tool_d"],
+      recent_activity_labels: ["tool result tool_b", "tool result tool_c", "tool result tool_d"],
     });
     expect(JSON.stringify(timedOut).length).toBeLessThan(1_024);
+
+    // A tool with a very long name cannot push the snapshot past its bound.
+    runtime.snapshotActivityMessages.mockReturnValue([
+      {
+        role: "toolResult" as const,
+        toolCallId: "call-long",
+        toolName: "t".repeat(2_000),
+        content: [{ type: "text" as const, text: "x" }],
+        isError: false,
+        timestamp: 0,
+      },
+    ]);
+    const longLabel = await coordinator.wait("root", "worker", 1);
+    expect(JSON.stringify(longLabel).length).toBeLessThan(1_024);
     expect(runtime.abort).not.toHaveBeenCalled();
     finishPrompt({ status: "completed", output: "completed after timeout" });
     await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
@@ -1866,6 +1886,9 @@ describe("minimal subagents coordinator", () => {
     expect(timedOut).toMatchObject({
       event: "timeout",
       state: "running",
+    });
+    expect(again.coordinator.status("root", "worker")).toMatchObject({
+      agent: { latest_turn: { turn_id: started.turn_id, status: "interrupted" } },
     });
     expect(timedOut.turn_id).not.toBe(first.turn_id);
     expect(timedOut.turn_id).not.toBe(started.turn_id);

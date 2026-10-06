@@ -585,6 +585,16 @@ function renderWaitProgress(
 /** Shown instead of the output of a result already delivered to the parent automatically. */
 const ALREADY_DELIVERED_TEXT = "Already delivered automatically; wait with turn_id to reread it.";
 
+/** The activity labels of a timeout result, including pre-compact results that carried the full status. */
+function timeoutActivityLabels(
+  details: Extract<WaitRenderDetails, { event: "timeout" }>,
+): readonly string[] {
+  return (
+    details.recent_activity_labels ??
+    latestProgressActivity(details.agent?.recent_activity ?? []).map((entry) => entry.label)
+  );
+}
+
 /** The collapsed body of a settled wait: what the child said, or why it stopped. */
 function collapsedWaitBody(
   details: WaitRenderDetails,
@@ -593,7 +603,7 @@ function collapsedWaitBody(
 ): Component | undefined {
   if (details.event === "message") return collapsedTextPreview(details.message, theme);
   if (details.event === "timeout") {
-    const labels = details.recent_activity ?? [];
+    const labels = timeoutActivityLabels(details);
     return labels.length > 0
       ? collapsedTextPreview(theme.fg("dim", labels.join(" \u00b7 ")), theme)
       : undefined;
@@ -662,13 +672,15 @@ function renderWaitResult(
     return container;
   }
   if (details.event === "timeout") {
-    container.addChild(renderLabelValue(theme, "State", details.state ?? "unknown"));
+    container.addChild(
+      renderLabelValue(theme, "State", details.state ?? details.agent?.state ?? "unknown"),
+    );
     if (details.latest_activity_at) {
       container.addChild(renderLabelValue(theme, "Latest activity", details.latest_activity_at));
     }
-    if (details.recent_activity && details.recent_activity.length > 0) {
-      appendTextSection(container, theme, "Recent activity", details.recent_activity.join("\n"));
-    }
+    const labels = timeoutActivityLabels(details);
+    if (labels.length > 0)
+      appendTextSection(container, theme, "Recent activity", labels.join("\n"));
     return container;
   }
   if (details.messages && details.messages.length > 0) {
