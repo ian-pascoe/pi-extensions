@@ -81,19 +81,19 @@ afterEach(async () => {
 type ToolName = "edit" | "lsp_apply";
 type ScriptedResponse = (context: Context) => AssistantMessage;
 
-interface ContentBlockText {
+interface ContentBlockSummary {
   readonly type: string;
   readonly text: string;
 }
 
 interface MutationRun {
-  readonly blocks: readonly ContentBlockText[];
+  readonly blocks: readonly ContentBlockSummary[];
   readonly file: string;
   readonly filePath: string;
 }
 
 /** Every content block of the newest tool result the model received for a tool; `text` is empty for non-text blocks. */
-function resultBlocks(context: Context, toolName: string): readonly ContentBlockText[] {
+function resultBlocks(context: Context, toolName: string): readonly ContentBlockSummary[] {
   const message = context.messages.findLast(
     (candidate) => candidate.role === "toolResult" && candidate.toolName === toolName,
   );
@@ -230,7 +230,7 @@ async function runMutation(toolName: ToolName, order: readonly string[]): Promis
             }),
           done,
         ];
-  let blocks: readonly ContentBlockText[] | undefined;
+  let blocks: readonly ContentBlockSummary[] | undefined;
   session.agent.streamFunction = (currentModel, context) => {
     const scripted = responses.shift();
     if (scripted === undefined) throw new Error("Unexpected model request");
