@@ -146,6 +146,7 @@ const WaitTurnDetailsSchema = Type.Object({
   error: Type.Optional(Type.String()),
   elapsed_ms: Type.Optional(Type.Number()),
   usage: Type.Optional(RenderUsageSchema),
+  already_delivered: Type.Optional(Type.Boolean()),
   messages: Type.Optional(Type.Array(WaitMessageDetailsSchema)),
 });
 const WaitTimeoutDetailsSchema = Type.Object({
@@ -297,6 +298,13 @@ export const CoordinatorToolOutputSchemas = {
     Type.Object({
       ...CoordinatorTurnOutputSchema.properties,
       event: Type.Literal("turn"),
+      messages: Type.Optional(Type.Array(CoordinatorWaitMessageOutputSchema)),
+      ...CoordinatorWaitSourceOutputSchema,
+    }),
+    Type.Object({
+      ...Type.Pick(CoordinatorTurnOutputSchema, ["agent_id", "turn_id", "status"]).properties,
+      event: Type.Literal("turn"),
+      already_delivered: Type.Literal(true),
       messages: Type.Optional(Type.Array(CoordinatorWaitMessageOutputSchema)),
       ...CoordinatorWaitSourceOutputSchema,
     }),

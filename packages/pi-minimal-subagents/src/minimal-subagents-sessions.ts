@@ -503,8 +503,13 @@ export function findDeliveryEvidence(
           ))
       );
     }
-    // A message or timeout wait result never carried the turn's terminal result.
-    if (waitToolResult && (details.event === "message" || details.event === "timeout"))
+    // A message, timeout, or already-delivered wait result never carried the turn's terminal result.
+    if (
+      waitToolResult &&
+      (details.event === "message" ||
+        details.event === "timeout" ||
+        details.already_delivered === true)
+    )
       return false;
     return details.source_agent_id === sourceAgentId && details.source_turn_id === sourceTurnId;
   });

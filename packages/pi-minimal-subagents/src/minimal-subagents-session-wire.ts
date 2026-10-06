@@ -36,6 +36,7 @@ const DeliveryEvidenceMessageSchema = Type.Object({
 /** Parses durable custom-message and wait-tool Delivery Evidence details. */
 export const DeliveryEvidenceDetailsSchema = Type.Object({
   event: Type.Optional(Type.String()),
+  already_delivered: Type.Optional(Type.Boolean()),
   source_agent_id: Type.String(),
   source_turn_id: Type.String(),
   delivery_id: Type.Optional(Type.String()),

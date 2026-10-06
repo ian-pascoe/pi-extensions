@@ -582,6 +582,9 @@ function renderWaitProgress(
   return container;
 }
 
+/** Shown instead of the output of a result already delivered to the parent automatically. */
+const ALREADY_DELIVERED_TEXT = "Already delivered automatically; wait with turn_id to reread it.";
+
 /** The collapsed body of a settled wait: what the child said, or why it stopped. */
 function collapsedWaitBody(
   details: WaitRenderDetails,
@@ -592,6 +595,9 @@ function collapsedWaitBody(
   if (details.event === "timeout") {
     const activity = latestProgressActivity(details.agent.recent_activity ?? []);
     return activity.length > 0 ? new ActivityLines(activity, theme) : undefined;
+  }
+  if (details.already_delivered) {
+    return collapsedTextPreview(theme.fg("muted", ALREADY_DELIVERED_TEXT), theme);
   }
   const output = details.output ?? "";
   if (status === "completed") {
@@ -669,7 +675,9 @@ function renderWaitResult(
     );
   }
   const output = details.output ?? "";
-  if (status === "completed") {
+  if (details.already_delivered) {
+    appendTextSection(container, theme, "Output", ALREADY_DELIVERED_TEXT);
+  } else if (status === "completed") {
     if (output.length > 0) {
       appendComponentSection(
         container,

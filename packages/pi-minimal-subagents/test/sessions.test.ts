@@ -1224,13 +1224,16 @@ export default function (pi) {
           status: "completed",
           output: "completed with native Notes",
         });
-        await coordinator.sendAgentMessage(
+        const continued = await coordinator.sendAgentMessage(
           "root",
           { agent_id: "notes-child", message: "List Notes again" },
           "root:turn",
         );
         await coordinator.waitForSettledOperations();
-        await expect(coordinator.wait("root", "notes-child", 10_000)).resolves.toMatchObject({
+        // Automatic fallback already handed this result, so only its turn_id rereads it.
+        await expect(
+          coordinator.wait("root", "notes-child", 10_000, undefined, continued.turn_id),
+        ).resolves.toMatchObject({
           event: "turn",
           status: "completed",
           output: "completed with native Notes",
@@ -1243,13 +1246,15 @@ export default function (pi) {
         coordinator = createCoordinator();
         await coordinator.restore(snapshot);
         expect(coordinator.snapshot().agents[0]?.launch_contract.ordinary_tools).toEqual(toolNames);
-        await coordinator.sendAgentMessage(
+        const restored = await coordinator.sendAgentMessage(
           "root",
           { agent_id: "notes-child", message: "List Notes after restoring" },
           "root:restored",
         );
         await coordinator.waitForSettledOperations();
-        await expect(coordinator.wait("root", "notes-child", 10_000)).resolves.toMatchObject({
+        await expect(
+          coordinator.wait("root", "notes-child", 10_000, undefined, restored.turn_id),
+        ).resolves.toMatchObject({
           event: "turn",
           status: "completed",
           output: "completed with native Notes",

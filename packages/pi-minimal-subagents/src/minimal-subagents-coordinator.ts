@@ -69,6 +69,7 @@ import type {
   StatusResult,
   TurnResult,
   WaitMessageResult,
+  WaitDeliveredTurnResult,
   WaitResult,
 } from "./minimal-subagents-types.js";
 
@@ -143,6 +144,27 @@ function terminalTurnResult(
 function terminalWaitResult(result: TurnResult, messages: WaitMessageResult[] = []): WaitResult {
   const terminal = { event: "turn" as const, ...structuredClone(result) };
   return messages.length === 0 ? terminal : { ...terminal, messages: structuredClone(messages) };
+}
+
+/** A terminal Wait Event naming an already delivered result without repeating its output. */
+function alreadyDeliveredWaitResult(
+  result: TurnResult,
+  messages: WaitMessageResult[],
+): WaitDeliveredTurnResult {
+  const delivered: WaitDeliveredTurnResult = {
+    event: "turn",
+    agent_id: result.agent_id,
+    turn_id: result.turn_id,
+    status: result.status,
+    already_delivered: true,
+  };
+  if (messages.length > 0) delivered.messages = structuredClone(messages);
+  return delivered;
+}
+
+/** The message ID of an automatic result message, which is also its Delivery Evidence key. */
+function automaticResultMessageId(sourceAgentId: string, sourceTurnId: string): string {
+  return `result:${sourceAgentId}:${sourceTurnId}`;
 }
 
 function combineCoordinatorMessages(messages: readonly CoordinatorMessage[]): CoordinatorMessage {
@@ -486,6 +508,11 @@ export class MinimalSubagentsCoordinator {
       (agent.latest_result?.turn_id === turnId ? agent.latest_result : undefined);
     if (retainedResult) {
       const messages = this.drainPendingParentMessages(callerId, agentId, turnId);
+      // A default wait falls back to the latest turn, whose result may already have been delivered
+      // automatically; repeating its output would deliver it twice. An explicit turn_id rereads it.
+      if (requestedTurnId === undefined && this.wasAlreadyDelivered(callerId, retainedResult)) {
+        return Promise.resolve(alreadyDeliveredWaitResult(retainedResult, messages));
+      }
       this.claimTerminalDelivery(callerId, retainedResult);
       return Promise.resolve(terminalWaitResult(retainedResult, messages));
     }
@@ -1335,7 +1362,7 @@ export class MinimalSubagentsCoordinator {
             source_agent_id: delivery.source_agent_id,
             destination_agent_id: delivery.destination_agent_id,
             source_turn_id: result.turn_id,
-            message_id: `result:${delivery.source_agent_id}:${result.turn_id}`,
+            message_id: automaticResultMessageId(delivery.source_agent_id, result.turn_id),
             status: result.status,
             elapsed_ms: result.elapsed_ms,
             usage: result.usage,
@@ -1734,6 +1761,22 @@ export class MinimalSubagentsCoordinator {
     return (
       findCoordinationDelivery(this.deliveryLedger, delivery.delivery_id)?.sequence ===
       delivery.sequence
+    );
+  }
+
+  /**
+   * Whether this result was already delivered to the caller automatically: it is handed, or the
+   * caller's branch holds its automatic result message. A wait's own tool result does not count.
+   */
+  private wasAlreadyDelivered(callerId: string, result: TurnResult): boolean {
+    return (
+      this.handedTerminalKeys.has(deliveryTurnKey(result.agent_id, result.turn_id)) ||
+      this.hasRecipientDeliveryEvidence(
+        callerId,
+        result.agent_id,
+        result.turn_id,
+        automaticResultMessageId(result.agent_id, result.turn_id),
+      )
     );
   }
 
