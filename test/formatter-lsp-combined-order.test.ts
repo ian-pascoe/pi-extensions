@@ -284,6 +284,26 @@ const formattedFiles = {
   lsp_apply: "// formatted\nconst newName = 1;\n// TODO later\n",
 } satisfies Record<ToolName, string>;
 
+/** The formatter line with its unified diff, which lets the next `edit` match the formatted file. */
+const formatterNotes = {
+  edit: [
+    "Formatted by fakefmt: lines 1–2 changed",
+    "@@ -1,2 +1,3 @@",
+    "-const   oldName   =   2;",
+    "+// formatted",
+    "+const oldName = 2;",
+    " // TODO later",
+  ].join("\n"),
+  lsp_apply: [
+    "Formatted by fakefmt: lines 1–2 changed",
+    "@@ -1,2 +1,3 @@",
+    "-const   newName   =   1;",
+    "+// formatted",
+    "+const newName = 1;",
+    " // TODO later",
+  ].join("\n"),
+} satisfies Record<ToolName, string>;
+
 describe("Pi Formatter and Pi LSP loaded as the Git collection loads them", () => {
   test("the collection loads pi-formatter before pi-lsp", () => {
     expect(collectionOrder).toEqual([FORMATTER_ENTRYPOINT, LSP_ENTRYPOINT]);
@@ -297,7 +317,7 @@ describe("Pi Formatter and Pi LSP loaded as the Git collection loads them", () =
       expect(run.blocks.map(({ type }) => type)).toEqual(["text", "text", "text"]);
       expect(orderedTexts(run)).toEqual([
         expectedOriginalResult(toolName, run.filePath),
-        "Formatted by fakefmt: lines 1–2 changed",
+        formatterNotes[toolName],
         formattedDiagnostic,
       ]);
     },
@@ -314,7 +334,7 @@ describe("Pi Formatter and Pi LSP loaded as the Git collection loads them", () =
       expect(orderedTexts(run)).toEqual([
         expectedOriginalResult(toolName, run.filePath),
         unformattedDiagnostic,
-        "Formatted by fakefmt: lines 1–2 changed",
+        formatterNotes[toolName],
       ]);
     },
   );
