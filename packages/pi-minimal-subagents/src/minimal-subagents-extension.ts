@@ -17,6 +17,7 @@ import {
   type SessionShutdownEvent,
   type SessionStartEvent,
   type SessionTreeEvent,
+  type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
 import {
@@ -552,6 +553,7 @@ export class MinimalSubagentsLifecycleController {
     this.pi.on("session_before_fork", (event, context) => this.prepareSessionFork(event, context));
     this.pi.on("session_tree", (event, context) => this.restoreSessionTree(event, context));
     this.pi.on("message_end", (event, context) => this.reconcileMessageDelivery(event, context));
+    this.pi.on("turn_end", (event) => this.requeueDiscardedRootResults(event));
     this.pi.on("session_shutdown", (event, context) => this.shutdownSession(event, context));
   }
 
@@ -926,10 +928,22 @@ export class MinimalSubagentsLifecycleController {
     _context: ExtensionContext,
   ): Promise<void> {
     if (!this.coordinator) return;
+    this.coordinator.recordRootMessageEnd();
     if (event.message.role === "toolResult" || event.message.role === "custom") {
       await this.coordinator.reconcileDeliveries();
       this.uiController?.refresh();
     }
+  }
+
+  /**
+   * Pi gives extensions no queue-cleared event, so Esc's discarded steers are found here: the turn
+   * boundary's pending-message preview is empty. Returns nothing, so the transcript, system prompt,
+   * and tools are unchanged.
+   */
+  private requeueDiscardedRootResults(event: TurnEndEvent): void {
+    if (!this.coordinator || event.context.pendingMessages.length > 0) return;
+    this.coordinator.requeueDiscardedRootResults();
+    this.uiController?.refresh();
   }
 
   private async shutdownSession(

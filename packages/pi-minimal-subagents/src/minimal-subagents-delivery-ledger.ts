@@ -51,7 +51,7 @@ export interface SelectObservableDeliveryTurnOptions {
   destinationAgentId: string;
   waitHandedDeliveryIds: ReadonlySet<string>;
   /** `deliveryTurnKey`s of terminal results already queued to the destination automatically. */
-  handedTurnKeys?: ReadonlySet<string>;
+  handedTurnKeys?: { has(key: string): boolean };
   activeTurnId?: string;
   latestResultTurnId?: string;
 }

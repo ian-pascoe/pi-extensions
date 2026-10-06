@@ -2,7 +2,7 @@ import { toToolContext } from "./tool-context.js";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -14,6 +14,7 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSettledEvent,
+  type ExtensionAPI,
   type ExtensionUIContext,
   type KeybindingsManager,
   type MessageEndEvent,
@@ -47,6 +48,7 @@ import {
   replayRegistryEntries,
 } from "../src/minimal-subagents-registry.js";
 import type { PiAgentSessionFactoryOptions } from "../src/minimal-subagents-sessions.js";
+import { RecordingAgentSessionFactory } from "./fixtures/recording-sessions.js";
 import {
   isForkDestinationForSource,
   rememberForkSnapshot,
@@ -54,12 +56,8 @@ import {
 } from "../src/minimal-subagents-fork-lifecycle.js";
 import type {
   AgentSessionFactory,
-  ChildAgentRuntime,
   PersistedAgent,
-  PersistedSessionIdentity,
   RegistrySnapshot,
-  RuntimeProfile,
-  RuntimeTurnOutcome,
 } from "../src/minimal-subagents-types.js";
 
 const temporaryDirectories: string[] = [];
@@ -76,153 +74,6 @@ const TEST_MODEL: Model<"openai-completions"> = {
   maxTokens: 8_192,
 };
 
-class RecordingChildRuntime implements ChildAgentRuntime {
-  readonly sessionLeafId: string;
-  isRunning = false;
-  abortCount = 0;
-  disposed = false;
-  private promptOutcome: PromiseWithResolvers<RuntimeTurnOutcome> | undefined;
-
-  constructor(
-    agentId: string,
-    private readonly holdPrompt: boolean,
-    private readonly abortGate: Promise<void> | undefined,
-  ) {
-    this.sessionLeafId = `leaf-${agentId}`;
-  }
-
-  async runPrompt(): Promise<RuntimeTurnOutcome> {
-    if (!this.holdPrompt) {
-      return { status: "completed", output: "completed child turn" };
-    }
-    this.isRunning = true;
-    this.promptOutcome = Promise.withResolvers<RuntimeTurnOutcome>();
-    return this.promptOutcome.promise;
-  }
-
-  async runMessage(): Promise<RuntimeTurnOutcome> {
-    return { status: "completed", output: "completed child message" };
-  }
-
-  async queueCoordinatorMessage(): Promise<void> {}
-
-  async abort(): Promise<void> {
-    this.abortCount++;
-    await this.abortGate;
-    this.isRunning = false;
-    this.promptOutcome?.resolve({ status: "cancelled", output: "" });
-  }
-
-  completePrompt(): void {
-    this.isRunning = false;
-    this.promptOutcome?.resolve({ status: "completed", output: "completed after disable" });
-  }
-
-  dispose(): void {
-    this.disposed = true;
-  }
-
-  getRuntimeProfile(): RuntimeProfile {
-    return { model: "lifecycle-test/model", thinking_level: "medium" };
-  }
-
-  snapshotCommittedMessages(): AgentMessage[] {
-    return [];
-  }
-
-  snapshotActivityMessages(): AgentMessage[] {
-    return [];
-  }
-
-  hasDeliveryEvidence(): boolean {
-    return false;
-  }
-
-  getUsage(): undefined {
-    return undefined;
-  }
-}
-
-class RecordingAgentSessionFactory implements AgentSessionFactory {
-  readonly createdAgentIds: string[] = [];
-  readonly openedAgentIds: string[] = [];
-  readonly clonedAgentIds: string[] = [];
-  readonly adoptedAgentIds: string[] = [];
-  readonly trashedAgentIds: string[] = [];
-  readonly runtimes = new Map<string, RecordingChildRuntime>();
-  holdPrompts = false;
-  abortGate: Promise<void> | undefined;
-
-  createIdentity(agent: PersistedAgent): PersistedSessionIdentity {
-    this.createdAgentIds.push(agent.agent_id);
-    return {
-      sessionFile: `/recording-sessions/${agent.agent_id}.jsonl`,
-      sessionId: `session-${agent.agent_id}`,
-      sessionLeafId: `leaf-${agent.agent_id}`,
-    };
-  }
-
-  async openRuntime(agent: PersistedAgent): Promise<ChildAgentRuntime> {
-    this.openedAgentIds.push(agent.agent_id);
-    return this.runtimeFor(agent.agent_id);
-  }
-
-  async resolveLaunchMissingDependencies(): Promise<string[]> {
-    return [];
-  }
-
-  async resolveRestorationMissingDependencies(): Promise<string[]> {
-    return [];
-  }
-
-  resolveThinkingLevel(_modelId: string, requested: ThinkingLevel): ThinkingLevel {
-    return requested;
-  }
-
-  modelSupportsImages(): boolean {
-    return true;
-  }
-
-  async cloneSession(agent: PersistedAgent): Promise<PersistedSessionIdentity> {
-    this.clonedAgentIds.push(agent.agent_id);
-    return this.clonedIdentity(agent.agent_id);
-  }
-
-  async cloneForkSourceSession(agent: PersistedAgent): Promise<PersistedSessionIdentity> {
-    this.clonedAgentIds.push(agent.agent_id);
-    return this.clonedIdentity(agent.agent_id);
-  }
-
-  async adoptForkSessionOwnership(agent: PersistedAgent): Promise<PersistedSessionIdentity> {
-    this.adoptedAgentIds.push(agent.agent_id);
-    return {
-      sessionFile: agent.session_file ?? `/recording-sessions/${agent.agent_id}.jsonl`,
-      sessionId: agent.session_id ?? `session-${agent.agent_id}`,
-      sessionLeafId: agent.session_leaf_id ?? `leaf-${agent.agent_id}`,
-    };
-  }
-
-  async trashSession(agent: PersistedAgent): Promise<void> {
-    this.trashedAgentIds.push(agent.agent_id);
-  }
-
-  private runtimeFor(agentId: string): RecordingChildRuntime {
-    const existing = this.runtimes.get(agentId);
-    if (existing) return existing;
-    const runtime = new RecordingChildRuntime(agentId, this.holdPrompts, this.abortGate);
-    this.runtimes.set(agentId, runtime);
-    return runtime;
-  }
-
-  private clonedIdentity(agentId: string): PersistedSessionIdentity {
-    return {
-      sessionFile: `/recording-clones/${agentId}.jsonl`,
-      sessionId: `clone-${agentId}`,
-      sessionLeafId: `clone-leaf-${agentId}`,
-    };
-  }
-}
-
 type RecordedNotification = {
   message: string;
   level: "info" | "warning" | "error";
@@ -234,6 +85,7 @@ type ExtensionHarness = {
   sessionFactory: RecordingAgentSessionFactory;
   agentDirectory: string;
   sentMessageTypes: string[];
+  sentMessages: Array<Parameters<ExtensionAPI["sendMessage"]>[0]>;
   sentDeliveryModes: Array<"steer" | "followUp" | "nextTurn" | undefined>;
   notifications: RecordedNotification[];
   extensionErrors: string[];
@@ -393,6 +245,7 @@ async function createExtensionHarness(
   );
   let idle = true;
   const sentMessageTypes: string[] = [];
+  const sentMessages: ExtensionHarness["sentMessages"] = [];
   const sentDeliveryModes: Array<"steer" | "followUp" | "nextTurn" | undefined> = [];
   const notifications: RecordedNotification[] = [];
   const extensionErrors: string[] = [];
@@ -402,6 +255,7 @@ async function createExtensionHarness(
     {
       sendMessage: (message, options) => {
         sentMessageTypes.push(message.customType);
+        sentMessages.push(structuredClone(message));
         sentDeliveryModes.push(options?.deliverAs);
       },
       sendUserMessage: () => undefined,
@@ -473,6 +327,7 @@ async function createExtensionHarness(
     sessionFactory,
     agentDirectory,
     sentMessageTypes,
+    sentMessages,
     sentDeliveryModes,
     notifications,
     extensionErrors,
@@ -566,6 +421,37 @@ const toolResultMessageEndEvent = {
     timestamp: 1,
   },
 } satisfies MessageEndEvent;
+
+function rootAssistantMessage(text: string) {
+  return {
+    role: "assistant" as const,
+    content: [{ type: "text" as const, text }],
+    api: TEST_MODEL.api,
+    provider: TEST_MODEL.provider,
+    model: TEST_MODEL.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop" as const,
+    timestamp: Date.now(),
+  };
+}
+
+function asQueuedCustomMessage(message: ExtensionHarness["sentMessages"][number]): AgentMessage {
+  return {
+    role: "custom",
+    customType: message.customType,
+    content: message.content,
+    display: message.display,
+    details: message.details,
+    timestamp: Date.now(),
+  };
+}
 
 async function emitSessionShutdown(
   harness: ExtensionHarness,
@@ -727,6 +613,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.runner.hasHandlers("session_before_fork")).toBe(true);
     expect(harness.runner.hasHandlers("session_tree")).toBe(true);
     expect(harness.runner.hasHandlers("message_end")).toBe(true);
+    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
     expect(harness.runner.hasHandlers("agent_settled")).toBe(false);
     expect(harness.runner.hasHandlers("session_shutdown")).toBe(true);
     expect(harness.runner.getCommand("subagents")?.description).toBe(
@@ -1389,6 +1276,122 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
 
     await emitSessionShutdown(harness, "quit");
+  });
+
+  /** Steer one completed result into an active root turn, then end that turn with Pi's queue preview. */
+  async function steerResultThenEndRootTurn(
+    prefix: string,
+    pendingMessages: (harness: ExtensionHarness) => AgentMessage[],
+    beforeTurnEnd?: (harness: ExtensionHarness) => void,
+  ) {
+    const cwd = await createTemporaryDirectory(`${prefix}-cwd-`);
+    const sessionDirectory = await createTemporaryDirectory(`${prefix}-sessions-`);
+    const harness = await createExtensionHarness(
+      await createPersistedSession(cwd, sessionDirectory),
+    );
+    await harness.runner.emit(sessionStartEvent());
+    harness.setIdle(false);
+    await harness.runner
+      .getToolDefinition("subagent")!
+      .execute(
+        "spawn-call",
+        { task: "Complete while the root runs", agent_id: "esc-child" },
+        undefined,
+        undefined,
+        toToolContext(harness.runner.createContext()),
+      );
+    await vi.waitFor(() => expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]), {
+      timeout: 2_000,
+    });
+    expect(harness.sentDeliveryModes).toEqual(["steer"]);
+    beforeTurnEnd?.(harness);
+
+    const aborted = {
+      ...rootAssistantMessage("interrupted"),
+      stopReason: "aborted",
+    } satisfies AgentMessage;
+    await harness.runner.emitMessageEnd({ type: "message_end", message: aborted });
+    const boundary = await harness.runner.emitBoundary(
+      {
+        type: "turn_end",
+        turnIndex: 1,
+        message: aborted,
+        toolResults: [],
+        messageEntryId: "aborted-entry",
+        toolResultEntryIds: [],
+        outcome: "aborted",
+      },
+      () => ({
+        contextEntries: [],
+        contextMessages: [],
+        llmMessages: [],
+        pendingMessages: pendingMessages(harness),
+        canContinue: false,
+      }),
+    );
+    // The handler never edits the transcript or asks Pi for another request.
+    expect(boundary).toMatchObject({ entries: [], continue: false });
+    return harness;
+  }
+
+  /** Drain coordinator work deterministically: an idle root lets a reload shutdown settle it. */
+  async function settleAndShutDown(harness: ExtensionHarness): Promise<void> {
+    harness.setIdle(true);
+    await emitSessionShutdown(harness, "reload");
+  }
+
+  it("re-sends a result Pi discarded from the root queue", async () => {
+    const harness = await steerResultThenEndRootTurn("minimal-subagents-esc-discarded", () => []);
+
+    await vi.waitFor(
+      () =>
+        expect(harness.sentMessageTypes).toEqual([
+          "minimal-subagents.result",
+          "minimal-subagents.result",
+        ]),
+      { timeout: 3_000 },
+    );
+    expect(harness.sentMessages[1]).toEqual(harness.sentMessages[0]);
+    await settleAndShutDown(harness);
+    expect(harness.extensionErrors).toEqual([]);
+  });
+
+  it("keeps a result Pi still holds queued", async () => {
+    const harness = await steerResultThenEndRootTurn(
+      "minimal-subagents-esc-still-queued",
+      (current) => current.sentMessages.map(asQueuedCustomMessage),
+    );
+
+    await settleAndShutDown(harness);
+    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
+    expect(harness.extensionErrors).toEqual([]);
+  });
+
+  it("settles a result the root received at the turn boundary", async () => {
+    const harness = await steerResultThenEndRootTurn(
+      "minimal-subagents-esc-received",
+      () => [],
+      (current) => {
+        // Pi persists a consumed steer before the turn boundary that follows it.
+        const sent = current.sentMessages[0]!;
+        current.sessionManager.appendCustomMessageEntry(
+          sent.customType,
+          sent.content,
+          sent.display,
+          sent.details,
+        );
+      },
+    );
+
+    await settleAndShutDown(harness);
+    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
+    expect(
+      replayRegistryEntries(
+        harness.sessionManager.getBranch(),
+        harness.sessionManager.getSessionId(),
+      ).deliveries,
+    ).toEqual([]);
+    expect(harness.extensionErrors).toEqual([]);
   });
 
   it("consumes a stored fork handoff without cloning the source root", async () => {

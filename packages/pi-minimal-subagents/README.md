@@ -357,8 +357,10 @@ retain individual delivery evidence; terminal wait ownership remains durable
 across reloads, forks, and newer turns. Automatic fallback retains its ordered
 queue reservation while batching queued messages from one source turn into one
 Pi steer. Root-bound messages remain batchable while the root turn is active; a
-pending terminal result absorbs them. Child sessions drain all available steers
-before the next model call. Destination-session Delivery Evidence still settles
+pending terminal result absorbs them. If Pi discards a root-bound steer before
+consuming it, as Esc does, the next root turn boundary reporting an empty Pi
+queue releases the result and automatic fallback queues it again. Child
+sessions drain all available steers before the next model call. Destination-session Delivery Evidence still settles
 each batched ledger item independently, preventing duplicate delivery and
 unbounded checkpoint growth. The pure Delivery Ledger state machine retains at
 most 20 pending wait-only terminal results per source agent; Coordination Messages

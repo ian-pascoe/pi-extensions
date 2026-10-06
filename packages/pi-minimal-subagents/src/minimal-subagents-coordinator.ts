@@ -111,6 +111,16 @@ interface PendingParentMessage {
   cancelGrace?: () => void;
 }
 
+/** One terminal result queued to its parent, until Delivery Evidence settles it or Pi discards it. */
+interface TerminalHandOff {
+  /** Hand-off order, compared with the root's last ended message at a turn boundary. */
+  order: number;
+  /** Whether the result entered Pi's clearable steer queue instead of starting a root turn. */
+  queued: boolean;
+  /** Coordination Messages batched into the same steer. */
+  coordinationDeliveryIds: readonly string[];
+}
+
 function agentDeliveryKey(agentId: string, turnId: string): string {
   return `${agentId}\u0000${turnId}`;
 }
@@ -168,7 +178,11 @@ export class MinimalSubagentsCoordinator {
   private readonly automaticCoordinationDeliveryIds = new Set<string>();
   private readonly waitHandedDeliveryIds = new Set<string>();
   /** Terminal results already queued to their parent, until Delivery Evidence settles them. */
-  private readonly handedTerminalKeys = new Set<string>();
+  private readonly handedTerminalKeys = new Map<string, TerminalHandOff>();
+  /** Monotonic order of hand-offs, compared against the root's last ended message. */
+  private handOffOrder = 0;
+  /** The latest hand-off order a root `message_end` has seen; later hand-offs may postdate Pi's queue snapshot. */
+  private rootMessageEndOrder = 0;
   private readonly backgroundOperations = new Set<Promise<void>>();
   private acceptingOperations = true;
   private lifecycleEpoch = 0;
@@ -886,6 +900,69 @@ export class MinimalSubagentsCoordinator {
     await Promise.allSettled(scheduled);
   }
 
+  /** Note that a root message ended; results handed before it reached Pi's queue before the next turn boundary. */
+  recordRootMessageEnd(): void {
+    this.rootMessageEndOrder = this.handOffOrder;
+  }
+
+  /**
+   * Release results Pi discarded from the root's steer queue, as Esc does.
+   *
+   * Call only at a root turn boundary whose pending-message snapshot is empty. Pi persists a
+   * consumed steer before that boundary, so a queued result handed before the turn's last message
+   * either has Delivery Evidence and settles, or was discarded. A discarded result becomes
+   * selectable by a default wait again and automatic fallback queues it again, together with its
+   * batched Coordination Messages. Synchronous: the root recipient queue waits for this turn.
+   */
+  requeueDiscardedRootResults(): void {
+    if (!this.acceptingOperations) return;
+    const candidates = this.deliveryLedger.terminalDeliveries
+      .filter((delivery) => {
+        if (delivery.destination_agent_id !== "root") return false;
+        const handOff = this.handedTerminalKeys.get(
+          deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id),
+        );
+        return handOff?.queued === true && handOff.order <= this.rootMessageEndOrder;
+      })
+      .sort(
+        (left, right) =>
+          (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER),
+      );
+
+    for (const delivery of candidates) {
+      const handedKey = deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id);
+      const handOff = this.handedTerminalKeys.get(handedKey);
+      if (!handOff) continue;
+      const batched = handOff.coordinationDeliveryIds.flatMap((deliveryId) => {
+        const item = findCoordinationDelivery(this.deliveryLedger, deliveryId);
+        return item ? [item] : [];
+      });
+      if (this.hasDeliveryEvidence(delivery)) {
+        for (const item of batched) {
+          if (this.hasCoordinationDeliveryEvidence(item)) this.settleCoordinationDelivery(item);
+        }
+        this.settleDelivery(delivery);
+        continue;
+      }
+
+      this.handedTerminalKeys.delete(handedKey);
+      const agent = this.agents.get(delivery.source_agent_id);
+      const result = delivery.result ?? agent?.latest_result;
+      if (
+        delivery.path === "message" &&
+        result?.status === "completed" &&
+        result.turn_id === delivery.source_turn_id
+      ) {
+        // Reserved first, so its grace period takes the Coordination Messages queued below.
+        this.trackBackgroundOperation(this.deliverAutomaticResult(result, delivery));
+      }
+      for (const item of batched) {
+        this.waitHandedDeliveryIds.delete(item.delivery_id);
+        this.queuePendingParentMessage("root", item.message, item);
+      }
+    }
+  }
+
   /** Clone complete child leaves for root fork ownership without ever sharing source session paths. */
   async prepareFork(sourceRootSessionFile: string): Promise<ForkSnapshot> {
     const activeRootChildren = this.childrenOf("root");
@@ -1223,8 +1300,13 @@ export class MinimalSubagentsCoordinator {
         for (const batchedDelivery of batchedCoordinationDeliveries) {
           this.waitHandedDeliveryIds.add(batchedDelivery.delivery_id);
         }
-        // Installed before delivery so a settlement inside it removes the marker.
-        this.handedTerminalKeys.add(handedKey);
+        // Installed before delivery so a settlement inside it removes the marker. Delivery up to
+        // Pi's `sendMessage` is synchronous, so the idle check predicts a steer versus a new turn.
+        this.handedTerminalKeys.set(handedKey, {
+          order: ++this.handOffOrder,
+          queued: delivery.destination_agent_id === "root" && !this.dependencies.root.isIdle(),
+          coordinationDeliveryIds: batchedCoordinationDeliveries.map((item) => item.delivery_id),
+        });
         await this.deliverToRecipient(
           delivery.destination_agent_id,
           combineCoordinatorMessages([
@@ -1569,7 +1651,7 @@ export class MinimalSubagentsCoordinator {
         deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id),
       ),
     );
-    for (const key of this.handedTerminalKeys) {
+    for (const key of this.handedTerminalKeys.keys()) {
       if (!pending.has(key)) this.handedTerminalKeys.delete(key);
     }
   }
