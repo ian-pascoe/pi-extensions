@@ -154,17 +154,21 @@ interface RenderContext {
   readonly sources: LspSourceLines;
 }
 
-/** Name a protocol `SymbolKind`, or `kind N` for a number outside its named values. */
-export function lspSymbolKindName(kind: number): string {
-  return SYMBOL_KIND_NAMES[kind - 1] ?? `kind ${kind}`;
+/** Name a protocol `SymbolKind`, or undefined for a number outside its named values. */
+export function lspKnownSymbolKindName(kind: number): string | undefined {
+  return SYMBOL_KIND_NAMES[kind - 1];
+}
+
+function symbolKindName(kind: number): string {
+  return lspKnownSymbolKindName(kind) ?? `kind ${kind}`;
 }
 
 /** Render `name (kind[, deprecated]) location[  suffix]`. */
 function symbolLine(symbol: SymbolFields, location: string, suffix?: string | null): string {
   const deprecated = symbol.deprecated === true || symbol.tags?.includes(DEPRECATED_SYMBOL_TAG);
   const kind = deprecated
-    ? `${lspSymbolKindName(symbol.kind)}, deprecated`
-    : lspSymbolKindName(symbol.kind);
+    ? `${symbolKindName(symbol.kind)}, deprecated`
+    : symbolKindName(symbol.kind);
   const head = `${compactLspText(symbol.name)} (${kind}) ${location}`;
   const extra = suffix === undefined || suffix === null ? "" : compactLspText(suffix);
   return extra === "" ? head : `${head}  ${extra}`;

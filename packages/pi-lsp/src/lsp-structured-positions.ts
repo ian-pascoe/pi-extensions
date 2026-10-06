@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { isLspLocationOperation, LspNormalizedPositionSchema } from "./lsp-location-text.js";
 import { protocolRecord, protocolString } from "./lsp-protocol-result.js";
-import { isLspStructureOperation, lspSymbolKindName } from "./lsp-structure-text.js";
+import { isLspStructureOperation, lspKnownSymbolKindName } from "./lsp-structure-text.js";
 import type { LspOperationName } from "./lsp-tool-contract.js";
 
 const RangeStartSchema = Type.Object({ start: LspNormalizedPositionSchema });
@@ -44,7 +44,8 @@ function locate(
     protocolString(record.targetUri) ??
     protocolString(record.uri) ??
     protocolString(location?.uri) ??
-    (record.selectionRange !== undefined || operation === "document_highlights"
+    (record.selectionRange !== undefined ||
+    (operation === "document_highlights" && record.range !== undefined)
       ? documentPath
       : undefined);
   return { path, start: Value.Check(RangeStartSchema, range) ? range.start : undefined };
@@ -63,9 +64,10 @@ function annotate(value: unknown, documentPath: string, operation: LspOperationN
       key === PRIVATE_FIELD ? entry : annotate(entry, documentPath, operation),
     ]),
   );
-  if (Value.Check(SymbolIdentitySchema, record)) {
-    annotated.kind_name = lspSymbolKindName(record.kind);
-  }
+  const kindName = Value.Check(SymbolIdentitySchema, record)
+    ? lspKnownSymbolKindName(record.kind)
+    : undefined;
+  if (kindName !== undefined) annotated.kind_name = kindName;
   const { path, start } = locate(record, documentPath, operation);
   if (path !== undefined) annotated.path = path;
   if (path !== undefined && start !== undefined) {
@@ -78,7 +80,7 @@ function annotate(value: unknown, documentPath: string, operation: LspOperationN
 /**
  * Extend a read's normalized response for its Structured Result: each location, symbol, and
  * hierarchy item gains the flat one-based `path`, `line`, and `character` a script passes straight
- * to a position tool, and each symbol its `kind_name`. The protocol fields stay. A symbol's
+ * to a position tool, and each symbol of a named kind its `kind_name`. The protocol fields stay. A symbol's
  * position is its name's start, a location's its range start, and a link's its target selection
  * start. A symbol whose server named no range gains only its `path`. Model-visible text never
  * shows these fields.

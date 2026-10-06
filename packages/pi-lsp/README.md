@@ -393,7 +393,9 @@ location, symbol, and hierarchy item in a location, symbol, or hierarchy read al
 symbol a `kind_name` such as `"class"` beside its numeric `kind`, so a script passes
 `{ file_path: item.path, line: item.line, character: item.character }` straight to `lsp_hover`,
 `lsp_find_references`, or `lsp_rename`. The protocol fields stay, and a symbol whose server named no
-range has a `path` but no position. Model-visible text never shows these fields. Position
+range has a `path` but no position. A workspace symbol's position is its location's range start,
+which some servers (such as `typescript`) extend over the whole declaration; take a name's
+position from `lsp_document_symbols` instead. Model-visible text never shows these fields. Position
 tools add `position: { path, line, character, token?, line_text }`: the queried position, the
 identifier or punctuation run there (absent on whitespace), and its trimmed line. The
 model-visible text of a read is derived from the same data.

@@ -1043,19 +1043,29 @@ describe("registered LSP tool", () => {
     });
     expect(workspace).toMatchObject([
       { name: "emoji", kind_name: "variable", path: fixture.filePath, line: 1, character: 7 },
-      { name: "unlocated", kind_name: "kind 99", path: fixture.filePath },
+      { name: "unlocated", path: fixture.filePath },
     ]);
-    // A symbol whose server named no range has a path, but no position to invent.
+    // A symbol of an unnamed kind has no kind name, and one whose server named no range has a
+    // path but no position to invent.
     expect(workspace).toEqual([
       expect.anything(),
-      expect.not.objectContaining({ line: expect.anything() }),
+      expect.not.objectContaining({ line: expect.anything(), kind_name: expect.anything() }),
     ]);
     const position = { file_path: fixture.filePath, line: 1, character: 7 };
     expect(await values({ operation: "goto_definition", ...position })).toMatchObject([
       [{ targetUri: fixture.filePath, path: fixture.filePath, line: 4, character: 7 }],
     ]);
-    expect(await values({ operation: "document_highlights", ...position })).toMatchObject([
-      [{ kind: 3, path: fixture.filePath, line: 1, character: 7 }],
+    // Only the highlight itself gains fields; its raw range stays as the server sent it.
+    expect(await values({ operation: "document_highlights", ...position })).toEqual([
+      [
+        {
+          kind: 3,
+          path: fixture.filePath,
+          line: 1,
+          character: 7,
+          range: { start: { line: 1, character: 7 }, end: { line: 1, character: 12 } },
+        },
+      ],
     ]);
     await fixture.close();
   });

@@ -1027,8 +1027,11 @@ function listedStatusServers(status: LspServerManagerStatus, all: boolean) {
  * the `LISTED_STATES` get a line, and the enabled Server Definitions without a Server Instance
  * are counted in one summary line.
  */
-function formatStatusText(status: LspServerManagerStatus, cwd: string, all: boolean): string {
-  const listed = listedStatusServers(status, all);
+function formatStatusText(
+  status: LspServerManagerStatus,
+  listed: readonly LspServerStatusEntry[],
+  cwd: string,
+): string {
   const lines = listed.map((server) => {
     const languages = Object.entries(statusLanguages(server.languages)).map(
       ([languageId, patterns]) => `${languageId}(${patterns.join(",")})`,
@@ -1937,7 +1940,7 @@ async function executeLspOperation(
         warnings: status.warnings,
       });
       return createLspToolOutput(
-        formatStatusText(status, context.cwd, all),
+        formatStatusText(status, listed, context.cwd),
         { ...operationDetails("status", outcomes), result_count: status.servers.length },
         lspStructuredFields(json),
         dependencies,
