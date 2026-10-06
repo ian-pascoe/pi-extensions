@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-todo
 
+## 0.5.0
+
+### Minor Changes
+
+- ab9b903: The `todo` tool's `update` action now accepts `updates: [{ id, status?, title?, description? }]` to change several Tasks atomically in one call.
+
 ## 0.4.0
 
 ### Minor Changes

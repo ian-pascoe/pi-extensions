@@ -1,5 +1,18 @@
 # @ian-pascoe/pi-lsp
 
+## 0.9.0
+
+### Minor Changes
+
+- c39e4ba: `lsp_document_symbols` now lists a file as an outline by default: top-level declarations plus the members of classes, interfaces, enums, namespaces, modules, packages, objects, and structs, without the locals, return-object properties, and callbacks inside function, method, and variable bodies. The new optional `depth` parameter adds one level inside those bodies per step, and `depth: "all"` returns the full tree as before. A closing line counts the nested symbols the depth left out, and the structured result follows the requested depth, with the count as `omitted`.
+- ac9bddf: `lsp_document_symbols` no longer lists import bindings in its default outline, where they were up to half the lines of a file. When the server supports folding ranges, one extra request finds the `imports` range, and top-level symbols inside it are left out. A separate closing line counts them (`N import bindings omitted; pass depth: "all" to see them.`), and the structured result adds `omitted_imports` to the `omitted` count. `depth: "all"` still lists them, and a server without folding ranges or an `imports` range, or a failed folding request, gives the same outline as before. Cancelling the call still cancels it.
+
+### Patch Changes
+
+- ce3b056: `lsp_hover` now shows a TypeScript signature fenced and separated from its documentation instead of running them together.
+- ee097a7: Report a diagnostics wait that ends in silence as `no diagnostics published by <server> within <wait>` (not a failure) instead of a bare `diagnostics timeout`, and remember that silence per document version for push-only servers so a repeat `lsp_diagnostics` of an unchanged file answers at once. A push, edit, close, or Server Instance restart forgets it. A file whose current version the server already published diagnostics for now returns them instead of timing out. A pull-capable server that times out reads as a stalled request (`no diagnostics received from <server>`) rather than as a clean file.
+- 2d2bd06: Applying a Workspace Edit that names a symlink, for example to delete or rename it, no longer risks deadlocking with a concurrent formatting or with itself when it also names the symlink's target. Pi LSP now locks files sorted by real path, the same order Pi Formatter uses.
+
 ## 0.8.0
 
 ### Minor Changes

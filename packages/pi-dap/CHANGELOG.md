@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-dap
 
+## 0.6.0
+
+### Minor Changes
+
+- e338194: **Breaking:** Desired Breakpoints now appear only in `dap_set_breakpoints`, `dap_launch`, and `dap_status` results, in their text, structured results, and output schemas. Other DAP tools no longer return `desired_breakpoints`; read it from `dap_status` instead. Descriptions of tools that can fail on the Debug Session state now name the `error` message.
+
 ## 0.5.0
 
 ### Minor Changes
