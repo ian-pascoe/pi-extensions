@@ -1333,6 +1333,119 @@ describe("minimal subagents coordinator", () => {
     );
   });
 
+  it("settles Coordination Messages an already-delivered wait drains by their delivery IDs", async () => {
+    let finishPrompt!: (outcome: RuntimeTurnOutcome) => void;
+    const runtime = childRuntime();
+    runtime.runPrompt.mockImplementation(
+      () => new Promise<RuntimeTurnOutcome>((resolve) => (finishPrompt = resolve)),
+    );
+    const { coordinator, root, notify, queuedMessages, registryEvents } = coordinatorFixture(
+      runtime,
+      0,
+    );
+    const spawned = await coordinator.spawn(
+      "root",
+      { task: "Report progress", agent_id: "worker" },
+      caller,
+    );
+    // The progress message's automatic delivery fails, so it is never handed.
+    root.queueCoordinatorMessage.mockRejectedValueOnce(new Error("root queue unavailable"));
+    await coordinator.sendAgentMessage("worker", { message: "progress 1" }, spawned.turn_id);
+    await vi.waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ type: "failure" })),
+    );
+    finishPrompt({ status: "completed", output: "complete" });
+    // Automatic fallback hands the result on its own.
+    await vi.waitFor(() =>
+      expect(queuedMessages).toEqual([
+        expect.objectContaining({ customType: "minimal-subagents.result" }),
+      ]),
+    );
+
+    const drained = await coordinator.wait("root", "worker", 1_000);
+    expect(drained).toEqual({
+      event: "turn",
+      agent_id: "worker",
+      turn_id: spawned.turn_id,
+      status: "completed",
+      already_delivered: true,
+      messages: [
+        expect.objectContaining({
+          event: "message",
+          turn_id: spawned.turn_id,
+          message: "progress 1",
+          delivery_id: expect.any(String),
+        }),
+      ],
+    });
+    const deliveryId = "messages" in drained ? drained.messages?.[0]?.delivery_id : undefined;
+    if (!deliveryId) throw new Error("Expected the drained message's delivery ID");
+    // The root session now holds the wait's tool result, with the details subagent_wait reports.
+    const entries: SessionEntry[] = [
+      {
+        type: "message",
+        id: "already-delivered-result",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "subagent_wait",
+          content: [{ type: "text", text: "already delivered" }],
+          details: JSON.parse(
+            JSON.stringify({
+              ...drained,
+              source_agent_id: drained.agent_id,
+              source_turn_id: drained.turn_id,
+            }),
+          ),
+          isError: false,
+          timestamp: 1,
+        },
+      },
+    ];
+    root.hasDeliveryEvidence.mockImplementation((agentId, turnId, requestedDeliveryId) =>
+      findDeliveryEvidence(entries, agentId, turnId, requestedDeliveryId),
+    );
+    await coordinator.reconcileDeliveries();
+
+    // The drained message settles by its delivery ID; the result awaits its own Delivery Evidence.
+    expect(registryEvents).toContainEqual(
+      expect.objectContaining({ event: "coordination-delivery-settled", delivery_id: deliveryId }),
+    );
+    expect(coordinator.snapshot().coordination_deliveries ?? []).toEqual([]);
+    expect(coordinator.snapshot().deliveries).toEqual([
+      expect.objectContaining({ source_agent_id: "worker", source_turn_id: spawned.turn_id }),
+    ]);
+    // A later wait does not drain the message again.
+    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toEqual({
+      event: "turn",
+      agent_id: "worker",
+      turn_id: spawned.turn_id,
+      status: "completed",
+      already_delivered: true,
+    });
+
+    // Pi persists the queued result steer; replay then finds nothing left to deliver.
+    const [resultMessage] = queuedMessages;
+    if (!resultMessage) throw new Error("Expected the automatic result message");
+    entries.push({
+      type: "custom_message",
+      id: "result-message",
+      parentId: "already-delivered-result",
+      timestamp: "2026-01-01T00:00:01.000Z",
+      customType: resultMessage.customType,
+      content: resultMessage.content,
+      display: true,
+      details: resultMessage.details,
+    });
+    await coordinator.reconcileDeliveries(true);
+    await coordinator.waitForSettledOperations();
+    expect(coordinator.snapshot().deliveries).toEqual([]);
+    expect(queuedMessages).toHaveLength(1);
+    expect(JSON.stringify(queuedMessages)).not.toContain("progress 1");
+  });
+
   it("rejects old waiters and abandons old runtime completion on branch restore", async () => {
     let finishOldPrompt!: (outcome: RuntimeTurnOutcome) => void;
     const oldRuntime = childRuntime();
