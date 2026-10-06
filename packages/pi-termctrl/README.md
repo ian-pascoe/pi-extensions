@@ -48,7 +48,7 @@ poll, which settles on quiet only after new output). Every `wait_ms` clamps to
 5 minutes.
 
 Results say why the wait ended in `settle_reason` (`matched`, `timeout`, `quiet`
-or `exit`) and in their first line, such as `t1 running · settled: timeout`; a
+or `exited`) and in their first line, such as `t1 running · settled: timeout`; a
 `wait_for_text` that timed out adds that the pattern was not seen. Polls report
 their reason too.
 
