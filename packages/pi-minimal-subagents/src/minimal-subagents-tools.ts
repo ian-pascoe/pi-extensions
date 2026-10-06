@@ -13,6 +13,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import { withTroubleshootingHint } from "./troubleshooting-skill.js";
 import type { MinimalSubagentsModelRole } from "./minimal-subagents-config.js";
+import { stringifyMinimalSubagentsResult } from "./minimal-subagents-usage.js";
 import {
   renderCoordinatorToolCall,
   renderCoordinatorToolResult,
@@ -186,7 +187,8 @@ function createCoordinatorToolRendering(
 function structuredToolResult<TDetails extends CoordinatorToolResultDetails>(
   result: TDetails,
 ): AgentToolResult<TDetails> {
-  const json = JSON.stringify(result, null, 2);
+  // Presentation only: `details` keeps the exact values the session persists.
+  const json = stringifyMinimalSubagentsResult(result, 2);
   const truncated = truncateHead(json, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
@@ -380,7 +382,7 @@ export function createCoordinatorToolDefinitions(
                 ? alreadyDeliveredContent(result)
                 : structuredToolResult(result).content,
             details,
-            structuredContent: JSON.parse(JSON.stringify(details)),
+            structuredContent: JSON.parse(stringifyMinimalSubagentsResult(details)),
           };
         });
       } finally {

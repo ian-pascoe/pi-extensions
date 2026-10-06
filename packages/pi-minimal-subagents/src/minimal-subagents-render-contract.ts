@@ -5,7 +5,7 @@ import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
 
 export type CoordinatorToolName = (typeof COORDINATOR_TOOL_NAMES)[number];
 
-const RenderUsageSchema = Type.Object({
+export const RenderUsageSchema = Type.Object({
   input: Type.Number(),
   output: Type.Number(),
   cacheRead: Type.Number(),
