@@ -333,3 +333,39 @@ for (const transition of ["native", "rollover"] as const) {
     });
   }
 }
+
+it("keeps the written prefix stable through filtered History calls and skips the running search call", async () => {
+  const f = await createSdkHarness([contextManagement]);
+  f.responses.push(reply("Noted."));
+  await f.session.prompt("Remember the needle phrase");
+  const before = f.requests.at(-1)!;
+  f.responses.push(
+    toolCall("context_history", { action: "search", query: "needle", type: "message" }, "search-1"),
+    toolCall("context_history", { action: "list", role: "user" }, "list-1"),
+    reply("Searched."),
+  );
+  await f.session.prompt("Find it");
+  const [search, list] = f.manager
+    .getBranch()
+    .flatMap((entry) =>
+      entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : [],
+    )
+    .map((message) =>
+      JSON.parse(
+        message.content.map((block) => (block.type === "text" ? block.text : "")).join(""),
+      ),
+    );
+  // The earlier user turn matches (once, in its text); the assistant call carrying the query does not.
+  expect(search.matches).toHaveLength(1);
+  expect(list.items.map((item: { preview: string }) => item.preview)).toEqual([
+    "user: Remember the needle phrase",
+    "user: Find it",
+  ]);
+  for (const request of f.requests) {
+    expect(request.tools).toEqual(before.tools);
+    expect(request.toolDefinitions).toEqual(before.toolDefinitions);
+    expect(request.systemPrompt).toBe(before.systemPrompt);
+  }
+  await expectWrittenPrefix(before, f.requests.at(-1)!);
+  expect(f.providerRequests).toEqual([]);
+});

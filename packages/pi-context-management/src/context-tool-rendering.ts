@@ -61,6 +61,8 @@ interface ContextToolArguments {
   handoff?: string;
   content?: string;
   window?: string;
+  type?: string;
+  role?: string;
   offset?: number;
   limit?: number;
 }
@@ -90,6 +92,8 @@ function expandedResult(
   if (args.name !== undefined) field(container, theme, "Note", args.name);
   if (args.query !== undefined) field(container, theme, "Query", args.query);
   if (args.window !== undefined) field(container, theme, "Window", args.window);
+  if (args.type !== undefined) field(container, theme, "Type", args.type);
+  if (args.role !== undefined) field(container, theme, "Role", args.role);
   if (args.offset !== undefined) field(container, theme, "Offset", args.offset);
   if (args.limit !== undefined) field(container, theme, "Limit", args.limit);
   return container;

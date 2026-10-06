@@ -1,5 +1,5 @@
 import { StringEnum, type JsonValue } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -7,6 +7,7 @@ import {
   renderContextToolResult,
   type ContextToolDetails,
 } from "./context-tool-rendering.js";
+import { describeEntry } from "./entry-preview.js";
 import {
   appendNote,
   assertContextJournalReadableForModel,
@@ -36,6 +37,20 @@ const HistoryParameters = Type.Object(
     action: StringEnum(["windows", "list", "read", "search"]),
     ref: Type.Optional(Type.String({ maxLength: 300 })),
     window: Type.Optional(Type.String({ maxLength: 300 })),
+    type: Type.Optional(
+      Type.String({
+        maxLength: 64,
+        description:
+          'list/search: only entries of this recorded type, e.g. "message", "custom", "compaction"',
+      }),
+    ),
+    role: Type.Optional(
+      Type.String({
+        maxLength: 64,
+        description:
+          'list/search: only message entries with this role, e.g. "user", "assistant", "toolResult"',
+      }),
+    ),
     query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
     offset: Type.Optional(Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 2000 })),
@@ -134,6 +149,20 @@ interface SearchItem {
   content: string;
   name?: string;
   recorded?: true;
+  /** Recorded JSON range that search must not match, such as the call running this search. */
+  skip?: { start: number; end: number } | undefined;
+}
+
+/** The recorded JSON range of the tool call currently running, if this entry carries it. */
+function inFlightCall(entry: SessionEntry, json: string, toolCallId: string) {
+  if (entry.type !== "message" || entry.message.role !== "assistant") return undefined;
+  const call = entry.message.content.find(
+    (block) => block.type === "toolCall" && block.id === toolCallId,
+  );
+  if (!call) return undefined;
+  const recorded = JSON.stringify(call);
+  const start = json.indexOf(recorded);
+  return start === -1 ? undefined : { start, end: start + recorded.length };
 }
 
 function* searchableText(item: SearchItem) {
@@ -144,6 +173,7 @@ function* searchableText(item: SearchItem) {
   // JSON.stringify emits valid JSON. Decode string values so literal searches do not confuse a newline with backslash+n.
   for (const token of item.content.matchAll(/"(?:\\.|[^"\\])*"/g)) {
     if (item.content[token.index + token[0].length] === ":") continue;
+    if (item.skip && token.index >= item.skip.start && token.index < item.skip.end) continue;
     yield {
       content: Value.Parse(Type.String(), JSON.parse(token[0])),
       start: token.index,
@@ -178,7 +208,8 @@ function search(items: Iterable<SearchItem>, query: string, offset: number, limi
             ref: item.ref,
             name: item.name,
             offset: recordedPosition,
-            preview: item.content.slice(Math.max(0, recordedPosition - 20), recordedPosition + 60),
+            // Preview the decoded text so escapes read as characters, not as JSON.
+            preview: part.content.slice(Math.max(0, position - 20), position + 60),
           });
         }
         position = part.content.indexOf(query, position + 1);
@@ -223,7 +254,7 @@ export function registerContextTools(
     name: "context_history",
     label: "Context History",
     description:
-      "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
+      "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry's text, tool call, or custom type. Search previews are decoded readable text; a direct search call does not match its own tool-call block. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
     parameters: HistoryParameters,
     annotations: {
       readOnlyHint: true,
@@ -244,7 +275,7 @@ export function registerContextTools(
       ),
     renderResult: (result, options, theme, context) =>
       renderContextToolResult(result, options, theme, "History", context.args, context.isError),
-    async execute(_id, params, signal, _update, ctx) {
+    async execute(toolCallId, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       assertContextJournalReadableForModel(ctx.sessionManager);
       if (!Value.Check(HistoryParameters, params))
@@ -299,12 +330,19 @@ export function registerContextTools(
         if (!window) throw new Error("Context Window is unavailable on the selected branch");
         entries = branch.slice(window.start, windows[index + 1]?.start ?? branch.length);
       }
+      const { type, role } = params;
+      if (type !== undefined || role !== undefined)
+        entries = entries.filter(
+          (entry) =>
+            (type === undefined || entry.type === type) &&
+            (role === undefined || (entry.type === "message" && entry.message.role === role)),
+        );
       if (params.action === "list") {
         const page = entries.slice(offset, offset + limit).map((entry) => ({
           ref: contextReference(manager, entry.id),
           type: entry.type,
           timestamp: entry.timestamp,
-          preview: JSON.stringify(entry).slice(0, 80),
+          preview: describeEntry(entry),
         }));
         return result({
           items: page,
@@ -313,13 +351,20 @@ export function registerContextTools(
         });
       }
       if (!params.query) throw new Error("A non-empty literal query is required");
+      // Only the newest assistant message carries the running call; providers may reuse call IDs.
+      const running = branch.findLast(
+        (entry) => entry.type === "message" && entry.message.role === "assistant",
+      );
       function* recordedEntries(): Generator<SearchItem> {
-        for (const entry of entries)
+        for (const entry of entries) {
+          const content = JSON.stringify(entry);
           yield {
             ref: contextReference(manager, entry.id),
-            content: JSON.stringify(entry),
+            content,
             recorded: true,
+            skip: entry === running ? inFlightCall(entry, content, toolCallId) : undefined,
           };
+        }
       }
       return result(search(recordedEntries(), params.query, offset, limit));
     },

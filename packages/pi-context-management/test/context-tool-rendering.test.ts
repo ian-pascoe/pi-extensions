@@ -157,7 +157,7 @@ test("History pages expand readable Context Window and recorded-entry rows", asy
       "list",
       {
         items: [
-          { ref, type: "message", timestamp: "2026-09-07T10:00:00Z", preview: '"role":"user"' },
+          { ref, type: "message", timestamp: "2026-09-07T10:00:00Z", preview: "user: hello" },
         ],
         total: 7,
         nextOffset: 1,
@@ -167,7 +167,12 @@ test("History pages expand readable Context Window and recorded-entry rows", asy
     ],
   ] as const) {
     const result = { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
-    const args = { action, window: "context:source-session:window-a" };
+    const args = {
+      action,
+      window: "context:source-session:window-a",
+      type: "message",
+      role: "user",
+    };
     const collapsed = present(tool, result, renderContext(args));
     expect(collapsed).toContain(
       `History · ${action}${action === "list" ? " · window-a" : ""} · ${heading} · more`,
@@ -176,6 +181,8 @@ test("History pages expand readable Context Window and recorded-entry rows", asy
     if (action === "list") expect(collapsed).toContain("window-a");
     const expanded = present(tool, result, renderContext(args, true));
     expect(expanded).toContain(row);
+    expect(expanded).toContain("Type: message");
+    expect(expanded).toContain("Role: user");
     expect(expanded).toContain(`Reference: ${ref}`);
     expect(expanded).toContain("Next offset: 1");
   }
