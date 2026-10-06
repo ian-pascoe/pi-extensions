@@ -36,6 +36,7 @@ import {
   LspPositionReadOutputSchema,
   LspReadOutputSchema,
   LspCodeActionsOutputSchema,
+  LspStatusOutputSchema,
   type LspToolParameters,
   type LspToolResultDetails,
 } from "../src/lsp-tool-contract.js";
@@ -68,6 +69,11 @@ class RecordingLspClient implements LspToolServerClient {
   // oxlint-disable-next-line anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns -- Responders simulate servers over opaque protocol payloads.
   responderByMethod = new Map<string, (parameters: unknown) => unknown>();
   currentDiagnostics: Diagnostic[] = [];
+  documentDiagnosticsResult: LspDocumentDiagnosticResult = {
+    status: "fresh",
+    source: "push",
+    diagnostics: [],
+  };
   currentDiagnosticsFailure: Error | undefined;
   synchronizationFailure: Error | undefined;
   workspaceDiagnosticsResult: LspWorkspaceDiagnosticResult = {
@@ -136,7 +142,7 @@ class RecordingLspClient implements LspToolServerClient {
     _signal?: AbortSignal,
   ): Promise<LspDocumentDiagnosticResult> {
     this.requests.push("textDocument/diagnostic");
-    return { status: "fresh", source: "push", diagnostics: [] };
+    return this.documentDiagnosticsResult;
   }
 
   async workspaceDiagnostics(_signal?: AbortSignal): Promise<LspWorkspaceDiagnosticResult> {
@@ -742,7 +748,7 @@ describe("registered LSP tool", () => {
       structured_truncated: false,
       truncated: false,
     });
-    expect(JSON.parse(resultText(status))).toEqual({ servers: [runningServer], warnings: [] });
+    expect(resultText(status)).toBe(`typescript running ${fixture.context.cwd} typescript(.ts)`);
 
     const rename = await executeTool(fixture, {
       operation: "rename",
@@ -1582,10 +1588,7 @@ describe("registered LSP tool", () => {
       },
     ];
     expect(resultText(hover)).toBe(
-      [
-        'Query position: source.ts:1:9 ("emoji")',
-        formatLspToolValue({ results, warnings: [] }),
-      ].join("\n"),
+      ['Query position: source.ts:1:9 ("emoji")', "", "const emoji: string"].join("\n"),
     );
     expect(Value.Parse(LspPositionReadOutputSchema, hover.structuredContent)).toEqual({
       position,
@@ -4139,5 +4142,293 @@ describe("registered LSP tool", () => {
     expect(answer?.value).toEqual(expect.any(Array));
     expect(structured.warnings.join("\n")).toContain(result.details.spill_path);
     await fixture.close();
+  });
+
+  describe("compact text results", () => {
+    function protocolRange(line: number, character: number, length: number) {
+      return {
+        start: { line, character },
+        end: { line, character: character + length },
+      };
+    }
+
+    function oneBasedRange(line: number, character: number, length: number) {
+      return {
+        start: { line: line + 1, character: character + 1 },
+        end: { line: line + 1, character: character + length + 1 },
+      };
+    }
+
+    test("lists LSP Diagnostics one per line over unchanged structured data", async () => {
+      const fixture = await createToolFixture();
+      await writeFile(fixture.filePath, "const emoji = '😀';\nlet unused = emoji;\n");
+      const uri = pathToFileURL(fixture.filePath).href;
+      const related = [
+        { location: { uri, range: protocolRange(0, 6, 5) }, message: "'emoji' is declared here." },
+      ];
+      fixture.client.documentDiagnosticsResult = {
+        status: "fresh",
+        source: "document_pull",
+        diagnostics: [
+          {
+            range: protocolRange(1, 4, 6),
+            severity: 2,
+            source: "oxlint",
+            code: "eslint(no-unused-vars)",
+            codeDescription: {
+              href: "https://oxc.rs/docs/guide/usage/linter/rules/eslint/no-unused-vars.html",
+            },
+            message:
+              "Variable 'unused' is declared but never used.\nUnused variables should start with a '_'.",
+            relatedInformation: related,
+          },
+          {
+            range: protocolRange(1, 13, 5),
+            severity: 1,
+            source: "ts",
+            code: 2322,
+            message: "Type 'string' is not assignable to type 'number'.",
+          },
+          { range: protocolRange(0, 0, 5), message: "Prefer let." },
+        ],
+      };
+
+      const result = await executeTool(fixture, {
+        operation: "diagnostics",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe(
+        [
+          "source.ts:2:5 warning oxlint(eslint(no-unused-vars)): Variable 'unused' is declared but never used. Unused variables should start with a '_'.",
+          "source.ts:2:14 error ts(2322): Type 'string' is not assignable to type 'number'.",
+          "source.ts:1:1: Prefer let.",
+        ].join("\n"),
+      );
+      const results = [
+        {
+          root_path: fixture.context.cwd,
+          server_id: "typescript",
+          value: {
+            status: "fresh",
+            source: "document_pull",
+            diagnostics: [
+              {
+                range: oneBasedRange(1, 4, 6),
+                severity: 2,
+                source: "oxlint",
+                code: "eslint(no-unused-vars)",
+                codeDescription: {
+                  href: "https://oxc.rs/docs/guide/usage/linter/rules/eslint/no-unused-vars.html",
+                },
+                message:
+                  "Variable 'unused' is declared but never used.\nUnused variables should start with a '_'.",
+                relatedInformation: [
+                  {
+                    location: { uri: fixture.filePath, range: oneBasedRange(0, 6, 5) },
+                    message: "'emoji' is declared here.",
+                  },
+                ],
+              },
+              {
+                range: oneBasedRange(1, 13, 5),
+                severity: 1,
+                source: "ts",
+                code: 2322,
+                message: "Type 'string' is not assignable to type 'number'.",
+              },
+              { range: oneBasedRange(0, 0, 5), message: "Prefer let." },
+            ],
+          },
+        },
+      ];
+      expect(result.structuredContent).toEqual({
+        results,
+        warnings: [],
+        structured_truncated: false,
+        truncated: false,
+      });
+      expect(result.details).toMatchObject({ operation: "diagnostics", result_count: 3 });
+      // The JSON envelope these results showed before the text was compact.
+      const jsonText = formatLspToolValue({ results, warnings: [] });
+      expect(resultText(result).length).toBeLessThan(jsonText.length / 2);
+      await fixture.close();
+    });
+
+    test("shows only the hover contents under the queried position", async () => {
+      const fixture = await createToolFixture();
+      const markdown = {
+        contents: {
+          kind: "markdown",
+          value: "```typescript\nconst emoji: string\n```\n\nA *smiling* face.",
+        },
+        range: protocolRange(0, 6, 5),
+      };
+      fixture.client.responseByMethod.set("textDocument/hover", markdown);
+      const call = { file_path: fixture.filePath, line: 1, character: 7 } as const;
+
+      const result = await executeTool(fixture, { operation: "hover", ...call });
+
+      expect(resultText(result)).toBe(
+        [
+          'Query position: source.ts:1:7 ("emoji")',
+          "",
+          "```typescript",
+          "const emoji: string",
+          "```",
+          "",
+          "A *smiling* face.",
+        ].join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        results: [
+          {
+            server_id: "typescript",
+            value: { contents: markdown.contents, range: oneBasedRange(0, 6, 5) },
+          },
+        ],
+      });
+
+      fixture.client.responseByMethod.set("textDocument/hover", {
+        contents: [{ language: "typescript", value: "const emoji: string" }, "A smiling face."],
+      });
+      const marked = await executeTool(fixture, { operation: "hover", ...call });
+      expect(resultText(marked)).toBe(
+        [
+          'Query position: source.ts:1:7 ("emoji")',
+          "",
+          "```typescript",
+          "const emoji: string",
+          "```",
+          "",
+          "A smiling face.",
+        ].join("\n"),
+      );
+      await fixture.close();
+    });
+
+    test("lists one compact line per server, failed or not yet started, with settings warnings", async () => {
+      const fixture = await createToolFixture();
+      const cwd = fixture.context.cwd;
+      const typescript = {
+        command: "fake",
+        args: [],
+        environment: {},
+        languages: [
+          { extensions: [".ts", ".tsx"], fileNames: [], languageId: "typescript" },
+          { extensions: [".js"], fileNames: [], languageId: "javascript" },
+        ],
+        requireRootMarker: false,
+        rootMarkers: [],
+      };
+      const settings: ResolvedLspSettings = {
+        ...resolvedSettings([]),
+        warnings: ["Project lsp.servers.bad: command is required"],
+        servers: new Map([
+          ["typescript", { ...typescript, id: "typescript" }],
+          ["broken", { ...typescript, id: "broken" }],
+          [
+            "python",
+            {
+              ...typescript,
+              id: "python",
+              languages: [{ extensions: [".py"], fileNames: ["SConstruct"], languageId: "python" }],
+            },
+          ],
+        ]),
+      };
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd,
+        settings,
+        startClient: async ({ definition }) => {
+          if (definition.id === "broken") throw new Error("spawn broken ENOENT\nexit 127");
+          return fixture.client;
+        },
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+      await executeTool(
+        fixture,
+        { operation: "diagnostics", file_path: fixture.filePath },
+        dependencies,
+      );
+
+      const status = await executeTool(fixture, { operation: "status" }, dependencies);
+
+      const structured = Value.Parse(LspStatusOutputSchema, status.structuredContent);
+      const [, broken] = structured.servers;
+      expect(broken?.error).toContain("spawn broken ENOENT");
+      expect(resultText(status)).toBe(
+        [
+          `typescript running ${cwd} typescript(.ts,.tsx) javascript(.js)`,
+          `broken unavailable ${cwd} typescript(.ts,.tsx) javascript(.js) error: ${broken?.error?.replaceAll(/\s+/gu, " ")}`,
+          "python configured python(.py,SConstruct)",
+          "",
+          "Warning: Project lsp.servers.bad: command is required",
+        ].join("\n"),
+      );
+      expect(structured).toEqual({
+        servers: [
+          {
+            server_id: "typescript",
+            root_path: cwd,
+            state: "running",
+            languages: { typescript: [".ts", ".tsx"], javascript: [".js"] },
+          },
+          {
+            server_id: "broken",
+            root_path: cwd,
+            state: "unavailable",
+            error: broken?.error,
+            languages: { typescript: [".ts", ".tsx"], javascript: [".js"] },
+          },
+          {
+            server_id: "python",
+            state: "configured",
+            languages: { python: [".py", "SConstruct"] },
+          },
+        ],
+        warnings: ["Project lsp.servers.bad: command is required"],
+        structured_truncated: false,
+        truncated: false,
+      });
+      expect(status.details).toMatchObject({ operation: "status", result_count: 3 });
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("marks a clean file per server", async () => {
+      const fixture = await createToolFixture(["typescript", "oxlint"]);
+
+      const result = await executeTool(fixture, {
+        operation: "diagnostics",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe(
+        [
+          "typescript:",
+          "  source.ts: no diagnostics",
+          "oxlint:",
+          "  source.ts: no diagnostics",
+        ].join("\n"),
+      );
+      await fixture.close();
+    });
+
+    test("reports a server whose diagnostics timed out", async () => {
+      const fixture = await createToolFixture();
+      fixture.client.documentDiagnosticsResult = { status: "timeout", diagnostics: [] };
+
+      const result = await executeTool(fixture, {
+        operation: "diagnostics",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe("source.ts: diagnostics timeout");
+      expect(result.structuredContent).toMatchObject({
+        results: [{ server_id: "typescript", value: { status: "timeout", diagnostics: [] } }],
+      });
+      await fixture.close();
+    });
   });
 });

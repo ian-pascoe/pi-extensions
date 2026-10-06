@@ -55,6 +55,8 @@ import {
   type ServerCapabilities,
   type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
+import { formatLspDiagnosticsReadText } from "./lsp-diagnostics-text.js";
+import { formatLspHoverReadText } from "./lsp-hover-text.js";
 import { LspInputError } from "./lsp-input-error.js";
 import {
   boundLspCompletions,
@@ -101,6 +103,7 @@ import {
   type LspServerFailureCode,
   type LspServerLanguage,
   type LspServerManager,
+  type LspServerManagerStatus,
   type LspServerReadResult,
   type LspServerRoute,
   type LspUnloadedWorkspacePackages,
@@ -581,6 +584,20 @@ async function readOutput(
       scope: queried?.headline ?? [],
       emptyMessage: queried?.emptyMessage,
     });
+  } else if (operation === "diagnostics") {
+    text = formatLspDiagnosticsReadText({
+      cwd: textContext.cwd,
+      documentPath: textContext.documentPath,
+      reads: results,
+      warnings: failureWarnings,
+    });
+  } else if (operation === "hover" && queried !== undefined) {
+    text = formatLspHoverReadText({
+      reads: results,
+      warnings: failureWarnings,
+      scope: queried.headline,
+      emptyMessage: queried.emptyMessage,
+    });
   } else if (queried !== undefined) {
     // Other position reads show their JSON under the queried position, or under what was not found.
     const summary =
@@ -939,6 +956,32 @@ function statusLanguages(languages: readonly LspServerLanguage[]) {
     patterns.set(languageId, [...(patterns.get(languageId) ?? []), ...extensions, ...fileNames]);
   }
   return Object.fromEntries(patterns);
+}
+
+/**
+ * Render status as one `server_id state [root] language(extensions,...)... [error: ...]` line per
+ * Server Definition or Server Instance, followed by settings warnings.
+ */
+function formatStatusText(status: LspServerManagerStatus, cwd: string): string {
+  const lines = status.servers.map((server) => {
+    const languages = Object.entries(statusLanguages(server.languages)).map(
+      ([languageId, patterns]) => `${languageId}(${patterns.join(",")})`,
+    );
+    return [
+      server.serverId,
+      server.state,
+      ...(server.rootPath === undefined ? [] : [lspDisplayPath(cwd, server.rootPath)]),
+      ...languages,
+      ...(server.error === undefined
+        ? []
+        : [`error: ${server.error.replaceAll(/\s+/gu, " ").trim()}`]),
+    ].join(" ");
+  });
+  const warnings = status.warnings.map((warning) => `Warning: ${warning}`);
+  return [
+    ...(lines.length === 0 ? ["No configured Server Definitions."] : lines),
+    ...(warnings.length === 0 ? [] : ["", ...warnings]),
+  ].join("\n");
 }
 
 /**
@@ -1756,7 +1799,7 @@ async function executeLspOperation(
         if (server.error === undefined) return outcome;
         return { ...outcome, message: server.error };
       });
-      const text = formatLspToolValue({
+      const json = formatLspToolValue({
         servers: status.servers.map((server) => ({
           error: server.error,
           languages: statusLanguages(server.languages),
@@ -1767,9 +1810,9 @@ async function executeLspOperation(
         warnings: status.warnings,
       });
       return createLspToolOutput(
-        text,
-        operationDetails("status", outcomes),
-        lspStructuredFields(text),
+        formatStatusText(status, context.cwd),
+        { ...operationDetails("status", outcomes), result_count: status.servers.length },
+        lspStructuredFields(json),
         dependencies,
       );
     }
