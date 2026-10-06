@@ -1572,7 +1572,9 @@ describe("other workspace roots of a Server Definition", () => {
         resolve(cwd, "packages/example/nested"),
         resolve(cwd, "packages/other"),
       ].sort((left, right) => left.localeCompare(right)),
-      hasMore: false,
+      count: 3,
+      capped: false,
+      unchecked: false,
     });
     await manager.shutdown();
   });
@@ -1599,7 +1601,9 @@ describe("other workspace roots of a Server Definition", () => {
       });
       expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot), cwd).toEqual({
         rootPaths: [repo, resolve(repo, "packages/b")],
-        hasMore: false,
+        count: 2,
+        capped: false,
+        unchecked: false,
       });
     }
   });
@@ -1629,7 +1633,12 @@ describe("other workspace roots of a Server Definition", () => {
       }).findOtherWorkspaceRoots("typescript", searchedRoot);
 
     // A marker in the home directory does not widen discovery beyond the repository.
-    const repoOnly = { rootPaths: [repo, resolve(repo, "packages/b")], hasMore: false };
+    const repoOnly = {
+      rootPaths: [repo, resolve(repo, "packages/b")],
+      count: 2,
+      capped: false,
+      unchecked: false,
+    };
     expect(await findFrom(repo)).toEqual(repoOnly);
     expect(await findFrom(searchedRoot)).toEqual(repoOnly);
     // A working directory at the home directory chose that scope itself.
@@ -1672,7 +1681,9 @@ describe("other workspace roots of a Server Definition", () => {
         resolve(repo, "packages/a"),
         resolve(repo, "tools/b"),
       ],
-      hasMore: false,
+      count: 4,
+      capped: false,
+      unchecked: false,
     });
   });
 
@@ -1687,7 +1698,9 @@ describe("other workspace roots of a Server Definition", () => {
 
     expect(await manager.findOtherWorkspaceRoots("typescript", searchedRoot)).toEqual({
       rootPaths: [],
-      hasMore: false,
+      count: 0,
+      capped: false,
+      unchecked: false,
     });
   });
 
@@ -1713,12 +1726,16 @@ describe("other workspace roots of a Server Definition", () => {
     // Package directories inside the searched workspace root are not other roots.
     expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
       rootPaths: [nested],
-      hasMore: false,
+      count: 1,
+      capped: false,
+      unchecked: false,
     });
     await rm(nested, { force: true, recursive: true });
     expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
       rootPaths: [],
-      hasMore: false,
+      count: 0,
+      capped: false,
+      unchecked: false,
     });
     await manager.shutdown();
   });
@@ -1745,7 +1762,12 @@ describe("other workspace roots of a Server Definition", () => {
 
     // Before the Server Instance starts, only the queried file's package counts as loaded.
     expect(await find()).toEqual({
-      otherRoots: { rootPaths: [resolve(cwd, "vendor/tool")], hasMore: false },
+      otherRoots: {
+        rootPaths: [resolve(cwd, "vendor/tool")],
+        count: 1,
+        capped: false,
+        unchecked: false,
+      },
       unloadedPackages: {
         packageRoots: [
           resolve(cwd, "packages/b"),
@@ -1780,7 +1802,12 @@ describe("other workspace roots of a Server Definition", () => {
       rootMarkers: [],
     }).findWorkspaceScope("typescript", cwd, loaded);
     expect(markerFreeScope).toEqual({
-      otherRoots: { rootPaths: [resolve(cwd, "vendor/tool")], hasMore: false },
+      otherRoots: {
+        rootPaths: [resolve(cwd, "vendor/tool")],
+        count: 1,
+        capped: false,
+        unchecked: false,
+      },
     });
   });
 
@@ -1815,26 +1842,26 @@ describe("other workspace roots of a Server Definition", () => {
     const packageB = resolve(workspaceRoot, "packages/b");
     // The workspace root's six directories are walked first, then the parent and `other`.
     expect(await scope(100)).toEqual({
-      otherRoots: { rootPaths: [parent], hasMore: false },
+      otherRoots: { rootPaths: [parent], count: 1, capped: false, unchecked: false },
       unloadedPackages: { packageRoots: [packageB], hasMore: false },
     });
     // The workspace root is complete; `other`, outside it, is unchecked.
     expect(await scope(7)).toEqual({
-      otherRoots: { rootPaths: [parent], hasMore: true },
+      otherRoots: { rootPaths: [parent], count: 1, capped: false, unchecked: true },
       unloadedPackages: { packageRoots: [packageB], hasMore: false },
     });
     // The parent, an ancestor of the workspace root, is unchecked: only other roots are incomplete.
     expect(await scope(6)).toEqual({
-      otherRoots: { rootPaths: [], hasMore: true },
+      otherRoots: { rootPaths: [], count: 0, capped: false, unchecked: true },
       unloadedPackages: { packageRoots: [packageB], hasMore: false },
     });
     // Directories inside the workspace root are unchecked too: both are incomplete.
     expect(await scope(5)).toEqual({
-      otherRoots: { rootPaths: [], hasMore: true },
+      otherRoots: { rootPaths: [], count: 0, capped: false, unchecked: true },
       unloadedPackages: { packageRoots: [packageB], hasMore: true },
     });
     expect(await scope(1)).toEqual({
-      otherRoots: { rootPaths: [], hasMore: true },
+      otherRoots: { rootPaths: [], count: 0, capped: false, unchecked: true },
       unloadedPackages: { packageRoots: [], hasMore: true },
     });
   });
@@ -1878,7 +1905,7 @@ describe("other workspace roots of a Server Definition", () => {
           synchronizedFilePaths: () => [],
         }),
       ).toEqual({
-        otherRoots: { rootPaths: [repo], hasMore: false },
+        otherRoots: { rootPaths: [repo], count: 1, capped: false, unchecked: false },
         unloadedPackages: {
           packageRoots: [resolve(workspaceRoot, "packages/b")],
           hasMore: false,
@@ -1915,7 +1942,7 @@ describe("other workspace roots of a Server Definition", () => {
         synchronizedFilePaths: () => [],
       }),
     ).toEqual({
-      otherRoots: { rootPaths: [], hasMore: true },
+      otherRoots: { rootPaths: [], count: 0, capped: false, unchecked: true },
       unloadedPackages: { packageRoots: [resolve(workspaceRoot, "packages/b")], hasMore: false },
     });
   });
@@ -1940,7 +1967,9 @@ describe("other workspace roots of a Server Definition", () => {
 
     expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
       rootPaths: ["c34", "c35", "c36", "c37", "c38"].map((child) => resolve(cwd, child)),
-      hasMore: true,
+      count: 6,
+      capped: true,
+      unchecked: false,
     });
   });
 
@@ -1955,7 +1984,7 @@ describe("other workspace roots of a Server Definition", () => {
 
     expect(
       await manager.findOtherWorkspaceRoots("typescript", resolve(cwd, "packages/example")),
-    ).toEqual({ rootPaths: [], hasMore: false });
+    ).toEqual({ rootPaths: [], count: 0, capped: false, unchecked: false });
     await manager.shutdown();
   });
 
@@ -1973,7 +2002,9 @@ describe("other workspace roots of a Server Definition", () => {
 
     expect(await manager.findOtherWorkspaceRoots("typescript", cwd)).toEqual({
       rootPaths: [],
-      hasMore: false,
+      count: 0,
+      capped: false,
+      unchecked: false,
     });
   });
 
@@ -1995,7 +2026,7 @@ describe("other workspace roots of a Server Definition", () => {
     );
     expect(roots.rootPaths).toHaveLength(5);
     expect(roots.rootPaths).not.toContain(resolve(cwd, "packages/example"));
-    expect(roots.hasMore).toBe(true);
+    expect(roots).toMatchObject({ count: 6, capped: true, unchecked: false });
   });
 
   test("reports that more roots may exist when discovery stops at its directory limit", async () => {
@@ -2015,6 +2046,6 @@ describe("other workspace roots of a Server Definition", () => {
 
     expect(
       await manager.findOtherWorkspaceRoots("typescript", resolve(cwd, "packages/example")),
-    ).toEqual({ rootPaths: [], hasMore: true });
+    ).toEqual({ rootPaths: [], count: 0, capped: false, unchecked: true });
   });
 });

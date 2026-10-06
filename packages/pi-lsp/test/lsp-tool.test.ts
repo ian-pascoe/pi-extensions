@@ -55,7 +55,11 @@ import {
   nodeLspWorkspaceEditFileOperations,
   type LspWorkspaceEditFileOperations,
 } from "../src/lsp-workspace-edit.js";
-import { TROUBLESHOOTING_HINT, TROUBLESHOOTING_SKILL_PATH } from "../src/troubleshooting-skill.js";
+import {
+  TROUBLESHOOTING_HINT,
+  TROUBLESHOOTING_SKILL_PATH,
+  TROUBLESHOOTING_WARNING_POINTER,
+} from "../src/troubleshooting-skill.js";
 import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
 
 const temporaryDirectories: string[] = [];
@@ -1155,7 +1159,7 @@ describe("registered LSP tool", () => {
       { ...fixture.dependencies, manager },
     );
 
-    const warning = `typescript searched only ${join("packages", "a")}; 1 other typescript root exists (${join("packages", "b")}), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`;
+    const warning = `typescript searched only ${join("packages", "a")}; 1 other typescript root exists (${join("packages", "b")}), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`;
     expect(resultText(result)).toBe(
       [
         `Query position: ${join("packages", "a", "source.ts")}:1:14 ("helper")`,
@@ -1221,7 +1225,7 @@ describe("registered LSP tool", () => {
     for (const result of [references, rename]) {
       expect(result.structuredContent).toMatchObject({
         warnings: [
-          `typescript searched only ${searchedRoot}; 2 other typescript roots exist (${others.join(", ")}), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`,
+          `typescript searched only ${searchedRoot}; 2 other typescript roots exist (${others.join(", ")}), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`,
         ],
       });
     }
@@ -1273,12 +1277,88 @@ describe("registered LSP tool", () => {
     );
 
     const names = ["b", "c", "d"].map((name) => join("packages", name)).join(", ");
-    const warning = `typescript searched only ${join("packages", "a")}; 5 other typescript roots exist (${names}, +2 more), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`;
-    expect(warning).not.toContain("\n");
+    const warning = `typescript searched only ${join("packages", "a")}; 5 other typescript roots exist (${names}, +2 more), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`;
     expect(references.structuredContent).toMatchObject({ warnings: [warning] });
     expect(rename.structuredContent).toMatchObject({ warnings: [warning] });
     if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
     expect(rename.details.summary).toContain(`Warning: ${warning}\n`);
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("states the walk cap, not an early stop, when more other roots exist than it reports", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    const sourcePath = resolve(cwd, "packages/a/source.ts");
+    for (const name of ["a", "b", "c", "d", "e", "f", "g", "h"]) {
+      await mkdir(resolve(cwd, "packages", name), { recursive: true });
+      await writeFile(resolve(cwd, "packages", name, "package.json"), "{}\n");
+    }
+    await writeFile(sourcePath, "export const helper = 1;\n");
+    fixture.client.responseByMethod.set("textDocument/references", []);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: resolvedSettings(["typescript"], ["package.json"]),
+      startClient: async () => fixture.client,
+    });
+
+    const result = await executeTool(
+      fixture,
+      { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
+      { ...fixture.dependencies, manager },
+    );
+
+    // The walk stops after finding one more than the five it reports.
+    const names = ["b", "c", "d"].map((name) => join("packages", name)).join(", ");
+    expect(result.structuredContent).toMatchObject({
+      warnings: [
+        `typescript searched only ${join("packages", "a")}; at least 6 other typescript roots exist (${names}, +3 more), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`,
+      ],
+    });
+    await manager.shutdown();
+    await fixture.close();
+  });
+
+  test("counts every other root of a workspace root's walk without claiming it stopped early", async () => {
+    const fixture = await createToolFixture();
+    const cwd = fixture.context.cwd;
+    const workspaceRoot = resolve(cwd, "workspace");
+    const sourcePath = resolve(workspaceRoot, "packages/a/index.ts");
+    await mkdir(resolve(workspaceRoot, "packages/a"), { recursive: true });
+    await writeFile(resolve(workspaceRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+    await writeFile(resolve(workspaceRoot, "packages/a/package.json"), "{}\n");
+    await writeFile(sourcePath, "export const helper = 1;\n");
+    const others = ["a", "b", "c", "d", "e", "f", "g", "h"].map((name) => join("vendor", name));
+    for (const other of others) {
+      await mkdir(resolve(cwd, other), { recursive: true });
+      await writeFile(resolve(cwd, other, "package.json"), "{}\n");
+    }
+    fixture.client.responseByMethod.set("textDocument/references", []);
+    const settings = resolvedSettings(["typescript"], ["package.json"]);
+    const definition = settings.servers.get("typescript");
+    if (definition === undefined) throw new Error("Expected the typescript definition");
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd,
+      settings: {
+        ...settings,
+        servers: new Map([
+          ["typescript", { ...definition, workspaceRootMarkers: ["pnpm-workspace.yaml"] }],
+        ]),
+      },
+      startClient: async () => fixture.client,
+    });
+
+    const result = await executeTool(
+      fixture,
+      { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
+      { ...fixture.dependencies, manager },
+    );
+
+    expect(result.structuredContent).toMatchObject({
+      warnings: [
+        `typescript searched only workspace; 8 other typescript roots exist (${others.slice(0, 3).join(", ")}, +5 more), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`,
+      ],
+    });
     await manager.shutdown();
     await fixture.close();
   });
@@ -1316,7 +1396,7 @@ describe("registered LSP tool", () => {
     );
 
     if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
-    const warning = `typescript searched only ${join("packages", "a")}; 1 other typescript root exists (${join("packages", "b")}), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`;
+    const warning = `typescript searched only ${join("packages", "a")}; 1 other typescript root exists (${join("packages", "b")}), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`;
     const scope = `Searched typescript workspace root: ${join("packages", "a")}\nWarning: ${warning}`;
     expect(rename.details.summary.startsWith(`${scope}\n\n`)).toBe(true);
     expect(rename.details.summary).toContain("+export const renamed = 1;");
@@ -1357,7 +1437,7 @@ describe("registered LSP tool", () => {
 
     expect(result.structuredContent).toMatchObject({
       warnings: [
-        `typescript searched only ${cwd}; other typescript roots may exist in directories that were not checked (discovery stopped early), so importers there may be missed. Query a file there or search for importers. (see ${TROUBLESHOOTING_SKILL_PATH})`,
+        `typescript searched only ${cwd}; other typescript roots may exist in directories that were not checked (discovery stopped early), so importers there may be missed. Query a file there or search for importers. ${TROUBLESHOOTING_WARNING_POINTER}`,
       ],
     });
     await manager.shutdown();
@@ -1403,13 +1483,12 @@ describe("registered LSP tool", () => {
     const references = () =>
       executeTool(fixture, { operation: "find_references", ...position }, dependencies);
     const unloadedWarning = (names: string) =>
-      `typescript has not loaded ${names} under ${cwd}; references there may be missing. Run any LSP tool on a file in the missing package, then retry. (see ${TROUBLESHOOTING_SKILL_PATH})`;
+      `typescript has not loaded ${names} under ${cwd}; references there may be missing. Run any LSP tool on a file in each missing package, then retry. ${TROUBLESHOOTING_WARNING_POINTER}`;
     const packagePaths = (names: readonly string[]) =>
       names.map((name) => join("packages", name)).join(", ");
 
     const first = await references();
     const firstWarning = unloadedWarning(`7 packages (${packagePaths(["b", "c", "d"])}, +4 more)`);
-    expect(firstWarning).not.toContain("\n");
     expect(resultText(first)).toContain(
       `Searched typescript workspace root: ${cwd}\nWarning: ${firstWarning}`,
     );
@@ -1420,6 +1499,8 @@ describe("registered LSP tool", () => {
       dependencies,
     );
     expect(rename.structuredContent).toMatchObject({ warnings: [firstWarning] });
+    if (rename.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
+    expect(rename.details.summary).toContain(`Warning: ${firstWarning}\n`);
 
     // Querying a file in a package loads it: that package is no longer named.
     await executeTool(
@@ -1498,12 +1579,12 @@ describe("registered LSP tool", () => {
     // directories leave every package unchecked; five reach packages/b but not the src directories.
     expect(await warningsWithLimit(3)).toMatchObject({
       warnings: [
-        `typescript may not have loaded every package under ${cwd} (discovery stopped early); references in unloaded packages may be missing. Run any LSP tool on a file in the missing package, then retry. (see ${TROUBLESHOOTING_SKILL_PATH})`,
+        `typescript may not have loaded every package under ${cwd} (discovery stopped early); references in unloaded packages may be missing. Run any LSP tool on a file in each package you need, then retry. ${TROUBLESHOOTING_WARNING_POINTER}`,
       ],
     });
     expect(await warningsWithLimit(5)).toMatchObject({
       warnings: [
-        `typescript has not loaded at least 1 package (${join("packages", "b")}; discovery stopped early) under ${cwd}; references there may be missing. Run any LSP tool on a file in the missing package, then retry. (see ${TROUBLESHOOTING_SKILL_PATH})`,
+        `typescript has not loaded at least 1 package (${join("packages", "b")}; discovery stopped early) under ${cwd}; references there may be missing. Run any LSP tool on a file in the missing package, then retry. ${TROUBLESHOOTING_WARNING_POINTER}`,
       ],
     });
     // Without root markers there are no packages to name, even when the walk is cut short.

@@ -193,12 +193,19 @@ export interface LspServerManagerStatus {
 export interface LspOtherWorkspaceRoots {
   /** Up to `LSP_OTHER_WORKSPACE_ROOT_LIMIT` absolute roots, sorted. */
   readonly rootPaths: readonly string[];
+  /** How many other roots were found, which can exceed `rootPaths`. */
+  readonly count: number;
   /**
-   * Whether more roots may exist than `rootPaths` lists: more were found, or discovery stopped at
-   * its directory limit before checking every directory that could hold one. Unchecked directories
-   * inside a searched workspace root do not count; they are reported with its unloaded packages.
+   * Whether the walk stopped at the root cap, so more than `count` roots may exist. A walk that
+   * collects unloaded packages does not stop at the cap and counts every root it reaches.
    */
-  readonly hasMore: boolean;
+  readonly capped: boolean;
+  /**
+   * Whether discovery stopped at its directory limit before checking every directory that could
+   * hold another root. Unchecked directories inside a searched workspace root do not count; they
+   * are reported with its unloaded packages.
+   */
+  readonly unchecked: boolean;
 }
 
 /** Package roots inside a workspace root whose Server Instance has synchronized none of their files. */
@@ -227,12 +234,13 @@ export interface LspWorkspaceScope {
 
 function summarizeOtherRoots(
   roots: ReadonlySet<string>,
-  unchecked: boolean,
+  walk: { readonly capped: boolean; readonly unchecked: boolean },
 ): LspOtherWorkspaceRoots {
   const sorted = [...roots].sort((left, right) => left.localeCompare(right));
   return {
     rootPaths: sorted.slice(0, LSP_OTHER_WORKSPACE_ROOT_LIMIT),
-    hasMore: sorted.length > LSP_OTHER_WORKSPACE_ROOT_LIMIT || unchecked,
+    count: sorted.length,
+    ...walk,
   };
 }
 
@@ -799,8 +807,9 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
         .map((route) => route.rootPath),
     );
     const definition = this.input.settings.servers.get(serverId);
+    const reachedCap = () => roots.size >= maxRoots;
     if (definition === undefined || !hasLspRootMarkers(definition)) {
-      return { otherRoots: summarizeOtherRoots(roots, false) };
+      return { otherRoots: summarizeOtherRoots(roots, { capped: reachedCap(), unchecked: false }) };
     }
     const policy = this.rootDiscoveryPolicy(definition);
     const readDirectory = this.input.readDirectory ?? readdir;
@@ -816,8 +825,8 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     }
     const collectPackages =
       loaded !== undefined && isWorkspaceRoot && policy.rootMarkers.length > 0;
-    if (roots.size >= maxRoots && !collectPackages) {
-      return { otherRoots: summarizeOtherRoots(roots, false) };
+    if (reachedCap() && !collectPackages) {
+      return { otherRoots: summarizeOtherRoots(roots, { capped: true, unchecked: false }) };
     }
     const discoveryBase = await findLspDiscoveryBase(
       searchedRoot,
@@ -833,10 +842,12 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     });
     for (const root of discovery.otherRoots) roots.add(root);
     const isInsideSearchedRoot = (path: string) => isSameOrAncestorDirectory(searchedRoot, path);
-    const otherRoots = summarizeOtherRoots(
-      roots,
-      discovery.unchecked.some((path) => !isWorkspaceRoot || !isInsideSearchedRoot(path)),
-    );
+    const otherRoots = summarizeOtherRoots(roots, {
+      capped: !collectPackages && reachedCap(),
+      unchecked: discovery.unchecked.some(
+        (path) => !isWorkspaceRoot || !isInsideSearchedRoot(path),
+      ),
+    });
     if (!collectPackages) return { otherRoots };
 
     const client = this.clients.get(lspInstanceKey(serverId, searchedRoot));
