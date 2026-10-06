@@ -22,6 +22,7 @@ import {
   InitializedNotification,
   InitializeRequest,
   LogMessageNotification,
+  MarkupKind,
   PositionEncodingKind,
   PublishDiagnosticsNotification,
   RegistrationRequest,
@@ -78,6 +79,9 @@ const PrepareRenameProviderSchema = Type.Object(
   { prepareProvider: Type.Literal(true) },
   { additionalProperties: true },
 );
+
+/** Documentation formats the client renders, preferred first. */
+const DOCUMENTATION_FORMATS = [MarkupKind.Markdown, MarkupKind.PlainText];
 
 /** Time budgets, in milliseconds, for one language-server process. */
 export type LspServerClientTimeouts = LspTimeouts;
@@ -941,12 +945,12 @@ export class LspServerClient {
               diagnostic: { dynamicRegistration: true, relatedDocumentSupport: true },
               completion: {
                 dynamicRegistration: true,
-                completionItem: { documentationFormat: ["markdown", "plaintext"] },
+                completionItem: { documentationFormat: DOCUMENTATION_FORMATS },
               },
-              hover: { dynamicRegistration: true, contentFormat: ["markdown", "plaintext"] },
+              hover: { dynamicRegistration: true, contentFormat: DOCUMENTATION_FORMATS },
               signatureHelp: {
                 dynamicRegistration: true,
-                signatureInformation: { documentationFormat: ["markdown", "plaintext"] },
+                signatureInformation: { documentationFormat: DOCUMENTATION_FORMATS },
               },
               declaration: { dynamicRegistration: true, linkSupport: true },
               definition: { dynamicRegistration: true, linkSupport: true },

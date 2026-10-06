@@ -19,7 +19,7 @@ interface FakeServerState {
     readonly hover: unknown;
     readonly completion: unknown;
     readonly signatureHelp: unknown;
-  };
+  } | null;
   readonly settingsNotifications: readonly unknown[];
   readonly opened: readonly {
     readonly uri: string;
@@ -117,12 +117,18 @@ describe("LspServerClient", () => {
     expect(client.hasCapability("textDocument/foldingRange")).toBe(true);
     expect(client.hasCapability("textDocument/prepareRename")).toBe(true);
     expect(state.initializationOptions).toEqual({ fakeInitialization: true });
-    expect(state.textDocumentCapabilities).toMatchObject({
-      hover: { contentFormat: ["markdown", "plaintext"] },
-      completion: { completionItem: { documentationFormat: ["markdown", "plaintext"] } },
-      signatureHelp: {
-        signatureInformation: { documentationFormat: ["markdown", "plaintext"] },
-      },
+    const formats = ["markdown", "plaintext"];
+    expect(state.textDocumentCapabilities?.hover).toEqual({
+      dynamicRegistration: true,
+      contentFormat: formats,
+    });
+    expect(state.textDocumentCapabilities?.completion).toEqual({
+      dynamicRegistration: true,
+      completionItem: { documentationFormat: formats },
+    });
+    expect(state.textDocumentCapabilities?.signatureHelp).toEqual({
+      dynamicRegistration: true,
+      signatureInformation: { documentationFormat: formats },
     });
     expect(state.settingsNotifications).toEqual([
       { typescript: { preferences: { quoteStyle: "single" } } },
