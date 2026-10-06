@@ -479,7 +479,8 @@ unavailable server. An unrecognized `apply_patch` result shape adds an adapter-v
 directory, named severities (`error`, `warning`, `info`, `hint`), and the whole message collapsed
 onto one line. When every changed file is clean, the section is one line:
 `LSP diagnostics: no diagnostics`. Otherwise clean files share one `no diagnostics: a.ts, b.ts`
-line. Diagnostics preserve
+line that leaves out any file a server reported a finding for, even when another server found it
+clean. Diagnostics preserve
 duplicates from independent servers and never change the original tool's success or error state.
 Only servers that advertise document diagnostics participate; formatting-only servers remain
 available for explicit LSP formatting operations without appearing in Post-edit Diagnostics. A

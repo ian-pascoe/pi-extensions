@@ -295,6 +295,30 @@ test("groups clean files into one line after the findings and omits files with n
   );
 });
 
+test("leaves a file with a finding out of the clean line when another Server Instance reported it clean", async () => {
+  await expect(
+    appendedText([
+      diagnosticOutcome("/work/src/a.ts", 1, "broken"),
+      { kind: "no_diagnostics", path: "/work/src/a.ts" },
+      { kind: "no_diagnostics", path: "/work/src/b.ts" },
+    ]),
+  ).resolves.toBe(
+    [
+      "",
+      "",
+      "LSP diagnostics",
+      "src/a.ts:3:7 error [typescript]: broken",
+      "no diagnostics: src/b.ts",
+    ].join("\n"),
+  );
+  await expect(
+    appendedText([
+      diagnosticOutcome("/work/src/a.ts", 1, "broken"),
+      { kind: "no_diagnostics", path: "/work/src/a.ts" },
+    ]),
+  ).resolves.toBe("\n\nLSP diagnostics\nsrc/a.ts:3:7 error [typescript]: broken");
+});
+
 test("drops a file with no configured server from the one-line clean result", async () => {
   await expect(
     appendedText([
