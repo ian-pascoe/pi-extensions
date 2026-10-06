@@ -128,15 +128,29 @@ function entry(session: AgentSessionRuntime["session"], customType: string) {
 
 describe("private Advisor native sessions", () => {
   it("omits the skills catalogue so skill changes keep the Advisor system prompt stable", async () => {
+    const discoverFixture = fileURLToPath(
+      new URL("./fixtures/skill-discover-extension.ts", import.meta.url),
+    );
     const prompts: string[] = [];
+    // Skills arrive both from the agent dir and from an inherited extension's `resources_discover`.
     for (const skill of [undefined, "alpha", "beta"]) {
-      const { observed, dir } = await observedFixture();
+      const { observed, dir } = await observedFixture([fixture, discoverFixture]);
       if (skill) {
-        await mkdir(join(dir, "skills", skill), { recursive: true });
-        await writeFile(
-          join(dir, "skills", skill, "SKILL.md"),
-          `---\nname: ${skill}\ndescription: Observed ${skill} skill\n---\nBody\n`,
-        );
+        for (const root of ["skills", "extension-skills"]) {
+          await mkdir(join(dir, root, skill), { recursive: true });
+          await writeFile(
+            join(dir, root, skill, "SKILL.md"),
+            `---\nname: ${skill}\ndescription: Observed ${skill} skill\n---\nBody\n`,
+          );
+        }
+        // Without the fix these resources would be loaded into the Advisor Session.
+        const plain = new DefaultResourceLoader({
+          cwd: dir,
+          agentDir: dir,
+          settingsManager: SettingsManager.inMemory(),
+        });
+        await plain.reload();
+        expect(plain.getSkills().skills.map((item) => item.name)).toContain(skill);
       }
       const runtime = await createAdvisorSession(observed, {
         config: readAdvisorSettings(observed).settings,
@@ -145,7 +159,11 @@ describe("private Advisor native sessions", () => {
       onTestFinished(() => disposeAdvisorSession(runtime));
       expect(runtime.session.getActiveToolNames()).toContain("read");
       expect(runtime.session.resourceLoader.getSkills().skills).toEqual([]);
-      prompts.push(runtime.session.systemPrompt.replaceAll(dir, "<dir>"));
+      const created = runtime.session.systemPrompt.replaceAll(dir, "<dir>");
+      await runtime.session.reload();
+      expect(runtime.session.resourceLoader.getSkills().skills).toEqual([]);
+      expect(runtime.session.systemPrompt.replaceAll(dir, "<dir>")).toBe(created);
+      prompts.push(created);
     }
     expect(prompts[0]).not.toContain("<skills>");
     expect(prompts[1]).toBe(prompts[0]);

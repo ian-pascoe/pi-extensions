@@ -353,8 +353,11 @@ async function buildAdvisorSession(
       resourceLoaderOptions: {
         noExtensions: true,
         noContextFiles: true,
-        // A Review never loads skills; the catalogue would only bloat and destabilize the prompt.
+        // Neither Reviews nor Consultations use skills; the catalogue would only bloat and
+        // destabilize the prompt. `noSkills` alone still admits skills that inherited extensions
+        // return from `resources_discover`, so also empty every skill load.
         noSkills: true,
+        skillsOverride: () => ({ skills: [], diagnostics: [] }),
         additionalExtensionPaths: extensionPaths,
         extensionFactories: [
           ...builtins,

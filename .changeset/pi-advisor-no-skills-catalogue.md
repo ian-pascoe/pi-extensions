@@ -2,4 +2,4 @@
 "@ian-pascoe/pi-advisor": patch
 ---
 
-Create the Advisor Session without the skills catalogue, which a Review never uses, shrinking its system prompt and keeping skill changes from invalidating the Advisor's cache.
+The Advisor's system prompt no longer carries the skills catalogue, including skills contributed by inherited extensions, which Reviews and Consultations never use. This shrinks the prompt and keeps skill changes from churning the Advisor's cache.
