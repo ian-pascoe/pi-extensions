@@ -1,5 +1,9 @@
-import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ToolCall } from "@earendil-works/pi-ai";
+import type {
+  ContextEditableContent,
+  CustomMessageEntry,
+  SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 
@@ -9,14 +13,15 @@ const ARGUMENT_LIMIT = 40;
 
 function clip(text: string, limit: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+  // Drop a high surrogate left dangling by the cut so a clip never splits a character.
+  return flat.length > limit
+    ? `${flat.slice(0, limit - 1).replace(/[\ud800-\udbff]$/, "")}…`
+    : flat;
 }
 
 const Str = Type.String();
 
-type Content = string | readonly (TextContent | ImageContent | ToolCall | ThinkingContent)[];
-
-function textOf(content: Content): string {
+function textOf(content: ContextEditableContent | CustomMessageEntry["content"]): string {
   if (Value.Check(Str, content)) return content;
   return content
     .map((block) => (block.type === "text" ? block.text : block.type === "image" ? "[image]" : ""))
@@ -44,7 +49,11 @@ function describeEntryText(entry: SessionEntry): string {
         case "user":
           return labelled("user", textOf(message.content));
         case "assistant": {
-          const text = clip(textOf(message.content), TEXT_LIMIT);
+          const thinking = message.content.some((block) => block.type === "thinking");
+          const text = clip(
+            textOf(message.content) || message.errorMessage || (thinking ? "[thinking]" : ""),
+            TEXT_LIMIT,
+          );
           const calls = message.content
             .filter((block) => block.type === "toolCall")
             .map(describeCall)
@@ -52,13 +61,19 @@ function describeEntryText(entry: SessionEntry): string {
           return `assistant${text ? `: ${text}` : ""}${calls ? ` → ${calls}` : ""}`;
         }
         case "toolResult":
-          return labelled(`toolResult(${message.toolName})`, textOf(message.content));
+          return labelled(
+            `toolResult(${message.toolName}${message.isError ? ", error" : ""})`,
+            textOf(message.content),
+          );
         case "bashExecution":
           return labelled("bashExecution", message.command);
         case "custom":
           return labelled(`custom(${message.customType})`, textOf(message.content));
+        case "branchSummary":
+        case "compactionSummary":
+          return labelled(message.role, message.summary);
         default:
-          return labelled(message.role, "summary" in message ? message.summary : "");
+          return message.role;
       }
     }
     case "custom":
@@ -83,5 +98,10 @@ function describeEntryText(entry: SessionEntry): string {
 
 /** One bounded line naming what a recorded entry says, so entries can be told apart without a read. */
 export function describeEntry(entry: SessionEntry): string {
-  return clip(describeEntryText(entry), PREVIEW_LIMIT);
+  try {
+    return clip(describeEntryText(entry), PREVIEW_LIMIT);
+  } catch {
+    // A malformed or unfamiliar recorded shape must not make the whole page unreadable.
+    return entry.type;
+  }
 }

@@ -254,7 +254,7 @@ export function registerContextTools(
     name: "context_history",
     label: "Context History",
     description:
-      "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry's text, tool call, or custom type. Search previews are decoded readable text; the search call itself is not matched. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
+      "Read-only selected-branch journal. windows/list/search are paginated (max 20); read returns exact serialized entry JSON with zero-based UTF-16 offsets (max 2000 units). Search is case-sensitive literal text, with JSON string escaping handled for you; returned offsets address serialized entry JSON. Optional window limits list/search. Optional type (entry type, e.g. message) and role (message role, e.g. user) filter list/search; by default every entry is included, and list previews describe each entry's text, tool call, or custom type. Search previews are decoded readable text; a direct search call does not match its own tool-call block. References carry their issuing session; a fork can resolve inherited entry IDs only when present on its selected branch. No unrelated session, abandoned sibling, or external spill file is opened.",
     parameters: HistoryParameters,
     annotations: {
       readOnlyHint: true,
@@ -351,6 +351,10 @@ export function registerContextTools(
         });
       }
       if (!params.query) throw new Error("A non-empty literal query is required");
+      // Only the newest assistant message carries the running call; providers may reuse call IDs.
+      const running = branch.findLast(
+        (entry) => entry.type === "message" && entry.message.role === "assistant",
+      );
       function* recordedEntries(): Generator<SearchItem> {
         for (const entry of entries) {
           const content = JSON.stringify(entry);
@@ -358,7 +362,7 @@ export function registerContextTools(
             ref: contextReference(manager, entry.id),
             content,
             recorded: true,
-            skip: inFlightCall(entry, content, toolCallId),
+            skip: entry === running ? inFlightCall(entry, content, toolCallId) : undefined,
           };
         }
       }

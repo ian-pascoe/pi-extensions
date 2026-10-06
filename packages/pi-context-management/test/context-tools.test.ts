@@ -6,6 +6,7 @@ import {
 import {
   fauxAssistantMessage,
   fauxText,
+  fauxThinking,
   fauxToolCall,
   type JsonValue,
 } from "@earendil-works/pi-ai";
@@ -444,6 +445,52 @@ describe("History previews and filters", () => {
     expect(preview).toMatch(/^user: long text long text/);
     expect(preview).toMatch(/…$/);
     expect(preview).not.toContain("\n");
+  });
+
+  test("previews separate thinking-only, failed, and error entries and never split a character", async () => {
+    const f = harness();
+    f.manager.appendMessage(fauxAssistantMessage([fauxThinking("pondering")]));
+    f.manager.appendMessage({
+      ...fauxAssistantMessage([]),
+      stopReason: "error",
+      errorMessage: "rate limited",
+    });
+    f.manager.appendMessage({
+      role: "toolResult",
+      toolCallId: "call-c",
+      toolName: "edit",
+      content: [],
+      isError: true,
+      timestamp: 1,
+    });
+    f.manager.appendMessage({ role: "user", content: "😀".repeat(200), timestamp: 2 });
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: Simulates a recorded entry from another Pi version whose message lacks its content field.
+    f.manager.appendMessage({ role: "user", timestamp: 3 } as unknown as Parameters<
+      SessionManager["appendMessage"]
+    >[0]);
+    const [thinking, errored, failed, emoji, malformed] = await previews(f);
+    expect(thinking).toBe("assistant: [thinking]");
+    expect(errored).toBe("assistant: rate limited");
+    expect(failed).toBe("toolResult(edit, error)");
+    expect(emoji).toBe(`user: ${"😀".repeat(29)}…`);
+    expect(malformed).toBe("message");
+  });
+
+  test("an earlier call that reused the running call's ID is still searchable", async () => {
+    const f = harness();
+    f.manager.appendMessage(
+      fauxAssistantMessage([
+        fauxToolCall("bash", { command: "grep needle src" }, { id: "test-call" }),
+      ]),
+    );
+    f.manager.appendMessage(
+      fauxAssistantMessage([
+        fauxToolCall("context_history", { action: "search", query: "needle" }, { id: "test-call" }),
+      ]),
+    );
+    const found = JSON.parse(await f.run("context_history", { action: "search", query: "needle" }));
+    expect(found.matches).toHaveLength(1);
+    expect(found.matches[0].preview).toBe("grep needle src");
   });
 
   test("type and role filters narrow list; the default returns every entry", async () => {
