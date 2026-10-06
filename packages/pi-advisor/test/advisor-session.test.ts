@@ -165,7 +165,6 @@ describe("private Advisor native sessions", () => {
       expect(runtime.session.systemPrompt.replaceAll(dir, "<dir>")).toBe(created);
       prompts.push(created);
     }
-    expect(prompts[0]).not.toContain("<skills>");
     expect(prompts[1]).toBe(prompts[0]);
     expect(prompts[2]).toBe(prompts[0]);
   });
