@@ -11,6 +11,7 @@ import {
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  isFileFormatter,
   resolveFormatterSettings,
   type FormatterDefinition,
   type ResolvedFormatterSettings,
@@ -270,15 +271,22 @@ function runFormatterCommand(
 }
 
 /**
- * A syntax error in the changed file is an input outcome that Post-edit Diagnostics report. A bad
- * configuration file produces similar wording, so the stderr must name the formatted file and
- * must not mention configuration.
+ * A syntax error in the changed file is an input outcome that Post-edit Diagnostics report. A File
+ * Formatter's declared `syntaxErrorPattern` replaces the heuristic. Otherwise a bad configuration
+ * file produces similar wording, so the stderr must name the formatted file and must not mention
+ * configuration.
  */
-function isInputFailure(failure: FormatterCommandFailure, path: string | undefined): boolean {
-  if (path === undefined) return false;
+function isInputFailure(
+  definition: FormatterDefinition,
+  failure: FormatterCommandFailure,
+  path: string | undefined,
+): boolean {
+  if (path === undefined || failure.kind !== "exit_error") return false;
+  if (definition.syntaxErrorPattern !== undefined) {
+    return definition.syntaxErrorPattern.test(failure.stderr);
+  }
   const fileName = basename(path);
   return (
-    failure.kind === "exit_error" &&
     SYNTAX_ERROR_PATTERN.test(failure.stderr) &&
     failure.stderr.includes(fileName) &&
     !CONFIGURATION_PATTERN.test(
@@ -350,7 +358,7 @@ async function formatMutationPaths(
   for (const definition of settings.formatters.values()) {
     const matchingPaths = existing.paths.filter((path) => formatterMatchesPath(definition, path));
     if (matchingPaths.length === 0) continue;
-    const usesFile = definition.args.some((argument) => argument.includes("$FILE"));
+    const usesFile = isFileFormatter(definition);
     const discoveredRoots = await Promise.all(
       matchingPaths.map(async (path) => ({
         path,
@@ -383,7 +391,7 @@ async function formatMutationPaths(
             path ?? `workspace ${root} triggered by ${matchingPaths.join(", ")}`,
             failure,
           ),
-          diagnosable: !isInputFailure(failure, path),
+          diagnosable: !isInputFailure(definition, failure, path),
         });
       }
       // Formatters such as `eslint --fix` exit non-zero after writing fixes, so compare regardless.

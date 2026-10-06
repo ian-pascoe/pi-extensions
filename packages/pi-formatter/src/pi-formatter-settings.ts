@@ -22,6 +22,7 @@ const FormatterDefinitionSchema = Type.Object(
     files: FormatterFilesSchema,
     requireRootMarker: Type.Optional(Type.Boolean()),
     rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
+    syntaxErrorPattern: Type.Optional(NonEmptyStringSchema),
   },
   { additionalProperties: false },
 );
@@ -58,6 +59,11 @@ export interface FormatterDefinition {
   /** Require any root marker above a candidate file; false falls back to Pi's working directory. */
   readonly requireRootMarker: boolean;
   readonly rootMarkers: readonly string[];
+  /**
+   * Stderr pattern a File Formatter declares for a syntax error in the changed file. When set it
+   * replaces the built-in heuristic for classifying failures as input outcomes.
+   */
+  readonly syntaxErrorPattern: RegExp | undefined;
 }
 
 /** Contains resolved trusted formatter definitions and non-fatal configuration warnings. */
@@ -81,9 +87,34 @@ export type FormatterSettingsDocumentInput =
   | { readonly formatter?: JsonValue };
 
 interface ParsedFormatterLayer {
-  readonly definitions: ReadonlyMap<string, FormatterDefinitionWire | null>;
+  readonly definitions: ReadonlyMap<string, FormatterDefinition | null>;
   readonly timeoutMs?: number;
   readonly warnings: readonly string[];
+}
+
+/** A File Formatter runs once per changed file because its arguments contain `$FILE`. */
+export function isFileFormatter(definition: { readonly args?: readonly string[] }): boolean {
+  return (definition.args ?? []).some((argument) => argument.includes("$FILE"));
+}
+
+/** Compile a declared syntax-error pattern, or explain why the definition must be quarantined. */
+function readSyntaxErrorPattern(
+  definition: FormatterDefinitionWire,
+): { readonly pattern?: RegExp } | { readonly problem: string } {
+  if (definition.syntaxErrorPattern === undefined) return {};
+  if (!isFileFormatter(definition)) {
+    return {
+      problem:
+        "requires $FILE in args because only a File Formatter has a changed file to report a syntax error in",
+    };
+  }
+  try {
+    return { pattern: new RegExp(definition.syntaxErrorPattern) };
+  } catch (cause) {
+    return {
+      problem: `expected a valid regular expression (${cause instanceof Error ? cause.message : String(cause)})`,
+    };
+  }
 }
 
 function formatterValidationWarning(
@@ -133,7 +164,7 @@ function readFormatterLayer(
     }
   }
 
-  const definitions = new Map<string, FormatterDefinitionWire | null>();
+  const definitions = new Map<string, FormatterDefinition | null>();
   if (formatter.formatters !== undefined) {
     if (!Value.Check(JsonObjectSchema, formatter.formatters)) {
       warnings.push(`${scope} formatter.formatters: expected an object`);
@@ -172,7 +203,18 @@ function readFormatterLayer(
           );
           definitions.set(id, null);
         } else {
-          definitions.set(id, definition);
+          const syntaxErrorPattern = readSyntaxErrorPattern(definition);
+          if ("problem" in syntaxErrorPattern) {
+            warnings.push(
+              `${scope} formatter.formatters.${id}.syntaxErrorPattern: ${syntaxErrorPattern.problem}`,
+            );
+            definitions.set(id, null);
+          } else {
+            definitions.set(
+              id,
+              resolveFormatterDefinition(id, definition, syntaxErrorPattern.pattern),
+            );
+          }
         }
       }
     }
@@ -184,6 +226,7 @@ function readFormatterLayer(
 function resolveFormatterDefinition(
   id: string,
   definition: FormatterDefinitionWire,
+  syntaxErrorPattern: RegExp | undefined,
 ): FormatterDefinition {
   return {
     args: definition.args ?? [],
@@ -194,6 +237,7 @@ function resolveFormatterDefinition(
     id,
     requireRootMarker: definition.requireRootMarker ?? false,
     rootMarkers: definition.rootMarkers ?? [],
+    syntaxErrorPattern,
   };
 }
 
@@ -203,17 +247,13 @@ export function resolveFormatterSettings(
 ): ResolvedFormatterSettings {
   const globalLayer = readFormatterLayer(reader.getGlobalSettings(), "global");
   const projectLayer = readFormatterLayer(reader.getProjectSettings(), "project");
-  const definitions = new Map<string, FormatterDefinitionWire>();
+  const formatters = new Map<string, FormatterDefinition>();
   for (const [id, definition] of globalLayer.definitions) {
-    if (definition !== null) definitions.set(id, definition);
+    if (definition !== null) formatters.set(id, definition);
   }
   for (const [id, definition] of projectLayer.definitions) {
-    if (definition === null) definitions.delete(id);
-    else definitions.set(id, definition);
-  }
-  const formatters = new Map<string, FormatterDefinition>();
-  for (const [id, definition] of definitions) {
-    formatters.set(id, resolveFormatterDefinition(id, definition));
+    if (definition === null) formatters.delete(id);
+    else formatters.set(id, definition);
   }
   return {
     formatters,

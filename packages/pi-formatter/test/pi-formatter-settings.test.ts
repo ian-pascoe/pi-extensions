@@ -182,4 +182,82 @@ describe("resolveFormatterSettings", () => {
       expect.stringContaining("global formatter.formatters.impossible.rootMarkers"),
     ]);
   });
+
+  test("compiles a File Formatter's syntax-error pattern and leaves it unset by default", async () => {
+    const settings = resolveFormatterSettings(
+      await createSettingsReader(
+        {
+          formatter: {
+            formatters: {
+              declared: { ...markdownFormatter("declared"), syntaxErrorPattern: "^error: Failed" },
+              fallback: markdownFormatter("fallback"),
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(settings.warnings).toEqual([]);
+    expect(settings.formatters.get("declared")?.syntaxErrorPattern).toEqual(/^error: Failed/);
+    expect(settings.formatters.get("fallback")?.syntaxErrorPattern).toBeUndefined();
+  });
+
+  test.each([
+    { name: "an invalid regex", syntaxErrorPattern: "(unclosed", reason: "Unterminated group" },
+    { name: "an empty pattern", syntaxErrorPattern: "", reason: "fewer than 1 characters" },
+    { name: "a non-string pattern", syntaxErrorPattern: 2, reason: "string" },
+  ])(
+    "quarantines a definition with $name and shadows the global one",
+    async ({ syntaxErrorPattern, reason }) => {
+      const settings = resolveFormatterSettings(
+        await createSettingsReader(
+          { formatter: { formatters: { shadowed: markdownFormatter("global") } } },
+          {
+            formatter: {
+              formatters: {
+                shadowed: { ...markdownFormatter("project"), syntaxErrorPattern },
+                healthy: markdownFormatter("healthy"),
+              },
+            },
+          },
+        ),
+      );
+
+      expect([...settings.formatters.keys()]).toEqual(["healthy"]);
+      expect(settings.warnings).toEqual([
+        expect.stringMatching(
+          new RegExp(
+            `^project formatter\\.formatters\\.shadowed\\.syntaxErrorPattern: .*${reason}`,
+          ),
+        ),
+      ]);
+    },
+  );
+
+  test("quarantines a syntax-error pattern on a Workspace Formatter", async () => {
+    const settings = resolveFormatterSettings(
+      await createSettingsReader(
+        {
+          formatter: {
+            formatters: {
+              workspace: {
+                ...markdownFormatter("workspace"),
+                args: ["--write"],
+                syntaxErrorPattern: "error",
+              },
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(settings.formatters.size).toBe(0);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining(
+        "global formatter.formatters.workspace.syntaxErrorPattern: requires $FILE in args",
+      ),
+    ]);
+  });
 });

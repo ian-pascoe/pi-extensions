@@ -72,6 +72,49 @@ token`, names the file, and does not mention configuration outside file paths. T
 LSP's Post-edit Diagnostics report when Pi LSP is installed, not a formatter failure to diagnose.
 Bad-configuration errors and Workspace Formatter failures keep the pointer.
 
+### Declaring a syntax-error signal
+
+That wording heuristic is a guess for formatters other than oxfmt, ruff, and stylua. A File
+Formatter can instead declare how it reports a syntax error with `syntaxErrorPattern`, a
+JavaScript regular expression source string tested against the formatter's stderr. The pattern is
+case-sensitive and has no flags, so `^` and `$` anchor to the whole trimmed stderr, not to each
+line; match a line start with `(?:^|\n)`. JSON strings need doubled backslashes.
+
+```json
+{
+  "formatter": {
+    "formatters": {
+      "oxfmt": {
+        "command": "oxfmt",
+        "args": ["$FILE"],
+        "files": { "extensions": [".ts", ".tsx", ".js", ".json"] },
+        "syntaxErrorPattern": "(?:^|\\n) *x "
+      },
+      "ruff-format": {
+        "command": "ruff",
+        "args": ["format", "$FILE"],
+        "files": { "extensions": [".py", ".pyi"] },
+        "syntaxErrorPattern": "(?:^|\\n)error: Failed to parse "
+      }
+    }
+  }
+}
+```
+
+oxfmt prints a syntax error as a `  x <message>` diagnostic and reports a bad configuration file as
+`Failed to load configuration file.`. ruff prints a syntax error as `error: Failed to parse
+<file>:<line>:<column>: …`, possibly after `warning:` lines, while a bad configuration file appears
+on a later `Cause: Failed to parse …` line. Forced colour (`FORCE_COLOR`) changes stderr: ruff adds
+ANSI codes and oxfmt prints `×` instead of `x`, so these patterns then miss and the pointer stays.
+
+When `syntaxErrorPattern` is set, it replaces the heuristic for that formatter: a non-zero exit
+whose stderr matches it is an input outcome without the pointer, and any other non-zero exit keeps
+the pointer. The stderr need not name the file, and it is not checked for configuration wording, so make
+the pattern specific enough not to match the formatter's configuration errors. Timeouts and spawn errors
+always keep the pointer. Without the setting, the heuristic applies unchanged. The setting needs
+`$FILE` in `args`, and an empty or invalid regular expression quarantines the definition with a
+startup warning. The pattern is never shown to the model.
+
 Global and project `timeoutMs` values override by scope. A project formatter replaces the complete
 global definition with the same ID; set it to `null` to disable it. Invalid definitions and fields
 are quarantined individually and reported at session startup. An invalid project replacement still
