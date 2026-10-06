@@ -29,17 +29,17 @@ export EXA_API_KEY=...
 export PARALLEL_API_KEY=...
 ```
 
-| Parameter              | Values           | Default                        | Behavior                                                                                            |
-| ---------------------- | ---------------- | ------------------------------ | --------------------------------------------------------------------------------------------------- |
-| `query`                | required string  | —                              | Sent to both Search Providers                                                                       |
-| `numResults`           | integer 1–20     | 8                              | Exa receives it; for Parallel, Pi trims the returned `results` list to this count                   |
-| `contextMaxCharacters` | integer 1–50,000 | none (all text, up to 256 KiB) | Pi cuts the provider text at this many Unicode code points and appends a marker, for both providers |
+| Parameter              | Values           | Default | Behavior                                                                                            |
+| ---------------------- | ---------------- | ------- | --------------------------------------------------------------------------------------------------- |
+| `query`                | required string  | —       | Sent to both Search Providers                                                                       |
+| `numResults`           | integer 1–20     | 8       | Exa receives it; for Parallel, Pi trims the returned `results` list to this count                   |
+| `contextMaxCharacters` | integer 1–50,000 | 6,000   | Pi cuts the provider text at this many Unicode code points and appends a marker, for both providers |
 
 Neither Search Provider honors `type` or `livecrawl` (their live tool schemas do not declare them), so Web Search no longer accepts them: a call that passes either fails Pi's argument validation. Descriptions are static strings, so the tool definition (and the prompt cache) is identical whichever provider the session selects.
 
 - **`numResults` on Exa.** It is sent as Exa's `numResults`. Pi also sends the query as Exa's required `objective`.
 - **`numResults` on Parallel.** Parallel has no count field. Its text is a pretty-printed JSON object with a `results` array; Pi keeps the first `numResults` entries and prints the object the same way. Text that is not that JSON object is returned unchanged.
-- **`contextMaxCharacters`.** It is applied in Pi, after the `numResults` trim and before the model-output limits, so `structuredContent.content` and the text the model reads agree. Cut text ends with `[Search results cut at N characters]`. It is never sent to a provider.
+- **`contextMaxCharacters`.** Search Provider text is free-form, not a result list, so Web Search gives it one total budget: 6,000 characters when the parameter is omitted, and an explicit value (up to 50,000) overrides that. It is applied in Pi, after the `numResults` trim and before the model-output limits, so `structuredContent.content` and the text the model reads agree. Cut text ends with `[Search results cut at N characters]`; a cut at the default budget adds `; pass contextMaxCharacters (up to 50000) for more`. It is never sent to a provider: Exa's `web_search_exa` schema declares no such field (it rejects unknown properties), and Parallel has none either.
 
 Exa receives an optional `EXA_API_KEY` endpoint credential; Parallel receives the query and Pi session ID. Search results are provider text without citation rewriting. A provider failure has no retry and never falls back to the other provider. Failures keep their cause: `Unable to search the web for <query>: <cause>` names the HTTP status, timeout, network error class, or the Search Provider's own message (an MCP `isError` result, a JSON-RPC `error`, or Exa's free-tier rate limit). An empty or whitespace-only query is rejected before any request. API keys never appear in errors.
 
@@ -52,6 +52,10 @@ Fetches exactly one absolute HTTP or HTTPS URL. HTTP is preserved, native fetch 
 | `url`     | required absolute HTTP or HTTPS URL       | —          |
 | `format`  | `text`, `markdown`, or `html`             | `markdown` |
 | `timeout` | number greater than 0 through 120 seconds | 30 seconds |
+| `offset`  | integer 1 or more                         | 1          |
+| `limit`   | integer 1 or more                         | all lines  |
+
+`offset` and `limit` page through a long result with the semantics of Pi's `read` tool: `offset` is the 1-indexed first line and `limit` is the maximum number of lines. They count lines of the text Web Fetch returns, after HTML converts to Markdown or text (or of the page itself for `format: "html"`). When lines remain after the window, the result ends with `[Showing lines 11-30 of 100. 70 lines remain; use offset=31 to continue.]`. An `offset` past the last line fails with the line count. Without either parameter the whole result is returned, as before.
 
 Only textual MIME types are returned: an absent type, `text/*`, JSON, XML, JavaScript, and structured `+json`/`+xml` types. SVG is accepted as XML. Other images and files are rejected. A failure reads `Unable to fetch <url>: <cause>` with URL credentials removed. The cause is the HTTP status (`HTTP 404 Not Found`), `invalid URL`, `unsupported URL scheme`, `unsupported content type` (download the document and convert it to text locally), `timed out after 30 seconds`, `network error <CODE>` such as `ECONNREFUSED`, `response body exceeds the 5 MiB limit`, or `request cancelled`. Only server (5xx), network, and timeout failures point the model to the troubleshooting Skill. HTML converts to Markdown or plain text when requested; scripts and other active embedded content are not executed.
 
@@ -70,7 +74,7 @@ Both tools declare an `outputSchema` and return matching `structuredContent`, so
 | `web_search` | `{ provider, content, full_output_path? }`                                                               |
 | `web_fetch`  | `{ url, content_type, format, content, truncated, structured_truncated, full_output_path? }` (final URL) |
 
-Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's text answer (at most 256 KiB). For Parallel it is its JSON result object trimmed to `numResults`. `contextMaxCharacters` can cut it and appends a marker, which can leave Parallel's JSON unparseable. For Web Search, `full_output_path` appears whenever the model-visible text was truncated and names the file with the trimmed and cut text. Web Fetch `content` is the converted text up to 1 MiB of UTF-8, cut on a character boundary.
+Scripts cannot read the private spill file, so `content` carries more than the model sees. Web Search `content` is the Search Provider's text answer (at most 256 KiB). For Parallel it is its JSON result object trimmed to `numResults`. `contextMaxCharacters` can cut it and appends a marker, which can leave Parallel's JSON unparseable. For Web Search, `full_output_path` appears whenever the model-visible text was truncated and names the file with the trimmed and cut text. Web Fetch `content` is the converted text of the selected `offset`/`limit` window, without the continuation note, up to 1 MiB of UTF-8, cut on a character boundary.
 
 Web Fetch reports two separate cuts, as pi-lsp does:
 
@@ -83,7 +87,7 @@ Search results stay provider text, so the schema does not invent result fields: 
 
 ## Limits and security
 
-Web Search response bodies stop at 256 KiB. Web Fetch response bodies stop at 5 MiB. Both tools apply Pi's 50 KiB or 2,000-line model-output limit after parsing or conversion. When output is truncated, the complete text is written to a unique private temporary directory and the returned result includes its path and exact counts. Script results are bounded separately, as described above. The operating system owns later temporary-file cleanup.
+Web Search response bodies stop at 256 KiB. Web Fetch response bodies stop at 5 MiB. Both tools apply Pi's 50 KiB or 2,000-line model-output limit after parsing or conversion (Web Search after its 6,000-character default budget, Web Fetch after the `offset`/`limit` window). When output is truncated, the complete text of what the limit was applied to (for Web Fetch, the selected window; the continuation note stays visible after the truncation notice) is written to a unique private temporary directory and the returned result includes its path and exact counts. Script results are bounded separately, as described above. The operating system owns later temporary-file cleanup.
 
 Queries and URLs leave the machine for their Search Provider or requested host. Web Fetch intentionally permits private-network destinations, so use it only where the model and extension are trusted. The package provides no browser automation, JavaScript execution, extension-owned crawling, cookie storage, cache, settings, commands, or citation rewriting.
 

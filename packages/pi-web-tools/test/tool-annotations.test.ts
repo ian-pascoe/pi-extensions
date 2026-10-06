@@ -154,3 +154,32 @@ test("reports explicit read-only, open-world annotations without changing the pr
   expect(annotated.systemPrompt).toBe(plain.systemPrompt);
   expect(withoutTimestamps(annotated.messages)).toEqual(withoutTimestamps(plain.messages));
 });
+
+test("hands the model identical ordered tool definitions on every turn, whichever provider a session selects", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-web-tools-budgets-"));
+  directories.push(cwd);
+  // Each session has its own id, so the runs span both Search Providers.
+  const turns = [];
+  for (let run = 0; run < 4; run++) turns.push(await captureTurn(piWebToolsExtension, cwd));
+  const [first, ...rest] = turns;
+  if (first === undefined) throw new Error("Expected a captured turn");
+
+  const definitions = first.tools;
+  if (!Array.isArray(definitions)) throw new Error("Expected an ordered tool list");
+  const web = definitions.filter(
+    (tool): tool is { name: string; description: string; parameters: unknown } =>
+      tool?.name === "web_search" || tool?.name === "web_fetch",
+  );
+  expect(web.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
+  const serialized = JSON.stringify(web);
+  // The output budgets are part of the static definitions the model is given.
+  expect(serialized).toContain("default: 6,000");
+  expect(serialized).toContain('"offset"');
+  expect(serialized).toContain('"limit"');
+  expect(serialized).toContain("1-indexed");
+  for (const turn of rest) {
+    expect(turn.tools).toEqual(first.tools);
+    expect(turn.systemPrompt).toBe(first.systemPrompt);
+    expect(withoutTimestamps(turn.messages)).toEqual(withoutTimestamps(first.messages));
+  }
+});

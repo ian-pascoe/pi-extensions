@@ -105,6 +105,20 @@ const WEB_FETCH_PARAMETERS = Type.Object(
         description: "Total timeout in seconds (default: 30, maximum: 120)",
       }),
     ),
+    offset: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description:
+          "Line to start reading from (1-indexed), counted in the returned format after conversion",
+      }),
+    ),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description:
+          "Maximum number of lines to return; the result says how many lines remain and the offset to continue from",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -125,7 +139,7 @@ type FetchedText = {
 };
 
 const WEB_FETCH_DESCRIPTION =
-  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML pages are converted to their main content, with the page title, when text or Markdown is requested; HTML format returns the page unchanged. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
+  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML pages are converted to their main content, with the page title, when text or Markdown is requested; HTML format returns the page unchanged. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file. Use offset and limit (lines, like the read tool) to page through a long result.";
 
 function parseHttpUrl(input: string): URL {
   let url: URL;
@@ -428,6 +442,38 @@ async function fetchText(
   };
 }
 
+/** The lines of fetched text a call asked for, and the note on what is left. */
+type LineWindow = {
+  readonly text: string;
+  readonly footer?: string;
+};
+
+/**
+ * Select `limit` lines from the 1-indexed `offset`, counted like Pi's `read` tool, and say how many
+ * lines remain and where to continue. Without either argument the text is returned whole.
+ */
+function selectLineWindow(
+  content: string,
+  offset: number | undefined,
+  limit: number | undefined,
+): LineWindow {
+  if (offset === undefined && limit === undefined) return { text: content };
+  const lines = content.split("\n");
+  const start = (offset ?? 1) - 1;
+  if (start >= lines.length) {
+    throw new WebInputError(
+      `offset ${offset} is beyond the end of the content (${lines.length} lines)`,
+    );
+  }
+  const end = limit === undefined ? lines.length : Math.min(start + limit, lines.length);
+  const text = lines.slice(start, end).join("\n");
+  if (end >= lines.length) return { text };
+  return {
+    text,
+    footer: `[Showing lines ${start + 1}-${end} of ${lines.length}. ${lines.length - end} lines remain; use offset=${end + 1} to continue.]`,
+  };
+}
+
 function unableToFetch(safeUrl: string, failure: WebFailure): Error {
   const message = `Unable to fetch ${safeUrl}: ${failure.cause}`;
   return new Error(failure.diagnosable ? `${message}\n\n${TROUBLESHOOTING_HINT}` : message);
@@ -469,7 +515,7 @@ export function createWebFetchTool(
           "requested URL",
           describeWebFailure(
             new WebInputError(
-              "invalid parameters (expected a url string with optional format and timeout)",
+              "invalid parameters (expected a url string with optional format, timeout, offset, and limit)",
             ),
           ),
         );
@@ -492,9 +538,15 @@ export function createWebFetchTool(
         // Dead links, blocked pages, bad input, and user cancellation are not failures the Skill diagnoses.
         throw unableToFetch(safeUrl, describeWebFailure(error, { callerSignal, timeoutMs }));
       }
+      let window: LineWindow;
+      try {
+        window = selectLineWindow(fetched.content, input.offset, input.limit);
+      } catch (error) {
+        throw unableToFetch(safeUrl, describeWebFailure(error));
+      }
       // Spilling the full output is local work; its failures are not Web Fetch transport failures.
-      const output = await createWebToolOutput(fetched.content);
-      const structured = boundWebToolStructuredText(fetched.content);
+      const output = await createWebToolOutput(window.text, { footer: window.footer });
+      const structured = boundWebToolStructuredText(window.text);
       const structuredContent: WebFetchOutput = {
         url: fetched.finalUrl,
         content_type: fetched.contentType,

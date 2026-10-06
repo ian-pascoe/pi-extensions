@@ -18,6 +18,9 @@ import { createWebToolOutput, WebToolTruncationDetailsSchema } from "./web-tool-
 const DEFAULT_EXA_URL = "https://mcp.exa.ai/mcp";
 const DEFAULT_PARALLEL_URL = "https://search.parallel.ai/mcp";
 const DEFAULT_NUM_RESULTS = 8;
+/** Default total budget for Search Provider text, in Unicode code points. */
+export const WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS = 6_000;
+const MAX_CONTEXT_MAX_CHARACTERS = 50_000;
 /** Longest `objective` Exa's `web_search_exa` schema accepts, in characters. */
 const EXA_OBJECTIVE_MAX_CHARACTERS = 4096;
 const MAX_SEARCH_RESPONSE_BYTES = 256 * 1024;
@@ -117,9 +120,10 @@ const WEB_SEARCH_PARAMETERS = Type.Object(
     contextMaxCharacters: Type.Optional(
       Type.Integer({
         minimum: 1,
-        maximum: 50_000,
+        maximum: MAX_CONTEXT_MAX_CHARACTERS,
+        default: WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS,
         description:
-          "Maximum characters of Search Provider text returned (1–50,000). No default: all text is returned, up to a 256 KiB response limit. Longer text is cut at that many code points, then marked.",
+          "Maximum characters of Search Provider text returned (1–50,000, default: 6,000). Longer text is cut at that many code points, then marked; raise it to read more.",
       }),
     ),
   },
@@ -164,7 +168,7 @@ const MCP_RESPONSE_SCHEMA = Type.Object(
 );
 
 const WEB_SEARCH_DESCRIPTION =
-  "Discover current public web information using Exa or Parallel. Results are textual and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
+  "Discover current public web information using Exa or Parallel. Results are textual, cut at 6,000 characters by default (see contextMaxCharacters), and model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file.";
 
 type ExaSearchArguments = {
   query: string;
@@ -518,12 +522,20 @@ function truncateCodePoints(text: string, limit: number): string {
   return text.length <= limit ? text : Array.from(text).slice(0, limit).join("");
 }
 
-/** Cut provider text at `contextMaxCharacters` code points, then mark the cut. */
+/**
+ * Cut provider text at `contextMaxCharacters` code points (default 6,000), then mark the cut. The
+ * default cut also says how to read more, since the model did not choose that budget.
+ */
 function limitSearchText(text: string, parameters: WebSearchParameters): string {
-  const limit = parameters.contextMaxCharacters;
-  if (limit === undefined) return text;
+  const explicit = parameters.contextMaxCharacters;
+  const limit = explicit ?? WEB_SEARCH_DEFAULT_CONTEXT_MAX_CHARACTERS;
   const kept = truncateCodePoints(text, limit);
-  return kept === text ? text : `${kept}\n\n[Search results cut at ${limit} characters]`;
+  if (kept === text) return text;
+  const more =
+    explicit === undefined
+      ? `; pass contextMaxCharacters (up to ${MAX_CONTEXT_MAX_CHARACTERS}) for more`
+      : "";
+  return `${kept}\n\n[Search results cut at ${limit} characters${more}]`;
 }
 
 function unableToSearch(query: string | undefined, failure: WebFailure): Error {

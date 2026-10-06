@@ -59,13 +59,28 @@ async function removeTemporaryDirectory(directory: string): Promise<void> {
   await rm(directory, { recursive: true, force: true }).catch(() => undefined);
 }
 
-/** Apply Pi's output limits and save complete truncated text to a private temporary file. */
-export async function createWebToolOutput(text: string): Promise<WebToolOutput> {
-  const initial = truncateHead(text, {
+/** Options for {@link createWebToolOutput}. */
+export type WebToolOutputOptions = {
+  /** One-line note that always stays visible after the text, and is not part of the spill. */
+  readonly footer?: string | undefined;
+};
+
+/**
+ * Apply Pi's output limits and save complete truncated text to a private temporary file. The
+ * footer, when given, is reserved inside the limits so it is never cut off.
+ */
+export async function createWebToolOutput(
+  text: string,
+  options: WebToolOutputOptions = {},
+): Promise<WebToolOutput> {
+  const footer = options.footer;
+  const footerText = footer === undefined ? "" : `\n\n${footer}`;
+  const withFooter = `${text}${footerText}`;
+  const initial = truncateHead(withFooter, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  if (!initial.truncated) return { content: text };
+  if (!initial.truncated) return { content: withFooter };
 
   let directory: string | undefined;
   let fullOutputPath: string;
@@ -82,14 +97,15 @@ export async function createWebToolOutput(text: string): Promise<WebToolOutput> 
   }
 
   const largestNotice = `[Output truncated: showing ${initial.totalLines} of ${initial.totalLines} lines (${initial.totalBytes} of ${initial.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
-  const visibleBytes = DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2;
+  const visibleBytes =
+    DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2 - Buffer.byteLength(footerText);
   if (visibleBytes < 0) {
     await removeTemporaryDirectory(directory);
     throw new Error("Web Tool truncation notice exceeds Pi output limit");
   }
   const visible = truncateHead(text, {
     maxBytes: visibleBytes,
-    maxLines: DEFAULT_MAX_LINES - TRUNCATION_NOTICE_LINES,
+    maxLines: DEFAULT_MAX_LINES - TRUNCATION_NOTICE_LINES - footerText.split("\n").length + 1,
   });
   const truncation: WebToolTruncationDetails = {
     outputLines: visible.outputLines,
@@ -100,7 +116,7 @@ export async function createWebToolOutput(text: string): Promise<WebToolOutput> 
   };
   const notice = `[Output truncated: showing ${visible.outputLines} of ${visible.totalLines} lines (${visible.outputBytes} of ${visible.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
   return {
-    content: visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`,
+    content: `${visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`}${footerText}`,
     truncation,
   };
 }
