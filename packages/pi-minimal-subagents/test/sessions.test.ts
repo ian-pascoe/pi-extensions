@@ -1085,12 +1085,12 @@ describe("minimal subagent sessions", () => {
     "keeps configured context tools and ordered definitions across child turns and restoration (%s)",
     async (mode) => {
       const withCodeMode = mode !== "standalone";
-      const coordinatorToolNames = ["agent_message", "subagent_wait", "subagent_status"];
+      const coordinatorToolNames = ["agent_message"];
       const notesCall = withCodeMode
         ? {
             name: "codemode",
             arguments: {
-              code: 'return { notes: await tools.context_notes({ action: "list" }), coordination: await tools.subagent_status({}), script: await tools.script_tool({}), names: ALL_TOOLS.map((tool) => tool.name).sort() };',
+              code: 'return { notes: await tools.context_notes({ action: "list" }), script: await tools.script_tool({}), names: ALL_TOOLS.map((tool) => tool.name).sort() };',
             },
           }
         : { name: "context_notes", arguments: { action: "list" } };
@@ -1288,10 +1288,9 @@ export default function (pi) {
           }
           const content = result?.role === "toolResult" ? result.content : [];
           const output = content.at(-1);
-          // Coordinator tools and context_notes declare an outputSchema, so scripts get structured objects.
+          // context_notes declares an outputSchema, so scripts get structured objects.
           expect(JSON.parse(output?.type === "text" ? output.text : "")).toEqual({
             notes: { notes: [], total: 0, next_offset: null },
-            coordination: { parent_id: "notes-child", agents: [] },
             script: "script ok",
             // Model-only context_rollover is declared to the child but never script-callable.
             names: [
