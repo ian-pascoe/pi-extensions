@@ -400,13 +400,36 @@ function manifestForOperations(
   };
 }
 
-function manifestQueuePaths(manifest: LspMutationManifest): string[] {
+/**
+ * The key Pi's file mutation queue uses for a path: its real path, or the resolved path when it
+ * does not exist. Pi does not export its own key function.
+ */
+async function mutationQueueKey(path: string): Promise<string> {
+  const resolved = resolve(path);
+  try {
+    return await realpath(resolved);
+  } catch (cause) {
+    if (cause instanceof Error && isMissingPathError(cause)) return resolved;
+    throw cause;
+  }
+}
+
+/**
+ * The paths to queue for a manifest: one per distinct queue key, in the order Pi Formatter takes
+ * them (`localeCompare`, ties broken by code unit). Pi's queue is not reentrant, so paths naming
+ * one file are queued once, and sorting keys rather than named paths keeps a symlink from
+ * ordering differently than its target does for another holder.
+ */
+async function manifestQueuePaths(manifest: LspMutationManifest): Promise<string[]> {
   const paths = new Set<string>();
   for (const entry of manifest.entries) {
     paths.add(entry.path);
     if (entry.destination_path !== undefined) paths.add(entry.destination_path);
   }
-  return [...paths].sort((left, right) => left.localeCompare(right));
+  const keys = new Set(await Promise.all([...paths].map(mutationQueueKey)));
+  return [...keys].sort(
+    (left, right) => left.localeCompare(right) || (left < right ? -1 : left > right ? 1 : 0),
+  );
 }
 
 async function restorePath(
@@ -688,7 +711,7 @@ export class LspWorkspaceEditStore {
     return rejected;
   }
 
-  /** Revalidate and apply one preview inside every sorted canonical mutation queue. */
+  /** Revalidate and apply one preview inside every sorted real-path mutation queue. */
   async applyPreview(
     previewId: string,
     manifest: LspMutationManifest,
@@ -702,7 +725,7 @@ export class LspWorkspaceEditStore {
         "Mutation Manifest no longer matches its preview",
       );
     }
-    const queuePaths = manifestQueuePaths(canonical);
+    const queuePaths = await manifestQueuePaths(canonical);
     const acquire = async (index: number): Promise<LspWorkspaceEditApplyResult> => {
       const path = queuePaths[index];
       if (path === undefined) return this.applyInsideQueues(preview, canonical, signal);

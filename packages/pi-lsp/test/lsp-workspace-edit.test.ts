@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   readlink,
+  realpath,
   rm,
   stat,
   symlink,
@@ -13,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { PositionEncodingKind, type WorkspaceEdit } from "vscode-languageserver-protocol";
 import { afterEach, describe, expect, test } from "vitest";
 import {
@@ -498,6 +500,104 @@ describe("Workspace Edit Preview and Validated Workspace Edit", () => {
     expect(queued).toEqual([a, z]);
     expect(await readFile(a, "utf8")).toBe("a");
     expect(await readFile(z, "utf8")).toBe("z");
+  });
+
+  test("queues a path naming the same file as another once, without waiting on itself", async () => {
+    const root = await makeTemporaryDirectory();
+    const target = resolve(root, "z.ts");
+    const link = resolve(root, "a.ts");
+    await writeFile(target, "z");
+    await symlink("z.ts", link);
+    const queued: string[] = [];
+    const store = new LspWorkspaceEditStore({
+      createPreviewId: () => "same-file-once",
+      queueMutation: (path, operation) => {
+        queued.push(path);
+        return withFileMutationQueue(path, operation);
+      },
+    });
+    const preview = await store.createPreview({
+      edit: {
+        documentChanges: [
+          {
+            textDocument: { uri: fileUri(target), version: null },
+            edits: [
+              {
+                newText: "Z",
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+              },
+            ],
+          },
+          { kind: "delete", uri: fileUri(link) },
+        ],
+      },
+      serverId: "typescript",
+    });
+    const applied = store.applyPreview(
+      preview.preview_id,
+      store.prepareMutationManifest(preview.preview_id),
+    );
+    const outcome = await Promise.race([
+      applied.then(() => "completed"),
+      new Promise<string>((done) => setTimeout(() => done("deadlocked"), 3000)),
+    ]);
+    expect(outcome).toBe("completed");
+    expect(queued).toEqual([await realpath(target)]);
+    expect(await readFile(target, "utf8")).toBe("Z");
+  });
+
+  test("applies a Workspace Edit deleting a symlink without deadlocking a real-path holder", async () => {
+    const root = await makeTemporaryDirectory();
+    const middle = resolve(root, "m.ts");
+    const target = resolve(root, "z.ts");
+    const link = resolve(root, "a.ts");
+    await writeFile(middle, "m");
+    await writeFile(target, "z");
+    await symlink("z.ts", link);
+    const store = new LspWorkspaceEditStore({ createPreviewId: () => "symlink-order" });
+    const preview = await store.createPreview({
+      edit: {
+        documentChanges: [
+          {
+            textDocument: { uri: fileUri(middle), version: null },
+            edits: [
+              {
+                newText: "M",
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+              },
+            ],
+          },
+          { kind: "delete", uri: fileUri(link) },
+        ],
+      },
+      serverId: "typescript",
+    });
+    // A formatter-style holder takes real-path keys in sorted order: m.ts, then z.ts.
+    const firstKey = await realpath(middle);
+    const secondKey = await realpath(target);
+    expect(firstKey.localeCompare(secondKey)).toBeLessThan(0);
+    let holderHoldsFirst: () => void = () => undefined;
+    const holdingFirst = new Promise<void>((done) => {
+      holderHoldsFirst = done;
+    });
+    const holder = withFileMutationQueue(firstKey, async () => {
+      holderHoldsFirst();
+      await new Promise((done) => setTimeout(done, 150));
+      await withFileMutationQueue(secondKey, async () => undefined);
+    });
+    await holdingFirst;
+    const applied = store.applyPreview(
+      preview.preview_id,
+      store.prepareMutationManifest(preview.preview_id),
+    );
+    const outcome = await Promise.race([
+      Promise.all([holder, applied]).then(() => "completed"),
+      new Promise<string>((done) => setTimeout(() => done("deadlocked"), 3000)),
+    ]);
+    expect(outcome).toBe("completed");
+    expect(await readFile(target, "utf8")).toBe("z");
+    await expect(lstat(link)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(middle, "utf8")).toBe("M");
   });
 
   test("rolls a failed batch back in reverse and reports exact rollback failures", async () => {
