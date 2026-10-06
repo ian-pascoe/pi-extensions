@@ -13,6 +13,18 @@
     "test": {
       "dependsOn": ["transit"]
     },
+    "//#test:root": {
+      "inputs": [
+        "test/**",
+        "vitest.config.ts",
+        "package.json",
+        "packages/pi-formatter/**",
+        "packages/pi-lsp/**",
+        "packages/pi-utils/src/**",
+        "!**/node_modules/**",
+        "!**/.turbo/**"
+      ]
+    },
     "//#typecheck:root": {
       "inputs": ["scripts/**/*.mjs", "test/**/*.ts", "vitest.config.ts"]
     },
