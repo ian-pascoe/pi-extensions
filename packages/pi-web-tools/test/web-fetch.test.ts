@@ -66,6 +66,8 @@ async function executeFetch(
     readonly url: string;
     readonly format?: "text" | "markdown" | "html";
     readonly timeout?: number;
+    readonly offset?: number;
+    readonly limit?: number;
   },
   signal?: AbortSignal,
 ) {
@@ -230,6 +232,251 @@ describe("Web Fetch", () => {
     );
   });
 
+  describe("line window", () => {
+    const numbered = (count: number) =>
+      Array.from({ length: count }, (_, index) => `line ${index + 1}`).join("\n");
+    const text = (result: Awaited<ReturnType<typeof executeFetch>>) => {
+      const part = result.content[0];
+      if (part?.type !== "text") throw new Error("Expected text result");
+      return part.text;
+    };
+    const fetchPlain =
+      (body: string): typeof globalThis.fetch =>
+      async () =>
+        new Response(body, { headers: { "content-type": "text/plain" } });
+
+    test("returns the page unchanged, with no note, when offset and limit are omitted", async () => {
+      const result = await executeFetch(
+        { fetch: fetchPlain(numbered(5)) },
+        { url: "https://example.com/w", format: "text" },
+      );
+      expect(text(result)).toBe(numbered(5));
+    });
+
+    test("reads limit lines from a 1-indexed offset and says how many remain and where to continue", async () => {
+      const result = await executeFetch(
+        { fetch: fetchPlain(numbered(100)) },
+        { url: "https://example.com/w", format: "text", offset: 11, limit: 20 },
+      );
+      const expected = `${Array.from({ length: 20 }, (_, index) => `line ${index + 11}`).join("\n")}\n\n[Showing lines 11-30 of 100. 70 lines remain. Use offset=31 to continue.]`;
+      expect(text(result)).toBe(expected);
+      // Scripts receive the window text, without the note.
+      expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).toBe(
+        Array.from({ length: 20 }, (_, index) => `line ${index + 11}`).join("\n"),
+      );
+      expect(result.details.truncation).toBeUndefined();
+    });
+
+    test("treats a limit without an offset as starting at line 1", async () => {
+      const result = await executeFetch(
+        { fetch: fetchPlain(numbered(10)) },
+        { url: "https://example.com/w", format: "text", limit: 3 },
+      );
+      expect(text(result)).toBe(
+        "line 1\nline 2\nline 3\n\n[Showing lines 1-3 of 10. 7 lines remain. Use offset=4 to continue.]",
+      );
+    });
+
+    test("adds no note when the window reaches the end of the page", async () => {
+      const toEnd = await executeFetch(
+        { fetch: fetchPlain(numbered(10)) },
+        { url: "https://example.com/w", format: "text", offset: 8 },
+      );
+      expect(text(toEnd)).toBe("line 8\nline 9\nline 10");
+      const exact = await executeFetch(
+        { fetch: fetchPlain(numbered(10)) },
+        { url: "https://example.com/w", format: "text", offset: 9, limit: 2 },
+      );
+      expect(text(exact)).toBe("line 9\nline 10");
+    });
+
+    test("fails with the line count when offset is past the end", async () => {
+      const message = await failureMessage(
+        executeFetch(
+          { fetch: fetchPlain(numbered(10)) },
+          { url: "https://example.com/w", format: "text", offset: 11 },
+        ),
+      );
+      expect(message).toBe(
+        "Unable to fetch https://example.com/w: Offset 11 is beyond end of content (10 lines total)",
+      );
+      expect(message).not.toContain(TROUBLESHOOTING_HINT);
+    });
+
+    test("windows the converted Markdown, not the source HTML", async () => {
+      const html = `<html><body><main>${Array.from({ length: 50 }, (_, index) => `<p>para ${index + 1}</p>`).join("")}</main></body></html>`;
+      const fetch: typeof globalThis.fetch = async () =>
+        new Response(html, { headers: { "content-type": "text/html" } });
+      const whole = await executeFetch({ fetch }, { url: "https://example.com/h" });
+      const converted = text(whole).split("\n");
+      const windowed = await executeFetch(
+        { fetch },
+        { url: "https://example.com/h", offset: 3, limit: 4 },
+      );
+      expect(text(windowed)).toBe(
+        `${converted.slice(2, 6).join("\n")}\n\n[Showing lines 3-6 of ${converted.length}. ${converted.length - 6} lines remain. Use offset=7 to continue.]`,
+      );
+      // format: html windows the unconverted page.
+      const rawHtml = await executeFetch(
+        { fetch },
+        { url: "https://example.com/h", format: "html", offset: 1, limit: 1 },
+      );
+      expect(text(rawHtml)).toBe(`${html}`);
+    });
+
+    /** Last visible content line number, the note's range, and its next offset, read from the output. */
+    const continuation = (visible: string) => {
+      const note =
+        /\[Showing lines (\d+)-(\d+) of (\d+)\. (\d+) lines? remains?\. Use offset=(\d+) to continue\.\]$/.exec(
+          visible,
+        );
+      if (note === null) throw new Error(`No continuation note in ${visible.slice(-200)}`);
+      const [first = 0, last = 0, total = 0, remaining = 0, next = 0] = note.slice(1).map(Number);
+      const shown = visible
+        .split("\n")
+        .filter((line) => /^line \d+$/.test(line))
+        .map((line) => Number(line.slice(5)));
+      return { first, last, total, remaining, next, shown };
+    };
+
+    test("names the next unseen line when the window is cut at the output budget", async () => {
+      const page = numbered(5_000);
+      const result = await executeFetch(
+        { fetch: fetchPlain(page) },
+        { url: "https://example.com/w", format: "text", offset: 11, limit: 3_000 },
+      );
+      const path = result.details.truncation?.fullOutputPath;
+      if (path === undefined) throw new Error("Expected Web Fetch spill");
+      spillDirectories.push(dirname(path));
+      const visible = text(result);
+      const note = continuation(visible);
+
+      // The model saw fewer than the 3,000 requested lines, and the note says exactly which.
+      expect(note.shown.length).toBeLessThan(3_000);
+      expect(note.shown[0]).toBe(11);
+      expect(note.last).toBe(note.shown.at(-1));
+      expect(note.next).toBe(note.last + 1);
+      expect(note.total).toBe(5_000);
+      expect(note.remaining).toBe(5_000 - note.last);
+      expect(visible.split("\n").length).toBeLessThanOrEqual(2_000);
+      expect(Buffer.byteLength(visible)).toBeLessThanOrEqual(50 * 1024);
+      expect(visible).toContain(`Full output saved to: ${path}`);
+      expect(result.details.truncation).toMatchObject({ totalLines: 3_000 });
+      // The spill holds exactly the requested window, without the note.
+      expect(await readFile(path, "utf8")).toBe(
+        Array.from({ length: 3_000 }, (_, index) => `line ${index + 11}`).join("\n"),
+      );
+      expect(result.structuredContent).toMatchObject({
+        truncated: true,
+        full_output_path: path,
+        total_lines: 5_000,
+        next_offset: 3_011,
+      });
+    });
+
+    test("continues past what the model saw, for an offset alone and for no window at all", async () => {
+      for (const parameters of [{ offset: 5 }, {}]) {
+        const result = await executeFetch(
+          { fetch: fetchPlain(numbered(5_000)) },
+          { url: "https://example.com/w", format: "text", ...parameters },
+        );
+        const path = result.details.truncation?.fullOutputPath;
+        if (path === undefined) throw new Error("Expected Web Fetch spill");
+        spillDirectories.push(dirname(path));
+        const note = continuation(text(result));
+        expect(note.first).toBe(parameters.offset ?? 1);
+        expect(note.shown[0]).toBe(note.first);
+        expect(note.next).toBe(note.shown.at(-1)! + 1);
+        expect(note.total).toBe(5_000);
+      }
+    });
+
+    test("pages through a long page with the note's offsets and sees every line exactly once", async () => {
+      const page = numbered(5_000);
+      const seen: number[] = [];
+      let offset: number | undefined;
+      for (let pass = 0; pass < 10; pass++) {
+        const result = await (offset === undefined
+          ? executeFetch(
+              { fetch: fetchPlain(page) },
+              { url: "https://example.com/w", format: "text" },
+            )
+          : executeFetch(
+              { fetch: fetchPlain(page) },
+              { url: "https://example.com/w", format: "text", offset },
+            ));
+        const spill = result.details.truncation?.fullOutputPath;
+        if (spill !== undefined) spillDirectories.push(dirname(spill));
+        const visible = text(result);
+        const lines = visible
+          .split("\n")
+          .filter((line) => /^line \d+$/.test(line))
+          .map((line) => Number(line.slice(5)));
+        seen.push(...lines);
+        if (!/Use offset=\d+ to continue/.test(visible)) break;
+        offset = continuation(visible).next;
+      }
+      expect(seen).toEqual(Array.from({ length: 5_000 }, (_, index) => index + 1));
+    });
+
+    test("tells scripts the total and the next offset only when a window was requested", async () => {
+      const windowed = await executeFetch(
+        { fetch: fetchPlain(numbered(100)) },
+        { url: "https://example.com/w", format: "text", offset: 11, limit: 20 },
+      );
+      expect(windowed.structuredContent).toMatchObject({ total_lines: 100, next_offset: 31 });
+      const toEnd = await executeFetch(
+        { fetch: fetchPlain(numbered(100)) },
+        { url: "https://example.com/w", format: "text", offset: 91 },
+      );
+      expect(toEnd.structuredContent).toMatchObject({ total_lines: 100 });
+      expect(toEnd.structuredContent).not.toHaveProperty("next_offset");
+      const whole = await executeFetch(
+        { fetch: fetchPlain(numbered(100)) },
+        { url: "https://example.com/w", format: "text" },
+      );
+      expect(whole.structuredContent).not.toHaveProperty("total_lines");
+      expect(whole.structuredContent).not.toHaveProperty("next_offset");
+      for (const result of [windowed, toEnd, whole]) {
+        expect(Value.Check(WebFetchOutputSchema, result.structuredContent)).toBe(true);
+      }
+    });
+
+    test("omits next_offset when script content was cut at 1 MiB, so scripts never skip lines", async () => {
+      const page = Array.from({ length: 40_000 }, (_, index) => `${"é".repeat(30)} ${index}`).join(
+        "\n",
+      );
+      const result = await executeFetch(
+        { fetch: fetchPlain(page) },
+        { url: "https://example.com/w", format: "text", limit: 39_000 },
+      );
+      const spill = result.details.truncation?.fullOutputPath;
+      if (spill !== undefined) spillDirectories.push(dirname(spill));
+      expect(result.structuredContent).toMatchObject({
+        structured_truncated: true,
+        total_lines: 40_000,
+      });
+      expect(result.structuredContent).not.toHaveProperty("next_offset");
+    });
+
+    test("says '1 line remains' for a single remaining line", async () => {
+      const result = await executeFetch(
+        { fetch: fetchPlain(numbered(3)) },
+        { url: "https://example.com/w", format: "text", limit: 2 },
+      );
+      expect(text(result)).toContain("1 line remains. Use offset=3 to continue.");
+    });
+
+    test("describes the window in the static parameter schema", () => {
+      const { properties }: { properties: Record<string, { description?: string }> } = JSON.parse(
+        JSON.stringify(createWebFetchTool().parameters),
+      );
+      expect(Object.keys(properties)).toEqual(["url", "format", "timeout", "offset", "limit"]);
+      expect(properties.offset?.description).toContain("1-indexed");
+      expect(properties.limit?.description).toContain("lines");
+    });
+  });
+
   test("rejects invalid parameters with a reason and no hint", async () => {
     const fetch: typeof globalThis.fetch = async () => {
       throw new Error("transport must not run");
@@ -237,7 +484,7 @@ describe("Web Fetch", () => {
     expect(
       await failureMessage(executeFetch({ fetch }, { url: "https://example.com", timeout: -1 })),
     ).toBe(
-      "Unable to fetch requested URL: invalid parameters (expected a url string with optional format and timeout)",
+      "Unable to fetch requested URL: invalid parameters (expected a url string with optional format, timeout, offset, and limit)",
     );
   });
 

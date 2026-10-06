@@ -134,6 +134,9 @@ export function renderWebFetchToolCall(
   if (parameters.format !== undefined) appendField(container, theme, "Format", parameters.format);
   if (parameters.timeout !== undefined)
     appendField(container, theme, "Timeout", `${parameters.timeout}s`);
+  if (parameters.offset !== undefined) appendField(container, theme, "Offset", parameters.offset);
+  if (parameters.limit !== undefined)
+    appendField(container, theme, "Limit", `${parameters.limit} lines`);
   return container;
 }
 

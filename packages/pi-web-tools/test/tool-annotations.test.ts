@@ -24,6 +24,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test } from "vitest";
 import piWebToolsExtension from "../src/index.js";
+import { selectSearchProvider } from "../src/web-search.js";
 
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
@@ -117,7 +118,7 @@ async function captureTurn(factory: ExtensionFactory, cwd: string) {
   await session.bindExtensions({ mode: "rpc" });
   await session.prompt("Hello");
   if (captured === undefined) throw new Error("No model request was captured");
-  return { reported: session.getAllTools(), ...captured };
+  return { reported: session.getAllTools(), sessionId: session.sessionId, ...captured };
 }
 
 test("reports explicit read-only, open-world annotations without changing the provider prefix", async () => {
@@ -153,4 +154,41 @@ test("reports explicit read-only, open-world annotations without changing the pr
   expect(JSON.stringify(annotated.tools)).not.toContain("Hint");
   expect(annotated.systemPrompt).toBe(plain.systemPrompt);
   expect(withoutTimestamps(annotated.messages)).toEqual(withoutTimestamps(plain.messages));
+});
+
+test("keeps ordered tool definitions, prompt, and history stable across sessions for both Search Providers", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-web-tools-budgets-"));
+  directories.push(cwd);
+  // Pi picks the provider from the session id; keep opening sessions until both are covered.
+  const turns = [];
+  const providers = new Set<string>();
+  while (providers.size < 2 && turns.length < 40) {
+    const turn = await captureTurn(piWebToolsExtension, cwd);
+    turns.push(turn);
+    providers.add(selectSearchProvider(turn.sessionId));
+  }
+  expect(providers).toEqual(new Set(["exa", "parallel"]));
+  // Compare at least a few sessions even when both providers appear straight away.
+  while (turns.length < 4) turns.push(await captureTurn(piWebToolsExtension, cwd));
+  const [first, ...rest] = turns;
+  if (first === undefined) throw new Error("Expected a captured turn");
+
+  const definitions = first.tools;
+  if (!Array.isArray(definitions)) throw new Error("Expected an ordered tool list");
+  const web = definitions.filter(
+    (tool): tool is { name: string; description: string; parameters: unknown } =>
+      tool?.name === "web_search" || tool?.name === "web_fetch",
+  );
+  expect(web.map(({ name }) => name)).toEqual(["web_search", "web_fetch"]);
+  const serialized = JSON.stringify(web);
+  // The output budgets are part of the static definitions the model is given.
+  expect(serialized).toContain("default: 6,000");
+  expect(serialized).toContain('"offset"');
+  expect(serialized).toContain('"limit"');
+  expect(serialized).toContain("1-indexed");
+  for (const turn of rest) {
+    expect(turn.tools).toEqual(first.tools);
+    expect(turn.systemPrompt).toBe(first.systemPrompt);
+    expect(withoutTimestamps(turn.messages)).toEqual(withoutTimestamps(first.messages));
+  }
 });

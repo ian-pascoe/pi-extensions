@@ -59,13 +59,79 @@ async function removeTemporaryDirectory(directory: string): Promise<void> {
   await rm(directory, { recursive: true, force: true }).catch(() => undefined);
 }
 
-/** Apply Pi's output limits and save complete truncated text to a private temporary file. */
-export async function createWebToolOutput(text: string): Promise<WebToolOutput> {
-  const initial = truncateHead(text, {
+/** Where a Web Tool's text sits within the longer text it was selected from, in 1-indexed lines. */
+export type WebToolLineWindow = {
+  /** Line of the source text that the first line of the output text came from. */
+  readonly firstLine: number;
+  /** Line count of the whole source text. */
+  readonly totalLines: number;
+};
+
+/** Options for {@link createWebToolOutput}. */
+export type WebToolOutputOptions = {
+  /**
+   * Source position of the text. When lines of the source remain after what the model can see, the
+   * output ends with a continuation note naming the `offset` to read next.
+   */
+  readonly window?: WebToolLineWindow | undefined;
+};
+
+/** Lines a continuation note adds: a blank line and the note itself. */
+const CONTINUATION_NOTE_LINES = 2;
+
+/**
+ * The note after `shownLines` lines of the text. `remaining` is derived from the lines shown unless
+ * a caller sizing the worst case passes the largest figure it could be.
+ */
+function continuationNote(
+  window: WebToolLineWindow,
+  shownLines: number,
+  remaining = window.totalLines - (window.firstLine + shownLines - 1),
+): string {
+  const lastLine = window.firstLine + shownLines - 1;
+  return `[Showing lines ${window.firstLine}-${lastLine} of ${window.totalLines}. ${remaining} ${remaining === 1 ? "line remains" : "lines remain"}. Use offset=${lastLine + 1} to continue.]`;
+}
+
+/** The note for a first line too long to show: where to read it and how to move past it. */
+function oversizedLineNote(window: WebToolLineWindow): string {
+  return `[Line ${window.firstLine} exceeds the ${DEFAULT_MAX_BYTES / 1024} KiB output limit and is not shown; read it from the saved output file, or use offset=${window.firstLine + 1} to continue after it.]`;
+}
+
+/** The note after `shownLines` lines of the text, or nothing when no source line remains. */
+function continuationSuffix(window: WebToolLineWindow | undefined, shownLines: number): string {
+  if (window === undefined) return "";
+  // Without a shown line, the oversized one itself is line `firstLine`; only later lines remain.
+  if (window.firstLine + Math.max(shownLines, 1) - 1 >= window.totalLines) return "";
+  return `\n\n${shownLines === 0 ? oversizedLineNote(window) : continuationNote(window, shownLines)}`;
+}
+
+/** Bytes that reserve room for the longest note any amount of shown text can need. */
+function largestSuffixBytes(window: WebToolLineWindow | undefined, textLines: number): number {
+  if (window === undefined) return 0;
+  // Fewer shown lines leave more remaining, so the most remaining lines is every one after the first.
+  // A first line too long to show leaves the whole budget free for its note, so it needs no reserve.
+  const worst = `\n\n${continuationNote(window, textLines, window.totalLines - window.firstLine)}`;
+  return Buffer.byteLength(worst);
+}
+
+/**
+ * Apply Pi's output limits and save complete truncated text to a private temporary file. A
+ * continuation note, when the window has lines left after the visible ones, is reserved inside the
+ * limits and built from the lines actually shown, so it is never cut off or wrong; the spill holds
+ * the text only.
+ */
+export async function createWebToolOutput(
+  text: string,
+  options: WebToolOutputOptions = {},
+): Promise<WebToolOutput> {
+  const window = options.window;
+  const textLines = text.split("\n").length;
+  const suffixBytes = largestSuffixBytes(window, textLines);
+  const initial = truncateHead(`${text}${continuationSuffix(window, textLines)}`, {
     maxBytes: DEFAULT_MAX_BYTES,
     maxLines: DEFAULT_MAX_LINES,
   });
-  if (!initial.truncated) return { content: text };
+  if (!initial.truncated) return { content: initial.content };
 
   let directory: string | undefined;
   let fullOutputPath: string;
@@ -82,14 +148,17 @@ export async function createWebToolOutput(text: string): Promise<WebToolOutput> 
   }
 
   const largestNotice = `[Output truncated: showing ${initial.totalLines} of ${initial.totalLines} lines (${initial.totalBytes} of ${initial.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
-  const visibleBytes = DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2;
+  const visibleBytes = DEFAULT_MAX_BYTES - Buffer.byteLength(largestNotice) - 2 - suffixBytes;
   if (visibleBytes < 0) {
     await removeTemporaryDirectory(directory);
     throw new Error("Web Tool truncation notice exceeds Pi output limit");
   }
   const visible = truncateHead(text, {
     maxBytes: visibleBytes,
-    maxLines: DEFAULT_MAX_LINES - TRUNCATION_NOTICE_LINES,
+    maxLines:
+      DEFAULT_MAX_LINES -
+      TRUNCATION_NOTICE_LINES -
+      (suffixBytes === 0 ? 0 : CONTINUATION_NOTE_LINES),
   });
   const truncation: WebToolTruncationDetails = {
     outputLines: visible.outputLines,
@@ -99,8 +168,9 @@ export async function createWebToolOutput(text: string): Promise<WebToolOutput> 
     fullOutputPath,
   };
   const notice = `[Output truncated: showing ${visible.outputLines} of ${visible.totalLines} lines (${visible.outputBytes} of ${visible.totalBytes} bytes). Full output saved to: ${fullOutputPath}]`;
+  const shown = `${visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`}`;
   return {
-    content: visible.content.length === 0 ? notice : `${visible.content}\n\n${notice}`,
+    content: `${shown}${continuationSuffix(window, visible.outputLines)}`,
     truncation,
   };
 }

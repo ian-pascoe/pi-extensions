@@ -278,11 +278,17 @@ describe("Pi Web Tools extension", () => {
     expect(
       Value.Check(fetch.parameters, { url: "http://localhost", format: "html", timeout: 120 }),
     ).toBe(true);
+    expect(Value.Check(fetch.parameters, { url: "https://example.com", offset: 1, limit: 1 })).toBe(
+      true,
+    );
     for (const input of [
       {},
       { url: "https://example.com", format: "pdf" },
       { url: "https://example.com", timeout: 0 },
       { url: "https://example.com", timeout: 121 },
+      { url: "https://example.com", offset: 0 },
+      { url: "https://example.com", offset: 1.5 },
+      { url: "https://example.com", limit: 0 },
     ]) {
       expect(Value.Check(fetch.parameters, input)).toBe(false);
     }
