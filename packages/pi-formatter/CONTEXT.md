@@ -14,8 +14,10 @@
 Pi Formatter runs matching Formatter Definitions sequentially after a Supported Mutation Tool
 reports changed destination files. Formatting completes before later tool-result middleware runs.
 A successful mutation remains successful when formatting fails. Deleted and vanished files are
-not formatter targets. Formatter changes to a file are reported as one line on the mutation result,
-and formatter syntax-error failures are input outcomes without a troubleshooting hint. A File
+not formatter targets. Formatter changes to a file are reported on the mutation result as a
+`Formatted by` line followed by a compact unified diff, within a fixed line and byte budget shared
+by the result; a change too large for the budget keeps only the line. Formatter syntax-error
+failures are input outcomes without a troubleshooting hint. A File
 Formatter may declare its own syntax-error signal (`syntaxErrorPattern`), which replaces the
 built-in stderr heuristic for that formatter.
 

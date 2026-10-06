@@ -52,8 +52,8 @@ directory is the fallback. Set `requireRootMarker` to `true` to skip the formatt
 marker exists above the changed file; it defaults to `false`. A required empty `rootMarkers` list is
 invalid. Formatters run sequentially in configuration order.
 
-When formatters change a file, one line per changed file is appended to the original tool result
-so the agent knows its view of the file is stale, for example
+When formatters change a file, a `Formatted by` line per changed file is appended to the original
+tool result so the agent knows its view of the file is stale, for example
 `Formatted by ruff-fix, ruff-format: lines 3–13 changed`. It names every File Formatter and
 Workspace Formatter that changed the file, in run order. Line numbers describe the formatted
 file: the span runs from the first line that differs from the content before any formatter ran to
@@ -63,6 +63,15 @@ It starts with the file path, relative to Pi's working directory, when the mutat
 than one file. Nothing is added when the final content equals the original. A formatter that exits
 non-zero or times out after writing changes is reported too; the `Formatted by` lines follow
 any warnings.
+
+Each `Formatted by` line is followed by a compact unified diff of what the formatters changed,
+measured against the content before any formatter ran: `-` lines are the original text, `+` lines
+are what is on disk now, and up to three unchanged lines surround each change. Copy the ` ` and
+`+` lines into an `edit`'s `oldText` to edit the formatted file without reading it again. The
+diff for all files of one mutation result shares a budget of 60 lines and 6,000 bytes; a file
+whose diff does not fit in what remains, or whose rewrite is too large to diff line by line,
+keeps only its `Formatted by` line, so a large reformat stays bounded and the agent re-reads the
+file.
 
 A timeout, spawn error, or non-zero exit appends a warning to the original tool result without
 changing that result's success state; later formatters still run. The warning ends with a pointer

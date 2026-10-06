@@ -16,7 +16,7 @@ import {
   type FormatterDefinition,
   type ResolvedFormatterSettings,
 } from "./pi-formatter-settings.js";
-import { describeChangedLines } from "./changed-lines.js";
+import { describeChangedLines, diffChangedLines } from "./changed-lines.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 const NativeMutationInputSchema = Type.Object(
@@ -72,6 +72,13 @@ const WorkspaceEditApplyDetailsSchema = Type.Object(
   { additionalProperties: true },
 );
 const MAX_FORMATTER_STDERR_CHARACTERS = 50_000;
+/**
+ * The most changed-hunk text, shared by every file of one mutation result. A file whose diff does
+ * not fit in what remains is reported by its changed-line summary alone, so a large reformat never
+ * floods the result.
+ */
+const MAX_DIFF_LINES = 60;
+const MAX_DIFF_BYTES = 6_000;
 /**
  * Pi LSP tools that apply a Workspace Edit Preview: `lsp_apply`, and the removed single `lsp` tool,
  * whose apply results remain in session history.
@@ -332,7 +339,12 @@ async function formatMutationPaths(
   signal: AbortSignal | undefined,
 ): Promise<readonly FormatterNote[]> {
   const existing = await existingFormatterPaths(cwd, paths);
-  const notes: FormatterNote[] = existing.warnings.map((text) => ({ text, diagnosable: true }));
+  const notes: FormatterNote[] = existing.warnings.map((text) => ({
+    text,
+    diagnosable: true,
+  }));
+  let remainingDiffLines = MAX_DIFF_LINES;
+  let remainingDiffBytes = MAX_DIFF_BYTES;
   const original = new Map<string, string | undefined>();
   const current = new Map<string, string | undefined>();
   const changedBy = new Map<string, string[]>();
@@ -407,10 +419,21 @@ async function formatMutationPaths(
       before === undefined || after === undefined ? undefined : describeChangedLines(before, after);
     if (changedLines === undefined) continue;
     const file = existing.paths.length > 1 ? `${relative(cwd, path)}: ` : "";
-    notes.push({
-      text: `Formatted by ${formatters.join(", ")}: ${file}${changedLines}`,
-      diagnosable: false,
-    });
+    const summary = `Formatted by ${formatters.join(", ")}: ${file}${changedLines}`;
+    const diff = diffChangedLines(before ?? "", after ?? "");
+    const diffText = diff?.join("\n");
+    if (
+      diff === undefined ||
+      diffText === undefined ||
+      diff.length > remainingDiffLines ||
+      Buffer.byteLength(diffText) > remainingDiffBytes
+    ) {
+      notes.push({ text: summary, diagnosable: false });
+      continue;
+    }
+    remainingDiffLines -= diff.length;
+    remainingDiffBytes -= Buffer.byteLength(diffText);
+    notes.push({ text: `${summary}\n${diffText}`, diagnosable: false });
   }
   return notes;
 }
