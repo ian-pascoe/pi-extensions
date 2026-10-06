@@ -645,9 +645,9 @@ describe("registered LSP tool", () => {
           kind: "operation",
           preview_records: [expect.objectContaining({ state: "available" })],
         });
-        const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-        expect(text).toContain('"applicable":false');
-        expect(text).toContain('"applicable":true');
+        expect(result.structuredContent).toMatchObject({
+          actions: [{ applicable: false }, { applicable: true }],
+        });
       }
     }
 
@@ -774,11 +774,6 @@ describe("registered LSP tool", () => {
       file_path: fixture.filePath,
       range: range(),
     });
-    expect(actions.structuredContent).toEqual({
-      ...JSON.parse(resultText(actions)),
-      structured_truncated: false,
-      truncated: false,
-    });
     expect(actions.structuredContent).toMatchObject({
       actions: [
         {
@@ -802,6 +797,11 @@ describe("registered LSP tool", () => {
     const prepared = prepareApply(fixture, { preview_id: rename.details.preview_id });
     const applied = await executeTool(fixture, { operation: "apply", ...prepared });
     expect(applied.isError).toBeUndefined();
+    expect(resultText(applied)).toBe(
+      [`Applied Workspace Edit Preview ${rename.details.preview_id}:`, "modified source.ts"].join(
+        "\n",
+      ),
+    );
     expect(applied.structuredContent).toEqual({
       preview_id: rename.details.preview_id,
       state: "applied",
@@ -2583,7 +2583,9 @@ describe("registered LSP tool", () => {
       status: "unsupported",
       message: expect.stringContaining("lsp_diagnostics"),
     });
-    expect(resultText(result)).toContain("publishes no workspace diagnostics");
+    expect(resultText(result)).toBe(
+      "Server typescript publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.",
+    );
     expect(result.details).toMatchObject({
       server_outcomes: [
         {
@@ -2642,7 +2644,13 @@ describe("registered LSP tool", () => {
       source: "push_cache",
       message: expect.stringContaining("pushed for 2 files opened in this session"),
     });
-    expect(resultText(result)).toContain("Use lsp_diagnostics for other files.");
+    expect(resultText(result)).toBe(
+      [
+        "Server typescript publishes no workspace diagnostics; these are the diagnostics it pushed for 2 files opened in this session. Use lsp_diagnostics for other files.",
+        "source.ts:1:1: problem",
+        "source.ts.clean.ts: no diagnostics",
+      ].join("\n"),
+    );
     await fixture.close();
   });
 
@@ -2703,7 +2711,7 @@ describe("registered LSP tool", () => {
         },
       ],
     });
-    expect(resultText(result)).not.toContain("file:");
+    expect(resultText(result)).toBe("source.ts:1:16: emoji");
     await fixture.close();
   });
 
@@ -4393,6 +4401,102 @@ describe("registered LSP tool", () => {
       });
       expect(status.details).toMatchObject({ operation: "status", result_count: 3 });
       await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("lists code actions with their preview, or why they cannot be applied", async () => {
+      const fixture = await createToolFixture();
+      const uri = pathToFileURL(fixture.filePath).href;
+      const missingUri = pathToFileURL(join(fixture.context.cwd, "missing.ts")).href;
+      const insertion = (target: string): WorkspaceEdit => ({
+        changes: {
+          [target]: [{ range: protocolRange(0, 0, 0), newText: "// fixed\n" }],
+        },
+      });
+      fixture.client.responseByMethod.set("textDocument/codeAction", [
+        { title: "Add comment", kind: "quickfix", edit: insertion(uri) },
+        { title: "Organize imports", kind: "source.organizeImports", command: "organize" },
+        { title: "Fix elsewhere", edit: insertion(missingUri) },
+      ]);
+
+      const result = await executeTool(fixture, {
+        operation: "code_actions",
+        file_path: fixture.filePath,
+        range: range(),
+      });
+
+      const { actions } = Value.Parse(LspCodeActionsOutputSchema, result.structuredContent);
+      const [applicable, , invalid] = actions;
+      expect(applicable?.summary).toContain("+// fixed");
+      expect(invalid?.error).toContain("text edit file is missing");
+      expect(resultText(result)).toBe(
+        [
+          `Add comment (quickfix): preview ${applicable?.preview_id}`,
+          ...(applicable?.summary ?? "")
+            .trimEnd()
+            .split("\n")
+            .map((line) => `  ${line}`),
+          "Organize imports (source.organizeImports): command only, cannot be applied",
+          `Fix elsewhere: cannot be applied: ${invalid?.error}`,
+        ].join("\n"),
+      );
+      expect(result.details).toMatchObject({ operation: "code_actions", result_count: 3 });
+
+      fixture.client.responseByMethod.set("textDocument/codeAction", []);
+      const none = await executeTool(fixture, {
+        operation: "code_actions",
+        file_path: fixture.filePath,
+        range: range(),
+      });
+      expect(resultText(none)).toBe("No code actions found.");
+      await fixture.close();
+    });
+
+    test("lists the files an applied preview changed", async () => {
+      const fixture = await createToolFixture();
+      const cwd = fixture.context.cwd;
+      await writeFile(join(cwd, "old.ts"), "old\n");
+      await writeFile(join(cwd, "deleted.ts"), "deleted\n");
+      const fileUri = (name: string) => pathToFileURL(join(cwd, name)).href;
+      fixture.client.responseByMethod.set("textDocument/rename", {
+        documentChanges: [
+          {
+            textDocument: { uri: pathToFileURL(fixture.filePath).href, version: null },
+            edits: [{ range: protocolRange(0, 0, 0), newText: "// applied\n" }],
+          },
+          { kind: "create", uri: fileUri("created.ts") },
+          { kind: "rename", oldUri: fileUri("old.ts"), newUri: fileUri("new.ts") },
+          { kind: "delete", uri: fileUri("deleted.ts") },
+        ],
+      });
+      const preview = await executeTool(fixture, {
+        operation: "rename",
+        file_path: fixture.filePath,
+        line: 1,
+        character: 7,
+        new_name: "renamed",
+      });
+      if (preview.details.kind !== "workspace_edit_preview") throw new Error("Expected a preview");
+
+      const prepared = prepareApply(fixture, { preview_id: preview.details.preview_id });
+      const applied = await executeTool(fixture, { operation: "apply", ...prepared });
+
+      expect(resultText(applied)).toBe(
+        [
+          `Applied Workspace Edit Preview ${preview.details.preview_id}:`,
+          "modified source.ts",
+          "created created.ts",
+          "deleted deleted.ts",
+          "renamed old.ts -> new.ts",
+        ].join("\n"),
+      );
+      expect(applied.structuredContent).toMatchObject({
+        state: "applied",
+        changed_files: [fixture.filePath],
+        created_files: [join(cwd, "created.ts")],
+        deleted_files: [join(cwd, "deleted.ts")],
+        moved_files: [{ from: join(cwd, "old.ts"), to: join(cwd, "new.ts") }],
+      });
       await fixture.close();
     });
 

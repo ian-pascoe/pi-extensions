@@ -66,6 +66,7 @@ import {
   type LspBoundedItems,
 } from "./lsp-item-list.js";
 import {
+  assembleLspReadText,
   formatLspLocationReadText,
   isLspLocationOperation,
   lspDisplayPath,
@@ -155,6 +156,7 @@ import {
   LspWorkspaceEditError,
   NO_CHANGES_SUMMARY,
   type LspMutationManifest,
+  type LspWorkspaceEditApplyResult,
   type LspWorkspaceEditStore,
 } from "./lsp-workspace-edit.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
@@ -584,8 +586,9 @@ async function readOutput(
       scope: queried?.headline ?? [],
       emptyMessage: queried?.emptyMessage,
     });
-  } else if (operation === "diagnostics") {
+  } else if (operation === "diagnostics" || operation === "workspace_diagnostics") {
     text = formatLspDiagnosticsReadText({
+      operation,
       cwd: textContext.cwd,
       documentPath: textContext.documentPath,
       reads: results,
@@ -1695,16 +1698,69 @@ async function executeCodeActions(
     readOperationOutcomes(result),
     result.successes.flatMap(({ value }) => value.previewRecords),
   );
-  const text = formatLspToolValue({
-    actions: result.successes.flatMap(({ value }) => value.actions),
-    warnings: result.failures.map(({ message }) => message),
+  const actions = result.successes.flatMap(({ value }) => value.actions);
+  const warnings = result.failures.map(({ message }) => message);
+  const json = formatLspToolValue({ actions, warnings });
+  const text = assembleLspReadText({
+    blocks: result.successes.map(({ serverId, value }) => ({
+      server_id: serverId,
+      lines:
+        value.actions.length === 0
+          ? ["No code actions found."]
+          : value.actions.flatMap(codeActionLines),
+    })),
+    warnings,
   });
-  return createLspToolOutput(text, details, lspStructuredFields(text), dependencies);
+  return createLspToolOutput(
+    text,
+    { ...details, result_count: actions.length },
+    lspStructuredFields(json),
+    dependencies,
+  );
+}
+
+/**
+ * Render one code action as `title (kind): preview <preview_id>` with its preview's summary
+ * indented below, or as `title (kind): ...cannot be applied` with the reason.
+ */
+function codeActionLines(action: CodeActionResult): string[] {
+  const title =
+    action.title === undefined ? "Untitled action" : action.title.replaceAll(/\s+/gu, " ").trim();
+  const head = action.kind === undefined ? title : `${title} (${action.kind})`;
+  if (action.preview_id !== undefined) {
+    const summary = (action.summary ?? "").trimEnd();
+    return [
+      `${head}: preview ${action.preview_id}`,
+      ...(summary === "" ? [] : summary.split("\n").map((line) => `  ${line}`)),
+    ];
+  }
+  if (action.error !== undefined) return [`${head}: cannot be applied: ${action.error}`];
+  return [`${head}: command only, cannot be applied`];
+}
+
+/** Render an applied preview as one `modified|created|deleted path` or `renamed from -> to` line per file. */
+function formatApplyText(
+  previewId: string,
+  result: LspWorkspaceEditApplyResult,
+  cwd: string,
+): string {
+  const path = (filePath: string) => lspDisplayPath(cwd, filePath);
+  const files = [
+    ...result.changed_files.map((file) => `modified ${path(file)}`),
+    ...result.created_files.map((file) => `created ${path(file)}`),
+    ...result.deleted_files.map((file) => `deleted ${path(file)}`),
+    ...result.moved_files.map(({ from, to }) => `renamed ${path(from)} -> ${path(to)}`),
+  ];
+  return [
+    `Applied Workspace Edit Preview ${previewId}${files.length === 0 ? "; no file changed." : ":"}`,
+    ...files,
+  ].join("\n");
 }
 
 async function executeApplyPreview(
   dependencies: LspToolDependencies,
   parameters: Extract<LspToolParameters, { operation: "apply" }>,
+  context: ExtensionContext,
   signal: AbortSignal | undefined,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   const storeManifest = dependencies.workspaceEdits.prepareMutationManifest(parameters.preview_id);
@@ -1769,12 +1825,12 @@ async function executeApplyPreview(
     changed_paths: sortedChangedPaths,
     state: result.state,
   };
-  const text = formatLspToolValue(result);
+  const json = formatLspToolValue(result);
   return createLspToolOutput(
-    text,
+    formatApplyText(parameters.preview_id, result, context.cwd),
     details,
     {
-      ...lspStructuredFields(text),
+      ...lspStructuredFields(json),
       changed_paths: sortedChangedPaths,
       mutation_manifest: canonicalManifest,
     },
@@ -1921,7 +1977,7 @@ async function executeLspOperation(
         executeCodeActions(dependencies, previews, parameters, context, signal),
       );
     case "apply":
-      return executeApplyPreview(dependencies, parameters, signal);
+      return executeApplyPreview(dependencies, parameters, context, signal);
   }
 }
 
