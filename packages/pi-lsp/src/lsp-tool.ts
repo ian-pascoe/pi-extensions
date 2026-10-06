@@ -109,6 +109,7 @@ import {
   type LspServerStatusEntry,
   type LspServerReadResult,
   type LspServerRoute,
+  type LspLoadedDocuments,
   type LspUnloadedWorkspacePackages,
 } from "./lsp-server-manager.js";
 import {
@@ -142,6 +143,11 @@ import {
   type ServerOperationOutcome,
 } from "./lsp-tool-contract.js";
 import { lspStructuredResultValue } from "./lsp-structured-positions.js";
+import {
+  LSP_WARM_UP_LIMITS,
+  warmUpUnloadedPackages,
+  type LspWarmUpLimits,
+} from "./lsp-workspace-warm-up.js";
 import {
   createLspToolOutput as createBaseLspToolOutput,
   formatLspToolValue,
@@ -262,6 +268,8 @@ export interface LspToolDependencies {
   readonly workspaceEdits: LspWorkspaceEditStore;
   /** Private Result Spill storage for complete truncated output. */
   readonly sessionFiles: LspSessionFiles;
+  /** Bounds of the automatic warm-up before references and rename; defaults to `LSP_WARM_UP_LIMITS`. */
+  readonly warmUp?: LspWarmUpLimits;
 }
 
 /** The registered ToolDefinition of one LSP operation. */
@@ -342,10 +350,11 @@ async function serverInstanceScope(
   queriedFilePath: string,
 ): Promise<ServerInstanceScope> {
   const root = lspDisplayPath(cwd, rootPath);
-  const scope = await dependencies.manager.findWorkspaceScope(serverId, rootPath, {
-    queriedFilePath,
-    synchronizedFilePaths: (client) => client.synchronizedDocumentPaths(),
-  });
+  const scope = await dependencies.manager.findWorkspaceScope(
+    serverId,
+    rootPath,
+    loadedDocuments(queriedFilePath),
+  );
   return {
     line: `Searched ${serverId} workspace root: ${root}`,
     warnings: [
@@ -355,6 +364,37 @@ async function serverInstanceScope(
         : unloadedWorkspacePackagesWarning(serverId, root, scope.unloadedPackages, cwd),
     ].filter((warning): warning is string => warning !== undefined),
   };
+}
+
+/** The documents a Server Instance has loaded: the file queried and its synchronized documents. */
+function loadedDocuments(queriedFilePath: string): LspLoadedDocuments<LspToolServerClient> {
+  return {
+    queriedFilePath,
+    synchronizedFilePaths: (client) => client.synchronizedDocumentPaths(),
+  };
+}
+
+/**
+ * Before references or rename, open a representative file in each package of the Server
+ * Instance's workspace root that has no synchronized document, within the dependencies' warm-up
+ * bounds, so the server searches them. The result's warning still names any package left unloaded.
+ */
+function warmUpWorkspace(
+  dependencies: LspToolDependencies,
+  client: LspToolServerClient,
+  route: LspServerRoute,
+  queriedFilePath: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  return warmUpUnloadedPackages({
+    manager: dependencies.manager,
+    client,
+    serverId: route.serverId,
+    rootPath: route.rootPath,
+    loaded: loadedDocuments(queriedFilePath),
+    limits: dependencies.warmUp ?? LSP_WARM_UP_LIMITS,
+    signal,
+  });
 }
 
 function unloadedWorkspacePackagesWarning(
@@ -1186,6 +1226,9 @@ async function executePositionRead(
     parameters.server_id,
     requireMethod(capabilityMethod),
     async (client, route) => {
+      if (parameters.operation === "find_references") {
+        await warmUpWorkspace(dependencies, client, route, filePath, signal);
+      }
       const prepared = await prepareLspDocument(client, route, filePath);
       const requested = { line: parameters.line, character: parameters.character };
       const position = protocolPosition(prepared, requested);
@@ -1553,6 +1596,7 @@ async function executeRenamePreview(
     parameters.server_id,
     requireMethod(RenameRequest.method),
     async (client, route) => {
+      await warmUpWorkspace(dependencies, client, route, filePath, signal);
       const prepared = await prepareLspDocument(client, route, filePath);
       return client.request(
         RenameRequest.method,

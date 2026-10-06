@@ -763,6 +763,42 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       .map((definition) => definition.id);
   }
 
+  private async holdsWorkspaceRootMarker(
+    policy: LspRootDiscoveryPolicy,
+    searchedRoot: string,
+  ): Promise<boolean> {
+    if (policy.workspaceRootMarkers.length === 0) return false;
+    let entryNames: readonly string[] = [];
+    try {
+      entryNames = await (this.input.readDirectory ?? readdir)(searchedRoot);
+    } catch {
+      // An unreadable root holds no markers we can see.
+    }
+    return isLspWorkspaceRoot(searchedRoot, entryNames, policy);
+  }
+
+  /**
+   * Whether `rootPath` is a workspace root of the Server Definition with root markers, the only
+   * kind of Server Instance root whose packages `findWorkspaceScope` reports as unloaded.
+   */
+  async isWorkspaceRoot(serverId: string, rootPath: string): Promise<boolean> {
+    const definition = this.input.settings.servers.get(serverId);
+    if (definition === undefined || !hasLspRootMarkers(definition)) return false;
+    const policy = this.rootDiscoveryPolicy(definition);
+    return (
+      policy.rootMarkers.length > 0 &&
+      (await this.holdsWorkspaceRootMarker(policy, resolve(this.input.cwd, rootPath)))
+    );
+  }
+
+  /** The language ID one Server Definition sends for a file, or undefined when it handles none. */
+  languageIdForFile(serverId: string, filePath: string): string | undefined {
+    const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
+    return this.input.settings.servers
+      .get(serverId)
+      ?.languages.find((language) => languageMatchesFile(language, absolutePath))?.languageId;
+  }
+
   /** Find workspace roots of one Server Definition other than `rootPath`; see `findWorkspaceScope`. */
   async findOtherWorkspaceRoots(
     serverId: string,
@@ -813,16 +849,7 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
     }
     const policy = this.rootDiscoveryPolicy(definition);
     const readDirectory = this.input.readDirectory ?? readdir;
-    let isWorkspaceRoot = false;
-    if (policy.workspaceRootMarkers.length > 0) {
-      let entryNames: readonly string[] = [];
-      try {
-        entryNames = await readDirectory(searchedRoot);
-      } catch {
-        // An unreadable root holds no markers we can see.
-      }
-      isWorkspaceRoot = isLspWorkspaceRoot(searchedRoot, entryNames, policy);
-    }
+    const isWorkspaceRoot = await this.holdsWorkspaceRootMarker(policy, searchedRoot);
     const collectPackages =
       loaded !== undefined && isWorkspaceRoot && policy.rootMarkers.length > 0;
     if (reachedCap() && !collectPackages) {
