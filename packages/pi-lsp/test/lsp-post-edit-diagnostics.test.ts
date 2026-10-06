@@ -272,7 +272,7 @@ test("reports clean results from configured servers on one line", async () => {
   ).resolves.toBe("\n\nLSP diagnostics: no diagnostics");
 });
 
-test("groups clean and unchecked files into one line each, after the findings", async () => {
+test("groups clean files into one line after the findings and omits files with no configured server", async () => {
   await expect(
     appendedText([
       { kind: "no_configured_server", path: "/work/package.json" },
@@ -291,13 +291,41 @@ test("groups clean and unchecked files into one line each, after the findings", 
       "c.ts:3:7 error [typescript]: broken",
       "slow.ts: diagnostics timeout (typescript)",
       "no diagnostics: a.ts, b.ts",
-      "not checked (no configured server): docs/a.md, notes.md, package.json",
     ].join("\n"),
   );
 });
 
-test("says a changed file with no configured server was not checked", async () => {
+test("drops a file with no configured server from the one-line clean result", async () => {
   await expect(
-    appendedText([{ kind: "no_configured_server", path: "/work/docs/readme.txt" }]),
-  ).resolves.toBe("\n\nLSP diagnostics\nnot checked (no configured server): docs/readme.txt");
+    appendedText([
+      { kind: "no_diagnostics", path: "/work/a.ts" },
+      { kind: "no_configured_server", path: "/work/README.md" },
+    ]),
+  ).resolves.toBe("\n\nLSP diagnostics: no diagnostics");
+});
+
+test("still reports a matched server failure beside a file with no configured server", async () => {
+  await expect(
+    appendedText([
+      { kind: "no_configured_server", path: "/work/README.md" },
+      { kind: "unavailable_server", path: "/work/a.ts", serverId: "typescript" },
+    ]),
+  ).resolves.toBe("\n\nLSP diagnostics\na.ts: unavailable server (typescript)");
+});
+
+test("leaves the mutation result unchanged when no edited file has a configured server", async () => {
+  const event = mutationEvent({
+    toolName: "apply_patch",
+    details: applyPatchDetails(["README.md", "package.json"]),
+  });
+  await expect(
+    appendPostEditDiagnostics(
+      event,
+      async () => [
+        { kind: "no_configured_server", path: "/work/README.md" },
+        { kind: "no_configured_server", path: "/work/package.json" },
+      ],
+      "/work",
+    ),
+  ).resolves.toBeUndefined();
 });

@@ -598,7 +598,19 @@ describe("Pi LSP extension lifecycle", () => {
   );
 
   test("starts runtime lazily, replays legacy and current previews on the active branch, augments writes, and shuts down idempotently", async () => {
-    const harness = await createExtensionHarness(false);
+    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        timeouts: { diagnosticsMs: 1_000, initializeMs: 5_000, shutdownMs: 1_000 },
+        servers: {
+          fake: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+        },
+      },
+    });
     const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
     await writeFile(filePath, "before\n");
     const baseEntryId = harness.sessionManager.appendMessage({
@@ -816,7 +828,7 @@ describe("Pi LSP extension lifecycle", () => {
     } satisfies ToolResultEvent);
     expect(augmented?.content?.at(-1)).toMatchObject({
       type: "text",
-      text: expect.stringContaining("no configured server"),
+      text: "\n\nLSP diagnostics: no diagnostics",
     });
     expect(augmented?.details).toBe(originalDetails);
     expect(augmented?.isError).toBe(false);
@@ -846,7 +858,7 @@ describe("Pi LSP extension lifecycle", () => {
     expect(partialApply?.structuredContent).toEqual(partialApplyEvent.structuredContent);
     expect(partialApply?.content?.at(-1)).toMatchObject({
       type: "text",
-      text: expect.stringContaining("no configured server"),
+      text: "\n\nLSP diagnostics: no diagnostics",
     });
     // Post-edit Diagnostics never flips the error state: a false input stays false.
     const nonErrorPartialApply = await harness.runner.emitToolResult({
@@ -861,7 +873,7 @@ describe("Pi LSP extension lifecycle", () => {
       input: { operation: "apply", ...partialApplyEvent.input },
     });
     expect(legacyApplyResult?.content?.at(-1)).toMatchObject({
-      text: expect.stringContaining("no configured server"),
+      text: "\n\nLSP diagnostics: no diagnostics",
     });
 
     const changedFiles = Array.from(
@@ -1046,7 +1058,7 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("reports a file as not checked until a required root marker exists", async () => {
+  test("stays silent about a file until a required root marker exists", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {
       lsp: {
@@ -1077,11 +1089,8 @@ describe("Pi LSP extension lifecycle", () => {
       isError: false,
     } satisfies ToolResultEvent;
 
-    const unchecked = await harness.runner.emitToolResult(event);
-    expect(unchecked?.content?.at(-1)).toEqual({
-      type: "text",
-      text: "\n\nLSP diagnostics\nnot checked (no configured server): source.ts",
-    });
+    const withoutRootMarker = await harness.runner.emitToolResult(event);
+    expect(withoutRootMarker).toBeUndefined();
 
     await writeFile(resolve(cwd, "tsconfig.json"), "{}");
     const augmented = await harness.runner.emitToolResult(event);
@@ -1092,7 +1101,7 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("reports a file as not checked when its only enabled server fails its gate beside a disabled one", async () => {
+  test("stays silent about a file whose only enabled server fails its gate beside a disabled one", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {
       lsp: {
@@ -1126,9 +1135,49 @@ describe("Pi LSP extension lifecycle", () => {
       details: { bytesWritten: 17 },
       isError: false,
     } satisfies ToolResultEvent);
+    expect(result).toBeUndefined();
+    await shutdownExtension(harness);
+  });
+
+  test("still reports a failing Server Instance beside a file no Server Definition covers", async () => {
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        timeouts: { diagnosticsMs: 1_000, initializeMs: 5_000, shutdownMs: 1_000 },
+        servers: {
+          broken: {
+            command: resolve(tmpdir(), "pi-lsp-missing-server-binary"),
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+        },
+      },
+    });
+    await startExtension(harness);
+    const cwd = harness.sessionManager.getCwd();
+    const sourcePath = resolve(cwd, "source.ts");
+    const notesPath = resolve(cwd, "notes.md");
+    await writeFile(sourcePath, "const value = 1;\n");
+    await writeFile(notesPath, "notes\n");
+
+    const result = await harness.runner.emitToolResult({
+      type: "tool_result",
+      toolCallId: "failing-beside-unmatched",
+      toolName: "apply_patch",
+      input: {},
+      content: [{ type: "text", text: "Applied patch" }],
+      details: {
+        status: "success",
+        result: {
+          changedFiles: [sourcePath, notesPath],
+          createdFiles: [],
+          deletedFiles: [],
+          movedFiles: [],
+        },
+      },
+      isError: false,
+    } satisfies ToolResultEvent);
     expect(result?.content?.at(-1)).toEqual({
       type: "text",
-      text: "\n\nLSP diagnostics\nnot checked (no configured server): source.ts",
+      text: "\n\nLSP diagnostics\nsource.ts: unavailable server (broken)",
     });
     await shutdownExtension(harness);
   });

@@ -34,11 +34,11 @@ Server Definitions come only from the `lsp` key in Pi's global and trusted proje
 An Activation Gate is evaluated independently for every candidate file. A Server Definition that
 does not pass its gate is excluded from automatic routing without warning. Changes to root markers
 take effect on the next route. An explicit request for a language-compatible Server Definition may
-distinguish a missing required root marker from a language mismatch. Post-edit Diagnostics are the
-exception to the silence: a changed file excluded by every matching gate is reported as not checked.
+distinguish a missing required root marker from a language mismatch. Post-edit Diagnostics stay
+silent about such a file too.
 
 When several Server Instances handle a read, successful results remain useful even if another instance fails. Failures stay labeled by server rather than replacing successful output.
 
 The extension does not own language-server installation, a built-in server catalog, formatting outside LSP, static parsing, or debugging. Those capabilities belong in separate additions only after demonstrated need.
 
-Post-edit Diagnostics apply whenever a Supported Mutation Tool reports affected files, including partial failures. Only Server Instances that advertise document diagnostics participate. Findings use paths relative to the working directory and named severities, and an all-clean result is one line. A changed file that no enabled Server Definition covers, because none handles its language or its Activation Gate fails, is reported as not checked rather than left silent; a file whose matching Server Definitions are all disabled stays silent. A successful mutation remains successful when Post-edit Diagnostics are unavailable. Neither Pi's standard output limit nor the Structured Result cap discards LSP output; excess output remains available as a Result Spill.
+Post-edit Diagnostics apply whenever a Supported Mutation Tool reports affected files, including partial failures. Only Server Instances that advertise document diagnostics participate. Findings use paths relative to the working directory and named severities, and an all-clean result is one line. A changed file that no enabled Server Definition covers, because none handles its language or its Activation Gate fails, is left silent, as is a file whose matching Server Definitions are all disabled; when no changed file is covered by an enabled Server Definition, no diagnostics section is appended (an `apply_patch` adapter-version warning still is). A Server Instance of a covering Server Definition that fails or times out is still reported. A successful mutation remains successful when Post-edit Diagnostics are unavailable. Neither Pi's standard output limit nor the Structured Result cap discards LSP output; excess output remains available as a Result Spill.
