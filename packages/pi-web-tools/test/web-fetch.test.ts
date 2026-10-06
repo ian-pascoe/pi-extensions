@@ -872,59 +872,119 @@ describe("Web Fetch main content", () => {
 
 describe("Web Fetch main content on large pages", () => {
   // Several MiB of HTML; extraction must stay linear because it runs synchronously and a request
-  // timeout cannot interrupt it.
+  // timeout cannot interrupt it. Each page is built from an item count so the same shape can be
+  // fetched at two sizes: the guard compares the two timings instead of an absolute duration,
+  // which depends on runner load.
   const LARGE_PAGES = {
-    "paragraphs in <main>": `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main>${Array.from(
-      { length: 120_000 },
-      (_, index) => `<p>paragraph ${index}</p>`,
-    ).join("")}</main></body></html>`,
-    "<aside> elements": `<html><head><title>Big</title></head><body>${Array.from(
-      { length: 120_000 },
-      (_, index) => `<aside>aside ${index}</aside>`,
-    ).join("")}<div><p>Real body text.</p></div></body></html>`,
-    "paragraphs on a plain page (no main or chrome)": `<!doctype html><html><head><title>Big</title></head><body>${Array.from(
-      { length: 110_000 },
-      (_, index) => `<p>paragraph ${index}</p>`,
-    ).join("")}</body></html>`,
-    "paragraphs in two <div>s inside <main>": `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main>${[
-      0, 1,
-    ]
-      .map(
-        (half) =>
-          `<div>${Array.from({ length: 55_000 }, (_, index) => `<p>half ${half} paragraph ${index}</p>`).join("")}</div>`,
-      )
-      .join("")}</main></body></html>`,
-    "list items in one <ul> inside <main>": `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main><ul>${Array.from(
-      { length: 100_000 },
-      (_, index) => `<li>item number ${index}</li>`,
-    ).join("")}</ul></main></body></html>`,
-    "list items in one <ol> on a plain page": `<html><body><ol start="5">${Array.from(
-      { length: 100_000 },
-      (_, index) => `<li>item number ${index}</li>`,
-    ).join("")}</ol></body></html>`,
-    "rows in one <table> (plain-text backstop)": `<html><body><p>Intro</p><table>${Array.from(
-      { length: 90_000 },
-      (_, index) => `<tr><td>row ${index}</td><td>value</td></tr>`,
-    ).join("")}</table></body></html>`,
-    "<nav> elements": `<html><head><title>Big</title></head><body>${Array.from(
-      { length: 120_000 },
-      (_, index) => `<nav>nav ${index}</nav>`,
-    ).join("")}<div><p>Real body text.</p></div></body></html>`,
-  } as const;
+    "paragraphs in <main>": {
+      items: 120_000,
+      build: (items) =>
+        `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main>${Array.from(
+          { length: items },
+          (_, index) => `<p>paragraph ${index}</p>`,
+        ).join("")}</main></body></html>`,
+    },
+    "<aside> elements": {
+      items: 120_000,
+      build: (items) =>
+        `<html><head><title>Big</title></head><body>${Array.from(
+          { length: items },
+          (_, index) => `<aside>aside ${index}</aside>`,
+        ).join("")}<div><p>Real body text.</p></div></body></html>`,
+    },
+    "paragraphs on a plain page (no main or chrome)": {
+      items: 110_000,
+      build: (items) =>
+        `<!doctype html><html><head><title>Big</title></head><body>${Array.from(
+          { length: items },
+          (_, index) => `<p>paragraph ${index}</p>`,
+        ).join("")}</body></html>`,
+    },
+    "paragraphs in two <div>s inside <main>": {
+      items: 110_000,
+      build: (items) =>
+        `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main>${[0, 1]
+          .map(
+            (half) =>
+              `<div>${Array.from({ length: items / 2 }, (_, index) => `<p>half ${half} paragraph ${index}</p>`).join("")}</div>`,
+          )
+          .join("")}</main></body></html>`,
+    },
+    "list items in one <ul> inside <main>": {
+      items: 100_000,
+      build: (items) =>
+        `<html><head><title>Big</title></head><body><nav>NavAlpha</nav><main><ul>${Array.from(
+          { length: items },
+          (_, index) => `<li>item number ${index}</li>`,
+        ).join("")}</ul></main></body></html>`,
+    },
+    "list items in one <ol> on a plain page": {
+      items: 100_000,
+      build: (items) =>
+        `<html><body><ol start="5">${Array.from(
+          { length: items },
+          (_, index) => `<li>item number ${index}</li>`,
+        ).join("")}</ol></body></html>`,
+    },
+    "rows in one <table> (plain-text backstop)": {
+      items: 90_000,
+      build: (items) =>
+        `<html><body><p>Intro</p><table>${Array.from(
+          { length: items },
+          (_, index) => `<tr><td>row ${index}</td><td>value</td></tr>`,
+        ).join("")}</table></body></html>`,
+    },
+    "<nav> elements": {
+      items: 120_000,
+      build: (items) =>
+        `<html><head><title>Big</title></head><body>${Array.from(
+          { length: items },
+          (_, index) => `<nav>nav ${index}</nav>`,
+        ).join("")}<div><p>Real body text.</p></div></body></html>`,
+    },
+  } satisfies Record<string, { items: number; build: (items: number) => string }>;
 
-  for (const [name, html] of Object.entries(LARGE_PAGES)) {
+  // Linear extraction takes about SCALE times as long on SCALE times the items; quadratic takes
+  // about SCALE² times as long. Runner load slows both timings alike, so the limit sits between
+  // the two without depending on absolute speed. A single run still varies by up to 2×, so the
+  // small page takes the best of two and the large page is retimed once when the first ratio
+  // reaches the limit, keeping the lower large timing. The ratio only reaches the limit once the
+  // quadratic part is several times the linear part; a milder or smaller regression passes, and
+  // the 30 s test timeout catches a severe one.
+  const SCALE = 4;
+  const MAX_RATIO = 10;
+
+  for (const [name, { items, build }] of Object.entries(LARGE_PAGES)) {
     for (const format of ["text", "markdown"] as const) {
-      test(`converts a multi-MiB page of ${name} in ${format} format quickly`, async () => {
-        expect(html.length).toBeGreaterThan(2 * 1024 * 1024);
-        const fetch: typeof globalThis.fetch = async () =>
-          new Response(html, { headers: { "content-type": "text/html" } });
-        const started = performance.now();
-        const result = await executeFetch({ fetch }, { url: "https://example.com/big", format });
-        const elapsed = performance.now() - started;
-        const spill = result.details.truncation?.fullOutputPath;
-        if (spill !== undefined) spillDirectories.push(dirname(spill));
+      test(`converts a multi-MiB page of ${name} in ${format} format in linear time`, async () => {
+        const time = async (html: string) => {
+          const fetch: typeof globalThis.fetch = async () =>
+            new Response(html, { headers: { "content-type": "text/html" } });
+          const started = performance.now();
+          const result = await executeFetch({ fetch }, { url: "https://example.com/big", format });
+          const elapsed = performance.now() - started;
+          const spill = result.details.truncation?.fullOutputPath;
+          if (spill !== undefined) spillDirectories.push(dirname(spill));
+          return { elapsed, result };
+        };
+        const large = build(items);
+        expect(large.length).toBeGreaterThan(2 * 1024 * 1024);
 
-        expect(elapsed).toBeLessThan(5_000);
+        // The small page runs first and best-of-two, so JIT warm-up and load spikes are discarded
+        // from the denominator.
+        const small = build(items / SCALE);
+        const smallElapsed = Math.max(
+          Math.min((await time(small)).elapsed, (await time(small)).elapsed),
+          1,
+        );
+        const first = await time(large);
+        let largeElapsed = first.elapsed;
+        if (largeElapsed / smallElapsed >= MAX_RATIO) {
+          largeElapsed = Math.min(largeElapsed, (await time(large)).elapsed);
+        }
+        const { result } = first;
+
+        expect(largeElapsed / smallElapsed).toBeLessThan(MAX_RATIO);
         expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).not.toContain(
           "NavAlpha",
         );
