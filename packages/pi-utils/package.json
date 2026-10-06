@@ -55,7 +55,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepack": "pnpm build",
-    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

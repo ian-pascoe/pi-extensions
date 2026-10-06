@@ -32,7 +32,7 @@
     "provenance": true
   },
   "scripts": {
-    "test": "vitest run --config ../../vitest.config.ts --root .",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
