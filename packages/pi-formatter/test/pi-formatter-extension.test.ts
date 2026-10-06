@@ -551,6 +551,95 @@ describe("Pi Formatter extension lifecycle", () => {
 
   test.each([
     {
+      name: "a declared signal that the heuristic would not accept",
+      stderr: () => "error: Failed to format input",
+      pattern: "^error: Failed to format",
+      hint: false,
+    },
+    {
+      name: "a declared signal that matches stderr mentioning configuration",
+      stderr: (file: string) => `${file}: invalid config near token`,
+      pattern: "invalid config near token",
+      hint: false,
+    },
+    {
+      name: "a syntax error the declared signal does not match",
+      stderr: (file: string) => `  x Unexpected token\n   ,-[${file}:1:11]`,
+      pattern: "^error: Failed to parse",
+      hint: true,
+    },
+  ])(
+    "replaces the heuristic with a configured syntax-error pattern for $name",
+    async ({ stderr, pattern, hint }) => {
+      const harness = await createFormatterHarness({
+        formatter: {
+          formatters: {
+            ruff: {
+              ...formatterDefinition([
+                "-e",
+                "console.error(process.argv[2]);process.exit(2)",
+                "$FILE",
+                stderr("input.txt"),
+              ]),
+              syntaxErrorPattern: pattern,
+            },
+          },
+        },
+      });
+      const filePath = resolve(harness.cwd, "input.txt");
+      await writeFile(filePath, "original");
+
+      const result = await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+      );
+
+      expect(lastText(result)).toContain("Pi Formatter: ruff failed");
+      expect(lastText(result).includes(TROUBLESHOOTING_HINT)).toBe(hint);
+    },
+  );
+
+  test.each([
+    {
+      name: "a timeout",
+      settings: {
+        timeoutMs: 25,
+        formatters: {
+          hanging: {
+            ...formatterDefinition([
+              "-e",
+              "console.error('hang');setInterval(() => {}, 1000)",
+              "$FILE",
+            ]),
+            syntaxErrorPattern: ".*",
+          },
+        },
+      },
+    },
+    {
+      name: "a spawn error",
+      settings: {
+        formatters: {
+          missing: { ...formatterDefinition(["$FILE"]), command: "\0", syntaxErrorPattern: ".*" },
+        },
+      },
+    },
+  ])(
+    "keeps the troubleshooting hint on $name despite a configured syntax-error pattern",
+    async ({ settings }) => {
+      const harness = await createFormatterHarness({ formatter: settings });
+      const filePath = resolve(harness.cwd, "input.txt");
+      await writeFile(filePath, "original");
+
+      const result = await harness.runner.emitToolResult(
+        toolResultEvent("write", { input: { path: filePath }, details: undefined }),
+      );
+
+      expect(lastText(result)).toContain(TROUBLESHOOTING_HINT);
+    },
+  );
+
+  test.each([
+    {
       name: "a timeout",
       settings: {
         timeoutMs: 25,

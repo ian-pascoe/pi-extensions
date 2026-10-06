@@ -22,6 +22,7 @@ const FormatterDefinitionSchema = Type.Object(
     files: FormatterFilesSchema,
     requireRootMarker: Type.Optional(Type.Boolean()),
     rootMarkers: Type.Optional(Type.Array(NonEmptyStringSchema)),
+    syntaxErrorPattern: Type.Optional(NonEmptyStringSchema),
   },
   { additionalProperties: false },
 );
@@ -58,6 +59,11 @@ export interface FormatterDefinition {
   /** Require any root marker above a candidate file; false falls back to Pi's working directory. */
   readonly requireRootMarker: boolean;
   readonly rootMarkers: readonly string[];
+  /**
+   * Stderr pattern a File Formatter declares for a syntax error in the changed file. When set it
+   * replaces the built-in heuristic for classifying failures as input outcomes.
+   */
+  readonly syntaxErrorPattern: RegExp | undefined;
 }
 
 /** Contains resolved trusted formatter definitions and non-fatal configuration warnings. */
@@ -84,6 +90,14 @@ interface ParsedFormatterLayer {
   readonly definitions: ReadonlyMap<string, FormatterDefinitionWire | null>;
   readonly timeoutMs?: number;
   readonly warnings: readonly string[];
+}
+
+function compileSyntaxErrorPattern(source: string): RegExp | undefined {
+  try {
+    return new RegExp(source);
+  } catch {
+    return undefined;
+  }
 }
 
 function formatterValidationWarning(
@@ -171,6 +185,22 @@ function readFormatterLayer(
             `${scope} formatter.formatters.${id}.rootMarkers: at least one root marker is required when requireRootMarker is true`,
           );
           definitions.set(id, null);
+        } else if (
+          definition.syntaxErrorPattern !== undefined &&
+          compileSyntaxErrorPattern(definition.syntaxErrorPattern) === undefined
+        ) {
+          warnings.push(
+            `${scope} formatter.formatters.${id}.syntaxErrorPattern: expected a valid regular expression`,
+          );
+          definitions.set(id, null);
+        } else if (
+          definition.syntaxErrorPattern !== undefined &&
+          !(definition.args ?? []).some((argument) => argument.includes("$FILE"))
+        ) {
+          warnings.push(
+            `${scope} formatter.formatters.${id}.syntaxErrorPattern: requires $FILE in args because only a File Formatter has a changed file to report a syntax error in`,
+          );
+          definitions.set(id, null);
         } else {
           definitions.set(id, definition);
         }
@@ -194,6 +224,10 @@ function resolveFormatterDefinition(
     id,
     requireRootMarker: definition.requireRootMarker ?? false,
     rootMarkers: definition.rootMarkers ?? [],
+    syntaxErrorPattern:
+      definition.syntaxErrorPattern === undefined
+        ? undefined
+        : compileSyntaxErrorPattern(definition.syntaxErrorPattern),
   };
 }
 

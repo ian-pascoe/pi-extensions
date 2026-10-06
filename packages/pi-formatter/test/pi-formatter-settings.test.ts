@@ -182,4 +182,76 @@ describe("resolveFormatterSettings", () => {
       expect.stringContaining("global formatter.formatters.impossible.rootMarkers"),
     ]);
   });
+
+  test("compiles a File Formatter's syntax-error pattern and leaves it unset by default", async () => {
+    const settings = resolveFormatterSettings(
+      await createSettingsReader(
+        {
+          formatter: {
+            formatters: {
+              declared: { ...markdownFormatter("declared"), syntaxErrorPattern: "^error: Failed" },
+              fallback: markdownFormatter("fallback"),
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(settings.warnings).toEqual([]);
+    expect(settings.formatters.get("declared")?.syntaxErrorPattern).toEqual(/^error: Failed/);
+    expect(settings.formatters.get("fallback")?.syntaxErrorPattern).toBeUndefined();
+  });
+
+  test.each([
+    { name: "an invalid regex", syntaxErrorPattern: "(unclosed" },
+    { name: "an empty pattern", syntaxErrorPattern: "" },
+    { name: "a non-string pattern", syntaxErrorPattern: 2 },
+  ])(
+    "quarantines a definition with $name and shadows the global one",
+    async ({ syntaxErrorPattern }) => {
+      const settings = resolveFormatterSettings(
+        await createSettingsReader(
+          { formatter: { formatters: { shadowed: markdownFormatter("global") } } },
+          {
+            formatter: {
+              formatters: {
+                shadowed: { ...markdownFormatter("project"), syntaxErrorPattern },
+                healthy: markdownFormatter("healthy"),
+              },
+            },
+          },
+        ),
+      );
+
+      expect([...settings.formatters.keys()]).toEqual(["healthy"]);
+      expect(settings.warnings).toEqual([
+        expect.stringContaining("project formatter.formatters.shadowed.syntaxErrorPattern"),
+      ]);
+    },
+  );
+
+  test("quarantines a syntax-error pattern on a Workspace Formatter", async () => {
+    const settings = resolveFormatterSettings(
+      await createSettingsReader(
+        {
+          formatter: {
+            formatters: {
+              workspace: {
+                ...markdownFormatter("workspace"),
+                args: ["--write"],
+                syntaxErrorPattern: "error",
+              },
+            },
+          },
+        },
+        {},
+      ),
+    );
+
+    expect(settings.formatters.size).toBe(0);
+    expect(settings.warnings).toEqual([
+      expect.stringContaining("global formatter.formatters.workspace.syntaxErrorPattern"),
+    ]);
+  });
 });
