@@ -1717,7 +1717,7 @@ describe("minimal subagents coordinator", () => {
     expect(root.queueCoordinatorMessage).toHaveBeenCalledOnce();
   });
 
-  it("queues a discarded result again after a root turn boundary releases it", async () => {
+  it("re-sends a discarded result only into the root's next run", async () => {
     const { coordinator, queuedMessages, setRootIdle } = coordinatorFixture(childRuntime(), 0);
     setRootIdle(false);
     const first = await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
@@ -1727,10 +1727,58 @@ describe("minimal subagents coordinator", () => {
     coordinator.recordRootMessageEnd();
     coordinator.requeueDiscardedRootResults();
     await coordinator.waitForSettledOperations();
+    // Released at once, but recovery never starts a root turn by itself.
+    expect(queuedMessages).toHaveLength(1);
+    expect(coordinator["handedTerminalKeys"].size).toBe(0);
+    setRootIdle(true);
+    coordinator.deliverDiscardedRootResults();
+    await coordinator.waitForSettledOperations();
+    expect(queuedMessages).toHaveLength(1);
 
+    // The root's next run starts: the result joins it as a steer.
+    setRootIdle(false);
+    coordinator.deliverDiscardedRootResults();
     expect(queuedMessages).toHaveLength(2);
     expect(queuedMessages[1]).toEqual(queuedMessages[0]);
-    expect([...coordinator["handedTerminalKeys"].keys()]).toEqual([`worker\u0000${first.turn_id}`]);
+    expect([...coordinator["handedTerminalKeys"].entries()]).toEqual([
+      [`worker\u0000${first.turn_id}`, expect.objectContaining({ queued: true })],
+    ]);
+    coordinator.deliverDiscardedRootResults();
+    await coordinator.waitForSettledOperations();
+    expect(queuedMessages).toHaveLength(2);
+  });
+
+  it("re-sends a discarded result ahead of newer results still in their grace period", async () => {
+    const { coordinator, queuedMessages, setRootIdle } = coordinatorFixture(childRuntime(), 100);
+    setRootIdle(false);
+    const first = await coordinator.spawn("root", { task: "First", agent_id: "older" }, caller);
+    await vi.waitFor(() => expect(queuedMessages).toHaveLength(1));
+    coordinator.recordRootMessageEnd();
+    coordinator.requeueDiscardedRootResults();
+    const second = await coordinator.spawn("root", { task: "Second", agent_id: "newer" }, caller);
+    await vi.waitFor(() => expect(coordinator.snapshot().deliveries).toHaveLength(2));
+
+    coordinator.deliverDiscardedRootResults();
+    await coordinator.waitForSettledOperations();
+
+    expect(queuedMessages.map((message) => message.details.source_turn_id)).toEqual([
+      first.turn_id,
+      first.turn_id,
+      second.turn_id,
+    ]);
+  });
+
+  it("abandons an automatic hand-off whose grace period spans a branch change", async () => {
+    const { coordinator, queuedMessages } = coordinatorFixture(childRuntime(), 100);
+    await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await vi.waitFor(() => expect(coordinator.snapshot().deliveries).toHaveLength(1));
+
+    // Restoring the same branch replays the result; the hand-off begun before it must not also send.
+    await coordinator.restore(coordinator.snapshot());
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await coordinator.waitForSettledOperations();
+
+    expect(queuedMessages).toHaveLength(1);
   });
 
   it.each([
@@ -1767,7 +1815,8 @@ describe("minimal subagents coordinator", () => {
       turn_id: first.turn_id,
       output: "done",
     });
-    // The wait claimed the result inside the grace period, so fallback does not queue it again.
+    // The root's next run starts, but the wait already claimed the result.
+    coordinator.deliverDiscardedRootResults();
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(queuedMessages).toHaveLength(1);
   });
@@ -1842,6 +1891,10 @@ describe("minimal subagents coordinator", () => {
 
     fixture.coordinator.recordRootMessageEnd();
     fixture.coordinator.requeueDiscardedRootResults();
+    await fixture.coordinator.waitForSettledOperations();
+    // The re-queued Coordination Messages wait for the result instead of being sent alone.
+    expect(fixture.queuedMessages).toHaveLength(1);
+    fixture.coordinator.deliverDiscardedRootResults();
     await fixture.coordinator.waitForSettledOperations();
 
     expect(fixture.queuedMessages).toHaveLength(2);

@@ -102,20 +102,40 @@ async function startHeldRootTurn() {
   sessions.push(session);
 
   const requests: ProviderRequest[] = [];
+  let summaryRequests = 0;
   const held = Promise.withResolvers<void>();
   session.agent.streamFunction = (currentModel, context, options) => {
-    requests.push({
+    const request = {
       tools: JSON.stringify(getCurrentTools(context.messages)),
       systemPrompt: getCurrentSystemPrompt(context.messages),
       messages: structuredClone(context.messages),
-    });
+    };
+    const stream = createAssistantMessageEventStream();
+    if (request.systemPrompt.startsWith("You are a context summarization assistant")) {
+      // A branch summary that outlasts the grace period, as a real model call would.
+      summaryRequests++;
+      setTimeout(() => {
+        const summary = fauxAssistantMessage("## Goal\nSpawn a worker.");
+        stream.push({
+          type: "done",
+          reason: "stop",
+          message: {
+            ...summary,
+            api: currentModel.api,
+            provider: currentModel.provider,
+            model: currentModel.id,
+          },
+        });
+      }, 1_500);
+      return stream;
+    }
+    requests.push(request);
     const respond = (message: AssistantMessage): AssistantMessage => ({
       ...message,
       api: currentModel.api,
       provider: currentModel.provider,
       model: currentModel.id,
     });
-    const stream = createAssistantMessageEventStream();
     if (requests.length === 1) {
       const spawn = fauxAssistantMessage(
         fauxToolCall("subagent", { task: "Report back", agent_id: "worker" }, { id: "spawn" }),
@@ -167,6 +187,7 @@ async function startHeldRootTurn() {
     requests,
     run,
     releaseHeldResponse: () => held.resolve(),
+    summaryRequests: () => summaryRequests,
     resultEntries: () =>
       session.sessionManager
         .getBranch()
@@ -191,25 +212,56 @@ async function outlastGracePeriod(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 1_500));
 }
 
-test("delivers a queued result again after Esc clears the root queue", async () => {
-  const { session, requests, run, resultEntries } = await startHeldRootTurn();
+test("delivers a result Esc discarded once the user starts the root's next run", async () => {
+  const { session, requests, run, resultEntries, pendingDeliveries } = await startHeldRootTurn();
 
   // Pi's Esc: clear the queue, then abort the running turn.
   session.clearQueue();
   await session.abort();
   await run;
+  // Recovery respects Esc: no provider request until the user prompts again.
+  await outlastGracePeriod();
+  expect(requests).toHaveLength(2);
   expect(resultEntries()).toHaveLength(0);
 
-  await vi.waitFor(() => expect(requests).toHaveLength(3), GRACE_TIMEOUT);
+  await session.prompt("next");
   await session.waitForIdle();
+  expect(requests).toHaveLength(3);
   expect(requestCarriesResult(requests[2])).toBe(true);
   expect(resultEntries()).toHaveLength(1);
 
-  // The re-send started a root turn rather than queueing, so no later boundary releases it again.
   await outlastGracePeriod();
   await session.waitForIdle();
   expect(requests).toHaveLength(3);
   expect(resultEntries()).toHaveLength(1);
+  expect(pendingDeliveries()).toEqual([]);
+});
+
+test("starts no root turn when /tree summarizes the branch after Esc", async () => {
+  const { session, requests, run, summaryRequests } = await startHeldRootTurn();
+  const firstUser = session.sessionManager
+    .getBranch()
+    .find((entry) => entry.type === "message" && entry.message.role === "user");
+  if (!firstUser) throw new Error("Expected the root's first user message");
+
+  session.clearQueue();
+  await session.abort();
+  await run;
+  const navigation = await session.navigateTree(firstUser.id, { summarize: true });
+  expect(navigation.cancelled).toBe(false);
+  await outlastGracePeriod();
+  await session.waitForIdle();
+
+  expect(summaryRequests()).toBe(1);
+  expect(requests).toHaveLength(2);
+  expect(
+    session.sessionManager
+      .getEntries()
+      .filter(
+        (entry) =>
+          entry.type === "custom_message" && entry.customType === "minimal-subagents.result",
+      ),
+  ).toEqual([]);
 });
 
 test("delivers a queued result once when nothing clears the queue", async () => {

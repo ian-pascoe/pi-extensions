@@ -613,7 +613,9 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.runner.hasHandlers("session_before_fork")).toBe(true);
     expect(harness.runner.hasHandlers("session_tree")).toBe(true);
     expect(harness.runner.hasHandlers("message_end")).toBe(true);
-    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
+    expect(harness.runner.hasHandlers("agent_start")).toBe(true);
+    // Registered only while a result waits in the root's steer queue.
+    expect(harness.runner.hasHandlers("turn_end")).toBe(false);
     expect(harness.runner.hasHandlers("agent_settled")).toBe(false);
     expect(harness.runner.hasHandlers("session_shutdown")).toBe(true);
     expect(harness.runner.getCommand("subagents")?.description).toBe(
@@ -1304,6 +1306,7 @@ describe("minimal subagents extension lifecycle", () => {
       timeout: 2_000,
     });
     expect(harness.sentDeliveryModes).toEqual(["steer"]);
+    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
     beforeTurnEnd?.(harness);
 
     const aborted = {
@@ -1342,16 +1345,23 @@ describe("minimal subagents extension lifecycle", () => {
 
   it("re-sends a result Pi discarded from the root queue", async () => {
     const harness = await steerResultThenEndRootTurn("minimal-subagents-esc-discarded", () => []);
+    expect(harness.runner.hasHandlers("turn_end")).toBe(false);
 
-    await vi.waitFor(
-      () =>
-        expect(harness.sentMessageTypes).toEqual([
-          "minimal-subagents.result",
-          "minimal-subagents.result",
-        ]),
-      { timeout: 3_000 },
-    );
+    // Esc leaves the root idle; recovery waits for the next run instead of starting one.
+    harness.setIdle(true);
+    await harness.runner.emit({ type: "agent_start" });
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
+
+    harness.setIdle(false);
+    await harness.runner.emit({ type: "agent_start" });
+    expect(harness.sentMessageTypes).toEqual([
+      "minimal-subagents.result",
+      "minimal-subagents.result",
+    ]);
+    expect(harness.sentDeliveryModes).toEqual(["steer", "steer"]);
     expect(harness.sentMessages[1]).toEqual(harness.sentMessages[0]);
+    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
     await settleAndShutDown(harness);
     expect(harness.extensionErrors).toEqual([]);
   });
@@ -1361,6 +1371,7 @@ describe("minimal subagents extension lifecycle", () => {
       "minimal-subagents-esc-still-queued",
       (current) => current.sentMessages.map(asQueuedCustomMessage),
     );
+    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
 
     await settleAndShutDown(harness);
     expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
@@ -1382,6 +1393,7 @@ describe("minimal subagents extension lifecycle", () => {
         );
       },
     );
+    expect(harness.runner.hasHandlers("turn_end")).toBe(false);
 
     await settleAndShutDown(harness);
     expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);

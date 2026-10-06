@@ -183,6 +183,8 @@ export class MinimalSubagentsCoordinator {
   private handOffOrder = 0;
   /** The latest hand-off order a root `message_end` has seen; later hand-offs may postdate Pi's queue snapshot. */
   private rootMessageEndOrder = 0;
+  /** Root results Pi discarded, awaiting the root's next run; each keeps its Delivery Ledger sequence. */
+  private readonly discardedRootResultKeys = new Set<string>();
   private readonly backgroundOperations = new Set<Promise<void>>();
   private acceptingOperations = true;
   private lifecycleEpoch = 0;
@@ -756,6 +758,7 @@ export class MinimalSubagentsCoordinator {
     this.waitHandedDeliveryIds.clear();
     this.automaticDeliveryKeys.clear();
     this.handedTerminalKeys.clear();
+    this.discardedRootResultKeys.clear();
     this.automaticCoordinationDeliveryIds.clear();
     this.deliveryLedger = createDeliveryLedger({
       deliveries: snapshot.deliveries,
@@ -910,9 +913,9 @@ export class MinimalSubagentsCoordinator {
    *
    * Call only at a root turn boundary whose pending-message snapshot is empty. Pi persists a
    * consumed steer before that boundary, so a queued result handed before the turn's last message
-   * either has Delivery Evidence and settles, or was discarded. A discarded result becomes
-   * selectable by a default wait again and automatic fallback queues it again, together with its
-   * batched Coordination Messages. Synchronous: the root recipient queue waits for this turn.
+   * either has Delivery Evidence and settles, or was discarded. A discarded result is selectable
+   * by a default wait again at once, with its batched Coordination Messages; automatic fallback
+   * re-sends it when the root's next run starts (`deliverDiscardedRootResults`).
    */
   requeueDiscardedRootResults(): void {
     if (!this.acceptingOperations) return;
@@ -946,20 +949,53 @@ export class MinimalSubagentsCoordinator {
       }
 
       this.handedTerminalKeys.delete(handedKey);
-      const agent = this.agents.get(delivery.source_agent_id);
-      const result = delivery.result ?? agent?.latest_result;
-      if (
-        delivery.path === "message" &&
-        result?.status === "completed" &&
-        result.turn_id === delivery.source_turn_id
-      ) {
-        // Reserved first, so its grace period takes the Coordination Messages queued below.
-        this.trackBackgroundOperation(this.deliverAutomaticResult(result, delivery));
-      }
+      this.discardedRootResultKeys.add(handedKey);
       for (const item of batched) {
         this.waitHandedDeliveryIds.delete(item.delivery_id);
         this.queuePendingParentMessage("root", item.message, item);
       }
+    }
+  }
+
+  /** Whether a root result waits in Pi's clearable steer queue, so turn boundaries must be watched. */
+  hasQueuedRootHandOffs(): boolean {
+    for (const handOff of this.handedTerminalKeys.values()) if (handOff.queued) return true;
+    return false;
+  }
+
+  /**
+   * Queue results Pi discarded into a root run that just started, in Delivery Ledger sequence.
+   *
+   * Recovery never starts a root turn by itself, so Esc stays respected: the results wait, still
+   * selectable by a default wait, until the user or another delivery starts the root's next run.
+   */
+  deliverDiscardedRootResults(): void {
+    if (
+      this.discardedRootResultKeys.size === 0 ||
+      !this.acceptingOperations ||
+      this.dependencies.root.isIdle()
+    )
+      return;
+    const discarded = this.deliveryLedger.terminalDeliveries
+      .filter((delivery) =>
+        this.discardedRootResultKeys.has(
+          deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id),
+        ),
+      )
+      .sort(
+        (left, right) =>
+          (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER),
+      );
+    this.discardedRootResultKeys.clear();
+    for (const delivery of discarded) {
+      const result = delivery.result ?? this.agents.get(delivery.source_agent_id)?.latest_result;
+      if (
+        delivery.path !== "message" ||
+        result?.status !== "completed" ||
+        result.turn_id !== delivery.source_turn_id
+      )
+        continue;
+      this.trackBackgroundOperation(this.deliverAutomaticResult(result, delivery, true));
     }
   }
 
@@ -1256,18 +1292,27 @@ export class MinimalSubagentsCoordinator {
     if (result.status !== "completed") this.removeSettledEmptyTurnClaim(agent.agent_id, turnId);
   }
 
+  /**
+   * Hand one terminal result to its parent through automatic fallback.
+   *
+   * By default it waits its turn in the recipient queue, then the wait-claim grace period. A
+   * `resume` hand-off re-sends a root result Pi discarded: its grace period has passed and its
+   * sequence precedes everything still queued, so it is handed at once, synchronously up to Pi.
+   */
   private async deliverAutomaticResult(
     result: TurnResult,
     delivery: PersistedDelivery,
+    resume = false,
   ): Promise<void> {
     const deliveryKey = agentDeliveryKey(delivery.source_agent_id, delivery.source_turn_id);
     const handedKey = deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id);
     if (this.automaticDeliveryKeys.has(deliveryKey)) return;
     this.automaticDeliveryKeys.add(deliveryKey);
-    const graceMs = this.deliveryGraceMs();
+    const graceMs = resume ? 0 : this.deliveryGraceMs();
+    const epoch = this.lifecycleEpoch;
     let batchedCoordinationDeliveries: PersistedCoordinationDelivery[] = [];
     try {
-      await this.enqueueRecipientDelivery(delivery.destination_agent_id, async () => {
+      const handOff = async () => {
         if (delivery.destination_agent_id !== "root") {
           await this.ensureRuntime(
             this.requireUsableAgent(delivery.destination_agent_id, "message"),
@@ -1275,6 +1320,8 @@ export class MinimalSubagentsCoordinator {
           if (!this.isTerminalDeliveryCurrent(delivery)) return;
         }
         if (graceMs > 0) await new Promise((resolve) => setTimeout(resolve, graceMs));
+        // A branch change during the grace period abandons this hand-off; restore replays it.
+        if (epoch !== this.lifecycleEpoch) return;
         if (!this.acceptingOperations || this.shouldStopAutomaticTerminalDelivery(delivery)) return;
         if (this.hasDeliveryEvidence(delivery)) {
           this.settleDelivery(delivery);
@@ -1317,7 +1364,10 @@ export class MinimalSubagentsCoordinator {
             this.isTerminalDeliveryCurrent(delivery) &&
             batchedCoordinationDeliveries.every((item) => this.isCoordinationDeliveryCurrent(item)),
         );
-      });
+      };
+      await (resume
+        ? handOff()
+        : this.enqueueRecipientDelivery(delivery.destination_agent_id, handOff));
     } catch (error) {
       this.handedTerminalKeys.delete(handedKey);
       for (const batchedDelivery of batchedCoordinationDeliveries) {
