@@ -212,7 +212,7 @@ export function lspSeverityName(severity: number): string | undefined {
   return SEVERITY_NAMES.get(severity);
 }
 
-/** Outcomes that take a line of their own; clean and unchecked files are grouped instead. */
+/** Outcomes the model sees; a file with no configured server is never shown, and clean files are grouped. */
 type ReportedOutcome = Exclude<
   PostEditDiagnosticOutcome,
   { kind: "no_diagnostics" | "no_configured_server" }
@@ -252,19 +252,18 @@ function compareOutcomes(left: ReportedOutcome, right: ReportedOutcome, cwd: str
   return formatOutcome(left, cwd).localeCompare(formatOutcome(right, cwd));
 }
 
-function groupedPathsLine(label: string, paths: readonly string[], cwd: string): readonly string[] {
+function cleanPathsLine(paths: readonly string[], cwd: string): readonly string[] {
   if (paths.length === 0) return [];
   const displayed = [...new Set(paths.map((path) => lspDisplayPath(cwd, path)))].sort(
     (left, right) => left.localeCompare(right),
   );
-  return [`${label}: ${displayed.join(", ")}`];
+  return [`no diagnostics: ${displayed.join(", ")}`];
 }
 
 /**
  * Render one compact deterministic LSP section without deduplicating independent server
  * diagnostics. Paths are relative to `cwd`. Findings and failures take one line each; clean files
- * and files with no configured server are each grouped on one line, and when every file is clean
- * the section is a single line.
+ * are grouped on one line, and when every file is clean the section is a single line.
  */
 export function formatPostEditDiagnostics(
   outcomes: readonly PostEditDiagnosticOutcome[],
@@ -274,19 +273,16 @@ export function formatPostEditDiagnostics(
     return "\n\nLSP diagnostics: no diagnostics";
   }
   const clean: string[] = [];
-  const unchecked: string[] = [];
   const reported: ReportedOutcome[] = [];
   for (const outcome of outcomes) {
     if (outcome.kind === "no_diagnostics") clean.push(outcome.path);
-    else if (outcome.kind === "no_configured_server") unchecked.push(outcome.path);
-    else reported.push(outcome);
+    else if (outcome.kind !== "no_configured_server") reported.push(outcome);
   }
   const lines = [
     ...reported
       .sort((left, right) => compareOutcomes(left, right, cwd))
       .map((outcome) => formatOutcome(outcome, cwd)),
-    ...groupedPathsLine("no diagnostics", clean, cwd),
-    ...groupedPathsLine("not checked (no configured server)", unchecked, cwd),
+    ...cleanPathsLine(clean, cwd),
   ];
   return `\n\nLSP diagnostics\n${lines.join("\n")}`;
 }
@@ -299,12 +295,13 @@ export async function appendPostEditDiagnostics(
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
   const extracted = extractPostEditDiagnosticPaths(event);
   if (extracted === undefined) return undefined;
+  // A file no Server Definition covers is noise: only matched-server outcomes are worth appending.
   const outcomes = [
     ...extracted.warnings.map((message): PostEditDiagnosticOutcome => ({
       kind: "warning",
       message,
     })),
-    ...(await diagnostics(extracted.paths)),
+    ...(await diagnostics(extracted.paths)).filter(({ kind }) => kind !== "no_configured_server"),
   ];
   if (outcomes.length === 0) return undefined;
   const patch: PostEditDiagnosticsResultPatch = {

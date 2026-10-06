@@ -598,7 +598,19 @@ describe("Pi LSP extension lifecycle", () => {
   );
 
   test("starts runtime lazily, replays legacy and current previews on the active branch, augments writes, and shuts down idempotently", async () => {
-    const harness = await createExtensionHarness(false);
+    const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
+    const harness = await createExtensionHarness(false, {
+      lsp: {
+        timeouts: { diagnosticsMs: 1_000, initializeMs: 5_000, shutdownMs: 1_000 },
+        servers: {
+          fake: {
+            command: process.execPath,
+            args: [fakeServerPath],
+            languages: [{ extensions: [".ts"], languageId: "typescript" }],
+          },
+        },
+      },
+    });
     const filePath = resolve(harness.sessionManager.getCwd(), "source.ts");
     await writeFile(filePath, "before\n");
     const baseEntryId = harness.sessionManager.appendMessage({
@@ -816,7 +828,7 @@ describe("Pi LSP extension lifecycle", () => {
     } satisfies ToolResultEvent);
     expect(augmented?.content?.at(-1)).toMatchObject({
       type: "text",
-      text: expect.stringContaining("no configured server"),
+      text: "\n\nLSP diagnostics: no diagnostics",
     });
     expect(augmented?.details).toBe(originalDetails);
     expect(augmented?.isError).toBe(false);
@@ -846,7 +858,7 @@ describe("Pi LSP extension lifecycle", () => {
     expect(partialApply?.structuredContent).toEqual(partialApplyEvent.structuredContent);
     expect(partialApply?.content?.at(-1)).toMatchObject({
       type: "text",
-      text: expect.stringContaining("no configured server"),
+      text: "\n\nLSP diagnostics: no diagnostics",
     });
     // Post-edit Diagnostics never flips the error state: a false input stays false.
     const nonErrorPartialApply = await harness.runner.emitToolResult({
@@ -861,7 +873,7 @@ describe("Pi LSP extension lifecycle", () => {
       input: { operation: "apply", ...partialApplyEvent.input },
     });
     expect(legacyApplyResult?.content?.at(-1)).toMatchObject({
-      text: expect.stringContaining("no configured server"),
+      text: "\n\nLSP diagnostics: no diagnostics",
     });
 
     const changedFiles = Array.from(
@@ -1046,7 +1058,7 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("reports a file as not checked until a required root marker exists", async () => {
+  test("stays silent about a file until a required root marker exists", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {
       lsp: {
@@ -1078,10 +1090,7 @@ describe("Pi LSP extension lifecycle", () => {
     } satisfies ToolResultEvent;
 
     const unchecked = await harness.runner.emitToolResult(event);
-    expect(unchecked?.content?.at(-1)).toEqual({
-      type: "text",
-      text: "\n\nLSP diagnostics\nnot checked (no configured server): source.ts",
-    });
+    expect(unchecked).toBeUndefined();
 
     await writeFile(resolve(cwd, "tsconfig.json"), "{}");
     const augmented = await harness.runner.emitToolResult(event);
@@ -1092,7 +1101,7 @@ describe("Pi LSP extension lifecycle", () => {
     await shutdownExtension(harness);
   });
 
-  test("reports a file as not checked when its only enabled server fails its gate beside a disabled one", async () => {
+  test("stays silent about a file whose only enabled server fails its gate beside a disabled one", async () => {
     const fakeServerPath = fileURLToPath(new URL("fixtures/fake-lsp-server.mjs", import.meta.url));
     const harness = await createExtensionHarness(false, {
       lsp: {
@@ -1126,10 +1135,7 @@ describe("Pi LSP extension lifecycle", () => {
       details: { bytesWritten: 17 },
       isError: false,
     } satisfies ToolResultEvent);
-    expect(result?.content?.at(-1)).toEqual({
-      type: "text",
-      text: "\n\nLSP diagnostics\nnot checked (no configured server): source.ts",
-    });
+    expect(result).toBeUndefined();
     await shutdownExtension(harness);
   });
 });
