@@ -362,7 +362,7 @@ describe("real TypeScript 7 language server client", () => {
     expect(workspace.startedRoots).toEqual([root]);
     // Before `b` is opened, the result warns that its references may be missing.
     expect(workspace.beforeImporterOpened).toContain(
-      `Warning: typescript has not loaded files from packages/b under ${root}; their references may be missing.`,
+      `Warning: typescript has not loaded 1 package (packages/b) under ${root}; references there may be missing.`,
     );
     expect(workspace.references).toContain("packages/b/src/index.ts:1:10");
     expect(workspace.references).toContain("packages/b/src/index.ts:2:22");
