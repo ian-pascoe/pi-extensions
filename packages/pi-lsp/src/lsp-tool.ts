@@ -964,10 +964,22 @@ function statusLanguages(languages: readonly LspServerLanguage[]) {
 
 /**
  * Render status as one `server_id state [root] language(extensions,...)... [error: ...]` line per
- * Server Definition or Server Instance, followed by settings warnings.
+ * Server Definition or Server Instance, followed by settings warnings. Unless `all` is set, only
+ * Server Instances that are running, starting, or unavailable, disabled servers, and servers with
+ * a last error get a line; the other servers are counted in one summary line.
  */
-function formatStatusText(status: LspServerManagerStatus, cwd: string): string {
-  const lines = status.servers.map((server) => {
+function formatStatusText(status: LspServerManagerStatus, cwd: string, all: boolean): string {
+  const listed = all
+    ? status.servers
+    : status.servers.filter(
+        ({ error, state }) =>
+          error !== undefined ||
+          state === "disabled" ||
+          state === "running" ||
+          state === "starting" ||
+          state === "unavailable",
+      );
+  const lines = listed.map((server) => {
     const languages = Object.entries(statusLanguages(server.languages)).map(
       ([languageId, patterns]) => `${languageId}(${patterns.join(",")})`,
     );
@@ -979,9 +991,14 @@ function formatStatusText(status: LspServerManagerStatus, cwd: string): string {
       ...(server.error === undefined ? [] : [`error: ${collapseLspWhitespace(server.error)}`]),
     ].join(" ");
   });
+  const omitted = status.servers.length - listed.length;
+  const summary =
+    omitted === 0 ? [] : [`+${omitted} configured, not started (pass all: true to list)`];
   const warnings = status.warnings.map((warning) => `Warning: ${warning}`);
   return [
-    ...(lines.length === 0 ? ["No configured Server Definitions."] : lines),
+    ...(status.servers.length === 0
+      ? ["No configured Server Definitions."]
+      : [...(lines.length === 0 ? ["No active servers."] : lines), ...summary]),
     ...(warnings.length === 0 ? [] : ["", ...warnings]),
   ].join("\n");
 }
@@ -1865,7 +1882,7 @@ async function executeLspOperation(
         warnings: status.warnings,
       });
       return createLspToolOutput(
-        formatStatusText(status, context.cwd),
+        formatStatusText(status, context.cwd, parameters.all === true),
         { ...operationDetails("status", outcomes), result_count: status.servers.length },
         lspStructuredFields(json),
         dependencies,
@@ -2034,7 +2051,7 @@ const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
 
 const LSP_TOOL_DESCRIPTIONS = {
   status:
-    "Report each configured language server's state, workspace root, last error, and the file extensions it handles per language ID.",
+    "Report language servers' state, workspace root, last error, and the file extensions each handles per language ID. Lists running, starting, errored, unavailable, and disabled servers and counts the rest; pass all: true to list every configured server.",
   capabilities: "Start a server for a workspace and report its negotiated capabilities.",
   restart:
     "Restart a server for a workspace, clearing its unavailable state, and report its capabilities.",

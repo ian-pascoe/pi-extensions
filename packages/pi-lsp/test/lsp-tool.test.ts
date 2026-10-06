@@ -4315,7 +4315,7 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("lists one compact line per server, failed or not yet started, with settings warnings", async () => {
+    test("lists active and errored servers, counts idle ones, and lists every server with all: true", async () => {
       const fixture = await createToolFixture();
       const cwd = fixture.context.cwd;
       const typescript = {
@@ -4361,19 +4361,31 @@ describe("registered LSP tool", () => {
       );
 
       const status = await executeTool(fixture, { operation: "status" }, dependencies);
+      const full = await executeTool(fixture, { operation: "status", all: true }, dependencies);
 
       const structured = Value.Parse(LspStatusOutputSchema, status.structuredContent);
       const [, broken] = structured.servers;
       expect(broken?.error).toContain("spawn broken ENOENT");
+      const errorLine = `broken unavailable ${cwd} typescript(.ts,.tsx) javascript(.js) error: ${broken?.error?.replaceAll(/\s+/gu, " ")}`;
       expect(resultText(status)).toBe(
         [
           `typescript running ${cwd} typescript(.ts,.tsx) javascript(.js)`,
-          `broken unavailable ${cwd} typescript(.ts,.tsx) javascript(.js) error: ${broken?.error?.replaceAll(/\s+/gu, " ")}`,
+          errorLine,
+          "+1 configured, not started (pass all: true to list)",
+          "",
+          "Warning: Project lsp.servers.bad: command is required",
+        ].join("\n"),
+      );
+      expect(resultText(full)).toBe(
+        [
+          `typescript running ${cwd} typescript(.ts,.tsx) javascript(.js)`,
+          errorLine,
           "python configured python(.py,SConstruct)",
           "",
           "Warning: Project lsp.servers.bad: command is required",
         ].join("\n"),
       );
+      expect(full.structuredContent).toEqual(status.structuredContent);
       expect(structured).toEqual({
         servers: [
           {
@@ -4400,6 +4412,42 @@ describe("registered LSP tool", () => {
         truncated: false,
       });
       expect(status.details).toMatchObject({ operation: "status", result_count: 3 });
+      await manager.shutdown();
+      await fixture.close();
+    });
+
+    test("says no server is active when every configured server is idle", async () => {
+      const fixture = await createToolFixture();
+      const cwd = fixture.context.cwd;
+      const settings: ResolvedLspSettings = {
+        ...resolvedSettings([]),
+        servers: new Map([
+          [
+            "python",
+            {
+              command: "fake",
+              args: [],
+              environment: {},
+              id: "python",
+              languages: [{ extensions: [".py"], fileNames: [], languageId: "python" }],
+              requireRootMarker: false,
+              rootMarkers: [],
+            },
+          ],
+        ]),
+      };
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd,
+        settings,
+        startClient: async () => fixture.client,
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+
+      const status = await executeTool(fixture, { operation: "status" }, dependencies);
+
+      expect(resultText(status)).toBe(
+        "No active servers.\n+1 configured, not started (pass all: true to list)",
+      );
       await manager.shutdown();
       await fixture.close();
     });

@@ -257,7 +257,9 @@ Diagnostics, hover, status, code actions, and apply results are compact text too
 - `lsp_hover` shows only the hover's markdown or plaintext contents, under the `Query position:`
   line.
 - `lsp_status` lists one `server_id state [root] language(extensions,...) [error: ...]` line per
-  server, followed by settings warnings.
+  running, starting, errored, unavailable, or disabled server, then one `+N configured, not started` summary
+  line for the rest, followed by settings warnings. Pass `all: true` to list every configured
+  server. Its structured result always lists every server.
 - `lsp_code_actions` lists each action as `title (kind): preview <preview_id>` with the preview's
   diff indented below, or says why it cannot be applied.
 - `lsp_apply` lists the files it modified, created, deleted, or renamed.
@@ -306,7 +308,8 @@ reports that the operation is unsupported. `lsp_rename` and the `lsp_format_*` t
 
 `lsp_status` lists each Server Definition's languages with the file extensions and filenames each
 handles (a map from language ID in its structured result), so it shows which servers a file routes
-to before any has started.
+to before any has started. Its text lists only active and errored servers unless called with
+`all: true`.
 
 `lsp_workspace_diagnostics` uses the server's workspace diagnostics pull when it has one, and
 otherwise the diagnostics it has pushed for files opened in this session. A server that answers only

@@ -8,7 +8,7 @@ disable-model-invocation: true
 # Pi LSP
 
 1. Read [`../../README.md`](../../README.md)'s Settings, `/lsp` command, and LSP tools sections, then identify the effective settings scope.
-2. Call `lsp_status`. Check that the representative file's extension or filename appears in the Server Definition's `languages`. If the Server Definition is disabled, report that state and its enablement controls before attempting startup.
+2. Call `lsp_status` with `all: true`, because the default lists only active and errored servers. Check that the representative file's extension or filename appears in the Server Definition's `languages`. If the Server Definition is disabled, report that state and its enablement controls before attempting startup.
 3. Test a representative file with `lsp_capabilities`, then `lsp_diagnostics`, supplying `server_id` when needed.
 4. Classify the result as settings, routing, process, capability, or Post-edit Diagnostics behavior.
 5. If Server Definitions changed, reload Pi. Enablement commands apply immediately. For an unavailable Server Instance, use `lsp_restart` only when recovery is authorized; otherwise ask the user to run `/lsp stop <server-id> <root>`, which permits a fresh lazy start.

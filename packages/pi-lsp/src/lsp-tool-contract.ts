@@ -176,7 +176,17 @@ function serverParametersSchema() {
  * Coordinates are one-based Unicode code points.
  */
 export const LspOperationParametersSchemas = {
-  status: Type.Object({}, { additionalProperties: false }),
+  status: Type.Object(
+    {
+      all: Type.Optional(
+        Type.Boolean({
+          description:
+            "List every configured server in the text; by default only running, starting, errored, and unavailable servers are listed and the rest are counted",
+        }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
   capabilities: serverParametersSchema(),
   restart: serverParametersSchema(),
   diagnostics: fileParametersSchema(),
