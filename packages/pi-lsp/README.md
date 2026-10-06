@@ -226,10 +226,14 @@ Symbol, hierarchy, and range results use the same paths and positions, with symb
   members of classes, interfaces, enums, namespaces, modules, packages, objects, and structs
   (rust-analyzer reports an `impl` block as an object), without the locals, return-object
   properties, and callbacks inside function, method, and variable bodies. A larger `depth` adds one
-  level inside those bodies per step, and `depth: "all"` lists the full tree. A final line counts
-  the nested symbols the depth left out, and the structured result's `omitted` holds that count and
-  follows the same depth. Import bindings still appear, because servers report them as variables,
-  and a type alias appears as `(class)`, because that is how the TypeScript server reports it.
+  level inside those bodies per step, and `depth: "all"` lists the full tree. Unless `depth` is
+  `"all"`, the outline also leaves out import bindings, which servers report as top-level
+  variables: when the server supports `textDocument/foldingRange`, one extra request finds its
+  `imports` ranges, and a top-level symbol lying entirely inside one is dropped. A server without
+  folding ranges, one that reports no `imports` range, or a failed folding request leaves the
+  imports listed. A final line counts the nested symbols and imports left out, and the structured
+  result's `omitted` holds that count. A type alias appears as `(class)`, because that is how the
+  TypeScript server reports it.
 - `lsp_call_hierarchy`, `lsp_type_hierarchy`, `lsp_supertypes`, and `lsp_subtypes` list
   `name (kind) path:line:col` lines. `lsp_incoming_calls` and `lsp_outgoing_calls` indent each call
   site below the caller or callee as `path:line:col  <source line>`.

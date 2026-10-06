@@ -134,7 +134,7 @@ export interface LspStructureReadTextInput {
   /** Absolute path of the queried document, which document symbols, call sites, and ranges refer to. */
   readonly documentPath: string;
   readonly reads: readonly (LspRead & {
-    /** Nested symbols a document-symbol read left out for its depth. */
+    /** Nested symbols and imports a document-symbol read left out for its depth. */
     readonly omitted?: number;
   })[];
   readonly warnings: readonly string[];
@@ -408,7 +408,7 @@ export async function formatLspStructureReadBlocks(
           ...(omitted === 0
             ? []
             : [
-                `${omitted} nested ${omitted === 1 ? "symbol" : "symbols"} omitted; raise depth or pass depth: "all" to see ${omitted === 1 ? "it" : "them"}.`,
+                `${omitted} nested or import ${omitted === 1 ? "symbol" : "symbols"} omitted; raise depth or pass depth: "all" to see ${omitted === 1 ? "it" : "them"}.`,
               ]),
         ],
       };

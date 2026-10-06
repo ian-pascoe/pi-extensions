@@ -328,7 +328,9 @@ describe("real TypeScript 7 language server client", () => {
       }
       expect(byDefault.names.some((name) => name?.includes("callback"))).toBe(false);
       // The output says symbols were left out, and how to see them.
-      expect(byDefault.names.some((name) => name?.includes("nested symbols omitted"))).toBe(true);
+      expect(
+        byDefault.names.some((name) => name?.includes("nested or import symbols omitted")),
+      ).toBe(true);
       expect(byDefault.structuredNames).not.toContain('"name":"ok"');
       expect(byDefault.structuredNames).toContain('"name":"summarize"');
 
@@ -339,6 +341,90 @@ describe("real TypeScript 7 language server client", () => {
         expect(full.names.some((name) => name?.includes("callback"))).toBe(true);
         expect(full.structuredNames).toContain('"name":"ok"');
       }
+    } finally {
+      await manager.shutdown();
+      await sessionFiles.close();
+    }
+  }, 60_000);
+
+  test("leaves import bindings out of the default outline and lists them at depth all", async () => {
+    const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-typescript-"));
+    temporaryDirectories.push(projectDirectory);
+    await writeFile(
+      resolve(projectDirectory, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { noEmit: true, strict: true } }),
+    );
+    const filePath = resolve(projectDirectory, "imports.ts");
+    await writeFile(
+      filePath,
+      [
+        'import { readFileSync, writeFileSync } from "node:fs";',
+        'import * as path from "node:path";',
+        'import os from "node:os";',
+        "",
+        "export const limit = 3;",
+        "",
+        "export function describe() {",
+        "  return [readFileSync, writeFileSync, path, os];",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const sessionFiles = await createLspSessionFiles(projectDirectory);
+    const manager = createTypeScriptManager(
+      projectDirectory,
+      typescriptDefinition(["tsconfig.json"]),
+    );
+    try {
+      const tool = createLspToolDefinition("document_symbols", () => ({
+        manager,
+        workspaceEdits: new LspWorkspaceEditStore(),
+        sessionFiles,
+      }));
+      const outline = async (parameters: { depth?: number | "all" }) => {
+        const result = await tool.execute(
+          "outline",
+          { file_path: filePath, ...parameters },
+          undefined,
+          undefined,
+          // SAFETY: Tool execution only reads cwd from ExtensionContext.
+          { cwd: projectDirectory } as ExtensionToolContext,
+        );
+        const text = result.content.map((part) => ("text" in part ? part.text : "")).join("");
+        return {
+          lines: text.split("\n"),
+          names: text.split("\n").map((line) => line.trim().split(" (")[0]),
+          structured: JSON.stringify(result.structuredContent),
+        };
+      };
+
+      const byDefault = await outline({});
+      expect(byDefault.names).toEqual(expect.arrayContaining(["limit", "describe"]));
+      for (const binding of ["readFileSync", "writeFileSync", "path", "os"]) {
+        expect(byDefault.names).not.toContain(binding);
+        expect(byDefault.structured).not.toContain(`"name":"${binding}"`);
+      }
+      // The hint counts the four dropped import bindings.
+      expect(byDefault.lines).toContain(
+        '4 nested or import symbols omitted; raise depth or pass depth: "all" to see them.',
+      );
+      expect(byDefault.structured).toContain('"omitted":4');
+
+      // A deeper count still omits imports; only "all" lists them.
+      expect((await outline({ depth: 2 })).names).not.toContain("readFileSync");
+      const full = await outline({ depth: "all" });
+      expect(full.names).toEqual(
+        expect.arrayContaining([
+          "readFileSync",
+          "writeFileSync",
+          "path",
+          "os",
+          "limit",
+          "describe",
+        ]),
+      );
+      expect(full.lines.some((line) => line.includes("omitted"))).toBe(false);
     } finally {
       await manager.shutdown();
       await sessionFiles.close();

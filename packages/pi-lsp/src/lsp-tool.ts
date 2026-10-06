@@ -66,6 +66,7 @@ import {
   type LspBoundedItems,
 } from "./lsp-item-list.js";
 import { limitLspDocumentSymbolDepth } from "./lsp-document-symbol-depth.js";
+import { dropImportSymbols, importFoldingRanges } from "./lsp-outline-imports.js";
 import {
   assembleLspReadText,
   collapseLspWhitespace,
@@ -287,7 +288,7 @@ interface LspReadValue {
   readonly server_id: string;
   // oxlint-disable-next-line anti-slop/no-unknown-property-types -- Normalized server responses stay opaque until rendering checks their shape.
   readonly value: unknown;
-  /** Nested symbols a document-symbol read left out for its depth. */
+  /** Nested symbols and import bindings a document-symbol read left out of its outline. */
   readonly omitted?: number;
 }
 
@@ -1350,6 +1351,24 @@ async function executeCompletion(
   );
 }
 
+/**
+ * The `imports` folding ranges of a document, for the same synchronized document the symbols are
+ * read from. A failed or timed-out request yields none, so the outline falls back to listing imports.
+ */
+async function requestImportFoldingRanges(
+  client: LspToolServerClient,
+  textDocument: { readonly uri: string },
+  signal: AbortSignal | undefined,
+) {
+  try {
+    return importFoldingRanges(
+      await client.request(FoldingRangeRequest.method, { textDocument }, signal),
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function executeFileRead(
   dependencies: LspToolDependencies,
   parameters: FileReadParameters,
@@ -1378,19 +1397,22 @@ async function executeFileRead(
           prepared,
         );
       }
-      let value = await client.request(
-        method,
-        { textDocument: { uri: prepared.document.uri } },
-        signal,
-      );
+      const textDocument = { uri: prepared.document.uri };
+      const depth = parameters.depth ?? DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH;
+      // The outline asks for folding ranges alongside the symbols, to tell import bindings apart.
+      const importRanges =
+        parameters.operation === "document_symbols" &&
+        depth !== "all" &&
+        client.hasCapability(FoldingRangeRequest.method)
+          ? requestImportFoldingRanges(client, textDocument, signal)
+          : undefined;
+      let value = await client.request(method, { textDocument }, signal);
       if (parameters.operation === "document_symbols") {
-        const limited = limitLspDocumentSymbolDepth(
-          value,
-          parameters.depth ?? DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH,
-        );
+        const withoutImports = dropImportSymbols(value, (await importRanges) ?? []);
+        const limited = limitLspDocumentSymbolDepth(withoutImports.value, depth);
         return {
           ...(await normalizeProtocolResult(limited.value, prepared)),
-          omitted: limited.omitted,
+          omitted: withoutImports.omitted + limited.omitted,
         };
       }
       if (

@@ -416,7 +416,7 @@ test.each([{ toolNames: ["lsp"] }, { toolNames: ["dap"] }, { toolNames: ["lsp", 
         properties: {
           depth: {
             anyOf: [{ type: "integer", minimum: 1 }, { const: "all" }],
-            description: expect.stringContaining("default 1"),
+            description: expect.stringMatching(/default 1.*without import bindings/),
           },
         },
       });
