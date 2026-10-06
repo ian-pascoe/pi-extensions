@@ -62,7 +62,10 @@ export type GitCheckpointSourceHead =
 export interface GitCheckpointCapture {
   readonly treeId: string;
   readonly sourceHead: GitCheckpointSourceHead;
+  /** Paths skipped by capture itself: submodules, nested repositories, oversized or special files. */
   readonly skippedPaths: readonly string[];
+  /** Untracked candidate paths excluded because Git ignores them, sorted. */
+  readonly ignoredPaths: readonly string[];
 }
 
 /** One deterministic path change between two Worktree Checkpoints. */
@@ -675,6 +678,10 @@ export class GitCheckpointStore {
     return normalized;
   }
 
+  private normalizedUniquePaths(paths: readonly string[]): string[] {
+    return [...new Set(paths.map((path) => this.validatePath(path)))].toSorted();
+  }
+
   private async scanFilesystem(signal?: AbortSignal): Promise<FilesystemScan> {
     const paths: string[] = [];
     const skipped: string[] = [];
@@ -759,7 +766,9 @@ export class GitCheckpointStore {
       (checkpointPath) => !sourceTracked.has(checkpointPath),
     );
     const ignored = await this.ignoredPaths(privateOnly, signal);
-    const skipped = new Set([...scan.skipped, ...ignored]);
+    // Ignored paths are reported through `ignoredPaths`, not as skipped; they still stay out of
+    // `allowed` and are removed from the private index below.
+    const skipped = new Set(scan.skipped);
     const allowed: string[] = [];
 
     for (const checkpointPath of candidates) {
@@ -832,6 +841,7 @@ export class GitCheckpointStore {
     if (!TREE_ID_PATTERN.test(treeId)) throw new Error("Git returned an invalid tree ID");
     return {
       skippedPaths: [...skipped].toSorted(),
+      ignoredPaths: [...ignored].toSorted(),
       sourceHead: await this.currentSourceHead(signal),
       treeId,
     };
@@ -912,7 +922,7 @@ export class GitCheckpointStore {
     return entries;
   }
 
-  private async restoreSkippedPaths(
+  private async pathsExcludedFromRestoreUnserialized(
     paths: readonly string[],
     signal?: AbortSignal,
   ): Promise<ReadonlySet<string>> {
@@ -1021,12 +1031,12 @@ export class GitCheckpointStore {
     const entries = await this.treeEntries(treeId, signal);
     const prepared: PreparedRestorePath[] = [];
     const skipped: string[] = [];
-    const normalizedPaths = [...new Set(paths.map((path) => this.validatePath(path)))].toSorted();
+    const normalizedPaths = this.normalizedUniquePaths(paths);
     for (const checkpointPath of normalizedPaths) await this.assertSafeDestination(checkpointPath);
-    const excludedPaths = await this.restoreSkippedPaths(normalizedPaths, signal);
+    const pathsExcluded = await this.pathsExcludedFromRestoreUnserialized(normalizedPaths, signal);
     for (const checkpointPathValue of normalizedPaths) {
       const checkpointPath = this.validatePath(checkpointPathValue);
-      if (excludedPaths.has(checkpointPath)) {
+      if (pathsExcluded.has(checkpointPath)) {
         skipped.push(checkpointPath);
         continue;
       }
@@ -1100,6 +1110,17 @@ export class GitCheckpointStore {
       const record = await this.readLegacyUndo();
       if (record && saveUndoRecord) await saveUndoRecord(record);
       await rm(this.legacyUndoPath(), { force: true });
+    });
+  }
+
+  /** Paths Restore would leave untouched now because they are git-ignored or in a nested repository. */
+  pathsExcludedFromRestore(
+    paths: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ReadonlySet<string>> {
+    return this.serialize(async () => {
+      this.assertEnabled("restore");
+      return this.pathsExcludedFromRestoreUnserialized(this.normalizedUniquePaths(paths), signal);
     });
   }
 
