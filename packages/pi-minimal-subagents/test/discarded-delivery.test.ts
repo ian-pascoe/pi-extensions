@@ -288,6 +288,25 @@ test("delivers a queued result once when nothing clears the queue", async () => 
   expect(delivered?.messages.slice(0, held?.messages.length)).toEqual(held?.messages);
 });
 
+test("delivers a result in the same run when the queue is cleared without an abort", async () => {
+  const { session, requests, run, releaseHeldResponse, resultEntries, pendingDeliveries } =
+    await startHeldRootTurn();
+
+  // A dequeue or RPC `clear_queue` drops the steer but leaves the root turn running.
+  session.clearQueue();
+  releaseHeldResponse();
+  await run;
+
+  expect(requests).toHaveLength(3);
+  expect(requestCarriesResult(requests[2])).toBe(true);
+  expect(resultEntries()).toHaveLength(1);
+  await outlastGracePeriod();
+  await session.waitForIdle();
+  expect(requests).toHaveLength(3);
+  expect(resultEntries()).toHaveLength(1);
+  expect(pendingDeliveries()).toEqual([]);
+});
+
 test("keeps a result queued across a plain abort", async () => {
   const { session, requests, run, resultEntries, pendingDeliveries } = await startHeldRootTurn();
 

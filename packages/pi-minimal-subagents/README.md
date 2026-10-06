@@ -360,15 +360,16 @@ steer. Root-bound messages remain batchable while the root turn is active; a
 pending terminal result absorbs them. If Pi discards a root-bound steer before
 consuming it, as Esc does, the next root turn boundary reporting an empty Pi
 queue releases the result: a default wait selects it again at once, and
-automatic fallback re-sends it, ahead of newer results, when the root's next run
-starts. Recovery never starts a root turn by itself. Child sessions drain all
-available steers before the next model call. Destination-session Delivery
-Evidence still settles each batched ledger item independently, preventing
-duplicate delivery and unbounded checkpoint growth. The pure Delivery Ledger
-state machine retains at most 20 pending wait-only terminal results per source
-agent; Coordination Messages are not removed by that terminal-retention limit.
-Delivered messages include stable delivery, source-agent, and source-turn
-identities in persisted details.
+automatic fallback re-sends it, ahead of newer results, into the root run if it
+is still going, or, after an abort such as Esc, when the root's next run starts.
+Recovery never starts a root turn by itself. Child sessions drain all available
+steers before the next model call. Destination-session Delivery Evidence still
+settles each batched ledger item independently, preventing duplicate delivery
+and unbounded checkpoint growth. The pure Delivery Ledger state machine retains
+at most 20 pending wait-only terminal results per source agent; Coordination
+Messages are not removed by that terminal-retention limit. Delivered messages
+include stable delivery, source-agent, and source-turn identities in persisted
+details.
 
 Deleting a child first verifies its session header and persistent identity,
 then uses the optional `trash` command when available and falls back to

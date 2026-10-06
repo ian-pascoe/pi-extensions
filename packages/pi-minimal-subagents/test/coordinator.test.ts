@@ -1768,6 +1768,27 @@ describe("minimal subagents coordinator", () => {
     ]);
   });
 
+  it("keeps the replay's hand-off reservation when an abandoned hand-off finishes", async () => {
+    const { coordinator, sessions, queuedMessages } = coordinatorFixture(childRuntime(), 200);
+    await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);
+    await vi.waitFor(() => expect(coordinator.snapshot().deliveries).toHaveLength(1));
+    // The restore replays the result about 100 ms after the first hand-off began its grace period.
+    sessions.resolveRestorationMissingDependencies.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return [];
+    });
+    const restored = coordinator.restore(coordinator.snapshot());
+
+    // After the abandoned hand-off wakes, but while the replay still waits out its grace period.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    coordinator.scheduleDeliveryReconciliation(true);
+    await restored;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await coordinator.waitForSettledOperations();
+
+    expect(queuedMessages).toHaveLength(1);
+  });
+
   it("abandons an automatic hand-off whose grace period spans a branch change", async () => {
     const { coordinator, queuedMessages } = coordinatorFixture(childRuntime(), 100);
     await coordinator.spawn("root", { task: "First", agent_id: "worker" }, caller);

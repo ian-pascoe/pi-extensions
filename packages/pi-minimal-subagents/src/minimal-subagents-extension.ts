@@ -948,8 +948,8 @@ export class MinimalSubagentsLifecycleController {
    * queued result remains.
    */
   private watchRootTurnEnds(): void {
-    this.unwatchRootTurnEnds ??= this.pi.on("turn_end", (event) =>
-      this.requeueDiscardedRootResults(event),
+    this.unwatchRootTurnEnds ??= this.pi.on("turn_end", (event, context) =>
+      this.requeueDiscardedRootResults(event, context),
     );
   }
 
@@ -962,14 +962,21 @@ export class MinimalSubagentsLifecycleController {
    * Pi gives extensions no queue-cleared event, so Esc's discarded steers are found here: the turn
    * boundary's pending-message preview is empty. Returns nothing, so the transcript, system prompt,
    * and tools are unchanged.
+   *
+   * A queue clear without an abort (dequeue, RPC `clear_queue`) leaves the run going, so released
+   * results are steered back at once and Pi's poll after this boundary takes them in the same run.
+   * Esc aborts the run, so its released results wait for the root's next run.
    */
-  private requeueDiscardedRootResults(event: TurnEndEvent): void {
+  private requeueDiscardedRootResults(event: TurnEndEvent, context: ExtensionContext): void {
     if (!this.coordinator) {
       this.stopWatchingRootTurnEnds();
       return;
     }
     if (event.context.pendingMessages.length === 0) {
       this.coordinator.requeueDiscardedRootResults();
+      if (context.signal && !context.signal.aborted) {
+        this.coordinator.deliverDiscardedRootResults();
+      }
       this.uiController?.refresh();
     }
     if (!this.coordinator.hasQueuedRootHandOffs()) this.stopWatchingRootTurnEnds();

@@ -92,6 +92,8 @@ type ExtensionHarness = {
   getActiveTools(): string[];
   setActiveTools(toolNames: string[]): void;
   setIdle(idle: boolean): void;
+  /** Set the root run's abort signal, as `ctx.signal` reports it. */
+  setSignal(signal: AbortSignal | undefined): void;
 };
 
 let modelRegistry: ModelRegistry;
@@ -244,6 +246,7 @@ async function createExtensionHarness(
     modelRegistry,
   );
   let idle = true;
+  let signal: AbortSignal | undefined;
   const sentMessageTypes: string[] = [];
   const sentMessages: ExtensionHarness["sentMessages"] = [];
   const sentDeliveryModes: Array<"steer" | "followUp" | "nextTurn" | undefined> = [];
@@ -294,7 +297,7 @@ async function createExtensionHarness(
       getScopedModels: () => [],
       isIdle: () => idle,
       isProjectTrusted: () => true,
-      getSignal: () => undefined,
+      getSignal: () => signal,
       abort: () => undefined,
       hasPendingMessages: () => false,
       shutdown: () => undefined,
@@ -334,6 +337,9 @@ async function createExtensionHarness(
     getActiveTools: () => [...activeTools],
     setActiveTools: (toolNames) => {
       activeTools = [...toolNames];
+    },
+    setSignal(nextSignal) {
+      signal = nextSignal;
     },
     setIdle(nextIdle) {
       idle = nextIdle;
@@ -1344,8 +1350,15 @@ describe("minimal subagents extension lifecycle", () => {
   }
 
   it("re-sends a result Pi discarded from the root queue", async () => {
-    const harness = await steerResultThenEndRootTurn("minimal-subagents-esc-discarded", () => []);
+    // Esc clears the queue, then aborts the run whose turn is ending.
+    const harness = await steerResultThenEndRootTurn(
+      "minimal-subagents-esc-discarded",
+      () => [],
+      (current) => current.setSignal(AbortSignal.abort()),
+    );
+    expect(harness.sentMessageTypes).toEqual(["minimal-subagents.result"]);
     expect(harness.runner.hasHandlers("turn_end")).toBe(false);
+    harness.setSignal(undefined);
 
     // Esc leaves the root idle; recovery waits for the next run instead of starting one.
     harness.setIdle(true);
@@ -1362,6 +1375,26 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.sentDeliveryModes).toEqual(["steer", "steer"]);
     expect(harness.sentMessages[1]).toEqual(harness.sentMessages[0]);
     expect(harness.runner.hasHandlers("turn_end")).toBe(true);
+    await settleAndShutDown(harness);
+    expect(harness.extensionErrors).toEqual([]);
+  });
+
+  it("steers a released result back into a root run whose queue was cleared without an abort", async () => {
+    const harness = await steerResultThenEndRootTurn(
+      "minimal-subagents-dequeued",
+      () => [],
+      (current) => current.setSignal(new AbortController().signal),
+    );
+
+    // Pi polls steers after this boundary, so the same run takes the result.
+    expect(harness.sentMessageTypes).toEqual([
+      "minimal-subagents.result",
+      "minimal-subagents.result",
+    ]);
+    expect(harness.sentDeliveryModes).toEqual(["steer", "steer"]);
+    expect(harness.sentMessages[1]).toEqual(harness.sentMessages[0]);
+    expect(harness.runner.hasHandlers("turn_end")).toBe(true);
+    harness.setSignal(undefined);
     await settleAndShutDown(harness);
     expect(harness.extensionErrors).toEqual([]);
   });

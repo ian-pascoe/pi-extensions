@@ -174,7 +174,8 @@ export class MinimalSubagentsCoordinator {
   private readonly waiters = new Map<string, Set<TurnWaiter>>();
   private readonly pendingParentMessages = new Map<string, PendingParentMessage[]>();
   private readonly recipientQueues = new Map<string, Promise<unknown>>();
-  private readonly automaticDeliveryKeys = new Set<string>();
+  /** In-flight automatic result hand-offs, each with the lifecycle epoch that owns it. */
+  private readonly automaticDeliveryKeys = new Map<string, number>();
   private readonly automaticCoordinationDeliveryIds = new Set<string>();
   private readonly waitHandedDeliveryIds = new Set<string>();
   /** Terminal results already queued to their parent, until Delivery Evidence settles them. */
@@ -1307,9 +1308,9 @@ export class MinimalSubagentsCoordinator {
     const deliveryKey = agentDeliveryKey(delivery.source_agent_id, delivery.source_turn_id);
     const handedKey = deliveryTurnKey(delivery.source_agent_id, delivery.source_turn_id);
     if (this.automaticDeliveryKeys.has(deliveryKey)) return;
-    this.automaticDeliveryKeys.add(deliveryKey);
-    const graceMs = resume ? 0 : this.deliveryGraceMs();
     const epoch = this.lifecycleEpoch;
+    this.automaticDeliveryKeys.set(deliveryKey, epoch);
+    const graceMs = resume ? 0 : this.deliveryGraceMs();
     let batchedCoordinationDeliveries: PersistedCoordinationDelivery[] = [];
     try {
       const handOff = async () => {
@@ -1369,6 +1370,8 @@ export class MinimalSubagentsCoordinator {
         ? handOff()
         : this.enqueueRecipientDelivery(delivery.destination_agent_id, handOff));
     } catch (error) {
+      // A hand-off abandoned by a branch change must not touch the restored branch's state.
+      if (epoch !== this.lifecycleEpoch) return;
       this.handedTerminalKeys.delete(handedKey);
       for (const batchedDelivery of batchedCoordinationDeliveries) {
         this.waitHandedDeliveryIds.delete(batchedDelivery.delivery_id);
@@ -1389,7 +1392,10 @@ export class MinimalSubagentsCoordinator {
         }),
       );
     } finally {
-      this.automaticDeliveryKeys.delete(deliveryKey);
+      // Restore's replay may own the key again; release it only from the call that holds it.
+      if (this.automaticDeliveryKeys.get(deliveryKey) === epoch) {
+        this.automaticDeliveryKeys.delete(deliveryKey);
+      }
     }
   }
 
