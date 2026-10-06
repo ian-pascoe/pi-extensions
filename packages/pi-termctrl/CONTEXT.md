@@ -13,6 +13,10 @@ _Avoid_: Session, shell, process
 A `bash` tool command the user moved to the background while it ran. It keeps its original pipes and accepts no input.
 _Avoid_: Background shell, detached process, task
 
+**Bash tail**:
+The last lines and bytes of a `bash` result that the model sees, set by `termctrl.bashTail`: the foreground output and the "output so far" of a backgrounding result. The full output stays in a log file the result names.
+_Avoid_: Output limit, truncation
+
 **Exit notification**:
 A message telling the agent that a Terminal or Background job ended, which it had not already seen through a tool call.
 _Avoid_: Completion event, callback

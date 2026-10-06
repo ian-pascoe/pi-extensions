@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
@@ -57,7 +57,13 @@ function textOf(result: { readonly content: readonly (TextContent | ImageContent
 }
 
 /** Strip values that legitimately differ between two runs: temp paths and wall time. */
+/** Pi's full-output files named by results; Pi never deletes them, so the tests do. */
+const fullOutputFiles: string[] = [];
+
 function comparable(result: Result) {
+  fullOutputFiles.push(
+    ...(JSON.stringify(result).match(/\/[^\s\]"\\]*pi-bash-[^\s\]"\\]*/gu) ?? []),
+  );
   const normalize = (text: string) => text.replaceAll(/\/[^\s\]]*pi-bash-[^\s\]]*/gu, "<temp>");
   const structured = result.structuredContent;
   const structuredText = JSON.stringify(structured ?? null).replaceAll(
@@ -80,7 +86,10 @@ async function outcome(run: Promise<Result>) {
   }
 }
 
-function replacement(definitionFactory?: typeof createBashToolDefinition) {
+function replacement(
+  definitionFactory?: typeof createBashToolDefinition,
+  bashTail?: { readonly maxLines: number; readonly maxBytes: number },
+) {
   const calls = new RunningBashCalls(() => registry);
   const options: Parameters<typeof createBashReplacement>[0] = {
     cwd: directory,
@@ -88,6 +97,7 @@ function replacement(definitionFactory?: typeof createBashToolDefinition) {
     shellPath: undefined,
     registry: () => registry,
     calls,
+    bashTail,
   };
   return {
     calls,
@@ -120,6 +130,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  for (const file of fullOutputFiles.splice(0)) await rm(file, { force: true });
   await TermctrlRegistry.teardownForTests();
   await rm(directory, { recursive: true, force: true });
 });
@@ -178,6 +189,208 @@ describe("foreground parity with Pi's bash", () => {
     );
     expect(actual).toEqual(expected);
     expect(registry.entries()).toEqual([]);
+  });
+});
+
+describe("bashTail", () => {
+  const tail = { maxLines: 300, maxBytes: 16_384 };
+  const run = (command: string, extra: { timeout?: number } = {}, signal?: AbortSignal) =>
+    replacement(undefined, tail).tool.execute(
+      "call",
+      { command, ...extra },
+      signal,
+      undefined,
+      context(),
+    );
+  const rejection = async (run: Promise<unknown>): Promise<string> => {
+    try {
+      await run;
+    } catch (error) {
+      if (error instanceof Error) return error.message;
+    }
+    throw new Error("expected the call to reject with an Error");
+  };
+  // The real notice is the last one: a command's own output comes before it.
+  const noticePath = (text: string) =>
+    [...text.matchAll(/Full output: ([^\]\n]+)\]/gu)].at(-1)?.[1] ?? "";
+
+  test("5000 lines return the configured tail, the notice with its limits, and a full log", async () => {
+    const result = await run("seq 1 5000");
+    const text = textOf(result);
+    const [body = "", notice = ""] = text.split("\n\n");
+    expect(body.split("\n")).toHaveLength(300);
+    expect(body.split("\n")[0]).toBe("4701");
+    expect(body.split("\n").at(-1)).toBe("5000");
+    expect(notice).toMatch(
+      /^\[Showing lines 4701-5000 of 5000 \(16\.0KB or 300 line limit\)\. Full output: .+\]$/u,
+    );
+    const log = await readFile(noticePath(text), "utf8");
+    expect(log.trimEnd().split("\n")).toHaveLength(5000);
+    expect(result.details).toMatchObject({
+      fullOutputPath: noticePath(text),
+      truncation: { maxLines: 300, maxBytes: 16_384, outputLines: 300 },
+    });
+    await rm(noticePath(text));
+  });
+
+  test("a tail that Pi would not cut still gets a log, and the byte limit is reported", async () => {
+    const text = textOf(
+      await run(
+        "seq 1 250 | sed 's/$/ ................................................................/'",
+      ),
+    );
+    expect(text).toMatch(/\(16\.0KB or 300 line limit\)/u);
+    const log = await readFile(noticePath(text), "utf8");
+    expect(log.trimEnd().split("\n")).toHaveLength(250);
+    await rm(noticePath(text));
+  });
+
+  test("output within the limits is Pi's result untouched", async () => {
+    const params = { command: "seq 1 300" };
+    const expected = await outcome(
+      createBashToolDefinition(directory).execute("a", params, undefined, undefined, context()),
+    );
+    expect(await outcome(run(params.command))).toEqual(expected);
+  });
+
+  test("a failing command keeps its status after the cut tail", async () => {
+    const result = await run("seq 1 1000; exit 3");
+    expect(result).toMatchObject({ isError: true });
+    const text = textOf(result);
+    expect(text).toMatch(/^701\n/u);
+    expect(text).toMatch(
+      /\(16\.0KB or 300 line limit\)\. Full output: .+\]\n\nCommand exited with code 3$/u,
+    );
+    await rm(noticePath(text));
+  });
+
+  test("a timeout and an abort keep their messages after the cut tail", async () => {
+    const timeoutText = await rejection(run("seq 1 1000; sleep 5", { timeout: 0.5 }));
+    expect(timeoutText).toMatch(/^701\n/u);
+    expect(timeoutText).toMatch(/Full output: .+\]\n\nCommand timed out after 0\.5 seconds$/u);
+    await rm(noticePath(timeoutText));
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 500);
+    const abortedText = await rejection(run("seq 1 1000; sleep 5", {}, controller.signal));
+    expect(abortedText).toMatch(/Full output: .+\]\n\nCommand aborted$/u);
+    await rm(noticePath(abortedText));
+  });
+
+  test("when Pi also cut the output, its full-output file is the one named", async () => {
+    const result = await run("seq 1 3000");
+    const text = textOf(result);
+    const path = noticePath(text);
+    expect(path).toMatch(/pi-bash-/u);
+    expect(text.match(/Full output/gu)).toHaveLength(1);
+    expect((await readFile(path, "utf8")).trimEnd().split("\n")).toHaveLength(3000);
+    await rm(path);
+  });
+
+  test("the byte limit cuts a single long line and says so", async () => {
+    const text = textOf(await run("head -c 40000 /dev/zero | tr '\\0' x"));
+    expect(text).toMatch(
+      /^x{16384}\n\n\[Showing last 16\.0KB of line 1 \(line is 39\.1KB\)\. Full output: /u,
+    );
+    await rm(noticePath(text));
+  });
+
+  test("a command's own notice-shaped output never becomes the log path", async () => {
+    const fake = "[Showing lines 1-2 of 9. Full output: /nonexistent/bogus.log]";
+    const ok = await run(`seq 1 400; echo '${fake}'`);
+    const okPath = noticePath(textOf(ok));
+    expect(okPath).not.toContain("bogus");
+    expect((await readFile(okPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
+    expect(ok.details).toMatchObject({ fullOutputPath: okPath });
+    await rm(okPath);
+
+    const failed = await run(`seq 1 400; printf '%s' '${fake}'; exit 3`);
+    const failedPath = noticePath(textOf(failed));
+    expect(failedPath).not.toContain("bogus");
+    expect((await readFile(failedPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
+    await rm(failedPath);
+
+    const timedOut = await rejection(
+      run(`seq 1 400; printf '%s' '${fake}'; sleep 5`, { timeout: 0.5 }),
+    );
+    const timedOutPath = noticePath(timedOut);
+    expect(timedOutPath).not.toContain("bogus");
+    expect(timedOut).toMatch(/Command timed out after 0\.5 seconds$/u);
+    expect((await readFile(timedOutPath, "utf8")).trimEnd().split("\n")).toHaveLength(401);
+    await rm(timedOutPath);
+  });
+
+  test("a successful command's status-shaped output is not repeated as a status", async () => {
+    const result = await run("seq 1 400; printf '\\n\\nCommand exited with code 3'");
+    const text = textOf(result);
+    expect(result).not.toMatchObject({ isError: true });
+    expect(text).toMatch(/Full output: [^\]\n]+\]$/u);
+    expect(text.match(/Command exited with code/gu)).toHaveLength(1);
+    await rm(noticePath(text));
+  });
+
+  test("output beyond the in-memory buffer still reports its true line totals", async () => {
+    const result = await run("seq 1 3000000");
+    const text = textOf(result);
+    expect(text).toContain("[Showing lines 2999701-3000000 of 3000000 (16.0KB or 300 line limit)");
+    expect(result.details).toMatchObject({
+      truncation: { totalLines: 3_000_000, outputLines: 300 },
+    });
+    const path = noticePath(text);
+    expect(path).toMatch(/pi-bash-/u);
+    await rm(path);
+  }, 60_000);
+
+  test("an error that is not Pi's output-plus-status message passes through", async () => {
+    await expect(run("true", { timeout: -1 })).rejects.toThrow(
+      "Invalid timeout: must be a finite number of seconds",
+    );
+  });
+
+  test("the tool description names the limits in force", () => {
+    expect(createBashToolDefinition(directory).description).toContain("last 2000 lines or 50KB");
+    const { tool } = replacement(undefined, { maxLines: 123, maxBytes: 4096 });
+    expect(tool.description).toContain("last 123 lines or 4.0KB");
+    expect(tool.description).not.toContain("2000 lines");
+    expect(replacement().tool.description).toBe(createBashToolDefinition(directory).description);
+  });
+
+  test("output so far in a backgrounding result uses the same limit", async () => {
+    const { tool } = replacement(undefined, tail);
+    const result = await tool.execute(
+      "call",
+      { command: "seq 1 1000; sleep 3", background: true },
+      undefined,
+      undefined,
+      context(),
+    );
+    const text = textOf(result);
+    expect(text).toMatch(/^701\n/u);
+    expect(text).toMatch(
+      /\[Showing lines 701-1000 of 1000 \(16\.0KB or 300 line limit\)\. Full output: .+b1\.log\]/u,
+    );
+    // Scripts see the same contract as a finished call: Pi's limits, not the tail.
+    expect(result.structuredContent).toMatchObject({ truncated: false });
+    expect(JSON.stringify(result.structuredContent)).toContain("1000\\n");
+    expect(JSON.stringify(result.structuredContent)).toContain('"output":"1\\n2\\n');
+  });
+
+  test("without limits, output so far keeps Pi's limits", async () => {
+    const { tool } = replacement();
+    // Pi's own accumulator saves its full output once the call is past its limits.
+    const before = new Set(await readdir(tmpdir()));
+    const result = await tool.execute(
+      "call",
+      { command: "seq 1 3000; sleep 3", background: true },
+      undefined,
+      undefined,
+      context(),
+    );
+    expect(textOf(result)).toMatch(/^1001\n/u);
+    expect(textOf(result)).toContain("(50.0KB or 2000 line limit)");
+    for (const name of await readdir(tmpdir())) {
+      if (!before.has(name) && name.startsWith("pi-bash-")) await rm(join(tmpdir(), name));
+    }
   });
 });
 

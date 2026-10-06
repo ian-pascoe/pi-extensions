@@ -182,6 +182,7 @@ class PiTermctrlController {
           shellPath,
           registry: currentRegistry,
           calls,
+          bashTail: settings.bashTail,
         }),
       );
     }
