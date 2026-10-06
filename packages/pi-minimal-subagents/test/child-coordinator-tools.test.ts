@@ -105,12 +105,16 @@ function createFixture(maxSubagentDepth = DEFAULT_MAX_SUBAGENT_DEPTH) {
     await coordinator.shutdown();
     const restored = createCoordinator();
     await restored.restore(snapshot);
-    await restored.sendAgentMessage(
+    const requestsBefore = readRequests().length;
+    const sent = await restored.sendAgentMessage(
       "root",
       { agent_id: agentId, message: "Again" },
       "root:restored",
     );
+    // A failed restore would leave the original request as the latest, passing vacuously.
+    expect(sent.disposition).toBe("started-turn");
     await restored.waitForSettledOperations();
+    expect(readRequests()).toHaveLength(requestsBefore + 1);
     return restored;
   };
   return { directory, createCoordinator, runChild, requestAt, restoreAndMessage };
