@@ -99,18 +99,19 @@ describe("DapProtocolClient", () => {
     });
   });
 
-  test("builds failed request text from the adapter error format and omits an empty stderr path", async () => {
+  test("builds failed request text from the adapter error format", async () => {
     const client = await createClient();
 
-    const error: unknown = await client
-      .request("fail-error-format")
-      .catch((cause: unknown) => cause);
-
-    expect(error).toMatchObject({
+    await expect(client.request("fail-error-format")).rejects.toMatchObject({
       kind: "request",
       message:
         "DAP Protocol Client: fail-error-format request failed: ReferenceError: nope is not defined (nope, {missing}) (adapter fixture)",
     });
+  });
+
+  test("omits the adapter stderr path from failed requests while stderr is empty", async () => {
+    const client = await createClient();
+
     await expect(client.request("fail")).rejects.toMatchObject({
       message: expect.not.stringContaining("stderr"),
     });
@@ -123,6 +124,24 @@ describe("DapProtocolClient", () => {
       kind: "request",
       message: expect.stringContaining(`stderr ${client.stderrPath}`),
     });
+  });
+
+  test("tracks the shared adapter stderr on failures from a target channel", async () => {
+    const port = await unusedTcpPort();
+    const root = await createClient({
+      args: [fixturePath, "--tcp", "$PORT"],
+      environment: { FAKE_MULTI_CONNECT: "1" },
+      transport: tcpTransport(port),
+    });
+    const target = await root.connectTargetChannel();
+
+    await expect(target.request("fail")).rejects.toMatchObject({
+      message: expect.not.stringContaining("stderr"),
+    });
+    await expect(target.request("fail-with-stderr")).rejects.toMatchObject({
+      message: expect.stringContaining(`stderr ${root.stderrPath}`),
+    });
+    await target.shutdown();
   });
 
   test("parses coalesced event and response frames", async () => {

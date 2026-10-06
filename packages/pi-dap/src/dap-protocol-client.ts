@@ -40,7 +40,9 @@ const DapFailureBodySchema = Type.Object(
     error: Type.Object(
       {
         format: Type.Optional(Type.String()),
-        variables: Type.Optional(Type.Record(Type.String(), Type.String())),
+        variables: Type.Optional(
+          Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()])),
+        ),
       },
       { additionalProperties: true },
     ),
@@ -171,11 +173,11 @@ export class DapProtocolClientError extends Error {
     message: string,
     options?: DapProtocolClientErrorOptions,
   ) {
-    const location =
+    const adapterContext =
       options?.stderrEmpty === true
         ? `adapter ${adapterId}`
         : `adapter ${adapterId}; stderr ${stderrPath}`;
-    super(`DAP Protocol Client: ${message} (${location})`, options);
+    super(`DAP Protocol Client: ${message} (${adapterContext})`, options);
   }
 }
 
@@ -490,17 +492,17 @@ class BoundedAdapterStderr {
 function failedRequestText(command: string, response: ParsedDapResponse): string {
   const parts: string[] = [];
   if (response.message !== undefined && response.message !== "") parts.push(response.message);
-  const format = adapterErrorFormat(response.body);
+  const format = adapterErrorMessage(response.body);
   if (format !== undefined && !parts.includes(format)) parts.push(format);
   return `${command} request failed${parts.length === 0 ? "" : `: ${parts.join(": ")}`}`;
 }
 
-function adapterErrorFormat(body: DapProtocolObject | undefined): string | undefined {
+function adapterErrorMessage(body: DapProtocolObject | undefined): string | undefined {
   if (!Value.Check(DapFailureBodySchema, body)) return undefined;
-  const { format, variables } = body.error;
+  const { format, variables = {} } = body.error;
   if (format === undefined || format === "") return undefined;
   return format.replace(/\{([^{}]+)\}/g, (placeholder, name: string) =>
-    Object.hasOwn(variables ?? {}, name) ? (variables?.[name] ?? placeholder) : placeholder,
+    Object.hasOwn(variables, name) ? String(variables[name]) : placeholder,
   );
 }
 
@@ -796,7 +798,7 @@ export class DapProtocolClient {
       socket,
       socket,
       socket,
-      undefined,
+      this.stderr,
       this.selectedPort,
     );
   }
@@ -1021,7 +1023,7 @@ export class DapProtocolClient {
           this.adapterId,
           this.stderrPath,
           failedRequestText(pending.command, response),
-          { stderrEmpty: this.stderr?.isEmpty ?? true },
+          { stderrEmpty: this.stderr?.isEmpty === true },
         ),
       );
       return;
