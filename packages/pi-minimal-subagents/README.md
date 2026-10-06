@@ -338,16 +338,16 @@ intermediate Wait Event containing a Coordination Message before the child turn
 settles. That event claims only its message, so later unconsumed messages and the
 terminal result retain automatic fallback. If the turn has already settled, a
 wait returns its terminal result with queued messages in `messages`; waiting
-again for the same settled turn returns the same result while it is retained. Pass
-optional `turn_id` to address a retained turn exactly, including one whose
-result you already claimed (a claimed result stays retained until Delivery
-Evidence settles it). Without it, waits skip claimed turns and turns whose
-result was already delivered to you automatically, and select the oldest
+again for a settled turn you claimed returns the same result while it is
+retained. Pass optional `turn_id` to address a retained turn exactly, including
+one whose result you already claimed (a claimed result stays retained until
+Delivery Evidence settles it). Without it, waits skip claimed turns and turns
+whose result was already delivered to you automatically, and select the oldest
 remaining observable turn, falling back to the active, then latest, turn. When
-that fallback reaches a result automatic fallback already handed to you, the
-wait returns `event: "turn"` with `already_delivered: true`, the turn identity,
-and status, but no output; it does not claim the turn, and `turn_id` rereads
-the full result. A
+that fallback reaches a result already delivered to you automatically, whether
+still queued or settled, the wait returns `event: "turn"` with
+`already_delivered: true`, the turn identity, and status, but no output; it does
+not claim the turn, and `turn_id` rereads the full result. A
 caller may have only one outstanding wait for the same source turn; a
 concurrent duplicate is rejected instead of competing for one Wait Event.
 When `timeout_ms` expires, the wait returns an observational `event: "timeout"`

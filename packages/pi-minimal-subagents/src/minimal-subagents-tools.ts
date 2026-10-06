@@ -330,7 +330,7 @@ export function createCoordinatorToolDefinitions(
     name: "subagent_wait",
     label: "Subagent Wait",
     description:
-      "Wait for one direct child's oldest observable turn whose result you have neither claimed nor received, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. A settled turn returns event=turn, with any queued messages in messages; waiting again returns the same result. Without turn_id, a result already delivered to you automatically returns event=turn with already_delivered=true and no output; pass its turn_id to reread it. Timeout returns event=timeout with detailed child status and never cancels the child.",
+      "Wait for one direct child's oldest observable turn whose result you have neither claimed nor received, or select an exact retained turn_id. An active child may first return event=message; later unconsumed items still fall back automatically. A settled turn returns event=turn, with any queued messages in messages; waiting again returns a result you claimed in full. Without turn_id, a result already delivered to you automatically returns event=turn with already_delivered=true and no output; pass its turn_id to reread it. Timeout returns event=timeout with detailed child status and never cancels the child.",
     promptSnippet: "Wait for one direct child's exact turn",
     parameters: options.schemas.subagent_wait,
     annotations: {
