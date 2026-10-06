@@ -1,7 +1,7 @@
 import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
-import { lspDisplayPath, lspDisplayPosition } from "./lsp-location-text.js";
+import { collapseLspWhitespace, lspDisplayPath, lspDisplayPosition } from "./lsp-location-text.js";
 import { LSP_APPLY_RESULT_TOOL_NAMES, MutationManifestSchema } from "./lsp-tool-contract.js";
 
 const NativeMutationInputSchema = Type.Object(
@@ -227,7 +227,7 @@ function formatOutcome(outcome: ReportedOutcome, cwd: string): string {
     case "diagnostic": {
       const diagnostic = outcome.diagnostic;
       const severity = lspSeverityName(diagnostic.severity) ?? `severity ${diagnostic.severity}`;
-      const message = diagnostic.message.replaceAll(/\s+/gu, " ").trim();
+      const message = collapseLspWhitespace(diagnostic.message);
       return `${lspDisplayPosition(cwd, diagnostic)} ${severity} [${diagnostic.serverId}]: ${message}`;
     }
     case "timeout":

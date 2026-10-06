@@ -262,20 +262,16 @@ const DIAGNOSTICS_HEADING = "\n\nLSP diagnostics\n";
 function expectedOriginalResult(toolName: ToolName, filePath: string): string {
   return toolName === "edit"
     ? `Successfully replaced 1 block(s) in ${filePath}.`
-    : JSON.stringify({
-        changed_files: [filePath],
-        created_files: [],
-        deleted_files: [],
-        moved_files: [],
-        preview_id: "<preview_id>",
-        state: "applied",
-      });
+    : "Applied Workspace Edit Preview <preview_id>:\nmodified source.ts";
 }
 
 /** Result text per content block, in order, with the `lsp_apply` preview id masked. */
 function orderedTexts(run: MutationRun): string[] {
   return run.blocks.map(({ text }) =>
-    text.replace(/"preview_id":"[^"]+"/, '"preview_id":"<preview_id>"'),
+    text.replace(
+      /^Applied Workspace Edit Preview [^:]+:/,
+      "Applied Workspace Edit Preview <preview_id>:",
+    ),
   );
 }
 

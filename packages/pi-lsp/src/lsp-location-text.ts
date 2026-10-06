@@ -105,9 +105,14 @@ export function shortenLspText(text: string): string {
     : text;
 }
 
+/** Collapse whitespace, such as a multi-line message, onto one line. */
+export function collapseLspWhitespace(text: string): string {
+  return text.replaceAll(/\s+/gu, " ").trim();
+}
+
 /** Collapse whitespace, such as a multi-line detail, onto one shortened line. */
 export function compactLspText(text: string): string {
-  return shortenLspText(text.replaceAll(/\s+/gu, " ").trim());
+  return shortenLspText(collapseLspWhitespace(text));
 }
 
 async function readSourceLines(path: string): Promise<readonly string[] | undefined> {

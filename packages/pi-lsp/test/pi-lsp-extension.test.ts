@@ -405,9 +405,7 @@ describe("Pi LSP extension lifecycle", () => {
       undefined,
       toToolContext(harness.runner.createContext()),
     );
-    const text = result.content.find((item) => item.type === "text");
-    if (text?.type !== "text") throw new Error("Expected status text");
-    expect(JSON.parse(text.text)).toMatchObject({
+    expect(result.structuredContent).toMatchObject({
       servers: [
         { root_path: firstRoot, state: "stopped" },
         { root_path: secondRoot, state: "running" },

@@ -55,6 +55,8 @@ import {
   type ServerCapabilities,
   type TextDocumentPositionParams,
 } from "vscode-languageserver-protocol/node";
+import { formatLspDiagnosticsReadText, isLspDiagnosticsOperation } from "./lsp-diagnostics-text.js";
+import { formatLspHoverReadText } from "./lsp-hover-text.js";
 import { LspInputError } from "./lsp-input-error.js";
 import {
   boundLspCompletions,
@@ -64,6 +66,8 @@ import {
   type LspBoundedItems,
 } from "./lsp-item-list.js";
 import {
+  assembleLspReadText,
+  collapseLspWhitespace,
   formatLspLocationReadText,
   isLspLocationOperation,
   lspDisplayPath,
@@ -101,6 +105,7 @@ import {
   type LspServerFailureCode,
   type LspServerLanguage,
   type LspServerManager,
+  type LspServerManagerStatus,
   type LspServerReadResult,
   type LspServerRoute,
   type LspUnloadedWorkspacePackages,
@@ -152,6 +157,7 @@ import {
   LspWorkspaceEditError,
   NO_CHANGES_SUMMARY,
   type LspMutationManifest,
+  type LspWorkspaceEditApplyResult,
   type LspWorkspaceEditStore,
 } from "./lsp-workspace-edit.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
@@ -514,8 +520,8 @@ function readTextContext(filePath: string, context: ExtensionContext): ReadTextC
 
 /**
  * Return one read's result. The Structured Result is the compact JSON of every server's normalized
- * response; location, symbol, hierarchy, and range reads derive readable model-visible text from
- * the same data (ADR-0003), and other reads show that JSON. References also name each searched
+ * response; location, symbol, hierarchy, range, diagnostics, and hover reads derive readable
+ * model-visible text from the same data (ADR-0003), and other reads show that JSON. References also name each searched
  * workspace root and warn when other roots of the same Server Definition exist or, in a workspace
  * root, when packages there have no document synchronized with the server. A position-based
  * query also reports its queried position: in the Structured Result, as the opening line of a result
@@ -580,6 +586,21 @@ async function readOutput(
       outgoingCallSitePath: (call) => OUTGOING_CALL_SITE_PATHS.get(call),
       scope: queried?.headline ?? [],
       emptyMessage: queried?.emptyMessage,
+    });
+  } else if (isLspDiagnosticsOperation(operation)) {
+    text = formatLspDiagnosticsReadText({
+      operation,
+      cwd: textContext.cwd,
+      documentPath: textContext.documentPath,
+      reads: results,
+      warnings: failureWarnings,
+    });
+  } else if (operation === "hover" && queried !== undefined) {
+    text = formatLspHoverReadText({
+      reads: results,
+      warnings: failureWarnings,
+      scope: queried.headline,
+      emptyMessage: queried.emptyMessage,
     });
   } else if (queried !== undefined) {
     // Other position reads show their JSON under the queried position, or under what was not found.
@@ -939,6 +960,30 @@ function statusLanguages(languages: readonly LspServerLanguage[]) {
     patterns.set(languageId, [...(patterns.get(languageId) ?? []), ...extensions, ...fileNames]);
   }
   return Object.fromEntries(patterns);
+}
+
+/**
+ * Render status as one `server_id state [root] language(extensions,...)... [error: ...]` line per
+ * Server Definition or Server Instance, followed by settings warnings.
+ */
+function formatStatusText(status: LspServerManagerStatus, cwd: string): string {
+  const lines = status.servers.map((server) => {
+    const languages = Object.entries(statusLanguages(server.languages)).map(
+      ([languageId, patterns]) => `${languageId}(${patterns.join(",")})`,
+    );
+    return [
+      server.serverId,
+      server.state,
+      ...(server.rootPath === undefined ? [] : [lspDisplayPath(cwd, server.rootPath)]),
+      ...languages,
+      ...(server.error === undefined ? [] : [`error: ${collapseLspWhitespace(server.error)}`]),
+    ].join(" ");
+  });
+  const warnings = status.warnings.map((warning) => `Warning: ${warning}`);
+  return [
+    ...(lines.length === 0 ? ["No configured Server Definitions."] : lines),
+    ...(warnings.length === 0 ? [] : ["", ...warnings]),
+  ].join("\n");
 }
 
 /**
@@ -1652,16 +1697,69 @@ async function executeCodeActions(
     readOperationOutcomes(result),
     result.successes.flatMap(({ value }) => value.previewRecords),
   );
-  const text = formatLspToolValue({
-    actions: result.successes.flatMap(({ value }) => value.actions),
-    warnings: result.failures.map(({ message }) => message),
+  const actions = result.successes.flatMap(({ value }) => value.actions);
+  const warnings = result.failures.map(({ message }) => message);
+  const json = formatLspToolValue({ actions, warnings });
+  const text = assembleLspReadText({
+    blocks: result.successes.map(({ serverId, value }) => ({
+      server_id: serverId,
+      lines:
+        value.actions.length === 0
+          ? ["No code actions found."]
+          : value.actions.flatMap(codeActionLines),
+    })),
+    warnings,
   });
-  return createLspToolOutput(text, details, lspStructuredFields(text), dependencies);
+  return createLspToolOutput(
+    text,
+    { ...details, result_count: actions.length },
+    lspStructuredFields(json),
+    dependencies,
+  );
+}
+
+/**
+ * Render one code action as `title (kind): preview <preview_id>` with its preview's summary
+ * indented below, or as `title (kind): ...cannot be applied` with the reason.
+ */
+function codeActionLines(action: CodeActionResult): string[] {
+  const title =
+    action.title === undefined ? "Untitled action" : collapseLspWhitespace(action.title);
+  const head = action.kind === undefined ? title : `${title} (${action.kind})`;
+  if (action.preview_id !== undefined) {
+    const summary = (action.summary ?? "").trimEnd();
+    return [
+      `${head}: preview ${action.preview_id}`,
+      ...(summary === "" ? [] : summary.split("\n").map((line) => `  ${line}`)),
+    ];
+  }
+  if (action.error !== undefined) return [`${head}: cannot be applied: ${action.error}`];
+  return [`${head}: command only, cannot be applied`];
+}
+
+/** Render an applied preview as one `modified|created|deleted path` or `renamed from -> to` line per file. */
+function formatApplyText(
+  previewId: string,
+  result: LspWorkspaceEditApplyResult,
+  cwd: string,
+): string {
+  const path = (filePath: string) => lspDisplayPath(cwd, filePath);
+  const files = [
+    ...result.changed_files.map((file) => `modified ${path(file)}`),
+    ...result.created_files.map((file) => `created ${path(file)}`),
+    ...result.deleted_files.map((file) => `deleted ${path(file)}`),
+    ...result.moved_files.map(({ from, to }) => `renamed ${path(from)} -> ${path(to)}`),
+  ];
+  return [
+    `Applied Workspace Edit Preview ${previewId}${files.length === 0 ? "; no file changed." : ":"}`,
+    ...files,
+  ].join("\n");
 }
 
 async function executeApplyPreview(
   dependencies: LspToolDependencies,
   parameters: Extract<LspToolParameters, { operation: "apply" }>,
+  context: ExtensionContext,
   signal: AbortSignal | undefined,
 ): Promise<AgentToolResult<LspToolResultDetails>> {
   const storeManifest = dependencies.workspaceEdits.prepareMutationManifest(parameters.preview_id);
@@ -1726,12 +1824,12 @@ async function executeApplyPreview(
     changed_paths: sortedChangedPaths,
     state: result.state,
   };
-  const text = formatLspToolValue(result);
+  const json = formatLspToolValue(result);
   return createLspToolOutput(
-    text,
+    formatApplyText(parameters.preview_id, result, context.cwd),
     details,
     {
-      ...lspStructuredFields(text),
+      ...lspStructuredFields(json),
       changed_paths: sortedChangedPaths,
       mutation_manifest: canonicalManifest,
     },
@@ -1756,7 +1854,7 @@ async function executeLspOperation(
         if (server.error === undefined) return outcome;
         return { ...outcome, message: server.error };
       });
-      const text = formatLspToolValue({
+      const json = formatLspToolValue({
         servers: status.servers.map((server) => ({
           error: server.error,
           languages: statusLanguages(server.languages),
@@ -1767,9 +1865,9 @@ async function executeLspOperation(
         warnings: status.warnings,
       });
       return createLspToolOutput(
-        text,
-        operationDetails("status", outcomes),
-        lspStructuredFields(text),
+        formatStatusText(status, context.cwd),
+        { ...operationDetails("status", outcomes), result_count: status.servers.length },
+        lspStructuredFields(json),
         dependencies,
       );
     }
@@ -1878,7 +1976,7 @@ async function executeLspOperation(
         executeCodeActions(dependencies, previews, parameters, context, signal),
       );
     case "apply":
-      return executeApplyPreview(dependencies, parameters, signal);
+      return executeApplyPreview(dependencies, parameters, context, signal);
   }
 }
 
@@ -1940,7 +2038,8 @@ const LSP_TOOL_DESCRIPTIONS = {
   capabilities: "Start a server for a workspace and report its negotiated capabilities.",
   restart:
     "Restart a server for a workspace, clearing its unavailable state, and report its capabilities.",
-  diagnostics: "Get fresh LSP Diagnostics for a file from every matching server.",
+  diagnostics:
+    "Get fresh LSP Diagnostics for a file from every matching server, one `path:line:col severity source(code): message` line each.",
   workspace_diagnostics:
     "Get a server's diagnostics for its whole workspace, from workspace pull or cached push diagnostics. A server that publishes none reports status unsupported; use lsp_diagnostics per file.",
   completion:
@@ -1977,7 +2076,7 @@ const LSP_TOOL_DESCRIPTIONS = {
   rename:
     "Preview renaming the symbol at a position across the workspace. Apply the preview with lsp_apply.",
   code_actions:
-    "List code actions for a range from every matching server, each naming its server_id. Each action with an edit gets a Workspace Edit Preview to apply with lsp_apply; command-only actions cannot be applied.",
+    "List code actions for a range from every matching server, grouped by server when several answer. Each action with an edit gets a Workspace Edit Preview to apply with lsp_apply; command-only actions cannot be applied.",
   apply:
     "Apply a Workspace Edit Preview by preview_id. Nothing changes if its files changed since the preview.",
 } as const satisfies Record<LspOperationName, string>;
