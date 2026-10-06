@@ -33,3 +33,33 @@ export function addMinimalSubagentsUsage(
     },
   };
 }
+
+/**
+ * USD decimal places kept in model-visible and structured usage costs. Six places is one
+ * millionth of a dollar: finer than any single turn's cost is worth reading, yet coarse enough to
+ * drop the binary-float tails that summing many per-message costs produces.
+ */
+export const MINIMAL_SUBAGENTS_COST_DECIMALS = 6;
+
+const COST_SCALE = 10 ** MINIMAL_SUBAGENTS_COST_DECIMALS;
+
+function roundCost(value: number): number {
+  return Number.isFinite(value) ? Math.round(value * COST_SCALE) / COST_SCALE : value;
+}
+
+/**
+ * Return a clone whose cost fields are rounded for presentation. Each field rounds independently
+ * from its exact value, so `total` stays within half a unit per summed field of the rounded sum.
+ */
+export function roundMinimalSubagentsUsageCosts(usage: Usage): Usage {
+  return {
+    ...usage,
+    cost: {
+      input: roundCost(usage.cost.input),
+      output: roundCost(usage.cost.output),
+      cacheRead: roundCost(usage.cost.cacheRead),
+      cacheWrite: roundCost(usage.cost.cacheWrite),
+      total: roundCost(usage.cost.total),
+    },
+  };
+}

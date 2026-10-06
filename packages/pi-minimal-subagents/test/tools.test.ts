@@ -19,7 +19,11 @@ import {
   type CoordinatorToolDefinitionOptions,
   type CoordinatorToolOperations,
 } from "../src/minimal-subagents-tools.js";
-import type { ActiveTurnProgress, WaitTimeoutResult } from "../src/minimal-subagents-types.js";
+import type {
+  ActiveTurnProgress,
+  AgentDetail,
+  WaitTimeoutResult,
+} from "../src/minimal-subagents-types.js";
 
 type RecordingWait = ReturnType<typeof vi.fn<CoordinatorToolOperations["wait"]>>;
 
@@ -224,6 +228,109 @@ describe("minimal subagents coordinator tools", () => {
     // Script callers receive the declared object shape.
     expect(result.structuredContent).toEqual(result.details);
     expect(result.structuredContent).toMatchObject({ source_turn_id: "child:older" });
+  });
+
+  describe("usage cost presentation", () => {
+    const noisyUsage = {
+      input: 10,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 7,
+      cacheWrite1h: 0,
+      reasoning: 0,
+      totalTokens: 22,
+      cost: {
+        input: 0.000022999999999999997,
+        output: 0.0018,
+        cacheRead: 0,
+        cacheWrite: 0.011296249999999999,
+        total: 0.014415649999999999,
+      },
+    };
+    const roundedCost = {
+      input: 0.000023,
+      output: 0.0018,
+      cacheRead: 0,
+      cacheWrite: 0.011296,
+      total: 0.014416,
+    };
+
+    it("rounds cost in subagent_wait text and structuredContent but keeps exact details", async () => {
+      const options = toolOptions("root", true);
+      options.recordedWait.mockResolvedValue({
+        event: "turn",
+        agent_id: "child",
+        turn_id: "child:1",
+        status: "completed",
+        output: "done",
+        usage: noisyUsage,
+      });
+
+      const result = await requireTool(options, "subagent_wait").execute(
+        "wait-call",
+        { agent_id: "child", timeout_ms: 50 },
+        new AbortController().signal,
+        undefined,
+        await createToolExecutionContext(),
+      );
+
+      const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+      expect(text).not.toMatch(/\d\.\d{7,}/);
+      expect(JSON.parse(text).usage.cost).toEqual(roundedCost);
+      expect(result.structuredContent).toMatchObject({ usage: { cost: roundedCost } });
+      expect(result.details).toMatchObject({ usage: { cost: noisyUsage.cost } });
+    });
+
+    it("rounds cost in subagent_status text and structuredContent", async () => {
+      const options = toolOptions("root", true);
+      const detail: AgentDetail = {
+        agent_id: "child",
+        parent_id: "root",
+        model: "provider/model",
+        thinking_level: "off",
+        state: "idle",
+        availability: "available",
+        tools: [],
+        child_count: 0,
+        launch_contract: {
+          model: "provider/model",
+          thinking_level: "off",
+          session_context: "omit",
+          project_context: "omit",
+          tools: undefined,
+          ordinary_tools: [],
+        },
+        capability_ceiling: [],
+        spawn_entry_id: "entry",
+        recent_messages: [],
+        recent_activity: [],
+        missing_dependencies: [],
+        latest_result: {
+          agent_id: "child",
+          turn_id: "child:1",
+          status: "completed",
+          output: "x",
+          usage: noisyUsage,
+        },
+        usage: noisyUsage,
+      };
+      const partialStatus = { agent: detail };
+      options.coordinator.status = vi.fn<CoordinatorToolOperations["status"]>(() => partialStatus);
+
+      const result = await requireTool(options, "subagent_status").execute(
+        "status-call",
+        { agent_id: "child" },
+        undefined,
+        undefined,
+        await createToolExecutionContext(),
+      );
+
+      const text = result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+      expect(text).not.toMatch(/\d\.\d{7,}/);
+      expect(result.structuredContent).toMatchObject({
+        agent: { usage: { cost: roundedCost }, latest_result: { usage: { cost: roundedCost } } },
+      });
+    });
   });
 
   it("returns a timeout in its declared compact output shape", async () => {

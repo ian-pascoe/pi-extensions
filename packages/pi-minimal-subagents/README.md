@@ -288,7 +288,9 @@ assistant message but omits image data. Timeout Wait Events carry only a compact
 progress snapshot. Children target only direct children; the Root Agent
 may inspect any descendant. Model-facing status reports a `child_count` but no
 nested `children` summaries. Reported `usage` always includes `cacheWrite1h`
-and `reasoning`, as `0` when the provider reports none. `subagent_cancel`
+and `reasoning`, as `0` when the provider reports none. Tool-result text and
+`structuredContent` round every `usage.cost` field to six decimal places of USD;
+exact values stay in session data. `subagent_cancel`
 lists in `affected_agent_ids` only agents whose active turns it cancelled.
 
 `session_context` defaults to `omit`: the child starts with only its system

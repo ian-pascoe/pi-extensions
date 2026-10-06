@@ -272,7 +272,10 @@ const CoordinatorWaitSourceOutputSchema = {
   source_turn_id: Type.String(),
 };
 
-/** Final details schemas exposed to CodeMode for the six coordinator tools. */
+/**
+ * Final details schemas exposed to CodeMode for the six coordinator tools. `structuredContent`
+ * matches them with every `usage.cost` field rounded for presentation.
+ */
 export const CoordinatorToolOutputSchemas = {
   subagent: Type.Object({
     agent_id: Type.String(),
