@@ -327,6 +327,8 @@ describe("real TypeScript 7 language server client", () => {
         expect(byDefault.names).not.toContain(hidden);
       }
       expect(byDefault.names.some((name) => name?.includes("callback"))).toBe(false);
+      // The output says symbols were left out, and how to see them.
+      expect(byDefault.names.some((name) => name?.includes("nested symbols omitted"))).toBe(true);
       expect(byDefault.structuredNames).not.toContain('"name":"ok"');
       expect(byDefault.structuredNames).toContain('"name":"summarize"');
 

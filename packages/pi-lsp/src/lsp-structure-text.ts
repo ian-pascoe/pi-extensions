@@ -133,7 +133,10 @@ export interface LspStructureReadTextInput {
   readonly cwd: string;
   /** Absolute path of the queried document, which document symbols, call sites, and ranges refer to. */
   readonly documentPath: string;
-  readonly reads: readonly LspRead[];
+  readonly reads: readonly (LspRead & {
+    /** Nested symbols a document-symbol read left out for its depth. */
+    readonly omitted?: number;
+  })[];
   readonly warnings: readonly string[];
   /** Requested selection-range positions, which head each list when there are several. */
   readonly positions?: readonly LspCodePointPosition[] | undefined;
@@ -397,7 +400,18 @@ export async function formatLspStructureReadBlocks(
       }
       const items: readonly unknown[] = Array.isArray(read.value) ? read.value : [read.value];
       const lines = items.length === 0 ? [empty] : await itemLines(items, context);
-      return { server_id: read.server_id, lines: lines ?? [formatLspToolValue(read.value)] };
+      const omitted = input.operation === "document_symbols" ? (read.omitted ?? 0) : 0;
+      return {
+        server_id: read.server_id,
+        lines: [
+          ...(lines ?? [formatLspToolValue(read.value)]),
+          ...(omitted === 0
+            ? []
+            : [
+                `${omitted} nested ${omitted === 1 ? "symbol" : "symbols"} omitted; raise depth or pass depth: "all" to see ${omitted === 1 ? "it" : "them"}.`,
+              ]),
+        ],
+      };
     }),
   );
 }

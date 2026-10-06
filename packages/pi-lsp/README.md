@@ -223,11 +223,13 @@ Symbol, hierarchy, and range results use the same paths and positions, with symb
 - `lsp_document_symbols` and `lsp_workspace_symbols` list `name (kind) path:line:col` lines.
   Document symbols form an indented outline and end with the symbol's detail; workspace symbols end
   with `in <container>`. By default (`depth: 1`) the outline lists top-level declarations and the
-  members of classes, interfaces, enums, namespaces, modules, and structs, without the locals,
-  return-object properties, and callbacks inside function, method, and variable bodies. A larger
-  `depth` adds one level inside those bodies per step, and `depth: "all"` lists the full tree. The
-  structured result is cut to the same depth. A type alias appears as `(class)` because that is how
-  the TypeScript server reports it.
+  members of classes, interfaces, enums, namespaces, modules, packages, objects, and structs
+  (rust-analyzer reports an `impl` block as an object), without the locals, return-object
+  properties, and callbacks inside function, method, and variable bodies. A larger `depth` adds one
+  level inside those bodies per step, and `depth: "all"` lists the full tree. A final line counts
+  the nested symbols the depth left out, and the structured result's `omitted` holds that count and
+  follows the same depth. Import bindings still appear, because servers report them as variables,
+  and a type alias appears as `(class)`, because that is how the TypeScript server reports it.
 - `lsp_call_hierarchy`, `lsp_type_hierarchy`, `lsp_supertypes`, and `lsp_subtypes` list
   `name (kind) path:line:col` lines. `lsp_incoming_calls` and `lsp_outgoing_calls` indent each call
   site below the caller or callee as `path:line:col  <source line>`.

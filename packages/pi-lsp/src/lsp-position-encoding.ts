@@ -19,6 +19,14 @@ export interface LspProtocolPosition {
   readonly character: number;
 }
 
+/** Order two zero-based protocol positions: negative when `left` is first, zero when equal. */
+export function compareLspProtocolPositions(
+  left: LspProtocolPosition,
+  right: LspProtocolPosition,
+): number {
+  return left.line === right.line ? left.character - right.character : left.line - right.line;
+}
+
 /** Normalize a server's negotiated position encoding, defaulting protocol omissions to UTF-16. */
 export function normalizeLspPositionEncoding(encoding: string | undefined): LspPositionEncoding {
   if (encoding === "utf-8") return "utf-8";

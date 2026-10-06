@@ -947,6 +947,7 @@ describe("registered LSP tool", () => {
       JSON.stringify({
         results: [
           {
+            omitted: 0,
             root_path: fixture.context.cwd,
             server_id: "typescript",
             value: [
@@ -1008,16 +1009,25 @@ describe("registered LSP tool", () => {
           .split("\n")
           .map((line) => line.trim().split(" (")[0]),
         structured: JSON.stringify(structured.results.map(({ value }) => value)),
+        omitted: structured.results.map((read) => read.omitted),
       };
     };
 
     const byDefault = await outline({});
-    expect(byDefault.text).toEqual(["Store", "add", "create"]);
+    // The hint names the symbols the depth left out, and the structured result counts them.
+    expect(byDefault.text).toEqual([
+      "Store",
+      "add",
+      "create",
+      '3 nested symbols omitted; raise depth or pass depth: "all" to see them.',
+    ]);
+    expect(byDefault.omitted).toEqual([3]);
     expect(byDefault.structured).toContain('"name":"add"');
     for (const hidden of ["draft", "state", "callback"]) {
       expect(byDefault.structured).not.toContain(`"name":"${hidden}"`);
     }
     expect((await outline({ depth: 1 })).text).toEqual(byDefault.text);
+    expect((await outline({ depth: 2 })).omitted).toEqual([0]);
     expect((await outline({ depth: 2 })).text).toEqual([
       "Store",
       "add",
