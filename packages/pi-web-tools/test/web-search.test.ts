@@ -928,14 +928,14 @@ describe("Web Search", () => {
     const secret = "spill-failure-secret";
     const fetch: typeof globalThis.fetch = async () => {
       process.env.TMPDIR = blocker;
-      return new Response(mcpResult("x".repeat(51 * 1024)));
+      return new Response(mcpResult("é".repeat(30_000)));
     };
 
     try {
       const failure: unknown = await executeSearch(
         "exa",
         { fetch, exaApiKey: redactWebSearchApiKey(secret) },
-        { query: "spill failure" },
+        { query: "spill failure", contextMaxCharacters: 50_000 },
       ).catch((cause: unknown) => cause);
       expect(failure).toBeInstanceOf(Error);
       expect(String(failure)).toContain("Unable to save complete Web Tool output");
@@ -960,7 +960,7 @@ describe("Web Search", () => {
         parallelUrl: `${server.baseUrl}/parallel`,
         exaApiKey: redactWebSearchApiKey(secret),
       },
-      { query: "many results" },
+      { query: "many results", contextMaxCharacters: 50_000 },
     );
     const path = result.details.truncation?.fullOutputPath;
     if (path === undefined) throw new Error("Expected search result spill");
@@ -1095,6 +1095,73 @@ describe("Web Search", () => {
       expect((await search("exa", "abcdef", { query: "q" })).text).toBe("abcdef");
     });
 
+    test("keeps a default 8-result search within the 6,000-character budget for both providers", async () => {
+      const excerpt = "highlight ".repeat(150);
+      const exa = Array.from(
+        { length: 8 },
+        (_, index) =>
+          `Title: Result ${index}\nURL: https://example.com/${index}\nHighlights:\n${excerpt}`,
+      ).join("\n\n");
+      const parallel = JSON.stringify(
+        {
+          results: Array.from({ length: 8 }, (_, index) => ({
+            url: `https://example.com/${index}`,
+            title: `Result ${index}`,
+            excerpts: [excerpt],
+          })),
+        },
+        null,
+        2,
+      );
+      for (const [provider, complete] of [
+        ["exa", exa],
+        ["parallel", parallel],
+      ] as const) {
+        expect(Array.from(complete).length).toBeGreaterThan(6_000);
+        const { result, text } = await search(provider, complete, { query: "q" });
+        const marker =
+          "\n\n[Search results cut at 6000 characters; pass contextMaxCharacters (up to 50000) for more]";
+        expect(text).toBe(`${Array.from(complete).slice(0, 6_000).join("")}${marker}`);
+        expect(Array.from(text).length).toBe(6_000 + Array.from(marker).length);
+        expect(result.structuredContent).toEqual({ provider, content: text });
+      }
+    });
+
+    test("defaults contextMaxCharacters to 6,000 and says how to read more when it cuts", async () => {
+      for (const provider of ["exa", "parallel"] as const) {
+        const complete = "x".repeat(6_001);
+        const { result, text } = await search(provider, complete, { query: "q" });
+        const expected = `${"x".repeat(6_000)}\n\n[Search results cut at 6000 characters; pass contextMaxCharacters (up to 50000) for more]`;
+        expect(text).toBe(expected);
+        expect(result.structuredContent).toEqual({ provider, content: expected });
+        const exact = "x".repeat(6_000);
+        expect((await search(provider, exact, { query: "q" })).text).toBe(exact);
+      }
+    });
+
+    test("lets an explicit contextMaxCharacters override the default, up to the unchanged maximum", async () => {
+      const complete = "y".repeat(20_000);
+      expect(
+        (await search("exa", complete, { query: "q", contextMaxCharacters: 20_000 })).text,
+      ).toBe(complete);
+      const { text } = await search("exa", "y".repeat(50_001), {
+        query: "q",
+        contextMaxCharacters: 50_000,
+      });
+      expect(text).toBe(`${"y".repeat(50_000)}\n\n[Search results cut at 50000 characters]`);
+    });
+
+    test("never sends the budget to a provider: Exa's live schema declares no such field", async () => {
+      const server = await startServer(() => ({ body: mcpResult("ok") }));
+      await executeSearch(
+        "exa",
+        { exaUrl: `${server.baseUrl}/exa`, parallelUrl: `${server.baseUrl}/parallel` },
+        { query: "q" },
+      );
+      expect(JSON.stringify(server.requests[0]?.body)).not.toContain("contextMaxCharacters");
+      expect(JSON.stringify(server.requests[0]?.body)).not.toContain("maxCharacters");
+    });
+
     test("counts code points, never splitting a multibyte character at the boundary", async () => {
       // "😀" is one code point but two UTF-16 units; "é" is two UTF-8 bytes.
       const { text } = await search("exa", "a😀é😀b", { query: "q", contextMaxCharacters: 2 });
@@ -1119,7 +1186,8 @@ describe("Web Search", () => {
       expect(Object.keys(properties)).toEqual(["query", "numResults", "contextMaxCharacters"]);
       expect(properties.numResults?.description).toContain("Exa applies it");
       expect(properties.contextMaxCharacters?.description).toContain("1–50,000");
-      expect(properties.contextMaxCharacters?.description).toContain("No default");
+      expect(properties.contextMaxCharacters?.description).toContain("default: 6,000");
+      expect(properties.contextMaxCharacters?.description).not.toContain("No default");
     });
   });
 });

@@ -43,6 +43,8 @@ describe("Pi Web Tools transcript rendering", () => {
       url: "https://user:password@example.com/path?q=1",
       format: "html" as const,
       timeout: 12,
+      offset: 40,
+      limit: 20,
     };
     expect(renderLines(renderWebFetchToolCall(fetch, plainTheme, false))).toBe(
       "Web  Fetch  example.com/path?q=1",
@@ -51,6 +53,8 @@ describe("Pi Web Tools transcript rendering", () => {
     expect(expandedFetch).toContain("URL: https://example.com/path?q=1");
     expect(expandedFetch).toContain("Format: html");
     expect(expandedFetch).toContain("Timeout: 12s");
+    expect(expandedFetch).toContain("Offset: 40");
+    expect(expandedFetch).toContain("Limit: 20 lines");
     expect(expandedFetch).not.toContain("user");
     expect(expandedFetch).not.toContain("password");
   });
