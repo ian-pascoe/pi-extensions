@@ -149,22 +149,11 @@ const stackLines: DapTextFormatter = ({ result, cwd }) => {
   ];
 };
 
-/** Longest variable value shown in text; one huge value must not push the other rows out of view. */
-const MAX_VARIABLE_VALUE_CHARS = 500;
-
-function boundedValue(value: string): string {
-  if (value.length <= MAX_VARIABLE_VALUE_CHARS) return value;
-  const high = value.charCodeAt(MAX_VARIABLE_VALUE_CHARS - 1);
-  const end =
-    high >= 0xd800 && high <= 0xdbff ? MAX_VARIABLE_VALUE_CHARS - 1 : MAX_VARIABLE_VALUE_CHARS;
-  return `${value.slice(0, end)}… (+${value.length - end} chars; full value in structuredContent)`;
-}
-
 function variableLine(variable: DebugProtocol.Variable, indent: string): string {
   const type = variable.type === undefined ? "" : `: ${oneLine(variable.type)}`;
   const children =
     variable.variablesReference > 0 ? ` [variables_reference ${variable.variablesReference}]` : "";
-  return `${indent}${oneLine(variable.name)}${type} = ${boundedValue(oneLine(variable.value))}${children}`;
+  return `${indent}${oneLine(variable.name)}${type} = ${oneLine(variable.value)}${children}`;
 }
 
 function scopeLines({ scope, variables }: DapVariableGroup): readonly string[] {
@@ -173,10 +162,7 @@ function scopeLines({ scope, variables }: DapVariableGroup): readonly string[] {
     return [`${header} (expensive, not expanded; pass its variables_reference to expand)`];
   }
   const count = `${variables.length} variable${variables.length === 1 ? "" : "s"}`;
-  return [
-    `${header}${scope.expensive ? " (expensive)" : ""}: ${count}`,
-    ...variables.map((variable) => variableLine(variable, "  ")),
-  ];
+  return [`${header}: ${count}`, ...variables.map((variable) => variableLine(variable, "  "))];
 }
 
 const variablesLines: DapTextFormatter = ({ result }) => {

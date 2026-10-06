@@ -102,7 +102,7 @@ export const DAP_TOOL_NAMESPACE = {
     "Desired Breakpoints set with dap_set_breakpoints apply to the active Debug Session and to every later launch.",
     "dap_launch, dap_continue, dap_next, dap_step_in, and dap_step_out wait until the Debuggee stops, exits, or the execution timeout passes; after a timeout the state is running, so use dap_pause or dap_stop.",
     "dap_stack, dap_variables, and dap_evaluate need a stopped Debuggee. Stack Frame ids from dap_stack feed dap_variables and dap_evaluate; a non-zero variables_reference lists child values with dap_variables, and dap_variables with frame_id lists expensive scopes such as Global without expanding them.",
-    "Each successful call drains unread Debuggee output. Text results are limited to 2,000 lines or 50 KB and save the complete result as a Result Spill; script results always carry complete data.",
+    "Each successful call drains unread Debuggee output. Text results are limited to 2,000 lines or 50 KB and save the complete result as a Result Spill; script results carry complete data (a frame's expensive scopes stay unexpanded).",
     "A call that fails because of the Debug Session state returns the current state with an error field instead of throwing.",
   ].join("\n"),
 };

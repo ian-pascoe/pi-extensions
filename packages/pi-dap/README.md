@@ -164,7 +164,8 @@ Each tool declares an output schema. Codemode scripts receive a structured
 result: the Debug Session state, all drained Debuggee output, Desired
 Breakpoints, and the operation's complete data (`breakpoints`, `stack_frames`
 and `total_frames`, `scopes` or `variables`, or `evaluation`). These results are
-not truncated to the transcript limits. A state failure resolves to the
+not truncated to the transcript limits; the one exception is that `dap_variables`
+with `frame_id` leaves expensive scopes unexpanded. A state failure resolves to the
 current state with an `error` field instead of rejecting.
 
 ## Output and lifecycle
@@ -185,10 +186,8 @@ Desired Breakpoints in text, since it is the only call that changes them. A call
 that waits and ends still `running` says `(wait timed out)`.
 
 Stack Frames, variables, and evaluations are one line per row. Adapter strings
-are flattened onto one line with `\n` escapes, and a variable value over 500
-characters is cut in text. Drained Debuggee output follows under its own
-heading. `structuredContent` keeps every existing field with strings verbatim,
-and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
+are flattened onto one line with `\n` escapes. Drained Debuggee output follows
+under its own heading. `structuredContent` keeps every existing field with strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
 `dap_variables` with `frame_id` lists scopes the adapter marks expensive, such
 as js-debug's Global, by name and `variables_reference` without expanding them;
 pass that reference to expand one. In `structuredContent` such a scope has no

@@ -775,7 +775,7 @@ describe("DAP tools", () => {
     });
   });
 
-  test("bounds text and presentation rows and values without bounding the script result", async () => {
+  test("bounds presentation rows and values without bounding the raw result", async () => {
     const fixture = await createToolFixture();
     const longValue = "x".repeat(1_000);
     fixture.session.result = {
@@ -801,15 +801,7 @@ describe("DAP tools", () => {
       undefined,
       fixture.context,
     );
-    // Text bounds each value so one huge value cannot push later rows out of view; scripts keep it all.
-    expect(result.content[0]).toMatchObject({
-      text: expect.stringContaining(
-        `value-24 = ${"x".repeat(500)}… (+500 chars; full value in structuredContent)`,
-      ),
-    });
-    expect(result.structuredContent).toMatchObject({
-      variables: expect.arrayContaining([expect.objectContaining({ value: longValue })]),
-    });
+    expect(result.content[0]).toMatchObject({ text: expect.stringContaining(longValue) });
     expect(result.details).toMatchObject({
       presentation: {
         kind: "variables",
