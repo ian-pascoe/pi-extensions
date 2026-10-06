@@ -187,6 +187,13 @@ describe("DAP tool family", () => {
     });
   });
 
+  test("only dap_launch, dap_set_breakpoints, and dap_status results carry desired_breakpoints", () => {
+    const withDesired = DAP_OPERATIONS.filter(
+      (operation) => "desired_breakpoints" in DapToolOutputSchemas[operation].properties,
+    );
+    expect(withDesired).toEqual(["launch", "set_breakpoints", "status"]);
+  });
+
   test("tells models and scripts about the state-failure result in each description", async () => {
     // These never reject because of the Debug Session state.
     const neverStateFailing: readonly DapOperation[] = ["set_breakpoints", "status", "stop"];

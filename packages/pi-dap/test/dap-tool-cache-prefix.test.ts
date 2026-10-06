@@ -65,6 +65,8 @@ type InlineExtension = NonNullable<
 >[number];
 
 const DAP_TOOLS = DAP_OPERATIONS.map((operation) => `dap_${operation}`);
+/** The only tools whose results, and so output schemas, carry `desired_breakpoints`. */
+const DESIRED_BREAKPOINT_TOOLS = ["dap_launch", "dap_set_breakpoints", "dap_status"];
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
 
@@ -267,7 +269,7 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
           "const status = await tools.dap_status({});",
           "const paused = await tools.dap_pause({});",
           "const namespace = await describeNamespace('dap');",
-          "return { state: status.state, output: status.output, pausedState: paused.state, pausedError: paused.error, namespace, stackType: await describeTool('dap_stack') };",
+          "return { state: status.state, output: status.output, pausedState: paused.state, pausedError: paused.error, namespace, stackType: await describeTool('dap_stack'), launchType: await describeTool('dap_launch') };",
         ].join("\n"),
       }),
       fauxAssistantMessage("Done."),
@@ -290,6 +292,15 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
         `Codemode: \`tools.${name}(args)\` resolves to \`{ state, `,
       );
       expect(declared?.description, name).toMatch(/\berror\?[,\s]/u);
+      // Tools that can fail on the Debug Session state say so, naming the `error` field.
+      if (!["dap_set_breakpoints", "dap_status", "dap_stop"].includes(name)) {
+        expect(declared?.description, name).toMatch(/`error` message/u);
+      }
+      // Only the tools that set, begin, or report the Debug Session declare Desired Breakpoints.
+      const declaresDesired = /\bdesired_breakpoints\?[,\s]/u.test(declared?.description ?? "");
+      expect(declaresDesired, `${name} declares desired_breakpoints`).toBe(
+        DESIRED_BREAKPOINT_TOOLS.includes(name),
+      );
     }
 
     // Scripts receive the structured result, including state for a state failure.
@@ -303,6 +314,10 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
     expect(scriptResult).toContain("same single Debug Session");
     // The `error` field's meaning reaches scripts through the rendered declaration.
     expect(scriptResult).toContain("// Set when the Debug Session state did not allow the call");
+    // The full declarations of tools that can fail on state render the `error` field's description.
+    expect(
+      scriptResult.match(/Set when the Debug Session state did not allow the call/gu),
+    ).toHaveLength(2);
   });
 
   test("nested script calls to the tools never overlap on the one Debug Session", async () => {

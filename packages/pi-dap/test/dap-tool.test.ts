@@ -25,6 +25,7 @@ import { DapSessionError } from "../src/dap-session.js";
 import { expectDapToolOutput } from "./dap-tool-output.js";
 import { createDapSessionFiles } from "../src/dap-session-files.js";
 import {
+  DAP_OPERATIONS,
   DapToolResultDetailsSchema,
   type DapOperation,
   type DapToolCallArguments,
@@ -232,9 +233,6 @@ describe("DAP tools", () => {
       thread_id: 3,
       output,
       output_discarded_bytes: 4,
-      desired_breakpoints: [
-        { file_path: "/workspace/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
-      ],
       scopes: [
         {
           name: "Locals",
@@ -285,6 +283,7 @@ describe("DAP tools", () => {
           ],
         },
         {
+          desired_breakpoints: [],
           breakpoints: [
             {
               id: 1,
@@ -340,10 +339,56 @@ describe("DAP tools", () => {
         stop_reason: "step",
         output: "",
         output_discarded_bytes: 0,
-        desired_breakpoints: [],
         ...expected,
       });
     }
+  });
+
+  test("structured results carry desired_breakpoints only for set_breakpoints, launch, and status", async () => {
+    const fixture = await createToolFixture();
+    fixture.session.result = {
+      snapshot: { state: "stopped", adapterId: "a", profileId: "p", stopReason: "step" },
+      output: "",
+      discardedOutputBytes: 0,
+      desiredBreakpoints: [
+        { filePath: "/w/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
+      ],
+      stackFrames: [],
+      variables: [],
+    };
+    const inputs = {
+      launch: {},
+      set_breakpoints: { file_path: "/w/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
+      continue: {},
+      next: {},
+      step_in: {},
+      step_out: {},
+      pause: {},
+      stack: {},
+      variables: { variables_reference: 1 },
+      evaluate: { expression: "x" },
+      status: {},
+      stop: {},
+    } satisfies Record<DapOperation, DapToolInput>;
+    const carriers: DapOperation[] = [];
+    for (const operation of DAP_OPERATIONS) {
+      const result = await dapTool(() => fixture.runtime, operation).execute(
+        operation,
+        inputs[operation],
+        undefined,
+        undefined,
+        fixture.context,
+      );
+      if (Object.keys(result.structuredContent ?? {}).includes("desired_breakpoints")) {
+        carriers.push(operation);
+        expect(result.structuredContent).toMatchObject({
+          desired_breakpoints: [
+            { file_path: "/w/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
+          ],
+        });
+      }
+    }
+    expect(carriers).toEqual(["launch", "set_breakpoints", "status"]);
   });
 
   describe("compact text results", () => {
@@ -426,8 +471,8 @@ describe("DAP tools", () => {
           source_name: "app.js",
           source_path: `${fixture.cwd}/app.js`,
         },
-        desired_breakpoints: [{ file_path: `${fixture.cwd}/app.js`, breakpoints: [{ line: 3 }] }],
       });
+      expect(result.structuredContent).not.toHaveProperty("desired_breakpoints");
     });
 
     test("a stop without a readable top frame still reports its reason", async () => {
@@ -568,7 +613,7 @@ describe("DAP tools", () => {
       ).resolves.toBe("terminated (exit code 0; exited)");
     });
 
-    test("only dap_set_breakpoints shows Desired Breakpoints", async () => {
+    test("only dap_set_breakpoints, dap_launch, and dap_status show Desired Breakpoints", async () => {
       const existingFile = import.meta.filename;
       const desiredBreakpoints = [
         {
@@ -597,8 +642,32 @@ describe("DAP tools", () => {
           `  ${existingFile}:9 if ready`,
         ].join("\n"),
       );
-      const status = await textOf("status", {}, { desiredBreakpoints });
-      expect(status).toBe("idle (no Debug Session)");
+      const listed = [
+        "Desired Breakpoints:",
+        `  ${existingFile}:2`,
+        `  ${existingFile}:9 if ready`,
+      ];
+      await expect(textOf("status", {}, { desiredBreakpoints })).resolves.toBe(
+        ["idle (no Debug Session)", ...listed].join("\n"),
+      );
+      await expect(
+        textOf("launch", {}, { desiredBreakpoints, snapshot: stoppedSnapshot }),
+      ).resolves.toBe(["stopped (breakpoint) · thread 1", ...listed].join("\n"));
+      // An empty list adds nothing to a state report.
+      await expect(textOf("status", {}, {})).resolves.toBe("idle (no Debug Session)");
+      // Every other operation leaves them out of text.
+      for (const operation of [
+        "continue",
+        "next",
+        "step_in",
+        "step_out",
+        "pause",
+        "stop",
+      ] as const) {
+        await expect(
+          textOf(operation, {}, { desiredBreakpoints, snapshot: stoppedSnapshot }),
+        ).resolves.toBe("stopped (breakpoint) · thread 1");
+      }
       expect(
         await textOf("set_breakpoints", { file_path: existingFile, breakpoints: [] }, {}),
       ).toBe(
