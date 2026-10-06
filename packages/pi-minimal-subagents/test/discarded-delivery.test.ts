@@ -1,43 +1,22 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
   fauxToolCall,
   getCurrentSystemPrompt,
   getCurrentTools,
-  InMemoryCredentialStore,
-  InMemoryModelsStore,
   type AssistantMessage,
   type Message,
 } from "@earendil-works/pi-ai";
-import { getModel } from "@earendil-works/pi-ai/compat";
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-  type AgentSession,
-} from "@earendil-works/pi-coding-agent";
 import { afterEach, expect, test, vi } from "vitest";
-import { createMinimalSubagentsExtension } from "../src/minimal-subagents-extension.js";
-import { replayRegistryEntries } from "../src/minimal-subagents-registry.js";
-import { RecordingAgentSessionFactory } from "./fixtures/recording-sessions.js";
+import {
+  asModelResponse,
+  disposeLiveRootSessions,
+  pendingRootDeliveries,
+  rootResultEntries,
+  startLiveRootSession,
+} from "./fixtures/live-root-session.js";
 
-const directories: string[] = [];
-const sessions: AgentSession[] = [];
-
-afterEach(async () => {
-  for (const session of sessions.splice(0)) {
-    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-    session.dispose();
-  }
-  await Promise.all(
-    directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
-  );
-});
+afterEach(disposeLiveRootSessions);
 
 interface ProviderRequest {
   readonly tools: string;
@@ -55,127 +34,72 @@ const GRACE_TIMEOUT = { timeout: 5_000 };
  * so the child's result is steered into Pi's queue while the root turn runs.
  */
 async function startHeldRootTurn() {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-minimal-subagents-discarded-"));
-  directories.push(cwd);
-  const settingsManager = SettingsManager.inMemory({
-    retry: { enabled: false },
-    compaction: { enabled: false },
-  });
-  const loader = new DefaultResourceLoader({
-    cwd,
-    agentDir: cwd,
-    settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    extensionFactories: [
-      {
-        name: "pi-minimal-subagents-discarded-delivery-test",
-        factory: createMinimalSubagentsExtension({
-          getAgentDirectory: () => cwd,
-          createSessionFactory: () => new RecordingAgentSessionFactory(),
-        }),
-      },
-    ],
-  });
-  await loader.reload();
-  expect(loader.getExtensions().errors).toEqual([]);
-  const modelRuntime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(),
-    modelsStore: new InMemoryModelsStore(),
-    modelsPath: join(cwd, "models.json"),
-    allowModelNetwork: false,
-  });
-  await modelRuntime.setRuntimeApiKey("anthropic", "TEST-NOT-A-REAL-KEY");
-  const { session } = await createAgentSession({
-    cwd,
-    agentDir: cwd,
-    model: getModel("anthropic", "claude-sonnet-4-5"),
-    modelRuntime,
-    resourceLoader: loader,
-    sessionManager: SessionManager.create(cwd, await mkdtemp(join(cwd, "sessions-"))),
-    settingsManager,
-    noTools: "builtin",
-  });
-  sessions.push(session);
-
   const requests: ProviderRequest[] = [];
   let summaryRequests = 0;
   const held = Promise.withResolvers<void>();
-  session.agent.streamFunction = (currentModel, context, options) => {
-    const request = {
-      tools: JSON.stringify(getCurrentTools(context.messages)),
-      systemPrompt: getCurrentSystemPrompt(context.messages),
-      messages: structuredClone(context.messages),
-    };
-    const stream = createAssistantMessageEventStream();
-    if (request.systemPrompt.startsWith("You are a context summarization assistant")) {
-      // A branch summary that outlasts the grace period, as a real model call would.
-      summaryRequests++;
-      setTimeout(() => {
-        const summary = fauxAssistantMessage("## Goal\nSpawn a worker.");
-        stream.push({
-          type: "done",
-          reason: "stop",
-          message: {
-            ...summary,
-            api: currentModel.api,
-            provider: currentModel.provider,
-            model: currentModel.id,
-          },
-        });
-      }, 1_500);
+  const session = await startLiveRootSession(
+    "discarded",
+    () => (currentModel, context, options) => {
+      const request = {
+        tools: JSON.stringify(getCurrentTools(context.messages)),
+        systemPrompt: getCurrentSystemPrompt(context.messages),
+        messages: structuredClone(context.messages),
+      };
+      const stream = createAssistantMessageEventStream();
+      if (request.systemPrompt.startsWith("You are a context summarization assistant")) {
+        // A branch summary that outlasts the grace period, as a real model call would.
+        summaryRequests++;
+        setTimeout(() => {
+          stream.push({
+            type: "done",
+            reason: "stop",
+            message: asModelResponse(
+              currentModel,
+              fauxAssistantMessage("## Goal\nSpawn a worker."),
+            ),
+          });
+        }, 1_500);
+        return stream;
+      }
+      requests.push(request);
+      const respond = (message: AssistantMessage) => asModelResponse(currentModel, message);
+      if (requests.length === 1) {
+        const spawn = fauxAssistantMessage(
+          fauxToolCall("subagent", { task: "Report back", agent_id: "worker" }, { id: "spawn" }),
+          { stopReason: "toolUse" },
+        );
+        queueMicrotask(() =>
+          stream.push({ type: "done", reason: "toolUse", message: respond(spawn) }),
+        );
+      } else if (requests.length === 2) {
+        // The root keeps working until it is released or aborted.
+        const abort = () =>
+          stream.push({
+            type: "error",
+            reason: "aborted",
+            error: respond(fauxAssistantMessage("", { stopReason: "aborted" })),
+          });
+        if (options?.signal?.aborted) queueMicrotask(abort);
+        options?.signal?.addEventListener("abort", abort, { once: true });
+        void held.promise.then(() =>
+          stream.push({
+            type: "done",
+            reason: "stop",
+            message: respond(fauxAssistantMessage("Still working.")),
+          }),
+        );
+      } else {
+        queueMicrotask(() =>
+          stream.push({
+            type: "done",
+            reason: "stop",
+            message: respond(fauxAssistantMessage("Done.")),
+          }),
+        );
+      }
       return stream;
-    }
-    requests.push(request);
-    const respond = (message: AssistantMessage): AssistantMessage => ({
-      ...message,
-      api: currentModel.api,
-      provider: currentModel.provider,
-      model: currentModel.id,
-    });
-    if (requests.length === 1) {
-      const spawn = fauxAssistantMessage(
-        fauxToolCall("subagent", { task: "Report back", agent_id: "worker" }, { id: "spawn" }),
-        { stopReason: "toolUse" },
-      );
-      queueMicrotask(() =>
-        stream.push({ type: "done", reason: "toolUse", message: respond(spawn) }),
-      );
-    } else if (requests.length === 2) {
-      // The root keeps working until it is released or aborted.
-      const abort = () =>
-        stream.push({
-          type: "error",
-          reason: "aborted",
-          error: respond(fauxAssistantMessage("", { stopReason: "aborted" })),
-        });
-      if (options?.signal?.aborted) queueMicrotask(abort);
-      options?.signal?.addEventListener("abort", abort, { once: true });
-      void held.promise.then(() =>
-        stream.push({
-          type: "done",
-          reason: "stop",
-          message: respond(fauxAssistantMessage("Still working.")),
-        }),
-      );
-    } else {
-      queueMicrotask(() =>
-        stream.push({
-          type: "done",
-          reason: "stop",
-          message: respond(fauxAssistantMessage("Done.")),
-        }),
-      );
-    }
-    return stream;
-  };
-  await session.bindExtensions({
-    mode: "rpc",
-    uiContext: session.extensionRunner.getUIContext(),
-  });
+    },
+  );
 
   const run = session.prompt("Spawn a worker");
   // The child completes at once; after the grace period its result is steered into the busy root.
@@ -188,18 +112,8 @@ async function startHeldRootTurn() {
     run,
     releaseHeldResponse: () => held.resolve(),
     summaryRequests: () => summaryRequests,
-    resultEntries: () =>
-      session.sessionManager
-        .getBranch()
-        .filter(
-          (entry) =>
-            entry.type === "custom_message" && entry.customType === "minimal-subagents.result",
-        ),
-    pendingDeliveries: () =>
-      replayRegistryEntries(
-        session.sessionManager.getBranch(),
-        session.sessionManager.getSessionId(),
-      ).deliveries,
+    resultEntries: () => rootResultEntries(session),
+    pendingDeliveries: () => pendingRootDeliveries(session),
   };
 }
 

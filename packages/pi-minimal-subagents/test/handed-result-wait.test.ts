@@ -1,42 +1,22 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
   fauxToolCall,
-  InMemoryCredentialStore,
-  InMemoryModelsStore,
   type AssistantMessage,
 } from "@earendil-works/pi-ai";
-import { getModel } from "@earendil-works/pi-ai/compat";
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-  type AgentSession,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { afterEach, expect, test, vi } from "vitest";
-import { createMinimalSubagentsExtension } from "../src/minimal-subagents-extension.js";
-import { replayRegistryEntries } from "../src/minimal-subagents-registry.js";
-import { RecordingAgentSessionFactory } from "./fixtures/recording-sessions.js";
+import {
+  asModelResponse,
+  disposeLiveRootSessions,
+  pendingRootDeliveries,
+  rootResultEntries,
+  startLiveRootSession,
+} from "./fixtures/live-root-session.js";
 
-const directories: string[] = [];
-const sessions: AgentSession[] = [];
-
-afterEach(async () => {
-  for (const session of sessions.splice(0)) {
-    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-    session.dispose();
-  }
-  await Promise.all(
-    directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
-  );
-});
+afterEach(disposeLiveRootSessions);
 
 /** The Recording child's outputs for a spawned turn and for a turn started by `agent_message`. */
 const SPAWN_OUTPUT = "completed child turn";
@@ -96,105 +76,39 @@ function spawnedTurnId(session: AgentSession): string {
   return reportedTurnId(session, "spawn");
 }
 
-/** One live root Pi session with the extension's registered tools and a scripted model. */
+/** One live root Pi session whose model answers each request with the next scripted step. */
 async function startScriptedRoot(steps: RootStep[]) {
-  const cwd = await mkdtemp(join(tmpdir(), "pi-minimal-subagents-handed-"));
-  directories.push(cwd);
-  const settingsManager = SettingsManager.inMemory({
-    retry: { enabled: false },
-    compaction: { enabled: false },
-  });
-  const loader = new DefaultResourceLoader({
-    cwd,
-    agentDir: cwd,
-    settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    extensionFactories: [
-      {
-        name: "pi-minimal-subagents-handed-result-test",
-        factory: createMinimalSubagentsExtension({
-          getAgentDirectory: () => cwd,
-          createSessionFactory: () => new RecordingAgentSessionFactory(),
-        }),
-      },
-    ],
-  });
-  await loader.reload();
-  expect(loader.getExtensions().errors).toEqual([]);
-  const modelRuntime = await ModelRuntime.create({
-    credentials: new InMemoryCredentialStore(),
-    modelsStore: new InMemoryModelsStore(),
-    modelsPath: join(cwd, "models.json"),
-    allowModelNetwork: false,
-  });
-  await modelRuntime.setRuntimeApiKey("anthropic", "TEST-NOT-A-REAL-KEY");
-  const { session } = await createAgentSession({
-    cwd,
-    agentDir: cwd,
-    model: getModel("anthropic", "claude-sonnet-4-5"),
-    modelRuntime,
-    resourceLoader: loader,
-    sessionManager: SessionManager.create(cwd, await mkdtemp(join(cwd, "sessions-"))),
-    settingsManager,
-    noTools: "builtin",
-  });
-  sessions.push(session);
-
   /** The serialized context of every answered model request, in order. */
   const requests: string[] = [];
-  session.agent.streamFunction = (currentModel, context, options) => {
+  const session = await startLiveRootSession("handed", (current) => (model, context, options) => {
     const stream = createAssistantMessageEventStream();
-    const respond = (message: AssistantMessage): AssistantMessage => ({
-      ...message,
-      api: currentModel.api,
-      provider: currentModel.provider,
-      model: currentModel.id,
-    });
     if (options?.signal?.aborted) {
       queueMicrotask(() =>
         stream.push({
           type: "error",
           reason: "aborted",
-          error: respond(fauxAssistantMessage("", { stopReason: "aborted" })),
+          error: asModelResponse(model, fauxAssistantMessage("", { stopReason: "aborted" })),
         }),
       );
       return stream;
     }
     const step = steps[requests.length] ?? reply("Done.");
     requests.push(JSON.stringify(context.messages));
-    void Promise.resolve(step(session)).then((message) =>
+    void Promise.resolve(step(current)).then((message) =>
       stream.push({
         type: "done",
         reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
-        message: respond(message),
+        message: asModelResponse(model, message),
       }),
     );
     return stream;
-  };
-  await session.bindExtensions({
-    mode: "rpc",
-    uiContext: session.extensionRunner.getUIContext(),
   });
 
   return {
     session,
     requests,
-    resultEntries: () =>
-      session.sessionManager
-        .getBranch()
-        .filter(
-          (entry) =>
-            entry.type === "custom_message" && entry.customType === "minimal-subagents.result",
-        ),
-    pendingDeliveries: () =>
-      replayRegistryEntries(
-        session.sessionManager.getBranch(),
-        session.sessionManager.getSessionId(),
-      ).deliveries,
+    resultEntries: () => rootResultEntries(session),
+    pendingDeliveries: () => pendingRootDeliveries(session),
     toolResult: (toolCallId: string) => toolResult(session, toolCallId),
   };
 }
