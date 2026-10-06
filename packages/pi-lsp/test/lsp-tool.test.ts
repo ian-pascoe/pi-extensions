@@ -61,8 +61,12 @@ import {
   TROUBLESHOOTING_WARNING_POINTER,
 } from "../src/troubleshooting-skill.js";
 import type { ResolvedLspSettings } from "../src/pi-lsp-settings.js";
+import { LSP_WARM_UP_LIMITS, type LspWarmUpLimits } from "../src/lsp-workspace-warm-up.js";
 
 const temporaryDirectories: string[] = [];
+
+/** Warm-up bounds that open nothing, so a test sees the unloaded-package warning. */
+const NO_WARM_UP = { packageLimit: 0, timeoutMs: 0 };
 
 class RecordingLspClient implements LspToolServerClient {
   readonly capabilities: ServerCapabilities = {};
@@ -1594,7 +1598,7 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
-  test("warns about workspace packages the Server Instance has not loaded until a file there is queried", async () => {
+  test("warns about workspace packages the Server Instance has not loaded until a file there is queried, when warm-up is off", async () => {
     const fixture = await createToolFixture();
     const cwd = fixture.context.cwd;
     await writeFile(resolve(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
@@ -1628,7 +1632,7 @@ describe("registered LSP tool", () => {
       },
       startClient: async () => fixture.client,
     });
-    const dependencies = { ...fixture.dependencies, manager };
+    const dependencies = { ...fixture.dependencies, manager, warmUp: NO_WARM_UP };
     const position = { file_path: sourcePath, line: 1, character: 14 };
     const references = () =>
       executeTool(fixture, { operation: "find_references", ...position }, dependencies);
@@ -1683,6 +1687,184 @@ describe("registered LSP tool", () => {
     expect(resultText(loaded)).not.toContain("Warning");
     await manager.shutdown();
     await fixture.close();
+  });
+
+  describe("workspace warm-up before references and rename", () => {
+    /** A pnpm-style workspace of packages a..h, each with a `src/index.ts`, and one manager. */
+    async function createWorkspace(packageNames: readonly string[] = ["a", "b", "c", "d", "e"]) {
+      const fixture = await createToolFixture();
+      const cwd = fixture.context.cwd;
+      await writeFile(resolve(cwd, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n");
+      for (const name of packageNames) {
+        await mkdir(resolve(cwd, "packages", name, "src"), { recursive: true });
+        await writeFile(resolve(cwd, "packages", name, "package.json"), "{}\n");
+        await writeFile(
+          resolve(cwd, "packages", name, "src/index.ts"),
+          "export const helper = 1;\n",
+        );
+      }
+      const settings = resolvedSettings(["typescript"], ["package.json"]);
+      const definition = settings.servers.get("typescript");
+      if (definition === undefined) throw new Error("Expected the typescript definition");
+      const manager = new LspServerManager<LspToolServerClient>({
+        cwd,
+        settings: {
+          ...settings,
+          servers: new Map([
+            ["typescript", { ...definition, workspaceRootMarkers: ["pnpm-workspace.yaml"] }],
+          ]),
+        },
+        startClient: async () => fixture.client,
+      });
+      const sourcePath = resolve(cwd, "packages/a/src/index.ts");
+      const references = (warmUp: LspWarmUpLimits = LSP_WARM_UP_LIMITS) =>
+        executeTool(
+          fixture,
+          { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
+          { ...fixture.dependencies, manager, warmUp },
+        );
+      const close = async () => {
+        await manager.shutdown();
+        await fixture.close();
+      };
+      return { fixture, cwd, manager, sourcePath, references, close };
+    }
+
+    test("opens one file in each unloaded package before searching, so no package is warned about", async () => {
+      const { fixture, cwd, references, close } = await createWorkspace();
+
+      const result = await references();
+
+      expect([...fixture.client.synchronizedPaths].sort()).toEqual(
+        ["a", "b", "c", "d", "e"].map((name) => resolve(cwd, "packages", name, "src/index.ts")),
+      );
+      expect(result.structuredContent).toMatchObject({ warnings: [] });
+      expect(resultText(result)).not.toContain("Warning");
+      await close();
+    });
+
+    test("warms up before a rename too, and a second request opens nothing more", async () => {
+      const { fixture, cwd, manager, sourcePath, close } = await createWorkspace(["a", "b", "c"]);
+      fixture.client.responseByMethod.set("textDocument/rename", {
+        changes: {
+          [pathToFileURL(sourcePath).href]: [
+            {
+              range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
+              newText: "renamed",
+            },
+          ],
+        },
+      });
+      const dependencies = { ...fixture.dependencies, manager };
+      const rename = await executeTool(
+        fixture,
+        { operation: "rename", file_path: sourcePath, line: 1, character: 14, new_name: "renamed" },
+        dependencies,
+      );
+
+      expect(rename.structuredContent).toMatchObject({ warnings: [] });
+      expect(fixture.client.synchronizedPaths).toEqual(
+        new Set(["a", "b", "c"].map((name) => resolve(cwd, "packages", name, "src/index.ts"))),
+      );
+      const synchronized = [...fixture.client.synchronizedPaths];
+      await executeTool(
+        fixture,
+        { operation: "find_references", file_path: sourcePath, line: 1, character: 14 },
+        dependencies,
+      );
+      expect([...fixture.client.synchronizedPaths]).toEqual(synchronized);
+      await close();
+    });
+
+    test("opens at most the capped number of packages and names the rest as still unloaded", async () => {
+      const { cwd, fixture, references, close } = await createWorkspace([
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+      ]);
+
+      const result = await references({ packageLimit: 3, timeoutMs: 10_000 });
+
+      // The queried package `a` is loaded already; the cap covers three of the six others.
+      expect(fixture.client.synchronizedPaths.size).toBe(1 + 3);
+      expect(result.structuredContent).toMatchObject({
+        warnings: [
+          `typescript has not loaded 3 packages (${["e", "f", "g"].map((name) => join("packages", name)).join(", ")}) under ${cwd}; references there may be missing. Run any LSP tool on a file in each missing package, then retry. ${TROUBLESHOOTING_WARNING_POINTER}`,
+        ],
+      });
+      await close();
+    });
+
+    test("opens nothing once its time budget is spent, and still searches", async () => {
+      const { fixture, references, close } = await createWorkspace();
+      fixture.client.responseByMethod.set("textDocument/references", [
+        {
+          uri: pathToFileURL(resolve(fixture.context.cwd, "packages/a/src/index.ts")).href,
+          range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } },
+        },
+      ]);
+
+      const result = await references({ packageLimit: 20, timeoutMs: 0 });
+
+      expect([...fixture.client.synchronizedPaths]).toHaveLength(1);
+      expect(resultText(result)).toContain("packages/a/src/index.ts:1:14");
+      expect(result.structuredContent).toMatchObject({
+        warnings: [expect.stringContaining("has not loaded 4 packages")],
+      });
+      await close();
+    });
+
+    test("skips a package whose files cannot be opened and warns about it", async () => {
+      const { fixture, cwd, references, close } = await createWorkspace(["a", "b", "c"]);
+      await rm(resolve(cwd, "packages/b/src"), { recursive: true });
+      await writeFile(resolve(cwd, "packages/b/notes.md"), "# notes\n");
+
+      const result = await references();
+
+      expect(fixture.client.synchronizedPaths.has(resolve(cwd, "packages/c/src/index.ts"))).toBe(
+        true,
+      );
+      expect(result.structuredContent).toMatchObject({
+        warnings: [expect.stringContaining(`has not loaded 1 package (${join("packages", "b")})`)],
+      });
+      await close();
+    });
+
+    test("never fails the request when a warm-up file cannot be synchronized", async () => {
+      const { fixture, references, close } = await createWorkspace(["a", "b"]);
+      const synchronize = fixture.client.synchronizeDocument.bind(fixture.client);
+      fixture.client.synchronizeDocument = async (filePath, languageId) => {
+        if (filePath.includes("packages/b")) throw new Error("not valid UTF-8");
+        return synchronize(filePath, languageId);
+      };
+
+      const result = await references();
+
+      expect(resultText(result)).toContain("has not loaded 1 package");
+      await close();
+    });
+
+    test("picks a source file under src over declaration, test, and configuration files", async () => {
+      const { fixture, cwd, references, close } = await createWorkspace(["a", "b"]);
+      const packageB = resolve(cwd, "packages/b");
+      await writeFile(resolve(packageB, "vitest.config.ts"), "export default {};\n");
+      await writeFile(resolve(packageB, "src/index.d.ts"), "export {};\n");
+      await writeFile(resolve(packageB, "src/index.test.ts"), "export {};\n");
+      await rm(resolve(packageB, "src/index.ts"));
+      await writeFile(resolve(packageB, "src/zeta.ts"), "export const zeta = 1;\n");
+      await mkdir(resolve(packageB, "node_modules/dep"), { recursive: true });
+      await writeFile(resolve(packageB, "node_modules/dep/index.ts"), "export {};\n");
+
+      await references();
+
+      expect(fixture.client.synchronizedPaths.has(resolve(packageB, "src/zeta.ts"))).toBe(true);
+      expect(fixture.client.synchronizedPaths.size).toBe(2);
+      await close();
+    });
   });
 
   test("reports a workspace walk cut short with the unloaded packages, not as other roots", async () => {

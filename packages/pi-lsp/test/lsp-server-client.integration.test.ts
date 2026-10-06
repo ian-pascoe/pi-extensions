@@ -17,6 +17,7 @@ import type { LspServerDefinition } from "../src/pi-lsp-settings.js";
 import { createLspSessionFiles } from "../src/lsp-session-files.js";
 import { createLspToolDefinition, type LspToolServerClient } from "../src/lsp-tool.js";
 import { LspWorkspaceEditStore } from "../src/lsp-workspace-edit.js";
+import { LSP_WARM_UP_LIMITS, type LspWarmUpLimits } from "../src/lsp-workspace-warm-up.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const temporaryDirectories: string[] = [];
@@ -304,13 +305,17 @@ describe("real TypeScript 7 language server client", () => {
     const importerFile = resolve(root, "packages/b/src/index.ts");
     // SAFETY: Tool execution only reads cwd from ExtensionContext.
     const context = { cwd: root } as ExtensionToolContext;
-    const search = async (definition: LspServerDefinition) => {
+    const search = async (
+      definition: LspServerDefinition,
+      warmUp: LspWarmUpLimits = LSP_WARM_UP_LIMITS,
+    ) => {
       const sessionFiles = await createLspSessionFiles(root);
       const manager = createTypeScriptManager(root, definition);
       const dependencies = () => ({
         manager,
         workspaceEdits: new LspWorkspaceEditStore(),
         sessionFiles,
+        warmUp,
       });
       // `helper` starts at one-based character 17 on line 1 of package `a`.
       const position = { file_path: helperFile, line: 1, character: 17 };
@@ -355,15 +360,16 @@ describe("real TypeScript 7 language server client", () => {
       }
     };
 
-    const workspace = await search({
+    const workspaceDefinition = {
       ...typescriptDefinition(["tsconfig.json"]),
       workspaceRootMarkers: ["pnpm-workspace.yaml"],
-    });
+    };
+    // Warm-up opens a file in `b` before the first query, so no manual opening is needed.
+    const workspace = await search(workspaceDefinition);
     expect(workspace.startedRoots).toEqual([root]);
-    // Before `b` is opened, the result warns that its references may be missing.
-    expect(workspace.beforeImporterOpened).toContain(
-      `Warning: typescript has not loaded 1 package (packages/b) under ${root}; references there may be missing.`,
-    );
+    expect(workspace.beforeImporterOpened).toContain("packages/b/src/index.ts:1:10");
+    expect(workspace.beforeImporterOpened).toContain("packages/b/src/index.ts:2:22");
+    expect(workspace.beforeImporterOpened).not.toContain("Warning");
     expect(workspace.references).toContain("packages/b/src/index.ts:1:10");
     expect(workspace.references).toContain("packages/b/src/index.ts:2:22");
     expect(workspace.references).not.toContain("Warning");
@@ -375,6 +381,15 @@ describe("real TypeScript 7 language server client", () => {
         { operation: "modify", path: importerFile },
       ],
     });
+
+    // Without warm-up, the server has not loaded `b` until a file there is opened: the first
+    // result misses `b` and warns, and the result after opening a file of `b` includes it.
+    const withoutWarmUp = await search(workspaceDefinition, { packageLimit: 0, timeoutMs: 0 });
+    expect(withoutWarmUp.beforeImporterOpened).not.toContain("packages/b/src/index.ts");
+    expect(withoutWarmUp.beforeImporterOpened).toContain(
+      `Warning: typescript has not loaded 1 package (packages/b) under ${root}; references there may be missing.`,
+    );
+    expect(withoutWarmUp.references).toContain("packages/b/src/index.ts:2:22");
 
     // Without workspace root markers, each package has its own Server Instance, and the
     // instance for `a` misses `b`'s usage.

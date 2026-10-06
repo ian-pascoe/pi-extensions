@@ -763,6 +763,14 @@ export class LspServerManager<TClient extends LspManagedServerClient = LspManage
       .map((definition) => definition.id);
   }
 
+  /** The language ID one Server Definition sends for a file, or undefined when it handles none. */
+  languageIdForFile(serverId: string, filePath: string): string | undefined {
+    const absolutePath = resolve(this.input.cwd, normalizeLspFilePath(filePath));
+    return this.input.settings.servers
+      .get(serverId)
+      ?.languages.find((language) => languageMatchesFile(language, absolutePath))?.languageId;
+  }
+
   /** Find workspace roots of one Server Definition other than `rootPath`; see `findWorkspaceScope`. */
   async findOtherWorkspaceRoots(
     serverId: string,

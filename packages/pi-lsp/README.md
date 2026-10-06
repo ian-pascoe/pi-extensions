@@ -81,13 +81,17 @@ same as leaving it unset. For example, add
 
 A server searches only the code it has loaded: the TypeScript server loads a package's
 `tsconfig.json` project when a file in that package is opened, so references in a package where
-the server has no open file can be missing. `lsp_find_references` and `lsp_rename` therefore warn
-about packages in the workspace (directories holding one of the server's `rootMarkers`) where it
-has no open file yet, as one line that counts them and names up to three, for example
+the server has no open file can be missing. Before `lsp_find_references` and `lsp_rename` query a
+workspace root, Pi LSP therefore opens one representative file in each package of it (directories
+holding one of the server's `rootMarkers`) where the server has no open file yet. The file is the
+shallowest source file the server handles, preferring `src` and avoiding declaration, test, and
+configuration files. Warm-up opens at most 20 files and spends at most 10 seconds, and never fails
+the request; a package it cannot open, or does not reach, is not loaded. Those packages are
+disclosed as one line that counts them and names up to three, for example
 `typescript has not loaded 7 packages (packages/b, packages/c, packages/d, +4 more) under
 /work/repo; references there may be missing. Run any LSP tool on a file in each missing package,
-then retry. (pi-lsp troubleshooting Skill: <path>)`. Pi LSP never opens files to load them. A
-package stops being named once any LSP tool has opened one of its files with that server
+then retry. (pi-lsp troubleshooting Skill: <path>)`. Pi LSP opens files only for these two
+operations and only in a workspace root. A package stops being named once any LSP tool has opened one of its files with that server
 in the session; the server keeps at most 100 files open, so a package whose files were all closed
 again is named again. The packages are found by the same bounded search as other workspace roots
 (below); when it stops early, the warning says so instead of claiming other roots outside the
