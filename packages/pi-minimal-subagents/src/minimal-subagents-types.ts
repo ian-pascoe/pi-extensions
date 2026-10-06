@@ -98,6 +98,19 @@ export interface WaitTurnResult extends TurnResult {
   messages?: WaitMessageResult[];
 }
 
+/**
+ * Reports that a default wait selected a terminal turn whose result automatic fallback already
+ * handed to the caller, so the result is not repeated; an explicit `turn_id` rereads it.
+ */
+export interface WaitDeliveredTurnResult {
+  event: "turn";
+  agent_id: string;
+  turn_id: string;
+  status: TurnResult["status"];
+  already_delivered: true;
+  messages?: WaitMessageResult[];
+}
+
 /** Reports an observational wait timeout with the current detailed child status. */
 export interface WaitTimeoutResult {
   event: "timeout";
@@ -110,7 +123,11 @@ export interface WaitTimeoutResult {
 }
 
 /** Reports one message, terminal turn, or timeout returned by subagent_wait. */
-export type WaitResult = WaitMessageResult | WaitTurnResult | WaitTimeoutResult;
+export type WaitResult =
+  | WaitMessageResult
+  | WaitTurnResult
+  | WaitDeliveredTurnResult
+  | WaitTimeoutResult;
 
 /** Provides bounded hierarchy, usage, and best-known Runtime Profile data for one persistent agent. */
 export interface AgentSummary extends RuntimeProfile {

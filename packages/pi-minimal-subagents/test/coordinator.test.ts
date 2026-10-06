@@ -1309,11 +1309,24 @@ describe("minimal subagents coordinator", () => {
       }),
     );
 
-    await expect(coordinator.wait("root", "worker", 1_000)).resolves.toMatchObject({
+    await vi.waitFor(() =>
+      expect(root.queueCoordinatorMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ customType: "minimal-subagents.result" }),
+      ),
+    );
+
+    // Automatic fallback handed the result, so a default wait does not repeat it.
+    const handed = await coordinator.wait("root", "worker", 1_000);
+    expect(handed).toEqual({
       event: "turn",
+      agent_id: "worker",
+      turn_id: spawned.turn_id,
       status: "completed",
-      output: "complete",
+      already_delivered: true,
     });
+    await expect(
+      coordinator.wait("root", "worker", 1_000, undefined, spawned.turn_id),
+    ).resolves.toMatchObject({ event: "turn", status: "completed", output: "complete" });
     await coordinator.waitForSettledOperations();
     expect(root.queueCoordinatorMessage).toHaveBeenCalledWith(
       expect.objectContaining({ content: expect.stringContaining("progress 2") }),

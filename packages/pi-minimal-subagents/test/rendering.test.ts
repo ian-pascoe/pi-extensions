@@ -158,6 +158,34 @@ describe("minimal subagents collapsed previews", () => {
     expect(failed).toContain("Provider overloaded");
   });
 
+  it("shows that a wait's result was already delivered instead of an empty output", () => {
+    const details = {
+      event: "turn",
+      agent_id: "worker",
+      turn_id: "worker:turn-1",
+      status: "completed",
+      already_delivered: true,
+      source_agent_id: "worker",
+      source_turn_id: "worker:turn-1",
+    };
+    for (const expanded of [false, true]) {
+      const rendered = renderLines(
+        renderCoordinatorToolResult(
+          "subagent_wait",
+          { content: [], details },
+          { expanded, isPartial: false },
+          plainTheme,
+          { agent_id: "worker" },
+        ),
+      );
+      expect(rendered).toContain("worker  ·  completed");
+      expect(rendered).toContain(
+        "Already delivered automatically; wait with turn_id to reread it.",
+      );
+      expect(rendered).not.toContain("(no output)");
+    }
+  });
+
   it("hangs a waiting child's turn off a rail of Pi-rendered items", () => {
     const toolTurn = (index: number): AgentMessage[] => [
       {
