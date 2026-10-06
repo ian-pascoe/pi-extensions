@@ -9,8 +9,8 @@ disable-model-invocation: true
 
 1. Read [`../../README.md`](../../README.md)'s Settings, `/lsp` command, and LSP tools sections, then identify the effective settings scope.
 2. Call `lsp_status` with `all: true`, because the default text lists only Server Instances (running, starting, unavailable, stopped) and disabled Server Definitions, and counts the rest. Check that the representative file's extension or filename appears in the Server Definition's `languages`. If the Server Definition is disabled, report that state and its enablement controls before attempting startup.
-3. Test a representative file with `lsp_capabilities`, then `lsp_diagnostics`, supplying `server_id` when needed.
-4. Classify the result as settings, routing, process, capability, or Post-edit Diagnostics behavior.
+3. Test a representative file with `lsp_capabilities`, then `lsp_diagnostics`, supplying `server_id` when needed. `no diagnostics published by <server> within <wait>` means a push-only server (for example marksman) stayed silent, which is how it reports a clean file: treat the file as clean unless its content suggests otherwise, and do not restart the server. A repeat query of the unchanged file answers at once; edit the file to ask again. `no diagnostics received from <server>` means a pull request stalled; retry later or check the Server Instance with `lsp_status`.
+4. Classify the result as settings, routing, process, capability, silent push-only server, or Post-edit Diagnostics behavior.
 5. If Server Definitions changed, reload Pi. Enablement commands apply immediately. For an unavailable Server Instance, use `lsp_restart` only when recovery is authorized; otherwise ask the user to run `/lsp stop <server-id> <root>`, which permits a fresh lazy start.
 6. Repeat status, capabilities, and diagnostics. Finish when the representative file reaches the intended Server Instance and operation, or an exact unsupported capability is evidenced.
 
