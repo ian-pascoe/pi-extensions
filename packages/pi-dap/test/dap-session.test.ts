@@ -149,7 +149,14 @@ describe("DapSession", () => {
           expect.objectContaining({ name: "nested", variablesReference: 21 }),
         ],
       },
+      // An expensive scope is listed with its reference but not expanded.
+      {
+        scope: expect.objectContaining({ name: "Global", variablesReference: 30, expensive: true }),
+      },
     ]);
+    expect(frameVariables.variableGroups?.[1]).not.toHaveProperty("variables");
+    const expanded = await session.variables({ variablesReference: 30 });
+    expect(expanded.variables).toEqual([expect.objectContaining({ name: "globalThis" })]);
     const childVariables = await session.variables({
       variablesReference: 21,
       start: 1,

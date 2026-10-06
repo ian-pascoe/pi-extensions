@@ -2,6 +2,8 @@ import { mkdtemp, readFile, readdir, readlink, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, expect, test } from "vitest";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import { createDapToolDefinitions } from "../src/dap-tool.js";
 import { DapSession, type DapSessionSnapshot } from "../src/dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "../src/dap-session-files.js";
 import type { ResolvedDapSettings } from "../src/pi-dap-settings.js";
@@ -153,9 +155,31 @@ test("debugs TypeScript through the Supported vscode-js-debug adapter and cleans
   const topStackFrame = stack.stackFrames?.at(0);
   expect(topStackFrame?.source?.path).toBe(programPath);
   const variables = await session.variables({ frameId: topStackFrame?.id ?? -1 });
-  expect(variables.variableGroups?.flatMap((group) => group.variables)).toContainEqual(
+  expect(variables.variableGroups?.flatMap((group) => group.variables ?? [])).toContainEqual(
     expect.objectContaining({ name: "answer", value: "42" }),
   );
+  // js-debug marks Global expensive: it is listed with its reference but never expanded here.
+  const expensiveGroups = variables.variableGroups?.filter((group) => group.scope.expensive) ?? [];
+  expect(expensiveGroups.length).toBeGreaterThan(0);
+  for (const group of expensiveGroups) expect(group.variables).toBeUndefined();
+  // The model sees the locals in the visible text, with no Result Spill to read.
+  const variablesTool = createDapToolDefinitions(() => ({ session, sessionFiles: files })).find(
+    ({ name }) => name === "dap_variables",
+  );
+  const variablesResult = await variablesTool?.execute(
+    "variables",
+    { frame_id: topStackFrame?.id ?? -1 },
+    undefined,
+    undefined,
+    // SAFETY: Tool execution only reads cwd from its context.
+    { cwd: projectDirectory } as ExtensionToolContext,
+  );
+  const variablesText = variablesResult?.content
+    .map((item) => (item.type === "text" ? item.text : ""))
+    .join("");
+  expect(variablesText).toMatch(/^\s{2}answer(: number)? = 42$/mu);
+  expect(variablesText).toContain("expensive, not expanded");
+  expect(variablesText).not.toContain("Result Spill");
   const evaluation = await session.evaluate({ expression: "answer" });
   expect(evaluation.evaluation?.result).toBe("42");
   await expect(session.evaluate({ expression: "undefinedName" })).rejects.toThrow(

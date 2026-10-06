@@ -232,7 +232,7 @@ describe("DAP tool family", () => {
       dap_stop: [[], []],
     });
     expect(tool("dap_variables").description).toContain(
-      "Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both",
+      "Exactly one of frame_id (the scopes of a Stack Frame; expensive scopes such as Global are listed but not expanded) or variables_reference (children of a value or of an unexpanded scope) is required, never both",
     );
   });
 

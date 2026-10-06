@@ -1,10 +1,7 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
   defineTool,
-  truncateHead,
   type AgentToolResult,
   type AgentToolUpdateCallback,
   type Theme,
@@ -45,7 +42,7 @@ import {
   type DapToolResultDetails,
 } from "./dap-tool-contract.js";
 import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js";
-import { formatDapToolText } from "./dap-tool-text.js";
+import { formatDapToolText, visibleDapText } from "./dap-tool-text.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
@@ -104,7 +101,7 @@ export const DAP_TOOL_NAMESPACE = {
     "Relative paths resolve from Pi's project directory.",
     "Desired Breakpoints set with dap_set_breakpoints apply to the active Debug Session and to every later launch.",
     "dap_launch, dap_continue, dap_next, dap_step_in, and dap_step_out wait until the Debuggee stops, exits, or the execution timeout passes; after a timeout the state is running, so use dap_pause or dap_stop.",
-    "dap_stack, dap_variables, and dap_evaluate need a stopped Debuggee. Stack Frame ids from dap_stack feed dap_variables and dap_evaluate; a non-zero variables_reference lists child values with dap_variables.",
+    "dap_stack, dap_variables, and dap_evaluate need a stopped Debuggee. Stack Frame ids from dap_stack feed dap_variables and dap_evaluate; a non-zero variables_reference lists child values with dap_variables, and dap_variables with frame_id lists expensive scopes such as Global without expanding them.",
     "Each successful call drains unread Debuggee output. Text results are limited to 2,000 lines or 50 KB and save the complete result as a Result Spill; script results always carry complete data.",
     "A call that fails because of the Debug Session state returns the current state with an error field instead of throwing.",
   ].join("\n"),
@@ -201,7 +198,7 @@ function dapVariablePresentation(result: DapSessionResult): DapPresentationDetai
           expensive: group.scope.expensive,
         });
       }
-      for (const variable of group.variables) appendVariable(variable, group.scope.name);
+      for (const variable of group.variables ?? []) appendVariable(variable, group.scope.name);
     }
   } else if (result.variables !== undefined) {
     for (const variable of result.variables) appendVariable(variable);
@@ -447,12 +444,15 @@ function toolOutput(
     case "variables": {
       const output: DapToolOutput<"variables"> = { ...base };
       if (result.variableGroups !== undefined) {
-        output.scopes = result.variableGroups.map((group) => ({
-          name: group.scope.name,
-          variables_reference: group.scope.variablesReference,
-          expensive: group.scope.expensive,
-          variables: group.variables.map(variableOutput),
-        }));
+        output.scopes = result.variableGroups.map(({ scope, variables }) => {
+          const row: NonNullable<DapToolOutput<"variables">["scopes"]>[number] = {
+            name: scope.name,
+            variables_reference: scope.variablesReference,
+            expensive: scope.expensive,
+          };
+          if (variables !== undefined) row.variables = variables.map(variableOutput);
+          return row;
+        });
       }
       if (result.variables !== undefined) output.variables = result.variables.map(variableOutput);
       return output;
@@ -485,11 +485,8 @@ async function createDapToolOutput(
   const text = formatDapToolText({ operation, result, cwd, executionWaitCancelled, warnings });
   const details = toolResultDetails(operation, result, executionWaitCancelled);
   const structuredContent = toolOutput(operation, result, executionWaitCancelled, warnings);
-  const truncation = truncateHead(text, {
-    maxBytes: DEFAULT_MAX_BYTES,
-    maxLines: DEFAULT_MAX_LINES,
-  });
-  if (!truncation.truncated) {
+  const visible = visibleDapText(text);
+  if (!visible.truncated) {
     return { content: [{ type: "text", text }], details, structuredContent };
   }
 
@@ -503,7 +500,7 @@ async function createDapToolOutput(
     content: [
       {
         type: "text",
-        text: `${truncation.content}\n\n[Pi DAP: output truncated; complete Result Spill: ${spillPath}]`,
+        text: `${visible.text}\n\n[Pi DAP: output truncated; complete Result Spill: ${spillPath}]`,
       },
     ],
     details: normalizedDetails,
@@ -863,7 +860,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
     }),
     defineTool<typeof DapVariablesParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("variables", "DAP variables"),
-      description: `List variables of the stopped Debuggee. Exactly one of frame_id (every scope of a Stack Frame) or variables_reference (children of a value) is required, never both; start and count (default 100) page each list. ${STATE_FAILURE}`,
+      description: `List variables of the stopped Debuggee. Exactly one of frame_id (the scopes of a Stack Frame; expensive scopes such as Global are listed but not expanded) or variables_reference (children of a value or of an unexpanded scope) is required, never both; start and count (default 100) page each list. ${STATE_FAILURE}`,
       exposure: "direct",
       annotations: READ_ONLY,
       parameters: DapVariablesParametersSchema,

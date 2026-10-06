@@ -179,10 +179,19 @@ function handleRequest(request) {
     }
     case "scopes":
       respond(request, {
-        scopes: [{ name: "Local", variablesReference: 20, expensive: false }],
+        scopes: [
+          { name: "Local", variablesReference: 20, expensive: false },
+          { name: "Global", variablesReference: 30, expensive: true },
+        ],
       });
       return;
     case "variables":
+      if (request.arguments?.variablesReference === 30) {
+        respond(request, {
+          variables: [{ name: "globalThis", value: "Window", variablesReference: 0 }],
+        });
+        return;
+      }
       respond(request, {
         variables: [
           {
