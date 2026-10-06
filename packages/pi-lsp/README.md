@@ -289,8 +289,9 @@ tools name the root they searched (`Searched typescript workspace root: packages
 server has other roots, they add a one-line warning that counts them and names up to three, for
 example `typescript searched only packages/a; 5 other typescript roots exist (packages/b,
 packages/c, packages/d, +2 more), so importers there may be missed. Query a file there or search
-for importers. (pi-lsp troubleshooting Skill: <path>)`. The search stops after it finds six other roots, and the warning then says `at least 6`; a workspace
-root's search counts every root it reaches. Both warnings end with the path of the pi-lsp
+for importers. (pi-lsp troubleshooting Skill: <path>)`. The search stops after it finds six other
+roots, and the warning then says `at least 6`; a workspace root's search counts every root it
+reaches. Both warnings end with the path of the pi-lsp
 troubleshooting Skill, and only a search that really left directories unchecked adds
 `discovery stopped early`. Those roots are its running or known servers and the roots of directories
 that contain one of its root or workspace root markers; a package inside the searched workspace root
