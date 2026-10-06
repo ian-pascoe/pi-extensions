@@ -259,11 +259,16 @@ function compareOutcomes(left: ReportedOutcome, right: ReportedOutcome, cwd: str
 /** One line naming the clean files; a file some server reported a finding for is never listed as clean. */
 function cleanPathsLine(
   paths: readonly string[],
-  withFindings: ReadonlySet<string>,
+  reported: readonly ReportedOutcome[],
   cwd: string,
 ): readonly string[] {
+  const pathsWithFindings = new Set(
+    reported.flatMap((outcome) =>
+      outcome.kind === "diagnostic" ? [lspDisplayPath(cwd, outcome.diagnostic.path)] : [],
+    ),
+  );
   const displayed = [...new Set(paths.map((path) => lspDisplayPath(cwd, path)))]
-    .filter((path) => !withFindings.has(path))
+    .filter((path) => !pathsWithFindings.has(path))
     .sort((left, right) => left.localeCompare(right));
   if (displayed.length === 0) return [];
   return [`no diagnostics: ${displayed.join(", ")}`];
@@ -285,16 +290,11 @@ export function formatPostEditDiagnostics(outcomes: readonly ShownOutcome[], cwd
     if (outcome.kind === "no_diagnostics") clean.push(outcome.path);
     else reported.push(outcome);
   }
-  const withFindings = new Set(
-    reported.flatMap((outcome) =>
-      outcome.kind === "diagnostic" ? [lspDisplayPath(cwd, outcome.diagnostic.path)] : [],
-    ),
-  );
   const lines = [
     ...reported
       .sort((left, right) => compareOutcomes(left, right, cwd))
       .map((outcome) => formatOutcome(outcome, cwd)),
-    ...cleanPathsLine(clean, withFindings, cwd),
+    ...cleanPathsLine(clean, reported, cwd),
   ];
   return `\n\nLSP diagnostics\n${lines.join("\n")}`;
 }

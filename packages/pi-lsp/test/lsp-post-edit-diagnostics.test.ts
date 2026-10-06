@@ -295,7 +295,7 @@ test("groups clean files into one line after the findings and omits files with n
   );
 });
 
-test("leaves a file with a finding out of the clean line when another server reported it clean", async () => {
+test("leaves a file with a finding out of the clean line when another Server Instance reported it clean", async () => {
   await expect(
     appendedText([
       diagnosticOutcome("/work/src/a.ts", 1, "broken"),

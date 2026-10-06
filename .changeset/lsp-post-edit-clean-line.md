@@ -2,4 +2,4 @@
 "@ian-pascoe/pi-lsp": patch
 ---
 
-Post-edit diagnostics no longer list a file as "no diagnostics" when another server reported a finding for it.
+Post-edit Diagnostics no longer list a file as "no diagnostics" when another server reported a finding for it.
