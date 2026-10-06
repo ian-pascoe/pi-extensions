@@ -180,6 +180,9 @@
         "rootMarkers": [
           "tsconfig.json"
         ],
+        "workspaceRootMarkers": [
+          "pnpm-workspace.yaml"
+        ],
         "requireRootMarker": true
       },
       "oxlint": {
