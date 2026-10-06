@@ -978,6 +978,80 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("cuts document symbols to the requested depth in both the text and the structured result", async () => {
+    const fixture = await createToolFixture();
+    await writeFile(fixture.filePath, `${"0123456789\n".repeat(6)}`);
+    const protocolRange = (line: number) => ({
+      start: { line, character: 0 },
+      end: { line, character: 10 },
+    });
+    const symbol = (name: string, kind: number, line: number, children: unknown[] = []) => ({
+      name,
+      kind,
+      range: protocolRange(line),
+      selectionRange: protocolRange(line),
+      children,
+    });
+    fixture.client.responseByMethod.set("textDocument/documentSymbol", [
+      symbol("Store", 5, 0, [symbol("add", 6, 1, [symbol("draft", 13, 2)])]),
+      symbol("create", 12, 3, [symbol("state", 13, 4), symbol("callback", 12, 5)]),
+    ]);
+    const outline = async (parameters: { depth?: number | "all" }) => {
+      const result = await executeTool(fixture, {
+        operation: "document_symbols",
+        file_path: fixture.filePath,
+        ...parameters,
+      });
+      const structured = Value.Parse(LspReadOutputSchema, result.structuredContent);
+      return {
+        text: resultText(result)
+          .split("\n")
+          .map((line) => line.trim().split(" (")[0]),
+        structured: JSON.stringify(structured.results.map(({ value }) => value)),
+      };
+    };
+
+    const byDefault = await outline({});
+    expect(byDefault.text).toEqual(["Store", "add", "create"]);
+    expect(byDefault.structured).toContain('"name":"add"');
+    for (const hidden of ["draft", "state", "callback"]) {
+      expect(byDefault.structured).not.toContain(`"name":"${hidden}"`);
+    }
+    expect((await outline({ depth: 1 })).text).toEqual(byDefault.text);
+    expect((await outline({ depth: 2 })).text).toEqual([
+      "Store",
+      "add",
+      "draft",
+      "create",
+      "state",
+      "callback",
+    ]);
+    expect((await outline({ depth: "all" })).text).toEqual([
+      "Store",
+      "add",
+      "draft",
+      "create",
+      "state",
+      "callback",
+    ]);
+    await expect(
+      executeTool(fixture, {
+        operation: "document_symbols",
+        file_path: fixture.filePath,
+        depth: 0,
+      }),
+    ).rejects.toThrow("Pi LSP: invalid tool arguments");
+    await expect(
+      executeTool(fixture, {
+        operation: "document_symbols",
+        file_path: fixture.filePath,
+        // @ts-expect-error -- The tool rejects a depth that is neither a count nor "all".
+        depth: "deep",
+      }),
+    ).rejects.toThrow("Pi LSP: invalid tool arguments");
+    await fixture.close();
+  });
+
   test("lets a script pass any structured symbol or location straight to a position tool", async () => {
     const fixture = await createToolFixture();
     await writeFile(fixture.filePath, "class Outer {\n  inner() {}\n}\nconst target = 1;\n");

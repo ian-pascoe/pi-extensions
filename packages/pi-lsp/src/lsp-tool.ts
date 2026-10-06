@@ -66,6 +66,11 @@ import {
   type LspBoundedItems,
 } from "./lsp-item-list.js";
 import {
+  DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH,
+  limitLspDocumentSymbolDepth,
+  type LspDocumentSymbolDepth,
+} from "./lsp-document-symbol-depth.js";
+import {
   assembleLspReadText,
   collapseLspWhitespace,
   formatLspLocationReadText,
@@ -213,6 +218,8 @@ interface FileReadParameters {
   readonly operation: FileReadOperation;
   readonly file_path: string;
   readonly server_id?: string;
+  /** Levels of nested symbols `document_symbols` keeps; other operations take none. */
+  readonly depth?: LspDocumentSymbolDepth;
 }
 interface PositionReadParameters {
   readonly operation: PositionReadOperation;
@@ -1366,7 +1373,12 @@ async function executeFileRead(
         { textDocument: { uri: prepared.document.uri } },
         signal,
       );
-      if (
+      if (parameters.operation === "document_symbols") {
+        value = limitLspDocumentSymbolDepth(
+          value,
+          parameters.depth ?? DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH,
+        );
+      } else if (
         parameters.operation === "document_links" &&
         supportsResolveProvider(client.capabilities.documentLinkProvider)
       ) {
@@ -2172,7 +2184,8 @@ const LSP_TOOL_DESCRIPTIONS = {
   find_references:
     "Find references to the symbol at a position. include_declaration defaults to true.",
   document_highlights: "Find the occurrences of the symbol at a position within its file.",
-  document_symbols: "List the symbols declared in a file.",
+  document_symbols:
+    "List the symbols declared in a file as an outline. By default only declarations and their members, not locals or callbacks; see `depth`.",
   workspace_symbols:
     "Search the workspace's symbols by name, one `name (kind) path:line:col` line each.",
   document_links: "List the links in a file.",

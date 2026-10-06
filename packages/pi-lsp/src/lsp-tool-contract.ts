@@ -1,4 +1,5 @@
 import { type Static, type TSchema, Type } from "typebox";
+import { DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH } from "./lsp-document-symbol-depth.js";
 
 /** Every LSP operation in registration order; each is registered as the Pi tool `lsp_<operation>`. */
 export const LSP_OPERATION_NAMES = [
@@ -224,7 +225,18 @@ export const LspOperationParametersSchemas = {
     { additionalProperties: false },
   ),
   document_highlights: positionParametersSchema(),
-  document_symbols: fileParametersSchema(),
+  document_symbols: Type.Object(
+    {
+      file_path: FilePathSchema,
+      depth: Type.Optional(
+        Type.Union([Type.Integer({ minimum: 1 }), Type.Literal("all")], {
+          description: `Levels of nested symbols to list (default ${DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH}): top-level declarations plus class, interface, enum, namespace, module, and struct members, without locals, return-object properties, or callbacks inside function, method, or variable bodies. Each further level adds one level inside those bodies; "all" lists the full tree`,
+        }),
+      ),
+      server_id: OptionalServerIdSchema,
+    },
+    { additionalProperties: false },
+  ),
   workspace_symbols: Type.Object(
     {
       query: Type.String(),
