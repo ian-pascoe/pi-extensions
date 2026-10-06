@@ -6,6 +6,7 @@ const pendingServerRequests = new Map();
 const cancelledRequests = new Set();
 const state = {
   initializationOptions: null,
+  textDocumentCapabilities: null,
   settingsNotifications: [],
   opened: [],
   changed: [],
@@ -93,6 +94,7 @@ async function handleRequest(message) {
   switch (message.method) {
     case "initialize":
       state.initializationOptions = message.params?.initializationOptions ?? null;
+      state.textDocumentCapabilities = message.params?.capabilities?.textDocument ?? null;
       const capabilities = {
         positionEncoding: "utf-8",
         renameProvider: { prepareProvider: true },
