@@ -42,16 +42,18 @@ const TodoParameters = Type.Object({
     Type.Integer({
       minimum: 1,
       maximum: Number.MAX_SAFE_INTEGER,
-      description: "Task ID for update or remove",
+      description: "Task ID for update or remove; not allowed with updates",
     }),
   ),
   title: Type.Optional(
-    Type.String({ description: "Task title for add or update; not allowed with tasks" }),
+    Type.String({
+      description: "Task title for add or update; not allowed with tasks or updates",
+    }),
   ),
   description: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {
       description:
-        "Optional Task description; null removes it during update; not allowed with tasks",
+        "Optional Task description; null removes it during update; not allowed with tasks or updates",
     }),
   ),
   tasks: Type.Optional(
@@ -70,8 +72,36 @@ const TodoParameters = Type.Object({
       },
     ),
   ),
+  updates: Type.Optional(
+    Type.Array(
+      Type.Object(
+        {
+          id: Type.Integer({
+            minimum: 1,
+            maximum: Number.MAX_SAFE_INTEGER,
+            description: "Task ID",
+          }),
+          status: Type.Optional(StringEnum(TODO_STATUSES, { description: "New Task status" })),
+          title: Type.Optional(Type.String({ description: "New Task title" })),
+          description: Type.Optional(
+            Type.Union([Type.String(), Type.Null()], {
+              description: "New Task description; null removes it",
+            }),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+      {
+        minItems: 1,
+        description:
+          "Task changes to apply in one call, all or none, one per Task ID; use instead of id, title, description, and status",
+      },
+    ),
+  ),
   status: Type.Optional(
-    StringEnum(TODO_STATUSES, { description: "Task status; for add, applies to every new Task" }),
+    StringEnum(TODO_STATUSES, {
+      description: "Task status; for add, applies to every new Task; not allowed with updates",
+    }),
   ),
 });
 
@@ -218,6 +248,9 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
         const count = params.tasks.length;
         text += theme.fg("dim", ` ${formatTaskCount(count)}`);
       }
+      if (params.action === "update" && params.updates) {
+        text += theme.fg("dim", ` ${formatTaskCount(params.updates.length)}`);
+      }
       return new Text(text, 0, 0);
     },
     renderResult: (result, { expanded }, theme) => {
@@ -229,7 +262,8 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
         const { action, tasks } = result.details;
         if (tasks.length === 0) return new Text(theme.fg("dim", "Todo List is empty"), 0, 0);
         const visibleTasks = expanded ? tasks : tasks.slice(0, TODO_COLLAPSED_TASK_LIMIT);
-        const heading = `${action === "add" ? "Added " : ""}${formatTaskCount(tasks.length)}:`;
+        const verb = action === "add" ? "Added " : action === "update" ? "Updated " : "";
+        const heading = `${verb}${formatTaskCount(tasks.length)}:`;
         const lines = [theme.fg("muted", heading)];
         for (const task of visibleTasks) {
           lines.push(renderTodoTaskLine(task, theme));
