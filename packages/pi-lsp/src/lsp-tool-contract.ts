@@ -115,7 +115,7 @@ export const LSP_MEMBER_CONTAINER_SYMBOL_KINDS = {
 } as const;
 const MEMBER_CONTAINER_NAMES = Object.keys(LSP_MEMBER_CONTAINER_SYMBOL_KINDS);
 const DocumentSymbolDepthSchema = Type.Union([Type.Integer({ minimum: 1 }), Type.Literal("all")], {
-  description: `Levels of nested symbols to list (default ${DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH}): top-level declarations plus the members of ${MEMBER_CONTAINER_NAMES.slice(0, -1).join(", ")}, and ${MEMBER_CONTAINER_NAMES.at(-1)} symbols, without locals, return-object properties, or callbacks inside function, method, or variable bodies. Each further level adds one level inside those bodies; "all" lists the full tree`,
+  description: `Levels of nested symbols to list (default ${DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH}): top-level declarations plus the members of ${MEMBER_CONTAINER_NAMES.slice(0, -1).join(", ")}, and ${MEMBER_CONTAINER_NAMES.at(-1)} symbols, without locals, return-object properties, or callbacks inside function, method, or variable bodies, and without import bindings. Each further level adds one level inside those bodies; "all" lists the full tree with import bindings`,
 });
 /** How many levels of nested symbols `lsp_document_symbols` keeps: a count, or `"all"` for the full tree. */
 export type LspDocumentSymbolDepth = Static<typeof DocumentSymbolDepthSchema>;
@@ -592,7 +592,14 @@ export const LspReadOutputSchema = Type.Object({
         Type.Integer({
           minimum: 0,
           description:
-            "Matching items left out by the limit, or the nested symbols left out by the depth",
+            "Matching items left out by the limit, or the nested symbols and import bindings left out of a document outline",
+        }),
+      ),
+      omitted_imports: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          description:
+            "The part of `omitted` that is import bindings, left out of a document outline",
         }),
       ),
     }),

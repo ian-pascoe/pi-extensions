@@ -134,8 +134,10 @@ export interface LspStructureReadTextInput {
   /** Absolute path of the queried document, which document symbols, call sites, and ranges refer to. */
   readonly documentPath: string;
   readonly reads: readonly (LspRead & {
-    /** Nested symbols a document-symbol read left out for its depth. */
+    /** Nested symbols and import bindings a document-symbol read left out of its outline. */
     readonly omitted?: number;
+    /** The part of `omitted` that is import bindings. */
+    readonly omitted_imports?: number;
   })[];
   readonly warnings: readonly string[];
   /** Requested selection-range positions, which head each list when there are several. */
@@ -401,14 +403,21 @@ export async function formatLspStructureReadBlocks(
       const items: readonly unknown[] = Array.isArray(read.value) ? read.value : [read.value];
       const lines = items.length === 0 ? [empty] : await itemLines(items, context);
       const omitted = input.operation === "document_symbols" ? (read.omitted ?? 0) : 0;
+      const imports = input.operation === "document_symbols" ? (read.omitted_imports ?? 0) : 0;
+      const nested = omitted - imports;
       return {
         server_id: read.server_id,
         lines: [
           ...(lines ?? [formatLspToolValue(read.value)]),
-          ...(omitted === 0
+          ...(nested <= 0
             ? []
             : [
-                `${omitted} nested ${omitted === 1 ? "symbol" : "symbols"} omitted; raise depth or pass depth: "all" to see ${omitted === 1 ? "it" : "them"}.`,
+                `${nested} nested ${nested === 1 ? "symbol" : "symbols"} omitted; raise depth or pass depth: "all" to see ${nested === 1 ? "it" : "them"}.`,
+              ]),
+          ...(imports <= 0
+            ? []
+            : [
+                `${imports} ${imports === 1 ? "import binding" : "import bindings"} omitted; pass depth: "all" to see ${imports === 1 ? "it" : "them"}.`,
               ]),
         ],
       };

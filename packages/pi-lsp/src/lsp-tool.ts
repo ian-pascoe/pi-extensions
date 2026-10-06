@@ -66,6 +66,7 @@ import {
   type LspBoundedItems,
 } from "./lsp-item-list.js";
 import { limitLspDocumentSymbolDepth } from "./lsp-document-symbol-depth.js";
+import { dropImportSymbols, importFoldingRanges } from "./lsp-outline-imports.js";
 import {
   assembleLspReadText,
   collapseLspWhitespace,
@@ -287,13 +288,17 @@ interface LspReadValue {
   readonly server_id: string;
   // oxlint-disable-next-line anti-slop/no-unknown-property-types -- Normalized server responses stay opaque until rendering checks their shape.
   readonly value: unknown;
-  /** Nested symbols a document-symbol read left out for its depth. */
+  /** Nested symbols and import bindings a document-symbol read left out of its outline. */
   readonly omitted?: number;
+  /** The part of `omitted` that is import bindings. */
+  readonly omitted_imports?: number;
 }
 
 /** One server's normalized response, with the count of items a depth or limit left out. */
 interface LspBoundedProtocolResult extends LspNormalizedProtocolResult {
   readonly omitted?: number;
+  /** The part of `omitted` that is import bindings. */
+  readonly omittedImports?: number | undefined;
 }
 
 interface PreparedDocument {
@@ -630,8 +635,11 @@ async function readOutput(
     successes: normalized.successes.map((success) => ({ ...success, value: success.value.value })),
   };
   const results = readOperationValue(resolved).map((read, index) => {
-    const omitted = normalized.successes[index]?.value.omitted;
-    return omitted === undefined ? read : { ...read, omitted };
+    const { omitted, omittedImports } = normalized.successes[index]?.value ?? {};
+    if (omitted === undefined) return read;
+    return omittedImports === undefined
+      ? { ...read, omitted }
+      : { ...read, omitted, omitted_imports: omittedImports };
   });
   const failureWarnings = [
     ...resultPositionWarnings(normalized, textContext.cwd),
@@ -1350,6 +1358,25 @@ async function executeCompletion(
   );
 }
 
+/**
+ * The `imports` folding ranges of a document, for the same synchronized document the symbols are
+ * read from. A failed or timed-out request yields none, so the outline falls back to listing imports.
+ */
+async function requestImportFoldingRanges(
+  client: LspToolServerClient,
+  textDocument: { readonly uri: string },
+  signal: AbortSignal | undefined,
+) {
+  try {
+    return importFoldingRanges(
+      await client.request(FoldingRangeRequest.method, { textDocument }, signal),
+    );
+  } catch (cause) {
+    if (signal?.aborted === true) throw cause;
+    return [];
+  }
+}
+
 async function executeFileRead(
   dependencies: LspToolDependencies,
   parameters: FileReadParameters,
@@ -1378,19 +1405,28 @@ async function executeFileRead(
           prepared,
         );
       }
-      let value = await client.request(
-        method,
-        { textDocument: { uri: prepared.document.uri } },
-        signal,
-      );
+      const textDocument = { uri: prepared.document.uri };
+      const depth = parameters.depth ?? DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH;
+      // The outline asks for folding ranges alongside the symbols, to tell import bindings apart.
+      const importRanges =
+        parameters.operation === "document_symbols" &&
+        depth !== "all" &&
+        client.hasCapability(FoldingRangeRequest.method)
+          ? requestImportFoldingRanges(client, textDocument, signal)
+          : Promise.resolve([]);
+      // Awaited together, so an aborted folding request never rejects unobserved.
+      const [imports, response] = await Promise.all([
+        importRanges,
+        client.request(method, { textDocument }, signal),
+      ]);
+      let value = response;
       if (parameters.operation === "document_symbols") {
-        const limited = limitLspDocumentSymbolDepth(
-          value,
-          parameters.depth ?? DEFAULT_LSP_DOCUMENT_SYMBOL_DEPTH,
-        );
+        const withoutImports = dropImportSymbols(value, imports);
+        const limited = limitLspDocumentSymbolDepth(withoutImports.value, depth);
         return {
           ...(await normalizeProtocolResult(limited.value, prepared)),
-          omitted: limited.omitted,
+          omitted: withoutImports.omitted + limited.omitted,
+          omittedImports: withoutImports.omitted > 0 ? withoutImports.omitted : undefined,
         };
       }
       if (

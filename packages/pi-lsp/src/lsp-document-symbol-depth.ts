@@ -24,6 +24,8 @@ const FlatSymbolSchema = Type.Object({
   location: Type.Object({ range: Type.Optional(Type.Unknown()) }),
 });
 
+const RangedSymbolSchema = Type.Object({ range: RangeSchema });
+
 type Range = Static<typeof RangeSchema>;
 
 /** A `textDocument/documentSymbol` response cut to a depth, and how many nested symbols the cut dropped. */
@@ -40,7 +42,7 @@ function childBudget(kind: number, budget: number): number {
 
 /** Count a symbol list and everything nested in it. */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Children are opaque until each matches the symbol schema.
-function countSymbols(symbols: readonly unknown[]): number {
+export function countSymbols(symbols: readonly unknown[]): number {
   return symbols.reduce<number>((count, symbol) => {
     const children = Value.Check(HierarchicalSymbolSchema, symbol) ? symbol.children : undefined;
     return count + 1 + (Array.isArray(children) ? countSymbols(children) : 0);
@@ -138,6 +140,40 @@ function flatEntry(
   return { name: item.name, kind: item.kind, containerName: item.containerName ?? "", range };
 }
 
+/** The entries of a response made only of flat `SymbolInformation` items, or undefined for any other response. */
+function flatEntries(value: readonly unknown[]): FlatEntry[] | undefined {
+  const entries = value.map(flatEntry);
+  return entries.length > 0 && entries.every((entry) => entry !== undefined) ? entries : undefined;
+}
+
+/** The index of each flat entry's container, or undefined for a top-level entry. */
+function flatParents(entries: readonly FlatEntry[]): (number | undefined)[] {
+  const byName = new Map<string, number[]>();
+  for (const [index, { name }] of entries.entries()) {
+    const sameName = byName.get(name);
+    if (sameName === undefined) byName.set(name, [index]);
+    else sameName.push(index);
+  }
+  return entries.map((_, index) => containerIndex(entries, byName, index));
+}
+
+/**
+ * The range of each top-level symbol of a `textDocument/documentSymbol` response, in response
+ * order, or undefined for a nested symbol or one without a readable range. A flat entry is
+ * top-level when no symbol its `containerName` names encloses it, as in the depth cut.
+ */
+export function topLevelSymbolRanges(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- A document symbol response may be a tree, a flat list, or null; its items stay opaque.
+  value: readonly unknown[],
+): (Range | undefined)[] {
+  const entries = flatEntries(value);
+  if (entries === undefined) {
+    return value.map((item) => (Value.Check(RangedSymbolSchema, item) ? item.range : undefined));
+  }
+  const parents = flatParents(entries);
+  return entries.map((entry, index) => (parents[index] === undefined ? entry.range : undefined));
+}
+
 /**
  * Keep the flat symbols whose chain of `containerName` containers stays within the depth. A
  * container is the nearest enclosing symbol of that name; a name that matches none is top-level.
@@ -147,13 +183,7 @@ function pruneFlat(
   entries: readonly FlatEntry[],
   depth: number,
 ): LspDepthLimitedSymbols {
-  const byName = new Map<string, number[]>();
-  for (const [index, { name }] of entries.entries()) {
-    const sameName = byName.get(name);
-    if (sameName === undefined) byName.set(name, [index]);
-    else sameName.push(index);
-  }
-  const parents = entries.map((_, index) => containerIndex(entries, byName, index));
+  const parents = flatParents(entries);
   /** The budget available to the children of each entry. */
   const available = new Map<number, number>();
   const resolving = new Set<number>();
@@ -193,10 +223,8 @@ export function limitLspDocumentSymbolDepth(
   depth: LspDocumentSymbolDepth,
 ): LspDepthLimitedSymbols {
   if (depth === "all" || !Array.isArray(value)) return { value, omitted: 0 };
-  const entries = value.map(flatEntry);
-  if (entries.length > 0 && entries.every((entry) => entry !== undefined)) {
-    return pruneFlat(value, entries, depth);
-  }
+  const entries = flatEntries(value);
+  if (entries !== undefined) return pruneFlat(value, entries, depth);
   const dropped = { count: 0 };
   return {
     value: value.map((item) => pruneHierarchical(item, depth, dropped)),

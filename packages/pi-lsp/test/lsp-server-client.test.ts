@@ -19,6 +19,7 @@ interface FakeServerState {
     readonly hover: unknown;
     readonly completion: unknown;
     readonly signatureHelp: unknown;
+    readonly foldingRange: unknown;
   } | null;
   readonly settingsNotifications: readonly unknown[];
   readonly opened: readonly {
@@ -132,6 +133,11 @@ describe("LspServerClient", () => {
     expect(state.textDocumentCapabilities?.signatureHelp).toEqual({
       dynamicRegistration: true,
       signatureInformation: { documentationFormat: formats },
+    });
+    // The outline finds import bindings by folding range kind, so the client names the kinds it reads.
+    expect(state.textDocumentCapabilities?.foldingRange).toEqual({
+      dynamicRegistration: true,
+      foldingRangeKind: { valueSet: ["comment", "imports", "region"] },
     });
     expect(state.settingsNotifications).toEqual([
       { typescript: { preferences: { quoteStyle: "single" } } },
