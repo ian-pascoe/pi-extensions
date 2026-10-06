@@ -100,11 +100,11 @@ const descriptions = {
   maxCorrectiveTurns: "Automatic Corrective Turns per request",
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
   seedBudgetTokens:
-    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window",
+    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 100k",
   reviewEvery:
     "When Reviews run: every turn, every N turns, or once per request; a tool error reviews at once",
   maxSessionTokens:
-    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window",
+    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 200k",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
 const inputHints = {
