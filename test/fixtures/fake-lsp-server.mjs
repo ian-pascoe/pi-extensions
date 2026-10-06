@@ -1,9 +1,13 @@
 // A content-aware fake language server for the combined Formatter + LSP test. It keeps the text of
 // every synchronized document and reports a diagnostic whose line and message depend on that text,
 // so a result shows whether diagnostics were computed before or after formatting.
+//
+// Why not the existing pi-lsp fixture (`packages/pi-lsp/test/fixtures/fake-lsp-server.mjs`): it has
+// no `textDocument/rename` handler and reports a fixed diagnostic on line 0 whatever the document
+// holds, so it cannot show which content a diagnostic was computed on. Documents come only from
+// synchronization (`didOpen`/`didChange`); an unsynchronized document is an error, so the test
+// cannot pass on text read from disk by accident.
 import process from "node:process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 
 const documents = new Map();
 let input = Buffer.alloc(0);
@@ -14,7 +18,9 @@ function send(message) {
 }
 
 function documentText(uri) {
-  return documents.get(uri) ?? readFileSync(fileURLToPath(uri), "utf8");
+  const text = documents.get(uri);
+  if (text === undefined) throw new Error(`Document was never synchronized: ${uri}`);
+  return text;
 }
 
 /** One diagnostic on the line holding `TODO`; the message says whether the formatter header exists. */
@@ -124,7 +130,12 @@ process.stdin.on("data", (chunk) => {
     const message = JSON.parse(input.subarray(bodyStart, bodyStart + length).toString("utf8"));
     input = input.subarray(bodyStart + length);
     if (message.method === undefined) continue;
-    if (message.id !== undefined) handleRequest(message);
-    else handleNotification(message);
+    if (message.id !== undefined) {
+      try {
+        handleRequest(message);
+      } catch (cause) {
+        send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: String(cause) } });
+      }
+    } else handleNotification(message);
   }
 });

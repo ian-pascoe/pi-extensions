@@ -1,12 +1,13 @@
 /**
  * Combined-mode test: Pi Formatter and Pi LSP loaded together as the Git collection loads them.
  *
- * Why this lives at the repository root: neither package may depend on the other at runtime, and a
- * `workspace:*` devDependency in one of them would put the other in its published manifest and the
- * lockfile for the sake of a test. A root test needs no manifest change, loads both packages the
- * way the collection does (by the entrypoint paths in the root `package.json` `pi.extensions`),
- * and runs through the root `test:root` Turborepo task of `pnpm verify` with the shared
- * `vitest.config.ts`.
+ * Why this lives at the repository root: a package-level test's Turborepo cache key cannot see the
+ * other package's source, so a change in one package would replay a stale pass. The root
+ * `//#test:root` task lists both packages (and pi-utils) as inputs. Neither package may depend on
+ * the other at runtime, and a `workspace:*` devDependency would put one in the other's published
+ * manifest and the lockfile for the sake of a test. A root test needs no manifest change, loads both
+ * packages the way the collection does (by the entrypoint paths in the root `package.json`
+ * `pi.extensions`), and runs through `pnpm verify` with the shared `vitest.config.ts`.
  *
  * What it pins: Pi chains `tool_result` handlers in extension load order, and the collection loads
  * pi-formatter before pi-lsp. A mutation result therefore carries, in order, the original tool
@@ -63,7 +64,15 @@ const sessions: AgentSession[] = [];
 
 afterEach(async () => {
   vi.unstubAllEnvs();
-  for (const session of sessions.splice(0)) session.dispose();
+  for (const session of sessions.splice(0)) {
+    // `dispose` does not emit `session_shutdown`; without it Pi LSP leaks its session directory
+    // and leaves the fake language server running.
+    try {
+      await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    } finally {
+      session.dispose();
+    }
+  }
   await Promise.all(
     directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );
@@ -83,15 +92,16 @@ interface MutationRun {
   readonly filePath: string;
 }
 
-/** The text blocks of the newest tool result the model received for a tool. */
+/** Every content block of the newest tool result the model received for a tool; `text` is empty for non-text blocks. */
 function resultBlocks(context: Context, toolName: string): readonly ContentBlockText[] {
   const message = context.messages.findLast(
     (candidate) => candidate.role === "toolResult" && candidate.toolName === toolName,
   );
   if (message?.role !== "toolResult") throw new Error(`No ${toolName} tool result`);
-  return message.content.flatMap((block) =>
-    block.type === "text" ? [{ type: block.type, text: block.text }] : [],
-  );
+  return message.content.map((block) => ({
+    type: block.type,
+    text: block.type === "text" ? block.text : "",
+  }));
 }
 
 const PreviewDetailsSchema = Type.Object({ preview_id: Type.String() });
@@ -171,9 +181,14 @@ async function runMutation(toolName: ToolName, order: readonly string[]): Promis
   });
   await loader.reload();
   expect(loader.getExtensions().errors).toEqual([]);
-  expect(loader.getExtensions().extensions.map(({ path }) => path)).toEqual(
-    expect.arrayContaining(order.map((entrypoint) => resolve(repositoryRoot, entrypoint))),
-  );
+  // Pi chains tool_result handlers in this load order, so assert it rather than mere presence.
+  const expectedPaths = order.map((entrypoint) => resolve(repositoryRoot, entrypoint));
+  expect(
+    loader
+      .getExtensions()
+      .extensions.map(({ path }) => path)
+      .filter((path) => expectedPaths.includes(path)),
+  ).toEqual(expectedPaths);
   const modelRuntime = await ModelRuntime.create({
     credentials: new InMemoryCredentialStore(),
     modelsStore: new InMemoryModelsStore(),
@@ -279,7 +294,7 @@ describe("Pi Formatter and Pi LSP loaded as the Git collection loads them", () =
   });
 
   test.each<ToolName>(["edit", "lsp_apply"])(
-    "a %s result is the tool result, the formatter line, then diagnostics on the formatted file",
+    "%s: tool result, formatter line, then Post-edit Diagnostics of the formatted file",
     async (toolName) => {
       const run = await runMutation(toolName, collectionOrder);
       expect(run.file).toBe(formattedFiles[toolName]);
@@ -295,10 +310,11 @@ describe("Pi Formatter and Pi LSP loaded as the Git collection loads them", () =
   // Documents the failure mode the collection order prevents: with pi-lsp first, diagnostics come
   // from the pre-format file and precede the formatter line, so line numbers disagree with disk.
   test.each<ToolName>(["edit", "lsp_apply"])(
-    "a %s result with the order swapped reports diagnostics on the unformatted file before the formatter line",
+    "%s with the order swapped: tool result, Post-edit Diagnostics of the unformatted file, then formatter line",
     async (toolName) => {
       const run = await runMutation(toolName, swappedOrder);
       expect(run.file).toBe(formattedFiles[toolName]);
+      expect(run.blocks.map(({ type }) => type)).toEqual(["text", "text", "text"]);
       expect(orderedTexts(run)).toEqual([
         expectedOriginalResult(toolName, run.filePath),
         unformattedDiagnostic,
