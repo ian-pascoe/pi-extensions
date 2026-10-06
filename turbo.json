@@ -13,6 +13,20 @@
     "test": {
       "dependsOn": ["transit"]
     },
+    "//#test:root": {
+      "inputs": [
+        "test/**",
+        "vitest.config.ts",
+        "package.json",
+        "pnpm-lock.yaml",
+        "packages/pi-formatter/**",
+        "packages/pi-lsp/**",
+        "packages/pi-utils/**",
+        "!**/node_modules/**",
+        "!**/dist/**",
+        "!**/.turbo/**"
+      ]
+    },
     "//#typecheck:root": {
       "inputs": ["scripts/**/*.mjs", "test/**/*.ts", "vitest.config.ts"]
     },

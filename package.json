@@ -21,10 +21,11 @@
     "pack:check": "node scripts/check-package-packs.mjs",
     "prepare": "node scripts/prepare.mjs",
     "publish-packages": "changeset publish",
-    "test": "turbo run test",
+    "test": "turbo run test test:root",
+    "test:root": "vitest run",
     "typecheck": "turbo run typecheck:root typecheck",
     "typecheck:root": "tsc --noEmit",
-    "verify": "turbo run format:check lint typecheck:root typecheck test --output-logs=errors-only",
+    "verify": "turbo run format:check lint typecheck:root typecheck test test:root --output-logs=errors-only",
     "version-packages": "changeset version && pnpm install --lockfile-only"
   },
   "devDependencies": {

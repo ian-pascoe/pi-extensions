@@ -168,7 +168,10 @@ pnpm --filter @ian-pascoe/pi-advisor typecheck
 pnpm --filter @ian-pascoe/pi-advisor test
 pnpm --filter @ian-pascoe/pi-termctrl typecheck
 pnpm --filter @ian-pascoe/pi-termctrl test
+pnpm test:root
 ```
+
+`pnpm test:root` runs the repository-level tests in `test/`, which exercise several packages together (for example Pi Formatter before Pi LSP, in the collection's extension order). `pnpm verify` runs it.
 
 Read [`CONTEXT-MAP.md`](CONTEXT-MAP.md), ADRs, and
 [`docs/releases.md`](docs/releases.md) before changing behavior or releasing.
