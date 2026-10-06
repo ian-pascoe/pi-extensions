@@ -203,7 +203,7 @@ that waits and ends still `running` says `(wait timed out)`.
 
 Stack Frames, variables, and evaluations are one line per row. Adapter strings
 are flattened onto one line with `\n` escapes. Drained Debuggee output follows
-under its own heading. `structuredContent` keeps every existing field with strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
+under its own heading. `structuredContent` keeps its fields' strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
 `dap_variables` with `frame_id` lists scopes the adapter marks expensive, such
 as js-debug's Global, by name and `variables_reference` without expanding them;
 pass that reference to expand one. In `structuredContent` such a scope has no

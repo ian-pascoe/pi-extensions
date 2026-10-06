@@ -31,6 +31,7 @@ import {
   DapStackParametersSchema,
   DapToolOutputSchemas,
   DapToolResultDetailsSchema,
+  type DapBaseOutput,
   DapVariablesParametersSchema,
   DapVariablesStrictParametersSchema,
   type DapExecutionWaitOperation,
@@ -319,7 +320,6 @@ function toolResultDetails(
   return Value.Parse(DapToolResultDetailsSchema, details);
 }
 
-type DapBaseOutput = DapToolOutput<"stop">;
 type DapDesiredBreakpointsOutput = Required<Pick<DapToolOutput<"status">, "desired_breakpoints">>;
 type DapStopOutput = Pick<
   DapToolOutput<"status">,
@@ -405,18 +405,20 @@ function toolOutput(
   warnings: readonly string[],
 ): DapToolOutput {
   const base = baseOutput(result);
+  const withWaitCancelled = <TOutput extends object>(output: TOutput) =>
+    executionWaitCancelled ? { ...output, execution_wait_cancelled: true } : output;
   switch (operation) {
-    case "launch": {
-      const output = { ...base, ...desiredBreakpointsOutput(result), ...stopOutput(result) };
-      return executionWaitCancelled ? { ...output, execution_wait_cancelled: true } : output;
-    }
+    case "launch":
+      return withWaitCancelled({
+        ...base,
+        ...desiredBreakpointsOutput(result),
+        ...stopOutput(result),
+      });
     case "continue":
     case "next":
     case "step_in":
-    case "step_out": {
-      const output = { ...base, ...stopOutput(result) };
-      return executionWaitCancelled ? { ...output, execution_wait_cancelled: true } : output;
-    }
+    case "step_out":
+      return withWaitCancelled({ ...base, ...stopOutput(result) });
     case "set_breakpoints": {
       const output: DapToolOutput<"set_breakpoints"> = {
         ...base,

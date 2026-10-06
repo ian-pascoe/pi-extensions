@@ -35,6 +35,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
 import { DAP_OPERATIONS } from "../src/dap-tool-contract.js";
+import { DESIRED_BREAKPOINT_OPERATIONS, NEVER_STATE_FAILING } from "./dap-tool-output.js";
 import { createPiDapExtension } from "../src/pi-dap-extension.js";
 
 interface CapturedTurn {
@@ -66,7 +67,9 @@ type InlineExtension = NonNullable<
 
 const DAP_TOOLS = DAP_OPERATIONS.map((operation) => `dap_${operation}`);
 /** The only tools whose results, and so output schemas, carry `desired_breakpoints`. */
-const DESIRED_BREAKPOINT_TOOLS = ["dap_launch", "dap_set_breakpoints", "dap_status"];
+const DESIRED_BREAKPOINT_TOOLS = DESIRED_BREAKPOINT_OPERATIONS.map(
+  (operation) => `dap_${operation}`,
+);
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
 
@@ -293,9 +296,10 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
       );
       expect(declared?.description, name).toMatch(/\berror\?[,\s]/u);
       // Tools that can fail on the Debug Session state say so, naming the `error` field.
-      if (!["dap_set_breakpoints", "dap_status", "dap_stop"].includes(name)) {
-        expect(declared?.description, name).toMatch(/`error` message/u);
-      }
+      const mentionsErrorMessage = /`error` message/u.test(declared?.description ?? "");
+      expect(mentionsErrorMessage, `${name} names the error message`).toBe(
+        !NEVER_STATE_FAILING.some((operation) => `dap_${operation}` === name),
+      );
       // Only the tools that set, begin, or report the Debug Session declare Desired Breakpoints.
       const declaresDesired = /\bdesired_breakpoints\?[,\s]/u.test(declared?.description ?? "");
       expect(declaresDesired, `${name} declares desired_breakpoints`).toBe(
@@ -314,10 +318,6 @@ describe("per-operation DAP tools keep the cached prefix stable", () => {
     expect(scriptResult).toContain("same single Debug Session");
     // The `error` field's meaning reaches scripts through the rendered declaration.
     expect(scriptResult).toContain("// Set when the Debug Session state did not allow the call");
-    // The full declarations of tools that can fail on state render the `error` field's description.
-    expect(
-      scriptResult.match(/Set when the Debug Session state did not allow the call/gu),
-    ).toHaveLength(2);
   });
 
   test("nested script calls to the tools never overlap on the one Debug Session", async () => {

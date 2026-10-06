@@ -446,6 +446,9 @@ const DapStatusOutputSchema = Type.Object(
 );
 
 const DapBaseOutputSchema = Type.Object(DapOutputBaseFields, { additionalProperties: false });
+
+/** Fields every script-facing result carries; see {@link DapToolOutputSchemas}. */
+export type DapBaseOutput = Static<typeof DapBaseOutputSchema>;
 const DapStoppedOutputSchema = Type.Object(
   { ...DapOutputBaseFields, ...DapStopOutputFields },
   { additionalProperties: false },

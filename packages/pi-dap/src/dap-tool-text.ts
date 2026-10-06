@@ -118,7 +118,6 @@ function desiredBreakpointLines(
   return rows.length === 0 ? ["Desired Breakpoints: none"] : ["Desired Breakpoints:", ...rows];
 }
 
-/** Desired Breakpoints show in `dap_set_breakpoints` (which changes them), `dap_launch`, and `dap_status`. */
 const setBreakpointsLines: DapTextFormatter = ({ result, cwd }) => {
   const rows = result.breakpoints;
   const lines: string[] = [];
@@ -137,7 +136,10 @@ const setBreakpointsLines: DapTextFormatter = ({ result, cwd }) => {
   return [...lines, ...desiredBreakpointLines(result.desiredBreakpoints, cwd)];
 };
 
-/** State lines followed by any Desired Breakpoints; an empty list adds no line to a state report. */
+/**
+ * Desired Breakpoints show in `dap_set_breakpoints` (which changes them), `dap_launch`, and
+ * `dap_status`. An empty list adds no line to a state report.
+ */
 const stateWithDesiredBreakpointsLines: DapTextFormatter = (context) => [
   ...stateLines(context),
   ...(context.result.desiredBreakpoints.some((file) => file.breakpoints.length > 0)
