@@ -454,9 +454,10 @@ function formatDapToolResult(
   warnings: readonly string[],
 ): string {
   const { output, ...summary } = result;
+  // Warnings lead so that truncating a long result can never drop them.
   const heading = [
-    `DAP ${operation}: ${JSON.stringify(summary)}`,
     ...warnings.map((warning) => `Warning: ${warning}`),
+    `DAP ${operation}: ${JSON.stringify(summary)}`,
   ].join("\n");
   if (output.length === 0) return heading;
   const discardNotice =
@@ -513,23 +514,47 @@ function stateFailureResult(error: Error, snapshot: DapSessionSnapshot): DapTool
   };
 }
 
-/** A Desired Breakpoint can precede its source file, but it cannot bind until the file exists. */
-async function dapOperationWarnings(
-  parameters: DapToolParameters,
-  cwd: string,
-): Promise<readonly string[]> {
-  if (parameters.operation !== "set_breakpoints" || parameters.breakpoints.length === 0) return [];
-  const filePath = resolve(cwd, parameters.file_path);
+/** A Desired Breakpoint can precede its source file, but it cannot bind until a file exists. */
+async function sourceFileWarnings(filePath: string): Promise<readonly string[]> {
   try {
-    await stat(filePath);
-    return [];
-  } catch {
-    return [`file not found: ${filePath}; breakpoints will not bind until it exists`];
+    if ((await stat(filePath)).isFile()) return [];
+    return [`not a file: ${filePath}; breakpoints will not bind`];
+  } catch (cause) {
+    const code = cause instanceof Error && "code" in cause ? String(cause.code) : "unknown";
+    return code === "ENOENT"
+      ? [`file not found: ${filePath}; breakpoints will not bind until it exists`]
+      : [`could not check ${filePath}: ${code}`];
   }
+}
+
+interface DapDispatch {
+  readonly result: DapSessionResult;
+  readonly warnings: readonly string[];
 }
 
 async function dispatchDapOperation(
   parameters: DapToolParameters,
+  session: DapToolSession,
+  cwd: string,
+  signal: AbortSignal | undefined,
+): Promise<DapDispatch> {
+  if (parameters.operation !== "set_breakpoints") {
+    return {
+      result: await dispatchSessionOperation(parameters, session, cwd, signal),
+      warnings: [],
+    };
+  }
+  const filePath = resolve(cwd, parameters.file_path);
+  const result = await session.setBreakpoints(
+    { filePath, breakpoints: parameters.breakpoints },
+    signal,
+  );
+  const warnings = parameters.breakpoints.length === 0 ? [] : await sourceFileWarnings(filePath);
+  return { result, warnings };
+}
+
+async function dispatchSessionOperation(
+  parameters: Exclude<DapToolParameters, { readonly operation: "set_breakpoints" }>,
   session: DapToolSession,
   cwd: string,
   signal: AbortSignal | undefined,
@@ -543,11 +568,6 @@ async function dispatchDapOperation(
       if (parameters.cwd !== undefined) input.cwd = resolve(cwd, parameters.cwd);
       return session.launch(input, signal);
     }
-    case "set_breakpoints":
-      return session.setBreakpoints(
-        { filePath: resolve(cwd, parameters.file_path), breakpoints: parameters.breakpoints },
-        signal,
-      );
     case "continue":
       return session.continue(signal);
     case "next":
@@ -620,13 +640,18 @@ async function executeDapOperation(
   const progressInterval = waits ? setInterval(updateProgress, 1_000) : undefined;
   progressInterval?.unref?.();
   try {
-    const result = await dispatchDapOperation(parameters, runtime.session, cwd, signal);
+    const { result, warnings } = await dispatchDapOperation(
+      parameters,
+      runtime.session,
+      cwd,
+      signal,
+    );
     const output = await createDapToolOutput(
       operation,
       result,
       runtime.sessionFiles,
       waits && signal?.aborted === true,
-      await dapOperationWarnings(parameters, cwd),
+      warnings,
     );
     notifyDapToolObserver(() => runtime.observer?.onToolSuccess(parameters, result));
     return output;

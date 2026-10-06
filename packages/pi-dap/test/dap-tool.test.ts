@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -691,6 +691,19 @@ describe("DAP tools", () => {
         text: expect.not.stringContaining("file not found"),
       });
       expect(result.structuredContent).not.toHaveProperty("warnings");
+    });
+
+    test("warns that a directory is not a file", async () => {
+      const fixture = await createToolFixture();
+      await mkdir(resolve(fixture.cwd, "src"));
+      const result = await setBreakpoints(fixture, {
+        file_path: "src",
+        breakpoints: [{ line: 1 }],
+      });
+      const warning = `not a file: ${resolve(fixture.cwd, "src")}; breakpoints will not bind`;
+      expect(fixture.session.calls).toHaveLength(1);
+      expect(result.content[0]).toMatchObject({ text: expect.stringContaining(warning) });
+      expect(result.structuredContent).toMatchObject({ warnings: [warning] });
     });
 
     test("does not warn when clearing its breakpoints", async () => {
