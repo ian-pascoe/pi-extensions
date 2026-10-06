@@ -41,10 +41,15 @@ const DiagnosticSchema = Type.Object({
 });
 /** Diagnostics stay opaque per item, so one malformed diagnostic does not hide the others. */
 const DiagnosticListSchema = Type.Array(Type.Unknown());
-const DocumentDiagnosticsSchema = Type.Object({
-  status: Type.Union([Type.Literal("fresh"), Type.Literal("timeout")]),
-  diagnostics: DiagnosticListSchema,
-});
+const DocumentDiagnosticsSchema = Type.Union([
+  Type.Object({ status: Type.Literal("fresh"), diagnostics: DiagnosticListSchema }),
+  Type.Object({
+    status: Type.Literal("timeout"),
+    diagnostics: DiagnosticListSchema,
+    waitedMs: Type.Number({ minimum: 0 }),
+    remembered: Type.Boolean(),
+  }),
+]);
 const WorkspaceDiagnosticsSchema = Type.Union([
   Type.Object({
     status: Type.Union([Type.Literal("fresh"), Type.Literal("timeout")]),
@@ -86,15 +91,35 @@ function diagnosticLine(path: string, diagnostic: unknown, cwd: string): string 
   return `${head}: ${collapseLspWhitespace(diagnostic.message)}`;
 }
 
+/** Render a wait in whole milliseconds under a second, otherwise in seconds with at most one decimal. */
+function waitText(waitedMs: number): string {
+  return waitedMs < 1000 ? `${Math.round(waitedMs)}ms` : `${Number((waitedMs / 1000).toFixed(1))}s`;
+}
+
+/**
+ * State what a silent wait established: the server published nothing, which for a push-only
+ * server is how a clean file looks. It is not a failure, and a remembered silence is not waited
+ * for again until the file changes.
+ */
+function silenceText(serverId: string, waitedMs: number, remembered: boolean): string {
+  const wait = waitText(waitedMs);
+  return remembered
+    ? `no diagnostics published by ${serverId} for this unchanged file (an earlier wait of ${wait} saw none; not a failure, the file may be clean; edit the file to wait again)`
+    : `no diagnostics published by ${serverId} within ${wait} (not a failure; a server that only pushes diagnostics stays silent for a clean file, so the file may be clean)`;
+}
+
 /** The lines of the queried document's read: one per LSP Diagnostic, or one saying it has none. */
 function documentDiagnosticLines(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- A server's normalized response is opaque until it matches the diagnostics schema.
   value: unknown,
+  serverId: string,
   input: LspDiagnosticsReadTextInput,
 ): readonly string[] {
   if (!Value.Check(DocumentDiagnosticsSchema, value)) return [formatLspToolValue(value)];
   const path = lspDisplayPath(input.cwd, input.documentPath);
-  if (value.status === "timeout") return [`${path}: diagnostics timeout`];
+  if (value.status === "timeout") {
+    return [`${path}: ${silenceText(serverId, value.waitedMs, value.remembered)}`];
+  }
   if (value.diagnostics.length === 0) return [`${path}: no diagnostics`];
   return value.diagnostics.map((diagnostic) =>
     diagnosticLine(input.documentPath, diagnostic, input.cwd),
@@ -140,7 +165,7 @@ export function formatLspDiagnosticsReadText(input: LspDiagnosticsReadTextInput)
     server_id: read.server_id,
     lines:
       input.operation === "diagnostics"
-        ? documentDiagnosticLines(read.value, input)
+        ? documentDiagnosticLines(read.value, read.server_id, input)
         : workspaceDiagnosticLines(read.value, input.cwd),
   }));
   return assembleLspReadText({ blocks, warnings: input.warnings });

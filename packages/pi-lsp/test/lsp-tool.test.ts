@@ -5225,19 +5225,51 @@ describe("registered LSP tool", () => {
       await fixture.close();
     });
 
-    test("reports a server whose diagnostics timed out", async () => {
+    test("states that a silent server published no diagnostics, not that the query failed", async () => {
       const fixture = await createToolFixture();
-      fixture.client.documentDiagnosticsResult = { status: "timeout", diagnostics: [] };
+      fixture.client.documentDiagnosticsResult = {
+        status: "timeout",
+        diagnostics: [],
+        waitedMs: 3000,
+        remembered: false,
+      };
 
       const result = await executeTool(fixture, {
         operation: "diagnostics",
         file_path: fixture.filePath,
       });
 
-      expect(resultText(result)).toBe("source.ts: diagnostics timeout");
+      expect(resultText(result)).toBe(
+        "source.ts: no diagnostics published by typescript within 3s (not a failure; a server that only pushes diagnostics stays silent for a clean file, so the file may be clean)",
+      );
       expect(result.structuredContent).toMatchObject({
-        results: [{ server_id: "typescript", value: { status: "timeout", diagnostics: [] } }],
+        results: [
+          {
+            server_id: "typescript",
+            value: { status: "timeout", diagnostics: [], waitedMs: 3000, remembered: false },
+          },
+        ],
       });
+      await fixture.close();
+    });
+
+    test("says a remembered silence was answered without waiting again", async () => {
+      const fixture = await createToolFixture();
+      fixture.client.documentDiagnosticsResult = {
+        status: "timeout",
+        diagnostics: [],
+        waitedMs: 250,
+        remembered: true,
+      };
+
+      const result = await executeTool(fixture, {
+        operation: "diagnostics",
+        file_path: fixture.filePath,
+      });
+
+      expect(resultText(result)).toBe(
+        "source.ts: no diagnostics published by typescript for this unchanged file (an earlier wait of 250ms saw none; not a failure, the file may be clean; edit the file to wait again)",
+      );
       await fixture.close();
     });
   });

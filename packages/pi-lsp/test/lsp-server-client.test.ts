@@ -275,10 +275,124 @@ describe("LspServerClient", () => {
     await expect(client.documentDiagnostics(filePath, "typescript")).resolves.toEqual({
       status: "timeout",
       diagnostics: [],
+      waitedMs: 50,
+      remembered: false,
     });
     await expect(client.workspaceDiagnostics()).resolves.toEqual({
       status: "timeout",
       diagnosticsByUri: new Map(),
+    });
+  });
+
+  describe("push-only server silence", () => {
+    const pushOnly = { FAKE_NO_PULL: "1", FAKE_PUSH: "none" } as const;
+
+    test("answers a repeat query of the unchanged version without waiting again", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePath = resolve(directory, "clean.md");
+      await writeFile(filePath, "# clean\n");
+      const client = await startFakeServer(directory, {
+        diagnosticsMs: 300,
+        environment: pushOnly,
+      });
+
+      const first = await client.documentDiagnostics(filePath, "markdown");
+      expect(first).toEqual({
+        status: "timeout",
+        diagnostics: [],
+        waitedMs: 300,
+        remembered: false,
+      });
+
+      const startedAt = Date.now();
+      const second = await client.documentDiagnostics(filePath, "markdown");
+      expect(Date.now() - startedAt).toBeLessThan(150);
+      expect(second).toEqual({
+        status: "timeout",
+        diagnostics: [],
+        waitedMs: 300,
+        remembered: true,
+      });
+      const state = await client.request<FakeServerState>("fake/state", {});
+      expect(state.opened).toHaveLength(1);
+      expect(state.changed).toHaveLength(0);
+    });
+
+    test("waits again after the document changes", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePath = resolve(directory, "changed.md");
+      await writeFile(filePath, "# clean\n");
+      const client = await startFakeServer(directory, {
+        diagnosticsMs: 200,
+        environment: pushOnly,
+      });
+      await client.documentDiagnostics(filePath, "markdown");
+      await writeFile(filePath, "# still clean\n");
+
+      const startedAt = Date.now();
+      const result = await client.documentDiagnostics(filePath, "markdown");
+
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+      expect(result).toMatchObject({ status: "timeout", remembered: false });
+      const state = await client.request<FakeServerState>("fake/state", {});
+      expect(state.changed).toHaveLength(1);
+    });
+
+    test("forgets the silence when the server later publishes for the version", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePath = resolve(directory, "late.md");
+      await writeFile(filePath, "# late\n");
+      const client = await startFakeServer(directory, {
+        diagnosticsMs: 100,
+        environment: { ...pushOnly, FAKE_DIAGNOSTICS: "one" },
+      });
+      const document = await client.synchronizeDocument(filePath, "markdown");
+      await expect(client.documentDiagnostics(filePath, "markdown")).resolves.toMatchObject({
+        remembered: false,
+      });
+      await expect(client.documentDiagnostics(filePath, "markdown")).resolves.toMatchObject({
+        remembered: true,
+      });
+
+      await client.request("fake/publishDiagnostics", { uri: document.uri, version: 1 });
+      const pushed = await client.currentDocumentDiagnostics(document);
+      expect(pushed.map(({ message }) => message)).toEqual(["unsynchronized diagnostic"]);
+      await expect(client.documentDiagnostics(filePath, "markdown")).resolves.toMatchObject({
+        remembered: false,
+      });
+    });
+
+    test("forgets the silence when the document is closed", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePath = resolve(directory, "closed.md");
+      await writeFile(filePath, "# closed\n");
+      const client = await startFakeServer(directory, {
+        diagnosticsMs: 100,
+        environment: pushOnly,
+      });
+      await client.documentDiagnostics(filePath, "markdown");
+      await client.closeDocument(filePath);
+
+      await expect(client.documentDiagnostics(filePath, "markdown")).resolves.toMatchObject({
+        status: "timeout",
+        remembered: false,
+      });
+    });
+
+    test("keeps retrying a pull-capable server that timed out", async () => {
+      const directory = await createTemporaryDirectory();
+      const filePath = resolve(directory, "pull.md");
+      await writeFile(filePath, "# pull\n");
+      const client = await startFakeServer(directory, {
+        diagnosticsMs: 50,
+        environment: { FAKE_DELAY_DIAGNOSTICS: "1", FAKE_PUSH: "none" },
+      });
+      await client.documentDiagnostics(filePath, "markdown");
+
+      await expect(client.documentDiagnostics(filePath, "markdown")).resolves.toMatchObject({
+        status: "timeout",
+        remembered: false,
+      });
     });
   });
 

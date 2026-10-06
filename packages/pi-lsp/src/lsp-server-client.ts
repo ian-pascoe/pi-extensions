@@ -124,14 +124,24 @@ export interface LspSynchronizedDocument {
   readonly text: string;
 }
 
-/** Fresh diagnostics or a distinct timeout outcome. */
+/**
+ * Fresh diagnostics or a distinct timeout outcome. A `timeout` is silence, not a failure: the
+ * server published nothing within `waitedMs`, which is all a push-only server does for a clean
+ * file. `remembered` marks silence recalled for an unchanged document version instead of waited
+ * for again.
+ */
 export type LspDocumentDiagnosticResult =
   | {
       readonly status: "fresh";
       readonly source: "push" | "document_pull";
       readonly diagnostics: readonly Diagnostic[];
     }
-  | { readonly status: "timeout"; readonly diagnostics: readonly [] };
+  | {
+      readonly status: "timeout";
+      readonly diagnostics: readonly [];
+      readonly waitedMs: number;
+      readonly remembered: boolean;
+    };
 
 /**
  * Workspace diagnostics grouped by URI, with cached push fallback only when pull is unsupported.
@@ -277,6 +287,8 @@ export class LspServerClient {
   private readonly dynamicRegistrations = new Map<string, Registration>();
   private readonly diagnosticWaiters = new Map<string, Set<() => void>>();
   private diagnosticsRevision = 0;
+  /** Document version of each URI whose diagnostics wait ended in silence from a push-only server. */
+  private readonly silentDocumentVersions = new Map<string, number>();
   private stderrTail: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   private stderrWrite = Promise.resolve();
   private closing = false;
@@ -579,6 +591,7 @@ export class LspServerClient {
       this.openDocuments.set(uri, existing);
       return existing;
     }
+    this.silentDocumentVersions.delete(uri);
     const next: OpenDocumentState = {
       uri,
       version: (existing?.version ?? 0) + 1,
@@ -644,6 +657,7 @@ export class LspServerClient {
     }
     this.pushDiagnostics.delete(uri);
     this.pullDiagnostics.delete(uri);
+    this.silentDocumentVersions.delete(uri);
   }
 
   /**
@@ -689,10 +703,16 @@ export class LspServerClient {
     previousRevision: number,
     signal: AbortSignal | undefined,
   ): Promise<LspDocumentDiagnosticResult> {
+    const registration = this.documentPullRegistration();
+    if (
+      registration === undefined &&
+      this.silentDocumentVersions.get(document.uri) === document.version
+    ) {
+      return this.silenceResult(true);
+    }
     const candidates: Array<Promise<LspDocumentDiagnosticResult>> = [
       this.waitForPushDiagnostics(document.uri, document.version, previousRevision, signal),
     ];
-    const registration = this.documentPullRegistration();
     if (registration !== undefined) {
       candidates.push(this.pullDocumentDiagnostics(document.uri, registration.identifier, signal));
     }
@@ -707,7 +727,7 @@ export class LspServerClient {
     } catch (cause) {
       if (cause instanceof LspServerClientError) {
         if (cause.kind === "cancelled") throw cause;
-        if (cause.kind === "timeout") return { status: "timeout", diagnostics: [] };
+        if (cause.kind === "timeout") return this.rememberSilence(document, registration);
       }
       if (cause instanceof AggregateError) {
         const cancellation = cause.errors.find(
@@ -720,13 +740,40 @@ export class LspServerClient {
             (error) => error instanceof LspServerClientError && error.kind === "timeout",
           )
         ) {
-          return { status: "timeout", diagnostics: [] };
+          return this.rememberSilence(document, registration);
         }
         const clientError = cause.errors.find((error) => error instanceof LspServerClientError);
         if (clientError instanceof LspServerClientError) throw clientError;
       }
       throw cause;
     }
+  }
+
+  private silenceResult(remembered: boolean): LspDocumentDiagnosticResult {
+    return {
+      status: "timeout",
+      diagnostics: [],
+      waitedMs: this.options.timeouts.diagnosticsMs,
+      remembered,
+    };
+  }
+
+  /**
+   * Report a diagnostics wait that ended in silence. A server with no document pull publishes
+   * nothing for a clean file, so its silence stays valid for this document version until a push,
+   * a change, a close, or a restart; a pull-capable server's timeout may be transient and is retried.
+   */
+  private rememberSilence(
+    document: LspSynchronizedDocument,
+    registration: DynamicDiagnosticRegistration | undefined,
+  ): LspDocumentDiagnosticResult {
+    if (
+      registration === undefined &&
+      this.openDocuments.get(document.uri)?.version === document.version
+    ) {
+      this.silentDocumentVersions.set(document.uri, document.version);
+    }
+    return this.silenceResult(false);
   }
 
   /**
@@ -864,6 +911,7 @@ export class LspServerClient {
   private bindProtocolHandlers(): void {
     this.connection.onNotification(PublishDiagnosticsNotification.type, (parameters) => {
       this.diagnosticsRevision++;
+      this.silentDocumentVersions.delete(parameters.uri);
       const state: PushDiagnosticsState = {
         diagnostics: parameters.diagnostics,
         revision: this.diagnosticsRevision,
@@ -1261,6 +1309,7 @@ export class LspServerClient {
       });
       this.pushDiagnostics.delete(oldestUri);
       this.pullDiagnostics.delete(oldestUri);
+      this.silentDocumentVersions.delete(oldestUri);
     }
   }
 

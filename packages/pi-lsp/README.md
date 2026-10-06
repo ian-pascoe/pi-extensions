@@ -256,7 +256,14 @@ Diagnostics, hover, status, code actions, and apply results are compact text too
 
 - `lsp_diagnostics` and `lsp_workspace_diagnostics` list one
   `path:line:col severity source(code): message` line per LSP Diagnostic. A queried file without
-  any reads `path: no diagnostics`, and a server whose diagnostics timed out says so. Workspace
+  any reads `path: no diagnostics`. A server that publishes nothing within the diagnostics timeout
+  reads `path: no diagnostics published by <server> within <wait> (not a failure; ...)`: servers
+  that only push diagnostics, such as marksman, stay silent for a clean file, so the file may be
+  clean. The structured value keeps `status: "timeout"` with `waitedMs` and `remembered`. For a
+  server with no document pull, that silence is remembered per document version: a repeat query of
+  the unchanged file answers at once (`remembered: true`, reading `for this unchanged file`) instead
+  of waiting again. A later push for the file, any edit to it, closing it, or a server restart
+  forgets it; a pull-capable server's timeout is never remembered. Workspace
   diagnostics start with the server's coverage message, if any, and count clean files on one
   `N files: no diagnostics` line. A malformed diagnostic is shown as JSON on its own line.
 - `lsp_hover` shows only the hover's markdown or plaintext contents, under the `Query position:`
