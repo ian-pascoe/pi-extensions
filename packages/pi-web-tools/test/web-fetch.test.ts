@@ -945,9 +945,12 @@ describe("Web Fetch main content on large pages", () => {
   } satisfies Record<string, { items: number; build: (items: number) => string }>;
 
   // Linear extraction takes about SCALE times as long on SCALE times the items; quadratic takes
-  // about SCALE² times as long. The limit sits between the two so that runner load, which slows
-  // both timings alike, cannot trip it, while a super-linear regression does. The 30 s test
-  // timeout stays as the only absolute backstop.
+  // about SCALE² times as long. Runner load slows both timings alike, so the limit sits between
+  // the two without depending on absolute speed. A single run still varies by up to 2×, so the
+  // small page takes the best of two and the large page is retimed once when the first ratio
+  // reaches the limit, keeping the lower large timing. The ratio only reaches the limit once the
+  // quadratic part is several times the linear part; a milder or smaller regression passes, and
+  // the 30 s test timeout catches a severe one.
   const SCALE = 4;
   const MAX_RATIO = 10;
 
@@ -967,13 +970,21 @@ describe("Web Fetch main content on large pages", () => {
         const large = build(items);
         expect(large.length).toBeGreaterThan(2 * 1024 * 1024);
 
-        // The small page runs first and best-of-two, so JIT warm-up and a load spike inflate it
-        // (lowering the ratio) rather than the large run.
+        // The small page runs first and best-of-two, so JIT warm-up and load spikes are discarded
+        // from the denominator.
         const small = build(items / SCALE);
-        const smallElapsed = Math.min((await time(small)).elapsed, (await time(small)).elapsed);
-        const { elapsed: largeElapsed, result } = await time(large);
+        const smallElapsed = Math.max(
+          Math.min((await time(small)).elapsed, (await time(small)).elapsed),
+          1,
+        );
+        const first = await time(large);
+        let largeElapsed = first.elapsed;
+        if (largeElapsed / smallElapsed >= MAX_RATIO) {
+          largeElapsed = Math.min(largeElapsed, (await time(large)).elapsed);
+        }
+        const { result } = first;
 
-        expect(largeElapsed / Math.max(smallElapsed, 1)).toBeLessThan(MAX_RATIO);
+        expect(largeElapsed / smallElapsed).toBeLessThan(MAX_RATIO);
         expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).not.toContain(
           "NavAlpha",
         );
