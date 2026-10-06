@@ -164,7 +164,8 @@ Each tool declares an output schema. Codemode scripts receive a structured
 result: the Debug Session state, all drained Debuggee output, Desired
 Breakpoints, and the operation's complete data (`breakpoints`, `stack_frames`
 and `total_frames`, `scopes` or `variables`, or `evaluation`). These results are
-not truncated to the transcript limits. A state failure resolves to the
+not truncated to the transcript limits; the one exception is that `dap_variables`
+with `frame_id` leaves expensive scopes unexpanded. A state failure resolves to the
 current state with an `error` field instead of rejecting.
 
 ## Output and lifecycle
@@ -181,15 +182,21 @@ file, line, column, and function come with every result that waits for a stop
 Further lines carry the adapter's stop `description` and the `hitBreakpointIds`
 (matching the `id` values `dap_set_breakpoints` reports), so you can tell your
 breakpoint from an adapter's entry stop. Only `dap_set_breakpoints` lists
-Desired Breakpoints in text, since it is the only call that changes them. Stack
-Frames, variables, and evaluations are one line per row; adapter strings are
-flattened onto one line with `\n` escapes, and drained Debuggee output follows
-under its own heading. The same stop details appear in `structuredContent` as
-`stop_description`, `hit_breakpoint_ids`, and `top_frame`, beside every field it
-had before, and strings there stay verbatim. A call that waits and ends still
-`running` says `(wait timed out)`. Tool text follows Pi's 2,000-line/50-KB visible limit; when truncated, the retained
-complete result is written to a Result Spill and its path appears in the
-result. Adapter stderr retains its newest 1 MiB in the session directory and
+Desired Breakpoints in text, since it is the only call that changes them. A call
+that waits and ends still `running` says `(wait timed out)`.
+
+Stack Frames, variables, and evaluations are one line per row. Adapter strings
+are flattened onto one line with `\n` escapes. Drained Debuggee output follows
+under its own heading. `structuredContent` keeps every existing field with strings verbatim, and adds `stop_description`, `hit_breakpoint_ids`, and `top_frame`.
+`dap_variables` with `frame_id` lists scopes the adapter marks expensive, such
+as js-debug's Global, by name and `variables_reference` without expanding them;
+pass that reference to expand one. In `structuredContent` such a scope has no
+`variables`.
+
+Tool text follows Pi's 2,000-line/50-KB visible limit and is cut at whole lines;
+a first line alone over the byte limit is cut mid-line, so the visible part is
+never empty. When truncated, the retained complete result is written to a Result
+Spill and its path appears in the result. Adapter stderr retains its newest 1 MiB in the session directory and
 process or protocol failures name that path. Failed requests report the
 adapter's own error text and name the path only when stderr has content. With
 `--no-session`, Pi provides no session directory, so these files use a private

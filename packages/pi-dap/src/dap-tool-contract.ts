@@ -363,7 +363,12 @@ const DapScopeSchema = Type.Object(
     name: Type.String(),
     variables_reference: DapIdSchema,
     expensive: Type.Boolean(),
-    variables: Type.Array(DapVariableSchema),
+    variables: Type.Optional(
+      Type.Array(DapVariableSchema, {
+        description:
+          "Absent for an expensive scope that was listed but not expanded; pass its variables_reference to dap_variables to expand it.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );

@@ -436,6 +436,100 @@ describe("DAP tools", () => {
       );
     });
 
+    test("an unexpanded expensive scope is listed with its reference to expand", async () => {
+      const fixture = await createToolFixture();
+      fixture.session.result = {
+        snapshot: stoppedSnapshot,
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+        variableGroups: [
+          {
+            scope: { name: "Local", variablesReference: 5, expensive: false },
+            variables: [{ name: "a", value: "1", variablesReference: 0 }],
+          },
+          { scope: { name: "Global", variablesReference: 6, expensive: true } },
+        ],
+      };
+
+      const result = await dapTool(() => fixture.runtime, "variables").execute(
+        "variables",
+        { frame_id: 1 },
+        undefined,
+        undefined,
+        fixture.context,
+      );
+
+      expect(result.content).toEqual([
+        {
+          type: "text",
+          text: [
+            "Scope Local [variables_reference 5]: 1 variable",
+            "  a = 1",
+            "Scope Global [variables_reference 6] (expensive, not expanded; pass its variables_reference to expand)",
+          ].join("\n"),
+        },
+      ]);
+      expect(result.structuredContent).toMatchObject({
+        scopes: [
+          { name: "Local", variables: [{ name: "a", value: "1" }] },
+          { name: "Global", variables_reference: 6, expensive: true },
+        ],
+      });
+      expect(result.structuredContent).toMatchObject({
+        scopes: [expect.anything(), expect.not.objectContaining({ variables: expect.anything() })],
+      });
+    });
+
+    test("text over the limit is cut at line boundaries and is never empty", async () => {
+      const fixture = await createToolFixture();
+      const tool = dapTool(() => fixture.runtime, "status");
+      const running = { state: "running", adapterId: "node", profileId: "node" } as const;
+
+      // 5,000 lines of 20 bytes: the visible part is the first whole lines up to Pi's line limit.
+      const manyLines = "0123456789abcdefghi\n".repeat(5_000);
+      fixture.session.result = {
+        snapshot: running,
+        output: manyLines,
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+      };
+      const cutByLines = await tool.execute("lines", {}, undefined, undefined, fixture.context);
+      const linesText = cutByLines.content[0]?.type === "text" ? cutByLines.content[0].text : "";
+      const visibleLines = linesText.split("\n\n[Pi DAP: output truncated")[0] ?? "";
+      expect(visibleLines.startsWith("running\n\nDebuggee output:\n0123456789abcdefghi")).toBe(
+        true,
+      );
+      expect(
+        visibleLines
+          .split("\n")
+          .every(
+            (line) => line === "" || /^(running|Debuggee output:|0123456789abcdefghi)$/u.test(line),
+          ),
+      ).toBe(true);
+
+      // One 200 KB evaluation result without a newline: the first line alone exceeds the byte limit.
+      fixture.session.result = {
+        snapshot: stoppedSnapshot,
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+        evaluation: { result: "é".repeat(100_000), variablesReference: 0 },
+      };
+      const hugeLine = await dapTool(() => fixture.runtime, "evaluate").execute(
+        "huge",
+        { expression: "x" },
+        undefined,
+        undefined,
+        fixture.context,
+      );
+      const hugeText = hugeLine.content[0]?.type === "text" ? hugeLine.content[0].text : "";
+      expect(hugeText).toContain("Result Spill");
+      expect(hugeText.length).toBeGreaterThan(20_000);
+      expect(hugeText.startsWith("éééé")).toBe(true);
+      expect(hugeText).not.toContain("\uFFFD");
+    });
+
     test("a wait that ended without a stop says it timed out", async () => {
       const running = {
         snapshot: { state: "running", adapterId: "node", profileId: "node" },

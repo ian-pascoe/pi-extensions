@@ -250,10 +250,13 @@ export interface DapDesiredBreakpointFile {
   readonly breakpoints: readonly DapDesiredBreakpoint[];
 }
 
-/** Variables fetched for one Stack Frame scope. */
+/**
+ * One Stack Frame scope. `variables` is absent for an expensive scope that was listed but not
+ * expanded; request its `variablesReference` to expand it.
+ */
 export interface DapVariableGroup {
   readonly scope: DebugProtocol.Scope;
-  readonly variables: readonly DebugProtocol.Variable[];
+  readonly variables?: readonly DebugProtocol.Variable[];
 }
 
 /** Where and why the Debuggee stopped, taken from the stopped event and the top Stack Frame. */
@@ -654,13 +657,19 @@ export class DapSession {
       await active.client.request("scopes", { frameId: input.frameId }, dapRequestOptions(signal)),
       "scopes",
     ).scopes;
+    // Expensive scopes (such as js-debug's Global) can hold thousands of rows; list, don't expand.
     const variableGroups = await Promise.all(
-      scopes.map(async (scope): Promise<DapVariableGroup> => ({
-        scope,
-        variables: (
-          await this.requestVariables(active, scope.variablesReference, start, count, signal)
-        ).variables,
-      })),
+      scopes.map(async (scope): Promise<DapVariableGroup> => {
+        if (scope.expensive) return { scope };
+        const { variables } = await this.requestVariables(
+          active,
+          scope.variablesReference,
+          start,
+          count,
+          signal,
+        );
+        return { scope, variables };
+      }),
     );
     return this.result({ variableGroups });
   }

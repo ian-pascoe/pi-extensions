@@ -1,7 +1,16 @@
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  truncateHead,
+} from "@earendil-works/pi-coding-agent";
 import type { DebugProtocol } from "@vscode/debugprotocol";
 import type { DapOperation } from "./dap-tool-contract.js";
 import { workspaceRelativeDapPath } from "./dap-tool-rendering.js";
-import type { DapDesiredBreakpointFile, DapSessionResult } from "./dap-session.js";
+import type {
+  DapDesiredBreakpointFile,
+  DapSessionResult,
+  DapVariableGroup,
+} from "./dap-session.js";
 
 /** Everything a text formatter may show: one operation's result plus how to present paths. */
 interface DapTextContext {
@@ -147,13 +156,17 @@ function variableLine(variable: DebugProtocol.Variable, indent: string): string 
   return `${indent}${oneLine(variable.name)}${type} = ${oneLine(variable.value)}${children}`;
 }
 
-const variablesLines: DapTextFormatter = ({ result }) => {
-  if (result.variableGroups !== undefined) {
-    return result.variableGroups.flatMap(({ scope, variables }) => [
-      `Scope ${oneLine(scope.name)} [variables_reference ${scope.variablesReference}]${scope.expensive ? " (expensive)" : ""}: ${variables.length} variable${variables.length === 1 ? "" : "s"}`,
-      ...variables.map((variable) => variableLine(variable, "  ")),
-    ]);
+function scopeLines({ scope, variables }: DapVariableGroup): readonly string[] {
+  const header = `Scope ${oneLine(scope.name)} [variables_reference ${scope.variablesReference}]`;
+  if (variables === undefined) {
+    return [`${header} (expensive, not expanded; pass its variables_reference to expand)`];
   }
+  const count = `${variables.length} variable${variables.length === 1 ? "" : "s"}`;
+  return [`${header}: ${count}`, ...variables.map((variable) => variableLine(variable, "  "))];
+}
+
+const variablesLines: DapTextFormatter = ({ result }) => {
+  if (result.variableGroups !== undefined) return result.variableGroups.flatMap(scopeLines);
   const variables = result.variables ?? [];
   return [
     `Variables: ${variables.length}`,
@@ -204,4 +217,25 @@ export function formatDapToolText(input: DapToolTextInput): string {
       ? ""
       : ` (${result.discardedOutputBytes} older bytes discarded)`;
   return `${summary}\n\nDebuggee output${discardNotice}:\n${result.output}`;
+}
+
+/** Model-visible part of a result: whole lines within Pi's limits, never empty for non-empty text. */
+export interface DapVisibleText {
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
+/**
+ * Cut `text` at line boundaries to Pi's 2,000-line/50-KB limit. Pi's `truncateHead` returns nothing
+ * when the first line alone is over the byte limit; then that line is cut mid-line instead, so the
+ * reader still sees the start of the result.
+ */
+export function visibleDapText(text: string): DapVisibleText {
+  const head = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+  if (!head.truncated) return { text, truncated: false };
+  if (head.content.length > 0) return { text: head.content, truncated: true };
+  const firstLine = text.split("\n", 1)[0] ?? "";
+  const bytes = Buffer.from(firstLine, "utf8").subarray(0, DEFAULT_MAX_BYTES);
+  // A cut inside a multi-byte character decodes to a trailing U+FFFD; drop it.
+  return { text: bytes.toString("utf8").replace(/\uFFFD$/u, ""), truncated: true };
 }

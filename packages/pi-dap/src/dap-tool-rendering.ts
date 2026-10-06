@@ -369,7 +369,7 @@ function appendPresentation(
         if (row.kind === "group") {
           container.addChild(
             new Text(
-              `${theme.bold(sanitizeDapObserverText(row.name))}  ${theme.fg("dim", `#${row.variables_reference}`)}`,
+              `${theme.bold(sanitizeDapObserverText(row.name))}  ${theme.fg("dim", `#${row.variables_reference}`)}${row.expensive ? theme.fg("muted", "  expensive, not expanded") : ""}`,
               0,
               0,
             ),

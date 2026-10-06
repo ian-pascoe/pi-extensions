@@ -148,6 +148,7 @@ describe("Pi DAP transcript rendering", () => {
   test("renders bounded structured rows, warnings, spill metadata, and sanitized Debuggee output", () => {
     const rows = [
       { kind: "group" as const, name: "Local", variables_reference: 20, expensive: false },
+      { kind: "group" as const, name: "Global", variables_reference: 30, expensive: true },
       {
         kind: "variable" as const,
         name: "answer",
@@ -155,7 +156,7 @@ describe("Pi DAP transcript rendering", () => {
         type: "number",
         variables_reference: 0,
       },
-      ...Array.from({ length: 18 }, (_, index) => ({
+      ...Array.from({ length: 17 }, (_, index) => ({
         kind: "variable" as const,
         name: `value-${index}`,
         value: String(index),
@@ -182,7 +183,8 @@ describe("Pi DAP transcript rendering", () => {
       ),
     );
     expect(expanded).toContain("State: stopped");
-    expect(expanded).toContain("Local  #20");
+    expect(expanded).toContain("Local  #20\n");
+    expect(expanded).toContain("Global  #30  expensive, not expanded");
     expect(expanded).toContain("answer = 42 · number");
     expect(expanded).toContain("3 more rows omitted");
     expect(expanded).toContain("12 older Debuggee output bytes discarded");
