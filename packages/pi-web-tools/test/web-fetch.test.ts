@@ -85,6 +85,12 @@ async function executeFetch(
   );
 }
 
+function resultText(result: Awaited<ReturnType<typeof executeFetch>>): string {
+  const part = result.content[0];
+  if (part?.type !== "text") throw new Error("Expected text result");
+  return part.text;
+}
+
 async function failureMessage(execution: Promise<unknown>): Promise<string> {
   try {
     await execution;
@@ -172,8 +178,6 @@ describe("Web Fetch", () => {
     [undefined, "absent"],
     ["text/plain", "plain"],
     ["text/markdown", "markdown"],
-    ["application/json", '{"ok":true}'],
-    ["application/problem+json", '{"error":true}'],
     ["application/xml", "<ok/>"],
     ["application/problem+xml", "<error/>"],
     ["application/javascript", "const ok = true;"],
@@ -237,11 +241,6 @@ describe("Web Fetch", () => {
   describe("line window", () => {
     const numbered = (count: number) =>
       Array.from({ length: count }, (_, index) => `line ${index + 1}`).join("\n");
-    const text = (result: Awaited<ReturnType<typeof executeFetch>>) => {
-      const part = result.content[0];
-      if (part?.type !== "text") throw new Error("Expected text result");
-      return part.text;
-    };
     const fetchPlain =
       (body: string): typeof globalThis.fetch =>
       async () =>
@@ -252,7 +251,7 @@ describe("Web Fetch", () => {
         { fetch: fetchPlain(numbered(5)) },
         { url: "https://example.com/w", format: "text" },
       );
-      expect(text(result)).toBe(numbered(5));
+      expect(resultText(result)).toBe(numbered(5));
     });
 
     test("reads limit lines from a 1-indexed offset and says how many remain and where to continue", async () => {
@@ -261,7 +260,7 @@ describe("Web Fetch", () => {
         { url: "https://example.com/w", format: "text", offset: 11, limit: 20 },
       );
       const expected = `${Array.from({ length: 20 }, (_, index) => `line ${index + 11}`).join("\n")}\n\n[Showing lines 11-30 of 100. 70 lines remain. Use offset=31 to continue.]`;
-      expect(text(result)).toBe(expected);
+      expect(resultText(result)).toBe(expected);
       // Scripts receive the window text, without the note.
       expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).toBe(
         Array.from({ length: 20 }, (_, index) => `line ${index + 11}`).join("\n"),
@@ -274,7 +273,7 @@ describe("Web Fetch", () => {
         { fetch: fetchPlain(numbered(10)) },
         { url: "https://example.com/w", format: "text", limit: 3 },
       );
-      expect(text(result)).toBe(
+      expect(resultText(result)).toBe(
         "line 1\nline 2\nline 3\n\n[Showing lines 1-3 of 10. 7 lines remain. Use offset=4 to continue.]",
       );
     });
@@ -284,12 +283,12 @@ describe("Web Fetch", () => {
         { fetch: fetchPlain(numbered(10)) },
         { url: "https://example.com/w", format: "text", offset: 8 },
       );
-      expect(text(toEnd)).toBe("line 8\nline 9\nline 10");
+      expect(resultText(toEnd)).toBe("line 8\nline 9\nline 10");
       const exact = await executeFetch(
         { fetch: fetchPlain(numbered(10)) },
         { url: "https://example.com/w", format: "text", offset: 9, limit: 2 },
       );
-      expect(text(exact)).toBe("line 9\nline 10");
+      expect(resultText(exact)).toBe("line 9\nline 10");
     });
 
     test("fails with the line count when offset is past the end", async () => {
@@ -310,12 +309,12 @@ describe("Web Fetch", () => {
       const fetch: typeof globalThis.fetch = async () =>
         new Response(html, { headers: { "content-type": "text/html" } });
       const whole = await executeFetch({ fetch }, { url: "https://example.com/h" });
-      const converted = text(whole).split("\n");
+      const converted = resultText(whole).split("\n");
       const windowed = await executeFetch(
         { fetch },
         { url: "https://example.com/h", offset: 3, limit: 4 },
       );
-      expect(text(windowed)).toBe(
+      expect(resultText(windowed)).toBe(
         `${converted.slice(2, 6).join("\n")}\n\n[Showing lines 3-6 of ${converted.length}. ${converted.length - 6} lines remain. Use offset=7 to continue.]`,
       );
       // format: html windows the unconverted page.
@@ -323,7 +322,7 @@ describe("Web Fetch", () => {
         { fetch },
         { url: "https://example.com/h", format: "html", offset: 1, limit: 1 },
       );
-      expect(text(rawHtml)).toBe(`${html}`);
+      expect(resultText(rawHtml)).toBe(`${html}`);
     });
 
     /** Last visible content line number, the note's range, and its next offset, read from the output. */
@@ -350,7 +349,7 @@ describe("Web Fetch", () => {
       const path = result.details.truncation?.fullOutputPath;
       if (path === undefined) throw new Error("Expected Web Fetch spill");
       spillDirectories.push(dirname(path));
-      const visible = text(result);
+      const visible = resultText(result);
       const note = continuation(visible);
 
       // The model saw fewer than the 3,000 requested lines, and the note says exactly which.
@@ -385,7 +384,7 @@ describe("Web Fetch", () => {
         const path = result.details.truncation?.fullOutputPath;
         if (path === undefined) throw new Error("Expected Web Fetch spill");
         spillDirectories.push(dirname(path));
-        const note = continuation(text(result));
+        const note = continuation(resultText(result));
         expect(note.first).toBe(parameters.offset ?? 1);
         expect(note.shown[0]).toBe(note.first);
         expect(note.next).toBe(note.shown.at(-1)! + 1);
@@ -409,7 +408,7 @@ describe("Web Fetch", () => {
             ));
         const spill = result.details.truncation?.fullOutputPath;
         if (spill !== undefined) spillDirectories.push(dirname(spill));
-        const visible = text(result);
+        const visible = resultText(result);
         const lines = visible
           .split("\n")
           .filter((line) => /^line \d+$/.test(line))
@@ -466,7 +465,7 @@ describe("Web Fetch", () => {
         { fetch: fetchPlain(numbered(3)) },
         { url: "https://example.com/w", format: "text", limit: 2 },
       );
-      expect(text(result)).toContain("1 line remains. Use offset=3 to continue.");
+      expect(resultText(result)).toContain("1 line remains. Use offset=3 to continue.");
     });
 
     test("describes the window in the static parameter schema", () => {
@@ -860,11 +859,142 @@ const NO_CHROME_PAGE = `<html><head><title>Bare Page</title></head><body><h1>Bar
 async function fetchHtmlPage(html: string, format: "markdown" | "text" | "html"): Promise<string> {
   const fetch: typeof globalThis.fetch = async () =>
     new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
-  const result = await executeFetch({ fetch }, { url: "https://example.com/page", format });
-  const block = result.content[0];
-  if (block?.type !== "text") throw new Error("Expected text content");
-  return block.text;
+  return resultText(await executeFetch({ fetch }, { url: "https://example.com/page", format }));
 }
+
+describe("Web Fetch JSON", () => {
+  // The id is above 2^53, so a parse-and-print round trip would round it.
+  const minified = JSON.stringify({
+    info: { name: "requests", version: "2.32.3", id: 0 },
+    releases: Object.fromEntries(
+      Array.from({ length: 30 }, (_, index) => [`2.${index}.0`, [{ size: index }]]),
+    ),
+  }).replace('"id":0', '"id":12345678901234567890');
+  const fetchJson =
+    (body: string, contentType = "application/json"): typeof globalThis.fetch =>
+    async () =>
+      new Response(body, { headers: { "content-type": contentType } });
+
+  test.each(["markdown", "text"] as const)(
+    "re-indents minified JSON for format %s without changing its values",
+    async (format) => {
+      const result = await executeFetch(
+        { fetch: fetchJson(minified) },
+        { url: "https://example.com/pypi/requests/json", format },
+      );
+      const output = resultText(result);
+      expect(output.split("\n").length).toBeGreaterThan(100);
+      expect(output.split("\n").slice(0, 6)).toEqual([
+        "{",
+        '  "info": {',
+        '    "name": "requests",',
+        '    "version": "2.32.3",',
+        '    "id": 12345678901234567890',
+        "  },",
+      ]);
+      expect(output.replace(/\s+/g, "")).toBe(minified);
+      expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).toBe(output);
+      expect(result.details.contentType).toBe("application/json");
+    },
+  );
+
+  test("pages through re-indented JSON with offset and limit", async () => {
+    const fetch = fetchJson(minified);
+    const whole = resultText(await executeFetch({ fetch }, { url: "https://example.com/j" })).split(
+      "\n",
+    );
+    const first = await executeFetch({ fetch }, { url: "https://example.com/j", limit: 5 });
+    expect(resultText(first)).toBe(
+      `${whole.slice(0, 5).join("\n")}\n\n[Showing lines 1-5 of ${whole.length}. ${whole.length - 5} lines remain. Use offset=6 to continue.]`,
+    );
+    const structured = Value.Parse(WebFetchOutputSchema, first.structuredContent);
+    expect(structured.total_lines).toBe(whole.length);
+    expect(structured.next_offset).toBe(6);
+    const next = await executeFetch(
+      { fetch },
+      { url: "https://example.com/j", offset: 6, limit: 5 },
+    );
+    expect(Value.Parse(WebFetchOutputSchema, next.structuredContent).content).toBe(
+      whole.slice(5, 10).join("\n"),
+    );
+  });
+
+  test("spills the re-indented JSON when it exceeds the output limit", async () => {
+    const large = JSON.stringify(
+      Array.from({ length: 5_000 }, (_, index) => ({ id: index, name: `item-${index}` })),
+    );
+    const result = await executeFetch(
+      { fetch: fetchJson(large) },
+      { url: "https://example.com/large", format: "text" },
+    );
+    const path = result.details.truncation?.fullOutputPath;
+    if (path === undefined) throw new Error("Expected Web Fetch spill");
+    spillDirectories.push(dirname(path));
+    const reindented = JSON.stringify(JSON.parse(large), null, 2);
+    expect(await readFile(path, "utf8")).toBe(reindented);
+    expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).toBe(reindented);
+    expect(reindented.startsWith(resultText(result).split("\n\n[Output truncated")[0] ?? "")).toBe(
+      true,
+    );
+  });
+
+  test("normalises the indentation of already formatted JSON", async () => {
+    const result = await executeFetch(
+      {
+        fetch: fetchJson(
+          '{\n    "slideshow": {\n        "title": "Sample",\n        "slides": []\n    }\n}\n',
+        ),
+      },
+      { url: "https://example.com/json" },
+    );
+    expect(resultText(result)).toBe(
+      '{\n  "slideshow": {\n    "title": "Sample",\n    "slides": []\n  }\n}',
+    );
+  });
+
+  test.each([
+    "application/json; charset=utf-8",
+    "text/json",
+    "application/problem+json",
+    "application/vnd.api+json",
+    "Application/LD+JSON",
+  ])("detects JSON served as %s", async (contentType) => {
+    const result = await executeFetch(
+      { fetch: fetchJson('{"a":[1]}', contentType) },
+      { url: "https://example.com/j", format: "text" },
+    );
+    expect(resultText(result)).toBe('{\n  "a": [\n    1\n  ]\n}');
+  });
+
+  test.each([
+    ["format html", "application/json", "html"],
+    ["text/plain", "text/plain", "text"],
+    ["no content type", undefined, "markdown"],
+    ["JavaScript", "application/javascript", "text"],
+  ] as const)("leaves JSON unchanged for %s", async (_name, contentType, format) => {
+    const fetch: typeof globalThis.fetch = async () =>
+      new Response(
+        new TextEncoder().encode(minified),
+        contentType === undefined ? {} : { headers: { "content-type": contentType } },
+      );
+    const result = await executeFetch({ fetch }, { url: "https://example.com/j", format });
+    expect(resultText(result)).toBe(minified);
+  });
+
+  test.each([
+    ["JSONP", 'callback({"a":1})'],
+    ["anti-hijacking prefix", ')]}\'\n{"a":1}'],
+    ["truncated", '{"a":[1,2'],
+    ["empty", ""],
+    ["too deeply nested", `${"[".repeat(5_000)}${"]".repeat(5_000)}`],
+  ])("returns a JSON-typed body that cannot be re-indented unchanged: %s", async (_name, body) => {
+    const result = await executeFetch(
+      { fetch: fetchJson(body) },
+      { url: "https://example.com/j", format: "text" },
+    );
+    expect(resultText(result)).toBe(body);
+  });
+});
 
 describe("Web Fetch main content", () => {
   test.each(["markdown", "text"] as const)(

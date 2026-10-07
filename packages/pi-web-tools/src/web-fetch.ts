@@ -6,6 +6,7 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { extractMainContent, type HtmlMainContent } from "./html-main-content.js";
 import { convertHtmlInChunks } from "./html-markdown.js";
+import { reindentJson } from "./json-reindent.js";
 import {
   cancelResponse,
   describeWebFailure,
@@ -159,7 +160,7 @@ type FetchedText = {
 };
 
 const WEB_FETCH_DESCRIPTION =
-  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML pages are converted to their main content, with the page title, when text or Markdown is requested; HTML format returns the page unchanged. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file. Use offset and limit (lines, like the read tool) to page through a long result.";
+  "Fetch one HTTP or HTTPS URL as text, Markdown, or HTML. HTML pages are converted to their main content, with the page title, when text or Markdown is requested; HTML format returns the page unchanged. JSON responses are re-indented in text and Markdown formats so long documents can be paged. Model-visible output is truncated to 50 KiB or 2,000 lines, with complete output saved to a private temporary file. Use offset and limit (lines, like the read tool) to page through a long result.";
 
 function parseHttpUrl(input: string): URL {
   let url: URL;
@@ -236,6 +237,11 @@ function isTextualMime(mime: string): boolean {
     mime === "application/javascript" ||
     mime === "application/x-javascript"
   );
+}
+
+/** Types that declare JSON. Bodies of other types are never parsed as JSON, even when they would be. */
+function isJsonMime(mime: string): boolean {
+  return mime === "application/json" || mime === "text/json" || mime.endsWith("+json");
 }
 
 /** Block elements that end the current line and separate a following block with a blank line. */
@@ -424,7 +430,9 @@ function convertHtmlPage(html: string, format: "markdown" | "text"): string {
 }
 
 function convertFetchedContent(content: string, mime: string, format: WebFetchFormat): string {
-  if (mime !== "text/html" || format === "html") return content;
+  if (format === "html") return content;
+  if (isJsonMime(mime)) return reindentJson(content) ?? content;
+  if (mime !== "text/html") return content;
   return convertHtmlPage(content, format);
 }
 
