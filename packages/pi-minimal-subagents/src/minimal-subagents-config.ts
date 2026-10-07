@@ -1,4 +1,8 @@
 import type { SettingsManager } from "@earendil-works/pi-coding-agent";
+import {
+  type LayeredSettingScope,
+  resolveLayeredOptions,
+} from "@ian-pascoe/pi-utils/layered-settings";
 import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -224,29 +228,28 @@ function readMinimalSubagentsSettings(
   return {};
 }
 
+/** Merge one scope's model roles into those of lower scopes, entry by entry. */
 function mergeModelRoleEntries(
-  globalValue: ModelRolesWireValue | undefined,
-  projectValue: ModelRolesWireValue | undefined,
+  current: ReadonlyMap<string, ScopedSettingValue>,
+  value: ModelRolesWireValue,
+  source: LayeredSettingScope,
   warnings: string[],
 ): Map<string, ScopedSettingValue> {
-  const entries = new Map<string, ScopedSettingValue>();
-  if (globalValue?.kind === "entries") {
-    for (const [name, value] of globalValue.entries) {
-      entries.set(name, { scope: "global", value });
-    }
-  } else if (globalValue?.kind === "invalid") {
-    warnings.push("global minimalSubagents.modelRoles: expected an object or null");
+  if (value.kind === "reset") return new Map();
+  if (value.kind === "invalid") {
+    warnings.push(`${source} minimalSubagents.modelRoles: expected an object or null`);
+    return new Map(current);
   }
-  if (projectValue?.kind === "reset") return new Map();
-  if (projectValue === undefined) return entries;
-  if (projectValue.kind === "invalid") {
-    warnings.push("project minimalSubagents.modelRoles: expected an object or null");
+  const entries = new Map(current);
+  if (source === "global") {
+    for (const [name, roleValue] of value.entries) {
+      entries.set(name, { scope: "global", value: roleValue });
+    }
     return entries;
   }
-  if (projectValue.kind !== "entries") return entries;
 
-  for (const [name, value] of projectValue.entries) {
-    if (value.kind === "delete") {
+  for (const [name, roleValue] of value.entries) {
+    if (roleValue.kind === "delete") {
       entries.delete(name);
       continue;
     }
@@ -254,9 +257,9 @@ function mergeModelRoleEntries(
     const mergedValue =
       inherited !== undefined &&
       isExpandedModelRoleWireValue(inherited) &&
-      isExpandedModelRoleWireValue(value)
-        ? parseModelRoleWireValue({ ...inherited.fields, ...value.fields })
-        : value;
+      isExpandedModelRoleWireValue(roleValue)
+        ? parseModelRoleWireValue({ ...inherited.fields, ...roleValue.fields })
+        : roleValue;
     entries.set(name, { scope: "project", value: mergedValue });
   }
   return entries;
@@ -380,26 +383,24 @@ function resolveSubagentAccessSettings(
   };
 }
 
-function resolveMaxSubagentDepth(
-  globalValue: MaxSubagentDepthWireValue | undefined,
-  projectValue: MaxSubagentDepthWireValue | undefined,
+function mergeMaxSubagentDepth(
+  current: number,
+  value: MaxSubagentDepthWireValue,
+  source: LayeredSettingScope,
   warnings: string[],
 ): number {
-  let resolvedDepth = DEFAULT_MAX_SUBAGENT_DEPTH;
-  if (globalValue?.kind === "depth") {
-    resolvedDepth = globalValue.value;
-  } else if (globalValue?.kind === "invalid") {
-    warnings.push(
-      "global minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
-    );
-  }
-  if (projectValue === undefined) return resolvedDepth;
-  if (projectValue.kind === "reset") return DEFAULT_MAX_SUBAGENT_DEPTH;
-  if (projectValue.kind === "depth") return projectValue.value;
+  if (value.kind === "reset") return DEFAULT_MAX_SUBAGENT_DEPTH;
+  if (value.kind === "depth") return value.value;
   warnings.push(
-    "project minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
+    `${source} minimalSubagents.maxSubagentDepth: expected a positive safe integer or null`,
   );
-  return resolvedDepth;
+  return current;
+}
+
+/** Settings resolved across scopes, before model role references are checked. */
+interface MergedMinimalSubagentsSettings extends MinimalSubagentsToolsets {
+  maxSubagentDepth: number;
+  modelRoles: Map<string, ScopedSettingValue>;
 }
 
 /** Resolve trusted global and project settings into validated subagent guidance and limits. */
@@ -412,28 +413,39 @@ export function resolveMinimalSubagentsConfig(
     input.projectTrusted === false
       ? {}
       : readMinimalSubagentsSettings(input.projectSettings, "project", warnings);
-  const maxSubagentDepth = resolveMaxSubagentDepth(
-    globalConfig.maxSubagentDepth,
-    projectConfig.maxSubagentDepth,
-    warnings,
-  );
-  const modelRoleEntries = mergeModelRoleEntries(
-    globalConfig.modelRoles,
-    projectConfig.modelRoles,
-    warnings,
-  );
+  const { settings } = resolveLayeredOptions<
+    ParsedMinimalSubagentsSettings,
+    MergedMinimalSubagentsSettings
+  >({
+    defaults: {
+      maxSubagentDepth: DEFAULT_MAX_SUBAGENT_DEPTH,
+      modelRoles: new Map(),
+      baseToolset: [...DEFAULT_TOOLSETS.baseToolset],
+      readToolset: [...DEFAULT_TOOLSETS.readToolset],
+      modifyToolset: [...DEFAULT_TOOLSETS.modifyToolset],
+    },
+    // Depth warnings precede model role warnings, as each key merges across scopes in turn.
+    optionKeys: ["maxSubagentDepth", "modelRoles", "baseToolset", "readToolset", "modifyToolset"],
+    layers: [
+      ["global", globalConfig],
+      ["project", projectConfig],
+    ],
+    merge: {
+      maxSubagentDepth: (current, value, source) =>
+        mergeMaxSubagentDepth(current, value, source, warnings),
+      modelRoles: (current, value, source) =>
+        mergeModelRoleEntries(current, value, source, warnings),
+    },
+  });
 
   return {
-    maxSubagentDepth,
+    maxSubagentDepth: settings.maxSubagentDepth,
     subagentAccess: resolveSubagentAccessSettings(globalConfig.enabled, projectConfig.enabled),
-    modelRoles: parseModelRoles(modelRoleEntries, input.eligibleModelIds, warnings),
+    modelRoles: parseModelRoles(settings.modelRoles, input.eligibleModelIds, warnings),
     toolsets: {
-      baseToolset: projectConfig.baseToolset ??
-        globalConfig.baseToolset ?? [...DEFAULT_TOOLSETS.baseToolset],
-      readToolset: projectConfig.readToolset ??
-        globalConfig.readToolset ?? [...DEFAULT_TOOLSETS.readToolset],
-      modifyToolset: projectConfig.modifyToolset ??
-        globalConfig.modifyToolset ?? [...DEFAULT_TOOLSETS.modifyToolset],
+      baseToolset: settings.baseToolset,
+      readToolset: settings.readToolset,
+      modifyToolset: settings.modifyToolset,
     },
     warnings,
   };

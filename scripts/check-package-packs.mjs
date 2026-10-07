@@ -101,6 +101,10 @@ function validatePackedFileList(packageName, files) {
       "dist/index.js",
       "dist/pi-agent-session-discovery.d.ts",
       "dist/pi-agent-session-discovery.js",
+      "dist/layered-settings.d.ts",
+      "dist/layered-settings.js",
+      "dist/evidence.d.ts",
+      "dist/evidence.js",
       "package.json",
     ]) {
       assertPackCondition(paths.includes(requiredPath), `${packageName} omits ${requiredPath}`);
@@ -178,7 +182,11 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
         packedManifest.exports?.["./pi-agent-session-discovery"]?.import ===
           "./dist/pi-agent-session-discovery.js" &&
         packedManifest.exports?.["./pi-agent-session-discovery"]?.types ===
-          "./dist/pi-agent-session-discovery.d.ts",
+          "./dist/pi-agent-session-discovery.d.ts" &&
+        packedManifest.exports?.["./layered-settings"]?.import === "./dist/layered-settings.js" &&
+        packedManifest.exports?.["./layered-settings"]?.types === "./dist/layered-settings.d.ts" &&
+        packedManifest.exports?.["./evidence"]?.import === "./dist/evidence.js" &&
+        packedManifest.exports?.["./evidence"]?.types === "./dist/evidence.d.ts",
       `${packageName} has an invalid compiled library entrypoint`,
     );
     assertPackCondition(

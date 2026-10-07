@@ -208,6 +208,20 @@ describe("minimal subagents configuration", () => {
     ]);
   });
 
+  it("orders warnings by setting, then scope: depth global/project, then roles global/project", () => {
+    const result = resolveMinimalSubagentsConfig({
+      globalSettings: { minimalSubagents: { modelRoles: 5, maxSubagentDepth: 0 } },
+      projectSettings: { minimalSubagents: { modelRoles: "roles", maxSubagentDepth: "deep" } },
+      eligibleModelIds: eligibleModels,
+    });
+    expect(result.warnings).toEqual([
+      "global minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
+      "project minimalSubagents.maxSubagentDepth: expected a positive safe integer or null",
+      "global minimalSubagents.modelRoles: expected an object or null",
+      "project minimalSubagents.modelRoles: expected an object or null",
+    ]);
+  });
+
   it("resolves all thinking levels in shorthand and expanded role forms", () => {
     const result = resolveMinimalSubagentsConfig({
       globalSettings: {
