@@ -23,14 +23,17 @@ import {
   renderReviewedCall,
   selectEvidence,
   textTokens,
+  typedUserMessages,
   userMessageKey,
   type IssuingCall,
+  type RootUserMessage,
   type ToolInput,
 } from "./guardian-evidence.js";
 import { contextFiles, loadedResourcePaths } from "./guardian-pi-resources.js";
 import { guardianSystemPrompt } from "./guardian-prompt.js";
 import { resolveGuardianModel, runGuardianReview, type ReviewResult } from "./guardian-review.js";
-import type { GuardedSessionRole } from "./guardian-root-registry.js";
+import { rootSession, type GuardedSessionRole } from "./guardian-root-registry.js";
+import { calibratedFactor, fallbackTokenFactor } from "./guardian-calibration.js";
 import { evidenceBudget, type GuardianConfig } from "./guardian-settings.js";
 import type { SensitivePathContext } from "./sensitive-paths.js";
 import { resolveToolPolicy, type ResolvedToolPolicy } from "./tool-policy.js";
@@ -56,6 +59,8 @@ export interface ReviewGate {
   reset(): void;
   /** Record held and unconsumed reviews before the session ends. */
   flush(): void;
+  /** The messages this session's user typed, for its Child Agents and Advisors. */
+  typedUserMessages(): RootUserMessage[];
 }
 
 /** One call as seen by Guardian's `tool_call` handler. */
@@ -148,6 +153,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
   const pendingAudits = new Map<string, PendingAudit>();
   const extensionInputs: string[] = [];
   const askOverride = overrideDialogs();
+  /** Calibrated real-to-estimated token factor per Guardian model, for this process. */
+  const tokenFactors = new Map<string, number>();
   const prefetchSlot = limiter(maxConcurrentPrefetches);
 
   function notify(ctx: ExtensionContext, text: string, level: "warning" | "error"): void {
@@ -264,13 +271,14 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       parent: issuingCall(call.parentToolCallId),
       reason,
     });
+    const name = `${resolved.model.provider}/${resolved.model.id}`;
+    // Pi's chars/4 estimate, scaled by this model's calibrated factor, approximates real tokens.
+    const factor = tokenFactors.get(name) ?? fallbackTokenFactor;
+    const tokens = (text: string) => Math.ceil(textTokens(text) * factor);
     // The Reviewed Call is never shortened: it must fit beside the policy and the reply.
     const capacity =
-      (resolved.model.contextWindow || fallbackWindow) -
-      textTokens(systemPrompt) -
-      outputReserveTokens;
-    const callTokens = textTokens(reviewed);
-    const name = `${resolved.model.provider}/${resolved.model.id}`;
+      (resolved.model.contextWindow || fallbackWindow) - tokens(systemPrompt) - outputReserveTokens;
+    const callTokens = tokens(reviewed);
     if (callTokens > capacity)
       return {
         ...failed(
@@ -285,16 +293,23 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       contextFiles: contextFiles(session, getAgentDir()),
       extensionMessages: extensionMessages(branch),
       overrides: recordedOverrides(branch),
-      budgetTokens: Math.min(
-        evidenceBudget(config.evidenceBudgetTokens, resolved.model.contextWindow),
-        capacity - callTokens,
+      rootUserMessages:
+        role.kind === "main" ? [] : (rootSession(role.rootSessionId)?.userMessages() ?? []),
+      // Selection counts chars/4, so the budget in real tokens is scaled down by the factor.
+      budgetTokens: Math.floor(
+        Math.min(
+          evidenceBudget(config.evidenceBudgetTokens, resolved.model.contextWindow),
+          capacity - callTokens,
+        ) / factor,
       ),
     });
+    const blocks = [...evidence.blocks, reviewed];
+    const estimated = textTokens(systemPrompt) + blocks.reduce((sum, b) => sum + textTokens(b), 0);
     const key = Symbol(call.toolCallId);
     reviewing.set(key, call.toolName);
     host.reviewingChanged();
     try {
-      return await runGuardianReview({
+      const result = await runGuardianReview({
         registry: ctx.modelRegistry,
         model: resolved.model,
         thinkingLevel: config.thinkingLevel,
@@ -303,7 +318,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
           messages: [
             {
               role: "user",
-              content: [...evidence.blocks, reviewed].map((text) => ({ type: "text", text })),
+              content: blocks.map((text) => ({ type: "text", text })),
               // A fixed timestamp keeps successive requests' prefixes byte-identical.
               timestamp: 0,
             },
@@ -313,6 +328,9 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         signal,
         sessionId: `pi-guardian:${ctx.sessionManager.getSessionId()}`,
       });
+      if (result.promptTokens !== undefined)
+        tokenFactors.set(name, calibratedFactor(factor, estimated, result.promptTokens));
+      return result;
     } finally {
       reviewing.delete(key);
       host.reviewingChanged();
@@ -320,7 +338,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
   }
 
   function auditEntry(call: SeenCall, result: ReviewResult, outcome: ReviewOutcome): ReviewEntry {
-    return {
+    const entry: ReviewEntry = {
       version: 1,
       toolName: call.toolName,
       toolCallId: call.toolCallId,
@@ -338,6 +356,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       usage: result.usage,
       cost: result.cost,
     };
+    if (result.retried) entry.retried = true;
+    return entry;
   }
 
   /** Hold an allowed call's entry until its result shows that it ran. */
@@ -576,5 +596,13 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       streak = 0;
     },
     flush,
+    typedUserMessages() {
+      const session = host.session();
+      if (!session) return [];
+      return typedUserMessages({
+        sources: session.messages,
+        extensionMessages: extensionMessages(session.sessionManager.getBranch()),
+      });
+    },
   };
 }

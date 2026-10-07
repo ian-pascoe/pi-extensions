@@ -62,6 +62,8 @@ export const reviewEntrySchema = Type.Object({
   executed: Type.Optional(Type.Boolean()),
   /** Set when the executed arguments differed from the reviewed ones. */
   argumentDrift: Type.Optional(Type.Boolean()),
+  /** Set when a malformed reply was followed by one corrective retry. */
+  retried: Type.Optional(Type.Boolean()),
 });
 export type ReviewEntry = Static<typeof reviewEntrySchema>;
 

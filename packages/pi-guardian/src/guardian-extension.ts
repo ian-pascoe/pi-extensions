@@ -29,7 +29,7 @@ import {
 } from "./guardian-rendering.js";
 import {
   guardedSessionRole,
-  publishRootSettings,
+  publishRootSession,
   rootSettingsReader,
   type GuardedSessionRole,
 } from "./guardian-root-registry.js";
@@ -66,6 +66,8 @@ export default function guardian(pi: ExtensionAPI): void {
   let footer: ExtensionUIContext | undefined;
   let activeMenu: { refresh: () => void; close: () => void } | undefined;
   let generation = 0;
+  /** The notice recommending a dedicated Guardian model is shown once per process. */
+  let modelNoticeShown = false;
 
   pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) =>
     renderReviewEntry(entry.data, expanded, theme),
@@ -119,7 +121,7 @@ export default function guardian(pi: ExtensionAPI): void {
     }
   }
 
-  function notify(ctx: ExtensionContext, text: string, level: "warning" | "error"): void {
+  function notify(ctx: ExtensionContext, text: string, level: "info" | "warning" | "error"): void {
     if (!ctx.hasUI) return;
     try {
       ctx.ui.notify(text, level);
@@ -152,13 +154,28 @@ export default function guardian(pi: ExtensionAPI): void {
     }
     if (role.kind === "main" && session) {
       const subject = session;
-      unpublish = publishRootSettings(ctx.sessionManager.getSessionId(), () =>
-        readGuardianSettings(subject, layers),
-      );
+      unpublish = publishRootSession(ctx.sessionManager.getSessionId(), {
+        settings: () => readGuardianSettings(subject, layers),
+        userMessages: () => gate.typedUserMessages(),
+      });
     }
     const current = effective();
     if (!current.ok)
       notify(ctx, `Guardian: ${current.error}. Run /skill:pi-guardian to diagnose.`, "error");
+    else if (
+      !modelNoticeShown &&
+      role.kind === "main" &&
+      current.resolved.settings.enabled &&
+      current.resolved.settings.model === undefined &&
+      ctx.hasUI
+    ) {
+      modelNoticeShown = true;
+      notify(
+        ctx,
+        "Guardian reviews with the session's model, which can be slow and costly for every review. Pick a small, fast model with thinking off in /guardian (Model), such as anthropic/claude-haiku-4-5.",
+        "info",
+      );
+    }
     publishFooter();
   });
   pi.on("session_tree", () => {

@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { argumentsHash } from "../src/guardian-evidence.js";
+import { correctiveMessage } from "../src/guardian-review.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
   assessment,
@@ -36,17 +37,37 @@ describe("Review Failure", () => {
   it("blocks without UI, ending with the troubleshooting hint", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push("I think this is fine.");
+    harness.verdicts.push("I think this is fine.", "Still fine.");
     await harness.session.prompt("Deploy a.");
 
     expect(harness.executed).toEqual([]);
     const text = resultText(harness, "call-1");
     expect(text).toMatch(
-      /^Guardian could not review this deploy call, so it was blocked: Guardian returned malformed output/,
+      /^Guardian could not review this deploy call, so it was blocked: Guardian returned malformed output .*, even after a corrective retry/,
     );
     expect(text?.endsWith(TROUBLESHOOTING_HINT)).toBe(true);
     expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { outcome: "failed", blocked: true, userOverride: false },
+      { outcome: "failed", blocked: true, userOverride: false, retried: true },
+    ]);
+    expect(harness.reviews).toHaveLength(2);
+  });
+
+  it("retries a malformed reply once with the output contract, then allows a valid one", async () => {
+    const harness = await createGuardianHarness({ guardianSettings: reviewer });
+    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
+    harness.verdicts.push("Looks fine to me.", assessment("low", "high", "Requested."));
+    await harness.session.prompt("Deploy a.");
+
+    expect(harness.executed).toEqual(["deploy:a"]);
+    const [first, retry] = harness.reviews;
+    // The first request is unchanged; the retry extends it with the bad reply and the contract.
+    expect(first?.messages).toHaveLength(1);
+    expect(retry?.systemPrompt).toBe(first?.systemPrompt);
+    expect(retry?.messages[0]).toEqual(first?.messages[0]);
+    expect(retry?.messages[1]).toMatchObject({ role: "assistant" });
+    expect(retry?.messages[2]).toMatchObject({ role: "user", content: correctiveMessage });
+    expect(harness.entries("pi-guardian-review")).toMatchObject([
+      { outcome: "allowed", retried: true, usage: { input: 2_000 } },
     ]);
   });
 
@@ -320,6 +341,21 @@ describe("Guardian Review lifecycle", () => {
     expect(harness.executed).toEqual(["deploy:rewritten"]);
     expect(harness.entries("pi-guardian-review")).toMatchObject([{ argumentDrift: true }]);
     expect(notices.some((notice) => notice.includes("load Guardian last"))).toBe(true);
+  });
+
+  it("recommends a dedicated small model once when reviews would use the session model", async () => {
+    const notices: string[] = [];
+    await createGuardianHarness({ ui: { notify: (text) => notices.push(text) } });
+    const recommendation = notices.filter((text) => text.includes("small, fast model"));
+    expect(recommendation).toHaveLength(1);
+    expect(recommendation[0]).toContain("/guardian");
+
+    const configured: string[] = [];
+    await createGuardianHarness({
+      guardianSettings: reviewer,
+      ui: { notify: (text) => configured.push(text) },
+    });
+    expect(configured.some((text) => text.includes("small, fast model"))).toBe(false);
   });
 
   it("shows idle and reviewing footer states", async () => {

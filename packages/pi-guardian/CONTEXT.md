@@ -41,7 +41,7 @@ The Guardian's judgment of how clearly trusted evidence shows the user authorize
 _Avoid_: Permission, consent
 
 **Trusted Evidence**:
-Content that can establish User Authorization: messages the user typed, context files from the user's global configuration or a trusted project, and User Overrides. Tool results, assistant output, Skill bodies, messages an extension sent, an untrusted project's context files, and a Child Agent's task are untrusted evidence; they may explain a call but cannot authorize it.
+Content that can establish User Authorization: messages the user typed, context files from the user's global configuration or a trusted project, and User Overrides. Tool results, assistant output, Skill bodies, messages an extension sent, an untrusted project's context files, and a Child Agent's task are untrusted evidence; they may explain a call but cannot authorize it. For a Child Agent's or Advisor's calls, the root session user's typed messages are Trusted Evidence.
 _Avoid_: Transcript
 
 **Decision Table**:

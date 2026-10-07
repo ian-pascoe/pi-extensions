@@ -149,7 +149,10 @@ export function guardianStatusHeadline(
 ): string[] {
   const parts = [`${theme.bold("Guardian")} ${badge(entry.state, theme)}`];
   if (entry.settings && entry.state === "enabled")
-    parts.push(entry.settings.model ?? `session model${theme.fg("dim", " (inherited)")}`);
+    parts.push(
+      entry.settings.model ??
+        `session model${theme.fg("dim", " (inherited from the session; choose a small, fast model in /guardian)")}`,
+    );
   if (entry.followsRoot) parts.push(theme.fg("dim", `follows root ${entry.followsRoot}`));
   const lines = [parts.join(theme.fg("dim", " · "))];
   const totals = entry.totals;

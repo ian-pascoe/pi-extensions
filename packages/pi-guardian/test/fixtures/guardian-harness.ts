@@ -59,6 +59,11 @@ export interface HarnessOptions {
   /** Extensions loaded after Guardian. */
   after?: ExtensionFactory[];
   systemPrompt?: string;
+  /**
+   * Prompt tokens the Guardian provider reports, given the request's chars/4 estimate (system
+   * prompt and every text block); defaults to a fixed 1000 input tokens.
+   */
+  promptTokens?: (estimated: number) => number;
   /** Leave Guardian out, to compare the Guarded Agent's requests with and without it. */
   withoutGuardian?: boolean;
   /** Activate Pi's built-in tools (`read`, `bash`, `edit`, `write`) on the temporary workspace. */
@@ -197,6 +202,21 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
             });
             const stream = createAssistantMessageEventStream();
             const verdict = verdicts.shift();
+            const quarter = (text: string) => Math.ceil(text.length / 4);
+            const estimated =
+              quarter(getCurrentSystemPrompt(context.messages) ?? "") +
+              withoutInitialSystemMessage(context.messages).reduce((sum, entry) => {
+                if (entry.role !== "user") return sum;
+                if (!Array.isArray(entry.content)) return sum + quarter(entry.content);
+                return (
+                  sum +
+                  entry.content.reduce(
+                    (total, part) => total + (part.type === "text" ? quarter(part.text) : 0),
+                    0,
+                  )
+                );
+              }, 0);
+            const reported = options.promptTokens?.(estimated) ?? 1_000;
             const finish = (text: string) => {
               const message = {
                 ...fauxAssistantMessage(text),
@@ -206,9 +226,9 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
               };
               message.usage = {
                 ...message.usage,
-                input: 1_000,
+                input: reported,
                 output: 50,
-                totalTokens: 1_050,
+                totalTokens: reported + 50,
                 cost: { ...message.usage.cost, total: 0.0011 },
               };
               stream.push({ type: "done", reason: "stop", message });

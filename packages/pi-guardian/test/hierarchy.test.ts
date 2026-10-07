@@ -62,6 +62,33 @@ describe("Child Agents and Advisors", () => {
     });
   });
 
+  it("weigh the root user's typed requests as Trusted Evidence, but not their own task", async () => {
+    const root = await createGuardianHarness({
+      guardianSettings: { model: "guardian-test/reviewer" },
+    });
+    root.responses.push(reply("I will delegate it."));
+    await root.session.prompt("Have a worker deploy staging.");
+    const child = await createGuardianHarness({
+      manager: await childManager(root.session.sessionManager.getSessionId()),
+    });
+    child.responses.push(toolCalls(["deploy", { target: "staging" }, "call-1"]), reply("Ok."));
+    child.verdicts.push(assessment("low", "high", "The root user asked for it."));
+    await child.session.prompt("Task from the parent agent: deploy staging and production.");
+    expect(child.executed).toEqual(["deploy:staging"]);
+    const message = child.reviews[0]?.messages[0];
+    const texts =
+      message?.role === "user" && Array.isArray(message.content)
+        ? message.content.map((part) => (part.type === "text" ? part.text : ""))
+        : [];
+    const labels = texts.map((text) => text.split("\n", 1)[0]);
+    expect(labels.slice(0, 2)).toEqual([
+      "Evidence (TRUSTED, origin: rootUser):",
+      "Evidence (UNTRUSTED, origin: user):",
+    ]);
+    expect(texts[0]).toContain("Have a worker deploy staging.");
+    expect(texts[1]).toContain("deploy staging and production");
+  });
+
   it("follow the root session's effective settings live", async () => {
     const root = await createGuardianHarness({
       guardianSettings: { model: "guardian-test/reviewer", tools: { deploy: "deny" } },

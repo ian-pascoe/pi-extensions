@@ -18,6 +18,8 @@ pi -e ./packages/pi-guardian/src/index.ts
 
 Guardian is **enabled by default** and reviews with the session's current model unless `model` is set. Without a usable model, every call that needs review is a Review Failure.
 
+**Choose a small, fast Guardian model with thinking off.** Every Reviewed Call waits for its review, and a large session model makes that slow and costly: in live use, Claude Opus took 6 to 17 s and about $0.27 per review, while `anthropic/claude-haiku-4-5` with `thinkingLevel: "off"` took about 1.4 s and $0.05. Set both in `/guardian` (Model, thinking level) or in settings, as in the [example](#settings). While `model` is unset, Guardian shows a one-time notice at session start, and `/guardian status` marks the model as inherited from the session.
+
 ## How a call is judged
 
 Every `tool_call`, including calls a tool issues itself (such as a `codemode` script's calls, which carry `parentToolCallId`), resolves to one Tool Policy:
@@ -55,7 +57,7 @@ Each review is one stateless model completion without tools ([ADR-0001](docs/adr
 - **System prompt**: the built-in policy (evidence handling, User Authorization scoring, risk taxonomy, Pi tools), your Security Policy (`policy`), and the output contract.
 - **One user message** of text blocks: context files, then evidence entries in conversation order, then the **Reviewed Call** — the tool, why it was reviewed (such as its Sensitive Path), the SHA-256 and full text of its exact arguments, the working directory, which agent issued it, and for nested calls the issuing call's tool and arguments.
 
-The request is append-only: within the evidence budget, each review's blocks extend the previous review's, so provider prompt caches apply across reviews. Guardian never changes the Guarded Agent's system prompt, tools, or messages.
+The request is append-only: each review's blocks extend the previous review's, so provider prompt caches apply across reviews, even after the history outgrows the evidence budget (see below). Guardian never changes the Guarded Agent's system prompt, tools, or messages.
 
 Pi runs a response's `tool_call` handlers one call at a time, even for parallel tool calls. Guardian therefore starts the reviews of a response's tool calls as soon as the response ends, at most four at once, and reuses each result when its call reaches `tool_call` with the same tool and arguments, so parallel calls are reviewed concurrently. It skips calls to unknown tools and calls whose arguments fail the tool's schema, which Pi never runs. A review started for a call that never arrives, or whose arguments changed before Guardian saw them, is recorded as `unused`.
 
@@ -65,11 +67,13 @@ Nested calls are different: a tool that issues calls concurrently, such as a `co
 
 **Trusted Evidence** can establish User Authorization: messages the user typed, context files, and recorded **User Overrides**. Guardian reads context files from Pi's resource loader (`getAgentsFiles()`), not from the system prompt, so a tool's prompt snippet cannot forge them. Pi loads `AGENTS.md`-style files from the working directory and its ancestors whether or not the project is trusted, so only the global file in Pi's agent directory and, in a trusted project, the others are Trusted Evidence; an untrusted project's context files are included as untrusted evidence.
 
-Everything else is labeled **UNTRUSTED**: tool results, assistant text and reasoning, extension and summary messages, user messages an extension sent (`sendUserMessage`), the body of a Skill expanded by `/skill:` (the text the user typed after it stays trusted), and in Child Agent and Advisor sessions every user message, since it comes from another agent. Each entry carries its message as JSON, so content cannot forge an evidence label.
+Everything else is labeled **UNTRUSTED**: tool results, assistant text and reasoning, extension and summary messages, user messages an extension sent (`sendUserMessage`), the body of a Skill expanded by `/skill:` (the text the user typed after it stays trusted), and in Child Agent and Advisor sessions every user message, since it comes from another agent. A Child Agent's or Advisor's reviews instead include the **root user's** typed messages (origin `rootUser`) as Trusted Evidence, interleaved by time, while the root session runs Guardian in the same process. Each entry carries its message as JSON, so content cannot forge an evidence label.
 
 Guardian recognizes an extension-sent message from Pi's `input` event (`source: "extension"`) and records a `pi-guardian-extension-message` session entry, so the label survives reloads. Not distinguishable, and therefore trusted like typed text: prompt templates expanded from `/name`, an extension message that another extension's `input` handler rewrote, and task messages from subagent systems other than Minimal Subagents.
 
-The evidence budget (`evidenceBudgetTokens`, by Pi's chars/4 estimate) defaults to `auto`: a quarter of the Guardian model's context window, at most 32,000 tokens. All Trusted Evidence is always kept, shortened with a marker if it alone exceeds the budget; the rest is the newest untrusted entries that fit. Each untrusted text is capped near 2,000 tokens with a marker.
+The evidence budget (`evidenceBudgetTokens`) defaults to `auto`: a quarter of the Guardian model's context window, at most 32,000 tokens. Pi's chars/4 estimate undercounts Guardian's JSON-heavy requests (about 1.3× on Claude Haiku and 1.7× on Claude Opus), so Guardian scales it by a per-model factor: 1.5 until the model's provider reports usage, then the reported prompt tokens (input plus cache reads and writes) over the estimate, rounded up to a quarter and changed only by a clear margin so it stays stable.
+
+All Trusted Evidence is always kept. The rest is a window of every entry from an anchor onward, so successive reviews share their prefix. When the evidence outgrows the budget, the anchor jumps forward past at least half a budget of the oldest untrusted entries, replaced by an omission note; the provider's cache breaks only at those jumps, at most once per half-budget of growth. The anchor is a pure function of the history, so a reload or branch switch finds the same window. Each untrusted text is capped near 2,000 tokens with a marker; Trusted Evidence is shortened, every entry with the same cap, only when it alone exceeds the budget.
 
 The Reviewed Call is never shortened, since a cut could hide the harmful part of a call. When it does not fit the Guardian model's context window beside the policy and room for the reply, the review is a Review Failure, and the evidence budget shrinks to what is left beside it.
 
@@ -101,11 +105,13 @@ The user sees a warning with the tool, risk, and rationale. With `onDeny: "ask"`
 
 ### Review Failure
 
-No model resolved, no credentials, a provider error, a timeout (`reviewTimeoutMs`), malformed output, a Reviewed Call too large to review in full, or unreadable Guardian settings never allow a call. With an interactive UI, a dialog offers **Allow once** (a User Override) or **Block**, after **View full call** for a long call; without one, the call is blocked with the reason and a pointer to the troubleshooting Skill. Aborting the agent's turn aborts its reviews; an aborted review blocks its call with an "aborted" reason and is not a Review Failure.
+No model resolved, no credentials, a provider error, a timeout (`reviewTimeoutMs`), malformed output twice in a row, a Reviewed Call too large to review in full, or unreadable Guardian settings never allow a call. With an interactive UI, a dialog offers **Allow once** (a User Override) or **Block**, after **View full call** for a long call; without one, the call is blocked with the reason and a pointer to the troubleshooting Skill. Aborting the agent's turn aborts its reviews; an aborted review blocks its call with an "aborted" reason and is not a Review Failure.
+
+A reply without exactly one valid assessment gets one corrective retry within the same deadline: the first request plus the bad reply and a user message restating the JSON contract, so the first request's cached prefix is unchanged. Pi's provider-neutral API has no JSON mode or forced tool call, so the contract is enforced by parsing. A retried review is marked `retried` in its audit entry.
 
 ### Audit
 
-Every Guardian Review appends a `pi-guardian-review` session entry, which never reaches the model: tool, call ID, parent call ID, arguments (bounded) and their full SHA-256, Risk Level, User Authorization, outcome, rationale, failure, User Override, whether an allowed call actually ran, model, duration, token usage, cost, and argument drift. `/guardian status` derives its totals from the selected branch's entries.
+Every Guardian Review appends a `pi-guardian-review` session entry, which never reaches the model: tool, call ID, parent call ID, arguments (bounded) and their full SHA-256, Risk Level, User Authorization, outcome, rationale, failure, User Override, whether an allowed call actually ran, model, duration, token usage and cost summed over a retry, whether the review was retried, and argument drift. `/guardian status` derives its totals from the selected branch's entries.
 
 User Overrides return to later reviews as Trusted Evidence in structured form. The user's decision is trusted but the arguments were written by the agent, so they are a marked field, and the Guardian's rationale is left out:
 
@@ -145,7 +151,7 @@ Settings live under `guardian` in Pi's global and trusted-project `settings.json
 | Key                        | Default   | Meaning                                                                                              |
 | -------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
 | `enabled`                  | `true`    | Gate tool calls. While disabled Guardian does nothing, including `deny` Tool Policies.               |
-| `model`                    | session   | Guardian model as `provider/id`; absent follows the session's current model.                         |
+| `model`                    | session   | Guardian model as `provider/id`; absent follows the session's current model. Prefer a small one.     |
 | `thinkingLevel`            | `"low"`   | `off` … `max`, clamped to the model.                                                                 |
 | `tools`                    | `{}`      | Tool Policies by tool name: `allow`, `review`, `deny`, or `null` to reset an inherited entry.        |
 | `safeCommands`             | `[]`      | Extra Safe Command prefixes; merged across scopes as a union.                                        |
@@ -161,6 +167,7 @@ Settings live under `guardian` in Pi's global and trusted-project `settings.json
 {
   "guardian": {
     "model": "anthropic/claude-haiku-4-5",
+    "thinkingLevel": "off",
     "tools": { "mcp__github__create_issue": "allow", "terminal_send": "deny" },
     "safeCommands": ["tree", "file"],
     "policy": "Pushing to github.com/acme/* is trusted. Never touch the production database.",
@@ -178,7 +185,7 @@ Only these two kinds of delegated session are detected. A child session of any o
 ## Limitations
 
 - **Argument drift**: Guardian reviews the arguments its `tool_call` handler sees. An extension loaded after Guardian can still change them. Pi emits `tool_execution_start` before `tool_call` handlers run, so Guardian compares the reviewed arguments with the `tool_result` event's arguments instead and warns after the call has run, marking the review entry with `argumentDrift`. Install Guardian last.
-- A Child Agent or Advisor reviews only its own conversation; the root user's messages are not part of its evidence.
+- A Child Agent or Advisor sees the root user's typed messages only while the root session runs Guardian in the same process; otherwise its evidence holds only its own conversation, none of it trusted.
 - Reviews cannot inspect files or run read-only checks (ADR-0001), so the policy leans conservative when evidence is missing.
 - `git` read-only subcommands still honor repository configuration such as `core.fsmonitor` or `diff.external`; edits to `.git` are Sensitive Paths and therefore reviewed.
 - Annotations and Safe Commands are trusted as declared; a tool that lies about `readOnlyHint` or `openWorldHint` runs without review unless you configure it.

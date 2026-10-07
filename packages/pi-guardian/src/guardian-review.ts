@@ -27,6 +27,13 @@ export interface ReviewMetrics {
   usage: ReviewUsage | null;
   /** Cost in dollars; `null` when unknown. */
   cost: number | null;
+  /** True when a malformed reply was followed by one corrective retry. */
+  retried?: boolean;
+  /**
+   * Prompt tokens the provider reported for the first attempt (input plus cache reads and
+   * writes), to calibrate Guardian's request-size estimate.
+   */
+  promptTokens?: number;
 }
 
 /** What one Guardian Review produced. */
@@ -83,92 +90,126 @@ export interface GuardianReviewInput {
   sessionId: string;
 }
 
-function metrics(
-  model: string,
-  started: number,
-  reply: AssistantMessage | undefined,
-): ReviewMetrics {
-  const usage = reply?.usage;
-  return {
-    model,
-    durationMs: Date.now() - started,
-    usage: usage
-      ? {
-          input: usage.input,
-          output: usage.output,
-          cacheRead: usage.cacheRead,
-          cacheWrite: usage.cacheWrite,
-          total: usage.totalTokens,
-        }
-      : null,
-    cost: usage && Number.isFinite(usage.cost.total) ? usage.cost.total : null,
-  };
+/** Token usage summed over a review's attempts; `null` when an attempt reported none. */
+function combinedUsage(
+  replies: readonly AssistantMessage[],
+): Pick<ReviewMetrics, "usage" | "cost"> {
+  if (!replies.length) return { usage: null, cost: null };
+  const usage: ReviewUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  let cost: number | null = 0;
+  for (const { usage: reported } of replies) {
+    usage.input += reported.input;
+    usage.output += reported.output;
+    usage.cacheRead += reported.cacheRead;
+    usage.cacheWrite += reported.cacheWrite;
+    usage.total += reported.totalTokens;
+    cost =
+      cost !== null && Number.isFinite(reported.cost.total) ? cost + reported.cost.total : null;
+  }
+  return { usage, cost };
 }
 
-/** Run one Guardian Review: a single completion without tools, bounded by the review timeout. */
+/** Follow-up sent once after a malformed reply, restating the output contract. */
+export const correctiveMessage =
+  'Your reply did not contain exactly one valid assessment. Respond again with exactly one JSON object and nothing else: {"risk_level": "low" | "medium" | "high" | "critical", "user_authorization": "unknown" | "low" | "medium" | "high", "rationale": "<one or two concise sentences>"}';
+
+/** Text of a reply's text blocks. */
+function replyText(reply: AssistantMessage): string {
+  return reply.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+}
+
+/**
+ * Run one Guardian Review: a completion without tools, bounded by the review timeout. A reply
+ * without a valid assessment gets one corrective follow-up within the same deadline; the first
+ * request is unchanged, so its prefix stays cacheable. Pi's provider-neutral API offers no JSON
+ * mode or forced tool call, so the contract is enforced by parsing.
+ */
 export async function runGuardianReview(input: GuardianReviewInput): Promise<ReviewResult> {
   const started = Date.now();
   const name = `${input.model.provider}/${input.model.id}`;
-  if (input.signal?.aborted) return { kind: "aborted", ...metrics(name, started, undefined) };
+  const replies: AssistantMessage[] = [];
+  const measured = (): ReviewMetrics => {
+    const result: ReviewMetrics = {
+      model: name,
+      durationMs: Date.now() - started,
+      ...combinedUsage(replies),
+    };
+    const first = replies[0]?.usage;
+    if (first) result.promptTokens = first.input + first.cacheRead + first.cacheWrite;
+    if (replies.length > 1) result.retried = true;
+    return result;
+  };
+  if (input.signal?.aborted) return { kind: "aborted", ...measured() };
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), input.timeoutMs);
   const signal = input.signal ? AbortSignal.any([input.signal, timeout.signal]) : timeout.signal;
+  const stopped = new Promise<undefined>((resolve) => {
+    signal.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
   const level = input.model.reasoning
     ? clampThinkingLevel(input.model, input.thinkingLevel)
     : "off";
-  let reply: AssistantMessage | undefined;
-  let failure: string | undefined;
+  const options: ModelsSimpleStreamOptions = { signal, sessionId: input.sessionId };
+  if (level !== "off") options.reasoning = level;
+  let context = input.context;
   try {
-    const stopped = new Promise<undefined>((resolve) => {
-      signal.addEventListener("abort", () => resolve(undefined), { once: true });
-    });
-    const options: ModelsSimpleStreamOptions = { signal, sessionId: input.sessionId };
-    if (level !== "off") options.reasoning = level;
-    reply = await Promise.race([
-      input.registry.streamSimple(input.model, input.context, options).result(),
-      stopped,
-    ]);
-  } catch (cause) {
-    failure = cause instanceof Error ? cause.message : String(cause);
+    for (;;) {
+      let reply: AssistantMessage | undefined;
+      let failure: string | undefined;
+      try {
+        reply = await Promise.race([
+          input.registry.streamSimple(input.model, context, options).result(),
+          stopped,
+        ]);
+      } catch (cause) {
+        failure = cause instanceof Error ? cause.message : String(cause);
+      }
+      if (reply) replies.push(reply);
+      if (input.signal?.aborted) return { kind: "aborted", ...measured() };
+      if (timeout.signal.aborted)
+        return {
+          kind: "failed",
+          failure: `Guardian Review timed out after ${input.timeoutMs / 1_000}s`,
+          ...measured(),
+        };
+      if (failure !== undefined || !reply)
+        return {
+          kind: "failed",
+          failure: `Guardian model request failed: ${failure ?? "no response"}`,
+          ...measured(),
+        };
+      if (reply.stopReason === "error" || reply.stopReason === "aborted")
+        return {
+          kind: "failed",
+          failure: `Guardian model request failed: ${reply.errorMessage ?? reply.stopReason}`,
+          ...measured(),
+        };
+      try {
+        const assessment = parseAssessment(replyText(reply));
+        return {
+          kind: "assessed",
+          assessment,
+          outcome: decide(assessment.risk, assessment.authorization),
+          ...measured(),
+        };
+      } catch (cause) {
+        if (replies.length > 1)
+          return {
+            kind: "failed",
+            failure: `${cause instanceof Error ? cause.message : String(cause)}, even after a corrective retry`,
+            ...measured(),
+          };
+      }
+      context = {
+        ...input.context,
+        messages: [
+          ...input.context.messages,
+          reply,
+          { role: "user", content: correctiveMessage, timestamp: 0 },
+        ],
+      };
+    }
   } finally {
     clearTimeout(timer);
-  }
-  const measured = metrics(name, started, reply);
-  if (input.signal?.aborted) return { kind: "aborted", ...measured };
-  if (timeout.signal.aborted)
-    return {
-      kind: "failed",
-      failure: `Guardian Review timed out after ${input.timeoutMs / 1_000}s`,
-      ...measured,
-    };
-  if (failure !== undefined || !reply)
-    return {
-      kind: "failed",
-      failure: `Guardian model request failed: ${failure ?? "no response"}`,
-      ...measured,
-    };
-  if (reply.stopReason === "error" || reply.stopReason === "aborted")
-    return {
-      kind: "failed",
-      failure: `Guardian model request failed: ${reply.errorMessage ?? reply.stopReason}`,
-      ...measured,
-    };
-  const text = reply.content
-    .flatMap((block) => (block.type === "text" ? [block.text] : []))
-    .join("");
-  try {
-    const assessment = parseAssessment(text);
-    return {
-      kind: "assessed",
-      assessment,
-      outcome: decide(assessment.risk, assessment.authorization),
-      ...measured,
-    };
-  } catch (cause) {
-    return {
-      kind: "failed",
-      failure: cause instanceof Error ? cause.message : String(cause),
-      ...measured,
-    };
   }
 }
