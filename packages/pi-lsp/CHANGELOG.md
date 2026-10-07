@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-lsp
 
+## 0.10.0
+
+### Minor Changes
+
+- 3f3283a: `lsp_workspace_diagnostics` no longer requires `server_id`. Without it, the tool queries every matching server for `file_path`, as the other reads do, and groups the results by server. A server that publishes no workspace diagnostics still reports `status: "unsupported"`, and a failing server appears in `warnings` without hiding the others. An explicit `server_id` limits the request to that server, as before. `lsp_capabilities` and `lsp_restart` still require `server_id`.
+
+### Patch Changes
+
+- 91d9798: The `lsp_workspace_diagnostics` description no longer repeats the shared `server_id` narrowing rule, and the root-anchor `file_path` parameter now says it selects the matching servers and their roots, since `lsp_workspace_diagnostics` and `lsp_workspace_symbols` can query several servers.
+
 ## 0.9.0
 
 ### Minor Changes
