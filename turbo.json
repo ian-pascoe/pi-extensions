@@ -44,6 +44,16 @@
         "!$TURBO_ROOT$/packages/*/.turbo/**"
       ]
     },
+    "@ian-pascoe/pi-guardian#test": {
+      "dependsOn": ["transit"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/pi-minimal-subagents/**",
+        "!$TURBO_ROOT$/packages/*/node_modules/**",
+        "!$TURBO_ROOT$/packages/*/dist/**",
+        "!$TURBO_ROOT$/packages/*/.turbo/**"
+      ]
+    },
     "@ian-pascoe/pi-context-management#test": {
       "dependsOn": ["transit"],
       "inputs": [

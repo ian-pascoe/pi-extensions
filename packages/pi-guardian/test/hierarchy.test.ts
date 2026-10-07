@@ -26,7 +26,42 @@ async function childManager(rootSessionId: string) {
   return manager;
 }
 
+/** A session journal promoted to an Advisor Session observing `rootSessionId`. */
+async function advisorManager(rootSessionId: string) {
+  const dir = await mkdtemp(join(tmpdir(), "pi-guardian-advisor-"));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
+  const manager = SessionManager.create(dir, join(dir, "sessions"));
+  manager.appendCustomEntry("pi-advisor-role", { observedSessionId: rootSessionId });
+  return manager;
+}
+
 describe("Child Agents and Advisors", () => {
+  it("detect an Advisor Session, which follows its root and trusts no user message", async () => {
+    const root = await createGuardianHarness({
+      guardianSettings: { model: "guardian-test/reviewer" },
+    });
+    await root.session.prompt("/guardian tool deploy review");
+    const advisor = await createGuardianHarness({
+      guardianSettings: { enabled: false },
+      manager: await advisorManager(root.session.sessionManager.getSessionId()),
+    });
+    advisor.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
+    advisor.verdicts.push(assessment("high", "unknown", "Pi asked, not the user."));
+    await advisor.session.prompt("Review the observed agent's last turn.");
+    expect(advisor.executed).toEqual([]);
+    const message = advisor.reviews[0]?.messages[0];
+    const texts =
+      message?.role === "user" && Array.isArray(message.content)
+        ? message.content.map((part) => (part.type === "text" ? part.text : ""))
+        : [];
+    expect(texts[0]).toMatch(/^Evidence \(UNTRUSTED, origin: user\)/);
+    expect(texts.at(-1)).toContain("Guarded Agent: an Advisor");
+    await advisor.session.prompt("/guardian status");
+    expect(advisor.entries("pi-guardian-status").at(-1)).toMatchObject({
+      followsRoot: root.session.sessionManager.getSessionId(),
+    });
+  });
+
   it("follow the root session's effective settings live", async () => {
     const root = await createGuardianHarness({
       guardianSettings: { model: "guardian-test/reviewer", tools: { deploy: "deny" } },
