@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import fc from "fast-check";
-import { afterEach, describe, expect, expectTypeOf, test } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import {
   DapProtocolClient,
   DapProtocolClientError,
@@ -65,12 +65,6 @@ function processExists(pid: number | undefined): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function waitForProcessExit(pid: number | undefined): Promise<void> {
-  for (let attempt = 0; attempt < 50 && processExists(pid); attempt += 1) {
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
   }
 }
 
@@ -372,7 +366,7 @@ describe("DapProtocolClient", () => {
     expect(error).toBeInstanceOf(DapProtocolClientError);
     expect(error).toMatchObject({ kind: expect.stringMatching(/exit|transport/) });
     await expect
-      .poll(() => readFile(client.stderrPath, "utf8"), { timeout: 1_000 })
+      .poll(() => readFile(client.stderrPath, "utf8"), { timeout: 10_000 })
       .toContain("fixture adapter crashed");
   });
 
@@ -392,11 +386,18 @@ describe("DapProtocolClient", () => {
     const client = await createClient();
 
     await client.request("stderr-crash", { bytes: 1024 * 1024 + 128 }).catch(() => undefined);
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    // The tail is written asynchronously; wait for the adapter's last bytes rather than a fixed delay.
+    await expect
+      .poll(
+        async () => (await readFile(client.stderrPath)).toString("utf8").endsWith("LATEST-STDERR"),
+        {
+          timeout: 10_000,
+        },
+      )
+      .toBe(true);
     const stderr = await readFile(client.stderrPath);
 
     expect(stderr.length).toBe(1024 * 1024);
-    expect(stderr.toString("utf8")).toMatch(/LATEST-STDERR$/);
   });
 
   test("awaits graceful DAP shutdown and process exit", async () => {
@@ -404,9 +405,7 @@ describe("DapProtocolClient", () => {
     const pid = client.adapterPid;
 
     await client.shutdown();
-    await waitForProcessExit(pid);
-
-    expect(processExists(pid)).toBe(false);
+    await expect.poll(() => processExists(pid), { timeout: 10_000 }).toBe(false);
   });
 
   test("forces an uncooperative Debug Adapter process down within shutdownMs", async () => {
@@ -415,12 +414,31 @@ describe("DapProtocolClient", () => {
       timeouts: { startupMs: 5_000, requestMs: 25, shutdownMs: 250 },
     });
     const pid = client.adapterPid;
-    const startedAt = Date.now();
+    // A response means the fixture has installed its SIGTERM handler; a signal sent before that
+    // would end it by default and hide a missing SIGKILL.
+    await client.request("echo", { value: "ready" }, { timeoutMs: 10_000 });
+    // Every wait in shutdown is a timer bounded by shutdownMs, so on a fake clock it resolves at the
+    // same clock time however slowly the runner handles the real process I/O in between.
+    const realSetTimeout = globalThis.setTimeout;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const startedAt = Date.now();
+      let settled = false;
+      const shutdown = client.shutdown().finally(() => {
+        settled = true;
+      });
+      while (!settled) {
+        // Move the clock only while shutdown waits on a timer; otherwise let real I/O finish.
+        if (vi.getTimerCount() > 0) await vi.advanceTimersByTimeAsync(1);
+        else await new Promise((resolveDelay) => realSetTimeout(resolveDelay, 1));
+      }
+      await shutdown;
+      expect(Date.now() - startedAt).toBeLessThanOrEqual(250);
+    } finally {
+      vi.useRealTimers();
+    }
 
-    await client.shutdown();
-    await waitForProcessExit(pid);
-
-    expect(Date.now() - startedAt).toBeLessThan(500);
-    expect(processExists(pid)).toBe(false);
+    // The fixture ignores DAP shutdown, SIGTERM, and stdin closing, so only SIGKILL ends it.
+    await expect.poll(() => processExists(pid), { timeout: 10_000 }).toBe(false);
   });
 });

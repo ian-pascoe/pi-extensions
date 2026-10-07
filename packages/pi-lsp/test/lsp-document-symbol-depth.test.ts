@@ -223,15 +223,30 @@ describe("limitLspDocumentSymbolDepth", () => {
     });
 
     test("resolves tens of thousands of entries without quadratic scans", () => {
+      // Count position reads instead of timing the call: wall-clock limits fail on loaded CI runners.
+      let reads = 0;
+      const counted = (symbol: ReturnType<typeof flat>) => {
+        for (const position of [symbol.location.range.start, symbol.location.range.end]) {
+          const { line } = position;
+          Object.defineProperty(position, "line", {
+            get: () => {
+              reads += 1;
+              return line;
+            },
+          });
+        }
+        return symbol;
+      };
       const many = [
-        flat("root", FUNCTION, [0, 100_000]),
+        counted(flat("root", FUNCTION, [0, 100_000])),
         ...Array.from({ length: 20_000 }, (_, index) =>
-          flat(`s${index}`, VARIABLE, [index + 1, index + 1], "root"),
+          counted(flat(`s${index}`, VARIABLE, [index + 1, index + 1], "root")),
         ),
       ];
-      const started = performance.now();
       expect(limit(many, 1)).toHaveLength(1);
-      expect(performance.now() - started).toBeLessThan(2000);
+      // Validating an entry and checking it against its one named container read a few positions;
+      // scanning other entries per entry would read on the order of entries² positions.
+      expect(reads).toBeLessThanOrEqual(50 * many.length);
     });
 
     test("treats an unknown container, or one without ranges, as best effort", () => {

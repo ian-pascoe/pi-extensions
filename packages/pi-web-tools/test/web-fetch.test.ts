@@ -3,8 +3,10 @@ import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Parser } from "htmlparser2";
+import TurndownService from "turndown";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import {
   createWebFetchTool,
   WEB_FETCH_DEFAULT_TIMEOUT_SECONDS,
@@ -1174,9 +1176,7 @@ describe("Web Fetch main content", () => {
 
 describe("Web Fetch main content on large pages", () => {
   // Several MiB of HTML; extraction must stay linear because it runs synchronously and a request
-  // timeout cannot interrupt it. Each page is built from an item count so the same shape can be
-  // fetched at two sizes: the guard compares the two timings instead of an absolute duration,
-  // which depends on runner speed.
+  // timeout cannot interrupt it.
   const LARGE_PAGES = {
     "paragraphs in <main>": {
       items: 120_000,
@@ -1246,51 +1246,60 @@ describe("Web Fetch main content on large pages", () => {
     },
   } satisfies Record<string, { items: number; build: (items: number) => string }>;
 
-  // Linear extraction takes about SCALE times as long on SCALE times the items; quadratic takes
-  // about SCALE² times as long. The guard compares CPU time (user + system) of the two runs rather
-  // than wall time: extraction is synchronous, so a busy runner mostly adds wall-clock time while
-  // descheduled, which CPU time excludes, and the remaining noise (cache contention, GC, frequency
-  // scaling) slows both runs alike. A wide SCALE puts the limit well between the two curves:
-  // linear is 8×, quadratic 64×, and the limit of 24× tolerates 3× noise on top of linear while a
-  // quadratic regression still exceeds it by 2.6×. The small page takes the best of two and the
-  // large page is retimed once when the first ratio reaches the limit, keeping the lower timing.
-  // The 90 s test timeout leaves room for slow, loaded runners and still catches a severe
-  // regression.
-  const SCALE = 8;
-  const MAX_RATIO = 24;
+  // Turndown re-reads its accumulated output for every sibling node, so one large input costs
+  // quadratic time; html-markdown.ts keeps every Turndown input small and parses each byte a bounded
+  // number of times. The guard counts that work instead of timing it, which depends on runner load:
+  // every byte handed to the HTML parser or to Turndown is recorded, and both totals must stay a
+  // small multiple of the page while no single Turndown input exceeds the atomic piece size.
+  // Pure-JavaScript loops elsewhere are not counted.
+  const MAX_PARSE_PASSES = 8;
+  const MAX_TURNDOWN_PASSES = 2;
+  const MAX_TURNDOWN_INPUT_BYTES = 256 * 1024;
+
+  // Count bytes through the prototypes without retaining arguments or receivers, so a regression
+  // fails an assertion instead of exhausting memory on recorded parser state. The counters are
+  // installed once for the block so a timed-out test cannot restore them under the next one.
+  const work = { parsedBytes: 0, turndownBytes: 0, largestTurndownInput: 0 };
+  // oxlint-disable-next-line typescript/unbound-method -- Called with its receiver and restored after the block.
+  const { write } = Parser.prototype;
+  // oxlint-disable-next-line typescript/unbound-method -- Called with its receiver and restored after the block.
+  const { turndown } = TurndownService.prototype;
+  beforeAll(() => {
+    Parser.prototype.write = function countedWrite(this: Parser, chunk: string) {
+      work.parsedBytes += chunk.length;
+      write.call(this, chunk);
+    };
+    TurndownService.prototype.turndown = function countedTurndown(
+      this: TurndownService,
+      input: string,
+    ) {
+      work.turndownBytes += input.length;
+      work.largestTurndownInput = Math.max(work.largestTurndownInput, input.length);
+      return turndown.call(this, input);
+    };
+  });
+  afterAll(() => {
+    Parser.prototype.write = write;
+    TurndownService.prototype.turndown = turndown;
+  });
 
   for (const [name, { items, build }] of Object.entries(LARGE_PAGES)) {
     for (const format of ["text", "markdown"] as const) {
-      test(`converts a multi-MiB page of ${name} in ${format} format in linear time`, async () => {
-        const time = async (html: string) => {
-          const fetch: typeof globalThis.fetch = async () =>
-            new Response(html, { headers: { "content-type": "text/html" } });
-          const started = process.cpuUsage();
-          const result = await executeFetch({ fetch }, { url: "https://example.com/big", format });
-          const used = process.cpuUsage(started);
-          const elapsed = (used.user + used.system) / 1000;
-          const spill = result.details.truncation?.fullOutputPath;
-          if (spill !== undefined) spillDirectories.push(dirname(spill));
-          return { elapsed, result };
-        };
-        const large = build(items);
-        expect(large.length).toBeGreaterThan(2 * 1024 * 1024);
+      test(`converts a multi-MiB page of ${name} in ${format} format in linear work`, async () => {
+        const html = build(items);
+        expect(html.length).toBeGreaterThan(2 * 1024 * 1024);
+        Object.assign(work, { parsedBytes: 0, turndownBytes: 0, largestTurndownInput: 0 });
+        const fetch: typeof globalThis.fetch = async () =>
+          new Response(html, { headers: { "content-type": "text/html" } });
+        const result = await executeFetch({ fetch }, { url: "https://example.com/big", format });
+        const spill = result.details.truncation?.fullOutputPath;
+        if (spill !== undefined) spillDirectories.push(dirname(spill));
 
-        // The small page runs first and best-of-two, so JIT warm-up and load spikes are discarded
-        // from the denominator.
-        const small = build(items / SCALE);
-        const smallElapsed = Math.max(
-          Math.min((await time(small)).elapsed, (await time(small)).elapsed),
-          1,
-        );
-        const first = await time(large);
-        let largeElapsed = first.elapsed;
-        if (largeElapsed / smallElapsed >= MAX_RATIO) {
-          largeElapsed = Math.min(largeElapsed, (await time(large)).elapsed);
-        }
-        const { result } = first;
-
-        expect(largeElapsed / smallElapsed).toBeLessThan(MAX_RATIO);
+        // The page is parsed at least once, so the counters see the conversion's work.
+        expect(work.parsedBytes).toBeGreaterThanOrEqual(html.length);
+        expect(work.parsedBytes).toBeLessThanOrEqual(MAX_PARSE_PASSES * html.length);
+        expect(work.largestTurndownInput).toBeLessThanOrEqual(MAX_TURNDOWN_INPUT_BYTES);
+        expect(work.turndownBytes).toBeLessThanOrEqual(MAX_TURNDOWN_PASSES * html.length);
         expect(Value.Parse(WebFetchOutputSchema, result.structuredContent).content).not.toContain(
           "NavAlpha",
         );
