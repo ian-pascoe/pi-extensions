@@ -1,5 +1,5 @@
-import type { JsonValue } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
+import { rewriteNamespaceDocument } from "@ian-pascoe/pi-utils/layered-settings";
 import { updateFileLocked } from "@ian-pascoe/pi-utils/locked-file-update";
 import { resolve } from "node:path";
 
@@ -10,31 +10,6 @@ export type MinimalSubagentsSettingsScope = "global" | "project";
 export interface MinimalSubagentsSettingsWriteContext {
   readonly cwd: string;
   isProjectTrusted(): boolean;
-}
-
-type SettingsJsonObject = Record<string, JsonValue>;
-
-function isSettingsJsonObject(value: JsonValue | undefined): value is SettingsJsonObject {
-  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- JSON.parse already established JSON data; distinguish object roots and settings blocks from primitives and arrays.
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function parseSettings(content: string | undefined, path: string): SettingsJsonObject {
-  if (content === undefined) return {};
-  // JSON.parse is the provenance for this JSON type; the object shape is checked below.
-  let parsed: JsonValue;
-  try {
-    parsed = JSON.parse(content.charCodeAt(0) === 0xfeff ? content.slice(1) : content);
-  } catch (cause) {
-    throw new Error(`Minimal subagents settings JSON is malformed at ${path}`, { cause });
-  }
-  if (!isSettingsJsonObject(parsed)) {
-    throw new Error(`Minimal subagents settings at ${path} must have an object root`);
-  }
-  if (parsed.minimalSubagents !== undefined && !isSettingsJsonObject(parsed.minimalSubagents)) {
-    throw new Error(`Minimal subagents settings at ${path} must have an object minimalSubagents`);
-  }
-  return parsed;
 }
 
 /**
@@ -58,15 +33,26 @@ export async function writeMinimalSubagentsEnabled(
     );
   }
 
-  await updateFileLocked(path, (content) => {
-    const settings = parseSettings(content, path);
-    const current = settings.minimalSubagents;
-    const minimalSubagents = isSettingsJsonObject(current) ? { ...current } : {};
-    if (enabled === undefined) delete minimalSubagents.enabled;
-    else minimalSubagents.enabled = enabled;
-    if (Object.keys(minimalSubagents).length === 0) delete settings.minimalSubagents;
-    else settings.minimalSubagents = minimalSubagents;
-    return `${JSON.stringify(settings, undefined, 2)}\n`;
-  });
+  await updateFileLocked(path, (current) =>
+    rewriteNamespaceDocument({
+      current,
+      namespace: "minimalSubagents",
+      invalid: (reason, cause) => {
+        if (reason === "malformed")
+          return new Error(`Minimal subagents settings JSON is malformed at ${path}`, { cause });
+        return new Error(
+          reason === "root"
+            ? `Minimal subagents settings at ${path} must have an object root`
+            : `Minimal subagents settings at ${path} must have an object minimalSubagents`,
+        );
+      },
+      update: (stored) => {
+        const minimalSubagents = { ...stored };
+        if (enabled === undefined) delete minimalSubagents.enabled;
+        else minimalSubagents.enabled = enabled;
+        return minimalSubagents;
+      },
+    }),
+  );
   return path;
 }

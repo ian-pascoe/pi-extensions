@@ -30,7 +30,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./pi-agent-session-discovery": "./src/pi-agent-session-discovery.ts",
-    "./locked-file-update": "./src/locked-file-update.ts"
+    "./locked-file-update": "./src/locked-file-update.ts",
+    "./layered-settings": "./src/layered-settings.ts",
+    "./evidence": "./src/evidence.ts"
   },
   "publishConfig": {
     "main": "./dist/index.js",
@@ -47,6 +49,14 @@
       "./locked-file-update": {
         "types": "./dist/locked-file-update.d.ts",
         "import": "./dist/locked-file-update.js"
+      },
+      "./layered-settings": {
+        "types": "./dist/layered-settings.d.ts",
+        "import": "./dist/layered-settings.js"
+      },
+      "./evidence": {
+        "types": "./dist/evidence.d.ts",
+        "import": "./dist/evidence.js"
       }
     },
     "access": "public",
@@ -65,10 +75,18 @@
     "@types/proper-lockfile": "^4.1.4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.99.0"
+    "@earendil-works/pi-ai": ">=0.99.0",
+    "@earendil-works/pi-coding-agent": ">=0.99.0",
+    "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "typebox": {
       "optional": true
     }
   },

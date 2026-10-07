@@ -19,3 +19,13 @@ Only this SDK-specific entrypoint requires the optional Pi coding-agent peer. Th
 ## Control characters
 
 `stripControlCharacters(text)` normalizes CR and CRLF line breaks to LF and removes C0/C1 control characters except tabs and newlines. Pair it with Pi TUI's `stripTerminalSequences` before rendering untrusted text.
+
+## Layered settings
+
+`defineLayeredSettings<Options, Config>({ namespace, label, schema, defaults, sessionEntryType?, merge? })` from `@ian-pascoe/pi-utils/layered-settings` manages one extension's options under a namespace key (for example `advisor`) in Pi's settings. `schema` is a TypeBox object whose properties are all optional; `label` names the extension in error messages. The returned functions read the global and trusted-project layers (`readLayers`, preserving per-scope errors), replay the selected branch's last `{ version: 1, overrides }` custom entry of `sessionEntryType` (`readOverrides`; omit the type for no session layer), resolve effective settings and per-key sources by default < global < trusted project < session (`readSettings`), validate option keys (`optionKey`), and write one scope through Pi's private settings storage lock (`writeSettings`, after `flush()`; it refuses untrusted projects, unsupported backends, and documents it cannot safely rewrite). An optional per-key `merge` hook, `(current, next, source) => value`, merges a key across layers instead of replacing it, for example a record merged entry by entry.
+
+Lower-level pieces are exported for consumers with their own validation or writer: `resolveLayeredOptions` is the pure layer fold (so lenient, warning-producing parsers can reuse it), and `rewriteNamespaceDocument` rewrites one namespace of a settings document's text (BOM stripping, object checks with caller-supplied errors, empty namespace removal) for use inside any lock, such as `updateFileLocked`.
+
+## Evidence projection
+
+`@ian-pascoe/pi-utils/evidence` projects observed Pi messages to what the model received: `projectEvidence(messages)` drops replay signatures, display details, provider metadata and native IDs, replaces images with attachment indexes, and links each tool call to its result with a stable `toolCallRef`. `evidenceRefs`, `evidenceTokens` (Pi's chars/4 estimate plus a per-image estimate), and `messageOrigins` (each message's role before Pi converted it) support consumers. `shortenEvidence(items, limit, marker)` and `fitEvidence(items, allowance, marker)` cap long texts and tool-call arguments, with the omission marker supplied by the caller; `evidenceItemsCost` and `combineEvidence` measure and join items.

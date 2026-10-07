@@ -3,8 +3,12 @@ import type {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import {
+  defineLayeredSettings,
+  type LayeredSettingChange,
+  type LayeredSettingsLayers,
+} from "@ian-pascoe/pi-utils/layered-settings";
 import { Type, type Static } from "typebox";
-import { Value } from "typebox/value";
 
 const positiveInteger = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 /** Authored Advisor options; every key is optional so absent values inherit. */
@@ -45,8 +49,6 @@ export const advisorOptionsSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export const advisorOptionKeys = Object.keys(advisorOptionsSchema.properties).map(advisorOptionKey);
-
 /** Authored options; absent values inherit rather than disabling their setting. */
 export type AdvisorOptions = Static<typeof advisorOptionsSchema>;
 /** Fully defaulted options; absent model/thinking follows the Observed Agent. */
@@ -66,7 +68,7 @@ export const advisorSettingSourceSchema = Type.Union([
 ]);
 export type AdvisorSettingSource = Static<typeof advisorSettingSourceSchema>;
 
-const defaults = {
+const defaults: AdvisorConfig = {
   enabled: false,
   includeSubagents: false,
   prompt:
@@ -124,49 +126,35 @@ export function sessionTokenLimit(
   return Math.min(Math.floor((contextWindow || fallbackWindow) / 2), autoSessionCeiling);
 }
 
-const sessionSchema = Type.Object(
-  {
-    version: Type.Literal(1),
-    overrides: advisorOptionsSchema,
-  },
-  { additionalProperties: false },
-);
+const layered = defineLayeredSettings<AdvisorOptions, AdvisorConfig>({
+  namespace: "advisor",
+  label: "Advisor",
+  schema: advisorOptionsSchema,
+  defaults,
+  sessionEntryType: "pi-advisor-settings",
+});
 
-// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings contain arbitrary authored JSON; this schema validates it before use. SDK command tests exercise the boundary.
+export const advisorOptionKeys = layered.optionKeys;
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings contain arbitrary authored JSON; the shared layered-settings schema check validates it before use. SDK command tests exercise the boundary.
 export function parseAdvisorOptions(value: unknown, source: AdvisorSettingSource): AdvisorOptions {
-  if (value === undefined) return {};
-  if (!Value.Check(advisorOptionsSchema, value)) {
-    const issue = Value.Errors(advisorOptionsSchema, value)[0];
-    throw new Error(
-      `Invalid ${source} Advisor settings${issue?.instancePath ?? ""}: ${issue?.message ?? "invalid options"}`,
-    );
-  }
-  return structuredClone(value);
+  return layered.parseOptions(value, source);
 }
 
 /** Reject inherited or unknown property names before applying an authored change. */
 export function advisorOptionKey(input: string): keyof AdvisorOptions {
-  if (!Value.Check(Type.KeyOf(advisorOptionsSchema), input))
-    throw new Error(`Unknown Advisor option: ${input}`);
-  return input;
+  return layered.optionKey(input);
 }
 
 /** Replay only the selected branch's last complete override snapshot. */
 export function readAdvisorOverrides(manager: Pick<SessionManager, "getBranch">): AdvisorOptions {
-  const entry = manager
-    .getBranch()
-    .findLast((item) => item.type === "custom" && item.customType === "pi-advisor-settings");
-  if (!entry || entry.type !== "custom") return {};
-  if (!Value.Check(sessionSchema, entry.data)) throw new Error("Invalid Advisor session settings");
-  return structuredClone(entry.data.overrides);
+  return layered.readOverrides(manager);
 }
 
 /** Authored scopes cached at startup/reload and updated after this extension's own writes. */
-export type AdvisorLayers = { global: AdvisorOptions | Error; project: AdvisorOptions | Error };
+export type AdvisorLayers = LayeredSettingsLayers<AdvisorOptions>;
 /** A validated authored mutation, independent of its persistence scope. */
-export type AdvisorChange =
-  | { action: "set"; key: keyof AdvisorOptions; patch: AdvisorOptions }
-  | { action: "inherit"; key: keyof AdvisorOptions };
+export type AdvisorChange = LayeredSettingChange<AdvisorOptions>;
 /** An applied change as recorded for confirmation; `options` is empty when the key inherits. */
 export const advisorAppliedChangeSchema = Type.Object({
   scope: advisorSettingScopeSchema,
@@ -177,21 +165,7 @@ export type AdvisorAppliedChange = Static<typeof advisorAppliedChangeSchema>;
 
 /** Read Pi's stored layers, preserving configuration failures until corrected. */
 export function readAdvisorLayers(manager: SettingsManager): AdvisorLayers {
-  const layers: AdvisorLayers = { global: {}, project: {} };
-  for (const scope of ["global", "project"] as const) {
-    try {
-      if (scope === "project" && !manager.isProjectTrusted()) continue;
-      const document =
-        scope === "global" ? manager.getGlobalSettings() : manager.getProjectSettings();
-      layers[scope] = parseAdvisorOptions(
-        "advisor" in document ? document.advisor : undefined,
-        scope,
-      );
-    } catch (cause) {
-      layers[scope] = cause instanceof Error ? cause : new Error(String(cause));
-    }
-  }
-  return layers;
+  return layered.readLayers(manager);
 }
 
 /** Resolve stored scopes without changing Pi's effective runtime overrides. */
@@ -199,77 +173,15 @@ export function readAdvisorSettings(
   session: Pick<AgentSession, "settingsManager" | "sessionManager">,
   authored = readAdvisorLayers(session.settingsManager),
 ) {
-  if (authored.global instanceof Error) throw authored.global;
-  if (session.settingsManager.isProjectTrusted() && authored.project instanceof Error)
-    throw authored.project;
-  const layers: Array<[AdvisorSettingSource, AdvisorOptions]> = [
-    ["global", authored.global],
-    [
-      "project",
-      session.settingsManager.isProjectTrusted() && !(authored.project instanceof Error)
-        ? authored.project
-        : {},
-    ],
-    ["session", readAdvisorOverrides(session.sessionManager)],
-  ];
-  const settings: AdvisorConfig = structuredClone(defaults);
-  const sources: Record<string, AdvisorSettingSource> = Object.fromEntries(
-    advisorOptionKeys.map((key): [string, AdvisorSettingSource] => [key, "default"]),
-  );
-  for (const [source, layer] of layers) {
-    Object.assign(settings, layer);
-    for (const key of Object.keys(layer)) sources[key] = source;
-  }
-  return { settings, sources };
+  return layered.readSettings(session, authored);
 }
 
-const storedDocumentSchema = Type.Object(
-  {
-    advisor: Type.Optional(Type.Object({}, { additionalProperties: true })),
-  },
-  { additionalProperties: true },
-);
-const optionalText = Type.Union([Type.String(), Type.Undefined()]);
-const storageSchema = Type.Object({
-  withLock: Type.Function(
-    [
-      Type.Union([Type.Literal("global"), Type.Literal("project")]),
-      Type.Function([optionalText], optionalText),
-    ],
-    Type.Void(),
-  ),
-});
-
 /** Use Pi's actual backend: its generic storage API is not exported. */
-export async function writeAdvisorSettings(
+export function writeAdvisorSettings(
   manager: SettingsManager,
   scope: "global" | "project",
   change: AdvisorChange,
   isCurrent: () => boolean,
 ): Promise<AdvisorOptions | undefined> {
-  if (scope === "project" && !manager.isProjectTrusted())
-    throw new Error("Advisor project settings require a trusted project");
-  const candidate: unknown = Object.getOwnPropertyDescriptor(manager, "storage")?.value;
-  if (!Value.Check(storageSchema, candidate)) {
-    throw new Error("Unsupported Pi settings backend: Advisor cannot safely write scoped settings");
-  }
-  const storage: Parameters<typeof SettingsManager.fromStorage>[0] = candidate;
-  await manager.flush();
-  if (!isCurrent()) return undefined;
-  if (scope === "project" && !manager.isProjectTrusted())
-    throw new Error("Advisor project settings require a trusted project");
-  let updated: AdvisorOptions | undefined;
-  storage.withLock(scope, (current) => {
-    const document: unknown = JSON.parse((current ?? "{}").replace(/^\uFEFF/, ""));
-    if (!Value.Check(storedDocumentSchema, document))
-      throw new Error(`Invalid ${scope} settings document; refusing to overwrite it`);
-    const next = { ...document.advisor };
-    if (change.action === "inherit") Reflect.deleteProperty(next, change.key);
-    else Object.assign(next, change.patch);
-    updated = parseAdvisorOptions(next, scope);
-    if (Object.keys(updated).length === 0) delete document.advisor;
-    else document.advisor = updated;
-    return `${JSON.stringify(document, null, 2)}\n`;
-  });
-  return updated;
+  return layered.writeSettings(manager, scope, change, isCurrent);
 }
