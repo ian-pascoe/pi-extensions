@@ -9,6 +9,7 @@ import {
   type LayeredSettingsLayers,
 } from "@ian-pascoe/pi-utils/layered-settings";
 import { Type, type Static } from "typebox";
+import { literalWords } from "./safe-command.js";
 
 /** A Tool Policy: run without review, send to the Guardian, or block outright. */
 export const toolPolicySchema = Type.Union([
@@ -136,9 +137,33 @@ const layered = defineLayeredSettings({
 
 export const guardianOptionKeys = layered.optionKeys;
 
+/**
+ * Reject `safeCommands` entries that could never match: an entry must be literal words, and its
+ * program a bare name, since a command run through a path (`./gradlew`) is never a Safe Command.
+ */
+function checkSafeCommands(
+  options: GuardianOptions,
+  source: GuardianSettingScope,
+): GuardianOptions {
+  for (const [index, entry] of (options.safeCommands ?? []).entries()) {
+    const program = literalWords(entry)?.[0];
+    const problem =
+      program === undefined
+        ? "must be literal words without shell syntax"
+        : /[/\\]/.test(program)
+          ? "must start with a bare program name, not a path"
+          : undefined;
+    if (problem)
+      throw new Error(
+        `Invalid ${source} Guardian settings/safeCommands/${index}: Safe Command ${JSON.stringify(entry)} ${problem}`,
+      );
+  }
+  return options;
+}
+
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings and command input contain arbitrary authored JSON; the shared layered-settings schema check validates it before use.
 export function parseGuardianOptions(value: unknown, source: GuardianSettingScope) {
-  return layered.parseOptions(value, source);
+  return checkSafeCommands(layered.parseOptions(value, source), source);
 }
 
 /** Reject inherited or unknown property names before applying an authored change. */
@@ -165,7 +190,17 @@ export type GuardianAppliedChange = Static<typeof guardianAppliedChangeSchema>;
 
 /** Read Pi's stored layers, preserving configuration failures until corrected. */
 export function readGuardianLayers(manager: SettingsManager): GuardianLayers {
-  return layered.readLayers(manager);
+  const layers = layered.readLayers(manager);
+  for (const scope of ["global", "project"] as const) {
+    const layer = layers[scope];
+    if (layer instanceof Error) continue;
+    try {
+      checkSafeCommands(layer, scope);
+    } catch (cause) {
+      layers[scope] = cause instanceof Error ? cause : new Error(String(cause));
+    }
+  }
+  return layers;
 }
 
 /** Effective settings with the scope that supplied each key. */

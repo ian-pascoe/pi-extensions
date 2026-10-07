@@ -81,6 +81,21 @@ describe("Guardian settings", () => {
     expect(() => resolveInvalid('{"onDeny":"prompt"}')).toThrow(/Invalid global Guardian settings/);
   });
 
+  it("rejects safeCommands that could never match", () => {
+    expect(() => resolveInvalid('{"safeCommands":["./gradlew test"]}')).toThrow(
+      'Invalid global Guardian settings/safeCommands/0: Safe Command "./gradlew test" must start with a bare program name, not a path',
+    );
+    expect(() => resolveInvalid('{"safeCommands":["npm test | tee"]}')).toThrow(
+      /must be literal words without shell syntax/,
+    );
+    expect(() => parseGuardianCommand('set safeCommands ["bin/test"] --global')).toThrow(
+      /must start with a bare program name/,
+    );
+    expect(resolve({ safeCommands: ["npm test -- src/a"] }, {}).settings.safeCommands).toEqual([
+      "npm test -- src/a",
+    ]);
+  });
+
   it("budgets evidence at a quarter of the context window, at most 32K", () => {
     expect(evidenceBudget("auto", 200_000)).toBe(32_000);
     expect(evidenceBudget("auto", 64_000)).toBe(16_000);
