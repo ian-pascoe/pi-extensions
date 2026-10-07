@@ -80,7 +80,9 @@
   "guardian": {
     "enabled": true,
     "model": "anthropic/claude-haiku-4-5",
-    "thinkingLevel": "off"
+    "thinkingLevel": "off",
+    "escalationModel": "anthropic/claude-sonnet-5-5",
+    "escalationThinkingLevel": "low"
   },
   "advisor": {
     "enabled": false,
