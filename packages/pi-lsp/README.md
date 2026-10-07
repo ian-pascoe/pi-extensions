@@ -335,10 +335,10 @@ then mentions. The same search finds a workspace root's packages. The rename war
 preview summary, so it is visible before `lsp_apply`; scripts receive it in `warnings` and the
 searched root in `root_path`.
 
-`lsp_workspace_symbols` requires `query` and a root-anchor `file_path`. `lsp_workspace_diagnostics`,
-`lsp_capabilities`, and `lsp_restart` require `server_id` and a root-anchor `file_path`. Other reads
-and `lsp_code_actions` query every matching capable server unless narrowed by `server_id`;
-successful responses remain visible when another server fails. Automatic reads omit matching
+`lsp_workspace_symbols` requires `query` and a root-anchor `file_path`, and `lsp_workspace_diagnostics`
+a root-anchor `file_path`. `lsp_capabilities` and `lsp_restart` require `server_id` and a root-anchor
+`file_path`. Other reads and `lsp_code_actions` query every matching capable server unless narrowed
+by `server_id`; successful responses remain visible when another server fails. Automatic reads omit matching
 incapable servers and fail once if none are capable; explicitly selecting an incapable server
 reports that the operation is unsupported. `lsp_rename` and the `lsp_format_*` tools may omit
 `server_id` only when exactly one matching capable server exists.
