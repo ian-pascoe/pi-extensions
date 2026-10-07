@@ -21,7 +21,7 @@ A tool call that its Tool Policy and call-specific exemptions send to the Guardi
 _Avoid_: Dangerous call, risky call
 
 **Safe Command**:
-A shell command that runs without review: one or more segments joined by `|`, `&&`, `||`, or `;`, each of literal words with no redirection, substitution, or expansion, whose program is on the safe-command list or matches an `allow` Command Rule, or a `cd` that provably stays inside the workspace, outside Sensitive Paths and nested git repositories, while no other call can change its target first.
+A shell command that runs without review: one or more segments joined by `|`, `&&`, `||`, or `;`, each of literal words with no redirection, substitution, or expansion, whose program is on the safe-command list or matches an `allow` Command Rule, or a `cd` that provably stays inside the workspace, outside Sensitive Paths and nested git repositories, while no other call can change its target first and nothing the shell inherits can redefine it. Environment variables that redirect git or `PATH` lookups keep `git` or every program from being one.
 _Avoid_: Allowlisted command
 
 **Command Rule**:

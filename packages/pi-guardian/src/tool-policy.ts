@@ -1,5 +1,5 @@
 import type { CustomToolCallEvent, ToolAnnotations } from "@earendil-works/pi-coding-agent";
-import { isSafeCommand, judgeCommand } from "./safe-command.js";
+import { isSafeCommand, judgeCommand, type ShellEnvironment } from "./safe-command.js";
 import { sensitivePathReason, type SensitivePathContext } from "./sensitive-paths.js";
 import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
 
@@ -58,6 +58,8 @@ export interface ToolPolicyInput {
    * running. A `cd` Safe Command segment judges its target as it is now, so it needs this.
    */
   settled?: boolean;
+  /** What `bash` commands inherit; defaults to this process's environment without settings. */
+  environment?: ShellEnvironment;
 }
 
 /**
@@ -97,7 +99,12 @@ function builtInDefault(call: ToolPolicyInput): ResolvedToolPolicy | undefined {
     const judged =
       // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; a non-string command cannot be judged and is reviewed.
       typeof command === "string"
-        ? judgeCommand(command, call.commands, call.settled ? call.paths : undefined)
+        ? judgeCommand(
+            command,
+            call.commands,
+            call.settled ? call.paths : undefined,
+            call.environment,
+          )
         : undefined;
     if (judged?.verdict === "allow") return { policy: "allow", source: "default" };
     const reason =

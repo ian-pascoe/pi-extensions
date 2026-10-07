@@ -2,8 +2,16 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { isSafeCommand, judgeCommand, literalWords } from "../src/safe-command.js";
+import {
+  isSafeCommand,
+  judgeCommand,
+  literalWords,
+  type ShellEnvironment,
+} from "../src/safe-command.js";
+import { useCleanShellEnvironment } from "./fixtures/shell-environment.js";
 import type { SensitivePathContext } from "../src/sensitive-paths.js";
+
+useCleanShellEnvironment();
 
 describe("Safe Command", () => {
   it.each([
@@ -255,15 +263,20 @@ describe("Safe Command", () => {
         "workspace/bare/objects",
         "workspace/bare/refs",
         "workspace/.pi",
-        "outside",
+        "workspace/caps/.GIT",
+        "workspace/lower",
+        "outside/inner",
         "home",
         "agent",
       ])
         await mkdir(join(root, directory), { recursive: true });
       await writeFile(join(workspace, "bare", "HEAD"), "ref: refs/heads/main\n");
+      await writeFile(join(workspace, "lower", "head"), "ref: refs/heads/main\n");
       await writeFile(join(workspace, "file.txt"), "");
       await symlink(join(root, "outside"), join(workspace, "escape"));
       await symlink(join(workspace, "src"), join(workspace, "src-link"));
+      await symlink(join(root, "outside", "inner"), join(workspace, "inner-link"));
+      await symlink(join(workspace, "vendor", "nested"), join(workspace, "repo-link"));
       where = { cwd: workspace, piDirectories: [join(root, "agent")], home: join(root, "home") };
     });
     afterAll(() => rm(root, { recursive: true, force: true }));
@@ -324,6 +337,12 @@ describe("Safe Command", () => {
       ["a cd in a pipeline", () => "cd src | git status"],
       ["a cd at the end of a pipeline", () => "ls | cd src"],
       ["an unsafe later segment", () => "cd src && rm -rf x"],
+      // `..` after a symlink: bash's logical `cd` lands in the workspace, `cd -P` outside it.
+      ["a logical and physical path that disagree", () => "cd inner-link/.. && git status"],
+      ["a symlink to a nested repository", () => "cd repo-link && git status"],
+      ["version-control metadata in another case", () => "cd caps/.GIT && ls"],
+      ["a nested repository named in another case", () => "cd caps && git status"],
+      ["a bare repository's head in another case", () => "cd lower && git log"],
     ])("reviews %s", (_case, command) => {
       expect(isSafeCommand(command(), {}, where)).toBe(false);
     });
@@ -352,9 +371,101 @@ describe("Safe Command", () => {
     });
 
     it("loses track of the directory after a cd only an allow Command Rule permits", () => {
-      const rules = { "cd /opt": "allow" } as const;
-      expect(isSafeCommand("cd /opt && git status", rules, where)).toBe(true);
-      expect(isSafeCommand("cd /opt && cd src", rules, where)).toBe(false);
+      for (const rules of [{ "cd /opt": "allow" }, { cd: "allow" }] as const) {
+        // Git there could read another repository's configuration.
+        expect(isSafeCommand("cd /opt && git status", rules, where)).toBe(false);
+        expect(isSafeCommand("cd /opt; git log", rules, where)).toBe(false);
+        // A later cd is no longer proved, so only a rule that covers it allows it.
+        expect(isSafeCommand("cd /opt && cd src", rules, where)).toBe("cd" in rules);
+        // Other built-in programs only read where they are pointed.
+        expect(isSafeCommand("cd /opt && ls && pwd", rules, where)).toBe(true);
+        // Git before the cd still runs in the working directory.
+        expect(isSafeCommand("git status && cd /opt", rules, where)).toBe(true);
+      }
+      // Without `where` no cd is proved, so any allowed one loses track too.
+      expect(isSafeCommand("cd src && git status", { cd: "allow" })).toBe(false);
+      // A `git` the user allowed by Command Rule stays allowed: that is the user's choice.
+      expect(
+        isSafeCommand("cd /opt && git status", { "cd /opt": "allow", git: "allow" }, where),
+      ).toBe(true);
+      expect(isSafeCommand("pushd /opt && git status", { pushd: "allow" }, where)).toBe(false);
+    });
+
+    describe("with the environment the shell inherits", () => {
+      const clean = { env: { PATH: "/usr/bin:/bin" } };
+      const safe = (command: string, environment: ShellEnvironment) =>
+        isSafeCommand(command, {}, where, environment);
+
+      it("allows cd and git in a clean environment, and with git's absolute hook variables", () => {
+        expect(safe("cd src && git status", clean)).toBe(true);
+        const hook = { env: { ...clean.env, GIT_EXEC_PATH: "/usr/lib/git-core", GIT_PREFIX: "" } };
+        expect(safe("cd src && git status", hook)).toBe(true);
+      });
+
+      it.each([
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+      ])("reviews git, with or without cd, while %s is set", (name) => {
+        for (const value of ["/abs/path", "payload", "1"]) {
+          const environment = { env: { ...clean.env, [name]: value } };
+          expect(safe("git status", environment), value).toBe(false);
+          expect(safe("cd src && git log", environment), value).toBe(false);
+          expect(safe("ls", environment), value).toBe(true);
+        }
+      });
+
+      it("reviews cd while a git variable holds a relative path", () => {
+        const environment = { env: { ...clean.env, GIT_EXEC_PATH: "payload" } };
+        expect(safe("cd src && ls", environment)).toBe(false);
+        expect(safe("ls src", environment)).toBe(true);
+      });
+
+      it.each([
+        ["BASH_ENV", { BASH_ENV: "/home/me/.bashenv" }],
+        ["ENV", { ENV: "/home/me/.shrc" }],
+        ["BASHOPTS", { BASHOPTS: "cdable_vars" }],
+        ["SHELLOPTS", { SHELLOPTS: "posix" }],
+        ["an exported function", { "BASH_FUNC_cd%%": "() { builtin cd /tmp; }" }],
+      ])("reviews cd while %s could redefine it", (_case, variables) => {
+        expect(safe("cd src && ls", { env: { ...clean.env, ...variables } })).toBe(false);
+      });
+
+      it("reviews a program an exported function replaces", () => {
+        const environment = { env: { ...clean.env, "BASH_FUNC_git%%": "() { rm -rf ~; }" } };
+        expect(safe("git status", environment)).toBe(false);
+        expect(safe("ls", environment)).toBe(true);
+      });
+
+      it("reviews cd unless Pi runs bash or sh without a command prefix", () => {
+        for (const shellPath of ["/bin/bash", "/usr/bin/sh", "C:\\Git\\bin\\bash.exe"])
+          expect(safe("cd src && ls", { ...clean, shellPath }), shellPath).toBe(true);
+        for (const shellPath of ["/bin/zsh", "/usr/bin/fish", "/bin/dash"])
+          expect(safe("cd src && ls", { ...clean, shellPath }), shellPath).toBe(false);
+        expect(safe("cd src && ls", { ...clean, commandPrefix: "shopt -s expand_aliases" })).toBe(
+          false,
+        );
+        expect(safe("cd src && ls", { ...clean, commandPrefix: "  " })).toBe(true);
+        expect(safe("git status", { ...clean, shellPath: "/bin/zsh" })).toBe(true);
+      });
+
+      it("reviews every command while PATH has a relative entry", () => {
+        for (const path of ["bin:/usr/bin", "/usr/bin::/bin", ".:/usr/bin"])
+          expect(safe("ls", { env: { PATH: path } }), path).toBe(false);
+      });
+
+      it("reads CDPATH from the given environment", () => {
+        const environment = { env: { ...clean.env, CDPATH: "/elsewhere" } };
+        expect(safe("cd src", environment)).toBe(false);
+        expect(safe(`cd ${join(workspace, "src")}`, environment)).toBe(true);
+      });
     });
   });
 

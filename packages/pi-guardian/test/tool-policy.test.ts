@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sensitivePathReason, type SensitivePathContext } from "../src/sensitive-paths.js";
 import { onlyReads, resolveToolPolicy, type ToolPolicyInput } from "../src/tool-policy.js";
+import { useCleanShellEnvironment } from "./fixtures/shell-environment.js";
+
+useCleanShellEnvironment();
 
 let root: string;
 let workspace: string;
@@ -271,6 +274,17 @@ describe("Tool Policy resolution", () => {
         resolveToolPolicy(call({ toolName: "bash", input: { command: escape }, settled: true }))
           .policy,
       ).toBe("review");
+    // What the shell inherits is passed through.
+    expect(
+      resolveToolPolicy(
+        call({
+          toolName: "bash",
+          input: { command },
+          settled: true,
+          environment: { env: { PATH: "/bin" }, shellPath: "/bin/zsh" },
+        }),
+      ).policy,
+    ).toBe("review");
     // A deny Command Rule on a later segment still denies.
     expect(
       resolveToolPolicy(

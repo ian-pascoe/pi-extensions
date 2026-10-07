@@ -4,7 +4,7 @@
  * a Safe Command and goes to the Guardian.
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, resolve, win32 } from "node:path";
 import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
 import {
   commandStarts,
@@ -175,14 +175,112 @@ function matchRule(
   return best?.rule;
 }
 
+/** What the shell running a `bash` command inherits, for judging Safe Commands. */
+export interface ShellEnvironment {
+  /** The environment variables the command runs with. */
+  env: NodeJS.ProcessEnv;
+  /** Pi's `shellPath` setting; unset, Pi runs bash, or `sh` where there is none. */
+  shellPath?: string | undefined;
+  /** Pi's `shellCommandPrefix` setting, run before every command. */
+  commandPrefix?: string | undefined;
+}
+
+/** The environment of this process, which Pi's `bash` tool passes on, without Pi's settings. */
+export function processShellEnvironment(): ShellEnvironment {
+  return { env: process.env };
+}
+
+function isSet(value: string | undefined): boolean {
+  return value !== undefined && value !== "";
+}
+
+/**
+ * Git variables that point git at another repository, index, object store, configuration, or
+ * helper programs, or inject configuration: while any is set, `git` is not a built-in Safe
+ * Command, since what it reads and runs no longer follows from the workspace.
+ */
+const gitRedirections = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CONFIG",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_PARAMETERS",
+];
+
+/**
+ * Whether `PATH` has an empty or relative entry, which the shell resolves against its working
+ * directory: a bare program name could then run a file the agent wrote, unreviewed.
+ */
+function relativePath(env: NodeJS.ProcessEnv): boolean {
+  const path = env["PATH"];
+  return path !== undefined && path.split(delimiter).some((entry) => !isAbsolute(entry));
+}
+
+/** Whether bash would run an exported shell function (`BASH_FUNC_name%%`) for `program`. */
+function exportedFunction(program: string, env: NodeJS.ProcessEnv): boolean {
+  return isSet(env[`BASH_FUNC_${program}%%`]) || isSet(env[`BASH_FUNC_${program}()`]);
+}
+
+/** Shells whose `cd` Guardian models: bash, and `sh` where Pi finds no bash. */
+const modeledShells = new Set(["bash", "sh"]);
+
+/**
+ * Whether the shell's `cd` behaves as {@link cdTarget} models it: Pi runs bash or `sh` with no
+ * command prefix; no startup file is sourced (`BASH_ENV`, `ENV`) and no exported function or
+ * shell option (`BASH_FUNC_*`, `BASHOPTS`, `SHELLOPTS`) could redefine `cd` or `CDPATH`; and no
+ * `GIT_*` variable holds anything but an absolute path, since a relative one such as
+ * `GIT_DIR=.payload` is resolved against the directory `cd` enters. (Git sets an absolute
+ * `GIT_EXEC_PATH` for its hooks, which changes nothing.)
+ */
+function cdModeled(environment: ShellEnvironment): boolean {
+  const { env, shellPath, commandPrefix } = environment;
+  if (commandPrefix?.trim()) return false;
+  if (
+    shellPath !== undefined &&
+    // `win32.basename` splits at both `/` and `\`, for a Windows `shellPath` too.
+    !modeledShells.has(
+      win32
+        .basename(shellPath)
+        .replace(/\.exe$/i, "")
+        .toLowerCase(),
+    )
+  )
+    return false;
+  if (["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"].some((name) => isSet(env[name]))) return false;
+  return !Object.entries(env).some(
+    ([name, value]) =>
+      (name.startsWith("GIT_") && isSet(value) && !isAbsolute(value ?? "")) ||
+      (name.startsWith("BASH_FUNC_") && isSet(value)),
+  );
+}
+
 /** Whether one segment is a Safe Command, given the Command Rule it matched, if any. */
-function safeSegment(segment: string, rule: MatchedCommandRule | undefined): boolean {
+function safeSegment(
+  segment: string,
+  rule: MatchedCommandRule | undefined,
+  environment: ShellEnvironment,
+  /** An earlier `cd` left the directory unknown: built-in `git` may read another repository. */
+  directoryUnknown: boolean,
+): boolean {
   const words = literalWords(segment);
   const program = words?.[0];
   if (!words || program === undefined) return false;
   // An environment assignment (`PAGER=x git log`) or a path (`./ls`) is not a known program.
   if (program.includes("=") || program.includes("/") || program === "") return false;
+  if (exportedFunction(program, environment.env)) return false;
+  // An `allow` Command Rule is the user's choice, even for `git` in an unknown directory.
   if (rule?.policy === "allow") return true;
+  if (
+    program === "git" &&
+    (directoryUnknown || gitRedirections.some((name) => isSet(environment.env[name])))
+  )
+    return false;
   const check = builtInPrograms.get(program);
   return check ? check(words.slice(1)) : false;
 }
@@ -223,11 +321,13 @@ function cdTarget(
   args: readonly string[],
   from: string,
   where: SensitivePathContext,
+  environment: ShellEnvironment,
 ): string | undefined {
   const [target] = args;
   if (args.length !== 1 || !target || target.startsWith("-")) return undefined;
   if ((where.platform ?? process.platform) === "win32") return undefined;
-  if (process.env["CDPATH"] && !isAbsolute(target)) return undefined;
+  if (!cdModeled(environment)) return undefined;
+  if (isSet(environment.env["CDPATH"]) && !isAbsolute(target)) return undefined;
   const logical = resolve(from, target);
   // Sensitive Paths are judged as Pi's file tools resolve paths, which rewrites some spellings.
   if (resolveToolPath(logical, where.cwd) !== logical) return undefined;
@@ -249,31 +349,45 @@ function cdTarget(
  * target harmless from every directory the shell may be in: the working directory at first, then
  * also each earlier `cd` target, since a `cd` may fail and leave the directory as it was, whatever
  * the operator. A `cd` in a pipeline runs in a subshell in bash but changes the directory in zsh,
- * so it is not a Safe Command segment. A `cd` only an `allow` Command Rule permits leaves the
- * directory unknown, so no later `cd` is a Safe Command segment. Without `where`, no `cd` is.
+ * so it is not a Safe Command segment. A directory change only an `allow` Command Rule permits
+ * (`cd`, `pushd`, `popd`, or a builtin that runs shell code) leaves the directory unknown: no
+ * later `cd` is then a Safe Command segment, and neither is a built-in `git`, which could read
+ * another repository's configuration there. Without `where`, no `cd` is a Safe Command segment.
+ * While `PATH` has a relative entry, no segment is.
  */
 function safeSegments(
   { segments, operators }: Segments,
   matched: readonly (MatchedCommandRule | undefined)[],
   where: SensitivePathContext | undefined,
+  environment: ShellEnvironment,
 ): boolean {
+  if (relativePath(environment.env)) return false;
   let directories = where ? [where.cwd] : [];
+  let directoryUnknown = false;
   for (const [index, segment] of segments.entries()) {
     const words = literalWords(segment);
     if (words?.[0] === "cd") {
       const piped = operators[index - 1] === "|" || operators[index] === "|";
       const targets =
-        where && !piped ? directories.map((from) => cdTarget(words.slice(1), from, where)) : [];
+        where && !piped && !directoryUnknown
+          ? directories.map((from) => cdTarget(words.slice(1), from, where, environment))
+          : [];
       if (targets.length && targets.every((target) => target !== undefined)) {
         directories = [...new Set([...directories, ...targets])];
         continue;
       }
-      directories = [];
     }
-    if (!safeSegment(segment, matched[index])) return false;
+    if (!safeSegment(segment, matched[index], environment, directoryUnknown)) return false;
+    if (directoryChanges.has(words?.[0] ?? "")) {
+      directories = [];
+      directoryUnknown = true;
+    }
   }
   return true;
 }
+
+/** Builtins that change the directory, or run shell code that may; see {@link safeSegments}. */
+const directoryChanges = new Set(["cd", "pushd", "popd", "source", ".", "eval"]);
 
 /** How a `bash` command is treated: run, sent to the Guardian, or blocked by a Command Rule. */
 export type CommandJudgment =
@@ -295,12 +409,14 @@ const caseInsensitivePlatforms: readonly NodeJS.Platform[] = ["darwin", "win32"]
  * Otherwise the command is a Safe Command, and runs, only when its segments are joined by `|`,
  * `&&`, `||`, or `;` and each is literal words whose program is a built-in safe program or
  * matches an `allow` rule, or is a `cd` into the workspace judged from `where`, whose `cwd` the
- * command starts in.
+ * command starts in. `environment` is what the shell inherits: some variables and settings keep
+ * `cd`, `git`, or every program from being safe.
  */
 export function judgeCommand(
   command: string,
   rules: Readonly<PolicyEntries> = {},
   where?: SensitivePathContext,
+  environment: ShellEnvironment = processShellEnvironment(),
 ): CommandJudgment {
   const split = splitSegments(command);
   const { segments, operators } = split;
@@ -321,7 +437,7 @@ export function judgeCommand(
   const matched = words.map((segmentWords) => matchRule(segmentWords, rules));
   const safe =
     operators.every((operator) => safeOperators.has(operator)) &&
-    safeSegments(split, matched, where);
+    safeSegments(split, matched, where, environment);
   return safe ? { verdict: "allow" } : { verdict: "review", rule: undefined };
 }
 
@@ -330,6 +446,7 @@ export function isSafeCommand(
   command: string,
   rules: Readonly<PolicyEntries> = {},
   where?: SensitivePathContext,
+  environment: ShellEnvironment = processShellEnvironment(),
 ): boolean {
-  return judgeCommand(command, rules, where).verdict === "allow";
+  return judgeCommand(command, rules, where, environment).verdict === "allow";
 }
