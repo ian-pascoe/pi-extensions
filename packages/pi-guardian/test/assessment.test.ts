@@ -40,6 +40,16 @@ describe("Guardian output parsing", () => {
     });
   });
 
+  it("accepts the same assessment repeated, with braces inside its rationale", () => {
+    const braced =
+      '{"risk_level":"low","user_authorization":"high","rationale":"uses {x} and \\"}\\""}';
+    expect(parseAssessment(`${braced}\n\`\`\`json\n${braced}\n\`\`\``)).toEqual({
+      risk: "low",
+      authorization: "high",
+      rationale: 'uses {x} and "}"',
+    });
+  });
+
   it("ignores extra fields", () => {
     expect(
       parseAssessment(
@@ -53,6 +63,10 @@ describe("Guardian output parsing", () => {
     ["unknown risk", '{"risk_level":"severe","user_authorization":"low","rationale":"x"}'],
     ["missing rationale", '{"risk_level":"low","user_authorization":"low"}'],
     ["broken JSON", '{"risk_level":"low",'],
+    [
+      "two differing assessments",
+      '{"risk_level":"critical","user_authorization":"unknown","rationale":"x"}\n```json\n{"risk_level":"low","user_authorization":"high","rationale":"y"}\n```',
+    ],
   ])("rejects %s as a Review Failure", (_case, text) => {
     expect(() => parseAssessment(text)).toThrow(/malformed output/);
   });

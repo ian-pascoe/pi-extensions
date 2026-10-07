@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 
@@ -42,20 +43,35 @@ export function decide(risk: RiskLevel, authorization: UserAuthorization): Outco
   return "rejected";
 }
 
-/** JSON candidates in a reply: the whole text, fenced blocks, then the outermost braces. */
-function candidates(text: string): string[] {
-  const found = [text.trim()];
-  for (const match of text.matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/gi))
-    if (match[1]) found.push(match[1].trim());
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) found.push(text.slice(start, end + 1));
-  return found;
+/** Every top-level `{…}` span in a reply, skipping braces inside JSON strings. */
+function objectSpans(text: string): string[] {
+  const spans: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  // Every structural character is ASCII, so UTF-16 indexes are safe here.
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"' && depth > 0) inString = true;
+    else if (character === "{") {
+      if (depth++ === 0) start = index;
+    } else if (character === "}" && depth > 0 && --depth === 0)
+      spans.push(text.slice(start, index + 1));
+  }
+  return spans;
 }
 
-/** Parse a Guardian reply; throws a Review Failure message when no valid assessment is found. */
-export function parseAssessment(text: string): Assessment {
-  for (const candidate of candidates(text)) {
+/** Valid assessments in a reply: the whole text, or each top-level JSON object in it. */
+function assessments(text: string): Assessment[] {
+  const found: Assessment[] = [];
+  for (const candidate of [text.trim(), ...objectSpans(text)]) {
     let parsed: unknown;
     try {
       parsed = JSON.parse(candidate);
@@ -63,13 +79,28 @@ export function parseAssessment(text: string): Assessment {
       continue;
     }
     if (!Value.Check(assessmentSchema, parsed)) continue;
-    return {
+    found.push({
       risk: parsed.risk_level,
       authorization: parsed.user_authorization,
       rationale: parsed.rationale.trim(),
-    };
+    });
   }
-  throw new Error("Guardian returned malformed output (expected the assessment JSON object)");
+  return found;
+}
+
+/**
+ * Parse a Guardian reply; throws a Review Failure message unless it holds exactly one valid
+ * assessment. Repeating the same assessment is tolerated; differing assessments are ambiguous.
+ */
+export function parseAssessment(text: string): Assessment {
+  const [first, ...rest] = assessments(text);
+  if (!first)
+    throw new Error("Guardian returned malformed output (expected the assessment JSON object)");
+  if (rest.some((other) => !isDeepStrictEqual(other, first)))
+    throw new Error(
+      "Guardian returned malformed output (more than one differing assessment JSON object)",
+    );
+  return first;
 }
 
 /** Codex-style feedback for a Rejection, as reported to the Guarded Agent. */
