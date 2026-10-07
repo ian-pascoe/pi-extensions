@@ -337,8 +337,9 @@ searched root in `root_path`.
 
 `lsp_workspace_symbols` requires `query` and a root-anchor `file_path`, and `lsp_workspace_diagnostics`
 a root-anchor `file_path`. `lsp_capabilities` and `lsp_restart` require `server_id` and a root-anchor
-`file_path`. Other reads and `lsp_code_actions` query every matching capable server unless narrowed
-by `server_id`; successful responses remain visible when another server fails. Automatic reads omit matching
+`file_path`. All other reads, including `lsp_workspace_diagnostics`, and `lsp_code_actions` query
+every matching capable server unless narrowed by `server_id`; successful responses remain visible
+when another server fails. Automatic reads omit matching
 incapable servers and fail once if none are capable; explicitly selecting an incapable server
 reports that the operation is unsupported. `lsp_rename` and the `lsp_format_*` tools may omit
 `server_id` only when exactly one matching capable server exists.
@@ -351,6 +352,8 @@ have not started shows with `all: true`, in the structured result as in the text
 otherwise the diagnostics it has pushed for files opened in this session. A server that answers only
 document pulls, such as the TypeScript server, publishes no workspace diagnostics; its value is then
 `{ status: "unsupported", message }`, pointing to `lsp_diagnostics`, rather than an empty result.
+Such a server is not omitted as incapable: without `server_id`, every matching server returns its
+own result.
 A result from pushed diagnostics carries a `message` too: it says how many files the push cache
 covers, counting files with no diagnostics, and points to `lsp_diagnostics` for other files, so an
 empty result is not read as a clean workspace.
