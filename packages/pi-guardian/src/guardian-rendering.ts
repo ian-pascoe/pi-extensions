@@ -3,8 +3,14 @@ import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { riskLabel } from "./guardian-assessment.js";
-import { reviewEntrySchema, reviewTotalsSchema, type AuditResult } from "./guardian-audit.js";
 import {
+  reviewEntrySchema,
+  reviewTotalsSchema,
+  type AuditResult,
+  type EscalationRecord,
+} from "./guardian-audit.js";
+import {
+  escalationThinkingLevel,
   guardianAppliedChangeSchema,
   guardianOptionKeys,
   guardianOptionsSchema,
@@ -74,16 +80,15 @@ export function formatGuardianOption(options: GuardianOptions, key: keyof Guardi
       return options.policy.trim()
         ? `${preview(options.policy)} (${options.policy.length} chars)`
         : "none";
-    case "tools": {
-      if (options.tools === undefined) return "inherit";
-      const entries = Object.entries(options.tools);
+    case "tools":
+    case "commands": {
+      const value = options[key];
+      if (value === undefined) return "inherit";
+      const entries = Object.entries(value);
       return entries.length
         ? entries.map(([name, policy]) => `${name}=${policy ?? "default"}`).join(", ")
         : "none";
     }
-    case "safeCommands":
-      if (options.safeCommands === undefined) return "inherit";
-      return options.safeCommands.length ? options.safeCommands.join(", ") : "none";
     case "reviewTimeoutMs":
       if (options.reviewTimeoutMs === undefined) return "inherit";
       return options.reviewTimeoutMs < 1_000
@@ -101,6 +106,15 @@ export function formatGuardianOption(options: GuardianOptions, key: keyof Guardi
   }
 }
 
+/** What an Escalation Pass did to a review's first assessment. */
+function escalationLabel(escalation: EscalationRecord): string {
+  const first = escalation.firstPass;
+  const was = `first pass ${riskLabel({ risk: first.risk, category: first.riskCategory })}/${first.authorization}`;
+  if (escalation.result === "assessed") return `escalated (${was})`;
+  if (escalation.result === "aborted") return `escalation aborted (${was})`;
+  return `escalation failed, first pass stands (${was})`;
+}
+
 /**
  * One Guardian Review in the transcript: result, tool, scores, and rationale. Unless `verbose`
  * is on, a review that let its call run unremarkably renders nothing: an allowed or unused review
@@ -116,10 +130,13 @@ export function renderReviewEntry(
 ): Component | undefined {
   if (!Value.Check(reviewEntrySchema, data))
     return new Text(`Guardian Review\n${JSON.stringify(data, null, 2)}`, 0, 0);
+  // Downgraded and escalated reviews always show: both mean the first assessment was doubtful.
   const quiet =
     (data.result === "allowed" || data.result === "unused") &&
     !data.userOverride &&
-    !data.argumentDrift;
+    !data.argumentDrift &&
+    !data.downgraded &&
+    !data.escalation;
   if (quiet && !verbose) return undefined;
   const style = resultStyle[data.result];
   const scores =
@@ -133,6 +150,7 @@ export function renderReviewEntry(
     data.userOverride ? theme.fg("warning", "user override") : undefined,
     data.argumentDrift ? theme.fg("warning", "arguments changed after review") : undefined,
     data.downgraded ? theme.fg("muted", "decided as medium: no Risk Category") : undefined,
+    data.escalation ? theme.fg("accent", escalationLabel(data.escalation)) : undefined,
   ]
     .filter((part) => part !== undefined)
     .join("  ");
@@ -141,6 +159,22 @@ export function renderReviewEntry(
   if (reason) lines.push(expanded ? reason : preview(reason));
   if (expanded) {
     lines.push(theme.fg("dim", `arguments ${data.arguments}`));
+    if (data.escalation) {
+      const { escalation } = data;
+      if (escalation.firstPass.rationale)
+        lines.push(theme.fg("dim", `first pass: ${escalation.firstPass.rationale}`));
+      if (escalation.failure) lines.push(theme.fg("dim", `escalation: ${escalation.failure}`));
+      lines.push(
+        theme.fg(
+          "dim",
+          `escalation ${[
+            escalation.model ?? "no model",
+            `${(escalation.durationMs / 1_000).toFixed(1)}s`,
+            escalation.cost === null ? "cost unknown" : formatMoney(escalation.cost),
+          ].join(" \u00b7 ")}`,
+        ),
+      );
+    }
     const meta = [
       data.model ?? undefined,
       `${(data.durationMs / 1_000).toFixed(1)}s`,
@@ -169,6 +203,13 @@ export function guardianStatusHeadline(
       entry.settings.model ??
         `session model${theme.fg("dim", " (inherited from the session; choose a small, fast model in /guardian)")}`,
     );
+  if (entry.settings && entry.state === "enabled")
+    parts.push(
+      theme.fg(
+        "dim",
+        `escalates to ${entry.settings.escalationModel ?? "the Guardian model"} (${escalationThinkingLevel(entry.settings)} thinking)`,
+      ),
+    );
   if (entry.followsRoot) parts.push(theme.fg("dim", `follows root ${entry.followsRoot}`));
   const lines = [parts.join(theme.fg("dim", " · "))];
   const totals = entry.totals;
@@ -183,6 +224,7 @@ export function guardianStatusHeadline(
           `${totals.failed} failed`,
           totals.aborted ? `${totals.aborted} aborted` : undefined,
           `${totals.overrides} ${totals.overrides === 1 ? "override" : "overrides"}`,
+          totals.escalated ? `${totals.escalated} escalated` : undefined,
           totals.drift ? `${totals.drift} argument drift` : undefined,
           totals.cost === null ? "cost unknown" : `cost ${formatMoney(totals.cost)}`,
         ]

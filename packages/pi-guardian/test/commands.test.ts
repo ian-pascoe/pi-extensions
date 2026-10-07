@@ -14,6 +14,7 @@ import {
 } from "../src/guardian-rendering.js";
 import {
   assessment,
+  confirmedRejection,
   createGuardianHarness,
   reply,
   toolCalls,
@@ -67,7 +68,7 @@ describe("/guardian command", () => {
     );
     harness.guardianReplies.push(
       assessment("low", "high", "Requested."),
-      assessment("critical", "unknown", "Not requested."),
+      ...confirmedRejection("critical", "unknown", "Not requested."),
     );
     await harness.session.prompt("Deploy a.");
     await harness.session.prompt("/guardian status");
@@ -77,7 +78,16 @@ describe("/guardian command", () => {
       followsRoot: null,
       settings: { enabled: true, model: "guardian-test/reviewer", thinkingLevel: "low" },
       sources: { model: "global", enabled: "default" },
-      totals: { reviews: 2, allowed: 1, rejected: 1, failed: 0, overrides: 0, cost: 0.0022 },
+      // The Rejection's Escalation Pass adds its cost to the same review.
+      totals: {
+        reviews: 2,
+        allowed: 1,
+        rejected: 1,
+        failed: 0,
+        overrides: 0,
+        escalated: 1,
+        cost: 0.0033,
+      },
       error: null,
     });
     const rendered = stripVTControlCharacters(
@@ -85,8 +95,9 @@ describe("/guardian command", () => {
     );
     expect(rendered).toContain("Guardian ● enabled");
     expect(rendered).toContain(
-      "2 reviews · 1 allowed · 1 rejected · 0 failed · 0 overrides · cost $0.0022",
+      "2 reviews · 1 allowed · 1 rejected · 0 failed · 0 overrides · 1 escalated · cost $0.0033",
     );
+    expect(rendered).toContain("escalates to the Guardian model (low thinking)");
   });
 
   it("changes one Tool Policy entry at the session scope", async () => {
@@ -213,6 +224,15 @@ describe("Guardian renderers", () => {
     expect(renderReviewEntry(allowed, false, plainTheme, true)).toBeDefined();
     expect(renderReviewEntry({ ...allowed, userOverride: true }, false, plainTheme)).toBeDefined();
     expect(renderReviewEntry({ ...allowed, argumentDrift: true }, false, plainTheme)).toBeDefined();
+    // An uncategorized high or critical risk decided as medium always shows.
+    const downgraded = renderReviewEntry(
+      { ...allowed, risk: "critical", downgraded: true },
+      false,
+      plainTheme,
+    );
+    expect(stripVTControlCharacters(downgraded?.render(200).join("\n") ?? "")).toContain(
+      "decided as medium: no Risk Category",
+    );
   });
 });
 

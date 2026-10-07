@@ -1,7 +1,7 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import type { RootUserMessage } from "./guardian-evidence.js";
+import type { ApprovedDelegation, RootUserMessage } from "./guardian-evidence.js";
 import type { ResolvedGuardianSettings } from "./guardian-settings.js";
 
 /** Reads a root session's current effective Guardian settings. */
@@ -50,7 +50,59 @@ export function rootSession(sessionId: string): RootSession | undefined {
   return registry().get(sessionId);
 }
 
-const childIdentitySchema = Type.Object({ original_root_session_id: Type.String() });
+/** Reads the delegations a session's Guardian or user allowed, newest last. */
+export type DelegationReader = () => ApprovedDelegation[];
+
+/**
+ * Process-global registry of approved delegations, keyed by the delegating agent: its root
+ * session ID and Minimal Subagents canonical agent ID (`root` for the root session). A Child
+ * Agent records only these IDs of its parent, not the parent's session ID.
+ */
+const delegationsKey = Symbol.for("pi-guardian.approved-delegations.v1");
+
+function delegations(): Map<string, DelegationReader> {
+  const existing: unknown = Object.getOwnPropertyDescriptor(globalThis, delegationsKey)?.value;
+  // Only this module writes the slot, always with a Map of delegation readers.
+  if (existing instanceof Map) return existing;
+  const created = new Map<string, DelegationReader>();
+  Object.defineProperty(globalThis, delegationsKey, { value: created, configurable: true });
+  return created;
+}
+
+/** The canonical agent ID Minimal Subagents gives the root agent. */
+export const rootAgentId = "root";
+
+function delegatorKey(rootSessionId: string, agentId: string): string {
+  return JSON.stringify([rootSessionId, agentId]);
+}
+
+/** Publish an agent's approved delegations; returns the matching unpublish. */
+export function publishDelegations(
+  rootSessionId: string,
+  agentId: string,
+  reader: DelegationReader,
+): () => void {
+  const readers = delegations();
+  const key = delegatorKey(rootSessionId, agentId);
+  readers.set(key, reader);
+  return () => {
+    if (readers.get(key) === reader) readers.delete(key);
+  };
+}
+
+/** The delegations an agent's Guardian or user allowed, if it runs Guardian in this process. */
+export function approvedDelegations(
+  rootSessionId: string,
+  agentId: string,
+): ApprovedDelegation[] | undefined {
+  return delegations().get(delegatorKey(rootSessionId, agentId))?.();
+}
+
+const childIdentitySchema = Type.Object({
+  original_root_session_id: Type.String(),
+  canonical_agent_id: Type.Optional(Type.String()),
+  direct_parent_id: Type.Optional(Type.String()),
+});
 const advisorRoleSchema = Type.Object({ observedSessionId: Type.String() });
 
 /**
@@ -59,7 +111,13 @@ const advisorRoleSchema = Type.Object({ observedSessionId: Type.String() });
  */
 export type GuardedSessionRole =
   | { kind: "main" }
-  | { kind: "child"; rootSessionId: string }
+  | {
+      kind: "child";
+      rootSessionId: string;
+      /** Its Minimal Subagents canonical agent ID and its direct parent's, when recorded. */
+      agentId: string | undefined;
+      parentAgentId: string | undefined;
+    }
   | { kind: "advisor"; rootSessionId: string };
 
 /**
@@ -73,7 +131,12 @@ export function guardedSessionRole(branch: readonly SessionEntry[]): GuardedSess
       entry.customType === "minimal-subagents.identity" &&
       Value.Check(childIdentitySchema, entry.data)
     )
-      return { kind: "child", rootSessionId: entry.data.original_root_session_id };
+      return {
+        kind: "child",
+        rootSessionId: entry.data.original_root_session_id,
+        agentId: entry.data.canonical_agent_id,
+        parentAgentId: entry.data.direct_parent_id,
+      };
     if (entry.customType === "pi-advisor-role" && Value.Check(advisorRoleSchema, entry.data))
       return { kind: "advisor", rootSessionId: entry.data.observedSessionId };
   }

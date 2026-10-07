@@ -29,10 +29,13 @@ import {
   type GuardianRenderTheme,
   type GuardianStatusEntry,
 } from "./guardian-rendering.js";
-import type { RootUserMessage } from "./guardian-evidence.js";
+import type { ApprovedDelegation, RootUserMessage } from "./guardian-evidence.js";
 import {
+  approvedDelegations,
   guardedSessionRole,
+  publishDelegations,
   publishRootSession,
+  rootAgentId,
   rootSession,
   type GuardedSessionRole,
 } from "./guardian-root-registry.js";
@@ -75,6 +78,8 @@ export default function guardian(pi: ExtensionAPI): void {
   let lastRoot:
     | { rootSessionId: string; resolved: ResolvedGuardianSettings; userMessages: RootUserMessage[] }
     | undefined;
+  /** A Child Agent's parent's approved delegations, kept after the parent leaves like `lastRoot`. */
+  let lastDelegations: ApprovedDelegation[] = [];
 
   // Allowed reviews stay out of the transcript unless `verbose` is on; their entries still count.
   pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) => {
@@ -124,6 +129,12 @@ export default function guardian(pi: ExtensionAPI): void {
     unavailable: () => discoveryError ?? "Guardian session is unavailable",
     role: () => role,
     rootUserMessages: () => (role.kind === "main" ? [] : (lastRoot?.userMessages ?? [])),
+    delegator() {
+      if (role.kind !== "child" || role.parentAgentId === undefined) return undefined;
+      const published = approvedDelegations(role.rootSessionId, role.parentAgentId);
+      if (published) lastDelegations = published;
+      return { agentId: role.parentAgentId, approved: lastDelegations };
+    },
     settings() {
       const current = effective();
       // On a settings error the gate fails closed; the defaults only shape its dialogs.
@@ -159,6 +170,7 @@ export default function guardian(pi: ExtensionAPI): void {
     unpublish = undefined;
     role = guardedSessionRole(ctx.sessionManager.getBranch());
     lastRoot = undefined;
+    lastDelegations = [];
     footer = ctx.hasUI ? ctx.ui : undefined;
     const found = discoverPiAgentSession(pi, piSdk.AgentSession);
     if (found.ok) {
@@ -174,26 +186,40 @@ export default function guardian(pi: ExtensionAPI): void {
       discoveryError = `Guardian cannot read this session's settings: ${found.warning}`;
     }
     const sessionId = ctx.sessionManager.getSessionId();
+    const unpublishers: (() => void)[] = [];
     if (role.kind === "main" && session) {
       const subject = session;
-      unpublish = publishRootSession(sessionId, {
-        rootSessionId: () => sessionId,
-        settings: () => readGuardianSettings(subject, layers),
-        userMessages: () => gate.typedUserMessages(),
-      });
+      unpublishers.push(
+        publishRootSession(sessionId, {
+          rootSessionId: () => sessionId,
+          settings: () => readGuardianSettings(subject, layers),
+          userMessages: () => gate.typedUserMessages(),
+        }),
+        publishDelegations(sessionId, rootAgentId, () => gate.approvedDelegations()),
+      );
     } else if (role.kind !== "main") {
       // Republish the root, so an Advisor observing this Child Agent follows the real root.
       const followed = role.rootSessionId;
-      unpublish = publishRootSession(sessionId, {
-        rootSessionId: () => followRoot()?.rootSessionId ?? followed,
-        settings() {
-          const current = effective();
-          if (!current.ok) throw new Error(current.error);
-          return current.resolved;
-        },
-        userMessages: () => followRoot()?.userMessages ?? [],
-      });
+      unpublishers.push(
+        publishRootSession(sessionId, {
+          rootSessionId: () => followRoot()?.rootSessionId ?? followed,
+          settings() {
+            const current = effective();
+            if (!current.ok) throw new Error(current.error);
+            return current.resolved;
+          },
+          userMessages: () => followRoot()?.userMessages ?? [],
+        }),
+      );
+      // A Child Agent's own delegations, for its children: nested delegation.
+      if (role.kind === "child" && role.agentId !== undefined)
+        unpublishers.push(
+          publishDelegations(role.rootSessionId, role.agentId, () => gate.approvedDelegations()),
+        );
     }
+    unpublish = () => {
+      for (const release of unpublishers) release();
+    };
     const current = effective();
     if (!current.ok)
       notify(ctx, `Guardian: ${current.error}. Run /skill:pi-guardian to diagnose.`, "error");
@@ -256,12 +282,16 @@ export default function guardian(pi: ExtensionAPI): void {
     if (entry.error) notify(ctx, `Guardian: ${entry.error}`, "error");
   }
 
-  /** The authored `tools` option at one scope. */
-  function authoredTools(subject: AgentSession, scope: GuardianSettingScope) {
-    if (scope === "session") return readGuardianOverrides(subject.sessionManager).tools;
+  /** The authored `tools` or `commands` option at one scope. */
+  function authoredEntries(
+    subject: AgentSession,
+    scope: GuardianSettingScope,
+    key: "tools" | "commands",
+  ) {
+    if (scope === "session") return readGuardianOverrides(subject.sessionManager)[key];
     const layer = layers[scope];
     if (layer instanceof Error) throw layer;
-    return layer.tools;
+    return layer[key];
   }
 
   /** Persist one validated change at its scope; undefined if superseded. */
@@ -405,15 +435,20 @@ export default function guardian(pi: ExtensionAPI): void {
             key: "policy",
             patch: parseGuardianOptions({ policy: edited }, command.scope),
           };
-        } else if (command.action === "tool") {
-          const tools = updatedToolEntries(
-            authoredTools(subject, command.scope),
-            command.name,
+        } else if (command.action === "tool" || command.action === "command") {
+          const key = command.action === "tool" ? "tools" : "commands";
+          const entries = updatedToolEntries(
+            authoredEntries(subject, command.scope, key),
+            command.action === "tool" ? command.name : command.prefix,
             command.value,
           );
-          change = tools
-            ? { action: "set", key: "tools", patch: parseGuardianOptions({ tools }, command.scope) }
-            : { action: "inherit", key: "tools" };
+          change = entries
+            ? {
+                action: "set",
+                key,
+                patch: parseGuardianOptions({ [key]: entries }, command.scope),
+              }
+            : { action: "inherit", key };
         } else change = command;
         applied = await applyChange(subject, command.scope, change, isCurrent);
       } catch (cause) {

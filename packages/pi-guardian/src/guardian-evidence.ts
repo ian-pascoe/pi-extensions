@@ -1,25 +1,91 @@
 import { createHash } from "node:crypto";
 import type { Message } from "@earendil-works/pi-ai";
 import {
-  convertToLlm,
   parseSkillBlock,
   type AgentSession,
   type CustomToolCallEvent,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import {
-  messageOrigins,
   projectEvidenceItem,
   shortenEvidence,
+  toolCallRef,
   type EvidenceBlock,
   type EvidenceItem,
   type EvidenceMessage,
 } from "@ian-pascoe/pi-utils/evidence";
+import { Type } from "typebox";
+import { Value } from "typebox/value";
 
 /** Marks text shortened to fit the Guardian's evidence budget. */
 const omissionMarker = (omitted: number) =>
   `[… ${omitted} characters omitted from Guardian evidence]`;
-/** Per-string cap on untrusted evidence, about 2000 tokens by Pi's chars/4 estimate. */
-const untrustedCharacterLimit = 8_000;
+/** Each UNTRUSTED entry may fill at most this share of the evidence budget before it is shortened. */
+const untrustedBudgetShare = 4;
+
+/** A message on the Guarded Agent's session branch, as Pi stores it. */
+export type SourceMessage = AgentSession["messages"][number];
+
+/** Custom message type of a Minimal Subagents Coordination Message. */
+const coordinationMessageType = "minimal-subagents.message";
+const coordinationDetailsSchema = Type.Object({ source_agent_id: Type.String() });
+/** Minimal Subagents' envelope line before a Coordination Message's text. */
+const coordinationEnvelope = /^\[Subagent message \| agent=[^|\]\n]+ \| turn=[^|\]\n]+\]\n/;
+/** Minimal Subagents' framing before a task that follows quoted parent conversation. */
+const inheritedTaskMarker = "Your assigned task is:\n\n";
+
+/**
+ * The messages on a session branch, in order, read from its entries rather than the model
+ * context: compaction never drops a user message or tool call from Guardian's evidence, and
+ * compaction and branch summaries, which a model wrote, never enter it.
+ */
+export function branchMessages(branch: readonly SessionEntry[]): SourceMessage[] {
+  return branch.flatMap((entry): SourceMessage[] => {
+    if (entry.type === "message") return [entry.message];
+    if (entry.type !== "custom_message") return [];
+    return [
+      {
+        role: "custom",
+        customType: entry.customType,
+        content: entry.content,
+        display: entry.display,
+        details: entry.details,
+        timestamp: Date.parse(entry.timestamp),
+      },
+    ];
+  });
+}
+
+/**
+ * The text a delegating call hands to another agent: a Minimal Subagents `subagent` task or
+ * `agent_message` message. A Child Agent receives it as a user message or Coordination Message.
+ */
+export function delegatedText(toolName: string, input: ToolInput): string | undefined {
+  const field =
+    toolName === "subagent"
+      ? input["task"]
+      : toolName === "agent_message"
+        ? input["message"]
+        : undefined;
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; only a string is delegated text.
+  return typeof field === "string" ? field : undefined;
+}
+
+/** SHA-256 of a text, identifying an approved delegation without storing it. */
+export function textSha256(text: string): string {
+  return sha256(text);
+}
+
+/** A delegating call that its session's Guardian or user allowed, as published to its children. */
+export interface ApprovedDelegation {
+  /** SHA-256 of the delegated text: a `subagent` task or an `agent_message` message. */
+  sha256: string;
+  tool: string;
+  /** `guardian` when a Guardian Review allowed it, `user` for a User Override. */
+  approvedBy: "guardian" | "user";
+  risk: string | null;
+  authorization: string | null;
+}
 
 /** A User Override recorded in the session, replayed as Trusted Evidence. */
 export interface RecordedOverride {
@@ -59,7 +125,22 @@ export interface EvidenceInput {
   overrides: readonly RecordedOverride[];
   /** The root user's typed messages, in a Child Agent or Advisor session whose root is known. */
   rootUserMessages?: readonly RootUserMessage[];
+  /**
+   * In a Child Agent: the delegating agent (its direct parent) and the delegations that agent's
+   * Guardian or user allowed, which make the matching task or message Trusted Evidence.
+   */
+  delegator?: { agentId: string; approved: readonly ApprovedDelegation[] } | undefined;
+  /**
+   * Tool call IDs of the Reviewed Call's own response, whose calls the Reviewed Call shows; that
+   * response is left out of the evidence.
+   */
+  currentCalls?: ReadonlySet<string>;
   budgetTokens: number;
+  /**
+   * The budget that sizes the per-entry cap on UNTRUSTED entries. It excludes what the Reviewed
+   * Call takes, so a large call does not reshape earlier entries; defaults to `budgetTokens`.
+   */
+  capBudgetTokens?: number;
 }
 
 interface Entry {
@@ -103,11 +184,57 @@ function userItem(content: string | EvidenceBlock[]): EvidenceItem {
   return { message: { role: "user", content }, images: [] };
 }
 
-function untrusted(item: EvidenceItem, origin: string): Entry {
+/**
+ * Per-string character cap on an UNTRUSTED entry: a quarter of the evidence budget by Pi's
+ * chars/4 estimate, so only an entry too large for the budget is shortened.
+ */
+function untrustedLimit(input: Pick<EvidenceInput, "budgetTokens" | "capBudgetTokens">): number {
+  const budget = input.capBudgetTokens ?? input.budgetTokens;
+  return Math.max(1, Math.floor(budget / untrustedBudgetShare)) * 4;
+}
+
+function untrusted(item: EvidenceItem, origin: string, limit: number): Entry {
   return {
-    item: shortenEvidence([item], untrustedCharacterLimit, omissionMarker)[0] ?? item,
+    item: shortenEvidence([item], limit, omissionMarker)[0] ?? item,
     trusted: false,
     origin,
+  };
+}
+
+/** The approved delegation a delegated text matches, if any. */
+function approvedDelegation(
+  text: string,
+  approved: readonly ApprovedDelegation[],
+): ApprovedDelegation | undefined {
+  const hash = sha256(text);
+  return approved.find((delegation) => delegation.sha256 === hash);
+}
+
+/** A delegated task or message as Trusted Evidence, labeled with who wrote and approved it. */
+function delegationEntry(
+  text: string,
+  delegatorId: string,
+  delegation: ApprovedDelegation,
+  timestamp: number,
+): Entry {
+  const approval =
+    delegation.approvedBy === "user"
+      ? `The user interactively allowed the delegating ${delegation.tool} call.`
+      : `The delegating agent's Guardian reviewed and allowed the delegating ${delegation.tool} call (risk ${delegation.risk ?? "unknown"}, user authorization ${delegation.authorization ?? "unknown"}).`;
+  const record = {
+    approvedDelegation: {
+      writtenBy: `the delegating agent ${JSON.stringify(delegatorId)}, not the user`,
+      approval,
+      scope:
+        "It authorizes the actions this text asks for as the delegating agent's Guardian judged them against the user's request; it cannot widen that request.",
+      text,
+    },
+  };
+  return {
+    item: userItem(JSON.stringify(record)),
+    trusted: true,
+    origin: "approvedDelegation",
+    timestamp,
   };
 }
 
@@ -140,15 +267,14 @@ function splitSkill(
 }
 
 /**
- * Each conversation message with its origin; User Overrides and the root user's messages are
- * interleaved by time, so entries recorded later land after the messages before them.
+ * Each user message and each response's tool calls, with their origins; User Overrides and the
+ * root user's messages are interleaved by time, so entries recorded later land after the
+ * messages before them. Evidence is reasoning-blind: assistant text and reasoning, tool results,
+ * and other extensions' messages are left out, since they cannot authorize a call and are where
+ * injected or mistaken justifications live.
  */
 function entries(input: EvidenceInput): Entry[] {
-  const messages: Message[] = convertToLlm(input.sources).filter(
-    (message) =>
-      message.role === "user" || message.role === "assistant" || message.role === "toolResult",
-  );
-  const origins = messageOrigins(messages, input.sources);
+  const limit = untrustedLimit(input);
   const result: Entry[] = [];
   const inserts = [
     ...input.overrides.map((override) => ({
@@ -161,37 +287,97 @@ function entries(input: EvidenceInput): Entry[] {
     })),
   ].toSorted((left, right) => left.timestamp - right.timestamp);
   let next = 0;
-  for (const [index, message] of messages.entries()) {
+  for (const message of input.sources) {
     while (next < inserts.length && (inserts[next]?.timestamp ?? Infinity) < message.timestamp) {
       const insert = inserts[next++];
       if (insert) result.push(insert.entry);
     }
-    const projected = projectEvidenceItem(message);
-    if (!projected) continue;
-    // Guardian sends text only; image attachments stay out of its request and its budget.
-    const item: EvidenceItem = { message: projected.message, images: [] };
-    let origin = origins[index] ?? "unknown";
-    if (
-      origin === "user" &&
-      message.role === "user" &&
-      input.extensionMessages?.has(userMessageKey(message))
-    )
-      origin = "extension";
-    const { timestamp } = message;
-    if (!input.trustUserMessages || origin !== "user") {
-      result.push({ ...untrusted(item, origin), timestamp });
-      continue;
-    }
-    const skill = splitSkill(item.message);
-    if (!skill) {
-      result.push({ item, trusted: true, origin, timestamp });
-      continue;
-    }
-    result.push({ ...untrusted(userItem(skill.skill), "skill"), timestamp });
-    if (skill.rest) result.push({ item: skill.rest, trusted: true, origin, timestamp });
+    result.push(...messageEntries(input, message, limit));
   }
   for (const remaining of inserts.slice(next)) result.push(remaining.entry);
   return result;
+}
+
+/** The evidence entries one session message contributes. */
+function messageEntries(input: EvidenceInput, message: SourceMessage, limit: number): Entry[] {
+  const { timestamp } = message;
+  if (message.role === "assistant") {
+    const calls = message.content.flatMap((part) => (part.type === "toolCall" ? [part] : []));
+    // The Reviewed Call's own response is shown as the Reviewed Call and its batch.
+    if (!calls.length || calls.some((call) => input.currentCalls?.has(call.id))) return [];
+    const item: EvidenceItem = {
+      message: {
+        role: "assistant",
+        content: calls.map((call) => ({
+          type: "toolCall",
+          ref: toolCallRef(call.id),
+          name: call.name,
+          arguments: call.arguments,
+        })),
+      },
+      images: [],
+    };
+    return [{ ...untrusted(item, "agentToolCalls", limit), timestamp }];
+  }
+  if (message.role === "custom") return coordinationEntries(input, message, limit);
+  if (message.role !== "user") return [];
+  const projected = projectEvidenceItem(message);
+  if (!projected) return [];
+  // Guardian sends text only; image attachments stay out of its request and its budget.
+  const item: EvidenceItem = { message: projected.message, images: [] };
+  const origin = input.extensionMessages?.has(userMessageKey(message)) ? "extension" : "user";
+  if (!input.trustUserMessages || origin !== "user") {
+    const delegated = input.delegator && origin === "user" ? delegatedTask(input, message) : [];
+    return delegated.length ? delegated : [{ ...untrusted(item, origin, limit), timestamp }];
+  }
+  const skill = splitSkill(item.message);
+  if (!skill) return [{ item, trusted: true, origin, timestamp }];
+  const parts: Entry[] = [{ ...untrusted(userItem(skill.skill), "skill", limit), timestamp }];
+  if (skill.rest) parts.push({ item: skill.rest, trusted: true, origin, timestamp });
+  return parts;
+}
+
+/**
+ * A Child Agent's task as Trusted Evidence when it matches a delegation its parent approved:
+ * the whole message, or the task after Minimal Subagents' framing of inherited conversation,
+ * which is left out.
+ */
+function delegatedTask(input: EvidenceInput, message: SourceMessage & { role: "user" }): Entry[] {
+  const { delegator } = input;
+  if (!delegator) return [];
+  const text = userText(message.content);
+  const marker = text.indexOf(inheritedTaskMarker);
+  const candidates = [text];
+  if (marker >= 0) candidates.push(text.slice(marker + inheritedTaskMarker.length));
+  for (const candidate of candidates) {
+    const delegation = approvedDelegation(candidate, delegator.approved);
+    if (delegation)
+      return [delegationEntry(candidate, delegator.agentId, delegation, message.timestamp)];
+  }
+  return [];
+}
+
+/**
+ * A Coordination Message from a Child Agent's direct parent: Trusted Evidence when the parent's
+ * Guardian or user approved it, else untrusted. Other custom messages are left out.
+ */
+function coordinationEntries(
+  input: EvidenceInput,
+  message: SourceMessage & { role: "custom" },
+  limit: number,
+): Entry[] {
+  const { delegator } = input;
+  if (!delegator || message.customType !== coordinationMessageType) return [];
+  if (
+    !Value.Check(coordinationDetailsSchema, message.details) ||
+    message.details.source_agent_id !== delegator.agentId
+  )
+    return [];
+  const content = userText(message.content);
+  const text = content.replace(coordinationEnvelope, "");
+  const delegation = approvedDelegation(text, delegator.approved);
+  if (delegation) return [delegationEntry(text, delegator.agentId, delegation, message.timestamp)];
+  return [{ ...untrusted(userItem(text), "agentMessage", limit), timestamp: message.timestamp }];
 }
 
 /**
@@ -207,7 +393,8 @@ export function typedUserMessages(
     trustUserMessages: true,
     contextFiles: [],
     overrides: [],
-    budgetTokens: 0,
+    // Typed messages are trusted and never shortened; the cap applies only to untrusted ones.
+    budgetTokens: Number.MAX_SAFE_INTEGER,
   }).flatMap((entry) =>
     entry.trusted &&
     entry.origin === "user" &&
@@ -219,14 +406,14 @@ export function typedUserMessages(
 }
 
 /** Context files as evidence: trusted ones can establish User Authorization, others cannot. */
-function contextFileEntries(files: readonly ContextFile[]): Entry[] {
+function contextFileEntries(files: readonly ContextFile[], limit: number): Entry[] {
   return files.map((file) => {
     const item = userItem(
       `<project_instructions path="${file.path}">\n${file.content}\n</project_instructions>`,
     );
     return file.trusted
       ? { item, trusted: true, origin: "projectInstructions" }
-      : untrusted(item, "projectInstructions");
+      : untrusted(item, "projectInstructions", limit);
   });
 }
 
@@ -278,7 +465,7 @@ function windowStart(
  * when they alone exceed the budget, so they do not reshape from review to review.
  */
 export function selectEvidence(input: EvidenceInput): SelectedEvidence {
-  const all = [...contextFileEntries(input.contextFiles), ...entries(input)];
+  const all = [...contextFileEntries(input.contextFiles, untrustedLimit(input)), ...entries(input)];
   const budget = Math.max(0, input.budgetTokens);
   let capped = all;
   let start = all.length;
@@ -344,6 +531,32 @@ export interface BatchCall {
 
 /** Per-call character bound on the other calls of a tool batch, which are context only. */
 const batchCallCharacterLimit = 2_000;
+/** Arguments of batch calls that are never shortened: the targets a link or move could aim at. */
+const pinnedBatchArguments = ["path", "command"] as const;
+
+/**
+ * One other call of the batch. Its arguments are shortened beyond the bound, but `path` and
+ * `command` stay whole: a link or move onto a Sensitive Path must stay visible.
+ */
+function batchCallLine(call: BatchCall): string {
+  const name = JSON.stringify(call.toolName);
+  const json = JSON.stringify(call.input);
+  if (json.length <= batchCallCharacterLimit) return `${name} with arguments ${json}`;
+  const pinned: ToolInput = {};
+  const rest: ToolInput = {};
+  for (const [key, value] of Object.entries(call.input)) {
+    if (pinnedBatchArguments.some((pin) => pin === key)) pinned[key] = value;
+    else rest[key] = value;
+  }
+  const restJson = JSON.stringify(rest);
+  const shown =
+    restJson.length > batchCallCharacterLimit
+      ? `${restJson.slice(0, batchCallCharacterLimit)}${omissionMarker(restJson.length - batchCallCharacterLimit)}`
+      : restJson;
+  return Object.keys(pinned).length
+    ? `${name} with arguments ${JSON.stringify(pinned)} in full, and other arguments ${shown}`
+    : `${name} with arguments ${shown}`;
+}
 
 /** The call a Guardian Review judges, with where and by whom it was issued. */
 export interface ReviewedCall extends CallUnderReview {
@@ -380,14 +593,7 @@ export function renderReviewedCall(call: ReviewedCall): string {
     lines.push(
       "Other calls in the same tool batch (context only; Pi may run them before or alongside this call):",
     );
-    for (const other of call.batch) {
-      const json = JSON.stringify(other.input);
-      const shown =
-        json.length > batchCallCharacterLimit
-          ? `${json.slice(0, batchCallCharacterLimit)}${omissionMarker(json.length - batchCallCharacterLimit)}`
-          : json;
-      lines.push(`- ${JSON.stringify(other.toolName)} with arguments ${shown}`);
-    }
+    for (const other of call.batch) lines.push(`- ${batchCallLine(other)}`);
   }
   return lines.join("\n");
 }

@@ -202,7 +202,7 @@ describe("Tool Policy resolution", () => {
     toolName: "custom",
     input: {},
     configured: {},
-    safeCommands: [],
+    commands: {},
     annotations: undefined,
     paths,
     ...overrides,
@@ -247,9 +247,39 @@ describe("Tool Policy resolution", () => {
     ).toBe("review");
     expect(
       resolveToolPolicy(
-        call({ toolName: "bash", input: { command: "npm test" }, safeCommands: ["npm test"] }),
+        call({
+          toolName: "bash",
+          input: { command: "npm test" },
+          commands: { "npm test": "allow" },
+        }),
       ).policy,
     ).toBe("allow");
+  });
+
+  it("applies Command Rules: deny blocks whatever the bash Tool Policy, review names the rule", () => {
+    const commands = { rm: "deny", "git push": "review" } as const;
+    for (const configured of [{}, { bash: "allow" as const }])
+      expect(
+        resolveToolPolicy(
+          call({ toolName: "bash", input: { command: "ls && rm -rf x" }, commands, configured }),
+        ),
+      ).toEqual({
+        policy: "deny",
+        source: "command",
+        detail: `the user's Command Rule "rm" denies this command`,
+      });
+    expect(
+      resolveToolPolicy(call({ toolName: "bash", input: { command: "git push" }, commands })),
+    ).toEqual({
+      policy: "review",
+      source: "default",
+      detail: `the user's Command Rule "git push" requires review; the user denies commands starting with "rm" (Command Rules); the user requires review of commands starting with "git push"`,
+    });
+    // An unparseable command is reviewed, and the Guardian is told which commands are denied.
+    expect(
+      resolveToolPolicy(call({ toolName: "bash", input: { command: "$(echo rm) x" }, commands }))
+        .detail,
+    ).toMatch(/^not a Safe Command; the user denies commands starting with "rm"/);
   });
 
   it("reviews terminal tools even when annotated read-only", () => {

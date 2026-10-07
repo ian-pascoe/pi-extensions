@@ -11,8 +11,10 @@ import {
   decide,
   decidedRisk,
   parseAssessment,
+  uncategorized,
   type Assessment,
   type Outcome,
+  type RiskCategory,
 } from "./guardian-assessment.js";
 import type { ReviewUsage } from "./guardian-audit.js";
 import { errorMessage } from "./guardian-notify.js";
@@ -35,6 +37,14 @@ export interface ReviewMetrics {
   promptTokens?: number;
   /** Guardian's chars/4 estimate of the first request, paired with `promptTokens`. */
   estimatedPromptTokens?: number;
+  /** Set when the first pass would have been rejected and an Escalation Pass ran. */
+  escalation?: Escalation;
+}
+
+/** A review's Escalation Pass: the first pass's assessment and what the second pass produced. */
+export interface Escalation {
+  firstPass: Assessment;
+  pass: ReviewResult;
 }
 
 /** What one Guardian Review produced. */
@@ -94,6 +104,8 @@ export interface GuardianReviewInput {
   signal: AbortSignal | undefined;
   /** Provider cache-affinity key, stable for the Guarded Agent's session. */
   sessionId: string;
+  /** The Risk Categories this review may name. */
+  categories: readonly RiskCategory[];
 }
 
 /** Token usage summed over a review's attempts; `null` when an attempt reported none. */
@@ -115,9 +127,58 @@ function combinedUsage(
   return { usage, cost };
 }
 
+/** Usage and cost of two passes; a pass that reached no model adds nothing. */
+function summedUsage(
+  first: ReviewMetrics,
+  second: ReviewMetrics,
+): Pick<ReviewMetrics, "usage" | "cost"> {
+  const passes = [first, second].filter((pass) => pass.usage !== null);
+  if (!passes.length) return { usage: null, cost: null };
+  const usage: ReviewUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  let cost: number | null = 0;
+  for (const pass of passes) {
+    if (!pass.usage) continue;
+    usage.input += pass.usage.input;
+    usage.output += pass.usage.output;
+    usage.cacheRead += pass.usage.cacheRead;
+    usage.cacheWrite += pass.usage.cacheWrite;
+    usage.total += pass.usage.total;
+    cost = cost !== null && pass.cost !== null ? cost + pass.cost : null;
+  }
+  return { usage, cost };
+}
+
+/**
+ * A rejected first pass combined with its Escalation Pass. The second pass's assessment decides
+ * when it produced one; when it failed, the first pass's Rejection stands, never an allow. An
+ * aborted second pass aborts the review. The first pass's model and calibration sample are kept;
+ * duration, usage, and cost are summed.
+ */
+export function withEscalation(
+  first: Extract<ReviewResult, { kind: "assessed" }>,
+  pass: ReviewResult,
+): ReviewResult {
+  const { kind: _kind, assessment, outcome, ...firstMetrics } = first;
+  const metrics: ReviewMetrics = {
+    ...firstMetrics,
+    durationMs: first.durationMs + pass.durationMs,
+    ...summedUsage(first, pass),
+    escalation: { firstPass: assessment, pass },
+  };
+  if (pass.kind === "aborted") return { kind: "aborted", ...metrics };
+  if (pass.kind === "assessed")
+    return { kind: "assessed", assessment: pass.assessment, outcome: pass.outcome, ...metrics };
+  return { kind: "assessed", assessment, outcome, ...metrics };
+}
+
 /** Follow-up sent once after a malformed reply, restating the output contract. */
 export const correctiveMessage =
   'Your reply did not contain exactly one valid assessment. Respond again with exactly one JSON object and nothing else: {"risk_level": "low" | "medium" | "high" | "critical", "user_authorization": "unknown" | "low" | "medium" | "high"}, adding "risk_category" and "rationale" when the output contract asks for them.';
+
+/** Follow-up sent once after a `high` or `critical` assessment without a valid Risk Category. */
+export function categoryCorrectiveMessage(categories: readonly RiskCategory[]): string {
+  return `Your assessment rated the risk high or critical without naming a valid Risk Category. \`high\` and \`critical\` risk require exactly one of: ${categories.join(", ")}. If one concretely applies to this exact call, respond again with exactly one JSON object naming it in "risk_category", with a "rationale"; if none applies, the risk is \`low\` or \`medium\`, so respond with that assessment instead. Respond with the JSON object and nothing else.`;
+}
 
 /** Text of a reply's text blocks. */
 function replyText(reply: AssistantMessage): string {
@@ -158,6 +219,14 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
   const options: ModelsSimpleStreamOptions = { signal, sessionId: input.sessionId };
   if (level !== "off") options.reasoning = level;
   let context = input.context;
+  /** A first reply rated high or critical without a valid Risk Category, asked about once. */
+  let uncategorizedFirst: Assessment | undefined;
+  const assessed = (assessment: Assessment): ReviewResult => ({
+    kind: "assessed",
+    assessment,
+    outcome: decide(decidedRisk(assessment), assessment.authorization),
+    ...measured(),
+  });
   try {
     for (;;) {
       let reply: AssistantMessage | undefined;
@@ -190,28 +259,30 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
           failure: `Guardian model request failed: ${reply.errorMessage ?? reply.stopReason}`,
           ...measured(),
         };
+      let corrective = correctiveMessage;
       try {
-        const assessment = parseAssessment(replyText(reply));
-        return {
-          kind: "assessed",
-          assessment,
-          outcome: decide(decidedRisk(assessment), assessment.authorization),
-          ...measured(),
-        };
+        const assessment = parseAssessment(replyText(reply), input.categories);
+        // Ask once for a missing or unknown Risk Category; only a retry that still lacks one is
+        // decided as `medium`.
+        if (!uncategorized(assessment) || replies.length > 1) return assessed(assessment);
+        uncategorizedFirst = assessment;
+        corrective = categoryCorrectiveMessage(input.categories);
       } catch (cause) {
-        if (replies.length > 1)
+        if (replies.length > 1) {
+          if (uncategorizedFirst) return assessed(uncategorizedFirst);
           return {
             kind: "failed",
             failure: `${errorMessage(cause)}, even after a corrective retry`,
             ...measured(),
           };
+        }
       }
       context = {
         ...input.context,
         messages: [
           ...input.context.messages,
           reply,
-          { role: "user", content: correctiveMessage, timestamp: 0 },
+          { role: "user", content: corrective, timestamp: 0 },
         ],
       };
     }

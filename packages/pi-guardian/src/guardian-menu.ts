@@ -68,16 +68,27 @@ export interface GuardianMenuUi {
   externalEditorCommand?: string;
 }
 
+const thinkingCycle = [
+  "inherit",
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 const cycleValues = {
   enabled: ["inherit", "on", "off"],
-  thinkingLevel: ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  thinkingLevel: thinkingCycle,
+  escalationThinkingLevel: thinkingCycle,
   onDeny: ["inherit", "block", "ask"],
   verbose: ["inherit", "on", "off"],
 } as const satisfies Record<string, readonly string[]>;
 type CycleKey = keyof typeof cycleValues;
 
 function isCycleKey(key: keyof GuardianOptions): key is CycleKey {
-  return key === "enabled" || key === "thinkingLevel" || key === "onDeny" || key === "verbose";
+  return Object.hasOwn(cycleValues, key);
 }
 
 function cycleValue(key: CycleKey, options: GuardianOptions): string | undefined {
@@ -92,8 +103,13 @@ const descriptions = {
   enabled: "Review tool calls before they run",
   model: "Guardian model; inherit follows the session's current model",
   thinkingLevel: "Guardian thinking level",
+  escalationModel:
+    "Model of the Escalation Pass that rechecks a would-be Rejection; inherit uses the Guardian model",
+  escalationThinkingLevel:
+    "Escalation Pass thinking level; inherit is low, or the Guardian thinking level if higher",
   tools: "Tool Policies: allow, review, or deny each tool's calls",
-  safeCommands: "Extra Safe Command prefixes that only read, such as git log; merged across scopes",
+  commands:
+    "Command Rules: allow, review, or deny bash commands by literal prefix, such as git describe=allow",
   policy: "Security Policy added to the built-in policy",
   reviewTimeoutMs: "Deadline for each Guardian Review, in seconds; a timeout is a Review Failure",
   evidenceBudgetTokens:
@@ -104,7 +120,7 @@ const descriptions = {
     "Ask for a rationale on every review and show allowed reviews in the transcript; off asks only for high-risk ones",
 } satisfies Record<keyof GuardianOptions, string>;
 const inputHints = {
-  safeCommands: "comma-separated command prefixes, none, or inherit",
+  commands: "prefix=allow|review|deny|default, comma-separated, as JSON, none, or inherit",
   reviewTimeoutMs: "seconds, or inherit",
   evidenceBudgetTokens: "a token count, auto, or inherit",
   maxConsecutiveRejections: "a number (0 disables), or inherit",
@@ -125,16 +141,8 @@ export function parseGuardianMenuValue(
         return { enabled: value === "on" ? true : value === "off" ? false : value };
       case "verbose":
         return { verbose: value === "on" ? true : value === "off" ? false : value };
-      case "safeCommands":
-        return {
-          safeCommands:
-            value === "none"
-              ? []
-              : value
-                  .split(",")
-                  .map((entry) => entry.trim())
-                  .filter(Boolean),
-        };
+      case "commands":
+        return parseCommandRules(value, scope);
       case "reviewTimeoutMs":
         return { reviewTimeoutMs: Math.round(Number(value) * 1_000) };
       case "evidenceBudgetTokens":
@@ -147,6 +155,28 @@ export function parseGuardianMenuValue(
     }
   })();
   return { action: "set", key, patch: parseGuardianOptions(patch, scope) };
+}
+
+/**
+ * Command Rules typed in the menu: `none`, a JSON object, or comma-separated `prefix=value`
+ * entries, where `default` writes `null` to reset an inherited entry.
+ */
+function parseCommandRules(value: string, scope: GuardianSettingScope) {
+  if (value === "none") return parseGuardianOptions({ commands: {} }, scope);
+  if (value.startsWith("{")) return parseGuardianOptions({ commands: JSON.parse(value) }, scope);
+  const rules = new Map<string, string | null>();
+  for (const entry of value.split(",")) {
+    if (!entry.trim()) continue;
+    const separator = entry.lastIndexOf("=");
+    const prefix = entry.slice(0, Math.max(0, separator)).trim();
+    const policy = entry.slice(separator + 1).trim();
+    if (separator < 0 || !prefix)
+      throw new Error(
+        `Write each Command Rule as prefix=allow|review|deny|default: ${entry.trim()}`,
+      );
+    rules.set(prefix, policy === "default" ? null : policy);
+  }
+  return parseGuardianOptions({ commands: Object.fromEntries(rules) }, scope);
 }
 
 /** Choose between editing the Security Policy in Pi's editor and inheriting it. */
@@ -277,9 +307,10 @@ export class GuardianSettingsMenu implements Component {
       };
     switch (key) {
       case "model":
+      case "escalationModel":
         return {
           ...row,
-          currentValue: settings.model ?? "inherit",
+          currentValue: settings[key] ?? "inherit",
           submenu: (_value, done) =>
             new ModelPicker(
               this.view.models,

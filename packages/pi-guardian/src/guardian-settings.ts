@@ -19,6 +19,15 @@ export const toolPolicySchema = Type.Union([
 ]);
 export type ToolPolicy = Static<typeof toolPolicySchema>;
 
+const authoredPolicyEntriesSchema = Type.Record(
+  Type.String({ minLength: 1 }),
+  Type.Union([toolPolicySchema, Type.Null()]),
+);
+/** Authored Tool Policies or Command Rules; `null` resets an inherited entry. */
+export type AuthoredPolicyEntries = Static<typeof authoredPolicyEntriesSchema>;
+/** Effective Tool Policies or Command Rules after merging every scope's entries. */
+export type PolicyEntries = Record<string, ToolPolicy>;
+
 export const thinkingLevelSchema = Type.Union([
   Type.Literal("off"),
   Type.Literal("minimal"),
@@ -38,17 +47,18 @@ export const guardianOptionsSchema = Type.Object(
     enabled: Type.Optional(Type.Boolean()),
     model: Type.Optional(Type.String({ minLength: 1 })),
     thinkingLevel: Type.Optional(thinkingLevelSchema),
+    /** Model of the Escalation Pass; absent uses the Guardian model. */
+    escalationModel: Type.Optional(Type.String({ minLength: 1 })),
+    /** Thinking level of the Escalation Pass; absent is `low`, or `thinkingLevel` if higher. */
+    escalationThinkingLevel: Type.Optional(thinkingLevelSchema),
     /** Per-tool Tool Policies; `null` resets an inherited entry to the built-in default. */
-    tools: Type.Optional(
-      Type.Record(Type.String({ minLength: 1 }), Type.Union([toolPolicySchema, Type.Null()])),
-    ),
+    tools: Type.Optional(authoredPolicyEntriesSchema),
     /**
-     * Extra Safe Command prefixes, such as `git log`; merged across scopes as a union. A prefix
-     * that runs workspace code, such as a test runner, is not safe.
+     * Command Rules by literal command prefix: `allow` makes matching segments Safe Commands,
+     * `review` sends the command to the Guardian, `deny` blocks it; `null` resets an inherited
+     * entry. A prefix that runs workspace code, such as a test runner, is not safe to allow.
      */
-    safeCommands: Type.Optional(
-      Type.Array(Type.String({ minLength: 1, pattern: "\\S" }), { uniqueItems: true }),
-    ),
+    commands: Type.Optional(authoredPolicyEntriesSchema),
     /** Security Policy added to the Guardian's built-in policy. */
     policy: Type.Optional(Type.String()),
     reviewTimeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2_147_483_647 })),
@@ -70,9 +80,12 @@ export interface GuardianConfig {
   enabled: boolean;
   model?: string;
   thinkingLevel: GuardianThinkingLevel;
+  escalationModel?: string;
+  escalationThinkingLevel?: GuardianThinkingLevel;
   /** Effective Tool Policies after merging every scope's entries. */
-  tools: Record<string, ToolPolicy>;
-  safeCommands: string[];
+  tools: PolicyEntries;
+  /** Effective Command Rules after merging every scope's entries. */
+  commands: PolicyEntries;
   policy: string;
   reviewTimeoutMs: number;
   evidenceBudgetTokens: number | "auto";
@@ -97,7 +110,7 @@ export const guardianDefaults: GuardianConfig = {
   enabled: true,
   thinkingLevel: "low",
   tools: {},
-  safeCommands: [],
+  commands: {},
   policy: "",
   reviewTimeoutMs: 60_000,
   evidenceBudgetTokens: "auto",
@@ -105,6 +118,19 @@ export const guardianDefaults: GuardianConfig = {
   maxConsecutiveRejections: 3,
   verbose: false,
 };
+
+const thinkingOrder: readonly GuardianThinkingLevel[] = thinkingLevelSchema.anyOf.map(
+  (literal) => literal.const,
+);
+
+/** The Escalation Pass's thinking level: as set, else `low` or the first pass's if higher. */
+export function escalationThinkingLevel(
+  options: Pick<GuardianOptions, "thinkingLevel" | "escalationThinkingLevel">,
+): GuardianThinkingLevel {
+  if (options.escalationThinkingLevel) return options.escalationThinkingLevel;
+  const first = options.thinkingLevel ?? guardianDefaults.thinkingLevel;
+  return thinkingOrder.indexOf(first) > thinkingOrder.indexOf("low") ? first : "low";
+}
 
 /** Pi's branch summarization uses the same fallback for models without a declared window. */
 const fallbackWindow = 128_000;
@@ -134,40 +160,42 @@ const layered = defineLayeredSettings({
   defaults: guardianDefaults,
   sessionEntryType: "pi-guardian-settings",
   merge: {
-    // Each scope adds or replaces entries; `null` drops the inherited entry.
-    tools: (current: GuardianConfig["tools"], next: NonNullable<GuardianOptions["tools"]>) => {
-      const merged = { ...current };
-      for (const [name, policy] of Object.entries(next)) {
-        if (policy === null) delete merged[name];
-        else merged[name] = policy;
-      }
-      return merged;
-    },
-    safeCommands: (current: string[], next: string[]) => [...new Set([...current, ...next])],
+    tools: mergeEntries,
+    commands: mergeEntries,
   },
 });
+
+/** Each scope adds or replaces entries; `null` drops the inherited entry. */
+function mergeEntries(current: PolicyEntries, next: AuthoredPolicyEntries) {
+  const merged = { ...current };
+  for (const [name, policy] of Object.entries(next)) {
+    if (policy === null) delete merged[name];
+    else merged[name] = policy;
+  }
+  return merged;
+}
 
 export const guardianOptionKeys = layered.optionKeys;
 
 /**
- * Reject `safeCommands` entries that could never match: an entry must be literal words, and its
- * program a bare name, since a command run through a path (`./gradlew`) is never a Safe Command.
+ * Reject Command Rules that could never match: a prefix must be literal words, and its program a
+ * bare name, since a command run through a path (`./gradlew`) never matches a rule.
  */
-function checkSafeCommands(
+function checkCommandRules(
   options: GuardianOptions,
   source: GuardianSettingScope,
 ): GuardianOptions {
-  for (const [index, entry] of (options.safeCommands ?? []).entries()) {
-    const program = literalWords(entry)?.[0];
+  for (const prefix of Object.keys(options.commands ?? {})) {
+    const program = literalWords(prefix)?.[0];
     const problem =
       program === undefined
         ? "must be literal words without shell syntax"
-        : /[/\\]/.test(program)
-          ? "must start with a bare program name, not a path"
+        : /[/\\=]/.test(program)
+          ? "must start with a bare program name, not a path or an assignment"
           : undefined;
     if (problem)
       throw new Error(
-        `Invalid ${source} Guardian settings/safeCommands/${index}: Safe Command ${JSON.stringify(entry)} ${problem}`,
+        `Invalid ${source} Guardian settings/commands: Command Rule ${JSON.stringify(prefix)} ${problem}`,
       );
   }
   return options;
@@ -175,7 +203,7 @@ function checkSafeCommands(
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings and command input contain arbitrary authored JSON; the shared layered-settings schema check validates it before use.
 export function parseGuardianOptions(value: unknown, source: GuardianSettingScope) {
-  return checkSafeCommands(layered.parseOptions(value, source), source);
+  return checkCommandRules(layered.parseOptions(value, source), source);
 }
 
 /** Reject inherited or unknown property names before applying an authored change. */
@@ -207,7 +235,7 @@ export function readGuardianLayers(manager: SettingsManager): GuardianLayers {
     const layer = layers[scope];
     if (layer instanceof Error) continue;
     try {
-      checkSafeCommands(layer, scope);
+      checkCommandRules(layer, scope);
     } catch (cause) {
       layers[scope] = cause instanceof Error ? cause : new Error(String(cause));
     }

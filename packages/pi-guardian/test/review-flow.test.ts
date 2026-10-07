@@ -7,6 +7,7 @@ import { correctiveMessage } from "../src/guardian-review.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
   assessment,
+  confirmedRejection,
   createGuardianHarness,
   DeferredReply,
   reply,
@@ -217,13 +218,13 @@ describe("Guardian Review lifecycle", () => {
     const harness = await createGuardianHarness({
       guardianSettings: { ...reviewer, maxConsecutiveRejections: 2 },
     });
-    const reject = assessment("critical", "unknown", "Exfiltration.");
+    const reject = confirmedRejection("critical", "unknown", "Exfiltration.");
     harness.responses.push(
       toolCalls(["deploy", { target: "a" }, "call-1"]),
       toolCalls(["deploy", { target: "b" }, "call-2"]),
       reply("never requested"),
     );
-    harness.guardianReplies.push(reject, reject);
+    harness.guardianReplies.push(...reject, ...reject);
     await harness.session.prompt("Deploy.");
     // The second Rejection ended the turn: no third model request.
     expect(harness.agentRequests).toHaveLength(2);
@@ -231,7 +232,7 @@ describe("Guardian Review lifecycle", () => {
 
     harness.responses.splice(0);
     harness.responses.push(toolCalls(["deploy", { target: "c" }, "call-3"]), reply("Ok."));
-    harness.guardianReplies.push(reject);
+    harness.guardianReplies.push(...reject);
     await harness.session.prompt("Try again.");
     // A new request starts a new streak: one Rejection does not end the turn.
     expect(harness.agentRequests).toHaveLength(4);
@@ -261,10 +262,9 @@ describe("Guardian Review lifecycle", () => {
     expect(harness.reviews).toHaveLength(2);
     // Both requests share their evidence; only the Reviewed Call differs.
     expect(blocks(harness, 0).slice(0, -1)).toEqual(blocks(harness, 1).slice(0, -1));
-    // Reviews started when the response ended already see that response's tool calls.
-    expect(blocks(harness, 0).at(-2)).toMatch(
-      /^Evidence \(UNTRUSTED, origin: assistant\):\n.*"name":"deploy"/s,
-    );
+    // The response's own calls appear only as the Reviewed Call and its batch, not as evidence.
+    expect(blocks(harness, 0).slice(0, -1).join("\n")).not.toContain('"name":"deploy"');
+    expect(blocks(harness, 0).at(-1)).toContain('- "deploy" with arguments {"target":"b"}');
   });
 
   it("reviews nested calls on their own with the issuing call as context", async () => {
@@ -300,7 +300,7 @@ describe("Guardian Review lifecycle", () => {
       reply("Ok."),
     );
     harness.guardianReplies.push(
-      assessment("high", "low", "Production."),
+      ...confirmedRejection("high", "low", "Production."),
       assessment("low", "high", "Ok."),
     );
     await harness.session.prompt("Deploy.");
@@ -310,7 +310,7 @@ describe("Guardian Review lifecycle", () => {
       userOverride: true,
       blocked: false,
     });
-    const override = blocks(harness, 1).find((block) => block.includes("origin: userOverride"));
+    const override = blocks(harness, 2).find((block) => block.includes("origin: userOverride"));
     expect(override).toMatch(/^Evidence \(TRUSTED, origin: userOverride\)/);
     const [, json = ""] = override?.split("\n") ?? [];
     const record = JSON.parse(JSON.parse(json).content);
@@ -387,14 +387,48 @@ describe("Guardian Review lifecycle", () => {
   it("decides an uncategorized high or critical assessment as medium, and records it", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.guardianReplies.push(
-      assessment("critical", "unknown", "It edits a core security module.", "core_module"),
+    const uncategorized = assessment(
+      "critical",
+      "unknown",
+      "It edits a core security module.",
+      "core_module",
     );
+    harness.guardianReplies.push(uncategorized, uncategorized);
     await harness.session.prompt("Deploy a.");
     expect(harness.executed).toEqual(["deploy:a"]);
+    // One corrective retry restated the Risk Categories before the downgrade.
+    const retry = harness.reviews[1]?.messages.at(-1);
+    expect(retry?.role === "user" ? retry.content : "").toEqual(
+      expect.stringContaining("without naming a valid Risk Category"),
+    );
     const [entry] = harness.entries("pi-guardian-review");
-    expect(entry).toMatchObject({ result: "allowed", risk: "critical", downgraded: true });
+    expect(entry).toMatchObject({
+      result: "allowed",
+      risk: "critical",
+      downgraded: true,
+      retried: true,
+    });
     expect(entry).not.toHaveProperty("riskCategory");
+  });
+
+  it("asks again for a missing Risk Category and decides by the corrected answer", async () => {
+    const harness = await createGuardianHarness({ guardianSettings: reviewer });
+    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
+    harness.guardianReplies.push(
+      JSON.stringify({
+        risk_level: "high",
+        user_authorization: "low",
+        risk_category: null,
+        rationale: null,
+      }),
+      // Case and hyphen variants name the same Risk Category.
+      ...confirmedRejection("high", "low", "Wipes data.", "Destruction"),
+    );
+    await harness.session.prompt("Deploy a.");
+    expect(harness.executed).toEqual([]);
+    expect(harness.entries("pi-guardian-review")).toMatchObject([
+      { result: "rejected", riskCategory: "destruction", retried: true },
+    ]);
   });
 
   it("names the Risk Category and a fixed reason in the warning and the dialog", async () => {

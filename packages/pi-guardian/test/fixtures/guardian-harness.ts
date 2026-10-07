@@ -44,6 +44,8 @@ export interface CapturedReview {
   systemPrompt: string;
   messages: Context["messages"];
   options: SimpleStreamOptions | undefined;
+  /** Whether this request is an Escalation Pass, which ends with the escalation instruction. */
+  escalation: boolean;
 }
 
 export interface HarnessOptions {
@@ -181,7 +183,8 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
           api: "openai-completions",
           apiKey: "offline",
           baseUrl: "https://guardian.invalid",
-          models: ["agent", "reviewer"].map((id) => ({
+          // `tiny` is a reviewer whose context window cannot hold a review.
+          models: ["agent", "reviewer", "tiny"].map((id) => ({
             id,
             name: id,
             reasoning: id === "reviewer",
@@ -190,15 +193,22 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
               id === "reviewer"
                 ? { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }
                 : offlineCost,
-            contextWindow: 200_000,
+            contextWindow: id === "tiny" ? 9_000 : 200_000,
             maxTokens: 2_048,
           })),
           streamSimple(model, context, requestOptions) {
+            const messages = structuredClone(withoutInitialSystemMessage(context.messages));
+            const [first] = messages;
+            const lastBlock =
+              first?.role === "user" && Array.isArray(first.content)
+                ? first.content.at(-1)
+                : undefined;
             reviews.push({
               model: `${model.provider}/${model.id}`,
               systemPrompt: getCurrentSystemPrompt(context.messages),
-              messages: structuredClone(withoutInitialSystemMessage(context.messages)),
+              messages,
               options: requestOptions,
+              escalation: lastBlock?.type === "text" && lastBlock.text.startsWith("Escalation:"),
             });
             const stream = createAssistantMessageEventStream();
             const scripted = guardianReplies.shift();
@@ -336,6 +346,15 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     agentContexts,
     entries,
   };
+}
+
+/**
+ * Replies for a Rejection that its Escalation Pass confirms: the first pass's assessment, then the
+ * same assessment again from the second pass.
+ */
+export function confirmedRejection(...args: Parameters<typeof assessment>): string[] {
+  const text = assessment(...args);
+  return [text, text];
 }
 
 export function reply(text: string): AssistantMessage {

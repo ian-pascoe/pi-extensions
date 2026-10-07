@@ -7,6 +7,7 @@ import {
 } from "../src/guardian-command.js";
 import { parseGuardianMenuValue } from "../src/guardian-menu.js";
 import {
+  escalationThinkingLevel,
   evidenceBudget,
   readGuardianSettings,
   type GuardianOptions,
@@ -48,7 +49,7 @@ describe("Guardian settings", () => {
         enabled: true,
         thinkingLevel: "low",
         tools: {},
-        safeCommands: [],
+        commands: {},
         policy: "",
         reviewTimeoutMs: 60_000,
         evidenceBudgetTokens: "auto",
@@ -62,13 +63,18 @@ describe("Guardian settings", () => {
 
   it("merges Tool Policies per entry and lets null reset an entry to the built-in default", () => {
     const { settings, sources } = resolve(
-      { tools: { bash: "allow", mcp__x: "deny" }, safeCommands: ["npm test"] },
-      { tools: { bash: "review", terminal_start: "allow" }, safeCommands: ["make"] },
-      { tools: { mcp__x: null }, safeCommands: ["npm test"] },
+      { tools: { bash: "allow", mcp__x: "deny" }, commands: { "npm test": "allow", rm: "deny" } },
+      { tools: { bash: "review", terminal_start: "allow" }, commands: { make: "allow" } },
+      { tools: { mcp__x: null }, commands: { rm: null, "git push": "review" } },
     );
     expect(settings.tools).toEqual({ bash: "review", terminal_start: "allow" });
-    expect(settings.safeCommands).toEqual(["npm test", "make"]);
+    expect(settings.commands).toEqual({
+      "npm test": "allow",
+      make: "allow",
+      "git push": "review",
+    });
     expect(sources["tools"]).toBe("session");
+    expect(sources["commands"]).toBe("session");
   });
 
   it("lets a trusted project weaken Guardian (ADR-0002)", () => {
@@ -82,19 +88,32 @@ describe("Guardian settings", () => {
     expect(() => resolveInvalid('{"onDeny":"prompt"}')).toThrow(/Invalid global Guardian settings/);
   });
 
-  it("rejects safeCommands that could never match", () => {
-    expect(() => resolveInvalid('{"safeCommands":["./gradlew test"]}')).toThrow(
-      'Invalid global Guardian settings/safeCommands/0: Safe Command "./gradlew test" must start with a bare program name, not a path',
+  it("rejects Command Rules that could never match", () => {
+    expect(() => resolveInvalid('{"commands":{"./gradlew test":"allow"}}')).toThrow(
+      'Invalid global Guardian settings/commands: Command Rule "./gradlew test" must start with a bare program name, not a path or an assignment',
     );
-    expect(() => resolveInvalid('{"safeCommands":["npm test | tee"]}')).toThrow(
+    expect(() => resolveInvalid('{"commands":{"npm test | tee":"allow"}}')).toThrow(
       /must be literal words without shell syntax/,
     );
-    expect(() => parseGuardianCommand('set safeCommands ["bin/test"] --global')).toThrow(
+    expect(() => resolveInvalid('{"commands":{"rm":"maybe"}}')).toThrow(
+      /Invalid global Guardian settings/,
+    );
+    expect(() => parseGuardianCommand('set commands {"bin/test":"deny"} --global')).toThrow(
       /must start with a bare program name/,
     );
-    expect(resolve({ safeCommands: ["npm test -- src/a"] }, {}).settings.safeCommands).toEqual([
-      "npm test -- src/a",
-    ]);
+    expect(() => parseGuardianCommand("command PAGER=x git deny")).toThrow(/assignment/);
+    expect(resolve({ commands: { "npm test -- src/a": "allow" } }, {}).settings.commands).toEqual({
+      "npm test -- src/a": "allow",
+    });
+  });
+
+  it("derives the Escalation Pass thinking level: low, or the first pass's if higher", () => {
+    expect(escalationThinkingLevel({ thinkingLevel: "off" })).toBe("low");
+    expect(escalationThinkingLevel({ thinkingLevel: "high" })).toBe("high");
+    expect(escalationThinkingLevel({ thinkingLevel: "high", escalationThinkingLevel: "off" })).toBe(
+      "off",
+    );
+    expect(escalationThinkingLevel({})).toBe("low");
   });
 
   it("budgets evidence at a quarter of the context window, at most 32K", () => {
@@ -121,10 +140,17 @@ describe("/guardian command", () => {
       name: "bash",
       value: "deny",
     });
-    expect(parseGuardianCommand('set safeCommands ["npm test"]')).toMatchObject({
-      key: "safeCommands",
-      patch: { safeCommands: ["npm test"] },
+    expect(parseGuardianCommand('set commands {"npm test":"allow"}')).toMatchObject({
+      key: "commands",
+      patch: { commands: { "npm test": "allow" } },
     });
+    expect(parseGuardianCommand("command git push --force deny --global")).toEqual({
+      action: "command",
+      scope: "global",
+      prefix: "git push --force",
+      value: "deny",
+    });
+    expect(() => parseGuardianCommand("command rm maybe")).toThrow(/Usage/);
     expect(() => parseGuardianCommand("tool bash maybe")).toThrow(/Usage/);
     expect(() => parseGuardianCommand("set nonsense 1")).toThrow(/Unknown Guardian option/);
     expect(() => parseGuardianCommand("set maxConsecutiveRejections -1")).toThrow(/Invalid/);
@@ -145,6 +171,7 @@ describe("/guardian command", () => {
     expect(values("t")).toEqual(["tool"]);
     expect(values("set on")).toEqual(["set onDeny"]);
     expect(values("tool bash d")).toEqual(["tool bash deny", "tool bash default"]);
+    expect(values("command rm d")).toEqual(["command rm deny", "command rm default"]);
     expect(values("off ")).toEqual(["off --global", "off --project"]);
   });
 
@@ -154,9 +181,19 @@ describe("/guardian command", () => {
       key: "reviewTimeoutMs",
       patch: { reviewTimeoutMs: 30_000 },
     });
-    expect(parseGuardianMenuValue("safeCommands", "npm test, make", "global")).toMatchObject({
-      patch: { safeCommands: ["npm test", "make"] },
+    expect(
+      parseGuardianMenuValue("commands", "npm test=allow, rm=deny, make=default", "global"),
+    ).toMatchObject({
+      patch: { commands: { "npm test": "allow", rm: "deny", make: null } },
     });
+    expect(parseGuardianMenuValue("commands", '{"git push":"review"}', "global")).toMatchObject({
+      patch: { commands: { "git push": "review" } },
+    });
+    expect(parseGuardianMenuValue("commands", "none", "global")).toMatchObject({
+      patch: { commands: {} },
+    });
+    expect(() => parseGuardianMenuValue("commands", "rm", "global")).toThrow(/prefix=/);
+    expect(() => parseGuardianMenuValue("commands", "rm=maybe", "global")).toThrow(/Invalid/);
     expect(parseGuardianMenuValue("evidenceBudgetTokens", "inherit", "global")).toEqual({
       action: "inherit",
       key: "evidenceBudgetTokens",

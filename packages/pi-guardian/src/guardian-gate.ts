@@ -15,45 +15,56 @@ import {
   riskLabel,
   statedRationale,
   uncategorized,
+  validRiskCategories,
+  type RiskCategory,
 } from "./guardian-assessment.js";
 import {
   auditArguments,
   calibrationSamples,
+  recordedDelegations,
   recordedOverrides,
   reviewEntryType,
   type AuditResult,
+  type EscalationRecord,
   type ReviewEntry,
 } from "./guardian-audit.js";
 import { tokenFactor } from "./guardian-calibration.js";
 import { overrideDialogs } from "./guardian-dialog.js";
 import {
+  branchMessages,
+  delegatedText,
   renderReviewedCall,
   selectEvidence,
+  textSha256,
   textTokens,
   typedUserMessages,
   userMessageKey,
   userText,
+  type ApprovedDelegation,
   type BatchCall,
   type CallUnderReview,
   type IssuingCall,
   type RootUserMessage,
   type ToolInput,
 } from "./guardian-evidence.js";
-import { notify } from "./guardian-notify.js";
+import { errorMessage, notify } from "./guardian-notify.js";
 import { contextFiles, loadedResourcePaths } from "./guardian-pi-resources.js";
-import { guardianSystemPrompt } from "./guardian-prompt.js";
+import { escalationInstruction, guardianSystemPrompt } from "./guardian-prompt.js";
 import {
   modelName,
   resolveGuardianModel,
   runGuardianReview,
+  withEscalation,
   type ReviewResult,
 } from "./guardian-review.js";
 import type { GuardedSessionRole } from "./guardian-root-registry.js";
 import {
   contextWindowOrFallback,
+  escalationThinkingLevel,
   evidenceBudget,
   type GuardianConfig,
 } from "./guardian-settings.js";
+import type { Context } from "@earendil-works/pi-ai";
 import type { SensitivePathContext } from "./sensitive-paths.js";
 import { readOnlyBuiltIns, resolveToolPolicy, type ResolvedToolPolicy } from "./tool-policy.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
@@ -66,6 +77,8 @@ export interface ReviewGateHost {
   role(): GuardedSessionRole;
   /** The root user's typed messages, for a Child Agent's or Advisor's evidence. */
   rootUserMessages(): RootUserMessage[];
+  /** A Child Agent's delegating agent and the delegations its Guardian or user allowed. */
+  delegator(): { agentId: string; approved: ApprovedDelegation[] } | undefined;
   /** Settings to enforce, or the error that makes every non-read-only call fail closed. */
   settings(): { config: GuardianConfig; error: string | undefined };
   /** The set of tools under review changed. */
@@ -82,6 +95,8 @@ export interface ReviewGate {
   flush(): void;
   /** The messages this session's user typed, for its Child Agents and Advisors. */
   typedUserMessages(): RootUserMessage[];
+  /** The delegations this session's Guardian or user allowed, for its Child Agents. */
+  approvedDelegations(): ApprovedDelegation[];
 }
 
 /** One call as seen by Guardian's `tool_call` handler. */
@@ -169,6 +184,30 @@ function failed(failure: string): ReviewResult {
   return { kind: "failed", failure, model: null, durationMs: 0, usage: null, cost: null };
 }
 
+/**
+ * The Risk Categories a review offers: `security_policy` only when the user configured a
+ * Security Policy or a `deny` Command Rule for a call to violate.
+ */
+function reviewCategories(config: GuardianConfig): readonly RiskCategory[] {
+  return validRiskCategories(
+    config.policy.trim() !== "" || Object.values(config.commands).includes("deny"),
+  );
+}
+
+/** One user message holding a review's text blocks; its fixed timestamp keeps prefixes stable. */
+function reviewRequest(systemPrompt: string, blocks: readonly string[]): Context {
+  return {
+    systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: blocks.map((text) => ({ type: "text", text })),
+        timestamp: 0,
+      },
+    ],
+  };
+}
+
 function agentLabel(role: GuardedSessionRole): string {
   if (role.kind === "main") return "the main Pi agent";
   if (role.kind === "child")
@@ -245,7 +284,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       toolName: call.toolName,
       input: call.input,
       configured: config.tools,
-      safeCommands: config.safeCommands,
+      commands: config.commands,
       annotations: pi.getAllTools().find((tool) => tool.name === call.toolName)?.annotations,
       paths: pathContext(ctx),
     });
@@ -306,7 +345,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     const session = host.session();
     if (!session) return failed(host.unavailable());
     const role = host.role();
-    const systemPrompt = guardianSystemPrompt(config.policy, config.verbose);
+    const categories = reviewCategories(config);
+    const systemPrompt = guardianSystemPrompt(config.policy, config.verbose, categories);
     const reviewed = renderReviewedCall({
       ...underReview(call),
       cwd: ctx.cwd,
@@ -332,53 +372,121 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         ),
         model: name,
       };
+    const budget = evidenceBudget(config.evidenceBudgetTokens, resolved.model.contextWindow);
     const evidence = selectEvidence({
-      sources: session.messages,
+      sources: branchMessages(branch),
       trustUserMessages: role.kind === "main",
       contextFiles: contextFiles(session, getAgentDir()),
       extensionMessages: extensionMessages(branch),
       overrides: recordedOverrides(branch),
       rootUserMessages: host.rootUserMessages(),
-      // Selection counts chars/4, so the budget in real tokens is scaled down by the factor.
-      budgetTokens: Math.floor(
-        Math.min(
-          evidenceBudget(config.evidenceBudgetTokens, resolved.model.contextWindow),
-          capacity - callTokens,
-        ) / factor,
+      delegator: host.delegator(),
+      currentCalls: new Set(
+        call.parentToolCallId === undefined
+          ? [call.toolCallId]
+          : [call.toolCallId, call.parentToolCallId],
       ),
+      // Selection counts chars/4, so the budget in real tokens is scaled down by the factor.
+      budgetTokens: Math.floor(Math.min(budget, capacity - callTokens) / factor),
+      capBudgetTokens: Math.floor(budget / factor),
     });
     const blocks = [...evidence.blocks, reviewed];
     const estimated = textTokens(systemPrompt) + blocks.reduce((sum, b) => sum + textTokens(b), 0);
+    const sessionId = `pi-guardian:${ctx.sessionManager.getSessionId()}`;
     const key = Symbol(call.toolCallId);
     reviewing.set(key, call.toolName);
     host.reviewingChanged();
     try {
-      const result = await runGuardianReview({
+      const first = await runGuardianReview({
         registry: ctx.modelRegistry,
         model: resolved.model,
         thinkingLevel: config.thinkingLevel,
-        context: {
-          systemPrompt,
-          messages: [
-            {
-              role: "user",
-              content: blocks.map((text) => ({ type: "text", text })),
-              // A fixed timestamp keeps successive requests' prefixes byte-identical.
-              timestamp: 0,
-            },
-          ],
-        },
+        context: reviewRequest(systemPrompt, blocks),
         timeoutMs: config.reviewTimeoutMs,
         signal,
-        sessionId: `pi-guardian:${ctx.sessionManager.getSessionId()}`,
+        sessionId,
+        categories,
       });
-      return result.promptTokens === undefined
-        ? result
-        : { ...result, estimatedPromptTokens: estimated };
+      const measured =
+        first.promptTokens === undefined ? first : { ...first, estimatedPromptTokens: estimated };
+      if (measured.kind !== "assessed" || measured.outcome === "allowed") return measured;
+      const request = { systemPrompt, blocks, categories, sessionId };
+      return withEscalation(measured, await escalate(ctx, config, request, signal));
     } finally {
       reviewing.delete(key);
       host.reviewingChanged();
     }
+  }
+
+  /**
+   * The Escalation Pass of a review whose first pass would be rejected: the same request plus a
+   * final instruction asking for careful reasoning, with the escalation model and thinking level
+   * and its own deadline. With the same model the request is almost entirely a cache hit.
+   */
+  async function escalate(
+    ctx: ExtensionContext,
+    config: GuardianConfig,
+    request: {
+      systemPrompt: string;
+      blocks: readonly string[];
+      categories: readonly RiskCategory[];
+      sessionId: string;
+    },
+    signal: AbortSignal | undefined,
+  ): Promise<ReviewResult> {
+    const resolved = resolveGuardianModel(
+      config.escalationModel ?? config.model,
+      ctx.modelRegistry,
+      ctx.model,
+    );
+    if (!resolved.ok) return { ...failed(resolved.failure), model: resolved.model };
+    const name = modelName(resolved.model);
+    const blocks = [...request.blocks, escalationInstruction(request.categories)];
+    const factor = tokenFactor(calibrationSamples(ctx.sessionManager.getBranch(), name));
+    const size = Math.ceil(
+      (textTokens(request.systemPrompt) + blocks.reduce((sum, b) => sum + textTokens(b), 0)) *
+        factor,
+    );
+    const capacity = contextWindowOrFallback(resolved.model.contextWindow) - outputReserveTokens;
+    if (size > capacity)
+      return {
+        ...failed(
+          `the review is too large for escalation model ${name} (about ${size} tokens; at most ${Math.max(0, capacity)} fit)`,
+        ),
+        model: name,
+      };
+    return runGuardianReview({
+      registry: ctx.modelRegistry,
+      model: resolved.model,
+      thinkingLevel: escalationThinkingLevel(config),
+      context: reviewRequest(request.systemPrompt, blocks),
+      timeoutMs: config.reviewTimeoutMs,
+      signal,
+      sessionId: request.sessionId,
+      categories: request.categories,
+    });
+  }
+
+  /** The audit record of a review's Escalation Pass. */
+  function escalationRecord(review: ReviewResult): EscalationRecord | undefined {
+    if (!review.escalation) return undefined;
+    const { firstPass, pass } = review.escalation;
+    const record: EscalationRecord = {
+      firstPass: {
+        risk: firstPass.risk,
+        authorization: firstPass.authorization,
+        rationale: firstPass.rationale || null,
+      },
+      result: pass.kind,
+      failure: pass.kind === "failed" ? pass.failure : null,
+      model: pass.model,
+      durationMs: pass.durationMs,
+      usage: pass.usage,
+      cost: pass.cost,
+    };
+    if (firstPass.category) record.firstPass.riskCategory = firstPass.category;
+    if (pass.retried) record.retried = true;
+    return record;
   }
 
   function auditEntry(call: SeenCall, review: ReviewResult, result: AuditResult): ReviewEntry {
@@ -409,6 +517,10 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       if (uncategorized(review.assessment)) entry.downgraded = true;
     }
     if (review.retried) entry.retried = true;
+    const escalation = escalationRecord(review);
+    if (escalation) entry.escalation = escalation;
+    const delegated = delegatedText(call.toolName, call.input);
+    if (delegated !== undefined) entry.delegationSha256 = textSha256(delegated);
     return entry;
   }
 
@@ -525,7 +637,10 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         call,
         basis: reviewBasis(ctx, config, policy),
         controller,
-        result: prefetchSlot(() => review(ctx, config, call, policy.detail, blocks, signal)),
+        // A review settling after a session switch must not become an unhandled rejection.
+        result: prefetchSlot(() => review(ctx, config, call, policy.detail, blocks, signal)).catch(
+          (cause: unknown) => failed(errorMessage(cause)),
+        ),
         consumed: false,
       });
     }
@@ -544,7 +659,13 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       // pending input whose text it carries exactly.
       const text = userText(message.content);
       const index = extensionInputs.findIndex((input) => sentBy(input, text));
-      if (index < 0) return;
+      if (index < 0) {
+        // A message the user typed, including steering and follow-up messages that Pi delivers
+        // without `before_agent_start`, starts a new request: the Rejection Streak ends.
+        streak = 0;
+        ending = false;
+        return;
+      }
       extensionInputs.splice(index, 1);
       pi.appendEntry(extensionMessageEntryType, { version: 1, key: userMessageKey(message) });
       return;
@@ -588,7 +709,10 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     if (policy.policy === "deny")
       return {
         block: true,
-        reason: `The ${call.toolName} tool is denied by Guardian's Tool Policy; the call did not run. Do not work around it; ask the user if this action is needed.`,
+        reason:
+          policy.source === "command"
+            ? `This command is denied by Guardian: ${policy.detail ?? "a Command Rule denies it"}; the call did not run. Do not work around it or reach the same effect another way; ask the user if this action is needed.`
+            : `The ${call.toolName} tool is denied by Guardian's Tool Policy; the call did not run. Do not work around it; ask the user if this action is needed.`,
       };
     let result: ReviewResult;
     if (
@@ -664,10 +788,20 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     typedUserMessages() {
       const session = host.session();
       if (!session) return [];
+      const branch = session.sessionManager.getBranch();
       return typedUserMessages({
-        sources: session.messages,
-        extensionMessages: extensionMessages(session.sessionManager.getBranch()),
+        sources: branchMessages(branch),
+        extensionMessages: extensionMessages(branch),
       });
+    },
+    approvedDelegations() {
+      const session = host.session();
+      if (!session) return [];
+      // Allowed calls are recorded once their results arrive; until then they are pending.
+      return recordedDelegations(
+        session.sessionManager.getBranch(),
+        [...pendingAudits.values()].map(({ entry }) => entry),
+      );
     },
   };
 }

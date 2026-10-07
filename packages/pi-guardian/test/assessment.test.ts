@@ -4,6 +4,7 @@ import {
   decidedRisk,
   parseAssessment,
   rejectionReason,
+  validRiskCategories,
   type RiskLevel,
   type UserAuthorization,
 } from "../src/guardian-assessment.js";
@@ -51,6 +52,32 @@ describe("Risk Categories", () => {
       rationale: "Uploads keys.",
     });
     expect(decide(decidedRisk(parsed), parsed.authorization)).toBe("rejected");
+  });
+
+  it.each(["Data_Egress", "data-egress", "DATA EGRESS", " data_egress "])(
+    "normalizes the stated category %j",
+    (stated) => {
+      const parsed = parseAssessment(
+        JSON.stringify({ risk_level: "high", user_authorization: "low", risk_category: stated }),
+      );
+      expect(parsed.category).toBe("data_egress");
+      expect(decide(decidedRisk(parsed), parsed.authorization)).toBe("rejected");
+    },
+  );
+
+  it("accepts a null category and rationale", () => {
+    expect(
+      parseAssessment(
+        '{"risk_level":"low","user_authorization":"high","risk_category":null,"rationale":null}',
+      ),
+    ).toEqual({ risk: "low", authorization: "high", category: undefined, rationale: "" });
+  });
+
+  it("accepts security_policy only when a Security Policy or deny Command Rule is configured", () => {
+    const text =
+      '{"risk_level":"high","user_authorization":"low","risk_category":"security-policy"}';
+    expect(parseAssessment(text).category).toBeUndefined();
+    expect(parseAssessment(text, validRiskCategories(true)).category).toBe("security_policy");
   });
 
   it("leaves low and medium risk unchanged without a category", () => {

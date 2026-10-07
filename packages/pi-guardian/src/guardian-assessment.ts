@@ -30,27 +30,44 @@ export const riskCategorySchema = Type.Union([
   Type.Literal("safety_weakening"),
   Type.Literal("remote_code"),
   Type.Literal("unreviewed_execution"),
+  Type.Literal("security_policy"),
 ]);
 export type RiskCategory = Static<typeof riskCategorySchema>;
 export const riskCategories: readonly RiskCategory[] = riskCategorySchema.anyOf.map(
   (literal) => literal.const,
 );
 
-function isRiskCategory(value: string | undefined): value is RiskCategory {
-  return riskCategories.some((name) => name === value);
+/**
+ * The Risk Categories a review may name: `security_policy` only when the user configured a
+ * Security Policy for the call to violate.
+ */
+export function validRiskCategories(securityPolicy: boolean): readonly RiskCategory[] {
+  return securityPolicy
+    ? riskCategories
+    : riskCategories.filter((name) => name !== "security_policy");
+}
+
+/** A stated category in canonical form: `Data-Egress` and `data egress` mean `data_egress`. */
+function normalizedCategory(value: string | null | undefined): string | undefined {
+  const text = value
+    ?.trim()
+    .toLowerCase()
+    .replaceAll(/[\s-]+/g, "_");
+  return text || undefined;
 }
 
 /**
  * The Guardian's required answer; extra fields are tolerated and ignored. The rationale and Risk
- * Category are optional: the category is given only for `high` or `critical` risk, and unless
- * `verbose` is on, so is the rationale. An unknown category is kept out rather than failing the
- * review, and decided like a missing one.
+ * Category are optional and may be `null`: the category is given only for `high` or `critical`
+ * risk, and unless `verbose` is on, so is the rationale. An unknown category is kept out rather
+ * than failing the parse; the review asks again once for a `high` or `critical` assessment
+ * without a valid one.
  */
 export const assessmentSchema = Type.Object({
   risk_level: riskLevelSchema,
   user_authorization: userAuthorizationSchema,
-  risk_category: Type.Optional(Type.String()),
-  rationale: Type.Optional(Type.String()),
+  risk_category: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  rationale: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });
 /** One Guardian Review's assessment, with the risk as the Guardian stated it. */
 export interface Assessment {
@@ -113,7 +130,7 @@ function objectSpans(text: string): string[] {
 }
 
 /** Valid assessments in a reply: the whole text, or each top-level JSON object in it. */
-function assessments(text: string): Assessment[] {
+function assessments(text: string, categories: readonly RiskCategory[]): Assessment[] {
   const found: Assessment[] = [];
   for (const candidate of [text.trim(), ...objectSpans(text)]) {
     let parsed: unknown;
@@ -123,11 +140,11 @@ function assessments(text: string): Assessment[] {
       continue;
     }
     if (!Value.Check(assessmentSchema, parsed)) continue;
-    const category = parsed.risk_category?.trim();
+    const stated = normalizedCategory(parsed.risk_category);
     found.push({
       risk: parsed.risk_level,
       authorization: parsed.user_authorization,
-      category: isRiskCategory(category) ? category : undefined,
+      category: categories.find((name) => name === stated),
       rationale: parsed.rationale?.trim() ?? "",
     });
   }
@@ -137,9 +154,13 @@ function assessments(text: string): Assessment[] {
 /**
  * Parse a Guardian reply; throws a Review Failure message unless it holds exactly one valid
  * assessment. Repeating the same assessment is tolerated; differing assessments are ambiguous.
+ * A category outside `categories` (by default every one but `security_policy`) is left out.
  */
-export function parseAssessment(text: string): Assessment {
-  const [first, ...rest] = assessments(text);
+export function parseAssessment(
+  text: string,
+  categories: readonly RiskCategory[] = validRiskCategories(false),
+): Assessment {
+  const [first, ...rest] = assessments(text, categories);
   if (!first)
     throw new Error("Guardian returned malformed output (expected the assessment JSON object)");
   if (rest.some((other) => !isDeepStrictEqual(other, first)))

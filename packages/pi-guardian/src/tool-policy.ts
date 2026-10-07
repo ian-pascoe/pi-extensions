@@ -1,16 +1,16 @@
 import type { CustomToolCallEvent, ToolAnnotations } from "@earendil-works/pi-coding-agent";
-import { isSafeCommand } from "./safe-command.js";
+import { judgeCommand } from "./safe-command.js";
 import { sensitivePathReason, type SensitivePathContext } from "./sensitive-paths.js";
-import type { ToolPolicy } from "./guardian-settings.js";
+import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
 
 /** Which rule supplied a call's Tool Policy, in precedence order. */
-export type ToolPolicySource = "setting" | "default" | "annotation" | "fallback";
+export type ToolPolicySource = "command" | "setting" | "default" | "annotation" | "fallback";
 
 /** A Tool Policy resolved for one call, with why. */
 export interface ResolvedToolPolicy {
   policy: ToolPolicy;
   source: ToolPolicySource;
-  /** Why a built-in default sends this particular call to review. */
+  /** Why a built-in default or Command Rule reviews or denies this particular call. */
   detail?: string;
 }
 
@@ -48,8 +48,8 @@ export interface ToolPolicyInput {
   input: CustomToolCallEvent["input"];
   /** Configured Tool Policies (`tools` setting), merged across scopes. */
   configured: Readonly<Record<string, ToolPolicy>>;
-  /** Configured Safe Command prefixes (`safeCommands` setting). */
-  safeCommands: readonly string[];
+  /** Configured Command Rules (`commands` setting), merged across scopes. */
+  commands: Readonly<PolicyEntries>;
   /** The tool's author-supplied annotations, if any. */
   annotations: ToolAnnotations | undefined;
   paths: SensitivePathContext;
@@ -73,19 +73,55 @@ function builtInDefault(call: ToolPolicyInput): ResolvedToolPolicy | undefined {
   if (toolName === "bash") {
     const command = input["command"];
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; a non-string command cannot be judged and is reviewed.
-    if (typeof command === "string" && isSafeCommand(command, call.safeCommands))
-      return { policy: "allow", source: "default" };
-    return { policy: "review", source: "default", detail: "not a Safe Command" };
+    const judged = typeof command === "string" ? judgeCommand(command, call.commands) : undefined;
+    if (judged?.verdict === "allow") return { policy: "allow", source: "default" };
+    const reason =
+      judged?.verdict === "review" && judged.rule
+        ? `the user's Command Rule ${JSON.stringify(judged.rule.prefix)} requires review`
+        : "not a Safe Command";
+    return { policy: "review", source: "default", detail: withCommandRules(reason, call.commands) };
   }
   return undefined;
 }
 
 /**
- * Resolve one call's Tool Policy: the configured `tools` entry, else the built-in default
- * (including Safe Command and Sensitive Path exemptions), else a `readOnlyHint` annotation without
- * `openWorldHint`, else review.
+ * A reviewed `bash` call's reason, naming the user's `deny` and `review` Command Rules: they
+ * match only segments whose leading words are literal, so the Guardian judges commands that
+ * reach the same effect another way, such as through a wrapper or a path.
+ */
+function withCommandRules(reason: string, rules: Readonly<PolicyEntries>): string {
+  const named = (policy: ToolPolicy) =>
+    Object.entries(rules).flatMap(([prefix, value]) =>
+      value === policy ? [JSON.stringify(prefix)] : [],
+    );
+  const denied = named("deny");
+  const reviewed = named("review");
+  const parts = [reason];
+  if (denied.length)
+    parts.push(`the user denies commands starting with ${denied.join(", ")} (Command Rules)`);
+  if (reviewed.length)
+    parts.push(`the user requires review of commands starting with ${reviewed.join(", ")}`);
+  return parts.join("; ");
+}
+
+/**
+ * Resolve one call's Tool Policy: a `deny` Command Rule for `bash`, else the configured `tools`
+ * entry, else the built-in default (including Safe Command, Command Rule, and Sensitive Path
+ * handling), else a `readOnlyHint` annotation without `openWorldHint`, else review.
  */
 export function resolveToolPolicy(call: ToolPolicyInput): ResolvedToolPolicy {
+  // A `deny` Command Rule is a hard limit, whatever the `bash` Tool Policy says.
+  const command = call.toolName === "bash" ? call.input["command"] : undefined;
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; only a string command can match a Command Rule.
+  if (typeof command === "string") {
+    const judged = judgeCommand(command, call.commands);
+    if (judged.verdict === "deny")
+      return {
+        policy: "deny",
+        source: "command",
+        detail: `the user's Command Rule ${JSON.stringify(judged.rule.prefix)} denies this command`,
+      };
+  }
   const configured = Object.hasOwn(call.configured, call.toolName)
     ? call.configured[call.toolName]
     : undefined;

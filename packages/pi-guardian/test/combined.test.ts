@@ -20,7 +20,18 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import "./fixtures/combined-extension.js";
 
-it("makes a real Minimal Subagents Child Agent follow its root's Guardian settings", async () => {
+/** One Guardian request, by the role of the session that sent it. */
+interface CombinedReview {
+  role: "main" | "child";
+  /** Every text block of the request's user message. */
+  blocks: string[];
+}
+
+/**
+ * A real root session running Minimal Subagents and Guardian, whose agent delegates deploying x
+ * to a Child Agent and waits; the Child Agent then deploys x. Every review allows its call.
+ */
+async function delegateDeploy(setup: readonly string[]) {
   const directory = await mkdtemp(join(tmpdir(), "pi-guardian-combined-"));
   onTestFinished(() => rm(directory, { recursive: true, force: true }));
   vi.stubEnv("PI_CODING_AGENT_DIR", directory);
@@ -40,7 +51,7 @@ it("makes a real Minimal Subagents Child Agent follow its root's Guardian settin
       retry: { enabled: false },
     }),
   );
-  const reviewedCalls: string[] = [];
+  const reviews: CombinedReview[] = [];
   const childResults: string[] = [];
   let mainCalls = 0;
   globalThis.guardianCombinedTest = {
@@ -60,8 +71,10 @@ it("makes a real Minimal Subagents Child Agent follow its root's Guardian settin
       if (model.id === "reviewer") {
         const blocks =
           lastUser?.role === "user" && Array.isArray(lastUser.content) ? lastUser.content : [];
-        const last = blocks.at(-1);
-        reviewedCalls.push(last?.type === "text" ? last.text : "");
+        reviews.push({
+          role,
+          blocks: blocks.map((part) => (part.type === "text" ? part.text : "")),
+        });
         message.content = [
           {
             type: "text",
@@ -144,17 +157,54 @@ it("makes a real Minimal Subagents Child Agent follow its root's Guardian settin
     await runtime.dispose();
   });
   await runtime.session.bindExtensions({ mode: "print" });
-
-  // A root session override the child's own settings do not have.
-  await runtime.session.prompt("/guardian tool deploy deny");
+  for (const command of setup) await runtime.session.prompt(command);
   await runtime.session.prompt("Delegate deploying x and wait for the result.");
-
   const wait = runtime.session.messages.find(
     (message) => message.role === "toolResult" && message.toolName === "subagent_wait",
   );
   expect(wait).toMatchObject({ isError: false });
+  return { reviews, childResults, executed: globalThis.guardianCombinedTest.executed };
+}
+
+/** The labels of a review's evidence blocks, without the Reviewed Call. */
+function labels(review: CombinedReview | undefined): string[] {
+  return (review?.blocks ?? []).slice(0, -1).map((block) => block.split("\n", 1)[0] ?? "");
+}
+
+it("makes a real Minimal Subagents Child Agent follow its root's Guardian settings", async () => {
+  // A root session override the child's own settings do not have.
+  const { reviews, childResults, executed } = await delegateDeploy(["/guardian tool deploy deny"]);
   // The child's deploy was denied by the root's Tool Policy without a Guardian Review.
-  expect(globalThis.guardianCombinedTest.executed).toEqual([]);
+  expect(executed).toEqual([]);
   expect(childResults).toEqual([expect.stringMatching(/denied by Guardian's Tool Policy/)]);
-  expect(reviewedCalls.some((text) => text.includes("Minimal Subagents Child Agent"))).toBe(false);
+  expect(reviews.some((review) => review.role === "child")).toBe(false);
+});
+
+it("weighs a task the root's Guardian approved as Trusted Evidence in the Child Agent", async () => {
+  const { reviews, executed } = await delegateDeploy([]);
+  expect(executed).toEqual(["child:deploy:x"]);
+  // The root's Guardian reviewed the delegating `subagent` call.
+  const root = reviews.find((review) => review.role === "main");
+  expect(root?.blocks.at(-1)).toContain("Tool: subagent");
+  const child = reviews.find((review) => review.role === "child");
+  expect(labels(child)).toEqual([
+    "Evidence (TRUSTED, origin: rootUser):",
+    "Evidence (TRUSTED, origin: approvedDelegation):",
+  ]);
+  const delegation = JSON.parse(JSON.parse(child?.blocks[1]?.split("\n")[1] ?? "{}").content);
+  expect(delegation.approvedDelegation).toMatchObject({
+    writtenBy: 'the delegating agent "root", not the user',
+    approval: expect.stringContaining("(risk low, user authorization high)"),
+    text: "Deploy x.",
+  });
+});
+
+it("keeps a task untrusted when an allow Tool Policy let the delegation run unreviewed", async () => {
+  const { reviews, executed } = await delegateDeploy(["/guardian tool subagent allow"]);
+  expect(executed).toEqual(["child:deploy:x"]);
+  expect(reviews.some((review) => review.role === "main")).toBe(false);
+  expect(labels(reviews.find((review) => review.role === "child"))).toEqual([
+    "Evidence (TRUSTED, origin: rootUser):",
+    "Evidence (UNTRUSTED, origin: user):",
+  ]);
 });

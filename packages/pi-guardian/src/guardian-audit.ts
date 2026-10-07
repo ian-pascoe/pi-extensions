@@ -6,7 +6,12 @@ import {
   riskLevelSchema,
   userAuthorizationSchema,
 } from "./guardian-assessment.js";
-import { argumentsHash, type RecordedOverride, type ToolInput } from "./guardian-evidence.js";
+import {
+  argumentsHash,
+  type ApprovedDelegation,
+  type RecordedOverride,
+  type ToolInput,
+} from "./guardian-evidence.js";
 
 /** Custom session entry recording one Guardian Review; never part of model context. */
 export const reviewEntryType = "pi-guardian-review";
@@ -39,6 +44,30 @@ export const reviewUsageSchema = Type.Object({
 });
 export type ReviewUsage = Static<typeof reviewUsageSchema>;
 
+/**
+ * The Escalation Pass of a review whose first pass would have been rejected. The entry's own
+ * assessment fields hold the deciding assessment: this pass's when it produced one, else the
+ * first pass's, whose Rejection then stands.
+ */
+export const escalationRecordSchema = Type.Object({
+  /** The first pass's assessment. */
+  firstPass: Type.Object({
+    risk: riskLevelSchema,
+    riskCategory: Type.Optional(riskCategorySchema),
+    authorization: userAuthorizationSchema,
+    rationale: nullableString,
+  }),
+  /** How the Escalation Pass ended; only `assessed` replaces the first pass's assessment. */
+  result: Type.Union([Type.Literal("assessed"), Type.Literal("failed"), Type.Literal("aborted")]),
+  failure: nullableString,
+  model: nullableString,
+  durationMs: Type.Number(),
+  usage: Type.Union([reviewUsageSchema, Type.Null()]),
+  cost: nullableNumber,
+  retried: Type.Optional(Type.Boolean()),
+});
+export type EscalationRecord = Static<typeof escalationRecordSchema>;
+
 export const reviewEntrySchema = Type.Object({
   version: Type.Literal(1),
   toolName: Type.String(),
@@ -62,10 +91,19 @@ export const reviewEntrySchema = Type.Object({
   userOverride: Type.Boolean(),
   /** True when the call was blocked. */
   blocked: Type.Boolean(),
+  /** The first pass's model; an Escalation Pass records its own. */
   model: nullableString,
+  /** Duration, usage, and cost summed over both passes when escalated. */
   durationMs: Type.Number(),
   usage: Type.Union([reviewUsageSchema, Type.Null()]),
   cost: nullableNumber,
+  /** Set when the first pass would have been rejected and a second, careful pass ran. */
+  escalation: Type.Optional(escalationRecordSchema),
+  /**
+   * SHA-256 of the text a delegating call (`subagent` task or `agent_message` message) hands to
+   * another agent; an allowed one is published as an approved delegation.
+   */
+  delegationSha256: Type.Optional(Type.String()),
   /**
    * Calibration sample: Guardian's chars/4 estimate of the first request and the prompt tokens
    * its provider reported. Each model's token factor is derived from these on the branch.
@@ -93,6 +131,8 @@ export const reviewTotalsSchema = Type.Object({
   aborted: Type.Number(),
   overrides: Type.Number(),
   drift: Type.Number(),
+  /** Reviews whose first pass would have been rejected and that ran an Escalation Pass. */
+  escalated: Type.Optional(Type.Number()),
   /** Total cost in dollars; `null` when any review's cost was unknown. */
   cost: nullableNumber,
   lastError: nullableString,
@@ -120,6 +160,7 @@ export function reviewTotals(branch: readonly SessionEntry[]): ReviewTotals {
     aborted: 0,
     overrides: 0,
     drift: 0,
+    escalated: 0,
     cost: 0,
     lastError: null,
   };
@@ -134,6 +175,7 @@ export function reviewTotals(branch: readonly SessionEntry[]): ReviewTotals {
     if (data.result === "aborted") totals.aborted++;
     if (data.userOverride) totals.overrides++;
     if (data.argumentDrift) totals.drift++;
+    if (data.escalation) totals.escalated = (totals.escalated ?? 0) + 1;
     totals.cost = totals.cost === null || data.cost === null ? null : totals.cost + data.cost;
   }
   return totals;
@@ -165,6 +207,33 @@ export function recordedOverrides(branch: readonly SessionEntry[]): RecordedOver
       },
     ];
   });
+}
+
+/**
+ * Delegations this session's Guardian allowed, or its user allowed once, on the branch: the
+ * delegated texts its Child Agents may weigh as Trusted Evidence. A call allowed by an `allow`
+ * Tool Policy is never reviewed and so never recorded here.
+ */
+export function recordedDelegations(
+  branch: readonly SessionEntry[],
+  pending: readonly ReviewEntry[] = [],
+): ApprovedDelegation[] {
+  return [...reviewEntries(branch).map(({ data }) => data), ...pending].flatMap((data) =>
+    data.delegationSha256 !== undefined &&
+    data.result !== "unused" &&
+    !data.blocked &&
+    data.executed !== false
+      ? [
+          {
+            sha256: data.delegationSha256,
+            tool: data.toolName,
+            approvedBy: data.userOverride ? "user" : "guardian",
+            risk: data.risk,
+            authorization: data.authorization,
+          },
+        ]
+      : [],
+  );
 }
 
 /** Calibration samples for one Guardian model on the branch, in order. */

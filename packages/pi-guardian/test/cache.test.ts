@@ -105,8 +105,8 @@ describe("evidence that overflows its budget", () => {
     expect(harness.reviews).toHaveLength(turns);
     const rawBudget = Math.floor(3_000 / 1.5);
     const evidence = harness.reviews.map(evidenceBlocks);
-    // One turn: an assistant tool call and its result.
-    const perTurn = blockTokens(evidence.at(-1)?.slice(-3, -1) ?? []);
+    // One turn: an assistant tool call; evidence leaves out its result.
+    const perTurn = blockTokens(evidence.at(-1)?.slice(-1) ?? []);
     const reanchors: number[] = [];
     let growth = 0;
     const growthAtReanchor: number[] = [];
@@ -181,7 +181,7 @@ describe("calibration from the session", () => {
     // Its first review already uses the 2.5\u00d7 factor the session recorded, not the 1.5\u00d7 fallback.
     const tokens = blockTokens(evidenceBlocks(reloaded.reviews[0]));
     expect(tokens).toBeLessThanOrEqual(1_200);
-    expect(tokens).toBeGreaterThan(600);
+    expect(tokens).toBeGreaterThan(400);
   });
 });
 
