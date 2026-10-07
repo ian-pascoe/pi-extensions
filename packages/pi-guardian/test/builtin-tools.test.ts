@@ -61,6 +61,28 @@ describe("Pi's built-in tools on a real workspace", () => {
     expect(reviewed(2)).toContain("Reviewed because: not a Safe Command");
   });
 
+  it("runs cd into the workspace without review unless another call of its batch may write", async () => {
+    const harness = await createGuardianHarness({ guardianSettings: reviewer, builtinTools: true });
+    await mkdir(join(harness.dir, "src"), { recursive: true });
+    const command = "cd src && pwd && ls";
+    harness.responses.push(
+      toolCalls(["bash", { command }, "call-1"]),
+      toolCalls(["read", { path: "README.md" }, "call-2"], ["bash", { command }, "call-3"]),
+      // Pi prepares a parallel batch's calls before running any, so a write could change `src`,
+      // such as by planting a repository, after the cd was judged.
+      toolCalls(
+        ["write", { path: "src/notes.txt", content: "x\n" }, "call-4"],
+        ["bash", { command }, "call-5"],
+      ),
+      reply("Ok."),
+    );
+    harness.guardianReplies.push(assessment("low", "high", "Requested."));
+    await harness.session.prompt("Look around src.");
+    expect(harness.reviews).toHaveLength(1);
+    expect(reviewedCall(harness, 0)).toContain(`Arguments: ${JSON.stringify({ command })}`);
+    expect(reviewedCall(harness, 0)).toContain('- "write" with arguments');
+  });
+
   it("reviews an edit to a hard-linked file", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer, builtinTools: true });
     await mkdir(join(harness.dir, "src"), { recursive: true });

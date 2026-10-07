@@ -1,5 +1,5 @@
 import type { CustomToolCallEvent, ToolAnnotations } from "@earendil-works/pi-coding-agent";
-import { judgeCommand } from "./safe-command.js";
+import { isSafeCommand, judgeCommand } from "./safe-command.js";
 import { sensitivePathReason, type SensitivePathContext } from "./sensitive-paths.js";
 import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
 
@@ -53,6 +53,22 @@ export interface ToolPolicyInput {
   /** The tool's author-supplied annotations, if any. */
   annotations: ToolAnnotations | undefined;
   paths: SensitivePathContext;
+  /**
+   * Whether no other call can change the file system between this judgment and the call
+   * running. A `cd` Safe Command segment judges its target as it is now, so it needs this.
+   */
+  settled?: boolean;
+}
+
+/**
+ * Whether a call only reads, so it cannot change what a `cd` target is while another call of its
+ * batch runs: a read-only built-in, or a `bash` Safe Command of built-in programs only.
+ */
+export function onlyReads(toolName: string, input: CustomToolCallEvent["input"]): boolean {
+  if (readOnlyBuiltIns.includes(toolName)) return true;
+  const command = toolName === "bash" ? input["command"] : undefined;
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; only a string command can be a Safe Command.
+  return typeof command === "string" && isSafeCommand(command);
 }
 
 /** Built-in default Tool Policy for one call, or `undefined` when the tool has none. */
@@ -72,8 +88,11 @@ function builtInDefault(call: ToolPolicyInput): ResolvedToolPolicy | undefined {
   }
   if (toolName === "bash") {
     const command = input["command"];
-    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; a non-string command cannot be judged and is reviewed.
-    const judged = typeof command === "string" ? judgeCommand(command, call.commands) : undefined;
+    const judged =
+      // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; a non-string command cannot be judged and is reviewed.
+      typeof command === "string"
+        ? judgeCommand(command, call.commands, call.settled ? call.paths : undefined)
+        : undefined;
     if (judged?.verdict === "allow") return { policy: "allow", source: "default" };
     const reason =
       judged?.verdict === "review" && judged.rule

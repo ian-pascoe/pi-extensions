@@ -3,7 +3,14 @@
  * module cannot read as simple commands of literal words joined by `|`, `&&`, `||`, or `;` is not
  * a Safe Command and goes to the Guardian.
  */
+import { readdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
 import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
+import {
+  resolveToolPath,
+  sensitivePathReason,
+  type SensitivePathContext,
+} from "./sensitive-paths.js";
 
 /**
  * Characters that make a command more than one simple command of literal words: pipes,
@@ -270,6 +277,94 @@ function safeSegment(segment: string, rule: MatchedCommandRule | undefined): boo
   return check ? check(words.slice(1)) : false;
 }
 
+/**
+ * Whether a directory from `directory` up to, but not including, the workspace root holds a git
+ * repository of its own: a `.git` entry, or a `HEAD` file that could make it a bare repository.
+ * Git run there would read that repository's configuration, whose `core.fsmonitor` or
+ * `core.pager` runs programs, and an ordinary workspace edit can write one outside any `.git`.
+ */
+function nestedRepository(directory: string, root: string): boolean {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync.native(root);
+  } catch {
+    return true;
+  }
+  for (let current = directory; current !== realRoot; current = dirname(current)) {
+    if (dirname(current) === current) return true;
+    try {
+      const names = readdirSync(current).map((name) => name.toLowerCase());
+      if (names.includes(".git") || names.includes("head")) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Where `cd` with `args` goes from `from`, when that is provably harmless, else `undefined`: one
+ * literal operand (no options, `-`, or empty name), not looked up through `CDPATH`, naming an
+ * existing directory that the shell reaches alike by its logical path (`..` removed lexically,
+ * bash's default) and its physical one (`..` after symlinks, `cd -P` or bash's fallback), which
+ * lies inside the workspace, is no Sensitive Path, and holds no nested git repository.
+ */
+function cdTarget(
+  args: readonly string[],
+  from: string,
+  where: SensitivePathContext,
+): string | undefined {
+  const [target] = args;
+  if (args.length !== 1 || !target || target.startsWith("-")) return undefined;
+  if ((where.platform ?? process.platform) === "win32") return undefined;
+  if (process.env["CDPATH"] && !isAbsolute(target)) return undefined;
+  const logical = resolve(from, target);
+  // Sensitive Paths are judged as Pi's file tools resolve paths, which rewrites some spellings.
+  if (resolveToolPath(logical, where.cwd) !== logical) return undefined;
+  let physical: string;
+  try {
+    physical = realpathSync.native(isAbsolute(target) ? target : `${from}/${target}`);
+    if (realpathSync.native(logical) !== physical || !statSync(physical).isDirectory())
+      return undefined;
+  } catch {
+    return undefined;
+  }
+  if (sensitivePathReason(logical, where) || nestedRepository(physical, where.cwd))
+    return undefined;
+  return logical;
+}
+
+/**
+ * Whether every segment is a Safe Command. A `cd` segment is one when {@link cdTarget} proves its
+ * target harmless from every directory the shell may be in: the working directory at first, then
+ * also each earlier `cd` target, since a `cd` may fail and leave the directory as it was, whatever
+ * the operator. A `cd` in a pipeline runs in a subshell in bash but changes the directory in zsh,
+ * so it is not a Safe Command segment. A `cd` only an `allow` Command Rule permits leaves the
+ * directory unknown, so no later `cd` is a Safe Command segment. Without `where`, no `cd` is.
+ */
+function safeSegments(
+  { segments, operators }: Segments,
+  matched: readonly (MatchedCommandRule | undefined)[],
+  where: SensitivePathContext | undefined,
+): boolean {
+  let directories = where ? [where.cwd] : [];
+  for (const [index, segment] of segments.entries()) {
+    const words = literalWords(segment);
+    if (words?.[0] === "cd") {
+      const piped = operators[index - 1] === "|" || operators[index] === "|";
+      const targets =
+        where && !piped ? directories.map((from) => cdTarget(words.slice(1), from, where)) : [];
+      if (targets.length && targets.every((target) => target !== undefined)) {
+        directories = [...new Set([...directories, ...targets])];
+        continue;
+      }
+      directories = [];
+    }
+    if (!safeSegment(segment, matched[index])) return false;
+  }
+  return true;
+}
+
 /** How a `bash` command is treated: run, sent to the Guardian, or blocked by a Command Rule. */
 export type CommandJudgment =
   | { verdict: "allow" }
@@ -281,13 +376,16 @@ export type CommandJudgment =
  * matched against the rules by its leading words, the longest matching prefix winning: any `deny`
  * segment denies the command, else any `review` segment reviews it. Otherwise the command is a
  * Safe Command, and runs, only when its segments are joined by `|`, `&&`, `||`, or `;` and each
- * is literal words whose program is a built-in safe program or matches an `allow` rule.
+ * is literal words whose program is a built-in safe program or matches an `allow` rule, or is a
+ * `cd` into the workspace judged from `where`, whose `cwd` the command starts in.
  */
 export function judgeCommand(
   command: string,
   rules: Readonly<PolicyEntries> = {},
+  where?: SensitivePathContext,
 ): CommandJudgment {
-  const { segments, operators } = splitSegments(command);
+  const split = splitSegments(command);
+  const { segments, operators } = split;
   const matched = segments.map((segment) => matchRule(leadingWords(segment), rules));
   const denied = matched.find((rule) => rule?.policy === "deny");
   if (denied) return { verdict: "deny", rule: denied };
@@ -295,11 +393,15 @@ export function judgeCommand(
   if (reviewed) return { verdict: "review", rule: reviewed };
   const safe =
     operators.every((operator) => safeOperators.has(operator)) &&
-    segments.every((segment, index) => safeSegment(segment, matched[index]));
+    safeSegments(split, matched, where);
   return safe ? { verdict: "allow" } : { verdict: "review", rule: undefined };
 }
 
-/** Whether `command` is a Safe Command under the given Command Rules. */
-export function isSafeCommand(command: string, rules: Readonly<PolicyEntries> = {}): boolean {
-  return judgeCommand(command, rules).verdict === "allow";
+/** Whether `command` is a Safe Command under the given Command Rules, judging `cd` from `where`. */
+export function isSafeCommand(
+  command: string,
+  rules: Readonly<PolicyEntries> = {},
+  where?: SensitivePathContext,
+): boolean {
+  return judgeCommand(command, rules, where).verdict === "allow";
 }

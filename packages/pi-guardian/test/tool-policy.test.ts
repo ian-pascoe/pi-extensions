@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sensitivePathReason, type SensitivePathContext } from "../src/sensitive-paths.js";
-import { resolveToolPolicy, type ToolPolicyInput } from "../src/tool-policy.js";
+import { onlyReads, resolveToolPolicy, type ToolPolicyInput } from "../src/tool-policy.js";
 
 let root: string;
 let workspace: string;
@@ -254,6 +254,48 @@ describe("Tool Policy resolution", () => {
         }),
       ).policy,
     ).toBe("allow");
+  });
+
+  it("allows cd into the workspace only when no other call can change the file system first", () => {
+    const command = "cd src && git status";
+    expect(
+      resolveToolPolicy(call({ toolName: "bash", input: { command }, settled: true })).policy,
+    ).toBe("allow");
+    expect(
+      resolveToolPolicy(call({ toolName: "bash", input: { command }, settled: false })).policy,
+    ).toBe("review");
+    expect(resolveToolPolicy(call({ toolName: "bash", input: { command } })).policy).toBe("review");
+    // Judged against the workspace in `paths`.
+    for (const escape of ["cd escape && git status", "cd .. && git status", "cd git-link"])
+      expect(
+        resolveToolPolicy(call({ toolName: "bash", input: { command: escape }, settled: true }))
+          .policy,
+      ).toBe("review");
+    // A deny Command Rule on a later segment still denies.
+    expect(
+      resolveToolPolicy(
+        call({
+          toolName: "bash",
+          input: { command: "cd src && git push" },
+          commands: { "git push": "deny" },
+          settled: true,
+        }),
+      ).policy,
+    ).toBe("deny");
+  });
+
+  it("counts only read-only built-ins and built-in Safe Commands as calls that only read", () => {
+    expect(onlyReads("read", { path: "x" })).toBe(true);
+    expect(onlyReads("bash", { command: "git status | head" })).toBe(true);
+    for (const [toolName, input] of [
+      ["write", { path: "src/HEAD" }],
+      ["edit", { path: "src/a.ts" }],
+      ["bash", { command: "ln -s /etc src/x" }],
+      ["bash", { command: "cd src" }],
+      ["bash", { command: 1 }],
+      ["custom", {}],
+    ] as const)
+      expect(onlyReads(toolName, input), toolName).toBe(false);
   });
 
   it("applies Command Rules: deny blocks whatever the bash Tool Policy, review names the rule", () => {

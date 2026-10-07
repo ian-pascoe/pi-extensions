@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { isSafeCommand, judgeCommand, literalWords } from "../src/safe-command.js";
+import type { SensitivePathContext } from "../src/sensitive-paths.js";
 
 describe("Safe Command", () => {
   it.each([
@@ -150,6 +154,127 @@ describe("Safe Command", () => {
     expect(judgeCommand("git diff", rules).verdict).toBe("deny");
     // A deny segment denies the whole command, whatever the other segments match.
     expect(judgeCommand("git status && git diff", rules).verdict).toBe("deny");
+  });
+
+  describe("cd into the workspace", () => {
+    let root: string;
+    let workspace: string;
+    let where: SensitivePathContext;
+    const cdpath = process.env["CDPATH"];
+
+    beforeAll(async () => {
+      root = await mkdtemp(join(tmpdir(), "guardian-cd-"));
+      workspace = join(root, "workspace");
+      for (const directory of [
+        "workspace/.git",
+        "workspace/src",
+        "workspace/packages/a/b",
+        "workspace/vendor/nested/.git",
+        "workspace/vendor/nested/lib",
+        "workspace/bare/objects",
+        "workspace/bare/refs",
+        "workspace/.pi",
+        "outside",
+        "home",
+        "agent",
+      ])
+        await mkdir(join(root, directory), { recursive: true });
+      await writeFile(join(workspace, "bare", "HEAD"), "ref: refs/heads/main\n");
+      await writeFile(join(workspace, "file.txt"), "");
+      await symlink(join(root, "outside"), join(workspace, "escape"));
+      await symlink(join(workspace, "src"), join(workspace, "src-link"));
+      where = { cwd: workspace, piDirectories: [join(root, "agent")], home: join(root, "home") };
+    });
+    afterAll(() => rm(root, { recursive: true, force: true }));
+    afterEach(() => {
+      if (cdpath === undefined) delete process.env["CDPATH"];
+      else process.env["CDPATH"] = cdpath;
+    });
+    beforeAll(() => {
+      delete process.env["CDPATH"];
+    });
+
+    it.each([
+      "cd src && git status --short | head -3 && git log --oneline -1",
+      "cd packages/a && git status",
+      "cd packages/a/b; ls",
+      "cd src-link && git status",
+      "cd . && pwd",
+      "cd 'packages/a' && ls",
+      "cd src || git status",
+    ])("allows %s", (command) => {
+      expect(isSafeCommand(command, {}, where)).toBe(true);
+    });
+
+    it("allows an absolute path inside the workspace", () => {
+      expect(isSafeCommand(`cd ${join(workspace, "src")} && git status`, {}, where)).toBe(true);
+      const packages = join(workspace, "packages");
+      expect(isSafeCommand(`cd src && cd ${packages} && git status`, {}, where)).toBe(true);
+    });
+
+    it.each([
+      ["an absolute path outside the workspace", () => `cd ${join(root, "outside")} && git status`],
+      ["a parent escape", () => "cd .. && git status"],
+      ["a parent escape into a sibling", () => "cd ../outside && git status"],
+      ["a symlink pointing outside", () => "cd escape && git status"],
+      ["version-control metadata", () => "cd .git && git status"],
+      ["version-control metadata via ..", () => "cd src/../.git && ls"],
+      ["another Sensitive Path", () => "cd .pi && ls"],
+      ["a nested repository", () => "cd vendor/nested && git status"],
+      ["inside a nested repository", () => "cd vendor/nested/lib && git status"],
+      ["a bare repository", () => "cd bare && git log"],
+      ["a missing directory", () => "cd missing && ls"],
+      ["a file", () => "cd file.txt && ls"],
+      ["bare cd", () => "cd && git status"],
+      ["cd -", () => "cd - && git status"],
+      ["cd ~", () => "cd ~ && git status"],
+      ["a variable", () => "cd $X && git status"],
+      ["cd -P", () => "cd -P src && git status"],
+      ["cd -L", () => "cd -L src"],
+      ["cd --", () => "cd -- src"],
+      ["an empty name", () => "cd '' && ls"],
+      ["two operands", () => "cd src packages"],
+      ["a sequential escape", () => "cd packages && cd ../.."],
+      ["an escape after a list", () => "cd src; cd ../../outside; git status"],
+      // A `cd` may fail and leave the directory as it was, so `..` from `packages/a` is judged
+      // from the workspace root too.
+      ["a .. that a failed cd would leave outside", () => "cd packages/a && cd .."],
+      ["a cd relative to an earlier one", () => "cd packages && cd a"],
+      ["a cd in a pipeline", () => "cd src | git status"],
+      ["a cd at the end of a pipeline", () => "ls | cd src"],
+      ["an unsafe later segment", () => "cd src && rm -rf x"],
+    ])("reviews %s", (_case, command) => {
+      expect(isSafeCommand(command(), {}, where)).toBe(false);
+    });
+
+    it("never allows cd without a workspace to judge it from", () => {
+      expect(isSafeCommand("cd src && git status")).toBe(false);
+    });
+
+    it("reviews a relative cd while CDPATH is set, but not an absolute one", () => {
+      process.env["CDPATH"] = join(root, "outside");
+      expect(isSafeCommand("cd src && git status", {}, where)).toBe(false);
+      expect(isSafeCommand(`cd ${join(workspace, "src")} && git status`, {}, where)).toBe(true);
+    });
+
+    it("still applies Command Rules to the segments after a cd", () => {
+      expect(judgeCommand("cd src && rm -rf x", { rm: "deny" }, where)).toMatchObject({
+        verdict: "deny",
+        rule: { prefix: "rm" },
+      });
+      expect(judgeCommand("cd src && git log", { "git log": "review" }, where).verdict).toBe(
+        "review",
+      );
+      expect(judgeCommand("cd src && npm test", { "npm test": "allow" }, where).verdict).toBe(
+        "allow",
+      );
+    });
+
+    it("loses track of the directory after a cd only an allow Command Rule permits", () => {
+      const rules = { "cd /opt": "allow" } as const;
+      expect(isSafeCommand("cd /opt && git status", rules, where)).toBe(true);
+      expect(isSafeCommand("cd /opt && cd src", rules, where)).toBe(false);
+    });
   });
 
   it("splits literal words with quotes", () => {

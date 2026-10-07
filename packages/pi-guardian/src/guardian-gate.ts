@@ -66,7 +66,12 @@ import {
 } from "./guardian-settings.js";
 import type { Context } from "@earendil-works/pi-ai";
 import type { SensitivePathContext } from "./sensitive-paths.js";
-import { readOnlyBuiltIns, resolveToolPolicy, type ResolvedToolPolicy } from "./tool-policy.js";
+import {
+  onlyReads,
+  readOnlyBuiltIns,
+  resolveToolPolicy,
+  type ResolvedToolPolicy,
+} from "./tool-policy.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 /** What the review gate reads from the extension that owns the session. */
@@ -274,13 +279,30 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     );
   }
 
+  /**
+   * Whether no other call can change the file system before `call` runs. Pi prepares a parallel
+   * batch's calls one by one and then runs them together, so only other calls that only read
+   * keep it settled; a sequential batch prepares each call after the earlier ones ran. A script's
+   * nested calls may run concurrently with calls this extension never sees.
+   */
+  function settledFor(call: SeenCall, batch: readonly ToolCall[]): boolean {
+    if (call.parentToolCallId !== undefined) return false;
+    if (!batch.some((block) => block.id === call.toolCallId)) return false;
+    if (sequentialBatch(batch)) return true;
+    return batch.every(
+      (block) => block.id === call.toolCallId || onlyReads(block.name, block.arguments),
+    );
+  }
+
   /** The call's Tool Policy, judged against the file system as it is now. */
   function policyFor(
     ctx: ExtensionContext,
     config: GuardianConfig,
     call: SeenCall,
+    batch: readonly ToolCall[],
   ): ResolvedToolPolicy {
     return resolveToolPolicy({
+      settled: settledFor(call, batch),
       toolName: call.toolName,
       input: call.input,
       configured: config.tools,
@@ -627,7 +649,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         input: structuredClone(input),
         parentToolCallId: undefined,
       };
-      const policy = policyFor(ctx, config, call);
+      const policy = policyFor(ctx, config, call, blocks);
       if (policy.policy !== "review") continue;
       const controller = new AbortController();
       const signal = ctx.signal
@@ -703,7 +725,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       if (early) discard(early);
       return { block: true, terminate: true, reason: streakEndedReason };
     }
-    const policy = policyFor(ctx, config, call);
+    const batch = call.parentToolCallId ? [] : batchOf(call.toolCallId);
+    const policy = policyFor(ctx, config, call, batch);
     if (policy.policy !== "review" && early) discard(early);
     if (policy.policy === "allow") return undefined;
     if (policy.policy === "deny")
@@ -726,7 +749,6 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       result = await early.result;
     } else {
       if (early) discard(early);
-      const batch = call.parentToolCallId ? [] : batchOf(call.toolCallId);
       result = await review(ctx, config, call, policy.detail, batch, ctx.signal);
     }
     return settle(ctx, config, call, result);
