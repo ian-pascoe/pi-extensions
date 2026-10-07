@@ -96,7 +96,7 @@ describe("Pi's built-in tools on a real workspace", () => {
     await harness.session.prompt("Do it.");
     expect(harness.reviews).toHaveLength(2);
     expect(reviewedCall(harness, 0)).toContain(
-      'Other calls in the same tool batch (context only; Pi may run them before or alongside this call):\n- "write" with arguments {"path":"target.txt","content":"x"}',
+      'Other calls in the same tool batch (context only, each reviewed on its own; Pi may run them before or alongside this call):\n- "write" with arguments {"path":"target.txt","content":"x"}',
     );
     expect(await readFile(join(harness.dir, "target.txt"), "utf8")).toBe("x");
   });

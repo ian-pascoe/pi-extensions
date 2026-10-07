@@ -591,7 +591,7 @@ export function renderReviewedCall(call: ReviewedCall): string {
     );
   if (call.batch?.length) {
     lines.push(
-      "Other calls in the same tool batch (context only; Pi may run them before or alongside this call):",
+      "Other calls in the same tool batch (context only, each reviewed on its own; Pi may run them before or alongside this call):",
     );
     for (const other of call.batch) lines.push(`- ${batchCallLine(other)}`);
   }
