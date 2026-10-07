@@ -204,7 +204,11 @@ function attach(readable, writable) {
   }
 }
 
-if (process.env.FAKE_IGNORE_SIGTERM === "1") process.on("SIGTERM", () => {});
+if (process.env.FAKE_IGNORE_SIGTERM === "1") {
+  process.on("SIGTERM", () => {});
+  // Stay alive after stdin closes too, so only SIGKILL ends an uncooperative adapter.
+  setInterval(() => {}, 1_000);
+}
 
 const tcpIndex = process.argv.indexOf("--tcp");
 if (tcpIndex >= 0) {

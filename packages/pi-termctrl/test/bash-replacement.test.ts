@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
@@ -397,17 +397,21 @@ describe("bashTail", () => {
 describe("Background jobs", () => {
   test("background: true moves a slow command to the background after 2 s", async () => {
     const { tool } = replacement();
+    // The command finishes only after the test opens the gate, so the call must return while it
+    // still runs; no upper time bound is needed to prove it moved to the background.
+    const gate = join(directory, "gate");
     const startedAt = Date.now();
     const result = await tool.execute(
       "call",
-      { command: "echo first; sleep 2.5; echo second", background: true },
+      {
+        command: `echo first; while [ ! -e '${gate}' ]; do sleep 0.05; done; echo second`,
+        background: true,
+      },
       undefined,
       undefined,
       context(),
     );
-    const elapsed = Date.now() - startedAt;
-    expect(elapsed).toBeGreaterThanOrEqual(2_000);
-    expect(elapsed).toBeLessThan(2_400);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2_000);
     const logPath = join(tmpdir(), "pi-termctrl", `${process.pid}-b1.log`);
     expect(result.structuredContent).toMatchObject({
       output: "first\n",
@@ -418,7 +422,8 @@ describe("Background jobs", () => {
     expect(result).not.toHaveProperty("isError");
     expect(textOf(result)).toContain("first\n\n\nCommand moved to the background as b1.");
 
-    await waitFor(() => notices.length === 1);
+    await writeFile(gate, "");
+    await waitFor(() => notices.length === 1, 10_000);
     expect(await readFile(logPath, "utf8")).toBe("first\nsecond\n");
     expect(notices[0]).toMatchObject([
       { id: "b1", kind: "job", exit: { code: 0, signal: null }, output: "first\nsecond\n" },
