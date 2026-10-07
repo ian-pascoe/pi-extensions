@@ -2220,7 +2220,7 @@ const LSP_TOOL_DESCRIPTIONS = {
   diagnostics:
     "Get fresh LSP Diagnostics for a file from every matching server, one `path:line:col severity source(code): message` line each.",
   workspace_diagnostics:
-    "Get workspace diagnostics from every matching server unless server_id narrows them, from workspace pull or cached push diagnostics. A server that publishes none reports status unsupported; use lsp_diagnostics per file.",
+    "Get workspace diagnostics from every matching server, from workspace pull or cached push diagnostics. A server that publishes none reports status unsupported; use lsp_diagnostics per file.",
   completion:
     "List completions at a position, one `label (kind)  detail` line each. By default only those starting with the identifier before the position.",
   hover: "Get type information and documentation for the symbol at a position.",

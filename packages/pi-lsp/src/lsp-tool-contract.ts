@@ -83,7 +83,7 @@ const FilePathSchema = Type.String({ minLength: 1 });
 /** A file that selects the Server Instance (and so the workspace root) for a workspace-wide call. */
 const RootAnchorPathSchema = Type.String({
   minLength: 1,
-  description: "Any file in the workspace; selects the server and its root",
+  description: "Any file in the workspace; selects the matching servers and their roots",
 });
 const ServerIdSchema = Type.String({ minLength: 1 });
 /** Items returned per server when a completion or workspace-symbol call names no `limit`. */

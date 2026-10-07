@@ -83,6 +83,7 @@ class RecordingLspClient implements LspToolServerClient {
     diagnostics: [],
   };
   currentDiagnosticsFailure: Error | undefined;
+  workspaceDiagnosticsFailure: Error | undefined;
   synchronizationFailure: Error | undefined;
   workspaceDiagnosticsResult: LspWorkspaceDiagnosticResult = {
     status: "fresh",
@@ -155,6 +156,7 @@ class RecordingLspClient implements LspToolServerClient {
 
   async workspaceDiagnostics(_signal?: AbortSignal): Promise<LspWorkspaceDiagnosticResult> {
     this.requests.push("workspace/diagnostic");
+    if (this.workspaceDiagnosticsFailure !== undefined) throw this.workspaceDiagnosticsFailure;
     return this.workspaceDiagnosticsResult;
   }
 
@@ -3363,11 +3365,8 @@ describe("registered LSP tool", () => {
     const fixture = await createToolFixture(["typescript", "oxlint", "failing"]);
     const typescript = new RecordingLspClient();
     const oxlint = new RecordingLspClient();
-    const failing = new (class extends RecordingLspClient {
-      override async workspaceDiagnostics(): Promise<LspWorkspaceDiagnosticResult> {
-        throw new Error("expected failure");
-      }
-    })();
+    const failing = new RecordingLspClient();
+    failing.workspaceDiagnosticsFailure = new Error("expected failure");
     typescript.workspaceDiagnosticsResult = { status: "unsupported" };
     oxlint.workspaceDiagnosticsResult = {
       status: "fresh",
@@ -3409,10 +3408,16 @@ describe("registered LSP tool", () => {
       ],
       warnings: [expect.stringContaining("expected failure")],
     });
-    const text = resultText(all);
-    expect(text).toContain("Server typescript publishes no workspace diagnostics");
-    expect(text).toContain("source.ts:1:1: lint");
-    expect(text).toContain("expected failure");
+    expect(resultText(all)).toBe(
+      [
+        "typescript:",
+        "  Server typescript publishes no workspace diagnostics; it reports diagnostics only for a requested file. Use lsp_diagnostics for each file.",
+        "oxlint:",
+        "  source.ts:1:1: lint",
+        "",
+        "Warning: Pi LSP: server failing request failed: expected failure",
+      ].join("\n"),
+    );
 
     const narrowed = await executeTool(
       fixture,
@@ -3423,7 +3428,6 @@ describe("registered LSP tool", () => {
       results: [{ server_id: "oxlint" }],
       warnings: [],
     });
-    expect(Value.Parse(LspReadOutputSchema, narrowed.structuredContent).results).toHaveLength(1);
     await manager.shutdown();
     await fixture.close();
   });
