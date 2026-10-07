@@ -1,0 +1,157 @@
+# Pi Guardian
+
+`@ian-pascoe/pi-guardian` gates a Pi agent's tool calls before they run. Routine calls run at once; risky ones go to a separate reviewer model, the Guardian, which judges the call's risk against the user's authorization. A fixed Decision Table turns that judgment into an allowed call or a binding Rejection.
+
+Requires Node `>=22.19.0` and Pi `>=0.99.0`.
+
+> **Guardian is a safety net, not a sandbox.** An allowed call runs with your full privileges, a reviewer model can be wrong or manipulated, and other extensions can still act on their own. Keep backups and review what agents do.
+
+## Install
+
+```bash
+pi install npm:@ian-pascoe/pi-guardian
+# or from this checkout
+pi -e ./packages/pi-guardian/src/index.ts
+```
+
+**Install Guardian last.** Pi runs `tool_call` handlers in extension load order, and an extension loaded after Guardian can rewrite a call's arguments after Guardian reviewed them. Guardian detects this after the call runs (see [Limitations](#limitations)).
+
+Guardian is **enabled by default** and reviews with the session's current model unless `model` is set. Without a usable model, every call that needs review is a Review Failure.
+
+## How a call is judged
+
+Every `tool_call`, including calls a tool issues itself (such as a `codemode` script's calls, which carry `parentToolCallId`), resolves to one Tool Policy:
+
+1. the configured `tools.<name>` setting, if any;
+2. else the built-in default:
+   - `allow`: `read`, `grep`, `find`, `ls`, `codemode`, `tool_search`, `todo`, `web_search`, `web_fetch`;
+   - `edit` and `write`: `allow`, unless the target is a **Sensitive Path**, which is reviewed;
+   - `bash`: `allow` only for a **Safe Command**, otherwise reviewed;
+   - `terminal_start`, `terminal_send`, and `powershell`: reviewed;
+3. else the tool's `readOnlyHint: true` annotation (as reported by `pi.getAllTools()`) allows it;
+4. else the call is reviewed.
+
+`deny` blocks the call without a model call. `review` sends it to a Guardian Review. A nested call is judged by its own Tool Policy; the issuing call is shown to the Guardian as context only.
+
+**Sensitive Paths** are anything outside the working directory (after resolving `~`, `..`, `@`, `file://`, and symlinks, including dangling ones), anything inside it under a `.git` or `.pi` directory or named `.env*` (any case), Pi's agent directory (`getAgentDir()`), and the session directory. Pi configuration is sensitive because changing it can weaken Guardian itself.
+
+A **Safe Command** is one simple command of literal words: no pipes, redirection, `;`, `&&`, `||`, `&`, subshells, grouping, command or process substitution, backticks, newlines or other control characters, variable, tilde, brace or history expansion, globbing, comments, escapes, or environment assignments, and a bare program name (no path). The built-in programs are `ls`, `pwd`, `cat`, `head`, `tail`, `wc`, `echo`, `stat`, `du`, `df`, `basename`, `dirname`, `realpath`, `which`, `whoami`, `uname`, `grep`, `rg` (without `--pre`, `--pre-glob`, or `--hostname-bin`), `find` (without `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf`, or `-fls`), and `git status`, `git log`, `git diff`, `git show` (without `--output`, `--ext-diff`, or `--textconv`), `git branch` (listing flags only), and `git rev-parse`, with no git options before the subcommand. When in doubt the command is reviewed. `safeCommands` adds literal prefixes: `"npm test"` allows `npm test` and `npm test -- --run`, but the rest of the command must still be literal words.
+
+## Guardian Review
+
+Each review is one stateless model completion without tools ([ADR-0001](docs/adr/0001-review-with-one-stateless-call.md)):
+
+- **System prompt**: the built-in policy (evidence handling, User Authorization scoring, risk taxonomy, Pi tools), your Security Policy (`policy`), and the output contract.
+- **One user message** of text blocks: project instructions, then evidence entries in conversation order, then the **Reviewed Call** — the tool, its exact arguments, the working directory, which agent issued it, and for nested calls the issuing call's tool and arguments.
+
+The request is append-only: within the evidence budget, each review's blocks extend the previous review's, so provider prompt caches apply across reviews. Guardian never changes the Guarded Agent's system prompt, tools, or messages.
+
+Pi runs `tool_call` handlers one call at a time, even for parallel tool calls. Guardian therefore starts the reviews of a response's tool calls as soon as the response ends and reuses each result when its call reaches `tool_call` with the same arguments, so parallel calls are reviewed concurrently. A review started for a call that never arrives, or whose arguments changed before Guardian saw them, is recorded as `unused`.
+
+### Evidence and trust
+
+**Trusted Evidence** can establish User Authorization: messages the user typed, the project instructions in the session system prompt's `<project_context>` section (`AGENTS.md` and other context files), and recorded **User Overrides**. Everything else is labeled **UNTRUSTED**: tool results, assistant text and reasoning, extension and summary messages, and in Child Agent and Advisor sessions every user message, since it comes from another agent. Each entry carries its message as JSON, so content cannot forge an evidence label.
+
+The evidence budget (`evidenceBudgetTokens`, by Pi's chars/4 estimate) defaults to `auto`: a quarter of the Guardian model's context window, at most 32,000 tokens. All Trusted Evidence is always kept, shortened with a marker if it alone exceeds the budget; the rest is the newest untrusted entries that fit. Each untrusted text is capped near 2,000 tokens with a marker, and the Reviewed Call's arguments near 8,000.
+
+### Decision Table
+
+The model returns `{"risk_level", "user_authorization", "rationale"}` (fenced JSON is tolerated). The Outcome is fixed:
+
+| Risk Level | `unknown` | `low`    | `medium` | `high`   |
+| ---------- | --------- | -------- | -------- | -------- |
+| `low`      | allowed   | allowed  | allowed  | allowed  |
+| `medium`   | allowed   | allowed  | allowed  | allowed  |
+| `high`     | rejected  | rejected | allowed  | allowed  |
+| `critical` | rejected  | rejected | rejected | rejected |
+
+### Rejection
+
+A Rejection blocks the call and tells the agent:
+
+```text
+This action was rejected due to unacceptable risk.
+Risk: high. Authorization: low.
+Reason: <rationale>
+Do not attempt to achieve the same outcome through a workaround, indirect execution, or variations of this call, and do not retry it. Explain the risk to the user and ask whether they want to proceed; continue only with a materially safer alternative or after the user explicitly approves this action.
+```
+
+The user sees a warning with the tool, risk, and rationale. With `onDeny: "ask"` and an interactive UI, a dialog offers **Allow once**: a User Override. Otherwise the user can authorize the action in conversation, which the next review weighs as Trusted Evidence.
+
+**Rejection Streak**: after `maxConsecutiveRejections` (default 3; 0 disables) consecutive blocked Reviewed Calls in one request, the blocking result also asks Pi to end the turn. Blocked Review Failures count toward the streak too, so a broken Guardian cannot keep a headless agent retrying. Any allowed Reviewed Call, including a User Override, resets it, and so does each new prompt. Pi ends the turn only when every call in the tool batch asked to stop.
+
+### Review Failure
+
+No model resolved, no credentials, a provider error, a timeout (`reviewTimeoutMs`), malformed output, or unreadable Guardian settings never allow a call. With an interactive UI, a dialog offers **Allow once** (a User Override) or **Block**; without one, the call is blocked with the reason and a pointer to the troubleshooting Skill. Aborting the agent's turn aborts its reviews; an aborted review blocks its call with an "aborted" reason and is not a Review Failure.
+
+### Audit
+
+Every Guardian Review appends a `pi-guardian-review` session entry, which never reaches the model: tool, call ID, parent call ID, arguments (bounded), Risk Level, User Authorization, outcome, rationale, failure, User Override, model, duration, token usage, cost, and argument drift. `/guardian status` derives its totals from the selected branch's entries. User Overrides return to later reviews as Trusted Evidence, for example "User Override: the user interactively allowed bash with arguments {"command":"rm -rf dist"} after a high-risk Rejection (…)".
+
+## Commands
+
+```text
+/guardian
+/guardian status
+/guardian on|off [--global|--project]
+/guardian tool <name> <allow|review|deny|default|inherit> [--global|--project]
+/guardian policy [--global|--project]
+/guardian inherit [key] [--global|--project]
+/guardian set <key> <JSON> [--global|--project]
+```
+
+Without a flag, changes go to the session. In the interactive TUI, `/guardian` opens a settings menu like `/advisor`'s: a Scope row (session, trusted project, global), cycling rows for `enabled`, `thinkingLevel`, and `onDeny` that show the selected scope's own value or what it inherits, a model picker, a per-tool Tool Policy list, the Security Policy in Pi's editor, and typed values for the rest. Closing it records one status entry listing the changes it applied. Elsewhere `/guardian` records a status entry.
+
+`/guardian status` records the effective settings with their sources, whether the session follows a root session, review counts (allowed, rejected, failed, aborted, overrides, argument drift), total review cost, and the last failure. The footer shows `guardian` while idle, `guardian: reviewing <tool>` during reviews, and nothing while disabled.
+
+## Settings
+
+Settings live under `guardian` in Pi's global and trusted-project `settings.json`, plus session overrides. Precedence is default < global < trusted project < session; a trusted project may weaken Guardian ([ADR-0002](docs/adr/0002-trusted-projects-may-weaken-guardian.md)), while an untrusted project's settings are ignored.
+
+| Key                        | Default   | Meaning                                                                                              |
+| -------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
+| `enabled`                  | `true`    | Gate tool calls. While disabled Guardian does nothing, including `deny` Tool Policies.               |
+| `model`                    | session   | Guardian model as `provider/id`; absent follows the session's current model.                         |
+| `thinkingLevel`            | `"low"`   | `off` … `max`, clamped to the model.                                                                 |
+| `tools`                    | `{}`      | Tool Policies by tool name: `allow`, `review`, `deny`, or `null` to reset an inherited entry.        |
+| `safeCommands`             | `[]`      | Extra Safe Command prefixes; merged across scopes as a union.                                        |
+| `policy`                   | `""`      | Security Policy: trusted destinations, forbidden actions, and other rules added to the built-in one. |
+| `reviewTimeoutMs`          | `60000`   | Deadline for each review; a timeout is a Review Failure.                                             |
+| `evidenceBudgetTokens`     | `"auto"`  | Positive integer or `auto`.                                                                          |
+| `onDeny`                   | `"block"` | `block`, or `ask` to offer Allow once on a Rejection in interactive sessions.                        |
+| `maxConsecutiveRejections` | `3`       | Rejection Streak that ends the turn; `0` never ends it.                                              |
+
+`tools` merges entry by entry across scopes: a higher scope adds or replaces entries, and `null` removes a lower scope's entry so the built-in default applies again. `set tools <JSON>` replaces that scope's whole map; `tool <name> <value>` changes one entry (`default` writes `null`, `inherit` removes the scope's entry). A configured Tool Policy overrides the built-in default, so `{"edit": "allow"}` also allows edits to Sensitive Paths.
+
+```json
+{
+  "guardian": {
+    "model": "anthropic/claude-haiku-4-5",
+    "tools": { "mcp__github__create_issue": "allow", "terminal_send": "deny" },
+    "safeCommands": ["npm test", "pnpm lint"],
+    "policy": "Pushing to github.com/acme/* is trusted. Never touch the production database.",
+    "onDeny": "ask"
+  }
+}
+```
+
+## Child Agents and Advisors
+
+Guardian loads in every session that loads it, including Minimal Subagents Child Agent sessions (print mode, no UI) and Advisor sessions. A Child Agent (detected by Minimal Subagents' `minimal-subagents.identity` entry) or an Advisor (pi-advisor's `pi-advisor-role` entry) follows its root session's effective settings live while that root runs Guardian in the same process; otherwise it falls back to its own global and project settings. Its task and other user messages come from another agent, so they are untrusted, and without UI its Review Failures and Rejections block. Settings changes from inside such a session are refused; change them in the root session.
+
+## Limitations
+
+- **Argument drift**: Guardian reviews the arguments its `tool_call` handler sees. An extension loaded after Guardian can still change them. Pi emits `tool_execution_start` before `tool_call` handlers run, so Guardian compares the reviewed arguments with the `tool_result` event's arguments instead and warns after the call has run, marking the review entry with `argumentDrift`. Install Guardian last.
+- A Child Agent or Advisor reviews only its own conversation; the root user's messages are not part of its evidence.
+- Reviews cannot inspect files or run read-only checks (ADR-0001), so the policy leans conservative when evidence is missing.
+- `git` read-only subcommands still honor repository configuration such as `core.fsmonitor` or `diff.external`; edits to `.git` are Sensitive Paths and therefore reviewed.
+- Annotations and Safe Commands are trusted as declared; a tool that lies about `readOnlyHint` runs without review unless you configure it.
+- `safeCommands` cannot remove a lower scope's entries.
+
+## Attribution
+
+Guardian's built-in policy is adapted from the Guardian prompts of [OpenAI Codex](https://github.com/openai/codex) (`codex-rs/prompts/templates/guardian/`), Copyright 2025 OpenAI, licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0). The adaptation (rewritten for Pi's tools, Trusted Evidence, a single stateless review, and an external Decision Table) is in [`src/guardian-prompt.ts`](src/guardian-prompt.ts). The Rejection wording follows Codex's.
+
+## Troubleshooting
+
+Run `/skill:pi-guardian`, or see [`skills/pi-guardian/SKILL.md`](skills/pi-guardian/SKILL.md).
