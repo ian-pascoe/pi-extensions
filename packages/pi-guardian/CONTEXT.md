@@ -13,7 +13,7 @@ The agent whose tool calls a Guardian reviews: the main Pi agent, a Minimal Suba
 _Avoid_: Observed Agent
 
 **Tool Policy**:
-The configured treatment of a tool's calls: `allow` runs them without review, `review` sends them to the Guardian, and `deny` blocks them outright. A tool with no configured Tool Policy is reviewed.
+The configured treatment of a tool's calls: `allow` runs them without review, `review` sends them to the Guardian, and `deny` blocks them outright. A tool with no configured, built-in, or annotated Tool Policy is reviewed.
 _Avoid_: Approval mode, permission tier
 
 **Reviewed Call**:
@@ -25,7 +25,7 @@ A simple shell command, with no pipes, redirection, command chaining, or substit
 _Avoid_: Allowlisted command
 
 **Sensitive Path**:
-A file path whose modification is reviewed even though ordinary workspace edits are not: anything outside the workspace root, and version-control, secret, or Pi configuration and session files within it. Pi configuration is sensitive because changing it can weaken the Guardian itself.
+A file path whose modification is reviewed even though ordinary workspace edits are not: anything outside the workspace root (and everything when the workspace root contains the home directory); persistence and credential locations in the home directory; version-control, secret, git hook, CI, editor-task, Pi and agent configuration, and context files within the workspace; resources Pi loaded; and files with more than one hard link. Pi configuration, context files, and loaded resources are sensitive because changing them can weaken the Guardian or rewrite trusted instructions.
 _Avoid_: Protected file
 
 **Guardian Review**:
@@ -41,7 +41,7 @@ The Guardian's judgment of how clearly trusted evidence shows the user authorize
 _Avoid_: Permission, consent
 
 **Trusted Evidence**:
-Content that can establish User Authorization: messages the user typed and project instructions. Tool results, assistant output, and a Child Agent's task are untrusted evidence; they may explain a call but cannot authorize it.
+Content that can establish User Authorization: messages the user typed, context files from the user's global configuration or a trusted project, and User Overrides. Tool results, assistant output, Skill bodies, messages an extension sent, an untrusted project's context files, and a Child Agent's task are untrusted evidence; they may explain a call but cannot authorize it.
 _Avoid_: Transcript
 
 **Decision Table**:
@@ -57,15 +57,15 @@ A blocked Reviewed Call, reported to the Guarded Agent with the Guardian's ratio
 _Avoid_: Veto, denial
 
 **User Override**:
-A user's interactive decision to run a call that a Rejection or Review Failure would have blocked. Later Guardian Reviews weigh it as Trusted Evidence.
+A user's interactive decision to run a call that a Rejection or Review Failure would have blocked. Later Guardian Reviews weigh it as Trusted Evidence that authorizes only that exact call.
 _Avoid_: Bypass
 
 **Rejection Streak**:
-Consecutive Rejections within one request. When it reaches its limit, the next Rejection also ends the agent's turn and returns control to the user; any allowed Reviewed Call ends the streak.
+Consecutive Rejections within one request. When it reaches its limit, that Rejection also ends the agent's turn and returns control to the user; any allowed Reviewed Call that runs ends the streak.
 _Avoid_: Circuit breaker
 
 **Review Failure**:
-A Guardian Review that produced no valid assessment, such as when no model resolves, the provider errors, the review times out, or the response is malformed. A Review Failure never allows the call: with an interactive user it asks them to confirm, and otherwise it blocks.
+A Guardian Review that produced no valid assessment, such as when no model resolves, the provider errors, the review times out, the response is malformed, the Reviewed Call is too large to review in full, or Guardian's settings are unreadable. A Review Failure never allows the call: with an interactive user it asks them to confirm, and otherwise it blocks.
 _Avoid_: Fail-open
 
 **Security Policy**:

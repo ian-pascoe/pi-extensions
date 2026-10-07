@@ -97,11 +97,18 @@ npm deprecate @ian-pascoe/pi-git-status-widget "Retired; use @ian-pascoe/pi-comm
 After the implementation PR merges, publish `@ian-pascoe/pi-guardian@0.0.0`
 from `packages/pi-guardian` with `npm publish --access public --provenance=false`
 after the release gates pass, then configure its trusted publisher as for Advisor.
-Guardian imports the `layered-settings` and `evidence` exports that the pending
+The `0.0.0` bootstrap only reserves the package name and cannot load: Guardian
+imports the `layered-settings` and `evidence` exports that the pending
 `@ian-pascoe/pi-utils` minor release adds, while its manifest range still names
-the current workspace version, so the `0.0.0` bootstrap only reserves the package
-name. Its `minor` Changeset releases the usable `0.1.0` in the same version PR
-that releases pi-utils and raises Guardian's pi-utils range.
+the current pi-utils version. The range cannot be raised first, because the
+package-tarball check requires every consumer's packed range to name the
+workspace pi-utils version. Guardian's `minor` Changeset releases the usable
+`0.1.0` in the same version PR that releases pi-utils and raises Guardian's
+pi-utils range. Once `0.1.0` is published, deprecate the placeholder:
+
+```bash
+npm deprecate @ian-pascoe/pi-guardian@0.0.0 "Name reservation only; it cannot load. Install 0.1.0 or later."
+```
 
 ## Trusted publishing and guarded automation
 
