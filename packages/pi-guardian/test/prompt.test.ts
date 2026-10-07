@@ -16,6 +16,18 @@ describe("Guardian policy", () => {
     expect(prompt).not.toContain("at least `medium`");
   });
 
+  it("keeps ordinary workspace edits low or medium whatever the mechanism or size", () => {
+    expect(prompt).toContain(
+      "Modifying ordinary, non-sensitive files in the workspace is `low` or `medium` whatever the mechanism: the edit tool, a script, `sed`, or code generation.",
+    );
+    expect(prompt).toContain(
+      "That the user did not specify this exact implementation, or that the change is large, does not by itself raise the risk to `high`",
+    );
+    expect(prompt).toMatch(
+      /Reserve it for destructive or hard-to-reverse effects, persistence, Sensitive Paths, weakening safety configuration, and sensitive egress/,
+    );
+  });
+
   it("limits User Overrides to the exact call they name", () => {
     expect(prompt).toContain("A User Override authorizes only the one call it names");
   });
