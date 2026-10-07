@@ -7,6 +7,13 @@ import { readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
 import {
+  commandStarts,
+  commandWords,
+  looseCommands,
+  splitSegments,
+  type Segments,
+} from "./shell-syntax.js";
+import {
   resolveToolPath,
   sensitivePathReason,
   type SensitivePathContext,
@@ -139,109 +146,6 @@ export const builtInSafePrograms: readonly string[] = [...builtInPrograms.keys()
 /** Operators that may join the segments of a Safe Command. */
 const safeOperators = new Set(["|", "&&", "||", ";"]);
 
-/** A command split at its unquoted control operators. */
-interface Segments {
-  segments: string[];
-  /** The operators between segments, such as `|` or `&&`, and newlines as `\n`. */
-  operators: string[];
-}
-
-/**
- * Split a command at unquoted control operators (`|`, `|&`, `||`, `&&`, `&`, `;`, `;;`, and
- * newlines). This only finds segment boundaries: a segment holding a substitution, subshell, or
- * other syntax may be split wrongly, but such a segment is never literal words, so it is neither
- * a Safe Command nor matched as one.
- */
-function splitSegments(command: string): Segments {
-  const segments: string[] = [];
-  const operators: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | undefined;
-  // Every structural character is ASCII, so UTF-16 indexes are safe here.
-  const characters = command;
-  for (let index = 0; index < characters.length; index++) {
-    const character = characters[index] ?? "";
-    const next = characters[index + 1];
-    if (quote) {
-      current += character;
-      if (character === quote) quote = undefined;
-      else if (quote === '"' && character === "\\" && next !== undefined) {
-        current += next;
-        index++;
-      }
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      current += character;
-      continue;
-    }
-    if (character === "\\" && next !== undefined) {
-      current += character + next;
-      index++;
-      continue;
-    }
-    let operator: string | undefined;
-    if (character === "|") operator = next === "|" || next === "&" ? `|${next}` : "|";
-    else if (character === "&") {
-      // `>&`, `<&`, and `&>` are redirections, which keep the segment non-literal.
-      const previous = characters[index - 1];
-      if (next === "&") operator = "&&";
-      else if (previous !== ">" && previous !== "<" && next !== ">") operator = "&";
-    } else if (character === ";") operator = next === ";" ? ";;" : ";";
-    else if (character === "\n" || character === "\r") operator = "\n";
-    if (operator === undefined) {
-      current += character;
-      continue;
-    }
-    segments.push(current);
-    operators.push(operator);
-    current = "";
-    index += operator.length - 1;
-  }
-  segments.push(current);
-  return { segments, operators };
-}
-
-/** `NAME=value` words that set the environment of the command after them. */
-const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
-
-/**
- * A segment's words with quotes and escapes removed, after any leading environment assignments,
- * for matching Command Rules. Unlike {@link literalWords} it tolerates expansions later in the
- * segment, so `rm -rf "$HOME"` still starts with `rm`; a word holding unquoted shell syntax keeps
- * it and so never equals a rule's literal word.
- */
-function leadingWords(segment: string): string[] {
-  const words: string[] = [];
-  let word: string | undefined;
-  let quote: "'" | '"' | undefined;
-  // Every structural character is ASCII, so UTF-16 indexes are safe here.
-  const characters = segment;
-  for (let index = 0; index < characters.length; index++) {
-    const character = characters[index] ?? "";
-    if (quote) {
-      if (character === quote) quote = undefined;
-      else if (quote === '"' && character === "\\" && index + 1 < characters.length)
-        word = (word ?? "") + (characters[++index] ?? "");
-      else word = (word ?? "") + character;
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      word ??= "";
-    } else if (character === "\\" && index + 1 < characters.length)
-      word = (word ?? "") + (characters[++index] ?? "");
-    else if (character === " " || character === "\t") {
-      if (word !== undefined) words.push(word);
-      word = undefined;
-    } else word = (word ?? "") + character;
-  }
-  if (word !== undefined) words.push(word);
-  const first = words.findIndex((candidate) => !assignment.test(candidate));
-  return first < 0 ? [] : words.slice(first);
-}
-
 /** A Command Rule that matched a segment. */
 export interface MatchedCommandRule {
   /** The rule's prefix as configured. */
@@ -249,16 +153,22 @@ export interface MatchedCommandRule {
   policy: ToolPolicy;
 }
 
-/** The Command Rule with the longest prefix that `words` start with. */
+/**
+ * The Command Rule with the longest prefix that `words` start with. With `foldCase`, the program
+ * name matches in any case, as on case-insensitive file systems.
+ */
 function matchRule(
   words: readonly string[],
   rules: Readonly<PolicyEntries>,
+  foldCase = false,
 ): MatchedCommandRule | undefined {
   let best: { rule: MatchedCommandRule; length: number } | undefined;
+  const same = (left: string, right: string, index: number) =>
+    left === right || (foldCase && index === 0 && left.toLowerCase() === right.toLowerCase());
   for (const [prefix, policy] of Object.entries(rules)) {
     const prefixWords = literalWords(prefix);
     if (!prefixWords?.length || prefixWords.length > words.length) continue;
-    if (!prefixWords.every((word, index) => words[index] === word)) continue;
+    if (!prefixWords.every((word, index) => same(words[index] ?? "", word, index))) continue;
     if (!best || prefixWords.length > best.length)
       best = { rule: { prefix, policy }, length: prefixWords.length };
   }
@@ -371,13 +281,21 @@ export type CommandJudgment =
   | { verdict: "review"; rule: MatchedCommandRule | undefined }
   | { verdict: "deny"; rule: MatchedCommandRule };
 
+/** Platforms whose usual file systems find a program in any case, so `RM` runs `rm`. */
+const caseInsensitivePlatforms: readonly NodeJS.Platform[] = ["darwin", "win32"];
+
 /**
  * Judge a `bash` command against the Command Rules. Every segment between control operators is
- * matched against the rules by its leading words, the longest matching prefix winning: any `deny`
- * segment denies the command, else any `review` segment reviews it. Otherwise the command is a
- * Safe Command, and runs, only when its segments are joined by `|`, `&&`, `||`, or `;` and each
- * is literal words whose program is a built-in safe program or matches an `allow` rule, or is a
- * `cd` into the workspace judged from `where`, whose `cwd` the command starts in.
+ * matched against the rules by its words, the longest matching prefix winning: any `deny`
+ * segment denies the command, else any `review` segment reviews it. For `deny` and `review`, a
+ * rule may also match after leading wrappers such as `time`, `env`, `sudo`, or `then`, and the
+ * program name matches in any case on macOS and Windows; and when the command holds syntax the
+ * splitter may misread, such as a here-document, comment, or `$'…'` string, `deny` rules are
+ * also matched against a quote-agnostic split, which may deny commands the shell never runs.
+ * Otherwise the command is a Safe Command, and runs, only when its segments are joined by `|`,
+ * `&&`, `||`, or `;` and each is literal words whose program is a built-in safe program or
+ * matches an `allow` rule, or is a `cd` into the workspace judged from `where`, whose `cwd` the
+ * command starts in.
  */
 export function judgeCommand(
   command: string,
@@ -386,11 +304,21 @@ export function judgeCommand(
 ): CommandJudgment {
   const split = splitSegments(command);
   const { segments, operators } = split;
-  const matched = segments.map((segment) => matchRule(leadingWords(segment), rules));
-  const denied = matched.find((rule) => rule?.policy === "deny");
+  const foldCase = caseInsensitivePlatforms.includes(where?.platform ?? process.platform);
+  const words = segments.map(commandWords);
+  // Every place a command may start, for `deny` and `review`; `allow` matches only the first word.
+  const candidates = [...words, ...looseCommands(command, split)].flatMap((candidate, index) =>
+    commandStarts(candidate, foldCase).flatMap((start) => {
+      const rule = matchRule(candidate.slice(start), rules, foldCase);
+      // A quote-agnostic reading only ever denies.
+      return rule && (index < words.length || rule.policy === "deny") ? [rule] : [];
+    }),
+  );
+  const denied = candidates.find((rule) => rule.policy === "deny");
   if (denied) return { verdict: "deny", rule: denied };
-  const reviewed = matched.find((rule) => rule?.policy === "review");
+  const reviewed = candidates.find((rule) => rule.policy === "review");
   if (reviewed) return { verdict: "review", rule: reviewed };
+  const matched = words.map((segmentWords) => matchRule(segmentWords, rules));
   const safe =
     operators.every((operator) => safeOperators.has(operator)) &&
     safeSegments(split, matched, where);

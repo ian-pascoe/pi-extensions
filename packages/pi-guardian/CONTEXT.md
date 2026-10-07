@@ -25,7 +25,7 @@ A shell command that runs without review: one or more segments joined by `|`, `&
 _Avoid_: Allowlisted command
 
 **Command Rule**:
-A user's treatment of `bash` commands starting with a literal prefix: `allow` makes matching segments Safe Commands, `review` sends the command to the Guardian, and `deny` blocks it without a Guardian Review. A rule matches only a segment whose leading words are literal; the longest matching prefix wins, and any `deny` segment denies the whole command.
+A user's treatment of `bash` commands starting with a literal prefix: `allow` makes matching segments Safe Commands, `review` sends the command to the Guardian, and `deny` blocks it without a Guardian Review. A rule matches only a segment whose leading words are literal as the shell reads them; the longest matching prefix wins, and any `deny` segment denies the whole command. `deny` and `review` also match after wrappers such as `time` or `env`, and where the command holds syntax Guardian may misread, `deny` errs toward denying.
 _Avoid_: Safe command list, allowlist entry
 
 **Sensitive Path**:

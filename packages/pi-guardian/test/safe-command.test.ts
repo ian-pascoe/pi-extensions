@@ -138,6 +138,87 @@ describe("Safe Command", () => {
       expect(judgeCommand(command, rules).verdict, command).not.toBe("deny");
   });
 
+  it("denies commands hidden by syntax a quote-tracking splitter misreads", () => {
+    const rules = { rm: "deny", "git push --force": "deny" } as const;
+    for (const command of [
+      "echo hi # it's stale\nrm -rf build",
+      "cat > notes.md <<'EOF'\nDon't forget\nEOF\nrm -rf build",
+      "cat <<-EOF\n\tit's\n\tEOF\nrm -rf build",
+      'cat <<"E O" ; ls\nit\'s\nE O\nrm -rf build',
+      "git push \\\n  --force origin main",
+      "echo $'it\\'s'; rm -rf x",
+      "$'rm' -rf x",
+      "$'\\x72m' -rf x",
+      "$'\\162m' -rf x",
+      '$"rm" -rf x',
+      "r\\\nm -rf x",
+      "echo $(rm -rf x)",
+      'echo "$(rm -rf x)"',
+      "echo `rm -rf x`",
+      "(rm -rf x)",
+      "echo 'unterminated; rm -rf x",
+      // A here-document that never ends still hides nothing.
+      "cat <<EOF\nrm -rf x",
+    ])
+      expect(judgeCommand(command, rules), JSON.stringify(command)).toMatchObject({
+        verdict: "deny",
+      });
+    // Text the shell never runs as a command is not denied by an exact reading.
+    for (const command of ["echo '# rm x'", 'echo "it\'s; rm x"', "echo a#b rm", "cat <<< 'rm x'"])
+      expect(judgeCommand(command, rules).verdict, JSON.stringify(command)).not.toBe("deny");
+  });
+
+  it("denies after wrappers that run the command after them", () => {
+    const rules = { rm: "deny", "git push": "deny", "git log": "review" } as const;
+    for (const command of [
+      "time rm -rf x",
+      "nohup rm x",
+      "env FOO=1 -i rm x",
+      "env -u HOME rm x",
+      "exec -a name env rm x",
+      "command rm x",
+      "builtin rm x",
+      "sudo -u root rm x",
+      "! rm x",
+      "{ rm x; }",
+      "if true; then rm x; fi",
+      "while true; do rm x; done",
+      "if false; then :; else rm x; fi",
+      "time git push origin main",
+    ])
+      expect(judgeCommand(command, rules).verdict, command).toBe("deny");
+    expect(judgeCommand("time git log", rules).verdict).toBe("review");
+    // An allow rule still matches only the first word.
+    expect(judgeCommand("time npm test", { "npm test": "allow" }).verdict).toBe("review");
+    expect(judgeCommand("echo rm x", rules).verdict).toBe("allow");
+  });
+
+  it("matches the program name in any case on case-insensitive platforms", () => {
+    const rules = { rm: "deny", "git log": "review" } as const;
+    const darwin = { cwd: "/nonexistent", piDirectories: [], platform: "darwin" } as const;
+    const linux = { ...darwin, platform: "linux" } as const;
+    expect(judgeCommand("RM -rf x", rules, darwin).verdict).toBe("deny");
+    expect(judgeCommand("Rm x", rules, { ...darwin, platform: "win32" }).verdict).toBe("deny");
+    expect(judgeCommand("GIT log", rules, darwin).verdict).toBe("review");
+    expect(judgeCommand("RM -rf x", rules, linux)).toEqual({ verdict: "review", rule: undefined });
+    // Arguments keep their case.
+    expect(judgeCommand("git LOG", rules, darwin)).toEqual({ verdict: "review", rule: undefined });
+  });
+
+  it("keeps Safe Commands at least as strict around misreadable syntax", () => {
+    for (const command of [
+      "ls # it's\npwd",
+      "ls #x",
+      "cat <<EOF\nx\nEOF",
+      "echo $'x'",
+      'echo $"x"',
+      "git \\\nstatus",
+      "(ls)",
+      "echo `ls`",
+    ])
+      expect(isSafeCommand(command), JSON.stringify(command)).toBe(false);
+  });
+
   it("reviews a command when a segment matches a review Command Rule, naming it", () => {
     const rules = { "git log": "review" } as const;
     expect(judgeCommand("git status && git log -1", rules)).toEqual({
