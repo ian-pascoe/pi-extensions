@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.5.0
+
+### Minor Changes
+
+- 447c32c: Foreground `bash` results and the "output so far" of backgrounding results now keep the last 300 lines or 16 KB instead of Pi's 2,000 lines or 50 KB. The notice names the limits used and the file holding every line. Set `termctrl.bashTail` to change the limits, or to `false` or `0` to restore Pi's.
+
+### Patch Changes
+
+- fcfe100: Queue `terminal_send` calls (and `terminal_stop`) per Terminal, so a parallel batch of sends to one Terminal types, settles, and returns screens in call order instead of interleaving. Calls to different Terminals stay concurrent; aborting a queued call removes it without affecting the running one.
+
 ## 0.4.1
 
 ### Patch Changes

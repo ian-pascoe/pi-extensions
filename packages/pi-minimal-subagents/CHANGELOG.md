@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.16.0
+
+### Minor Changes
+
+- 29c58b0: **Behavior change:** Child Agents that cannot spawn now get only `agent_message`, dropping the unusable `subagent_wait` and `subagent_status` definitions from every child request (child CodeMode scripts lose those two tools). Fanout children below the depth cap keep all six Coordinator Tools; a fanout child at the cap now gets only `agent_message`.
+
+### Patch Changes
+
+- 3043858: `subagent_wait` and `subagent_status` now round `usage.cost` fields to six decimal places of USD in their text and `structuredContent`, so results no longer show float-noise tails such as `0.000022999999999999997`.
+
 ## 0.15.0
 
 ### Minor Changes
