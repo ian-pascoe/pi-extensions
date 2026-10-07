@@ -21,7 +21,7 @@ import {
 import { matchesKey } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { KILLED_EXIT, TermctrlRegistry } from "./termctrl-registry.js";
-import type { BashTailLimits } from "./pi-termctrl-settings.js";
+import type { OutputLimits } from "./pi-termctrl-settings.js";
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { TerminalExit } from "./terminal-driver.js";
 
@@ -286,7 +286,7 @@ export interface BashReplacementOptions {
    * Limits on the model-visible tail of a result and of "output so far"; undefined keeps Pi's own
    * limits. Pi's `bash` accepts no limits, so the replacement tightens what Pi returns.
    */
-  readonly bashTail?: BashTailLimits | undefined;
+  readonly bashTail?: OutputLimits | undefined;
   /** Builds Pi's `bash` definition; tests wrap it to observe what reaches Pi's accumulator. */
   readonly definitionFactory?: typeof createBashToolDefinition;
 }
@@ -377,7 +377,7 @@ function limitForegroundText(
   call: BashCall,
   piText: string,
   piDetails: BashToolDetails | undefined,
-  limits: BashTailLimits,
+  limits: OutputLimits,
   hasStatus: boolean,
 ) {
   const output = call.foregroundOutput();
@@ -403,7 +403,7 @@ function limitForegroundText(
 function backgroundResult(
   outcome: BackgroundOutcome,
   startedAt: number,
-  limits: BashTailLimits | undefined,
+  limits: OutputLimits | undefined,
 ) {
   const truncation = truncateBuffered(outcome.output, outcome.dropped, limits ?? {});
   let text = truncation.content;
@@ -427,7 +427,7 @@ function backgroundResult(
 
 type BashResult = Awaited<ReturnType<ReturnType<typeof createBashToolDefinition>["execute"]>>;
 
-function limitResult(call: BashCall, result: BashResult, limits: BashTailLimits): BashResult {
+function limitResult(call: BashCall, result: BashResult, limits: OutputLimits): BashResult {
   const [first] = result.content;
   if (first?.type !== "text") return result;
   const limited = limitForegroundText(
@@ -445,7 +445,7 @@ function limitResult(call: BashCall, result: BashResult, limits: BashTailLimits)
   };
 }
 
-function limitError(call: BashCall, error: Error, limits: BashTailLimits): Error {
+function limitError(call: BashCall, error: Error, limits: OutputLimits): Error {
   // Only Pi's output-plus-status messages are rewritten; any other error passes through.
   if (!PI_STATUS.test(error.message)) return error;
   const limited = limitForegroundText(call, error.message, undefined, limits, true);
@@ -453,7 +453,7 @@ function limitError(call: BashCall, error: Error, limits: BashTailLimits): Error
 }
 
 /** Pi's description names its own limits; name the ones in force instead. */
-function describeTail(description: string, limits: BashTailLimits | undefined): string {
+function describeTail(description: string, limits: OutputLimits | undefined): string {
   if (limits === undefined) return description;
   const piLimits = `${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB`;
   const ours = `${limits.maxLines} lines or ${formatSize(limits.maxBytes)}`;

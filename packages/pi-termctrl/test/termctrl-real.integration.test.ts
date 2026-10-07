@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getShellConfig, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { DEFAULT_TERMCTRL_SETTINGS } from "../src/pi-termctrl-settings.js";
 import { resolveTermctrlBinary } from "../src/termctrl-binary.js";
 import { createTermctrlDriver } from "../src/termctrl-driver.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
@@ -37,12 +39,13 @@ function createTools() {
     registry,
     shell: () => ({ shell: shell.shell, args: shell.args, commandPrefix: undefined }),
     viewport: () => ({ cols: 80, rows: 12 }),
+    scrollback: () => DEFAULT_TERMCTRL_SETTINGS.scrollback,
   };
   return {
     registry,
     start: createTerminalStartTool(runtime),
     send: createTerminalSendTool(runtime),
-    stop: createTerminalStopTool(registry),
+    stop: createTerminalStopTool(runtime),
   };
 }
 
@@ -196,7 +199,7 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
   });
 
   test(
-    "polls a long-running process and returns every scrolled-off line",
+    "polls a long-running process and returns every scrolled-off line once",
     { timeout: 20_000 },
     async () => {
       const tools = createTools();
@@ -227,7 +230,10 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
         context,
       );
       expect(polled.details.screen).toContain("finished");
-      const shown = ticks(`${polled.details.scrolled_off}\n${polled.details.screen}`);
+      // Ticks the first result showed on its screen are not repeated once they scroll off.
+      const shown = ticks(
+        `${started.details.screen}\n${polled.details.scrolled_off}\n${polled.details.screen}`,
+      );
       expect(shown).toEqual(Array.from({ length: 81 - firstTop }, (_, index) => firstTop + index));
       const quiet = await tools.send.execute(
         "send",
@@ -237,6 +243,43 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
         context,
       );
       expect(quiet.details).toMatchObject({ changed: false, scrolled_off: "" });
+    },
+  );
+
+  test.skipIf(spawnSync("python3", ["--version"]).status !== 0)(
+    "does not repeat lines the agent saw and keeps the start and end of a flood",
+    { timeout: 20_000 },
+    async () => {
+      const tools = createTools();
+      const context = toolContext();
+      const started = await tools.start.execute(
+        "start",
+        { command: "python3 -q", wait_ms: 10_000 },
+        undefined,
+        undefined,
+        context,
+      );
+      await untilScreenShows(tools, context, started, "/^>>>$/m");
+      const run = (text: string, waitFor: string) =>
+        tools.send.execute(
+          "send",
+          { id: "t1", text, wait_for_text: waitFor, wait_ms: 10_000 },
+          undefined,
+          undefined,
+          context,
+        );
+      const ticked = await run("for i in range(3): print('tick', i)\n\n", "/^tick 2\n>>>$/m");
+      expect(ticked.details.screen).toMatch(/^tick 0$/mu);
+      const flood = await run("for i in range(300): print('line', i)\n\n", "/^line 299\n>>>$/m");
+      const scrolled = flood.details.scrolled_off;
+      expect(scrolled).not.toContain("tick");
+      expect(scrolled.split("\n").length).toBeLessThanOrEqual(100);
+      expect(scrolled).toMatch(/^\[… \d+ lines omitted …\]$/mu);
+      expect(flood.details.output_missing).toBeUndefined();
+      const full = await readFile(flood.details.full_output_path ?? "", "utf8");
+      const numbers = [...full.matchAll(/^line (\d+)$/gmu)].map(([, line]) => Number(line));
+      expect(numbers).toEqual(Array.from({ length: 300 }, (_, index) => index));
+      expect(full).not.toContain("tick");
     },
   );
 

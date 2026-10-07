@@ -20,16 +20,24 @@ export interface TerminalViewport {
   readonly rows: number;
 }
 
-/** The most lines and bytes of the model-visible `bash` output: a foreground result or the output so far of a backgrounding one. */
-export type BashTailLimits = Readonly<Required<TruncationOptions>>;
+/** The most lines and bytes of model-visible output that a setting allows. */
+export type OutputLimits = Readonly<Required<TruncationOptions>>;
 
 /** The effective `settings.termctrl` values after layering global and trusted project settings. */
 export interface ResolvedTermctrlSettings {
   readonly replaceBash: boolean;
   readonly defaultViewport: TerminalViewport;
   readonly exitTailLines: number;
-  /** Limits on the model-visible `bash` tail; undefined restores Pi's own limits. */
-  readonly bashTail: BashTailLimits | undefined;
+  /**
+   * Limits on the model-visible `bash` output: a foreground result or the output so far of a
+   * backgrounding one. Undefined restores Pi's own limits.
+   */
+  readonly bashTail: OutputLimits | undefined;
+  /**
+   * Limits on the scrolled-off lines a Terminal result shows, kept from their start and end.
+   * Undefined restores Pi's own limits on the whole result.
+   */
+  readonly scrollback: OutputLimits | undefined;
   readonly warnings: readonly string[];
 }
 
@@ -44,31 +52,42 @@ export interface TermctrlSettingsReader {
   getProjectSettings(): TermctrlSettingsDocumentInput;
 }
 
+/** The settings that limit model-visible output. */
+type OutputLimitKey = "bashTail" | "scrollback";
+
+/** One layer's value for an output limit setting. */
+interface OutputLimitsLayer {
+  enabled?: boolean;
+  lines?: number;
+  bytes?: number;
+}
+
 interface TermctrlLayer {
   replaceBash?: boolean;
   cols?: number;
   rows?: number;
   exitTailLines?: number;
-  bashTailEnabled?: boolean;
-  bashTailLines?: number;
-  bashTailBytes?: number;
+  bashTail?: OutputLimitsLayer;
+  scrollback?: OutputLimitsLayer;
 }
 
-export const DEFAULT_TERMCTRL_SETTINGS: Omit<ResolvedTermctrlSettings, "warnings" | "bashTail"> & {
-  readonly bashTail: BashTailLimits;
-} = {
+export const DEFAULT_TERMCTRL_SETTINGS: Omit<
+  ResolvedTermctrlSettings,
+  "warnings" | OutputLimitKey
+> & { readonly [key in OutputLimitKey]: OutputLimits } = {
   replaceBash: true,
   defaultViewport: { cols: 120, rows: 40 },
   exitTailLines: 20,
   bashTail: { maxLines: 300, maxBytes: 16 * 1024 },
+  scrollback: { maxLines: 100, maxBytes: 16 * 1024 },
 };
 
 const JsonObjectSchema = Type.Record(Type.String(), Type.Any());
 const SettingsDocumentSchema = Type.Object({ termctrl: Type.Optional(Type.Any()) });
 const BooleanSchema = Type.Boolean();
 const ViewportDimensionSchema = Type.Integer({ minimum: 1, maximum: VIEWPORT_LIMIT });
-const BashTailLinesSchema = Type.Integer({ minimum: 1, maximum: DEFAULT_MAX_LINES });
-const BashTailBytesSchema = Type.Integer({ minimum: 1, maximum: DEFAULT_MAX_BYTES });
+const LimitLinesSchema = Type.Integer({ minimum: 1, maximum: DEFAULT_MAX_LINES });
+const LimitBytesSchema = Type.Integer({ minimum: 1, maximum: DEFAULT_MAX_BYTES });
 const ExitTailLinesSchema = Type.Integer({ minimum: 0, maximum: EXIT_TAIL_LIMIT });
 
 function isJsonObject(value: JsonValue): value is JsonObject {
@@ -103,7 +122,8 @@ function readLayer(
         else warnings.push(`${path}: expected an integer from 0 to ${EXIT_TAIL_LIMIT}`);
         break;
       case "bashTail":
-        readBashTail(value, path, layer, warnings);
+      case "scrollback":
+        layer[key] = readOutputLimits(value, path, warnings);
         break;
       case "defaultViewport":
         readViewport(value, path, layer, warnings);
@@ -130,29 +150,24 @@ function readViewport(value: JsonValue, path: string, layer: TermctrlLayer, warn
   }
 }
 
-function readBashTail(value: JsonValue, path: string, layer: TermctrlLayer, warnings: string[]) {
-  if (Value.Check(BooleanSchema, value)) {
-    layer.bashTailEnabled = value;
-    return;
-  }
-  if (value === 0) {
-    layer.bashTailEnabled = false;
-    return;
-  }
+function readOutputLimits(value: JsonValue, path: string, warnings: string[]): OutputLimitsLayer {
+  if (Value.Check(BooleanSchema, value)) return { enabled: value };
+  if (value === 0) return { enabled: false };
   if (!isJsonObject(value)) {
     warnings.push(`${path}: expected a boolean, 0, or a JSON object`);
-    return;
+    return {};
   }
+  const limits: OutputLimitsLayer = {};
   let valid = 0;
   for (const [key, limit] of Object.entries(value)) {
     if (key === "lines") {
-      if (Value.Check(BashTailLinesSchema, limit)) {
-        layer.bashTailLines = limit;
+      if (Value.Check(LimitLinesSchema, limit)) {
+        limits.lines = limit;
         valid++;
       } else warnings.push(`${path}.lines: expected an integer from 1 to ${DEFAULT_MAX_LINES}`);
     } else if (key === "bytes") {
-      if (Value.Check(BashTailBytesSchema, limit)) {
-        layer.bashTailBytes = limit;
+      if (Value.Check(LimitBytesSchema, limit)) {
+        limits.bytes = limit;
         valid++;
       } else warnings.push(`${path}.bytes: expected an integer from 1 to ${DEFAULT_MAX_BYTES}`);
     } else {
@@ -160,7 +175,24 @@ function readBashTail(value: JsonValue, path: string, layer: TermctrlLayer, warn
     }
   }
   // An object with only invalid fields must not override a lower layer's opt-out.
-  if (valid > 0 || Object.keys(value).length === 0) layer.bashTailEnabled = true;
+  if (valid > 0 || Object.keys(value).length === 0) limits.enabled = true;
+  return limits;
+}
+
+/** Layer one output limit setting: the project's fields over the global ones, over the defaults. */
+function resolveOutputLimits(
+  key: OutputLimitKey,
+  globalLayer: TermctrlLayer,
+  projectLayer: TermctrlLayer,
+): OutputLimits | undefined {
+  const global = globalLayer[key];
+  const project = projectLayer[key];
+  if (!(project?.enabled ?? global?.enabled ?? true)) return undefined;
+  const defaults = DEFAULT_TERMCTRL_SETTINGS[key];
+  return {
+    maxLines: project?.lines ?? global?.lines ?? defaults.maxLines,
+    maxBytes: project?.bytes ?? global?.bytes ?? defaults.maxBytes,
+  };
 }
 
 /** Resolve global and trusted-project `termctrl` settings, keeping valid fields around warnings. */
@@ -177,15 +209,8 @@ export function resolveTermctrlSettings(reader: TermctrlSettingsReader): Resolve
     },
     exitTailLines:
       projectLayer.exitTailLines ?? globalLayer.exitTailLines ?? defaults.exitTailLines,
-    bashTail:
-      (projectLayer.bashTailEnabled ?? globalLayer.bashTailEnabled ?? true)
-        ? {
-            maxLines:
-              projectLayer.bashTailLines ?? globalLayer.bashTailLines ?? defaults.bashTail.maxLines,
-            maxBytes:
-              projectLayer.bashTailBytes ?? globalLayer.bashTailBytes ?? defaults.bashTail.maxBytes,
-          }
-        : undefined,
+    bashTail: resolveOutputLimits("bashTail", globalLayer, projectLayer),
+    scrollback: resolveOutputLimits("scrollback", globalLayer, projectLayer),
     warnings,
   };
 }

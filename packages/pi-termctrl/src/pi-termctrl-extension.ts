@@ -17,7 +17,11 @@ import { TermctrlPsController } from "./ps-panel.js";
 import { resolveTermctrlBinary, type TermctrlBinaryResolution } from "./termctrl-binary.js";
 import { createTermctrlDriver } from "./termctrl-driver.js";
 import { TermctrlRegistry } from "./termctrl-registry.js";
-import { resolveTermctrlSettings, type TerminalViewport } from "./pi-termctrl-settings.js";
+import {
+  resolveTermctrlSettings,
+  type OutputLimits,
+  type TerminalViewport,
+} from "./pi-termctrl-settings.js";
 import type { TerminalDriver } from "./terminal-driver.js";
 import {
   createTerminalListTool,
@@ -41,6 +45,7 @@ interface ActiveSession {
   readonly ps: TermctrlPsController;
   readonly shell: () => TerminalShell;
   readonly viewport: TerminalViewport;
+  readonly scrollback: OutputLimits | undefined;
   readonly exitTailLines: number;
 }
 
@@ -91,6 +96,7 @@ class PiTermctrlController {
         registry: this.registry,
         shell: () => this.session().shell(),
         viewport: () => this.session().viewport,
+        scrollback: () => this.session().scrollback,
       };
       this.pi.registerTool(createTerminalStartTool(runtime));
       this.pi.registerTool(createTerminalSendTool(runtime));
@@ -120,7 +126,12 @@ class PiTermctrlController {
   }
 
   private registerManagementTools(): void {
-    this.pi.registerTool(createTerminalStopTool(this.registry));
+    this.pi.registerTool(
+      createTerminalStopTool({
+        registry: this.registry,
+        scrollback: () => this.session().scrollback,
+      }),
+    );
     this.pi.registerTool(createTerminalListTool(this.registry));
     this.pi.registerTool(
       createTerminalWaitTool({
@@ -195,6 +206,7 @@ class PiTermctrlController {
         return { shell: shell.shell, args: shell.args, commandPrefix };
       },
       viewport: settings.defaultViewport,
+      scrollback: settings.scrollback,
       exitTailLines: settings.exitTailLines,
     };
   }

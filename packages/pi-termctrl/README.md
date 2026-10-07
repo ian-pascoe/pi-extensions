@@ -64,10 +64,11 @@ code or signal; a poll (neither `text` nor `keys`) still returns its final scree
 
 Results contain the visible screen, the log lines that scrolled off since the
 agent's previous result, `state`, `exit_code` or `signal` once exited, and
-`changed: false` when the screen matches the previous result. Scrolled-off lines
-include lines the agent saw on an earlier screen, so a line rewritten in place,
-such as a progress line, arrives in its final form. Tools that declare
-structured output give `codemode` scripts typed values.
+`changed: false` when the screen matches the previous result. A line the agent
+saw on an earlier screen is not repeated when it scrolls off unchanged; a line
+rewritten in place since, such as a progress line or a prompt the agent typed
+at, arrives again in its final form. Tools that declare structured output give
+`codemode` scripts typed values.
 
 Scrolled-off lines are best effort: they come from termctrl's scrollback, which
 is limited (several hundred lines; fewer when lines are long) and drops its
@@ -80,11 +81,14 @@ scrollback holds before that result, its oldest lines are lost without
 `output_missing`, because termctrl does not report the trimming. Run commands
 whose complete output matters with `bash`, or redirect their output to a file.
 
-A result is limited to Pi's 2000 lines or 50 KB. The screen is kept first, from
-its bottom, and the newest scrolled-off lines fill the rest. When anything is
-cut, every line of the result goes to
-`$TMPDIR/pi-termctrl/<pid>-<id>-output-<n>.log`, named in the result's notice
-and `full_output_path`.
+Scrolled-off lines are limited by `termctrl.scrollback` (100 lines or 16 KB by
+default). Past it, a result keeps the first and last lines and puts a
+`[… N lines omitted …]` line between them. A whole result is limited to Pi's
+2000 lines or 50 KB: the screen is kept first, from its bottom, and the
+scrolled-off lines fill the rest. With `scrollback` set to `false`, only Pi's
+limits apply and the newest scrolled-off lines are kept. When anything is cut,
+every line of the result goes to `$TMPDIR/pi-termctrl/<pid>-<id>-output-<n>.log`,
+named in the result's notice and `full_output_path`.
 
 `keys` are termctrl key names: `Enter`, `Escape`, `ArrowUp`, `ArrowDown`,
 `ArrowLeft`, `ArrowRight`, `Tab`, `Shift+Tab`, `Backspace`, `Delete`, `Home`,
@@ -214,17 +218,19 @@ by field:
     "replaceBash": true,
     "defaultViewport": { "cols": 120, "rows": 40 },
     "exitTailLines": 20,
-    "bashTail": { "lines": 300, "bytes": 16384 }
+    "bashTail": { "lines": 300, "bytes": 16384 },
+    "scrollback": { "lines": 100, "bytes": 16384 }
   }
 }
 ```
 
-| Setting           | Default                        | Meaning                                                                                                |
-| ----------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `replaceBash`     | `true`                         | Replace `bash` to enable Background jobs                                                               |
-| `defaultViewport` | `{ cols: 120, rows: 40 }`      | Terminal size; each dimension 1 to 1000                                                                |
-| `exitTailLines`   | `20`                           | Lines of output in an Exit notification, 0–1000                                                        |
-| `bashTail`        | `{ lines: 300, bytes: 16384 }` | Model-visible `bash` output tail: `lines` 1–2000, `bytes` 1–51200; `false` or `0` restores Pi's limits |
+| Setting           | Default                        | Meaning                                                                                                    |
+| ----------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `replaceBash`     | `true`                         | Replace `bash` to enable Background jobs                                                                   |
+| `defaultViewport` | `{ cols: 120, rows: 40 }`      | Terminal size; each dimension 1 to 1000                                                                    |
+| `exitTailLines`   | `20`                           | Lines of output in an Exit notification, 0–1000                                                            |
+| `bashTail`        | `{ lines: 300, bytes: 16384 }` | Model-visible `bash` output tail: `lines` 1–2000, `bytes` 1–51200; `false` or `0` restores Pi's limits     |
+| `scrollback`      | `{ lines: 100, bytes: 16384 }` | Scrolled-off lines in a Terminal result, keeping the first and last; same ranges and opt-out as `bashTail` |
 
 Invalid values keep the lower layer and unknown keys produce warnings at session
 start. Use `/reload` after editing settings.
