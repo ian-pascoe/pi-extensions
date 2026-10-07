@@ -639,10 +639,13 @@ export function renderReviewedCall(call: ReviewedCall): string {
     lines.push(
       `Issued by tool call: ${call.parent.toolName}`,
       `Issuing call arguments: ${JSON.stringify(call.parent.input)}`,
+      "The issuing call's other nested calls appear only in its arguments above.",
     );
   if (call.batch?.length) {
     lines.push(
-      "Other calls in the same tool batch (context only, each reviewed on its own; Pi may run them before or alongside this call):",
+      call.parent
+        ? "Other calls in the issuing call's tool batch (each reviewed on its own; they bear on this call only where they change what it does, and Pi may run them before or alongside the issuing call):"
+        : "Other calls in the same tool batch (each reviewed on its own; they bear on this call only where they change what it does, and Pi may run them before or alongside this call):",
     );
     for (const other of call.batch) lines.push(`- ${batchCallLine(other)}`);
   }

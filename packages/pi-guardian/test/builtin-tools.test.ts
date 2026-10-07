@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
 import { link, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
+import { useCleanShellEnvironment } from "./fixtures/shell-environment.js";
 import {
   assessment,
   confirmedRejection,
@@ -22,6 +24,8 @@ function reviewedCall(
     ? message.content.map((part) => (part.type === "text" ? part.text : "")).at(-1)
     : undefined;
 }
+
+useCleanShellEnvironment();
 
 describe("Pi's built-in tools on a real workspace", () => {
   it("runs ordinary writes and Safe Commands without review", async () => {
@@ -83,6 +87,60 @@ describe("Pi's built-in tools on a real workspace", () => {
     expect(reviewedCall(harness, 0)).toContain('- "write" with arguments');
   });
 
+  it("reviews a cd a script issues, showing the writes of the script's tool batch", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: reviewer,
+      builtinTools: true,
+      before: [
+        (pi) =>
+          pi.registerTool({
+            name: "runner",
+            label: "Runner",
+            description: "Run a shell command through a nested call.",
+            parameters: Type.Object({ command: Type.String() }),
+            annotations: { readOnlyHint: true },
+            execute: async (_id, args, _signal, _onUpdate, ctx) => {
+              const result = await ctx.executeTool("bash", { command: args.command });
+              return {
+                content: [{ type: "text", text: result.isError ? "blocked" : "ran" }],
+                details: {},
+              };
+            },
+          }),
+      ],
+    });
+    await mkdir(join(harness.dir, "vendor"), { recursive: true });
+    const command = "cd vendor && git status";
+    harness.responses.push(
+      toolCalls(
+        ["write", { path: "vendor/HEAD", content: "ref: refs/heads/main\n" }, "call-1"],
+        ["write", { path: "vendor/config", content: "[core]\n\tfsmonitor = sh x\n" }, "call-2"],
+        ["runner", { command }, "call-3"],
+      ),
+      reply("Ok."),
+    );
+    harness.guardianReplies.push(
+      ...confirmedRejection(
+        "high",
+        "unknown",
+        "Runs planted git configuration.",
+        "unreviewed_execution",
+      ),
+    );
+    await harness.session.prompt("Check vendor.");
+    // A script's call is never settled, so its cd is reviewed even into an ordinary directory.
+    const shown = reviewedCall(harness, 0) ?? "";
+    expect(shown).toContain(`Arguments: ${JSON.stringify({ command })}`);
+    expect(shown).toContain("Issued by tool call: runner");
+    expect(shown).toContain(
+      "Other calls in the issuing call's tool batch (each reviewed on its own;",
+    );
+    expect(shown).toContain('- "write" with arguments {"path":"vendor/HEAD"');
+    expect(shown).toContain('- "write" with arguments {"path":"vendor/config"');
+    // The issuing call is shown once, as the issuing call, not as a batch sibling.
+    expect(shown).not.toContain('- "runner"');
+  });
+
   it("reviews an edit to a hard-linked file", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer, builtinTools: true });
     await mkdir(join(harness.dir, "src"), { recursive: true });
@@ -118,7 +176,7 @@ describe("Pi's built-in tools on a real workspace", () => {
     await harness.session.prompt("Do it.");
     expect(harness.reviews).toHaveLength(2);
     expect(reviewedCall(harness, 0)).toContain(
-      'Other calls in the same tool batch (context only, each reviewed on its own; Pi may run them before or alongside this call):\n- "write" with arguments {"path":"target.txt","content":"x"}',
+      'Other calls in the same tool batch (each reviewed on its own; they bear on this call only where they change what it does, and Pi may run them before or alongside this call):\n- "write" with arguments {"path":"target.txt","content":"x"}',
     );
     expect(await readFile(join(harness.dir, "target.txt"), "utf8")).toBe("x");
   });

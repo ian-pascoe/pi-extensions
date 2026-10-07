@@ -485,6 +485,7 @@ describe("the Reviewed Call", () => {
         agent: "the main Pi agent",
         parent: { toolName: "codemode", input: { code: "await tools.bash(...)" } },
         reason: "not a Safe Command",
+        batch: [{ toolName: "write", input: { path: "vendor/HEAD", content: "x" } }],
       }),
     ).toBe(
       [
@@ -497,6 +498,9 @@ describe("the Reviewed Call", () => {
         'Arguments: {"command":"rm -rf dist"}',
         "Issued by tool call: codemode",
         'Issuing call arguments: {"code":"await tools.bash(...)"}',
+        "The issuing call's other nested calls appear only in its arguments above.",
+        "Other calls in the issuing call's tool batch (each reviewed on its own; they bear on this call only where they change what it does, and Pi may run them before or alongside the issuing call):",
+        '- "write" with arguments {"path":"vendor/HEAD","content":"x"}',
       ].join("\n"),
     );
   });

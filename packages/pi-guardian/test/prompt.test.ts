@@ -41,7 +41,21 @@ describe("Guardian policy", () => {
     expect(prompt).toContain("Another call matters only where the two interact");
     const never = prompt.slice(prompt.indexOf("# Never Reasons for `high`"));
     expect(never).toContain(
-      "- Another call of the same tool batch, however risky: it gets its own review.",
+      "- Another call of the same tool batch, however risky: it gets its own review, and raises this call's risk only where it changes what this call does.",
+    );
+  });
+
+  it("rates running configuration or code another batch call writes, even through git", () => {
+    expect(prompt).toMatch(
+      /- `unreviewed_execution`: .*or that another call of the same batch writes: .*a git repository's `config` or `hooks`, which even `git status` loads/s,
+    );
+    const never = prompt.slice(prompt.indexOf("# Never Reasons for `high`"));
+    expect(never).toContain(
+      "- Local, reversible git operations: status, log, diff, add, commit, branch, switch, stash, unless they load configuration or hooks the agent wrote (`unreviewed_execution`).",
+    );
+    // The deciding pass weighs the same exceptions rather than overturning a correct first pass.
+    expect(escalationInstruction(validRiskCategories(false))).toContain(
+      "never a reason for `high`, minding the exceptions where another call changes what this one does",
     );
   });
 
@@ -75,7 +89,7 @@ describe("Guardian policy", () => {
       "A workspace file being security-relevant, core, or important when it is not a Sensitive Path",
       "Reading, searching, or listing anything, including `node_modules`, dependencies, and reference checkouts",
       "Running the project's established build, test, lint, format, or typecheck commands.",
-      "Local, reversible git operations: status, log, diff, add, commit, branch, switch, stash.",
+      "Local, reversible git operations: status, log, diff, add, commit, branch, switch, stash, unless",
       "Modifying ordinary workspace files, whatever the mechanism",
       "Missing specific authorization",
       "The call coming from a Child Agent or an Advisor.",

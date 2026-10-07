@@ -67,6 +67,7 @@ import {
   type GuardianConfig,
 } from "./guardian-settings.js";
 import type { Context } from "@earendil-works/pi-ai";
+import { processShellEnvironment, type ShellEnvironment } from "./safe-command.js";
 import type { SensitivePathContext } from "./sensitive-paths.js";
 import {
   onlyReads,
@@ -318,14 +319,29 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       commands: config.commands,
       annotations: pi.getAllTools().find((tool) => tool.name === call.toolName)?.annotations,
       paths: pathContext(ctx),
+      environment: shellEnvironment(),
     });
   }
 
-  /** The other calls of a top-level call's tool batch, as context for its review. */
+  /** What the session's `bash` commands inherit: this process's environment and Pi's settings. */
+  function shellEnvironment(): ShellEnvironment {
+    const settings = host.session()?.settingsManager;
+    return {
+      ...processShellEnvironment(),
+      shellPath: settings?.getShellPath(),
+      commandPrefix: settings?.getShellCommandPrefix(),
+    };
+  }
+
+  /**
+   * The other calls of a call's tool batch, as context for its review: for a nested call, those
+   * of its issuing call's batch, which Pi may run alongside the issuing script. The issuing call
+   * is shown on its own, and the script's other nested calls only within its arguments.
+   */
   function batchSiblings(call: SeenCall, batch: readonly ToolCall[]): BatchCall[] {
-    if (call.parentToolCallId !== undefined) return [];
+    const own = call.parentToolCallId ?? call.toolCallId;
     return batch.flatMap((other) =>
-      other.id === call.toolCallId ? [] : [{ toolName: other.name, input: other.arguments }],
+      other.id === own ? [] : [{ toolName: other.name, input: other.arguments }],
     );
   }
 
@@ -756,7 +772,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       if (early) discard(early);
       return { block: true, terminate: true, reason: streakEndedReason };
     }
-    const batch = call.parentToolCallId ? [] : batchOf(call.toolCallId);
+    const batch = batchOf(call.parentToolCallId ?? call.toolCallId);
     const policy = policyFor(ctx, config, call, batch);
     if (policy.policy !== "review" && early) discard(early);
     if (policy.policy === "allow") return undefined;
