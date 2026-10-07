@@ -114,7 +114,7 @@ export function evidenceBudget(
   return Math.min(Math.floor((contextWindow || fallbackWindow) / 4), autoEvidenceCeiling);
 }
 
-const layered = defineLayeredSettings<GuardianOptions, GuardianConfig>({
+const layered = defineLayeredSettings({
   namespace: "guardian",
   label: "Guardian",
   schema: guardianOptionsSchema,
@@ -122,7 +122,7 @@ const layered = defineLayeredSettings<GuardianOptions, GuardianConfig>({
   sessionEntryType: "pi-guardian-settings",
   merge: {
     // Each scope adds or replaces entries; `null` drops the inherited entry.
-    tools: (current, next) => {
+    tools: (current: GuardianConfig["tools"], next: NonNullable<GuardianOptions["tools"]>) => {
       const merged = { ...current };
       for (const [name, policy] of Object.entries(next)) {
         if (policy === null) delete merged[name];
@@ -130,14 +130,14 @@ const layered = defineLayeredSettings<GuardianOptions, GuardianConfig>({
       }
       return merged;
     },
-    safeCommands: (current, next) => [...new Set([...current, ...next])],
+    safeCommands: (current: string[], next: string[]) => [...new Set([...current, ...next])],
   },
 });
 
 export const guardianOptionKeys = layered.optionKeys;
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings and command input contain arbitrary authored JSON; the shared layered-settings schema check validates it before use.
-export function parseGuardianOptions(value: unknown, source: GuardianSettingSource) {
+export function parseGuardianOptions(value: unknown, source: GuardianSettingScope) {
   return layered.parseOptions(value, source);
 }
 
@@ -147,7 +147,7 @@ export function guardianOptionKey(input: string): keyof GuardianOptions {
 }
 
 /** Replay only the selected branch's last complete override snapshot. */
-export function readGuardianOverrides(manager: Pick<SessionManager, "getBranch">) {
+export function readGuardianOverrides(manager: Pick<SessionManager, "getBranch">): GuardianOptions {
   return layered.readOverrides(manager);
 }
 
