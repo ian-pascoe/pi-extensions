@@ -1,16 +1,9 @@
+import type { JsonValue } from "@earendil-works/pi-ai";
 import { describe, expect, test } from "vitest";
 import {
   resolveTermctrlSettings,
   type TermctrlSettingsDocumentInput,
 } from "../src/pi-termctrl-settings.js";
-
-type JsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | readonly JsonValue[]
-  | { readonly [key: string]: JsonValue };
 
 function reader(
   globalSettings: TermctrlSettingsDocumentInput,

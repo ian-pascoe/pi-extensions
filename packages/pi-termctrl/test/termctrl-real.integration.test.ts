@@ -270,6 +270,8 @@ describe.skipIf(binary.kind !== "available")("real termctrl binary", () => {
         );
       const ticked = await run("for i in range(3): print('tick', i)\n\n", "/^tick 2\n>>>$/m");
       expect(ticked.details.screen).toMatch(/^tick 0$/mu);
+      // 300 lines, not the issue's 500: termctrl's own scrollback must keep them all for the full
+      // output file to hold every line and for output_missing to stay unset.
       const flood = await run("for i in range(300): print('line', i)\n\n", "/^line 299\n>>>$/m");
       const scrolled = flood.details.scrolled_off;
       expect(scrolled).not.toContain("tick");

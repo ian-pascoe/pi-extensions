@@ -21,7 +21,7 @@ export interface TerminalViewport {
 }
 
 /** The most lines and bytes of model-visible output that a setting allows. */
-export type OutputLimits = Readonly<Required<TruncationOptions>>;
+export type LineByteLimits = Readonly<Required<TruncationOptions>>;
 
 /** The effective `settings.termctrl` values after layering global and trusted project settings. */
 export interface ResolvedTermctrlSettings {
@@ -32,12 +32,12 @@ export interface ResolvedTermctrlSettings {
    * Limits on the model-visible `bash` output: a foreground result or the output so far of a
    * backgrounding one. Undefined restores Pi's own limits.
    */
-  readonly bashTail: OutputLimits | undefined;
+  readonly bashTail: LineByteLimits | undefined;
   /**
    * Limits on the scrolled-off lines a Terminal result shows, kept from their start and end.
    * Undefined restores Pi's own limits on the whole result.
    */
-  readonly scrollback: OutputLimits | undefined;
+  readonly scrollback: LineByteLimits | undefined;
   readonly warnings: readonly string[];
 }
 
@@ -53,10 +53,10 @@ export interface TermctrlSettingsReader {
 }
 
 /** The settings that limit model-visible output. */
-type OutputLimitKey = "bashTail" | "scrollback";
+type LineByteLimitKey = "bashTail" | "scrollback";
 
-/** One layer's value for an output limit setting. */
-interface OutputLimitsLayer {
+/** One layer's value for a `bashTail` or `scrollback` setting. */
+interface LineByteLimitsLayer {
   enabled?: boolean;
   lines?: number;
   bytes?: number;
@@ -67,14 +67,14 @@ interface TermctrlLayer {
   cols?: number;
   rows?: number;
   exitTailLines?: number;
-  bashTail?: OutputLimitsLayer;
-  scrollback?: OutputLimitsLayer;
+  bashTail?: LineByteLimitsLayer;
+  scrollback?: LineByteLimitsLayer;
 }
 
 export const DEFAULT_TERMCTRL_SETTINGS: Omit<
   ResolvedTermctrlSettings,
-  "warnings" | OutputLimitKey
-> & { readonly [key in OutputLimitKey]: OutputLimits } = {
+  "warnings" | LineByteLimitKey
+> & { readonly [key in LineByteLimitKey]: LineByteLimits } = {
   replaceBash: true,
   defaultViewport: { cols: 120, rows: 40 },
   exitTailLines: 20,
@@ -123,7 +123,7 @@ function readLayer(
         break;
       case "bashTail":
       case "scrollback":
-        layer[key] = readOutputLimits(value, path, warnings);
+        layer[key] = readLineByteLimits(value, path, warnings);
         break;
       case "defaultViewport":
         readViewport(value, path, layer, warnings);
@@ -150,14 +150,18 @@ function readViewport(value: JsonValue, path: string, layer: TermctrlLayer, warn
   }
 }
 
-function readOutputLimits(value: JsonValue, path: string, warnings: string[]): OutputLimitsLayer {
+function readLineByteLimits(
+  value: JsonValue,
+  path: string,
+  warnings: string[],
+): LineByteLimitsLayer {
   if (Value.Check(BooleanSchema, value)) return { enabled: value };
   if (value === 0) return { enabled: false };
   if (!isJsonObject(value)) {
     warnings.push(`${path}: expected a boolean, 0, or a JSON object`);
     return {};
   }
-  const limits: OutputLimitsLayer = {};
+  const limits: LineByteLimitsLayer = {};
   let valid = 0;
   for (const [key, limit] of Object.entries(value)) {
     if (key === "lines") {
@@ -179,12 +183,12 @@ function readOutputLimits(value: JsonValue, path: string, warnings: string[]): O
   return limits;
 }
 
-/** Layer one output limit setting: the project's fields over the global ones, over the defaults. */
-function resolveOutputLimits(
-  key: OutputLimitKey,
+/** Layer a `bashTail` or `scrollback` setting: the project's fields over the global ones, over the defaults. */
+function resolveLineByteLimits(
+  key: LineByteLimitKey,
   globalLayer: TermctrlLayer,
   projectLayer: TermctrlLayer,
-): OutputLimits | undefined {
+): LineByteLimits | undefined {
   const global = globalLayer[key];
   const project = projectLayer[key];
   if (!(project?.enabled ?? global?.enabled ?? true)) return undefined;
@@ -209,8 +213,8 @@ export function resolveTermctrlSettings(reader: TermctrlSettingsReader): Resolve
     },
     exitTailLines:
       projectLayer.exitTailLines ?? globalLayer.exitTailLines ?? defaults.exitTailLines,
-    bashTail: resolveOutputLimits("bashTail", globalLayer, projectLayer),
-    scrollback: resolveOutputLimits("scrollback", globalLayer, projectLayer),
+    bashTail: resolveLineByteLimits("bashTail", globalLayer, projectLayer),
+    scrollback: resolveLineByteLimits("scrollback", globalLayer, projectLayer),
     warnings,
   };
 }

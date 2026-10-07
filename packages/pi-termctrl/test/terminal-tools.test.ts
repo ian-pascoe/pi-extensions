@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import type { OutputLimits } from "../src/pi-termctrl-settings.js";
+import type { LineByteLimits } from "../src/pi-termctrl-settings.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
@@ -19,7 +19,7 @@ import {
 import { FakeDriverFactory, type FakeTerminal } from "./fake-driver.js";
 
 /** The `termctrl.scrollback` limits the Terminal tools read; each test starts with the default. */
-let scrollback: OutputLimits | undefined;
+let scrollback: LineByteLimits | undefined;
 /** Whether the fake session has a message queued, for `terminal_wait`. */
 let pendingMessages = false;
 /** The session's working directory; `terminal_start` checks that it exists. */
@@ -456,6 +456,27 @@ describe("terminal_send", () => {
     });
   });
 
+  test("skips nothing it showed when output is missing", async () => {
+    const numbers = (from: number, to: number) =>
+      Array.from({ length: to - from + 1 }, (_, index) => String(from + index));
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = numbers(1, 10);
+      self.screen = numbers(6, 10).join("\n");
+    });
+    // The cursor is lost, so 6 and 7 are not known to be the rows the agent saw.
+    terminal.onInput = (self) => {
+      self.logLines = ["6", "7", "50", "51", "52"];
+      self.screen = "51\n52";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.structuredContent).toMatchObject({
+      scrolled_off: "6\n7\n50",
+      output_missing: true,
+    });
+  });
+
   test("says output is missing when a burst overflows before anything scrolled off", async () => {
     const { terminal } = await startTerminal((self) => {
       self.logLines = ["$ "];
@@ -537,6 +558,45 @@ describe("terminal_send", () => {
     expect(lines).toContainEqual(expect.stringMatching(/^\[… \d+ lines omitted …\]$/u));
     expect(await readFile(value.details.full_output_path ?? "", "utf8")).toBe(
       `${rows.join("\n")}\n$ `,
+    );
+  });
+
+  test("names the scrollback limits when they leave no room for the omission marker", async () => {
+    scrollback = { maxLines: 1, maxBytes: 16 * 1024 };
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["$ "];
+      self.screen = "$ ";
+    });
+    terminal.onInput = (self) => {
+      self.logLines = ["$ ", "a", "b", "c", "$ "];
+      self.screen = "$ ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.details.scrolled_off).toBe("c");
+    expect(textOf(value)).toMatch(
+      /\[Showing the last 1 of 3 scrolled-off lines \(16\.0KB or 1 line limit\)\. Full output: /u,
+    );
+  });
+
+  test("says when a scrolled-off line too long for the scrollback limits shows only its end", async () => {
+    scrollback = { maxLines: 100, maxBytes: 100 };
+    const long = `start${"x".repeat(300)}end`;
+    const { terminal } = await startTerminal((self) => {
+      self.logLines = ["$ "];
+      self.screen = "$ ";
+    });
+    terminal.onInput = (self) => {
+      self.logLines = ["$ ", long, "$ "];
+      self.screen = "$ ";
+    };
+    const { value } = await timed(
+      harness.send.execute("call", { id: "t1", text: "x" }, undefined, undefined, root),
+    );
+    expect(value.details.scrolled_off).toMatch(/^x+end$/u);
+    expect(textOf(value)).toMatch(
+      /\[Showing the end of scrolled-off line 1 of 1 \(100B or 100 line limit\)\. Full output: /u,
     );
   });
 

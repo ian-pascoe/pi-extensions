@@ -7,7 +7,6 @@ import {
   formatSize,
   truncateTail,
   type ExtensionToolContext,
-  type TruncationOptions,
 } from "@earendil-works/pi-coding-agent";
 import type { Key } from "@kitlangton/terminal-control";
 import { Type, type Static } from "typebox";
@@ -19,7 +18,7 @@ import type {
 } from "./termctrl-registry.js";
 import { describeExitStatus, formatExitNotice, lastLines } from "./exit-notification.js";
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
-import type { OutputLimits, TerminalViewport } from "./pi-termctrl-settings.js";
+import type { LineByteLimits, TerminalViewport } from "./pi-termctrl-settings.js";
 import type { TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
@@ -74,11 +73,11 @@ export interface TerminalToolRuntime {
   readonly shell: () => TerminalShell;
   readonly viewport: () => TerminalViewport;
   /** The `termctrl.scrollback` limits; undefined leaves only Pi's limits on the whole result. */
-  readonly scrollback: () => OutputLimits | undefined;
+  readonly scrollback: () => LineByteLimits | undefined;
 }
 
-/** What `terminal_stop` reads: it also stops Background jobs, so it needs no shell or viewport. */
-export type TerminalStopRuntime = Pick<TerminalToolRuntime, "registry" | "scrollback">;
+/** What building a Terminal result reads; `terminal_stop` also stops Background jobs and needs only this. */
+export type TerminalResultRuntime = Pick<TerminalToolRuntime, "registry" | "scrollback">;
 
 const TerminalStateSchema = Type.Union([Type.Literal("running"), Type.Literal("exited")]);
 
@@ -457,12 +456,16 @@ interface ShownScrolled {
   readonly truncated: boolean;
   readonly totalLines: number;
   readonly outputLines: number;
-  /** Describes a cut that kept the start and end; absent when only the newest lines were kept. */
+  /** Describes a cut to the `termctrl.scrollback` limits; absent for a cut to Pi's limits alone. */
   readonly summary?: string;
 }
 
 function omissionMarker(count: number): string {
   return `[… ${count} lines omitted …]`;
+}
+
+function describeLimits(limits: LineByteLimits): string {
+  return `(${formatSize(limits.maxBytes)} or ${limits.maxLines} line limit)`;
 }
 
 /**
@@ -472,7 +475,7 @@ function omissionMarker(count: number): string {
  */
 function keepStartAndEnd(
   lines: readonly string[],
-  limits: Required<TruncationOptions>,
+  limits: LineByteLimits,
 ): ShownScrolled | undefined {
   // Each kept line is counted with the newline that joins it to the marker or its neighbour.
   const bodyLines = limits.maxLines - 1;
@@ -490,15 +493,18 @@ function keepStartAndEnd(
   }
   const tail: string[] = [];
   let tailBytes = 0;
+  let lastLineCut = false;
   const tailByteLimit = bodyBytes - headBytes;
   for (let index = lines.length - 1; index >= head.length; index--) {
     if (tail.length >= bodyLines - head.length) break;
     const line = lines[index] ?? "";
     const size = Buffer.byteLength(line, "utf8") + 1;
     if (tailBytes + size > tailByteLimit) {
-      // A line too long for the limits on its own still shows its end.
-      if (head.length === 0 && tail.length === 0)
+      // A last line too long for the limits on its own still shows its end.
+      if (head.length === 0 && tail.length === 0) {
         tail.push(truncateTail(line, { maxLines: 1, maxBytes: tailByteLimit - 1 }).content);
+        lastLineCut = true;
+      }
       break;
     }
     tail.unshift(line);
@@ -506,12 +512,26 @@ function keepStartAndEnd(
   }
   const omitted = lines.length - head.length - tail.length;
   const kept = omitted > 0 ? [...head, omissionMarker(omitted), ...tail] : [...head, ...tail];
+  const shown = lastLineCut
+    ? `the end of scrolled-off line ${lines.length} of ${lines.length}`
+    : `the first ${head.length} and last ${tail.length} of ${lines.length} scrolled-off lines`;
   return {
     content: kept.join("\n"),
     truncated: true,
     totalLines: lines.length,
     outputLines: head.length + tail.length,
-    summary: `Showing the first ${head.length} and last ${tail.length} of ${lines.length} scrolled-off lines (${formatSize(limits.maxBytes)} or ${limits.maxLines} line limit).`,
+    summary: `Showing ${shown} ${describeLimits(limits)}.`,
+  };
+}
+
+/** Keep the newest scrolled-off lines within `limits`. */
+function keepNewest(lines: readonly string[], limits: LineByteLimits): ShownScrolled {
+  const newest = truncateTail(lines.join("\n"), limits);
+  return {
+    content: newest.content,
+    truncated: newest.truncated,
+    totalLines: lines.length,
+    outputLines: newest.outputLines,
   };
 }
 
@@ -521,31 +541,27 @@ function keepStartAndEnd(
  */
 function fitScrolled(
   lines: readonly string[],
-  room: Required<TruncationOptions>,
-  scrollback: OutputLimits | undefined,
+  room: LineByteLimits,
+  scrollback: LineByteLimits | undefined,
 ): ShownScrolled {
-  const text = lines.join("\n");
   if (room.maxLines <= 0 || room.maxBytes <= 0) {
     return { content: "", truncated: lines.length > 0, totalLines: lines.length, outputLines: 0 };
   }
-  const limits =
-    scrollback === undefined
-      ? room
-      : {
-          maxLines: Math.min(scrollback.maxLines, room.maxLines),
-          maxBytes: Math.min(scrollback.maxBytes, room.maxBytes),
-        };
+  if (scrollback === undefined) return keepNewest(lines, room);
+  const limits = {
+    maxLines: Math.min(scrollback.maxLines, room.maxLines),
+    maxBytes: Math.min(scrollback.maxBytes, room.maxBytes),
+  };
+  const text = lines.join("\n");
   if (lines.length <= limits.maxLines && Buffer.byteLength(text, "utf8") <= limits.maxBytes) {
     return { content: text, truncated: false, totalLines: lines.length, outputLines: lines.length };
   }
-  const kept = scrollback === undefined ? undefined : keepStartAndEnd(lines, limits);
+  const kept = keepStartAndEnd(lines, limits);
   if (kept !== undefined) return kept;
-  const newest = truncateTail(text, limits);
+  const newest = keepNewest(lines, limits);
   return {
-    content: newest.content,
-    truncated: newest.truncated,
-    totalLines: lines.length,
-    outputLines: newest.outputLines,
+    ...newest,
+    summary: `Showing the last ${newest.outputLines} of ${lines.length} scrolled-off lines ${describeLimits(limits)}.`,
   };
 }
 
@@ -560,7 +576,7 @@ async function fitOutput(
   entry: TerminalEntry,
   screen: string,
   scrolled: ScrolledOff,
-  scrollback: OutputLimits | undefined,
+  scrollback: LineByteLimits | undefined,
 ): Promise<FittedOutput> {
   const fitted = await truncateOutput(registry, entry, screen, scrolled.lines, scrollback);
   if (!scrolled.gap) return { ...fitted, gap: false };
@@ -573,7 +589,7 @@ async function truncateOutput(
   entry: TerminalEntry,
   screen: string,
   scrolled: readonly string[],
-  scrollback: OutputLimits | undefined,
+  scrollback: LineByteLimits | undefined,
 ): Promise<Omit<FittedOutput, "gap">> {
   const limits = { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES };
   const shownScreen = truncateTail(screen, limits);
@@ -653,7 +669,7 @@ function formatTerminalText(
 
 /** Build the agent's view of a Terminal after a wait, recording the exit as seen. */
 async function terminalResult(
-  { registry, scrollback }: TerminalStopRuntime,
+  { registry, scrollback }: TerminalResultRuntime,
   entry: TerminalEntry,
   snapshot: TerminalSnapshot | undefined,
   settleReason: SettleReason,
@@ -973,7 +989,7 @@ function stopTerminalInTurn(
 }
 
 /** `terminal_stop`: stop a Terminal or Background job and forget it. */
-export function createTerminalStopTool({ registry, scrollback }: TerminalStopRuntime) {
+export function createTerminalStopTool({ registry, scrollback }: TerminalResultRuntime) {
   return defineTool<typeof StopParameters, StopResult>({
     name: "terminal_stop",
     label: "terminal_stop",

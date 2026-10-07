@@ -19,7 +19,7 @@ import { createTermctrlDriver } from "./termctrl-driver.js";
 import { TermctrlRegistry } from "./termctrl-registry.js";
 import {
   resolveTermctrlSettings,
-  type OutputLimits,
+  type LineByteLimits,
   type TerminalViewport,
 } from "./pi-termctrl-settings.js";
 import type { TerminalDriver } from "./terminal-driver.js";
@@ -45,7 +45,7 @@ interface ActiveSession {
   readonly ps: TermctrlPsController;
   readonly shell: () => TerminalShell;
   readonly viewport: TerminalViewport;
-  readonly scrollback: OutputLimits | undefined;
+  readonly scrollback: LineByteLimits | undefined;
   readonly exitTailLines: number;
 }
 
