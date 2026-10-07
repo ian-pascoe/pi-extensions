@@ -32,7 +32,9 @@
     "./pi-agent-session-discovery": "./src/pi-agent-session-discovery.ts",
     "./locked-file-update": "./src/locked-file-update.ts",
     "./layered-settings": "./src/layered-settings.ts",
-    "./evidence": "./src/evidence.ts"
+    "./evidence": "./src/evidence.ts",
+    "./settings-menu": "./src/settings-menu.ts",
+    "./settings-command": "./src/settings-command.ts"
   },
   "publishConfig": {
     "main": "./dist/index.js",
@@ -57,6 +59,14 @@
       "./evidence": {
         "types": "./dist/evidence.d.ts",
         "import": "./dist/evidence.js"
+      },
+      "./settings-menu": {
+        "types": "./dist/settings-menu.d.ts",
+        "import": "./dist/settings-menu.js"
+      },
+      "./settings-command": {
+        "types": "./dist/settings-command.d.ts",
+        "import": "./dist/settings-command.js"
       }
     },
     "access": "public",
@@ -77,6 +87,7 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.99.0",
     "@earendil-works/pi-coding-agent": ">=0.99.0",
+    "@earendil-works/pi-tui": ">=0.99.0",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
@@ -84,6 +95,9 @@
       "optional": true
     },
     "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
       "optional": true
     },
     "typebox": {

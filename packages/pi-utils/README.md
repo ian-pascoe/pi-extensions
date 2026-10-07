@@ -19,6 +19,8 @@ The Pi packages and `typebox` are optional peers; Pi's extension loader supplies
 | `./pi-agent-session-discovery` | Nothing; the caller passes `AgentSession` from `@earendil-works/pi-coding-agent` |
 | `./evidence`                   | `@earendil-works/pi-coding-agent` (`convertToLlm`, `estimateTokens`)             |
 | `./layered-settings`           | `typebox`                                                                        |
+| `./settings-menu`              | `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`                   |
+| `./settings-command`           | Nothing; its declarations reference `@earendil-works/pi-tui` types               |
 
 Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` are erased from the compiled JavaScript, but the published declarations reference them, so TypeScript consumers outside Pi need those packages installed to type-check.
 
@@ -35,6 +37,14 @@ Type-only imports from `@earendil-works/pi-ai` and `@earendil-works/pi-coding-ag
 `defineLayeredSettings({ namespace, label, schema, defaults, sessionEntryType?, merge? })` from `@ian-pascoe/pi-utils/layered-settings` manages one extension's options under a namespace key (for example `advisor`) in Pi's settings. `schema` is a TypeBox object whose properties are all optional (checked when defining); the authored options are `Static<typeof schema>`, and `defaults` must hold every option key with a compatible type unless the key has a `merge` hook. `label` names the extension in error messages. The returned functions read the global and trusted-project layers (`readLayers`, preserving per-scope errors), replay the selected branch's last `{ version: 1, overrides }` custom entry of `sessionEntryType` (`readOverrides`, present only when `sessionEntryType` is given), resolve effective settings and per-key sources by default < global < trusted project < session (`readSettings`), validate option keys (`optionKey`), and write one scope through Pi's private settings storage lock (`writeSettings`, after `flush()`; it refuses untrusted projects, unsupported backends, and documents it cannot safely rewrite). An optional per-key `merge` hook, `(current, next, source) => value`, merges a key across layers instead of replacing it, for example a record merged entry by entry.
 
 Lower-level pieces are exported for consumers with their own validation or writer: `resolveLayeredOptions` is the pure layer fold (so lenient, warning-producing parsers can reuse it), and `rewriteNamespaceDocument` rewrites one namespace of a settings document's text (BOM stripping, object checks with caller-supplied errors, empty namespace removal) for use inside any lock, such as `updateFileLocked`.
+
+## Settings menu widgets
+
+`@ian-pascoe/pi-utils/settings-menu` holds the widgets behind an extension's `ctx.ui.custom` settings menu, built on Pi's native components. `ValueInput(title, hint, theme, submit, cancel)` is a single-line field whose `submit` may throw a user-facing message to show inline. `ModelPicker(models, choose, cancel)` is a fuzzy-searchable list of model names with `inherit` first. `nextCycleValue(values, current)` returns the next value of a cycled option, wrapping around. `errorText(cause)` is a thrown value's message. `theme` is a `SettingsMenuTheme`, the `fg` and `bold` methods of Pi's `Theme`. The rows, labels, and descriptions stay with the extension.
+
+## Settings command parsing
+
+`@ian-pascoe/pi-utils/settings-command` parses a `/command [on|off|status|inherit [key]|set <key> <JSON>] [--global|--project]` line. `parseSettingsCommand(input, spec)` returns `menu`, `status`, `set`, or `inherit` actions with the scope (`session` unless a flag names another). The `spec` supplies `usage`, `optionKey` and `parseOptions` (the validation, typically from `defineLayeredSettings`), `toggle(enabled)` (the key and patch for `on` and `off`), and optionally `parseExtra(text, scope)` for the command's own actions, tried first. `completeSettingsCommandArguments(prefix, spec)` completes the words, option keys after `set ` and `inherit `, optional `extra(prefix)` values, and the scope flags once the command parses at the `session` scope.
 
 ## Evidence projection
 
