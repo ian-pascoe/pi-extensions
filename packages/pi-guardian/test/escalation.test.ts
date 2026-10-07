@@ -86,6 +86,16 @@ describe("Escalation Pass", () => {
     );
   });
 
+  it("reads the second pass's final assessment after reasoning with stray braces", async () => {
+    const { harness, entry } = await deployOnce({}, [
+      assessment("high", "low", "Looks risky."),
+      `The call touches {prod, which the user named.\n${assessment("medium", "high", "Requested.")}`,
+    ]);
+    expect(harness.reviews).toHaveLength(2);
+    expect(harness.executed).toEqual(["deploy:prod"]);
+    expect(entry).toMatchObject({ result: "allowed", escalation: { result: "assessed" } });
+  });
+
   it("rejects with the second pass's assessment when it confirms the Rejection", async () => {
     const { harness, entry } = await deployOnce({}, [
       assessment("high", "low", "Looks risky."),

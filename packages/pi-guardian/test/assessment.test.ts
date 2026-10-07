@@ -3,6 +3,7 @@ import {
   decide,
   decidedRisk,
   parseAssessment,
+  parseFinalAssessment,
   rejectionReason,
   validRiskCategories,
   type RiskLevel,
@@ -24,6 +25,40 @@ describe("Decision Table", () => {
       expect(authorizations.map((authorization) => decide(risk, authorization))).toEqual(outcomes);
     });
   }
+});
+
+describe("reasoned replies", () => {
+  const final = JSON.stringify({
+    risk_level: "medium",
+    user_authorization: "high",
+    rationale: "Requested { in braces }.",
+  });
+
+  it.each([
+    ["an unbalanced brace in the reasoning", `The set {a, b is open. So:\n${final}`],
+    [
+      "an example object in the reasoning",
+      `A rejection would be {"risk_level": "critical", "user_authorization": "unknown"}. But:\n${final}`,
+    ],
+    ["a quote in the reasoning", `It's "quoted. Answer: ${final} Done.`],
+    ["a bare answer", final],
+  ])("take the assessment that ends last despite %s", (_case, text) => {
+    expect(parseFinalAssessment(text)).toMatchObject({
+      risk: "medium",
+      authorization: "high",
+      rationale: "Requested { in braces }.",
+    });
+  });
+
+  it("fail without any assessment", () => {
+    expect(() => parseFinalAssessment("I think {it is fine")).toThrow(/malformed output/);
+  });
+
+  it("are parsed strictly in the first pass", () => {
+    expect(() => parseAssessment(`The set {a, b is open. So:\n${final}`)).toThrow(
+      /malformed output/,
+    );
+  });
 });
 
 describe("Risk Categories", () => {

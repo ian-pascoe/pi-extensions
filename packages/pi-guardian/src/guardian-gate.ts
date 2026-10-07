@@ -138,6 +138,8 @@ interface ExtensionInput {
   text: string;
   /** Pi appends image-processing hints to the text of a message with images. */
   images: boolean;
+  /** The agent run current when it arrived; see {@link installReviewGate}'s `agent_end`. */
+  run: number;
 }
 
 /** Early reviews running at once; the rest wait for a slot. */
@@ -243,6 +245,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
   const prefetched = new Map<string, Prefetch>();
   const pendingAudits = new Map<string, PendingAudit>();
   const extensionInputs: ExtensionInput[] = [];
+  /** Agent runs started, to age out extension inputs that never became messages. */
+  let runs = 0;
   const askOverride = overrideDialogs();
   const prefetchSlot = limiter(maxConcurrentPrefetches);
 
@@ -448,7 +452,9 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
   /**
    * The Escalation Pass of a review whose first pass would be rejected: the same request plus a
    * final instruction asking for careful reasoning, with the escalation model and thinking level
-   * and its own deadline. With the same model the request is almost entirely a cache hit.
+   * and its own deadline. Its request extends the first pass's, so the cached system prompt is
+   * reused; the cached messages are reused only with the same model and thinking settings, since
+   * a provider such as Anthropic invalidates cached messages when thinking changes.
    */
   async function escalate(
     ctx: ExtensionContext,
@@ -491,6 +497,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       signal,
       sessionId: request.sessionId,
       categories: request.categories,
+      reasoned: true,
     });
   }
 
@@ -675,7 +682,11 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
 
   pi.on("input", (event) => {
     if (event.source !== "extension") return;
-    extensionInputs.push({ text: event.text, images: (event.images?.length ?? 0) > 0 });
+    extensionInputs.push({
+      text: event.text,
+      images: (event.images?.length ?? 0) > 0,
+      run: runs,
+    });
     if (extensionInputs.length > maxPendingInputs) extensionInputs.shift();
   });
 
@@ -814,9 +825,20 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
   }
 
   pi.on("turn_end", discardPrefetches);
+  pi.on("agent_start", () => {
+    runs++;
+  });
   pi.on("agent_end", () => {
     flush();
     calls.clear();
+    // An input that arrived before this run started was due as a message in it, as a prompt or a
+    // queued steering or follow-up message; one still pending never became a message (another
+    // handler handled or rewrote it, or its prompt failed, which Guardian cannot observe).
+    // Dropped, it cannot mislabel a message the user later types with the same text; until then
+    // such a message is labeled as the extension's, which errs toward untrusted. Inputs that
+    // arrived during the run may still start the next one, so they wait one more run.
+    const due = extensionInputs.filter((input) => input.run >= runs);
+    extensionInputs.splice(0, extensionInputs.length, ...due);
   });
   pi.on("before_agent_start", () => {
     streak = 0;

@@ -11,6 +11,7 @@ import {
   decide,
   decidedRisk,
   parseAssessment,
+  parseFinalAssessment,
   uncategorized,
   type Assessment,
   type Outcome,
@@ -106,6 +107,11 @@ export interface GuardianReviewInput {
   sessionId: string;
   /** The Risk Categories this review may name. */
   categories: readonly RiskCategory[];
+  /**
+   * The reply reasons before ending with its answer, as an Escalation Pass's does: the last
+   * assessment object decides, rather than the only one.
+   */
+  reasoned?: boolean;
 }
 
 /** Token usage summed over a review's attempts; `null` when an attempt reported none. */
@@ -259,7 +265,8 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
         };
       let corrective = correctiveMessage;
       try {
-        const assessment = parseAssessment(replyText(reply), input.categories);
+        const parse = input.reasoned ? parseFinalAssessment : parseAssessment;
+        const assessment = parse(replyText(reply), input.categories);
         // Ask once for a missing or unknown Risk Category; only a retry that still lacks one is
         // decided as `medium`. A malformed retry is a failure, never the first reply decided as
         // `medium`: that would turn a `critical` into an allow.

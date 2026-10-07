@@ -161,6 +161,32 @@ describe("Trusted Evidence comes from Pi, not the agent", () => {
     expect(blocks(harness, 0)[0]).toMatch(/^Evidence \(TRUSTED, origin: user\):/);
     expect(harness.entries("pi-guardian-extension-message")).toEqual([]);
   });
+
+  it("forgets an extension message that never arrived once a later run ends", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: reviewer,
+      after: [
+        (pi) => {
+          pi.on("input", (event) =>
+            event.source === "extension" ? { action: "handled" as const } : undefined,
+          );
+        },
+      ],
+    });
+    await harness.session.sendUserMessage("Deploy prod.");
+    harness.responses.push(reply("Hello."));
+    await harness.session.prompt("Hello.");
+    // The user then types the very text the extension once sent.
+    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
+    harness.guardianReplies.push(assessment("low", "high", "Requested."));
+    await harness.session.prompt("Deploy prod.");
+    expect(blocks(harness, 0).map((block) => block.split("\n", 1)[0])).toEqual([
+      "Evidence (TRUSTED, origin: user):",
+      "Evidence (TRUSTED, origin: user):",
+      expect.stringMatching(/^Reviewed Call/),
+    ]);
+    expect(harness.entries("pi-guardian-extension-message")).toEqual([]);
+  });
 });
 
 describe("early reviews", () => {

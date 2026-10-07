@@ -129,26 +129,73 @@ function objectSpans(text: string): string[] {
   return spans;
 }
 
+/** The assessment a JSON text holds, if it is a valid one. */
+function assessmentIn(
+  candidate: string,
+  categories: readonly RiskCategory[],
+): Assessment | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    return undefined;
+  }
+  if (!Value.Check(assessmentSchema, parsed)) return undefined;
+  const stated = normalizedCategory(parsed.risk_category);
+  return {
+    risk: parsed.risk_level,
+    authorization: parsed.user_authorization,
+    category: categories.find((name) => name === stated),
+    rationale: parsed.rationale?.trim() ?? "",
+  };
+}
+
 /** Valid assessments in a reply: the whole text, or each top-level JSON object in it. */
 function assessments(text: string, categories: readonly RiskCategory[]): Assessment[] {
-  const found: Assessment[] = [];
-  for (const candidate of [text.trim(), ...objectSpans(text)]) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    if (!Value.Check(assessmentSchema, parsed)) continue;
-    const stated = normalizedCategory(parsed.risk_category);
-    found.push({
-      risk: parsed.risk_level,
-      authorization: parsed.user_authorization,
-      category: categories.find((name) => name === stated),
-      rationale: parsed.rationale?.trim() ?? "",
-    });
+  return [text.trim(), ...objectSpans(text)].flatMap(
+    (candidate) => assessmentIn(candidate, categories) ?? [],
+  );
+}
+
+/** The index of the `}` closing the JSON object that opens at `start`, skipping strings. */
+function objectEnd(text: string, start: number): number | undefined {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  // Every structural character is ASCII, so UTF-16 indexes are safe here.
+  for (let index = start; index < text.length; index++) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+    } else if (character === '"') inString = true;
+    else if (character === "{") depth++;
+    else if (character === "}" && --depth === 0) return index;
   }
-  return found;
+  return undefined;
+}
+
+/**
+ * Parse a reply that reasons before its answer, such as an Escalation Pass's: the valid
+ * assessment whose JSON object ends last, from any `{`, so an unbalanced brace or an example
+ * object in the reasoning cannot hide or contradict the final answer. Throws a Review Failure
+ * message when it holds none.
+ */
+export function parseFinalAssessment(
+  text: string,
+  categories: readonly RiskCategory[] = validRiskCategories(false),
+): Assessment {
+  let found: { assessment: Assessment; end: number } | undefined;
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    const end = objectEnd(text, start);
+    if (end === undefined || (found && end <= found.end)) continue;
+    const assessment = assessmentIn(text.slice(start, end + 1), categories);
+    if (assessment) found = { assessment, end };
+  }
+  if (!found)
+    throw new Error("Guardian returned malformed output (expected the assessment JSON object)");
+  return found.assessment;
 }
 
 /**
