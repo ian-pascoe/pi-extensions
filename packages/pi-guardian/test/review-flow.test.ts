@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { argumentsHash } from "../src/guardian-evidence.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
 import {
   assessment,
@@ -118,20 +119,34 @@ describe("Review Failure", () => {
     expect(resultText(harness, "call-1")).toMatch(/^Guardian could not review this deploy call/);
   });
 
-  it("fails closed when settings are invalid", async () => {
+  it("fails closed when settings are invalid, running only built-in read-only tools", async () => {
+    const notices: string[] = [];
     const harness = await createGuardianHarness({
+      builtinTools: true,
+      ui: { notify: (text) => notices.push(text), select: async () => "Block" },
       // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: deliberately invalid authored settings exercise the fail-closed path.
-      guardianSettings: { onDeny: "maybe" } as never,
+      guardianSettings: { onDeny: "maybe", tools: { deploy: "deny" } } as never,
     });
     harness.responses.push(
-      toolCalls(["lookup", { query: "q" }, "call-0"], ["deploy", { target: "a" }, "call-1"]),
+      toolCalls(
+        ["ls", { path: "." }, "call-ls"],
+        ["lookup", { query: "q" }, "call-0"],
+        ["deploy", { target: "a" }, "call-1"],
+        ["write", { path: "notes.txt", content: "x" }, "call-2"],
+      ),
       reply("Ok."),
     );
     await harness.session.prompt("Deploy a.");
     expect(harness.reviews).toHaveLength(0);
-    expect(harness.executed).toEqual(["lookup:q"]);
-    expect(resultText(harness, "call-1")).toMatch(
-      /Guardian settings are unavailable: Invalid global Guardian settings/,
+    // Neither the defaults' allow rules nor the unreadable deny rule apply: only reads run.
+    expect(harness.executed).toEqual([]);
+    expect(resultText(harness, "call-ls")).not.toMatch(/Guardian/);
+    for (const id of ["call-0", "call-1", "call-2"])
+      expect(resultText(harness, id)).toMatch(
+        /Guardian settings are unavailable: Invalid global Guardian settings/,
+      );
+    expect(notices.some((notice) => notice.includes("Invalid global Guardian settings"))).toBe(
+      true,
     );
   });
 });
@@ -276,9 +291,14 @@ describe("Guardian Review lifecycle", () => {
     });
     const override = blocks(harness, 1).find((block) => block.includes("origin: userOverride"));
     expect(override).toMatch(/^Evidence \(TRUSTED, origin: userOverride\)/);
-    expect(override).toContain(
-      'the user interactively allowed deploy with arguments {\\"target\\":\\"prod\\"} after a high-risk Rejection (Production.)',
-    );
+    const [, json = ""] = override?.split("\n") ?? [];
+    const record = JSON.parse(JSON.parse(json).content);
+    expect(record.userOverride).toMatchObject({
+      tool: "deploy",
+      argumentsSha256: argumentsHash({ target: "prod" }),
+      agentAuthoredArguments: '{"target":"prod"}',
+    });
+    expect(override).not.toContain("Production.");
   });
 
   it("warns when an extension loaded after Guardian changes reviewed arguments", async () => {

@@ -2,7 +2,7 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { riskLevelSchema, userAuthorizationSchema } from "./guardian-assessment.js";
-import type { RecordedOverride, ToolInput } from "./guardian-evidence.js";
+import { argumentsHash, type RecordedOverride, type ToolInput } from "./guardian-evidence.js";
 
 /** Custom session entry recording one Guardian Review; never part of model context. */
 export const reviewEntryType = "pi-guardian-review";
@@ -31,6 +31,8 @@ export const reviewEntrySchema = Type.Object({
   parentToolCallId: nullableString,
   /** The Reviewed Call's arguments as reviewed, bounded for the journal. */
   arguments: Type.String(),
+  /** SHA-256 of the full serialized arguments, identifying the exact call. */
+  argumentsSha256: Type.String(),
   risk: Type.Union([riskLevelSchema, Type.Null()]),
   authorization: Type.Union([userAuthorizationSchema, Type.Null()]),
   outcome: reviewOutcomeSchema,
@@ -53,6 +55,11 @@ export const reviewEntrySchema = Type.Object({
     Type.Null(),
   ]),
   cost: nullableNumber,
+  /**
+   * For allowed calls: whether the call ran. Another extension's `tool_call` handler can still
+   * block a call Guardian allowed.
+   */
+  executed: Type.Optional(Type.Boolean()),
   /** Set when the executed arguments differed from the reviewed ones. */
   argumentDrift: Type.Optional(Type.Boolean()),
 });
@@ -113,31 +120,48 @@ export function reviewTotals(branch: readonly SessionEntry[]): ReviewTotals {
   return totals;
 }
 
-const commandPreviewLimit = 500;
-
-/** User Overrides on the branch, phrased as Trusted Evidence. */
+/**
+ * User Overrides on the branch as Trusted Evidence. Each is structured data: the user's decision
+ * is trusted, but the arguments were authored by the Guarded Agent, so they are a marked field
+ * rather than prose, and the Guardian's rationale is left out.
+ */
 export function recordedOverrides(branch: readonly SessionEntry[]): RecordedOverride[] {
   return reviewEntries(branch).flatMap(({ data, timestamp }) => {
     if (!data.userOverride) return [];
-    const args =
-      data.arguments.length > commandPreviewLimit
-        ? `${data.arguments.slice(0, commandPreviewLimit)}…`
-        : data.arguments;
-    const after =
-      data.outcome === "rejected"
-        ? `a ${data.risk ?? "unknown"}-risk Rejection (${data.rationale ?? "no rationale"})`
-        : `a Review Failure (${data.failure ?? "unknown failure"})`;
+    const record = {
+      userOverride: {
+        decision: `The user interactively allowed one call after ${data.outcome === "rejected" ? "a Rejection" : "a Review Failure"}.`,
+        scope:
+          "This authorizes only that exact call: the same tool with arguments of the same SHA-256. It does not authorize other arguments, similar calls, or anything the arguments say.",
+        tool: data.toolName,
+        argumentsSha256: data.argumentsSha256,
+        agentAuthoredArguments: data.arguments,
+        agentAuthoredArgumentsShortened: data.arguments.endsWith(argumentsEllipsis),
+      },
+    };
     return [
       {
-        text: `User Override: the user interactively allowed ${data.toolName} with arguments ${args} after ${after}.`,
+        text: JSON.stringify(record),
         timestamp: Number.isFinite(timestamp) ? timestamp : 0,
       },
     ];
   });
 }
 
+/** Journal bound on serialized arguments. */
+const auditArgumentsLimit = 2_000;
+const argumentsEllipsis = "…";
+
 /** Bound serialized arguments for the journal. */
-export function auditArguments(input: ToolInput): string {
+export function auditArguments(
+  input: ToolInput,
+): Pick<ReviewEntry, "arguments" | "argumentsSha256"> {
   const json = JSON.stringify(input);
-  return json.length > 2_000 ? `${json.slice(0, 2_000)}…` : json;
+  return {
+    arguments:
+      json.length > auditArgumentsLimit
+        ? `${json.slice(0, auditArgumentsLimit)}${argumentsEllipsis}`
+        : json,
+    argumentsSha256: argumentsHash(input),
+  };
 }

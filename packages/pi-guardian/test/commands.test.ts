@@ -160,6 +160,7 @@ describe("Guardian renderers", () => {
       toolCallId: "c",
       parentToolCallId: null,
       arguments: '{"command":"rm -rf dist"}',
+      argumentsSha256: "0".repeat(64),
       risk: "high",
       authorization: "low",
       outcome: "rejected",

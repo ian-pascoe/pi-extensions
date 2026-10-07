@@ -4,38 +4,20 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionUIContext,
-  ExtensionUIDialogOptions,
-  ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
-import { isDeepStrictEqual } from "node:util";
-import { rejectionReason } from "./guardian-assessment.js";
-import {
-  auditArguments,
-  recordedOverrides,
-  reviewEntryType,
-  reviewTotals,
-  type ReviewEntry,
-  type ReviewOutcome,
-} from "./guardian-audit.js";
+import { reviewEntryType, reviewTotals } from "./guardian-audit.js";
 import {
   parseGuardianCommand,
   completeGuardianCommandArguments,
   updatedToolEntries,
 } from "./guardian-command.js";
-import {
-  projectInstructions,
-  renderReviewedCall,
-  selectEvidence,
-  type IssuingCall,
-  type ToolInput,
-} from "./guardian-evidence.js";
+import { installReviewGate } from "./guardian-gate.js";
 import {
   GuardianSettingsMenu,
   type GuardianMenuHost,
   type GuardianScopedOptions,
 } from "./guardian-menu.js";
-import { guardianSystemPrompt } from "./guardian-prompt.js";
 import {
   guardianFooterText,
   guardianStatusHeadline,
@@ -45,7 +27,6 @@ import {
   type GuardianRenderTheme,
   type GuardianStatusEntry,
 } from "./guardian-rendering.js";
-import { resolveGuardianModel, runGuardianReview, type ReviewResult } from "./guardian-review.js";
 import {
   guardedSessionRole,
   publishRootSettings,
@@ -53,7 +34,6 @@ import {
   type GuardedSessionRole,
 } from "./guardian-root-registry.js";
 import {
-  evidenceBudget,
   guardianDefaults,
   parseGuardianOptions,
   readGuardianLayers,
@@ -62,44 +42,15 @@ import {
   writeGuardianSettings,
   type GuardianAppliedChange,
   type GuardianChange,
-  type GuardianConfig,
   type GuardianLayers,
   type GuardianSettingScope,
   type ResolvedGuardianSettings,
 } from "./guardian-settings.js";
-import { resolveToolPolicy, type ResolvedToolPolicy } from "./tool-policy.js";
-import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 /** Effective settings for this session, or why they cannot be read. */
 type Effective =
   | { ok: true; resolved: ResolvedGuardianSettings; followsRoot: string | null }
   | { ok: false; error: string };
-
-/** One call as seen by Guardian's `tool_call` handler. */
-interface SeenCall {
-  toolCallId: string;
-  toolName: string;
-  input: ToolInput;
-  parentToolCallId: string | undefined;
-}
-
-/** A Guardian Review started when the assistant message ended, ahead of its call's preflight. */
-interface Prefetch {
-  /** The call as the assistant message issued it. */
-  call: SeenCall;
-  input: ToolInput;
-  controller: AbortController;
-  result: Promise<ReviewResult>;
-  consumed: boolean;
-}
-
-/** An allowed call's audit entry, held until its result shows whether its arguments drifted. */
-interface PendingAudit {
-  entry: ReviewEntry;
-  approved: ToolInput;
-}
-
-const choices = { block: "Block", allow: "Allow once" } as const;
 
 function message(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -115,12 +66,6 @@ export default function guardian(pi: ExtensionAPI): void {
   let footer: ExtensionUIContext | undefined;
   let activeMenu: { refresh: () => void; close: () => void } | undefined;
   let generation = 0;
-  let streak = 0;
-  /** Tool names under review, keyed per review so a superseded review cannot clear another. */
-  const reviewing = new Map<symbol, string>();
-  const calls = new Map<string, SeenCall>();
-  const prefetched = new Map<string, Prefetch>();
-  const pendingAudits = new Map<string, PendingAudit>();
 
   pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) =>
     renderReviewEntry(entry.data, expanded, theme),
@@ -144,13 +89,19 @@ export default function guardian(pi: ExtensionAPI): void {
     }
   }
 
-  /** Settings to enforce: on a settings error, defaults whose reviews all fail closed. */
-  function enforced(): { config: GuardianConfig; error: string | undefined } {
-    const current = effective();
-    return current.ok
-      ? { config: current.resolved.settings, error: undefined }
-      : { config: guardianDefaults, error: current.error };
-  }
+  const gate = installReviewGate(pi, {
+    session: () => session,
+    unavailable: () => discoveryError ?? "Guardian session is unavailable",
+    role: () => role,
+    settings() {
+      const current = effective();
+      // On a settings error the gate fails closed; the defaults only shape its dialogs.
+      return current.ok
+        ? { config: current.resolved.settings, error: undefined }
+        : { config: guardianDefaults, error: current.error };
+    },
+    reviewingChanged: () => publishFooter(),
+  });
 
   function publishFooter(): void {
     activeMenu?.refresh();
@@ -160,11 +111,7 @@ export default function guardian(pi: ExtensionAPI): void {
       footer.setStatus(
         "guardian",
         current.ok
-          ? guardianFooterText(
-              current.resolved.settings.enabled,
-              [...reviewing.values()],
-              footer.theme,
-            )
+          ? guardianFooterText(current.resolved.settings.enabled, gate.reviewing(), footer.theme)
           : footer.theme.fg("error", "guardian: settings error"),
       );
     } catch {
@@ -181,345 +128,11 @@ export default function guardian(pi: ExtensionAPI): void {
     }
   }
 
-  function append(entry: ReviewEntry): void {
-    try {
-      pi.appendEntry(reviewEntryType, entry);
-    } catch {
-      // The session ended while a review settled; nothing remains to record it in.
-    }
-  }
-
-  function policyFor(
-    ctx: ExtensionContext,
-    config: GuardianConfig,
-    toolName: string,
-    input: ToolInput,
-  ): ResolvedToolPolicy {
-    return resolveToolPolicy({
-      toolName,
-      input,
-      configured: config.tools,
-      safeCommands: config.safeCommands,
-      annotations: pi.getAllTools().find((tool) => tool.name === toolName)?.annotations,
-      paths: {
-        cwd: ctx.cwd,
-        piDirectories: [piSdk.getAgentDir(), ctx.sessionManager.getSessionDir()].filter(Boolean),
-      },
-    });
-  }
-
-  /** The issuing call of a nested call, from calls seen this run or the transcript. */
-  function issuingCall(parentToolCallId: string | undefined): IssuingCall | undefined {
-    if (parentToolCallId === undefined) return undefined;
-    const seen = calls.get(parentToolCallId);
-    if (seen) return { toolName: seen.toolName, input: seen.input };
-    for (const entry of session?.messages.toReversed() ?? []) {
-      if (entry.role !== "assistant") continue;
-      const block = entry.content.find(
-        (part) => part.type === "toolCall" && part.id === parentToolCallId,
-      );
-      if (block?.type === "toolCall") return { toolName: block.name, input: block.arguments };
-    }
-    return { toolName: "unknown", input: { toolCallId: parentToolCallId } };
-  }
-
-  /** Run one Guardian Review of `call` against the current evidence. */
-  async function review(
-    ctx: ExtensionContext,
-    config: GuardianConfig,
-    call: SeenCall,
-    signal: AbortSignal | undefined,
-  ): Promise<ReviewResult> {
-    const resolved = resolveGuardianModel(config.model, ctx.modelRegistry, ctx.model);
-    const unmeasured = { model: null, durationMs: 0, usage: null, cost: null };
-    if (!resolved.ok)
-      return { kind: "failed", failure: resolved.failure, ...unmeasured, model: resolved.model };
-    if (!session)
-      return {
-        kind: "failed",
-        failure: discoveryError ?? "Guardian session is unavailable",
-        ...unmeasured,
-      };
-    let systemPrompt = "";
-    try {
-      systemPrompt = ctx.getSystemPrompt();
-    } catch {
-      // Without the Guarded Agent's system prompt, project instructions are simply absent.
-    }
-    const evidence = selectEvidence({
-      sources: session.messages,
-      trustUserMessages: role.kind === "main",
-      projectInstructions: projectInstructions(systemPrompt),
-      overrides: recordedOverrides(ctx.sessionManager.getBranch()),
-      budgetTokens: evidenceBudget(config.evidenceBudgetTokens, resolved.model.contextWindow),
-    });
-    const reviewed = renderReviewedCall({
-      toolName: call.toolName,
-      input: call.input,
-      cwd: ctx.cwd,
-      agent:
-        role.kind === "main"
-          ? "the main Pi agent"
-          : role.kind === "child"
-            ? "a Minimal Subagents Child Agent (its task comes from another agent, not the user)"
-            : "an Advisor (its requests come from Pi, not the user)",
-      parent: issuingCall(call.parentToolCallId),
-    });
-    const key = Symbol(call.toolCallId);
-    reviewing.set(key, call.toolName);
-    publishFooter();
-    try {
-      return await runGuardianReview({
-        registry: ctx.modelRegistry,
-        model: resolved.model,
-        thinkingLevel: config.thinkingLevel,
-        context: {
-          systemPrompt: guardianSystemPrompt(config.policy),
-          messages: [
-            {
-              role: "user",
-              content: [...evidence.blocks, reviewed].map((text) => ({ type: "text", text })),
-              // A fixed timestamp keeps successive requests' prefixes byte-identical.
-              timestamp: 0,
-            },
-          ],
-        },
-        timeoutMs: config.reviewTimeoutMs,
-        signal,
-        sessionId: `pi-guardian:${ctx.sessionManager.getSessionId()}`,
-      });
-    } finally {
-      reviewing.delete(key);
-      publishFooter();
-    }
-  }
-
-  function auditEntry(call: SeenCall, result: ReviewResult, outcome: ReviewOutcome): ReviewEntry {
-    return {
-      version: 1,
-      toolName: call.toolName,
-      toolCallId: call.toolCallId,
-      parentToolCallId: call.parentToolCallId ?? null,
-      arguments: auditArguments(call.input),
-      risk: result.kind === "assessed" ? result.assessment.risk : null,
-      authorization: result.kind === "assessed" ? result.assessment.authorization : null,
-      outcome,
-      rationale: result.kind === "assessed" ? result.assessment.rationale : null,
-      failure: result.kind === "failed" ? result.failure : null,
-      userOverride: false,
-      blocked: outcome !== "allowed",
-      model: result.model,
-      durationMs: result.durationMs,
-      usage: result.usage,
-      cost: result.cost,
-    };
-  }
-
-  /** Ask an interactive user to allow a call once; anything but an explicit allow blocks. */
-  async function askOverride(ctx: ExtensionContext, title: string): Promise<boolean> {
-    if (!ctx.hasUI) return false;
-    try {
-      const options: ExtensionUIDialogOptions = {};
-      if (ctx.signal) options.signal = ctx.signal;
-      const choice = await ctx.ui.select(title, [choices.block, choices.allow], options);
-      return choice === choices.allow && !ctx.signal?.aborted;
-    } catch {
-      return false;
-    }
-  }
-
-  /** Hold an allowed call's entry until its result, to detect argument drift. */
-  function allow(call: SeenCall, entry: ReviewEntry): undefined {
-    streak = 0;
-    pendingAudits.set(call.toolCallId, { entry, approved: structuredClone(call.input) });
-    return undefined;
-  }
-
-  function blocked(
-    config: GuardianConfig,
-    entry: ReviewEntry,
-    reason: string,
-  ): ToolCallEventResult {
-    append(entry);
-    streak++;
-    const result: ToolCallEventResult = { block: true, reason };
-    if (config.maxConsecutiveRejections > 0 && streak >= config.maxConsecutiveRejections)
-      result.terminate = true;
-    return result;
-  }
-
-  /** Turn a review into the call's fate: allow, ask the user, or block. */
-  async function settle(
-    ctx: ExtensionContext,
-    config: GuardianConfig,
-    call: SeenCall,
-    result: ReviewResult,
-  ): Promise<ToolCallEventResult | undefined> {
-    if (result.kind === "aborted") {
-      append(auditEntry(call, result, "aborted"));
-      return { block: true, reason: "Guardian Review was aborted; the call did not run." };
-    }
-    if (result.kind === "assessed" && result.outcome === "allowed")
-      return allow(call, auditEntry(call, result, "allowed"));
-    if (result.kind === "assessed") {
-      const { risk, authorization, rationale } = result.assessment;
-      notify(ctx, `Guardian rejected ${call.toolName} (${risk} risk): ${rationale}`, "warning");
-      const entry = auditEntry(call, result, "rejected");
-      if (
-        config.onDeny === "ask" &&
-        (await askOverride(
-          ctx,
-          `Guardian rejected ${call.toolName} — risk ${risk}, authorization ${authorization}\n${rationale}\nArguments: ${entry.arguments}`,
-        ))
-      )
-        return allow(call, { ...entry, userOverride: true, blocked: false });
-      return blocked(config, entry, rejectionReason(result.assessment));
-    }
-    notify(ctx, `Guardian could not review ${call.toolName}: ${result.failure}`, "warning");
-    const entry = auditEntry(call, result, "failed");
-    if (
-      await askOverride(
-        ctx,
-        `Guardian could not review ${call.toolName}: ${result.failure}\nArguments: ${entry.arguments}`,
-      )
-    )
-      return allow(call, { ...entry, userOverride: true, blocked: false });
-    return blocked(
-      config,
-      entry,
-      `Guardian could not review this ${call.toolName} call, so it was blocked: ${result.failure}. Do not retry it or work around it; tell the user that Guardian could not review the action and ask how to proceed.\n\n${TROUBLESHOOTING_HINT}`,
-    );
-  }
-
-  /** Record an unconsumed prefetched review once it settles. */
-  function discard(call: SeenCall, prefetch: Prefetch): void {
-    if (prefetch.consumed) return;
-    prefetch.consumed = true;
-    prefetch.controller.abort();
-    void prefetch.result.then((result) => {
-      if (result.usage || result.durationMs > 0) append(auditEntry(call, result, "unused"));
-    });
-  }
-
-  pi.on("message_end", (event, ctx) => {
-    // Pi executes tool calls only from a completed tool-use response.
-    if (event.message.role !== "assistant" || event.message.stopReason !== "toolUse") return;
-    const { config, error } = enforced();
-    if (!config.enabled || error) return;
-    for (const block of event.message.content) {
-      if (block.type !== "toolCall" || prefetched.has(block.id)) continue;
-      const call: SeenCall = {
-        toolCallId: block.id,
-        toolName: block.name,
-        input: structuredClone(block.arguments),
-        parentToolCallId: undefined,
-      };
-      if (policyFor(ctx, config, call.toolName, call.input).policy !== "review") continue;
-      const controller = new AbortController();
-      const signal = ctx.signal
-        ? AbortSignal.any([ctx.signal, controller.signal])
-        : controller.signal;
-      prefetched.set(block.id, {
-        call,
-        input: call.input,
-        controller,
-        // Started now so parallel calls are reviewed concurrently; Pi runs preflight serially.
-        result: review(ctx, config, call, signal),
-        consumed: false,
-      });
-    }
-  });
-
-  pi.on("tool_call", async (event, ctx) => {
-    const call: SeenCall = {
-      toolCallId: event.toolCallId,
-      toolName: event.toolName,
-      input: event.input,
-      parentToolCallId: event.parentToolCallId,
-    };
-    calls.set(call.toolCallId, { ...call, input: structuredClone(call.input) });
-    const prefetch = prefetched.get(call.toolCallId);
-    const { config, error } = enforced();
-    if (!config.enabled && !error) {
-      if (prefetch) discard(call, prefetch);
-      return undefined;
-    }
-    const policy = policyFor(ctx, config, call.toolName, call.input);
-    if (policy.policy !== "review" && prefetch) discard(call, prefetch);
-    if (policy.policy === "allow") return undefined;
-    if (policy.policy === "deny")
-      return {
-        block: true,
-        reason: `The ${call.toolName} tool is denied by Guardian's Tool Policy; the call did not run. Do not work around it; ask the user if this action is needed.`,
-      };
-    if (error) {
-      const failure: ReviewResult = {
-        kind: "failed",
-        failure: `Guardian settings are unavailable: ${error}`,
-        model: null,
-        durationMs: 0,
-        usage: null,
-        cost: null,
-      };
-      return settle(ctx, config, call, failure);
-    }
-    let result: ReviewResult;
-    if (prefetch && !prefetch.consumed && isDeepStrictEqual(prefetch.input, call.input)) {
-      prefetch.consumed = true;
-      result = await prefetch.result;
-    } else {
-      if (prefetch) discard(call, prefetch);
-      result = await review(ctx, config, call, ctx.signal);
-    }
-    return settle(ctx, config, call, result);
-  });
-
-  pi.on("tool_result", (event, ctx) => {
-    const pending = pendingAudits.get(event.toolCallId);
-    if (!pending) return;
-    pendingAudits.delete(event.toolCallId);
-    if (!isDeepStrictEqual(pending.approved, event.input)) {
-      pending.entry.argumentDrift = true;
-      notify(
-        ctx,
-        `Guardian: ${pending.entry.toolName} ran with arguments that changed after its review. An extension loaded after Guardian modified them; load Guardian last.`,
-        "warning",
-      );
-    }
-    append(pending.entry);
-  });
-
-  /** Record reviews started ahead of calls that never consumed them. */
-  function discardPrefetches(): void {
-    for (const prefetch of prefetched.values()) discard(prefetch.call, prefetch);
-    prefetched.clear();
-  }
-
-  /** Record held and unconsumed reviews when their calls can no longer report. */
-  function flush(): void {
-    discardPrefetches();
-    for (const { entry } of pendingAudits.values()) append(entry);
-    pendingAudits.clear();
-  }
-
-  pi.on("turn_end", discardPrefetches);
-  pi.on("agent_end", () => {
-    flush();
-    calls.clear();
-  });
-  pi.on("before_agent_start", () => {
-    streak = 0;
-  });
-
   pi.on("session_start", (_event, ctx) => {
     activeMenu?.close();
     generation++;
     // The previous session's reviews were recorded at its shutdown; drop what remains.
-    for (const prefetch of prefetched.values()) prefetch.controller.abort();
-    prefetched.clear();
-    pendingAudits.clear();
-    calls.clear();
-    streak = 0;
+    gate.reset();
     unpublish?.();
     unpublish = undefined;
     role = guardedSessionRole(ctx.sessionManager.getBranch());
@@ -556,7 +169,7 @@ export default function guardian(pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => {
     activeMenu?.close();
     generation++;
-    flush();
+    gate.flush();
     unpublish?.();
     unpublish = undefined;
     session = undefined;

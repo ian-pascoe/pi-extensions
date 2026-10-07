@@ -21,6 +21,7 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  type CreateAgentSessionOptions,
   type ExtensionAPI,
   type ExtensionFactory,
   type ExtensionUIContext,
@@ -53,9 +54,19 @@ export interface HarnessOptions {
   /** Mode bound with `ui`; the settings menu needs `tui`. */
   mode?: "tui" | "rpc";
   manager?: SessionManager;
+  /** Extensions loaded before Guardian. */
+  before?: ExtensionFactory[];
   /** Extensions loaded after Guardian. */
   after?: ExtensionFactory[];
   systemPrompt?: string;
+  /** Leave Guardian out, to compare the Guarded Agent's requests with and without it. */
+  withoutGuardian?: boolean;
+  /** Activate Pi's built-in tools (`read`, `bash`, `edit`, `write`) on the temporary workspace. */
+  builtinTools?: boolean;
+  /** Context files as Pi's resource loader would provide them. */
+  contextFiles?: (dir: string) => { path: string; content: string }[];
+  /** Trust the temporary project. */
+  projectTrusted?: boolean;
 }
 
 const offlineCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -72,7 +83,10 @@ const agentModel: Model<"openai-completions"> = {
   maxTokens: 2_048,
 };
 
-/** Test tools: `deploy` has no annotations (reviewed), `lookup` is read-only, `script` nests calls. */
+/**
+ * Test tools: `deploy` has no annotations (reviewed), `lookup` is read-only, `script` nests calls
+ * one at a time, and `batch` nests them concurrently.
+ */
 function testTools(executed: string[]): ExtensionFactory {
   return (pi: ExtensionAPI) => {
     pi.registerTool({
@@ -110,6 +124,20 @@ function testTools(executed: string[]): ExtensionFactory {
         return { content: [{ type: "text", text }], details: {} };
       },
     });
+    pi.registerTool({
+      name: "batch",
+      label: "Batch",
+      description: "Deploy targets through concurrent nested tool calls.",
+      parameters: Type.Object({ targets: Type.Array(Type.String()) }),
+      annotations: { readOnlyHint: true },
+      execute: async (_id, args, _signal, _onUpdate, ctx) => {
+        const results = await Promise.all(
+          args.targets.map((target) => ctx.executeTool("deploy", { target })),
+        );
+        const text = results.map((result) => (result.isError ? "blocked" : "ran")).join(",");
+        return { content: [{ type: "text", text }], details: {} };
+      },
+    });
   };
 }
 
@@ -118,10 +146,10 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
   const dir = await mkdtemp(join(tmpdir(), "pi-guardian-test-"));
   onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const manager = options.manager ?? SessionManager.create(dir, join(dir, "sessions"));
-  const settings = SettingsManager.inMemory({
-    retry: { enabled: false },
-    compaction: { enabled: false },
-  });
+  const settings = SettingsManager.inMemory(
+    { retry: { enabled: false }, compaction: { enabled: false } },
+    { projectTrusted: options.projectTrusted ?? true },
+  );
   if (options.guardianSettings)
     Object.defineProperty(settings, "getGlobalSettings", {
       value: () => ({ guardian: options.guardianSettings }),
@@ -138,7 +166,10 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
+    agentsFilesOverride: (loaded) =>
+      options.contextFiles ? { agentsFiles: options.contextFiles(dir) } : loaded,
     extensionFactories: [
+      ...(options.before ?? []),
       testTools(executed),
       (pi) =>
         pi.registerProvider("guardian-test", {
@@ -207,7 +238,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
             return stream;
           },
         }),
-      guardian,
+      ...(options.withoutGuardian ? [] : [guardian]),
       ...(options.after ?? []),
     ],
     systemPromptOverride: () =>
@@ -220,7 +251,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     modelsPath: join(dir, "models.json"),
     allowModelNetwork: false,
   });
-  const { session } = await createAgentSession({
+  const sessionOptions: CreateAgentSessionOptions = {
     cwd: dir,
     agentDir: dir,
     sessionManager: manager,
@@ -228,15 +259,20 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     resourceLoader: loader,
     modelRuntime,
     model: agentModel,
-    noTools: "builtin",
-  });
+  };
+  if (!options.builtinTools) sessionOptions.noTools = "builtin";
+  const { session } = await createAgentSession(sessionOptions);
   onTestFinished(() => {
     session.dispose();
   });
   const responses: AssistantMessage[] = [];
   const agentRequests: Context["messages"][] = [];
+  /** The Guarded Agent's whole serialized requests: system prompt, ordered tools, and messages. */
+  const agentContexts: string[] = [];
   session.agent.streamFunction = (currentModel, context) => {
     agentRequests.push(structuredClone(withoutInitialSystemMessage(context.messages)));
+    // The transcript's system messages carry the system prompt and ordered tool declarations.
+    agentContexts.push(JSON.stringify(context.messages));
     const next = responses.shift() ?? reply("Done.");
     const message = {
       ...next,
@@ -268,7 +304,18 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
       .flatMap((entry) =>
         entry.type === "custom" && entry.customType === customType ? [entry.data] : [],
       );
-  return { dir, manager, session, reviews, verdicts, responses, executed, agentRequests, entries };
+  return {
+    dir,
+    manager,
+    session,
+    reviews,
+    verdicts,
+    responses,
+    executed,
+    agentRequests,
+    agentContexts,
+    entries,
+  };
 }
 
 export function reply(text: string): AssistantMessage {

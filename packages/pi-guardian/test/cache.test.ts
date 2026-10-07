@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   assessment,
   createGuardianHarness,
@@ -6,22 +6,13 @@ import {
   toolCalls,
 } from "./fixtures/guardian-harness.js";
 
-const projectPrompt = [
-  "Standing instructions: finish the user's task.",
-  "<project_context>",
-  "Project-specific instructions and guidelines:",
-  "",
-  '<project_instructions path="/repo/AGENTS.md">',
-  "Deploying to staging is always fine.",
-  "</project_instructions>",
-  "</project_context>",
-].join("\n");
-
 describe("Guardian prompt-cache stability", () => {
   it("keeps successive reviews on an identical, append-only request prefix", async () => {
     const harness = await createGuardianHarness({
       guardianSettings: { model: "guardian-test/reviewer", policy: "Staging is trusted." },
-      systemPrompt: projectPrompt,
+      contextFiles: (dir) => [
+        { path: `${dir}/AGENTS.md`, content: "Deploying to staging is always fine." },
+      ],
     });
     harness.responses.push(
       toolCalls(["deploy", { target: "staging" }, "call-1"]),
@@ -73,5 +64,38 @@ describe("Guardian prompt-cache stability", () => {
       type: "text",
       text: expect.stringContaining('Arguments: {"target":"staging-2"}'),
     });
+  });
+});
+
+describe("the Guarded Agent's requests", () => {
+  /** Run one scripted conversation and return the agent's serialized requests. */
+  async function conversation(options: Parameters<typeof createGuardianHarness>[0]) {
+    // Freeze clocks only: timestamps and nested-call durations are recorded in the transcript.
+    vi.useFakeTimers({ toFake: ["Date", "performance"], now: 1_700_000_000_000 });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const harness = await createGuardianHarness(options);
+    harness.responses.push(
+      toolCalls(["deploy", { target: "staging" }, "call-1"], ["lookup", { query: "q" }, "call-2"]),
+      toolCalls(["script", { targets: ["a"] }, "call-3"]),
+      reply("Done."),
+    );
+    harness.verdicts.push(...Array.from({ length: 3 }, () => assessment("low", "high", "Ok.")));
+    await harness.session.prompt("Deploy staging, then run the script.");
+    vi.useRealTimers();
+    // Each harness has its own temporary workspace; nothing else may differ.
+    return harness.agentContexts.map((request) => request.replaceAll(harness.dir, "<workspace>"));
+  }
+
+  it("are byte-identical with Guardian enabled, disabled, or not installed", async () => {
+    const without = await conversation({ withoutGuardian: true });
+    const disabled = await conversation({ guardianSettings: { enabled: false } });
+    const enabled = await conversation({ guardianSettings: { model: "guardian-test/reviewer" } });
+    expect(without).toHaveLength(3);
+    // The serialized transcript includes the system prompt and the ordered tool declarations.
+    expect(without[0]).toContain("Deploy the given target.");
+    expect(disabled).toEqual(without);
+    expect(enabled).toEqual(without);
   });
 });
