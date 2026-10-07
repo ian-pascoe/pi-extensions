@@ -29,14 +29,20 @@ async function childManager(rootSessionId: string, agentId = "worker", parentAge
   return manager;
 }
 
-/** A stand-in for Minimal Subagents' `subagent` tool, so a session can delegate. */
+/**
+ * A stand-in for Minimal Subagents' `subagent` tool in the Child Agent `worker`, so it can
+ * delegate: like the real tool, its result details name the spawned agent's canonical ID.
+ */
 const delegatingTool: ExtensionFactory = (pi) => {
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
     description: "Delegate a task.",
-    parameters: Type.Object({ task: Type.String() }),
-    execute: async () => ({ content: [{ type: "text", text: "spawned" }], details: {} }),
+    parameters: Type.Object({ task: Type.String(), agent_id: Type.String() }),
+    execute: async (_id, args) => ({
+      content: [{ type: "text", text: "spawned" }],
+      details: { agent_id: `worker.${args.agent_id}` },
+    }),
   });
 };
 
@@ -226,18 +232,34 @@ describe("Child Agents and Advisors", () => {
       before: [delegatingTool],
     });
     child.responses.push(
-      toolCalls(["subagent", { task: "Deploy staging." }, "call-delegate"]),
+      toolCalls(["subagent", { task: "Deploy staging.", agent_id: "deployer" }, "call-delegate"]),
       reply("Delegated."),
     );
     child.guardianReplies.push(assessment("low", "high", "The root user asked for it."));
     await child.session.prompt("Deploy staging, delegating the work.");
     expect(child.entries("pi-guardian-review")).toMatchObject([
-      { toolName: "subagent", result: "allowed", delegationSha256: expect.any(String) },
+      {
+        toolName: "subagent",
+        result: "allowed",
+        delegationSha256: expect.any(String),
+        delegationRecipient: "worker.deployer",
+      },
     ]);
-    const reviewTask = async (agentId: string, parentAgentId: string) => {
-      const grandchild = await createGuardianHarness({
-        manager: await childManager(rootId, agentId, parentAgentId),
-      });
+    const reviewTask = async (
+      agentId: string,
+      parentAgentId: string,
+      /** A Coordination Message from the parent carrying the same text, before the prompt. */
+      coordination = false,
+    ) => {
+      const manager = await childManager(rootId, agentId, parentAgentId);
+      if (coordination)
+        manager.appendCustomMessageEntry(
+          "minimal-subagents.message",
+          `[Subagent message | agent=${parentAgentId} | turn=t1]\nDeploy staging.`,
+          true,
+          { source_agent_id: parentAgentId },
+        );
+      const grandchild = await createGuardianHarness({ manager });
       grandchild.responses.push(
         toolCalls(["deploy", { target: "staging" }, "call-1"]),
         reply("Ok."),
@@ -254,6 +276,56 @@ describe("Child Agents and Advisors", () => {
     ]);
     // A Child Agent of another parent does not, even with the same text.
     expect((await reviewTask("other", "root"))[1]).toBe("Evidence (UNTRUSTED, origin: user):");
+    // Nor does a sibling the task was not handed to, as with a replay through a spawn or an
+    // `agent_message` an `allow` Tool Policy let through unreviewed.
+    expect((await reviewTask("worker.other", "worker"))[1]).toBe(
+      "Evidence (UNTRUSTED, origin: user):",
+    );
+    expect(await reviewTask("worker.other", "worker", true)).toEqual([
+      "Evidence (TRUSTED, origin: rootUser):",
+      "Evidence (UNTRUSTED, origin: agentMessage):",
+      "Evidence (UNTRUSTED, origin: user):",
+      expect.stringMatching(/^Reviewed Call/),
+    ]);
+    // The task approved for a spawn is not a Coordination Message, even to the same agent.
+    expect((await reviewTask("worker.deployer", "worker", true))[1]).toBe(
+      "Evidence (UNTRUSTED, origin: agentMessage):",
+    );
+  });
+
+  it("end the Rejection Streak on a Coordination Message from the direct parent", async () => {
+    const child = await createGuardianHarness({
+      guardianSettings: { model: "guardian-test/reviewer", maxConsecutiveRejections: 1 },
+      manager: await childManager("absent-root", "worker", "root"),
+    });
+    const message = (source: string, text: string) =>
+      child.session.sendCustomMessage(
+        {
+          customType: "minimal-subagents.message",
+          content: `[Subagent message | agent=${source} | turn=t1]\n${text}`,
+          display: true,
+          details: { source_agent_id: source },
+        },
+        { triggerTurn: true },
+      );
+    child.responses.push(
+      toolCalls(["deploy", { target: "a" }, "call-1"]),
+      toolCalls(["deploy", { target: "c" }, "call-2"]),
+      toolCalls(["deploy", { target: "b" }, "call-3"]),
+      reply("Ok."),
+    );
+    child.guardianReplies.push(
+      ...confirmedRejection("critical", "unknown", "Not requested."),
+      assessment("low", "high", "The parent asked."),
+    );
+    await child.session.prompt("Deploy a.");
+    // A sibling's message does not end the streak: the call is blocked without review.
+    await message("other", "Deploy c.");
+    expect(child.reviews).toHaveLength(2);
+    // The parent's message starts a new request.
+    await message("root", "Deploy b.");
+    expect(child.reviews).toHaveLength(3);
+    expect(child.executed).toEqual(["deploy:b"]);
   });
 
   it("fall back to their own settings when the root does not run Guardian in-process", async () => {

@@ -324,6 +324,32 @@ describe("Tool Policy resolution", () => {
     ).toMatch(/^not a Safe Command; the user denies commands starting with "rm"/);
   });
 
+  it("applies deny Command Rules to terminal_start and powershell, and names them to the Guardian", () => {
+    const commands = { rm: "deny", "git push": "review" } as const;
+    for (const toolName of ["terminal_start", "powershell"])
+      for (const configured of [{}, { [toolName]: "allow" as const }])
+        expect(
+          resolveToolPolicy(
+            call({ toolName, input: { command: "cd x && rm -rf y" }, commands, configured }),
+          ),
+        ).toEqual({
+          policy: "deny",
+          source: "command",
+          detail: `the user's Command Rule "rm" denies this command`,
+        });
+    const named = `the user denies commands starting with "rm" (Command Rules); the user requires review of commands starting with "git push"`;
+    for (const toolName of ["terminal_start", "terminal_send", "powershell"])
+      expect(
+        resolveToolPolicy(call({ toolName, input: { command: "python", text: "rm x" }, commands })),
+      ).toEqual({ policy: "review", source: "default", detail: named });
+    // terminal_send types text rather than running a command line: reviewed, never denied.
+    expect(
+      resolveToolPolicy(
+        call({ toolName: "terminal_send", input: { text: "rm -rf x\n" }, commands }),
+      ).policy,
+    ).toBe("review");
+  });
+
   it("reviews terminal tools even when annotated read-only", () => {
     expect(
       resolveToolPolicy(call({ toolName: "terminal_send", annotations: { readOnlyHint: true } })),

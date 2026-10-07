@@ -219,8 +219,6 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
   const options: ModelsSimpleStreamOptions = { signal, sessionId: input.sessionId };
   if (level !== "off") options.reasoning = level;
   let context = input.context;
-  /** A first reply rated high or critical without a valid Risk Category, asked about once. */
-  let uncategorizedFirst: Assessment | undefined;
   const assessed = (assessment: Assessment): ReviewResult => ({
     kind: "assessed",
     assessment,
@@ -263,19 +261,17 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
       try {
         const assessment = parseAssessment(replyText(reply), input.categories);
         // Ask once for a missing or unknown Risk Category; only a retry that still lacks one is
-        // decided as `medium`.
+        // decided as `medium`. A malformed retry is a failure, never the first reply decided as
+        // `medium`: that would turn a `critical` into an allow.
         if (!uncategorized(assessment) || replies.length > 1) return assessed(assessment);
-        uncategorizedFirst = assessment;
         corrective = categoryCorrectiveMessage(input.categories);
       } catch (cause) {
-        if (replies.length > 1) {
-          if (uncategorizedFirst) return assessed(uncategorizedFirst);
+        if (replies.length > 1)
           return {
             kind: "failed",
             failure: `${errorMessage(cause)}, even after a corrective retry`,
             ...measured(),
           };
-        }
       }
       context = {
         ...input.context,

@@ -40,8 +40,10 @@ import {
   typedUserMessages,
   userMessageKey,
   userText,
+  isCoordinationFrom,
   type ApprovedDelegation,
   type BatchCall,
+  type Delegator,
   type CallUnderReview,
   type IssuingCall,
   type RootUserMessage,
@@ -83,7 +85,7 @@ export interface ReviewGateHost {
   /** The root user's typed messages, for a Child Agent's or Advisor's evidence. */
   rootUserMessages(): RootUserMessage[];
   /** A Child Agent's delegating agent and the delegations its Guardian or user allowed. */
-  delegator(): { agentId: string; approved: ApprovedDelegation[] } | undefined;
+  delegator(): Delegator | undefined;
   /** Settings to enforce, or the error that makes every non-read-only call fail closed. */
   settings(): { config: GuardianConfig; error: string | undefined };
   /** The set of tools under review changed. */
@@ -161,6 +163,9 @@ function extensionMessages(branch: readonly SessionEntry[]): Set<string> {
     ),
   );
 }
+
+/** Minimal Subagents' `subagent` and `agent_message` result details name the agent reached. */
+const delegationResultSchema = Type.Object({ agent_id: Type.String({ minLength: 1 }) });
 
 /** Whether a user message's text is exactly what an extension sent, plus Pi's image hints. */
 function sentBy(input: ExtensionInput, text: string): boolean {
@@ -692,6 +697,21 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       pi.appendEntry(extensionMessageEntryType, { version: 1, key: userMessageKey(message) });
       return;
     }
+    if (message.role === "custom") {
+      // In a Child Agent, a Coordination Message from its direct parent starts a new request,
+      // as a typed message does in a main session, often without `before_agent_start`: the
+      // Rejection Streak ends. Any such message counts, approved or not, like any typed message.
+      const role = host.role();
+      if (
+        role.kind === "child" &&
+        role.parentAgentId !== undefined &&
+        isCoordinationFrom(message, role.parentAgentId)
+      ) {
+        streak = 0;
+        ending = false;
+      }
+      return;
+    }
     // Pi executes tool calls only from a completed tool-use response.
     if (message.role !== "assistant" || message.stopReason !== "toolUse") return;
     prefetch(
@@ -761,6 +781,14 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       pendingAudits.delete(event.toolCallId);
       if (!ending) streak = 0;
       pending.entry.executed = true;
+      // The agent a delegating call reached, from its result: approval is bound to it.
+      const { details } = event;
+      if (
+        pending.entry.delegationSha256 !== undefined &&
+        !event.isError &&
+        Value.Check(delegationResultSchema, details)
+      )
+        pending.entry.delegationRecipient = details.agent_id;
       if (!isDeepStrictEqual(pending.reviewedInput, event.input)) {
         pending.entry.argumentDrift = true;
         notify(

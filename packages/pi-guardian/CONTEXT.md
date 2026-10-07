@@ -45,7 +45,7 @@ The Guardian's judgment of a Reviewed Call's potential for harm: `low`, `medium`
 _Avoid_: Danger score
 
 **Risk Category**:
-The concrete reason a Reviewed Call is `high` or `critical` risk, from a closed list: `data_egress`, `credential_access`, `destruction`, `persistence`, `sensitive_path`, `safety_weakening`, `remote_code`, `unreviewed_execution`, and, when the user configured a Security Policy or a `deny` Command Rule, `security_policy`. A `high` or `critical` Risk Level without one is asked about once more, then decided as `medium`.
+The concrete reason a Reviewed Call is `high` or `critical` risk, from a closed list: `data_egress`, `credential_access`, `destruction`, `persistence`, `sensitive_path`, `safety_weakening`, `remote_code`, `unreviewed_execution`, and, when the user configured a Security Policy or a `deny` Command Rule, `security_policy`. A `high` or `critical` Risk Level without one is asked about once more, then decided as `medium`; a malformed answer to that question is a Review Failure.
 _Avoid_: Reason code
 
 **User Authorization**:
@@ -61,7 +61,7 @@ Evidence that can establish User Authorization: messages the user typed, context
 _Avoid_: Transcript
 
 **Approved Delegation**:
-A Child Agent's task or Coordination Message from its direct parent that the parent's Guardian reviewed and allowed with at least `medium` User Authorization (and a Risk Category for any `high` or `critical` risk), or the parent's user allowed once. It is Trusted Evidence in the Child Agent, written by the delegating agent and bounded by what that Guardian judged the user to have requested. A delegation an `allow` Tool Policy let through unreviewed is not approved.
+A Child Agent's task or Coordination Message from its direct parent that the parent's Guardian reviewed and allowed with at least `medium` User Authorization (and a Risk Category for any `high` or `critical` risk), or the parent's user allowed once. It is Trusted Evidence only in the Child Agent it reached and only as the task or Coordination Message it was approved as, written by the delegating agent and bounded by what that Guardian judged the user to have requested. A delegation an `allow` Tool Policy let through unreviewed is not approved.
 _Avoid_: Trusted task, delegated authority
 
 **Decision Table**:
@@ -81,7 +81,7 @@ A user's interactive decision to run a call that a Rejection or Review Failure w
 _Avoid_: Bypass
 
 **Rejection Streak**:
-Consecutive blocked Reviewed Calls within one request: Rejections and blocked Review Failures. When it reaches its limit, Guardian ends the agent's turn and returns control to the user, blocking every further call until the user's next prompt, steering, or follow-up message; before that, any allowed Reviewed Call that runs ends the streak, and so does any message the user types.
+Consecutive blocked Reviewed Calls within one request: Rejections and blocked Review Failures. When it reaches its limit, Guardian ends the agent's turn and returns control to the user, blocking every further call until the user's next prompt, steering, or follow-up message; before that, any allowed Reviewed Call that runs ends the streak, and so does any message the user types. In a Child Agent, a Coordination Message from its direct parent counts as such a message.
 _Avoid_: Circuit breaker
 
 **Review Failure**:

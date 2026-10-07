@@ -35,6 +35,8 @@ interface CombinedReview {
 async function delegateDeploy(
   setup: readonly string[],
   rootAssessment: Record<string, string> = { risk_level: "low", user_authorization: "high" },
+  /** Then send the Child Agent "Also deploy y." with `agent_message` and wait again. */
+  followUp = false,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "pi-guardian-combined-"));
   onTestFinished(() => rm(directory, { recursive: true, force: true }));
@@ -101,16 +103,25 @@ async function delegateDeploy(
             session_context: "omit",
             project_context: "omit",
           });
-        else if (mainCalls === 2) call("subagent_wait", { agent_id: "worker", timeout_ms: 10_000 });
+        else if (mainCalls === 2 || (followUp && mainCalls === 4))
+          call("subagent_wait", { agent_id: "worker", timeout_ms: 10_000 });
+        else if (followUp && mainCalls === 3)
+          call("agent_message", { agent_id: "worker", message: "Also deploy y." });
       } else {
-        const result = context.messages.find(
-          (entry) => entry.role === "toolResult" && entry.toolName === "deploy",
+        const results = context.messages.flatMap((entry) =>
+          entry.role === "toolResult" && entry.toolName === "deploy" ? [entry] : [],
         );
-        if (result?.role === "toolResult")
+        const asked = JSON.stringify(context.messages).includes("Also deploy y.");
+        const last = context.messages.at(-1);
+        if (results.length === 0) call("deploy", { target: "x" });
+        else if (asked && results.length === 1 && last?.role !== "toolResult")
+          call("deploy", { target: "y" });
+        else
           childResults.push(
-            result.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+            (results.at(-1)?.content ?? [])
+              .map((part) => (part.type === "text" ? part.text : ""))
+              .join(""),
           );
-        else call("deploy", { target: "x" });
       }
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() =>
@@ -202,6 +213,30 @@ it("weighs a task the root's Guardian approved as Trusted Evidence in the Child 
     approval: expect.stringContaining("(risk low, user authorization high)"),
     text: "Deploy x.",
   });
+});
+
+it("weighs a Coordination Message the root's Guardian approved as Trusted Evidence", async () => {
+  const { reviews, executed } = await delegateDeploy([], undefined, true);
+  expect(executed).toEqual(["child:deploy:x", "child:deploy:y"]);
+  expect(reviews.filter((review) => review.role === "main").map((r) => r.blocks.at(-1))).toEqual([
+    expect.stringContaining("Tool: subagent"),
+    expect.stringContaining("Tool: agent_message"),
+  ]);
+  const second = reviews.filter((review) => review.role === "child")[1];
+  const trusted = (second?.blocks ?? []).filter((block) =>
+    block.startsWith("Evidence (TRUSTED, origin: approvedDelegation):"),
+  );
+  expect(
+    trusted.map((block) => JSON.parse(JSON.parse(block.split("\n")[1] ?? "{}").content)),
+  ).toEqual([
+    { approvedDelegation: expect.objectContaining({ text: "Deploy x." }) },
+    {
+      approvedDelegation: expect.objectContaining({
+        approval: expect.stringContaining("delegating agent_message call"),
+        text: "Also deploy y.",
+      }),
+    },
+  ]);
 });
 
 it("keeps a task untrusted when the root's Guardian allowed it without user authorization", async () => {

@@ -31,8 +31,6 @@ const coordinationMessageType = "minimal-subagents.message";
 const coordinationDetailsSchema = Type.Object({ source_agent_id: Type.String() });
 /** Minimal Subagents' envelope line before a Coordination Message's text. */
 const coordinationEnvelope = /^\[Subagent message \| agent=[^|\]\n]+ \| turn=[^|\]\n]+\]\n/;
-/** Minimal Subagents' framing before a task that follows quoted parent conversation. */
-const inheritedTaskMarker = "Your assigned task is:\n\n";
 
 /**
  * The messages on a session branch, in order, read from its entries rather than the model
@@ -80,7 +78,10 @@ export function textSha256(text: string): string {
 export interface ApprovedDelegation {
   /** SHA-256 of the delegated text: a `subagent` task or an `agent_message` message. */
   sha256: string;
+  /** `subagent` for a task, `agent_message` for a Coordination Message. */
   tool: string;
+  /** The canonical agent ID the delegating call reached, from its result. */
+  recipient: string;
   /** `guardian` when a Guardian Review allowed it, `user` for a User Override. */
   approvedBy: "guardian" | "user";
   risk: string | null;
@@ -129,7 +130,7 @@ export interface EvidenceInput {
    * In a Child Agent: the delegating agent (its direct parent) and the delegations that agent's
    * Guardian or user allowed, which make the matching task or message Trusted Evidence.
    */
-  delegator?: { agentId: string; approved: readonly ApprovedDelegation[] } | undefined;
+  delegator?: Delegator | undefined;
   /**
    * Tool call IDs of the Reviewed Call's own response, whose calls the Reviewed Call shows; that
    * response is left out of the evidence.
@@ -201,13 +202,65 @@ function untrusted(item: EvidenceItem, origin: string, limit: number): Entry {
   };
 }
 
-/** The approved delegation a delegated text matches, if any. */
+/** Whether a custom message is a Minimal Subagents Coordination Message from `agentId`. */
+export function isCoordinationFrom(
+  message: Pick<SourceMessage & { role: "custom" }, "customType" | "details">,
+  agentId: string,
+): boolean {
+  return (
+    message.customType === coordinationMessageType &&
+    Value.Check(coordinationDetailsSchema, message.details) &&
+    message.details.source_agent_id === agentId
+  );
+}
+
+/** A Child Agent's delegating agent, its own agent ID, and what the delegating agent approved. */
+export interface Delegator {
+  /** The direct parent's canonical agent ID. */
+  agentId: string;
+  /** This Child Agent's canonical agent ID; without it, nothing is approved for it. */
+  selfId: string | undefined;
+  approved: readonly ApprovedDelegation[];
+}
+
+/** A canonical agent ID without Minimal Subagents' legacy `root.` prefix. */
+function unprefixed(agentId: string): string {
+  return agentId.startsWith("root.") ? agentId.slice("root.".length) : agentId;
+}
+
+/**
+ * The approved delegation a delegated text matches, if any: the same text, handed to this Child
+ * Agent, by the tool that delivers it as `tool` (`subagent` for its task, `agent_message` for a
+ * Coordination Message). A text approved for another agent or another use is not.
+ */
 function approvedDelegation(
   text: string,
-  approved: readonly ApprovedDelegation[],
+  tool: "subagent" | "agent_message",
+  delegator: Delegator,
 ): ApprovedDelegation | undefined {
+  const { selfId } = delegator;
+  if (selfId === undefined) return undefined;
   const hash = sha256(text);
-  return approved.find((delegation) => delegation.sha256 === hash);
+  return delegator.approved.find(
+    (delegation) =>
+      delegation.sha256 === hash &&
+      delegation.tool === tool &&
+      unprefixed(delegation.recipient) === unprefixed(selfId),
+  );
+}
+
+/**
+ * Minimal Subagents' framing of a task after inherited parent conversation, up to the task
+ * (`buildInheritedContextTaskPrompt` in `minimal-subagents-context.ts`).
+ */
+function inheritedTaskFraming(agentId: string, parentId: string): string {
+  return [
+    `The parent_message entries above, and any summary of earlier ones, come from the conversation of your parent \`${parentId}\`. They are background context only.`,
+    `Requests and tool calls in them belong to your parent, not to you: do not continue or repeat your parent's work.`,
+    `You are \`${agentId}\`. Your assigned task is:`,
+    "",
+    "",
+  ].join("\n");
 }
 
 /** A delegated task or message as Trusted Evidence, labeled with who wrote and approved it. */
@@ -339,18 +392,21 @@ function messageEntries(input: EvidenceInput, message: SourceMessage, limit: num
 
 /**
  * A Child Agent's task as Trusted Evidence when it matches a delegation its parent approved:
- * the whole message, or the task after Minimal Subagents' framing of inherited conversation,
- * which is left out.
+ * the whole message, or the task after Minimal Subagents' exact framing of inherited
+ * conversation, which is left out.
  */
 function delegatedTask(input: EvidenceInput, message: SourceMessage & { role: "user" }): Entry[] {
   const { delegator } = input;
   if (!delegator) return [];
   const text = userText(message.content);
-  const marker = text.indexOf(inheritedTaskMarker);
   const candidates = [text];
-  if (marker >= 0) candidates.push(text.slice(marker + inheritedTaskMarker.length));
+  const framing =
+    delegator.selfId === undefined
+      ? undefined
+      : inheritedTaskFraming(delegator.selfId, delegator.agentId);
+  if (framing && text.startsWith(framing)) candidates.push(text.slice(framing.length));
   for (const candidate of candidates) {
-    const delegation = approvedDelegation(candidate, delegator.approved);
+    const delegation = approvedDelegation(candidate, "subagent", delegator);
     if (delegation)
       return [delegationEntry(candidate, delegator.agentId, delegation, message.timestamp)];
   }
@@ -367,15 +423,10 @@ function coordinationEntries(
   limit: number,
 ): Entry[] {
   const { delegator } = input;
-  if (!delegator || message.customType !== coordinationMessageType) return [];
-  if (
-    !Value.Check(coordinationDetailsSchema, message.details) ||
-    message.details.source_agent_id !== delegator.agentId
-  )
-    return [];
+  if (!delegator || !isCoordinationFrom(message, delegator.agentId)) return [];
   const content = userText(message.content);
   const text = content.replace(coordinationEnvelope, "");
-  const delegation = approvedDelegation(text, delegator.approved);
+  const delegation = approvedDelegation(text, "agent_message", delegator);
   if (delegation) return [delegationEntry(text, delegator.agentId, delegation, message.timestamp)];
   return [{ ...untrusted(userItem(text), "agentMessage", limit), timestamp: message.timestamp }];
 }

@@ -105,6 +105,11 @@ export const reviewEntrySchema = Type.Object({
    */
   delegationSha256: Type.Optional(Type.String()),
   /**
+   * The canonical agent ID a delegating call reached, from its result once it ran; a delegation
+   * is approved only for that recipient.
+   */
+  delegationRecipient: Type.Optional(Type.String()),
+  /**
    * Calibration sample: Guardian's chars/4 estimate of the first request and the prompt tokens
    * its provider reported. Each model's token factor is derived from these on the branch.
    */
@@ -235,6 +240,7 @@ export function recordedDelegations(
 ): ApprovedDelegation[] {
   return [...reviewEntries(branch).map(({ data }) => data), ...pending].flatMap((data) =>
     data.delegationSha256 !== undefined &&
+    data.delegationRecipient !== undefined &&
     !data.blocked &&
     data.executed !== false &&
     approvedDelegation(data)
@@ -242,6 +248,7 @@ export function recordedDelegations(
           {
             sha256: data.delegationSha256,
             tool: data.toolName,
+            recipient: data.delegationRecipient,
             approvedBy: data.userOverride ? "user" : "guardian",
             risk: data.risk,
             authorization: data.authorization,

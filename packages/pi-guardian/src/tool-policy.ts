@@ -75,7 +75,13 @@ export function onlyReads(toolName: string, input: CustomToolCallEvent["input"])
 function builtInDefault(call: ToolPolicyInput): ResolvedToolPolicy | undefined {
   const { toolName, input } = call;
   if (allowedByDefault.includes(toolName)) return { policy: "allow", source: "default" };
-  if (reviewedByDefault.includes(toolName)) return { policy: "review", source: "default" };
+  if (reviewedByDefault.includes(toolName)) {
+    // These run or drive shell commands, so the Guardian is told which ones the user restricts.
+    const rules = commandRulesNote(call.commands);
+    return rules
+      ? { policy: "review", source: "default", detail: rules }
+      : { policy: "review", source: "default" };
+  }
   if (isFileWrite(toolName)) {
     const path = input["path"];
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; a non-string path cannot be judged and is reviewed.
@@ -104,36 +110,47 @@ function builtInDefault(call: ToolPolicyInput): ResolvedToolPolicy | undefined {
 }
 
 /**
- * A reviewed `bash` call's reason, naming the user's `deny` and `review` Command Rules: they
- * match only segments whose leading words are literal, so the Guardian judges commands that
- * reach the same effect another way, such as through a wrapper or a path.
+ * The user's `deny` and `review` Command Rules, as a reviewed shell call's reason names them:
+ * they match only segments whose leading words are literal, so the Guardian judges commands
+ * that reach the same effect another way, such as through a wrapper, a path, or a terminal.
  */
-function withCommandRules(reason: string, rules: Readonly<PolicyEntries>): string {
+function commandRulesNote(rules: Readonly<PolicyEntries>): string | undefined {
   const named = (policy: ToolPolicy) =>
     Object.entries(rules).flatMap(([prefix, value]) =>
       value === policy ? [JSON.stringify(prefix)] : [],
     );
   const denied = named("deny");
   const reviewed = named("review");
-  const parts = [reason];
+  const parts: string[] = [];
   if (denied.length)
     parts.push(`the user denies commands starting with ${denied.join(", ")} (Command Rules)`);
   if (reviewed.length)
     parts.push(`the user requires review of commands starting with ${reviewed.join(", ")}`);
-  return parts.join("; ");
+  return parts.length ? parts.join("; ") : undefined;
 }
 
+/** A reviewed `bash` call's reason, followed by the user's `deny` and `review` Command Rules. */
+function withCommandRules(reason: string, rules: Readonly<PolicyEntries>): string {
+  const note = commandRulesNote(rules);
+  return note ? `${reason}; ${note}` : reason;
+}
+
+/** Tools whose `command` argument is a shell command line, which `deny` Command Rules govern. */
+const shellCommandTools: readonly string[] = ["bash", "terminal_start", "powershell"];
+
 /**
- * Resolve one call's Tool Policy: a `deny` Command Rule for `bash`, else the configured `tools`
- * entry, else the built-in default (including Safe Command, Command Rule, and Sensitive Path
- * handling), else a `readOnlyHint` annotation without `openWorldHint`, else review.
+ * Resolve one call's Tool Policy: a `deny` Command Rule for a shell command (`bash`,
+ * `terminal_start`, or `powershell`), else the configured `tools` entry, else the built-in
+ * default (including Safe Command, Command Rule, and Sensitive Path handling), else a
+ * `readOnlyHint` annotation without `openWorldHint`, else review.
  */
 export function resolveToolPolicy(call: ToolPolicyInput): ResolvedToolPolicy {
-  // A `deny` Command Rule is a hard limit, whatever the `bash` Tool Policy says.
-  const command = call.toolName === "bash" ? call.input["command"] : undefined;
+  // A `deny` Command Rule is a hard limit, whatever the tool's Tool Policy says.
+  const command = shellCommandTools.includes(call.toolName) ? call.input["command"] : undefined;
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; only a string command can match a Command Rule.
   if (typeof command === "string") {
-    const judged = judgeCommand(command, call.commands);
+    // Only `deny` is read here, so judging `cd` targets from `paths` changes nothing.
+    const judged = judgeCommand(command, call.commands, call.paths);
     if (judged.verdict === "deny")
       return {
         policy: "deny",

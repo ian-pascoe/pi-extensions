@@ -133,7 +133,7 @@ export default function guardian(pi: ExtensionAPI): void {
       if (role.kind !== "child" || role.parentAgentId === undefined) return undefined;
       const published = approvedDelegations(role.rootSessionId, role.parentAgentId);
       if (published) lastDelegations = published;
-      return { agentId: role.parentAgentId, approved: lastDelegations };
+      return { agentId: role.parentAgentId, selfId: role.agentId, approved: lastDelegations };
     },
     settings() {
       const current = effective();

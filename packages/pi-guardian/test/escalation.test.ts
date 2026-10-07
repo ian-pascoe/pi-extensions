@@ -126,6 +126,96 @@ describe("Escalation Pass", () => {
     );
   });
 
+  it("keeps the Rejection when the escalation's corrective reply to an uncategorized critical is malformed", async () => {
+    const { harness, entry } = await deployOnce({}, [
+      assessment("high", "low", "Looks risky."),
+      assessment("critical", "unknown", "Wipes prod.", null),
+      "not json",
+    ]);
+    expect(harness.reviews).toHaveLength(3);
+    expect(harness.executed).toEqual([]);
+    expect(entry).toMatchObject({
+      result: "rejected",
+      risk: "high",
+      escalation: {
+        result: "failed",
+        failure: expect.stringMatching(/malformed output.*even after a corrective retry/),
+        retried: true,
+      },
+    });
+  });
+
+  it("fails a first pass whose corrective reply to an uncategorized critical is malformed", async () => {
+    const { harness, entry } = await deployOnce({}, [
+      assessment("critical", "unknown", "Wipes prod.", null),
+      "not json",
+    ]);
+    // A Review Failure, not the first reply decided as `medium` and allowed; no escalation.
+    expect(harness.reviews).toHaveLength(2);
+    expect(harness.executed).toEqual([]);
+    expect(entry).toMatchObject({ result: "failed", blocked: true, retried: true });
+    expect(entry).not.toHaveProperty("escalation");
+  });
+
+  it("aborts the review when the turn is aborted during the second pass", async () => {
+    const harness = await createGuardianHarness({ guardianSettings: reviewer });
+    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]));
+    harness.guardianReplies.push(
+      assessment("high", "low", "Looks risky."),
+      new DeferredReply(
+        (options) =>
+          new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+            void harness.session.abort();
+          }),
+      ),
+    );
+    await harness.session.prompt("Deploy prod.");
+    expect(harness.executed).toEqual([]);
+    expect(harness.entries("pi-guardian-review")).toMatchObject([
+      { result: "aborted", blocked: true, escalation: { result: "aborted" } },
+    ]);
+  });
+
+  it("keeps the Rejection when the escalation model has no credentials", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: { ...reviewer, escalationModel: "guardian-keyless/reviewer" },
+      before: [
+        (pi) =>
+          pi.registerProvider("guardian-keyless", {
+            api: "openai-completions",
+            baseUrl: "https://guardian.invalid",
+            models: [
+              {
+                id: "reviewer",
+                name: "reviewer",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 200_000,
+                maxTokens: 2_048,
+              },
+            ],
+          }),
+      ],
+    });
+    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
+    harness.guardianReplies.push(assessment("high", "low", "Looks risky."));
+    await harness.session.prompt("Deploy prod.");
+    expect(harness.reviews).toHaveLength(1);
+    expect(harness.executed).toEqual([]);
+    expect(harness.entries("pi-guardian-review")).toMatchObject([
+      {
+        result: "rejected",
+        escalation: {
+          result: "failed",
+          model: "guardian-keyless/reviewer",
+          failure: "No credentials are configured for Guardian model guardian-keyless/reviewer",
+        },
+      },
+    ]);
+  });
+
   it("keeps the Rejection when the review is too large for the escalation model", async () => {
     const { harness, entry } = await deployOnce({ escalationModel: "guardian-test/tiny" }, [
       assessment("high", "low", "Looks risky."),
