@@ -126,7 +126,7 @@ export function sessionTokenLimit(
   return Math.min(Math.floor((contextWindow || fallbackWindow) / 2), autoSessionCeiling);
 }
 
-const layered = defineLayeredSettings<AdvisorOptions, AdvisorConfig>({
+const layered = defineLayeredSettings({
   namespace: "advisor",
   label: "Advisor",
   schema: advisorOptionsSchema,
@@ -137,7 +137,7 @@ const layered = defineLayeredSettings<AdvisorOptions, AdvisorConfig>({
 export const advisorOptionKeys = layered.optionKeys;
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings contain arbitrary authored JSON; the shared layered-settings schema check validates it before use. SDK command tests exercise the boundary.
-export function parseAdvisorOptions(value: unknown, source: AdvisorSettingSource): AdvisorOptions {
+export function parseAdvisorOptions(value: unknown, source: AdvisorSettingScope): AdvisorOptions {
   return layered.parseOptions(value, source);
 }
 

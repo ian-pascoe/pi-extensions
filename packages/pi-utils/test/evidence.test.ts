@@ -8,6 +8,7 @@ import {
   fitEvidence,
   messageOrigins,
   projectEvidence,
+  projectEvidenceItem,
   shortenEvidence,
   toolCallRef,
   type EvidenceItem,
@@ -42,11 +43,8 @@ const messages: Message[] = [
 
 const items = (source: readonly Message[]): EvidenceItem[] =>
   source.flatMap((message) => {
-    const {
-      messages: [only],
-      images,
-    } = projectEvidence([message]);
-    return only ? [{ message: only, images }] : [];
+    const item = projectEvidenceItem(message);
+    return item ? [item] : [];
   });
 
 describe("evidence projection", () => {
@@ -66,6 +64,16 @@ describe("evidence projection", () => {
     expect(evidence.images).toEqual([image]);
     expect(evidenceRefs(evidence.messages)).toEqual([ref, ref]);
     expect(toolCallRef("call-1")).toBe(toolCallRef("call-1"));
+  });
+
+  it("projects one message with its own images, or nothing for an unknown role", () => {
+    const [toolResult] = messages.slice(2, 3);
+    expect(toolResult && projectEvidenceItem(toolResult)).toEqual({
+      message: projectEvidence(messages.slice(2, 3)).messages[0],
+      images: [image],
+    });
+    const [future]: Message[] = JSON.parse(JSON.stringify([{ role: "futureRole", content: "x" }]));
+    expect(future && projectEvidenceItem(future)).toBeUndefined();
   });
 
   it("estimates tokens from the serialized messages plus images", () => {
@@ -96,6 +104,52 @@ describe("evidence projection", () => {
       ],
     );
     expect(origins).toEqual(["user", "bashExecution"]);
+  });
+
+  it("pairs a rewritten message with the next unused source of its timestamp", () => {
+    const bash = (timestamp: number) =>
+      ({
+        role: "bashExecution",
+        command: "ls",
+        output: "x",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+        timestamp,
+      }) as const;
+    // A context hook rewrote the text, so no converted source matches exactly.
+    expect(
+      messageOrigins([{ role: "user", content: "rewritten", timestamp: 6 }], [bash(6)]),
+    ).toEqual(["bashExecution"]);
+    expect(
+      messageOrigins([{ role: "user", content: "rewritten", timestamp: 9 }], [bash(6)]),
+    ).toEqual(["unknown"]);
+  });
+
+  it("keeps messages that share a timestamp apart by content, then by order", () => {
+    const custom = (content: string) =>
+      ({ role: "custom", customType: "note", content, display: true, timestamp: 7 }) as const;
+    const user = (content: string): Message => ({ role: "user", content, timestamp: 7 });
+    const sources = [custom("finding"), { role: "user", content: "hello", timestamp: 7 } as const];
+    // Exact conversions claim their own source regardless of position.
+    expect(
+      messageOrigins(
+        [
+          { role: "user", content: [{ type: "text", text: "finding" }], timestamp: 7 },
+          user("hello"),
+        ],
+        sources,
+      ),
+    ).toEqual(["custom", "user"]);
+    // One exact match leaves the remaining source to the one rewritten message.
+    expect(messageOrigins([user("changed"), user("hello")], sources)).toEqual(["custom", "user"]);
+    // Nothing exact: the k-th unmatched message takes the k-th unused source.
+    expect(messageOrigins([user("a"), user("b")], sources)).toEqual(["custom", "user"]);
+    expect(messageOrigins([user("a"), user("b"), user("c")], sources)).toEqual([
+      "custom",
+      "user",
+      "unknown",
+    ]);
   });
 });
 
@@ -139,6 +193,22 @@ describe("evidence shortening and fitting", () => {
     expect(fitted).toBeDefined();
     expect(evidenceItemsCost(fitted ?? [])).toBeLessThanOrEqual(allowance);
     expect(fitEvidence(source, 1, marker)).toBeUndefined();
+  });
+
+  it("picks the longest per-string limit that fits, not merely one that fits", () => {
+    const source: EvidenceItem[] = [
+      { message: { role: "user", content: "x".repeat(2000) }, images: [] },
+    ];
+    const allowance = Math.floor(evidenceItemsCost(source) / 2);
+    const fitted = fitEvidence(source, allowance, marker);
+    const limit = JSON.stringify(fitted?.[0]?.message.content).indexOf("\\n[cut ") - 1; // minus the opening quote
+    expect(limit).toBeGreaterThan(0);
+    expect(evidenceItemsCost(shortenEvidence(source, limit, marker))).toBeLessThanOrEqual(
+      allowance,
+    );
+    expect(evidenceItemsCost(shortenEvidence(source, limit + 1, marker))).toBeGreaterThan(
+      allowance,
+    );
   });
 
   it("combines items, renumbering image attachments", () => {

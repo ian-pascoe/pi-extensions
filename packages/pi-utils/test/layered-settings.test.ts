@@ -28,15 +28,12 @@ interface Config {
 const defaults: Config = { enabled: false, limit: 3, tools: { read: true } };
 const sessionEntryType = "test-settings";
 
-function define(withSession = true) {
-  const merge = {
-    tools: (current: Config["tools"], next: Config["tools"]) => ({ ...current, ...next }),
-  };
-  const definition = { namespace: "demo", label: "Demo", schema, defaults, merge };
-  return defineLayeredSettings<Options, Config>(
-    withSession ? { ...definition, sessionEntryType } : definition,
-  );
-}
+const merge = {
+  tools: (current: Config["tools"], next: Config["tools"]) => ({ ...current, ...next }),
+};
+const definition = { namespace: "demo", label: "Demo", schema, defaults, merge };
+const define = () => defineLayeredSettings({ ...definition, sessionEntryType });
+const defineWithoutSession = () => defineLayeredSettings(definition);
 
 function storageHarness(global = "{}", project = "{}", trusted = true) {
   const documents = { global, project };
@@ -85,7 +82,7 @@ describe("layered settings resolution", () => {
       JSON.stringify({ demo: { limit: 9, bogus: 1 } }),
       false,
     );
-    const resolved = define(false).readSettings({
+    const resolved = defineWithoutSession().readSettings({
       settingsManager: manager,
       sessionManager: branch({ version: 1, overrides: { limit: 1 } }),
     });
@@ -142,6 +139,13 @@ describe("layered settings resolution", () => {
     );
   });
 
+  it("omits readOverrides without a session entry type", () => {
+    const settings = defineWithoutSession();
+    // @ts-expect-error -- `readOverrides` exists only when `sessionEntryType` is given.
+    expect(settings.readOverrides).toBeUndefined();
+    expect("readOverrides" in define()).toBe(true);
+  });
+
   it("validates option keys and labels errors", () => {
     const settings = define();
     expect(settings.optionKeys).toEqual(["enabled", "limit", "tools"]);
@@ -174,6 +178,79 @@ describe("layered settings resolution", () => {
     expect(resolved.sources).toEqual({ limit: "global", tools: "project" });
     expect(defaults.tools).toEqual({ read: true });
   });
+
+  it("treats an authored undefined as inheriting and never passes it to a hook", () => {
+    const calls: unknown[] = [];
+    // Session overrides are in-process values, so an explicit `undefined` survives to the fold.
+    type Authored = { [Key in keyof Options]?: Options[Key] | undefined };
+    const resolved = resolveLayeredOptions<Authored, Config>({
+      defaults,
+      optionKeys: ["enabled", "limit", "tools"],
+      layers: [
+        ["global", { enabled: true, limit: 8, tools: { a: true } }],
+        ["project", { enabled: undefined, limit: undefined, tools: undefined }],
+        ["session", { tools: { b: true } }],
+      ],
+      merge: {
+        tools: (current, next, source) => {
+          calls.push([source, next]);
+          return { ...current, ...next };
+        },
+      },
+    });
+    expect(calls).toEqual([
+      ["global", { a: true }],
+      ["session", { b: true }],
+    ]);
+    expect(resolved.settings).toEqual({
+      enabled: true,
+      limit: 8,
+      tools: { read: true, a: true, b: true },
+    });
+    expect(resolved.sources).toEqual({ enabled: "global", limit: "global", tools: "session" });
+  });
+});
+
+describe("layered settings definition", () => {
+  it("requires every schema property to be optional", () => {
+    expect(() =>
+      defineLayeredSettings({
+        namespace: "demo",
+        label: "Demo",
+        schema: Type.Object({ limit: Type.Integer() }),
+        defaults: { limit: 1 },
+      }),
+    ).toThrow("Demo settings schema must make every option optional");
+  });
+
+  it("rejects a config that cannot hold the schema's options at compile time", () => {
+    const optional = Type.Object({ limit: Type.Optional(Type.Number()) });
+    // A schema key `Config` lacks, however the options type is spelled.
+    // @ts-expect-error -- `other` is not a `Config` key.
+    defineLayeredSettings({
+      namespace: "demo",
+      label: "Demo",
+      schema: Type.Object({ other: Type.Optional(Type.Boolean()) }),
+      defaults: { limit: 1 },
+    });
+    // An unhooked key whose authored type is not assignable to its config type.
+    // @ts-expect-error -- a number does not fit `string`.
+    defineLayeredSettings({
+      namespace: "demo",
+      label: "Demo",
+      schema: optional,
+      defaults: { limit: "1" },
+    });
+    // A hook may bridge the types.
+    const settings = defineLayeredSettings({
+      namespace: "demo",
+      label: "Demo",
+      schema: optional,
+      defaults: { limit: "1" },
+      merge: { limit: (current: string, next: number) => `${current}${next}` },
+    });
+    expect(settings.optionKeys).toEqual(["limit"]);
+  });
 });
 
 describe("layered settings writes", () => {
@@ -186,6 +263,14 @@ describe("layered settings writes", () => {
     expect(documents.global).toBe(
       `${JSON.stringify({ theme: "dark", demo: { limit: 4 } }, null, 2)}\n`,
     );
+  });
+
+  it("surfaces the original SyntaxError of a malformed document", async () => {
+    const { documents, manager } = storageHarness("{");
+    await expect(
+      define().writeSettings(manager, "global", set({ limit: 2 }), () => true),
+    ).rejects.toBeInstanceOf(SyntaxError);
+    expect(documents.global).toBe("{");
   });
 
   it("deletes an empty namespace on inherit", async () => {

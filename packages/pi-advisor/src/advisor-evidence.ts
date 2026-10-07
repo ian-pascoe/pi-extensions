@@ -3,7 +3,7 @@ import {
   combineEvidence,
   evidenceItemsCost,
   fitEvidence,
-  projectEvidence,
+  projectEvidenceItem,
   shortenEvidence,
   type Evidence,
   type EvidenceItem,
@@ -77,11 +77,8 @@ export function selectContextSeed(
   const { messages } = context;
   const observedSetup = projectObservedSetup(context);
   const projected = messages.map((message): EvidenceItem[] => {
-    const {
-      messages: [only],
-      images,
-    } = projectEvidence([message]);
-    return only ? [{ message: only, images }] : [];
+    const item = projectEvidenceItem(message);
+    return item ? [item] : [];
   });
   // Fall back to the converted role only when no converted user message has a known origin.
   const origins = options.origins?.some(

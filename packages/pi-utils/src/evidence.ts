@@ -4,7 +4,7 @@ import type { ImageContent, Message, TextContent, ToolCall } from "@earendil-wor
 import { convertToLlm, estimateTokens, type AgentSession } from "@earendil-works/pi-coding-agent";
 
 /**
- * Review Evidence: the observed model's view of its context, without what Pi stores only for
+ * Evidence: the observed model's view of its context, without what Pi stores only for
  * replay or display (signatures, `details`, provider/response metadata, native IDs).
  */
 export type EvidenceBlock =
@@ -37,15 +37,15 @@ export interface Evidence {
 }
 /**
  * Tool-Call Reference: compact, shared by an observed tool call and its result. Derived from
- * the native call ID alone, so it is stable across projections and Advisor Sessions and can
+ * the native call ID alone, so it is stable across projections and reviewer sessions and can
  * be recomputed from the observed transcript.
  */
 export function toolCallRef(toolCallId: string): string {
-  // Coerce rather than trust the stored shape: a malformed ID must not pause the Advisor.
+  // Coerce rather than trust the stored shape: a malformed ID must not interrupt the consumer.
   return createHash("sha256").update(String(toolCallId)).digest("base64url").slice(0, 8);
 }
 
-/** Every Tool-Call Reference in projected Review Evidence, from calls and their results. */
+/** Every Tool-Call Reference in projected evidence, from calls and their results. */
 export function evidenceRefs(messages: readonly EvidenceMessage[]): string[] {
   return messages.flatMap((message) => {
     if (message.role === "toolResult") return [message.ref];
@@ -56,7 +56,7 @@ export function evidenceRefs(messages: readonly EvidenceMessage[]): string[] {
 
 /**
  * Each observed message's role before Pi converted it for the model. Compaction and branch
- * summaries, custom messages (including delivered Advisor findings), and `!` command results all
+ * summaries, custom messages (including findings delivered back to the observed agent), and `!` command results all
  * reach the model as `user` messages; only `user` origins are requests from the user.
  */
 export function messageOrigins(
@@ -259,9 +259,18 @@ export function projectEvidence(messages: readonly Message[]): Evidence {
         return [abnormal];
       }
       default:
-        // System messages reach the Advisor through the Observed Setup; unknown roles are omitted.
+        // System messages reach the consumer through its own setup summary; unknown roles are omitted.
         return [];
     }
   });
   return { messages: projected, images };
+}
+
+/** Project one observed message; `undefined` when its role is omitted from evidence. */
+export function projectEvidenceItem(message: Message): EvidenceItem | undefined {
+  const {
+    messages: [only],
+    images,
+  } = projectEvidence([message]);
+  return only ? { message: only, images } : undefined;
 }

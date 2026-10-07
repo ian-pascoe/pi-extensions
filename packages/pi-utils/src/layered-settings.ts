@@ -1,6 +1,6 @@
 import type { JsonValue } from "@earendil-works/pi-ai";
 import type { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Type, type TObject } from "typebox";
+import { Type, type Static, type TObject } from "typebox";
 import { Value } from "typebox/value";
 
 /** Native layer an authored option is written to or replayed from. */
@@ -48,8 +48,8 @@ export interface ResolvedLayeredSettings<Config> {
 
 /**
  * Resolve effective settings: defaults, then each layer in order. A key a layer authors replaces
- * the lower value, or is passed to that key's merge hook. Also reports which source supplied
- * each key. Pure: validation and trust gating belong to whoever built the layers.
+ * the lower value, or is passed to that key's merge hook. A key authored as `undefined` inherits
+ * like an absent one. Also reports which source supplied each key. Pure: validation and trust gating belong to whoever built the layers.
  */
 export function resolveLayeredOptions<Options extends object, Config extends object>(
   input: ResolveLayeredOptionsInput<Options, Config>,
@@ -61,16 +61,17 @@ export function resolveLayeredOptions<Options extends object, Config extends obj
     layer: Options,
     source: LayeredSettingScope,
   ) => {
-    // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: `Object.hasOwn` checked below that the layer authored this key, and authored values are never `undefined`.
+    // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: the fold below checked that the layer authored this key with a value other than `undefined`, which TypeBox accepts for optional properties and in-process session overrides keep.
     const next = layer[key] as Exclude<Options[Key], undefined>;
     const hook = input.merge?.[key];
-    // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: without a hook the authored value replaces the default, so its type matches `Config[Key]` by the caller's contract.
+    // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: without a hook the authored value replaces the default, so its type matches `Config[Key]` by the caller's contract; `defineLayeredSettings` enforces that contract at the type level.
     settings[key] = hook ? hook(settings[key], next, source) : (next as Config[Key]);
   };
   for (const key of input.optionKeys) {
     sources[String(key)] = "default";
     for (const [source, layer] of input.layers) {
-      if (!Object.hasOwn(layer, key)) continue;
+      // An explicit `undefined` inherits, as an absent key does; merge hooks never receive it.
+      if (!Object.hasOwn(layer, key) || layer[key] === undefined) continue;
       apply(key, layer, source);
       sources[String(key)] = source;
     }
@@ -122,19 +123,83 @@ export function rewriteNamespaceDocument(input: RewriteNamespaceDocumentInput): 
   return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
-/** Definition of one extension's layered settings namespace. */
-export interface LayeredSettingsDefinition<Options, Config> {
+/**
+ * Definition of one extension's layered settings namespace. `Options` is `Static<S>`; `Merge`
+ * holds the per-key merge hooks and `Entry` the session entry type, both inferred.
+ */
+export interface LayeredSettingsDefinition<
+  S extends TObject,
+  Config extends object,
+  Merge extends LayeredSettingMerges<Static<S>, Config> = {},
+  Entry extends string | undefined = undefined,
+> {
   /** Key under which authored options live in Pi's settings documents, e.g. `advisor`. */
   namespace: string;
   /** Name used in error messages, e.g. `Advisor`. */
   label: string;
-  /** Schema of `Options`; every property must be optional so absent values inherit. */
-  schema: TObject;
+  /** Schema of the authored options; every property must be optional so absent values inherit. */
+  schema: S;
   defaults: Config;
   /** Custom session entry type holding `{ version: 1, overrides }`; omit for no session layer. */
-  sessionEntryType?: string;
+  sessionEntryType?: Entry;
   /** Per-key merge hooks for keys that merge across layers instead of replacing. */
-  merge?: LayeredSettingMerges<Options, Config>;
+  merge?: Merge;
+}
+
+/**
+ * Option keys the definition's `Config` cannot hold: a key `Config` lacks, or an unhooked key whose
+ * authored value type is not assignable to its `Config` type.
+ */
+export type LayeredSettingsConfigMismatch<Options, Config, Hooked extends PropertyKey> = {
+  [Key in keyof Options]-?: Key extends keyof Config
+    ? Key extends Hooked
+      ? never
+      : [Exclude<Options[Key], undefined>] extends [Config[Key]]
+        ? never
+        : Key
+    : Key;
+}[keyof Options];
+/** Adds a type error naming the mismatched keys; `unknown` (no constraint) when there are none. */
+type LayeredSettingsConfigCheck<Options, Config, Hooked extends PropertyKey> = [
+  LayeredSettingsConfigMismatch<Options, Config, Hooked>,
+] extends [never]
+  ? unknown
+  : { configMismatch: LayeredSettingsConfigMismatch<Options, Config, Hooked> };
+
+/** Settings operations for one namespace; `Options` is `Static<S>`. */
+export interface LayeredSettings<S extends TObject, Config extends object> {
+  /** Reject inherited or unknown property names before applying an authored change. */
+  optionKey(input: string): keyof Static<S> & string;
+  /** Schema property names, in schema order. */
+  optionKeys: readonly (keyof Static<S> & string)[];
+  /** Validate authored options read from, or about to be written to, a scope. */
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings contain arbitrary authored JSON; the schema validates it before use.
+  parseOptions(value: unknown, source: LayeredSettingScope): Static<S>;
+  /** Read Pi's stored layers, preserving configuration failures until corrected. */
+  readLayers(manager: SettingsManager): LayeredSettingsLayers<Static<S>>;
+  /** Resolve stored scopes without changing Pi's effective runtime overrides. */
+  readSettings(
+    session: {
+      settingsManager: SettingsManager;
+      sessionManager: Pick<SessionManager, "getBranch">;
+    },
+    authored?: LayeredSettingsLayers<Static<S>>,
+  ): ResolvedLayeredSettings<Config>;
+  /** Use Pi's actual backend: its generic storage API is not exported. */
+  writeSettings(
+    manager: SettingsManager,
+    scope: "global" | "project",
+    change: LayeredSettingChange<Static<S>>,
+    isCurrent: () => boolean,
+  ): Promise<Static<S> | undefined>;
+}
+/** Layered settings with a session layer, so overrides can be replayed from a session branch. */
+export interface SessionLayeredSettings<
+  S extends TObject,
+  Config extends object,
+> extends LayeredSettings<S, Config> {
+  /** Replay only the selected branch's last complete override snapshot. */
+  readOverrides(manager: Pick<SessionManager, "getBranch">): Static<S>;
 }
 
 const optionalText = Type.Union([Type.String(), Type.Undefined()]);
@@ -148,18 +213,36 @@ const storageSchema = Type.Object({
   ),
 });
 
+/** `SessionLayeredSettings` when `Entry` is a session entry type, else `LayeredSettings`. */
+export type DefinedLayeredSettings<
+  S extends TObject,
+  Config extends object,
+  Entry extends string | undefined,
+> = [Entry] extends [string] ? SessionLayeredSettings<S, Config> : LayeredSettings<S, Config>;
+
 /**
  * Define layered settings: authored options from Pi's global settings, trusted-project settings
  * and (optionally) session overrides, resolved over defaults with precedence
- * default < global < trusted project < session. `Options` is the static type of `schema`.
+ * default < global < trusted project < session. The authored options are `Static<S>`; `Config`
+ * must hold every option key, with a type the authored value is assignable to unless the key
+ * has a merge hook. `readOverrides` exists only when `sessionEntryType` is given.
  */
-export function defineLayeredSettings<Options extends object, Config extends object>(
-  definition: LayeredSettingsDefinition<Options, Config>,
-) {
+export function defineLayeredSettings<
+  S extends TObject,
+  Config extends object,
+  Merge extends LayeredSettingMerges<Static<S>, Config> = {},
+  Entry extends string | undefined = undefined,
+>(
+  definition: LayeredSettingsDefinition<S, Config, Merge, Entry> &
+    LayeredSettingsConfigCheck<Static<S>, Config, keyof Merge>,
+): DefinedLayeredSettings<S, Config, Entry> {
+  type Options = Static<S>;
   type OptionKey = keyof Options & keyof Config & string;
   type Layers = LayeredSettingsLayers<Options>;
   type Change = LayeredSettingChange<Options>;
   const { namespace, label, schema, defaults, sessionEntryType, merge } = definition;
+  if (!Value.Check(schema, {}))
+    throw new Error(`${label} settings schema must make every option optional`);
   const keySchema = Type.KeyOf(schema);
   const sessionSchema = Type.Object(
     { version: Type.Literal(1), overrides: schema },
@@ -178,17 +261,21 @@ export function defineLayeredSettings<Options extends object, Config extends obj
     return Value.Check(sessionSchema, value);
   }
 
-  /** Reject inherited or unknown property names before applying an authored change. */
   function optionKey(input: string): OptionKey {
     if (!isOptionKey(input)) throw new Error(`Unknown ${label} option: ${input}`);
     return input;
   }
   const optionKeys = Object.keys(schema.properties).map(optionKey);
 
+  /** The options of a layer that authored nothing. */
+  function noOptions(): Options {
+    // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: the schema accepts `{}` (asserted above), so the empty object is a valid `Options`.
+    return {} as Options;
+  }
+
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- SAFETY: Native settings contain arbitrary authored JSON; the option schema validates it before use. SDK command tests exercise the boundary.
-  function parseOptions(value: unknown, source: LayeredSettingSource): Options {
-    // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: every schema property is optional by contract, so the empty object is a valid `Options`.
-    if (value === undefined) return {} as Options;
+  function parseOptions(value: unknown, source: LayeredSettingScope): Options {
+    if (value === undefined) return noOptions();
     if (!isOptions(value)) {
       const issue = Value.Errors(schema, value)[0];
       throw new Error(
@@ -197,7 +284,6 @@ export function defineLayeredSettings<Options extends object, Config extends obj
     }
     return structuredClone(value);
   }
-  const noOptions = (): Options => parseOptions(undefined, "default");
 
   /** Replay only the selected branch's last complete override snapshot. */
   function readOverrides(manager: Pick<SessionManager, "getBranch">): Options {
@@ -247,7 +333,9 @@ export function defineLayeredSettings<Options extends object, Config extends obj
     ];
     if (sessionEntryType !== undefined)
       layers.push(["session", readOverrides(session.sessionManager)]);
-    return resolveLayeredOptions<Options, Config>({ defaults, optionKeys, layers, merge });
+    // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: `OptionKey` is `keyof Options & keyof Config`, which the definition's config check guarantees for every option key.
+    const keys = optionKeys as readonly OptionKey[];
+    return resolveLayeredOptions<Options, Config>({ defaults, optionKeys: keys, layers, merge });
   }
 
   /** Use Pi's actual backend: its generic storage API is not exported. */
@@ -290,13 +378,16 @@ export function defineLayeredSettings<Options extends object, Config extends obj
     return updated;
   }
 
-  return {
+  const settings: LayeredSettings<S, Config> = {
     optionKey,
     optionKeys,
     parseOptions,
-    readOverrides,
     readLayers,
     readSettings,
     writeSettings,
   };
+  // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion -- SAFETY: the conditional return type selects the session variant exactly when `sessionEntryType` is a string, which is when `readOverrides` is added.
+  return (
+    sessionEntryType === undefined ? settings : { ...settings, readOverrides }
+  ) as DefinedLayeredSettings<S, Config, Entry>;
 }
