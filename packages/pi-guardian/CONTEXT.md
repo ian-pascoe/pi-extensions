@@ -25,16 +25,20 @@ A simple shell command, with no pipes, redirection, command chaining, or substit
 _Avoid_: Allowlisted command
 
 **Sensitive Path**:
-A file path whose modification is reviewed even though ordinary workspace edits are not: anything outside the workspace root (and everything when the workspace root contains the home directory); persistence and credential locations in the home directory; version-control, secret, git hook, CI, editor-task, Pi and agent configuration, and context files within the workspace; resources Pi loaded; and files with more than one hard link. Pi configuration, context files, and loaded resources are sensitive because changing them can weaken the Guardian or rewrite trusted instructions.
+A file path whose modification is reviewed even though ordinary workspace edits are not: anything outside the workspace root (and everything when the workspace root contains the home directory); persistence and credential locations in the home directory, and the same dotfile names anywhere in the workspace; version-control, secret, git hook, CI, editor, package-manager hook, Pi and agent configuration, and context files within the workspace; resources Pi loaded, except extensions inside the workspace, which are project code; and files with more than one hard link. Pi configuration, context files, and loaded resources are sensitive because changing them can weaken the Guardian or rewrite trusted instructions.
 _Avoid_: Protected file
 
 **Guardian Review**:
-One assessment of one Reviewed Call, producing a Risk Level, a User Authorization, and a rationale.
+One assessment of one Reviewed Call, producing a Risk Level, a User Authorization, a Risk Category when the risk is `high` or `critical`, and a rationale.
 _Avoid_: Review (an Advisor term), approval
 
 **Risk Level**:
 The Guardian's judgment of a Reviewed Call's potential for harm: `low`, `medium`, `high`, or `critical`.
 _Avoid_: Danger score
+
+**Risk Category**:
+The concrete reason a Reviewed Call is `high` or `critical` risk, from a closed list: `data_egress`, `credential_access`, `destruction`, `persistence`, `sensitive_path`, `safety_weakening`, `remote_code`, or `unreviewed_execution`. A `high` or `critical` Risk Level without one is decided as `medium`.
+_Avoid_: Reason code
 
 **User Authorization**:
 The Guardian's judgment of how clearly trusted evidence shows the user authorized a Reviewed Call: `unknown`, `low`, `medium`, or `high`.
@@ -45,7 +49,7 @@ Content that can establish User Authorization: messages the user typed, context 
 _Avoid_: Transcript
 
 **Decision Table**:
-The fixed mapping from Risk Level and User Authorization to an Outcome: `low` and `medium` risk are allowed; `high` risk is allowed only with at least `medium` User Authorization; `critical` risk is always rejected.
+The fixed mapping from Risk Level and User Authorization to an Outcome, where a `high` or `critical` Risk Level without a Risk Category counts as `medium`: `low` and `medium` risk are allowed; `high` risk is allowed only with at least `medium` User Authorization; `critical` risk is always rejected.
 _Avoid_: Threshold
 
 **Outcome**:
@@ -61,7 +65,7 @@ A user's interactive decision to run a call that a Rejection or Review Failure w
 _Avoid_: Bypass
 
 **Rejection Streak**:
-Consecutive Rejections within one request. When it reaches its limit, that Rejection also ends the agent's turn and returns control to the user; any allowed Reviewed Call that runs ends the streak.
+Consecutive blocked Reviewed Calls within one request: Rejections and blocked Review Failures. When it reaches its limit, Guardian ends the agent's turn and returns control to the user, blocking every further call until the next prompt; before that, any allowed Reviewed Call that runs ends the streak.
 _Avoid_: Circuit breaker
 
 **Review Failure**:

@@ -2,7 +2,7 @@
   "name": "@ian-pascoe/pi-guardian",
   "version": "0.0.0",
   "private": false,
-  "description": "Model-reviewed gating of risky Pi agent tool calls before they run.",
+  "description": "Model-reviewed gating of Pi agent tool calls before they run.",
   "keywords": [
     "guardian",
     "pi",

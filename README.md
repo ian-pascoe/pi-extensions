@@ -25,7 +25,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
 | [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |
-| [`@ian-pascoe/pi-guardian`](packages/pi-guardian)                     | Model-reviewed gating of risky tool calls before they run.   | `pi install npm:@ian-pascoe/pi-guardian`           |
+| [`@ian-pascoe/pi-guardian`](packages/pi-guardian)                     | Model-reviewed gating of tool calls before they run.         | `pi install npm:@ian-pascoe/pi-guardian`           |
 
 `@ian-pascoe/pi-codemode` and `@ian-pascoe/pi-mcp` are retired in favor of Pi's
 built-in `codemode` (`defaultTools: ["+codemode"]`) and MCP support (`mcp.json`).
@@ -128,7 +128,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi Termctrl Terminals need the `termctrl` binary that `@kitlangton/terminal-control`
   installs for macOS and GNU/Linux on arm64 or x64. Elsewhere only the `bash`
   replacement and Background jobs work.
-- Pi Guardian is enabled by default and reviews risky tool calls with the session's model unless configured; load it last so no later extension rewrites reviewed arguments.
+- Pi Guardian is enabled by default and reviews the tool calls its Tool Policies send to review with the session's model unless configured; load it last so no later extension rewrites reviewed arguments.
 - Pi Advisor is disabled by default. Loaded Context Management requires all three private context-tool grants; incompatible tool exposure pauses review rather than expanding permissions.
 
 See package READMEs for configuration. The repository MIT license covers
