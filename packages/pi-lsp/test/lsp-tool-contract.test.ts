@@ -34,6 +34,8 @@ describe("Pi LSP tool contract", () => {
       "file_path",
     ]);
     expect(LspOperationParametersSchemas.capabilities.required).toEqual(["server_id", "file_path"]);
+    expect(LspOperationParametersSchemas.restart.required).toEqual(["server_id", "file_path"]);
+    expect(LspOperationParametersSchemas.workspace_diagnostics.required).toEqual(["file_path"]);
     expect(LspOperationParametersSchemas.format_document.required).toEqual([
       "file_path",
       "tab_size",

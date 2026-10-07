@@ -214,7 +214,10 @@ export const LspOperationParametersSchemas = {
   capabilities: serverParametersSchema(),
   restart: serverParametersSchema(),
   diagnostics: fileParametersSchema(),
-  workspace_diagnostics: serverParametersSchema(),
+  workspace_diagnostics: Type.Object(
+    { file_path: RootAnchorPathSchema, server_id: OptionalServerIdSchema },
+    { additionalProperties: false },
+  ),
   completion: Type.Object(
     {
       file_path: FilePathSchema,

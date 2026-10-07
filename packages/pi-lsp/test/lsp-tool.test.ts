@@ -3359,6 +3359,75 @@ describe("registered LSP tool", () => {
     await fixture.close();
   });
 
+  test("gets workspace diagnostics from every matching server unless server_id narrows them", async () => {
+    const fixture = await createToolFixture(["typescript", "oxlint", "failing"]);
+    const typescript = new RecordingLspClient();
+    const oxlint = new RecordingLspClient();
+    const failing = new (class extends RecordingLspClient {
+      override async workspaceDiagnostics(): Promise<LspWorkspaceDiagnosticResult> {
+        throw new Error("expected failure");
+      }
+    })();
+    typescript.workspaceDiagnosticsResult = { status: "unsupported" };
+    oxlint.workspaceDiagnosticsResult = {
+      status: "fresh",
+      source: "workspace_pull",
+      diagnosticsByUri: new Map([
+        [
+          pathToFileURL(fixture.filePath).href,
+          [
+            {
+              range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+              message: "lint",
+            },
+          ],
+        ],
+      ]),
+    };
+    const clients = new Map<string, RecordingLspClient>([
+      ["typescript", typescript],
+      ["oxlint", oxlint],
+      ["failing", failing],
+    ]);
+    const manager = new LspServerManager<LspToolServerClient>({
+      cwd: fixture.context.cwd,
+      settings: resolvedSettings(["typescript", "oxlint", "failing"]),
+      startClient: async ({ definition }) => clients.get(definition.id) ?? typescript,
+    });
+    const dependencies = { ...fixture.dependencies, manager };
+
+    const all = await executeTool(
+      fixture,
+      { operation: "workspace_diagnostics", file_path: fixture.filePath },
+      dependencies,
+    );
+    expect(all.isError).not.toBe(true);
+    expect(Value.Parse(LspReadOutputSchema, all.structuredContent)).toMatchObject({
+      results: [
+        { server_id: "typescript", value: { status: "unsupported" } },
+        { server_id: "oxlint", value: { status: "fresh", source: "workspace_pull" } },
+      ],
+      warnings: [expect.stringContaining("expected failure")],
+    });
+    const text = resultText(all);
+    expect(text).toContain("Server typescript publishes no workspace diagnostics");
+    expect(text).toContain("source.ts:1:1: lint");
+    expect(text).toContain("expected failure");
+
+    const narrowed = await executeTool(
+      fixture,
+      { operation: "workspace_diagnostics", file_path: fixture.filePath, server_id: "oxlint" },
+      dependencies,
+    );
+    expect(Value.Parse(LspReadOutputSchema, narrowed.structuredContent)).toMatchObject({
+      results: [{ server_id: "oxlint" }],
+      warnings: [],
+    });
+    expect(Value.Parse(LspReadOutputSchema, narrowed.structuredContent).results).toHaveLength(1);
+    await manager.shutdown();
+    await fixture.close();
+  });
+
   test("says a document-pull server publishes no workspace diagnostics", async () => {
     const fixture = await createToolFixture();
     fixture.client.workspaceDiagnosticsResult = { status: "unsupported" };
