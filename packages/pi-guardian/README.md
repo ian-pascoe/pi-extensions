@@ -26,7 +26,7 @@ Every `tool_call`, including calls a tool issues itself (such as a `codemode` sc
 
 1. the configured `tools.<name>` setting, if any;
 2. else the built-in default:
-   - `allow`: `read`, `grep`, `find`, `ls`, `codemode`, `tool_search`, `todo`, `web_search`;
+   - `allow`: `read`, `grep`, `find`, `ls`, `codemode`, `tool_search`, `todo`, `web_search`, and Context Management's `context_notes`, `context_history`, and `context_rollover`, which only touch the session's own notes, journal, and handoff;
    - `edit` and `write`: `allow`, unless the target is a **Sensitive Path** or the call shares its assistant message's tool batch with a call that is not allowed without review (Pi may run them in parallel, and that call could replace the target with a link first); either is reviewed;
    - `bash`: `allow` only for a **Safe Command**, otherwise reviewed;
    - `terminal_start`, `terminal_send`, and `powershell`: reviewed;

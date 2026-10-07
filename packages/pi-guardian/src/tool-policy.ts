@@ -24,6 +24,10 @@ export const allowedByDefault: readonly string[] = [
   "tool_search",
   "todo",
   "web_search",
+  // Context Management: session-local notes, journal reads, and handoffs.
+  "context_notes",
+  "context_history",
+  "context_rollover",
 ];
 /** Tools reviewed by default regardless of their annotations. */
 export const reviewedByDefault: readonly string[] = [

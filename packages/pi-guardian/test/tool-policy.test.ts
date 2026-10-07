@@ -168,12 +168,21 @@ describe("Tool Policy resolution", () => {
     ...overrides,
   });
 
-  it.each(["read", "grep", "find", "ls", "codemode", "tool_search", "todo", "web_search"])(
-    "allows %s by default",
-    (toolName) => {
-      expect(resolveToolPolicy(call({ toolName }))).toEqual({ policy: "allow", source: "default" });
-    },
-  );
+  it.each([
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "codemode",
+    "tool_search",
+    "todo",
+    "web_search",
+    "context_notes",
+    "context_history",
+    "context_rollover",
+  ])("allows %s by default", (toolName) => {
+    expect(resolveToolPolicy(call({ toolName }))).toEqual({ policy: "allow", source: "default" });
+  });
 
   it("allows ordinary edits and reviews Sensitive Paths", () => {
     expect(resolveToolPolicy(call({ toolName: "edit", input: { path: "src/a.ts" } })).policy).toBe(
