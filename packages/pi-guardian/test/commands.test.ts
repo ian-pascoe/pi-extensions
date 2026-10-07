@@ -65,7 +65,7 @@ describe("/guardian command", () => {
       toolCalls(["deploy", { target: "b" }, "call-2"]),
       reply("Ok."),
     );
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("low", "high", "Requested."),
       assessment("critical", "unknown", "Not requested."),
     );

@@ -58,7 +58,7 @@ describe("Child Agents and Advisors", () => {
       manager: await advisorManager(root.session.sessionManager.getSessionId()),
     });
     advisor.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    advisor.verdicts.push(assessment("high", "unknown", "Pi asked, not the user."));
+    advisor.guardianReplies.push(assessment("high", "unknown", "Pi asked, not the user."));
     await advisor.session.prompt("Review the observed agent's last turn.");
     expect(advisor.executed).toEqual([]);
     const message = advisor.reviews[0]?.messages[0];
@@ -84,7 +84,7 @@ describe("Child Agents and Advisors", () => {
       manager: await childManager(root.session.sessionManager.getSessionId()),
     });
     child.responses.push(toolCalls(["deploy", { target: "staging" }, "call-1"]), reply("Ok."));
-    child.verdicts.push(assessment("low", "high", "The root user asked for it."));
+    child.guardianReplies.push(assessment("low", "high", "The root user asked for it."));
     await child.session.prompt("Task from the parent agent: deploy staging and production.");
     expect(child.executed).toEqual(["deploy:staging"]);
     const message = child.reviews[0]?.messages[0];
@@ -118,7 +118,7 @@ describe("Child Agents and Advisors", () => {
     // A root session override applies to the child at once.
     await root.session.prompt("/guardian tool deploy review");
     child.responses.push(toolCalls(["deploy", { target: "b" }, "call-2"]), reply("Ok."));
-    child.verdicts.push(assessment("high", "unknown", "Only another agent asked for this."));
+    child.guardianReplies.push(assessment("high", "unknown", "Only another agent asked for this."));
     await child.session.prompt("Task from the parent agent: deploy b.");
     expect(child.executed).toEqual([]);
     expect(child.reviews).toHaveLength(1);
@@ -156,7 +156,7 @@ describe("Child Agents and Advisors", () => {
       manager: await advisorManager(child.session.sessionManager.getSessionId()),
     });
     advisor.responses.push(toolCalls(["deploy", { target: "staging" }, "call-1"]), reply("Ok."));
-    advisor.verdicts.push(assessment("low", "high", "The root user asked for it."));
+    advisor.guardianReplies.push(assessment("low", "high", "The root user asked for it."));
     await advisor.session.prompt("Review the worker's last turn.");
     expect(advisor.reviews).toHaveLength(1);
     const texts = requestTexts(advisor.reviews[0]);
@@ -185,7 +185,7 @@ describe("Child Agents and Advisors", () => {
     // The root ends (as on /new or /resume) and leaves the registry.
     root.session.dispose();
     child.responses.push(toolCalls(["deploy", { target: "staging" }, "call-1"]), reply("Ok."));
-    child.verdicts.push(assessment("low", "high", "The root user asked for it."));
+    child.guardianReplies.push(assessment("low", "high", "The root user asked for it."));
     await child.session.prompt("Task from the parent agent: deploy staging.");
     expect(child.reviews).toHaveLength(1);
     expect(requestTexts(child.reviews[0])[0]).toContain("Have a worker deploy staging.");

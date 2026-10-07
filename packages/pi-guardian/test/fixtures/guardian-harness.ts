@@ -160,7 +160,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
       value: () => ({ guardian: options.guardianSettings }),
     });
   const reviews: CapturedReview[] = [];
-  const verdicts: GuardianReply[] = [];
+  const guardianReplies: GuardianReply[] = [];
   const executed: string[] = [];
   const loader = new DefaultResourceLoader({
     cwd: dir,
@@ -201,7 +201,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
               options: requestOptions,
             });
             const stream = createAssistantMessageEventStream();
-            const verdict = verdicts.shift();
+            const scripted = guardianReplies.shift();
             const quarter = (text: string) => Math.ceil(text.length / 4);
             const estimated =
               quarter(getCurrentSystemPrompt(context.messages) ?? "") +
@@ -245,15 +245,15 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
               stream.push({ type: "error", reason, error: message });
             };
             queueMicrotask(() => {
-              if (verdict === undefined) fail("No scripted Guardian reply", "error");
-              else if (verdict instanceof Error) fail(verdict.message, "error");
-              else if (verdict instanceof DeferredReply)
-                verdict
+              if (scripted === undefined) fail("No scripted Guardian reply", "error");
+              else if (scripted instanceof Error) fail(scripted.message, "error");
+              else if (scripted instanceof DeferredReply)
+                scripted
                   .run(requestOptions)
                   .then(finish, (cause: unknown) =>
                     fail(cause instanceof Error ? cause.message : String(cause), "aborted"),
                   );
-              else finish(verdict);
+              else finish(scripted);
             });
             return stream;
           },
@@ -329,7 +329,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     manager,
     session,
     reviews,
-    verdicts,
+    guardianReplies,
     responses,
     executed,
     agentRequests,

@@ -31,7 +31,7 @@ describe("Guardian through the native SDK", () => {
       toolCalls(["deploy", { target: "staging" }, "call-deploy"]),
       reply("Done."),
     );
-    harness.verdicts.push(assessment("low", "high", "The user asked to deploy staging."));
+    harness.guardianReplies.push(assessment("low", "high", "The user asked to deploy staging."));
     await harness.session.prompt("Look up x, then deploy staging.");
 
     expect(harness.executed).toEqual(["lookup:x", "deploy:staging"]);
@@ -61,7 +61,9 @@ describe("Guardian through the native SDK", () => {
       guardianSettings: { model: "guardian-test/reviewer" },
     });
     harness.responses.push(toolCalls(["deploy", { target: "production" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push(assessment("high", "low", "Deploying production was not requested."));
+    harness.guardianReplies.push(
+      assessment("high", "low", "Deploying production was not requested."),
+    );
     await harness.session.prompt("Deploy staging.");
 
     expect(harness.executed).toEqual([]);

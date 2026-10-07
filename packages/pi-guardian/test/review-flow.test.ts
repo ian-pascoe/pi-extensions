@@ -37,7 +37,7 @@ describe("Review Failure", () => {
   it("blocks without UI, ending with the troubleshooting hint", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push("I think this is fine.", "Still fine.");
+    harness.guardianReplies.push("I think this is fine.", "Still fine.");
     await harness.session.prompt("Deploy a.");
 
     expect(harness.executed).toEqual([]);
@@ -55,7 +55,7 @@ describe("Review Failure", () => {
   it("retries a malformed reply once with the output contract, then allows a valid one", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push("Looks fine to me.", assessment("low", "high", "Requested."));
+    harness.guardianReplies.push("Looks fine to me.", assessment("low", "high", "Requested."));
     await harness.session.prompt("Deploy a.");
 
     expect(harness.executed).toEqual(["deploy:a"]);
@@ -95,10 +95,10 @@ describe("Review Failure", () => {
       ),
       /Guardian Review timed out after 0.02s/,
     ],
-  ] as const)("treats %s as a Review Failure", async (_case, settings, verdict, failure) => {
+  ] as const)("treats %s as a Review Failure", async (_case, settings, scripted, failure) => {
     const harness = await createGuardianHarness({ guardianSettings: settings });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    if (verdict) harness.verdicts.push(verdict);
+    if (scripted) harness.guardianReplies.push(scripted);
     await harness.session.prompt("Deploy a.");
     expect(harness.executed).toEqual([]);
     expect(resultText(harness, "call-1")).toMatch(failure);
@@ -116,7 +116,7 @@ describe("Review Failure", () => {
       },
     });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push(new Error("provider down"));
+    harness.guardianReplies.push(new Error("provider down"));
     await harness.session.prompt("Deploy a.");
 
     expect(titles[0]).toMatch(
@@ -134,7 +134,7 @@ describe("Review Failure", () => {
       ui: { select: async () => "Block" },
     });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push(new Error("provider down"));
+    harness.guardianReplies.push(new Error("provider down"));
     await harness.session.prompt("Deploy a.");
     expect(harness.executed).toEqual([]);
     expect(resultText(harness, "call-1")).toMatch(/^Guardian could not review this deploy call/);
@@ -177,7 +177,7 @@ describe("Guardian Review lifecycle", () => {
     let harness: Harness | undefined;
     harness = await createGuardianHarness({ guardianSettings: reviewer });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]));
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       new DeferredReply(
         (options) =>
           new Promise((_resolve, reject) => {
@@ -223,7 +223,7 @@ describe("Guardian Review lifecycle", () => {
       toolCalls(["deploy", { target: "b" }, "call-2"]),
       reply("never requested"),
     );
-    harness.verdicts.push(reject, reject);
+    harness.guardianReplies.push(reject, reject);
     await harness.session.prompt("Deploy.");
     // The second Rejection ended the turn: no third model request.
     expect(harness.agentRequests).toHaveLength(2);
@@ -231,7 +231,7 @@ describe("Guardian Review lifecycle", () => {
 
     harness.responses.splice(0);
     harness.responses.push(toolCalls(["deploy", { target: "c" }, "call-3"]), reply("Ok."));
-    harness.verdicts.push(reject);
+    harness.guardianReplies.push(reject);
     await harness.session.prompt("Try again.");
     // A new request starts a new streak: one Rejection does not end the turn.
     expect(harness.agentRequests).toHaveLength(4);
@@ -251,7 +251,7 @@ describe("Guardian Review lifecycle", () => {
       await bothStarted;
       return assessment("low", "high", "Requested.");
     });
-    harness.verdicts.push(concurrent, concurrent);
+    harness.guardianReplies.push(concurrent, concurrent);
     harness.responses.push(
       toolCalls(["deploy", { target: "a" }, "call-a"], ["deploy", { target: "b" }, "call-b"]),
       reply("Ok."),
@@ -273,7 +273,7 @@ describe("Guardian Review lifecycle", () => {
       toolCalls(["script", { targets: ["a", "b"] }, "call-script"]),
       reply("Ok."),
     );
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("low", "high", "Requested."),
       assessment("high", "unknown", "Not requested."),
     );
@@ -299,7 +299,7 @@ describe("Guardian Review lifecycle", () => {
       toolCalls(["deploy", { target: "prod2" }, "call-2"]),
       reply("Ok."),
     );
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("high", "low", "Production."),
       assessment("low", "high", "Ok."),
     );
@@ -336,7 +336,7 @@ describe("Guardian Review lifecycle", () => {
       ],
     });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push(assessment("low", "high", "Requested."));
+    harness.guardianReplies.push(assessment("low", "high", "Requested."));
     await harness.session.prompt("Deploy a.");
     expect(harness.executed).toEqual(["deploy:rewritten"]);
     expect(harness.entries("pi-guardian-review")).toMatchObject([{ argumentDrift: true }]);
@@ -352,7 +352,7 @@ describe("Guardian Review lifecycle", () => {
         toolCalls(["deploy", { target: "prod" }, "call-2"]),
         reply("Ok."),
       );
-      harness.verdicts.push(
+      harness.guardianReplies.push(
         JSON.stringify({ risk_level: "low", user_authorization: "high" }),
         JSON.stringify({
           risk_level: "high",
@@ -387,7 +387,7 @@ describe("Guardian Review lifecycle", () => {
   it("decides an uncategorized high or critical assessment as medium, and records it", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("critical", "unknown", "It edits a core security module.", "core_module"),
     );
     await harness.session.prompt("Deploy a.");
@@ -411,7 +411,7 @@ describe("Guardian Review lifecycle", () => {
       },
     });
     harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       JSON.stringify({
         risk_level: "critical",
         user_authorization: "unknown",
@@ -456,7 +456,7 @@ describe("Guardian Review lifecycle", () => {
       ui: { setStatus: (_key, text) => statuses.push(text && stripVTControlCharacters(text)) },
     });
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
-    harness.verdicts.push(assessment("low", "high", "Requested."));
+    harness.guardianReplies.push(assessment("low", "high", "Requested."));
     await harness.session.prompt("Deploy a.");
     expect(statuses).toContain("guardian");
     expect(statuses).toContain("guardian: reviewing deploy");

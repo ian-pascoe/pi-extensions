@@ -44,7 +44,7 @@ describe("Pi's built-in tools on a real workspace", () => {
       toolCalls(["bash", { command: "touch made-by-bash" }, "call-2"]),
       reply("Ok."),
     );
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("high", "unknown", "Installs a git hook."),
       assessment("low", "high", "Requested."),
     );
@@ -68,7 +68,7 @@ describe("Pi's built-in tools on a real workspace", () => {
       toolCalls(["write", { path: "src/linked.txt", content: "new\n" }, "call-1"]),
       reply("Ok."),
     );
-    harness.verdicts.push(assessment("high", "unknown", "Changes another path."));
+    harness.guardianReplies.push(assessment("high", "unknown", "Changes another path."));
     await harness.session.prompt("Update linked.txt.");
     expect(harness.reviews).toHaveLength(1);
     expect(await readFile(join(harness.dir, "outside.txt"), "utf8")).toBe("old\n");
@@ -83,7 +83,7 @@ describe("Pi's built-in tools on a real workspace", () => {
       ),
       reply("Ok."),
     );
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("critical", "unknown", "Links a path the batch writes.", "sensitive_path"),
     );
     await harness.session.prompt("Do it.");
@@ -118,7 +118,7 @@ describe("Pi's built-in tools on a real workspace", () => {
       toolCalls(["write", { path: ".env.local", content: "A=2\n" }, "call-1"]),
       reply("Ok."),
     );
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("low", "high", "The user asked to update .env.local."),
       assessment("critical", "unknown", "Overwrites git config.", "sensitive_path"),
     );

@@ -29,7 +29,7 @@ async function overflowingSession(turns: number, promptTokens: (estimated: numbe
       toolCalls(["deploy", { target: `${turn}:${"x".repeat(300)}` }, `call-${turn}`]),
     );
   harness.responses.push(reply("Done."));
-  harness.verdicts.push(
+  harness.guardianReplies.push(
     ...Array.from({ length: turns }, () => assessment("low", "high", "Requested.")),
   );
   await harness.session.prompt("Deploy every target, one at a time.");
@@ -50,7 +50,7 @@ describe("Guardian prompt-cache stability", () => {
       toolCalls(["deploy", { target: "staging-2" }, "call-3"]),
       reply("Done."),
     );
-    harness.verdicts.push(
+    harness.guardianReplies.push(
       assessment("low", "high", "Requested."),
       assessment("low", "high", "Requested."),
     );
@@ -176,7 +176,7 @@ describe("calibration from the session", () => {
       toolCalls(["deploy", { target: `again:${"x".repeat(300)}` }, "call-again"]),
       reply("Done."),
     );
-    reloaded.verdicts.push(assessment("low", "high", "Requested."));
+    reloaded.guardianReplies.push(assessment("low", "high", "Requested."));
     await reloaded.session.prompt("Deploy once more.");
     // Its first review already uses the 2.5\u00d7 factor the session recorded, not the 1.5\u00d7 fallback.
     const tokens = blockTokens(evidenceBlocks(reloaded.reviews[0]));
@@ -199,7 +199,9 @@ describe("the Guarded Agent's requests", () => {
       toolCalls(["script", { targets: ["a"] }, "call-3"]),
       reply("Done."),
     );
-    harness.verdicts.push(...Array.from({ length: 3 }, () => assessment("low", "high", "Ok.")));
+    harness.guardianReplies.push(
+      ...Array.from({ length: 3 }, () => assessment("low", "high", "Ok.")),
+    );
     await harness.session.prompt("Deploy staging, then run the script.");
     vi.useRealTimers();
     // Each harness has its own temporary workspace; nothing else may differ.
