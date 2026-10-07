@@ -29,9 +29,13 @@ interface CombinedReview {
 
 /**
  * A real root session running Minimal Subagents and Guardian, whose agent delegates deploying x
- * to a Child Agent and waits; the Child Agent then deploys x. Every review allows its call.
+ * to a Child Agent and waits; the Child Agent then deploys x. Every review allows its call, the
+ * root's with `rootAssessment`.
  */
-async function delegateDeploy(setup: readonly string[]) {
+async function delegateDeploy(
+  setup: readonly string[],
+  rootAssessment: Record<string, string> = { risk_level: "low", user_authorization: "high" },
+) {
   const directory = await mkdtemp(join(tmpdir(), "pi-guardian-combined-"));
   onTestFinished(() => rm(directory, { recursive: true, force: true }));
   vi.stubEnv("PI_CODING_AGENT_DIR", directory);
@@ -79,8 +83,9 @@ async function delegateDeploy(setup: readonly string[]) {
           {
             type: "text",
             text: JSON.stringify({
-              risk_level: "low",
-              user_authorization: "high",
+              ...(role === "main"
+                ? rootAssessment
+                : { risk_level: "low", user_authorization: "high" }),
               rationale: "Requested.",
             }),
           },
@@ -197,6 +202,18 @@ it("weighs a task the root's Guardian approved as Trusted Evidence in the Child 
     approval: expect.stringContaining("(risk low, user authorization high)"),
     text: "Deploy x.",
   });
+});
+
+it("keeps a task untrusted when the root's Guardian allowed it without user authorization", async () => {
+  const { reviews, executed } = await delegateDeploy([], {
+    risk_level: "medium",
+    user_authorization: "unknown",
+  });
+  expect(executed).toEqual(["child:deploy:x"]);
+  expect(labels(reviews.find((review) => review.role === "child"))).toEqual([
+    "Evidence (TRUSTED, origin: rootUser):",
+    "Evidence (UNTRUSTED, origin: user):",
+  ]);
 });
 
 it("keeps a task untrusted when an allow Tool Policy let the delegation run unreviewed", async () => {

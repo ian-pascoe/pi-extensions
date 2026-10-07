@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import { recordedOverrides } from "../src/guardian-audit.js";
+import { recordedDelegations, recordedOverrides, type ReviewEntry } from "../src/guardian-audit.js";
 import {
   argumentsHash,
   branchMessages,
@@ -319,6 +319,60 @@ describe("approved delegations", () => {
     expect(child({ sources: [user("Deploy x.", 1)], delegator: undefined })[0]).toMatch(
       /^Evidence \(UNTRUSTED, origin: user\)/,
     );
+  });
+});
+
+describe("recorded delegations", () => {
+  const entry = (overrides: Partial<ReviewEntry>): ReviewEntry => ({
+    version: 1,
+    toolName: "subagent",
+    toolCallId: "c",
+    parentToolCallId: null,
+    arguments: "{}",
+    argumentsSha256: "x",
+    risk: "low",
+    authorization: "high",
+    result: "allowed",
+    rationale: null,
+    failure: null,
+    userOverride: false,
+    blocked: false,
+    model: null,
+    durationMs: 0,
+    usage: null,
+    cost: null,
+    delegationSha256: textSha256("Deploy x."),
+    executed: true,
+    ...overrides,
+  });
+
+  it("publishes only delegations the user authorized or allowed once", () => {
+    const published = (overrides: Partial<ReviewEntry>) =>
+      recordedDelegations([], [entry(overrides)]).length;
+    expect(published({})).toBe(1);
+    expect(published({ risk: "high", riskCategory: "destruction", authorization: "medium" })).toBe(
+      1,
+    );
+    // Allowed, but the Guardian did not find the user authorized it.
+    expect(published({ risk: "medium", authorization: "unknown" })).toBe(0);
+    expect(published({ risk: "low", authorization: "low" })).toBe(0);
+    // An uncategorized critical decided as `medium` is allowed, but not an approval.
+    expect(published({ risk: "critical", authorization: "high", downgraded: true })).toBe(0);
+    // The user allowed it once after a Rejection or Review Failure.
+    expect(
+      published({
+        result: "rejected",
+        risk: "critical",
+        authorization: "unknown",
+        userOverride: true,
+      }),
+    ).toBe(1);
+    expect(
+      published({ result: "failed", risk: null, authorization: null, userOverride: true }),
+    ).toBe(1);
+    // Blocked, or never run.
+    expect(published({ result: "rejected", blocked: true })).toBe(0);
+    expect(published({ executed: false })).toBe(0);
   });
 });
 

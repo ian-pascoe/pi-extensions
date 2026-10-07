@@ -210,7 +210,22 @@ export function recordedOverrides(branch: readonly SessionEntry[]): RecordedOver
 }
 
 /**
- * Delegations this session's Guardian allowed, or its user allowed once, on the branch: the
+ * Whether a review approved its delegating call: the user allowed it once, or the Guardian
+ * allowed it while judging the user authorized it (`medium` or `high`) and naming a Risk
+ * Category for any `high` or `critical` risk. An allowed call the Guardian could not tie to the
+ * user's request is not approved, so its text stays untrusted in the Child Agent.
+ */
+function approvedDelegation(data: ReviewEntry): boolean {
+  if (data.userOverride) return true;
+  return (
+    data.result === "allowed" &&
+    !data.downgraded &&
+    (data.authorization === "medium" || data.authorization === "high")
+  );
+}
+
+/**
+ * Delegations this session's Guardian approved, or its user allowed once, on the branch: the
  * delegated texts its Child Agents may weigh as Trusted Evidence. A call allowed by an `allow`
  * Tool Policy is never reviewed and so never recorded here.
  */
@@ -220,9 +235,9 @@ export function recordedDelegations(
 ): ApprovedDelegation[] {
   return [...reviewEntries(branch).map(({ data }) => data), ...pending].flatMap((data) =>
     data.delegationSha256 !== undefined &&
-    data.result !== "unused" &&
     !data.blocked &&
-    data.executed !== false
+    data.executed !== false &&
+    approvedDelegation(data)
       ? [
           {
             sha256: data.delegationSha256,

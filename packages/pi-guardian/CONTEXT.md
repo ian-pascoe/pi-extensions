@@ -61,7 +61,7 @@ Evidence that can establish User Authorization: messages the user typed, context
 _Avoid_: Transcript
 
 **Approved Delegation**:
-A Child Agent's task or Coordination Message from its direct parent that the parent's Guardian reviewed and allowed, or the parent's user allowed once. It is Trusted Evidence in the Child Agent, written by the delegating agent and bounded by what that Guardian judged the user to have requested. A delegation an `allow` Tool Policy let through unreviewed is not approved.
+A Child Agent's task or Coordination Message from its direct parent that the parent's Guardian reviewed and allowed with at least `medium` User Authorization (and a Risk Category for any `high` or `critical` risk), or the parent's user allowed once. It is Trusted Evidence in the Child Agent, written by the delegating agent and bounded by what that Guardian judged the user to have requested. A delegation an `allow` Tool Policy let through unreviewed is not approved.
 _Avoid_: Trusted task, delegated authority
 
 **Decision Table**:
