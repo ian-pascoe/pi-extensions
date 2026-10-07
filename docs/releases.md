@@ -92,6 +92,17 @@ releases `0.1.0` through the ordinary version PR. Deprecate every published
 npm deprecate @ian-pascoe/pi-git-status-widget "Retired; use @ian-pascoe/pi-command-deck."
 ```
 
+## Guardian bootstrap
+
+After the implementation PR merges, publish `@ian-pascoe/pi-guardian@0.0.0`
+from `packages/pi-guardian` with `npm publish --access public --provenance=false`
+after the release gates pass, then configure its trusted publisher as for Advisor.
+Guardian imports the `layered-settings` and `evidence` exports that the pending
+`@ian-pascoe/pi-utils` minor release adds, while its manifest range still names
+the current workspace version, so the `0.0.0` bootstrap only reserves the package
+name. Its `minor` Changeset releases the usable `0.1.0` in the same version PR
+that releases pi-utils and raises Guardian's pi-utils range.
+
 ## Trusted publishing and guarded automation
 
 Configure npm Trusted Publishing for every active package with repository

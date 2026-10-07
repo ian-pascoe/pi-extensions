@@ -25,6 +25,7 @@ independently or together from this Git repository.
 | [`@ian-pascoe/pi-skills-selector`](packages/pi-skills-selector)       | Native `$skill-name` completion and instruction links.       | `pi install npm:@ian-pascoe/pi-skills-selector`    |
 | [`@ian-pascoe/pi-advisor`](packages/pi-advisor)                       | Optional background review and attributed corrective advice. | `pi install npm:@ian-pascoe/pi-advisor`            |
 | [`@ian-pascoe/pi-termctrl`](packages/pi-termctrl)                     | Interactive Terminals, Background jobs, and a `/ps` panel.   | `pi install npm:@ian-pascoe/pi-termctrl`           |
+| [`@ian-pascoe/pi-guardian`](packages/pi-guardian)                     | Model-reviewed gating of risky tool calls before they run.   | `pi install npm:@ian-pascoe/pi-guardian`           |
 
 `@ian-pascoe/pi-codemode` and `@ian-pascoe/pi-mcp` are retired in favor of Pi's
 built-in `codemode` (`defaultTools: ["+codemode"]`) and MCP support (`mcp.json`).
@@ -78,6 +79,7 @@ packages/pi-context-management/src/index.ts
 packages/pi-skills-selector/src/index.ts
 packages/pi-advisor/src/index.ts
 packages/pi-termctrl/src/index.ts
+packages/pi-guardian/src/index.ts
 ```
 
 Every selectable configuration skill path is:
@@ -97,6 +99,7 @@ packages/pi-context-management/skills/pi-context-management/SKILL.md
 packages/pi-skills-selector/skills/pi-skills-selector/SKILL.md
 packages/pi-advisor/skills/pi-advisor/SKILL.md
 packages/pi-termctrl/skills/pi-termctrl/SKILL.md
+packages/pi-guardian/skills/pi-guardian/SKILL.md
 ```
 
 Pin a tag or commit for reproducible Git installs:
@@ -125,6 +128,7 @@ pi install git:github.com/ian-pascoe/pi-extensions@<tag-or-commit>
 - Pi Termctrl Terminals need the `termctrl` binary that `@kitlangton/terminal-control`
   installs for macOS and GNU/Linux on arm64 or x64. Elsewhere only the `bash`
   replacement and Background jobs work.
+- Pi Guardian is enabled by default and reviews risky tool calls with the session's model unless configured; load it last so no later extension rewrites reviewed arguments.
 - Pi Advisor is disabled by default. Loaded Context Management requires all three private context-tool grants; incompatible tool exposure pauses review rather than expanding permissions.
 
 See package READMEs for configuration. The repository MIT license covers
@@ -169,6 +173,8 @@ pnpm --filter @ian-pascoe/pi-advisor typecheck
 pnpm --filter @ian-pascoe/pi-advisor test
 pnpm --filter @ian-pascoe/pi-termctrl typecheck
 pnpm --filter @ian-pascoe/pi-termctrl test
+pnpm --filter @ian-pascoe/pi-guardian typecheck
+pnpm --filter @ian-pascoe/pi-guardian test
 pnpm test:root
 ```
 
