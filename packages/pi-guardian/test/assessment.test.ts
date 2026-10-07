@@ -61,7 +61,7 @@ describe("Guardian output parsing", () => {
   it.each([
     ["prose", "Looks fine to me."],
     ["unknown risk", '{"risk_level":"severe","user_authorization":"low","rationale":"x"}'],
-    ["missing rationale", '{"risk_level":"low","user_authorization":"low"}'],
+    ["missing authorization", '{"risk_level":"low","rationale":"x"}'],
     ["broken JSON", '{"risk_level":"low",'],
     [
       "two differing assessments",
@@ -69,6 +69,14 @@ describe("Guardian output parsing", () => {
     ],
   ])("rejects %s as a Review Failure", (_case, text) => {
     expect(() => parseAssessment(text)).toThrow(/malformed output/);
+  });
+
+  it.each(["low", "critical"])("accepts a %s-risk assessment without a rationale", (risk) => {
+    expect(parseAssessment(`{"risk_level":"${risk}","user_authorization":"low"}`)).toEqual({
+      risk,
+      authorization: "low",
+      rationale: "",
+    });
   });
 });
 
@@ -87,6 +95,12 @@ describe("Rejection text", () => {
         "Reason: Exfiltrates keys.",
         "Do not attempt to achieve the same outcome through a workaround, indirect execution, or variations of this call, and do not retry it. Explain the risk to the user and ask whether they want to proceed; continue only with a materially safer alternative or after the user explicitly approves this action.",
       ].join("\n"),
+    );
+  });
+
+  it("uses a fixed reason when a high-risk assessment omits its rationale", () => {
+    expect(rejectionReason({ risk: "high", authorization: "low", rationale: "" })).toContain(
+      "Reason: The Guardian gave no specific rationale.\n",
     );
   });
 });

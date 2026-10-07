@@ -17,11 +17,14 @@ export const userAuthorizationSchema = Type.Union([
 ]);
 export type UserAuthorization = Static<typeof userAuthorizationSchema>;
 
-/** The Guardian's required answer; extra fields are tolerated and ignored. */
+/**
+ * The Guardian's required answer; extra fields are tolerated and ignored. The rationale is
+ * optional because, unless `verbose` is on, the Guardian gives one only for `high` or `critical`.
+ */
 export const assessmentSchema = Type.Object({
   risk_level: riskLevelSchema,
   user_authorization: userAuthorizationSchema,
-  rationale: Type.String(),
+  rationale: Type.Optional(Type.String()),
 });
 /** One Guardian Review's assessment. */
 export interface Assessment {
@@ -82,7 +85,7 @@ function assessments(text: string): Assessment[] {
     found.push({
       risk: parsed.risk_level,
       authorization: parsed.user_authorization,
-      rationale: parsed.rationale.trim(),
+      rationale: parsed.rationale?.trim() ?? "",
     });
   }
   return found;

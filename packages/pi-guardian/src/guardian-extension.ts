@@ -69,9 +69,16 @@ export default function guardian(pi: ExtensionAPI): void {
   /** The notice recommending a dedicated Guardian model is shown once per process. */
   let modelNoticeShown = false;
 
-  pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) =>
-    renderReviewEntry(entry.data, expanded, theme),
-  );
+  // Allowed reviews stay out of the transcript unless `verbose` is on; their entries still count.
+  pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) => {
+    const current = effective();
+    return renderReviewEntry(
+      entry.data,
+      expanded,
+      theme,
+      current.ok && current.resolved.settings.verbose,
+    );
+  });
   pi.registerEntryRenderer(statusEntryType, (entry, { expanded }, theme) =>
     renderStatusEntry(entry.data, expanded, theme),
   );

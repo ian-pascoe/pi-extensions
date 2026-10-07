@@ -343,6 +343,41 @@ describe("Guardian Review lifecycle", () => {
     expect(notices.some((notice) => notice.includes("load Guardian last"))).toBe(true);
   });
 
+  it.each([false, true])(
+    "with verbose %s, asks for rationales and shows allowed reviews accordingly",
+    async (verbose) => {
+      const harness = await createGuardianHarness({ guardianSettings: { ...reviewer, verbose } });
+      harness.responses.push(
+        toolCalls(["deploy", { target: "a" }, "call-1"]),
+        toolCalls(["deploy", { target: "prod" }, "call-2"]),
+        reply("Ok."),
+      );
+      harness.verdicts.push(
+        JSON.stringify({ risk_level: "low", user_authorization: "high" }),
+        JSON.stringify({ risk_level: "high", user_authorization: "low" }),
+      );
+      await harness.session.prompt("Deploy a.");
+      expect(harness.executed).toEqual(["deploy:a"]);
+      expect(harness.reviews[0]?.systemPrompt.includes("omit the rationale")).toBe(!verbose);
+      // A high-risk assessment without a rationale still rejects, with a fixed reason.
+      expect(resultText(harness, "call-2")).toContain(
+        "Reason: The Guardian gave no specific rationale.",
+      );
+      const runner = harness.session.extensionRunner;
+      const renderer = runner?.getEntryRenderer("pi-guardian-review");
+      const theme = runner?.getUIContext().theme;
+      if (!renderer || !theme) throw new Error("Missing review renderer");
+      const rendered = harness.session.sessionManager
+        .getBranch()
+        .flatMap((entry) =>
+          entry.type === "custom" && entry.customType === "pi-guardian-review" ? [entry] : [],
+        )
+        .map((entry) => renderer(entry, { expanded: false }, theme) !== undefined);
+      // The allowed review shows only when verbose; the Rejection always shows.
+      expect(rendered).toEqual([verbose, true]);
+    },
+  );
+
   it("recommends a dedicated small model once when reviews would use the session model", async () => {
     const notices: string[] = [];
     await createGuardianHarness({ ui: { notify: (text) => notices.push(text) } });

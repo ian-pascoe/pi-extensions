@@ -79,7 +79,7 @@ The Reviewed Call is never shortened, since a cut could hide the harmful part of
 
 ### Decision Table
 
-The model returns `{"risk_level", "user_authorization", "rationale"}` (fenced JSON is tolerated; a reply with two differing assessments is malformed). The Outcome is fixed:
+The model returns `{"risk_level", "user_authorization", "rationale"}` (fenced JSON is tolerated; a reply with two differing assessments is malformed). Unless `verbose` is on, the output contract asks for the rationale only at `high` or `critical` risk, the only levels the Decision Table can reject, which saves output tokens and latency; a Rejection whose assessment omits it uses the fixed reason "The Guardian gave no specific rationale." The contract is part of the system prompt, so it changes, and the cache restarts, only when `verbose` does. The Outcome is fixed:
 
 | Risk Level | `unknown` | `low`    | `medium` | `high`   |
 | ---------- | --------- | -------- | -------- | -------- |
@@ -113,6 +113,8 @@ A reply without exactly one valid assessment gets one corrective retry within th
 
 Every Guardian Review appends a `pi-guardian-review` session entry, which never reaches the model: tool, call ID, parent call ID, arguments (bounded) and their full SHA-256, Risk Level, User Authorization, outcome, rationale, failure, User Override, whether an allowed call actually ran, model, duration, token usage and cost summed over a retry, whether the review was retried, and argument drift. `/guardian status` derives its totals from the selected branch's entries.
 
+The transcript shows only the reviews that need attention: Rejections, Review Failures, aborted reviews, User Overrides, and argument drift. Allowed and unused reviews are still recorded and counted, but render nothing unless `verbose` is on. Guardian shows no notice for allowed calls; while a review runs, the footer shows `guardian: reviewing <tool>`.
+
 User Overrides return to later reviews as Trusted Evidence in structured form. The user's decision is trusted but the arguments were written by the agent, so they are a marked field, and the Guardian's rationale is left out:
 
 ```json
@@ -140,7 +142,7 @@ User Overrides return to later reviews as Trusted Evidence in structured form. T
 /guardian set <key> <JSON> [--global|--project]
 ```
 
-Without a flag, changes go to the session. In the interactive TUI, `/guardian` opens a settings menu like `/advisor`'s: a Scope row (session, trusted project, global), cycling rows for `enabled`, `thinkingLevel`, and `onDeny` that show the selected scope's own value or what it inherits, a model picker, a per-tool Tool Policy list, the Security Policy in Pi's editor, and typed values for the rest. Closing it records one status entry listing the changes it applied. Elsewhere `/guardian` records a status entry.
+Without a flag, changes go to the session. In the interactive TUI, `/guardian` opens a settings menu like `/advisor`'s: a Scope row (session, trusted project, global), cycling rows for `enabled`, `thinkingLevel`, `onDeny`, and `verbose` that show the selected scope's own value or what it inherits, a model picker, a per-tool Tool Policy list, the Security Policy in Pi's editor, and typed values for the rest. Closing it records one status entry listing the changes it applied. Elsewhere `/guardian` records a status entry.
 
 `/guardian status` records the effective settings with their sources, whether the session follows a root session, review counts (allowed, rejected, failed, aborted, overrides, argument drift), total review cost, and the last failure. The footer shows `guardian` while idle, `guardian: reviewing <tool>` during reviews, and nothing while disabled.
 
@@ -160,6 +162,7 @@ Settings live under `guardian` in Pi's global and trusted-project `settings.json
 | `evidenceBudgetTokens`     | `"auto"`  | Positive integer or `auto`.                                                                          |
 | `onDeny`                   | `"block"` | `block`, or `ask` to offer Allow once on a Rejection in interactive sessions.                        |
 | `maxConsecutiveRejections` | `3`       | Rejection Streak that ends the turn; `0` never ends it.                                              |
+| `verbose`                  | `false`   | Ask for a rationale on every review and show allowed reviews in the transcript, for debugging.       |
 
 `tools` merges entry by entry across scopes: a higher scope adds or replaces entries, and `null` removes a lower scope's entry so the built-in default applies again. `set tools <JSON>` replaces that scope's whole map; `tool <name> <value>` changes one entry (`default` writes `null`, `inherit` removes the scope's entry). A configured Tool Policy overrides the built-in default, so `{"edit": "allow"}` also allows edits to Sensitive Paths.
 

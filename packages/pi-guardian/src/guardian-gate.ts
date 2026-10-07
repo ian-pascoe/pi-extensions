@@ -262,7 +262,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     const session = host.session();
     if (!session) return failed(host.unavailable());
     const role = host.role();
-    const systemPrompt = guardianSystemPrompt(config.policy);
+    const systemPrompt = guardianSystemPrompt(config.policy, config.verbose);
     const reviewed = renderReviewedCall({
       toolName: call.toolName,
       input: call.input,

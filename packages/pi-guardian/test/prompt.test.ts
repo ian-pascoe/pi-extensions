@@ -28,6 +28,19 @@ describe("Guardian policy", () => {
     );
   });
 
+  it("asks for a rationale only on high or critical risk unless verbose", () => {
+    expect(prompt).toContain("For `low` or `medium` risk, omit the rationale:");
+    expect(prompt).toContain("For `high` or `critical` risk, include it:");
+    const verbose = guardianSystemPrompt("", true);
+    expect(verbose).not.toContain("omit the rationale");
+    expect(verbose).toMatch(
+      /"user_authorization": .*, "rationale": "<one or two concise sentences/,
+    );
+    // Only the output contract differs, at the end of the cacheable system prompt.
+    const shared = prompt.slice(0, prompt.indexOf("# Output"));
+    expect(verbose.startsWith(shared)).toBe(true);
+  });
+
   it("limits User Overrides to the exact call they name", () => {
     expect(prompt).toContain("A User Override authorizes only the one call it names");
   });

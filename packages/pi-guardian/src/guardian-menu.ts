@@ -70,16 +70,19 @@ const cycleValues = {
   enabled: ["inherit", "on", "off"],
   thinkingLevel: ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"],
   onDeny: ["inherit", "block", "ask"],
+  verbose: ["inherit", "on", "off"],
 } as const satisfies Record<string, readonly string[]>;
 type CycleKey = keyof typeof cycleValues;
 
 function isCycleKey(key: keyof GuardianOptions): key is CycleKey {
-  return key === "enabled" || key === "thinkingLevel" || key === "onDeny";
+  return key === "enabled" || key === "thinkingLevel" || key === "onDeny" || key === "verbose";
 }
 
 function cycleValue(key: CycleKey, options: GuardianOptions): string | undefined {
-  if (key === "enabled")
-    return options.enabled === undefined ? undefined : options.enabled ? "on" : "off";
+  if (key === "enabled" || key === "verbose") {
+    const value = options[key];
+    return value === undefined ? undefined : value ? "on" : "off";
+  }
   return options[key];
 }
 
@@ -95,6 +98,8 @@ const descriptions = {
     "Token budget for evidence; auto is a quarter of the Guardian model's context window, at most 32k",
   onDeny: "On a Rejection: block, or ask the user to allow once",
   maxConsecutiveRejections: "Rejection Streak that ends the agent's turn; 0 never ends it",
+  verbose:
+    "Ask for a rationale on every review and show allowed reviews in the transcript; off asks only for high-risk ones",
 } satisfies Record<keyof GuardianOptions, string>;
 const inputHints = {
   safeCommands: "comma-separated command prefixes, none, or inherit",
@@ -122,6 +127,8 @@ export function parseGuardianMenuValue(
     switch (key) {
       case "enabled":
         return { enabled: value === "on" ? true : value === "off" ? false : value };
+      case "verbose":
+        return { verbose: value === "on" ? true : value === "off" ? false : value };
       case "safeCommands":
         return {
           safeCommands:

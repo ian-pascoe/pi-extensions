@@ -89,7 +89,10 @@ export function formatGuardianOption(options: GuardianOptions, key: keyof Guardi
         ? `${options.reviewTimeoutMs}ms`
         : `${options.reviewTimeoutMs / 1_000}s`;
     case "enabled":
-      return options.enabled === undefined ? "inherit" : options.enabled ? "on" : "off";
+    case "verbose": {
+      const value = options[key];
+      return value === undefined ? "inherit" : value ? "on" : "off";
+    }
     default: {
       const value = options[key];
       return value === undefined ? "inherit" : String(value);
@@ -97,15 +100,26 @@ export function formatGuardianOption(options: GuardianOptions, key: keyof Guardi
   }
 }
 
-/** One Guardian Review in the transcript: outcome, tool, scores, and rationale. */
+/**
+ * One Guardian Review in the transcript: outcome, tool, scores, and rationale. Unless `verbose`
+ * is on, a review that let its call run unremarkably renders nothing: an allowed or unused review
+ * without a User Override or argument drift. Rejections, Review Failures, aborts, and User
+ * Overrides always show.
+ */
 export function renderReviewEntry(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled entry data is validated by the review schema below; anything else renders raw.
   data: unknown,
   expanded: boolean,
   theme: GuardianRenderTheme,
-): Component {
+  verbose = false,
+): Component | undefined {
   if (!Value.Check(reviewEntrySchema, data))
     return new Text(`Guardian Review\n${JSON.stringify(data, null, 2)}`, 0, 0);
+  const quiet =
+    (data.outcome === "allowed" || data.outcome === "unused") &&
+    !data.userOverride &&
+    !data.argumentDrift;
+  if (quiet && !verbose) return undefined;
   const style = outcomeStyle[data.outcome];
   const scores =
     data.risk && data.authorization

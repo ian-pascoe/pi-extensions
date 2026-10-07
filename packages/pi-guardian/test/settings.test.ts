@@ -54,6 +54,7 @@ describe("Guardian settings", () => {
         evidenceBudgetTokens: "auto",
         onDeny: "block",
         maxConsecutiveRejections: 3,
+        verbose: false,
       },
       sources: expect.objectContaining({ enabled: "default", tools: "default" }),
     });

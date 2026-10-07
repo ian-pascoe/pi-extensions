@@ -54,6 +54,8 @@ export const guardianOptionsSchema = Type.Object(
     maxConsecutiveRejections: Type.Optional(
       Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
     ),
+    /** Ask for a rationale on every review and show allowed reviews in the transcript. */
+    verbose: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -73,6 +75,7 @@ export interface GuardianConfig {
   evidenceBudgetTokens: number | "auto";
   onDeny: "block" | "ask";
   maxConsecutiveRejections: number;
+  verbose: boolean;
 }
 
 export const guardianSettingScopeSchema = Type.Union([
@@ -97,6 +100,7 @@ export const guardianDefaults: GuardianConfig = {
   evidenceBudgetTokens: "auto",
   onDeny: "block",
   maxConsecutiveRejections: 3,
+  verbose: false,
 };
 
 /** Pi's branch summarization uses the same fallback for models without a declared window. */

@@ -174,20 +174,45 @@ describe("Guardian renderers", () => {
       cost: null,
     };
     const theme = plainTheme;
-    const collapsed = stripVTControlCharacters(
-      renderReviewEntry(entry, false, theme).render(200).join("\n"),
+    const render = (data: Parameters<typeof renderReviewEntry>[0], expanded: boolean) =>
+      renderReviewEntry(data, expanded, theme)
+        ?.render(200)
+        .map((line) => stripVTControlCharacters(line))
+        .join("\n");
+    expect(render(entry, false)).toContain(
+      "✖ Guardian rejected  bash  risk high · authorization low",
     );
-    expect(collapsed).toContain("✖ Guardian rejected  bash  risk high · authorization low");
-    const expanded = stripVTControlCharacters(
-      renderReviewEntry(entry, true, theme).render(200).join("\n"),
-    );
+    const expanded = render(entry, true);
     expect(expanded).toContain('arguments {"command":"rm -rf dist"}');
     expect(expanded).toContain("p/m · 1.5s · 2 tokens · cost unknown");
-    expect(
-      stripVTControlCharacters(
-        renderReviewEntry({ bogus: true }, false, theme).render(80).join("\n"),
-      ),
-    ).toContain("Guardian Review");
+    expect(render({ bogus: true }, false)).toContain("Guardian Review");
+  });
+
+  it("hides allowed reviews unless verbose, but always shows overrides and drift", () => {
+    const allowed = {
+      version: 1,
+      toolName: "deploy",
+      toolCallId: "c",
+      parentToolCallId: null,
+      arguments: "{}",
+      argumentsSha256: "0".repeat(64),
+      risk: "low",
+      authorization: "high",
+      outcome: "allowed",
+      rationale: null,
+      failure: null,
+      userOverride: false,
+      blocked: false,
+      model: "p/m",
+      durationMs: 100,
+      usage: null,
+      cost: null,
+    };
+    expect(renderReviewEntry(allowed, true, plainTheme)).toBeUndefined();
+    expect(renderReviewEntry({ ...allowed, outcome: "unused" }, true, plainTheme)).toBeUndefined();
+    expect(renderReviewEntry(allowed, false, plainTheme, true)).toBeDefined();
+    expect(renderReviewEntry({ ...allowed, userOverride: true }, false, plainTheme)).toBeDefined();
+    expect(renderReviewEntry({ ...allowed, argumentDrift: true }, false, plainTheme)).toBeDefined();
   });
 });
 

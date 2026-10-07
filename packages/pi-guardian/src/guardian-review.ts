@@ -111,7 +111,7 @@ function combinedUsage(
 
 /** Follow-up sent once after a malformed reply, restating the output contract. */
 export const correctiveMessage =
-  'Your reply did not contain exactly one valid assessment. Respond again with exactly one JSON object and nothing else: {"risk_level": "low" | "medium" | "high" | "critical", "user_authorization": "unknown" | "low" | "medium" | "high", "rationale": "<one or two concise sentences>"}';
+  'Your reply did not contain exactly one valid assessment. Respond again with exactly one JSON object and nothing else: {"risk_level": "low" | "medium" | "high" | "critical", "user_authorization": "unknown" | "low" | "medium" | "high"}, adding "rationale": "<one or two concise sentences>" when the output contract asks for it.';
 
 /** Text of a reply's text blocks. */
 function replyText(reply: AssistantMessage): string {
