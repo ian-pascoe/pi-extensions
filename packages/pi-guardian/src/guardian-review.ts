@@ -7,17 +7,16 @@ import {
   type ModelsSimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import { decide, parseAssessment, type Assessment, type Outcome } from "./guardian-assessment.js";
+import {
+  decide,
+  decidedRisk,
+  parseAssessment,
+  type Assessment,
+  type Outcome,
+} from "./guardian-assessment.js";
+import type { ReviewUsage } from "./guardian-audit.js";
+import { errorMessage } from "./guardian-notify.js";
 import type { GuardianThinkingLevel } from "./guardian-settings.js";
-
-/** Token usage of one Guardian Review. */
-export interface ReviewUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  total: number;
-}
 
 /** Measurements recorded for every Guardian Review that reached a model. */
 export interface ReviewMetrics {
@@ -34,6 +33,8 @@ export interface ReviewMetrics {
    * writes), to calibrate Guardian's request-size estimate.
    */
   promptTokens?: number;
+  /** Guardian's chars/4 estimate of the first request, paired with `promptTokens`. */
+  estimatedPromptTokens?: number;
 }
 
 /** What one Guardian Review produced. */
@@ -46,6 +47,11 @@ export type ReviewResult =
 export type ResolvedGuardianModel =
   | { ok: true; model: Model<Api> }
   | { ok: false; failure: string; model: string | null };
+
+/** A model's `provider/id` name, as the `model` setting and audit entries spell it. */
+export function modelName(model: Pick<Model<Api>, "provider" | "id">): string {
+  return `${model.provider}/${model.id}`;
+}
 
 /** `model` setting (`provider/id`), else the Guarded Agent's current model; it needs auth. */
 export function resolveGuardianModel(
@@ -67,7 +73,7 @@ export function resolveGuardianModel(
       failure: "No Guardian model: set the Guardian model setting or select a session model",
       model: null,
     };
-  const name = `${model.provider}/${model.id}`;
+  const name = modelName(model);
   if (!registry.hasConfiguredAuth(model))
     return {
       ok: false,
@@ -111,7 +117,7 @@ function combinedUsage(
 
 /** Follow-up sent once after a malformed reply, restating the output contract. */
 export const correctiveMessage =
-  'Your reply did not contain exactly one valid assessment. Respond again with exactly one JSON object and nothing else: {"risk_level": "low" | "medium" | "high" | "critical", "user_authorization": "unknown" | "low" | "medium" | "high"}, adding "rationale": "<one or two concise sentences>" when the output contract asks for it.';
+  'Your reply did not contain exactly one valid assessment. Respond again with exactly one JSON object and nothing else: {"risk_level": "low" | "medium" | "high" | "critical", "user_authorization": "unknown" | "low" | "medium" | "high"}, adding "risk_category" and "rationale" when the output contract asks for them.';
 
 /** Text of a reply's text blocks. */
 function replyText(reply: AssistantMessage): string {
@@ -126,7 +132,7 @@ function replyText(reply: AssistantMessage): string {
  */
 export async function runGuardianReview(input: GuardianReviewInput): Promise<ReviewResult> {
   const started = Date.now();
-  const name = `${input.model.provider}/${input.model.id}`;
+  const name = modelName(input.model);
   const replies: AssistantMessage[] = [];
   const measured = (): ReviewMetrics => {
     const result: ReviewMetrics = {
@@ -162,7 +168,7 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
           stopped,
         ]);
       } catch (cause) {
-        failure = cause instanceof Error ? cause.message : String(cause);
+        failure = errorMessage(cause);
       }
       if (reply) replies.push(reply);
       if (input.signal?.aborted) return { kind: "aborted", ...measured() };
@@ -189,14 +195,14 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
         return {
           kind: "assessed",
           assessment,
-          outcome: decide(assessment.risk, assessment.authorization),
+          outcome: decide(decidedRisk(assessment), assessment.authorization),
           ...measured(),
         };
       } catch (cause) {
         if (replies.length > 1)
           return {
             kind: "failed",
-            failure: `${cause instanceof Error ? cause.message : String(cause)}, even after a corrective retry`,
+            failure: `${errorMessage(cause)}, even after a corrective retry`,
             ...measured(),
           };
       }

@@ -183,7 +183,7 @@ describe("User Override evidence", () => {
           argumentsSha256: argumentsHash(input),
           risk: "high",
           authorization: "low",
-          outcome: "rejected",
+          result: "rejected",
           rationale: "RATIONALE TEXT",
           failure: null,
           userOverride: true,
@@ -242,6 +242,7 @@ describe("the Reviewed Call", () => {
     const rendered = renderReviewedCall({
       toolName: "bash",
       input: { command },
+      parent: undefined,
       cwd: "/repo",
       agent: "the main Pi agent",
     });

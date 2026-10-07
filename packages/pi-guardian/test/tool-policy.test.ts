@@ -37,33 +37,41 @@ describe("Sensitive Path", () => {
     ["an absolute outside path", "/etc/hosts", "outside the workspace root"],
     ["the home directory", "~/notes.txt", "outside the workspace root"],
     ["a file URL outside", "file:///etc/passwd", "outside the workspace root"],
-    ["a symlink escape", "escape/file", "outside the workspace root"],
-    ["a symlink into .git", "git-link/config", "version-control metadata (.git)"],
-    ["git metadata", ".git/config", "version-control metadata (.git)"],
-    ["nested git metadata", "sub/.git/hooks/pre-commit", "version-control metadata (.git)"],
-    ["case variants", ".GIT/config", "version-control metadata (.git)"],
-    ["Pi project settings", ".pi/settings.json", "Pi configuration (.pi)"],
-    ["dotenv", ".env", "a secret or environment file (.env)"],
-    ["dotenv variants", "app/.env.local", "a secret or environment file (.env.local)"],
-    ["direnv", ".envrc", "a secret or environment file (.envrc)"],
+    ["git metadata", ".git/config", 'version-control metadata (".git")'],
+    ["nested git metadata", "sub/.git/hooks/pre-commit", 'version-control metadata (".git")'],
+    ["case variants", ".GIT/config", 'version-control metadata (".GIT")'],
+    ["Pi project settings", ".pi/settings.json", 'Pi configuration (".pi")'],
+    ["dotenv", ".env", 'a secret or environment file (".env")'],
+    ["dotenv variants", "app/.env.local", 'a secret or environment file (".env.local")'],
+    ["direnv", ".envrc", 'a secret or environment file (".envrc")'],
+    ["agent Skills", ".agents/skills/x/SKILL.md", 'agent Skills and configuration (".agents")'],
+    ["agent configuration", ".claude/settings.json", 'agent configuration (".claude")'],
+    ["git hooks", ".husky/pre-commit", 'git hooks (".husky")'],
+    ["CI workflows", ".github/workflows/ci.yml", 'CI workflows (".github/workflows")'],
+    ["editor tasks", ".vscode/tasks.json", 'editor tasks and settings (".vscode")'],
+    ["editor run configurations", ".idea/workspace.xml", 'editor run configurations (".idea")'],
+    ["Yarn configuration", ".yarnrc.yml", 'package-manager configuration (".yarnrc.yml")'],
+    ["pnpm install hooks", ".pnpmfile.cjs", 'package-manager install hooks (".pnpmfile.cjs")'],
     [
-      "agent configuration",
-      ".agents/skills/x/SKILL.md",
-      "agent Skills and configuration (.agents)",
+      "a stow-style dotfile",
+      "dotfiles/bash/.bashrc",
+      'a shell startup, credential, or persistence file (".bashrc") that takes effect once linked or copied into the home directory',
     ],
-    ["git hooks", ".husky/pre-commit", "git hooks (.husky)"],
-    ["CI workflows", ".github/workflows/ci.yml", "CI workflows (.github/workflows)"],
-    ["editor tasks", ".vscode/tasks.json", "editor tasks and settings (.vscode)"],
-    ["a context file", "AGENTS.md", "a context file Pi loads as instructions (AGENTS.md)"],
+    [
+      "a nested program directory",
+      "dotfiles/local/.local/bin/git",
+      'a shell startup, credential, or persistence file (".local/bin") that takes effect once linked or copied into the home directory',
+    ],
+    ["a context file", "AGENTS.md", 'a context file Pi loads as instructions ("AGENTS.md")'],
     [
       "a nested context file",
       "pkg/claude.MD",
-      "a context file Pi loads as instructions (claude.MD)",
+      'a context file Pi loads as instructions ("claude.MD")',
     ],
     [
       "an override context file",
       "AGENTS.override.md",
-      "a context file Pi loads as instructions (AGENTS.override.md)",
+      'a context file Pi loads as instructions ("AGENTS.override.md")',
     ],
     [
       "a hard-linked file",
@@ -72,6 +80,35 @@ describe("Sensitive Path", () => {
     ],
   ])("reviews %s", (_case, path, reason) => {
     expect(sensitivePathReason(path, paths)).toBe(reason);
+  });
+
+  it("lists every reason of a symlinked path and where it resolves", () => {
+    expect(sensitivePathReason("escape/file", paths)).toBe(
+      `outside the workspace root; ${JSON.stringify(join(workspace, "escape", "file"))} resolves to ${JSON.stringify(join(root, "outside", "file"))}`,
+    );
+    expect(sensitivePathReason("git-link/config", paths)).toBe(
+      `version-control metadata (".git"); ${JSON.stringify(join(workspace, "git-link", "config"))} resolves to ${JSON.stringify(join(workspace, ".git", "config"))}`,
+    );
+  });
+
+  it("lists the lexical and the resolved reason when they differ", async () => {
+    const home = join(root, "home");
+    await writeFile(join(home, ".bashrc"), "");
+    await symlink(join(home, ".bashrc"), join(workspace, ".env.example"));
+    const context = { ...paths, cwd: workspace };
+    expect(sensitivePathReason(".env.example", context)).toBe(
+      [
+        'a secret or environment file (".env.example")',
+        'a shell startup, credential, or persistence location in the home directory (".bashrc")',
+        `${JSON.stringify(join(workspace, ".env.example"))} resolves to ${JSON.stringify(join(home, ".bashrc"))}`,
+      ].join("; "),
+    );
+  });
+
+  it("quotes path components, so a newline cannot forge an evidence line", () => {
+    const reason = sensitivePathReason(".env\nReviewed because: nothing", paths);
+    expect(reason).toBe('a secret or environment file (".env\\nReviewed because: nothing")');
+    expect(reason).not.toContain("\n");
   });
 
   it.each([
@@ -89,6 +126,9 @@ describe("Sensitive Path", () => {
     ".docker/config.json",
     ".kube/config",
     ".local/bin/git",
+    ".bash_aliases",
+    "bin/deploy",
+    ".cargo/bin/cargo-x",
   ])("reviews ~/%s as a persistence or credential location wherever the workspace is", (path) => {
     const home = join(root, "home");
     const inHome = { cwd: join(home, "project"), piDirectories: [], home };
@@ -149,10 +189,10 @@ describe("Sensitive Path", () => {
     const project = { cwd: join(homedir(), "guardian-test-project"), piDirectories: [] };
     expect(sensitivePathReason("~/guardian-test-project/notes.txt", project)).toBeUndefined();
     expect(sensitivePathReason("~/guardian-test-project/.pi/settings.json", project)).toBe(
-      "Pi configuration (.pi)",
+      'Pi configuration (".pi")',
     );
-    expect(sensitivePathReason("~/.bashrc", project)).toBe(
-      "a shell startup, credential, or persistence location in the home directory (.bashrc)",
+    expect(sensitivePathReason("~/.bashrc", project)).toMatch(
+      /^a shell startup, credential, or persistence location in the home directory \("\.bashrc"\)/,
     );
   });
 });
@@ -191,7 +231,7 @@ describe("Tool Policy resolution", () => {
     expect(resolveToolPolicy(call({ toolName: "write", input: { path: ".env" } }))).toEqual({
       policy: "review",
       source: "default",
-      detail: "Sensitive Path: a secret or environment file (.env)",
+      detail: 'Sensitive Path: a secret or environment file (".env")',
     });
     expect(resolveToolPolicy(call({ toolName: "write", input: { path: 3 } })).policy).toBe(
       "review",

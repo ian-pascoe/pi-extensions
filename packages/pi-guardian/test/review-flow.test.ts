@@ -47,7 +47,7 @@ describe("Review Failure", () => {
     );
     expect(text?.endsWith(TROUBLESHOOTING_HINT)).toBe(true);
     expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { outcome: "failed", blocked: true, userOverride: false, retried: true },
+      { result: "failed", blocked: true, userOverride: false, retried: true },
     ]);
     expect(harness.reviews).toHaveLength(2);
   });
@@ -67,7 +67,7 @@ describe("Review Failure", () => {
     expect(retry?.messages[1]).toMatchObject({ role: "assistant" });
     expect(retry?.messages[2]).toMatchObject({ role: "user", content: correctiveMessage });
     expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { outcome: "allowed", retried: true, usage: { input: 2_000 } },
+      { result: "allowed", retried: true, usage: { input: 2_000 } },
     ]);
   });
 
@@ -124,7 +124,7 @@ describe("Review Failure", () => {
     );
     expect(harness.executed).toEqual(["deploy:a"]);
     expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { outcome: "failed", userOverride: true, blocked: false },
+      { result: "failed", userOverride: true, blocked: false },
     ]);
   });
 
@@ -189,7 +189,7 @@ describe("Guardian Review lifecycle", () => {
     await harness.session.prompt("Deploy a.");
     expect(harness.executed).toEqual([]);
     expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { outcome: "aborted", blocked: true },
+      { result: "aborted", blocked: true },
     ]);
   });
 
@@ -284,8 +284,8 @@ describe("Guardian Review lifecycle", () => {
       'Issued by tool call: script\nIssuing call arguments: {"targets":["a","b"]}',
     );
     expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { toolName: "deploy", parentToolCallId: "call-script", outcome: "allowed" },
-      { toolName: "deploy", parentToolCallId: "call-script", outcome: "rejected" },
+      { toolName: "deploy", parentToolCallId: "call-script", result: "allowed" },
+      { toolName: "deploy", parentToolCallId: "call-script", result: "rejected" },
     ]);
   });
 
@@ -306,7 +306,7 @@ describe("Guardian Review lifecycle", () => {
     await harness.session.prompt("Deploy.");
     expect(harness.executed).toEqual(["deploy:prod", "deploy:prod2"]);
     expect(harness.entries("pi-guardian-review")[0]).toMatchObject({
-      outcome: "rejected",
+      result: "rejected",
       userOverride: true,
       blocked: false,
     });
@@ -354,11 +354,17 @@ describe("Guardian Review lifecycle", () => {
       );
       harness.verdicts.push(
         JSON.stringify({ risk_level: "low", user_authorization: "high" }),
-        JSON.stringify({ risk_level: "high", user_authorization: "low" }),
+        JSON.stringify({
+          risk_level: "high",
+          user_authorization: "low",
+          risk_category: "destruction",
+        }),
       );
       await harness.session.prompt("Deploy a.");
       expect(harness.executed).toEqual(["deploy:a"]);
-      expect(harness.reviews[0]?.systemPrompt.includes("omit the rationale")).toBe(!verbose);
+      expect(harness.reviews[0]?.systemPrompt.includes("omit the category and the rationale")).toBe(
+        !verbose,
+      );
       // A high-risk assessment without a rationale still rejects, with a fixed reason.
       expect(resultText(harness, "call-2")).toContain(
         "Reason: The Guardian gave no specific rationale.",
@@ -377,6 +383,56 @@ describe("Guardian Review lifecycle", () => {
       expect(rendered).toEqual([verbose, true]);
     },
   );
+
+  it("decides an uncategorized high or critical assessment as medium, and records it", async () => {
+    const harness = await createGuardianHarness({ guardianSettings: reviewer });
+    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
+    harness.verdicts.push(
+      assessment("critical", "unknown", "It edits a core security module.", "core_module"),
+    );
+    await harness.session.prompt("Deploy a.");
+    expect(harness.executed).toEqual(["deploy:a"]);
+    const [entry] = harness.entries("pi-guardian-review");
+    expect(entry).toMatchObject({ result: "allowed", risk: "critical", downgraded: true });
+    expect(entry).not.toHaveProperty("riskCategory");
+  });
+
+  it("names the Risk Category and a fixed reason in the warning and the dialog", async () => {
+    const notices: string[] = [];
+    const titles: string[] = [];
+    const harness = await createGuardianHarness({
+      guardianSettings: { ...reviewer, onDeny: "ask" },
+      ui: {
+        notify: (text) => notices.push(text),
+        select: async (title) => {
+          titles.push(title);
+          return "Block";
+        },
+      },
+    });
+    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
+    harness.verdicts.push(
+      JSON.stringify({
+        risk_level: "critical",
+        user_authorization: "unknown",
+        risk_category: "data_egress",
+      }),
+    );
+    await harness.session.prompt("Deploy.");
+    expect(harness.executed).toEqual([]);
+    expect(notices).toContain(
+      "Guardian rejected deploy (critical (data_egress) risk): The Guardian gave no specific rationale.",
+    );
+    expect(titles[0]).toMatch(
+      /^Guardian rejected deploy \u2014 risk critical \(data_egress\), authorization unknown\nThe Guardian gave no specific rationale\./,
+    );
+    expect(resultText(harness, "call-1")).toContain(
+      "Risk: critical (data_egress). Authorization: unknown.",
+    );
+    expect(harness.entries("pi-guardian-review")).toMatchObject([
+      { result: "rejected", riskCategory: "data_egress" },
+    ]);
+  });
 
   it("recommends a dedicated small model once when reviews would use the session model", async () => {
     const notices: string[] = [];

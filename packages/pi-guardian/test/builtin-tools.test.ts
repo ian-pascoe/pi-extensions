@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { link, mkdir, readFile, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +10,17 @@ import {
 } from "./fixtures/guardian-harness.js";
 
 const reviewer = { model: "guardian-test/reviewer" } as const;
+
+/** The Reviewed Call block of a captured Guardian request. */
+function reviewedCall(
+  harness: Awaited<ReturnType<typeof createGuardianHarness>>,
+  index: number,
+): string | undefined {
+  const message = harness.reviews[index]?.messages[0];
+  return message?.role === "user" && Array.isArray(message.content)
+    ? message.content.map((part) => (part.type === "text" ? part.text : "")).at(-1)
+    : undefined;
+}
 
 describe("Pi's built-in tools on a real workspace", () => {
   it("runs ordinary writes and Safe Commands without review", async () => {
@@ -41,14 +52,9 @@ describe("Pi's built-in tools on a real workspace", () => {
     expect(harness.reviews).toHaveLength(2);
     expect(existsSync(join(harness.dir, ".git/hooks/pre-commit"))).toBe(false);
     expect(existsSync(join(harness.dir, "made-by-bash"))).toBe(true);
-    const reviewed = (index: number) => {
-      const message = harness.reviews[index]?.messages[0];
-      return message?.role === "user" && Array.isArray(message.content)
-        ? message.content.map((part) => (part.type === "text" ? part.text : "")).at(-1)
-        : undefined;
-    };
+    const reviewed = (index: number) => reviewedCall(harness, index);
     expect(reviewed(0)).toContain(
-      "Reviewed because: Sensitive Path: version-control metadata (.git)",
+      'Reviewed because: Sensitive Path: version-control metadata (".git")',
     );
     expect(reviewed(1)).toContain("Reviewed because: not a Safe Command");
   });
@@ -68,7 +74,7 @@ describe("Pi's built-in tools on a real workspace", () => {
     expect(await readFile(join(harness.dir, "outside.txt"), "utf8")).toBe("old\n");
   });
 
-  it("reviews an ordinary write that shares a batch with a reviewed call", async () => {
+  it("allows an ordinary write beside a reviewed call, which sees it as batch context", async () => {
     const harness = await createGuardianHarness({ guardianSettings: reviewer, builtinTools: true });
     harness.responses.push(
       toolCalls(
@@ -78,14 +84,55 @@ describe("Pi's built-in tools on a real workspace", () => {
       reply("Ok."),
     );
     harness.verdicts.push(
-      assessment("critical", "unknown", "Links outside the workspace."),
-      assessment("high", "unknown", "Races the link."),
+      assessment("critical", "unknown", "Links a path the batch writes.", "sensitive_path"),
     );
     await harness.session.prompt("Do it.");
-    expect(harness.reviews).toHaveLength(2);
-    expect(harness.entries("pi-guardian-review")).toEqual(
-      expect.arrayContaining([expect.objectContaining({ toolName: "write", outcome: "rejected" })]),
+    expect(harness.reviews).toHaveLength(1);
+    expect(reviewedCall(harness, 0)).toContain(
+      'Other calls in the same tool batch (context only; Pi may run them before or alongside this call):\n- "write" with arguments {"path":"target.txt","content":"x"}',
     );
-    expect(existsSync(join(harness.dir, "target.txt"))).toBe(false);
+    expect(await readFile(join(harness.dir, "target.txt"), "utf8")).toBe("x");
+  });
+
+  it("reviews an early-reviewed write afresh when its target changed before it arrived", async () => {
+    let dir = "";
+    const harness = await createGuardianHarness({
+      guardianSettings: reviewer,
+      builtinTools: true,
+      before: [
+        (pi) => {
+          // Swap the target for a link into .git between the early review and the preflight.
+          pi.on("tool_call", async (event) => {
+            if (event.toolCallId !== "call-1") return;
+            await rm(join(dir, ".env.local"));
+            await symlink(join(dir, ".git", "config"), join(dir, ".env.local"));
+          });
+        },
+      ],
+    });
+    dir = harness.dir;
+    await mkdir(join(dir, ".git"), { recursive: true });
+    await writeFile(join(dir, ".git", "config"), "[core]\n");
+    await writeFile(join(dir, ".env.local"), "A=1\n");
+    harness.responses.push(
+      toolCalls(["write", { path: ".env.local", content: "A=2\n" }, "call-1"]),
+      reply("Ok."),
+    );
+    harness.verdicts.push(
+      assessment("low", "high", "The user asked to update .env.local."),
+      assessment("critical", "unknown", "Overwrites git config.", "sensitive_path"),
+    );
+    await harness.session.prompt("Set A=2 in .env.local.");
+    expect(harness.reviews).toHaveLength(2);
+    expect(reviewedCall(harness, 1)).toContain(
+      `resolves to ${JSON.stringify(join(dir, ".git", "config"))}`,
+    );
+    expect(await readFile(join(dir, ".git", "config"), "utf8")).toBe("[core]\n");
+    expect(harness.entries("pi-guardian-review")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ result: "unused" }),
+        expect.objectContaining({ result: "rejected" }),
+      ]),
+    );
   });
 });

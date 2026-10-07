@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
   assessment,
   createGuardianHarness,
@@ -139,6 +140,26 @@ describe("Trusted Evidence comes from Pi, not the agent", () => {
     ]);
     expect(harness.entries("pi-guardian-extension-message")).toHaveLength(1);
   });
+
+  it("matches extension messages exactly, not by prefix", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: reviewer,
+      after: [
+        (pi) => {
+          // A later input handler consumes the extension's message, so it never arrives.
+          pi.on("input", (event) =>
+            event.source === "extension" ? { action: "handled" as const } : undefined,
+          );
+        },
+      ],
+    });
+    await harness.session.sendUserMessage("Deploy");
+    harness.responses.push(toolCalls(["deploy", { target: "prod" }, "call-1"]), reply("Ok."));
+    harness.verdicts.push(assessment("low", "high", "Requested."));
+    await harness.session.prompt("Deploy prod.");
+    expect(blocks(harness, 0)[0]).toMatch(/^Evidence \(TRUSTED, origin: user\):/);
+    expect(harness.entries("pi-guardian-extension-message")).toEqual([]);
+  });
 });
 
 describe("early reviews", () => {
@@ -161,8 +182,8 @@ describe("early reviews", () => {
     expect(blocks(harness, 1).at(-1)).toContain('Arguments: {"target":"rewritten"}');
     expect(harness.entries("pi-guardian-review")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ outcome: "unused", arguments: '{"target":"a"}' }),
-        expect.objectContaining({ outcome: "allowed", arguments: '{"target":"rewritten"}' }),
+        expect.objectContaining({ result: "unused", arguments: '{"target":"a"}' }),
+        expect.objectContaining({ result: "allowed", arguments: '{"target":"rewritten"}' }),
       ]),
     );
   });
@@ -180,7 +201,46 @@ describe("early reviews", () => {
     harness.verdicts.push(assessment("low", "high", "Early."));
     await harness.session.prompt("Deploy a.");
     expect(harness.executed).toEqual([]);
-    expect(harness.entries("pi-guardian-review")).toMatchObject([{ outcome: "unused" }]);
+    expect(harness.entries("pi-guardian-review")).toMatchObject([{ result: "unused" }]);
+  });
+
+  it("reviews only the first call of a sequential batch early, so later ones see results", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: reviewer,
+      before: [
+        (pi) => {
+          pi.registerTool({
+            name: "note",
+            label: "Note",
+            description: "Record a note.",
+            parameters: Type.Object({ text: Type.String() }),
+            annotations: { readOnlyHint: true },
+            executionMode: "sequential",
+            execute: async () => ({ content: [{ type: "text", text: "noted" }], details: {} }),
+          });
+        },
+      ],
+    });
+    harness.responses.push(
+      toolCalls(
+        ["deploy", { target: "a" }, "call-1"],
+        ["note", { text: "between" }, "call-2"],
+        ["deploy", { target: "b" }, "call-3"],
+      ),
+      reply("Ok."),
+    );
+    harness.verdicts.push(
+      assessment("low", "high", "Requested."),
+      assessment("low", "high", "Ok."),
+    );
+    await harness.session.prompt("Deploy a, note, then deploy b.");
+    expect(harness.executed).toEqual(["deploy:a", "deploy:b"]);
+    expect(harness.reviews).toHaveLength(2);
+    // The second review ran at its call's preflight, after the earlier calls' results.
+    expect(blocks(harness, 1).join("\n")).toContain("deployed a");
+    expect(harness.entries("pi-guardian-review")).not.toContainEqual(
+      expect.objectContaining({ result: "unused" }),
+    );
   });
 
   it("skips unknown tools and invalid arguments, which Pi never runs", async () => {
@@ -239,8 +299,8 @@ describe("Rejections and User Overrides under concurrency", () => {
     expect(resultText(harness, "call-a")).toMatch(/^This action was rejected/);
     expect(harness.entries("pi-guardian-review")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ toolCallId: "call-a", outcome: "rejected", blocked: true }),
-        expect.objectContaining({ toolCallId: "call-b", outcome: "allowed", executed: true }),
+        expect.objectContaining({ toolCallId: "call-a", result: "rejected", blocked: true }),
+        expect.objectContaining({ toolCallId: "call-b", result: "allowed", executed: true }),
       ]),
     );
   });
@@ -268,6 +328,77 @@ describe("Rejections and User Overrides under concurrency", () => {
     await harness.session.prompt("Deploy a, b, and c.");
     expect(harness.executed.toSorted()).toEqual(["deploy:a", "deploy:b", "deploy:c"]);
     expect(peak).toBe(1);
+  });
+
+  it("blocks every later call once the Rejection Streak limit is reached, ending the turn", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: { ...reviewer, maxConsecutiveRejections: 2 },
+    });
+    harness.responses.push(
+      toolCalls(
+        ["deploy", { target: "x" }, "call-1"],
+        ["deploy", { target: "y" }, "call-2"],
+        ["lookup", { query: "q" }, "call-3"],
+      ),
+      toolCalls(["lookup", { query: "again" }, "call-4"]),
+      reply("never requested"),
+    );
+    harness.verdicts.push(
+      assessment("critical", "unknown", "No."),
+      assessment("critical", "unknown", "No."),
+    );
+    await harness.session.prompt("Deploy.");
+    // Even the read-only lookup, allowed by default, was blocked once the limit was reached.
+    expect(harness.executed).toEqual([]);
+    expect(resultText(harness, "call-3")).toMatch(/^Guardian ended the agent's turn/);
+    // The first call of the batch did not ask to end the turn, so Pi asked for one more response,
+    // whose every call was blocked and ended it.
+    expect(resultText(harness, "call-4")).toMatch(/^Guardian ended the agent's turn/);
+    expect(harness.agentRequests).toHaveLength(2);
+  });
+
+  it("ends the turn at once when the streak limit is reached by a batch's first call", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: { ...reviewer, maxConsecutiveRejections: 1 },
+    });
+    harness.responses.push(
+      toolCalls(["deploy", { target: "x" }, "call-1"], ["lookup", { query: "q" }, "call-2"]),
+      reply("never requested"),
+    );
+    harness.verdicts.push(assessment("critical", "unknown", "No."));
+    await harness.session.prompt("Deploy.");
+    expect(harness.executed).toEqual([]);
+    expect(harness.agentRequests).toHaveLength(1);
+  });
+
+  it("judges argument drift against arguments snapshotted before the review", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: reviewer,
+      before: [
+        (pi) => {
+          // Mutate the arguments while Guardian's review is still running.
+          pi.on("tool_call", (event: ToolCallEvent) => {
+            if (event.toolName !== "deploy") return;
+            const { input } = event;
+            setTimeout(() => {
+              input["target"] = "changed";
+            }, 5);
+          });
+        },
+      ],
+    });
+    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
+    harness.verdicts.push(
+      new DeferredReply(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return assessment("low", "high", "Requested.");
+      }),
+    );
+    await harness.session.prompt("Deploy a.");
+    expect(harness.executed).toEqual(["deploy:changed"]);
+    expect(harness.entries("pi-guardian-review")).toMatchObject([
+      { result: "allowed", arguments: '{"target":"a"}', argumentDrift: true },
+    ]);
   });
 
   it("resets the Rejection Streak only when an allowed call actually runs", async () => {
@@ -299,7 +430,7 @@ describe("Rejections and User Overrides under concurrency", () => {
     expect(harness.agentRequests).toHaveLength(3);
     expect(harness.entries("pi-guardian-review")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ toolCallId: "call-2", outcome: "allowed", executed: false }),
+        expect.objectContaining({ toolCallId: "call-2", result: "allowed", executed: false }),
       ]),
     );
   });

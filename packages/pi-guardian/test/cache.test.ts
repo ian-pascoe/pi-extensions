@@ -157,6 +157,34 @@ describe("evidence that overflows its budget", () => {
   });
 });
 
+describe("calibration from the session", () => {
+  it("records calibration samples, so a reloaded session keeps its factor", async () => {
+    const scale = (estimated: number) => Math.ceil(estimated * 2.5);
+    const first = await overflowingSession(16, scale);
+    expect(first.entries("pi-guardian-review")).toContainEqual(
+      expect.objectContaining({
+        estimatedPromptTokens: expect.any(Number),
+        promptTokens: expect.any(Number),
+      }),
+    );
+    const reloaded = await createGuardianHarness({
+      guardianSettings: { model: "guardian-test/reviewer", evidenceBudgetTokens: 3_000 },
+      manager: first.manager,
+      promptTokens: scale,
+    });
+    reloaded.responses.push(
+      toolCalls(["deploy", { target: `again:${"x".repeat(300)}` }, "call-again"]),
+      reply("Done."),
+    );
+    reloaded.verdicts.push(assessment("low", "high", "Requested."));
+    await reloaded.session.prompt("Deploy once more.");
+    // Its first review already uses the 2.5\u00d7 factor the session recorded, not the 1.5\u00d7 fallback.
+    const tokens = blockTokens(evidenceBlocks(reloaded.reviews[0]));
+    expect(tokens).toBeLessThanOrEqual(1_200);
+    expect(tokens).toBeGreaterThan(600);
+  });
+});
+
 describe("the Guarded Agent's requests", () => {
   /** Run one scripted conversation and return the agent's serialized requests. */
   async function conversation(options: Parameters<typeof createGuardianHarness>[0]) {

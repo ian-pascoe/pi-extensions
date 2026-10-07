@@ -353,7 +353,22 @@ export function toolCalls(
   };
 }
 
-/** A Guardian assessment reply. */
-export function assessment(risk: string, authorization: string, rationale: string): string {
-  return JSON.stringify({ risk_level: risk, user_authorization: authorization, rationale });
+/**
+ * A Guardian assessment reply. `high` and `critical` risk name the `destruction` Risk Category
+ * unless another is given; `null` leaves it out.
+ */
+export function assessment(
+  risk: string,
+  authorization: string,
+  rationale: string,
+  category: string | null = risk === "high" || risk === "critical" ? "destruction" : null,
+): string {
+  if (category === null)
+    return JSON.stringify({ risk_level: risk, user_authorization: authorization, rationale });
+  return JSON.stringify({
+    risk_level: risk,
+    user_authorization: authorization,
+    risk_category: category,
+    rationale,
+  });
 }

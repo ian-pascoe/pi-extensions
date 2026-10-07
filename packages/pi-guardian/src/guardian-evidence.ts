@@ -82,7 +82,7 @@ function sha256(text: string): string {
 }
 
 /** The text a user message carries, for identifying it across Pi's message conversions. */
-function userText(content: Message["content"] | string): string {
+export function userText(content: Message["content"] | string): string {
   if (!Array.isArray(content)) return content;
   return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
@@ -328,15 +328,30 @@ export interface IssuingCall {
   input: ToolInput;
 }
 
-/** The call a Guardian Review judges. */
-export interface ReviewedCall {
+/** A call under review: its tool, its arguments, and the call that issued it, if nested. */
+export interface CallUnderReview {
   toolName: string;
   input: ToolInput;
+  /** The tool call that issued this one, such as a codemode script. */
+  parent: IssuingCall | undefined;
+}
+
+/** Another call of the Reviewed Call's tool batch. */
+export interface BatchCall {
+  toolName: string;
+  input: ToolInput;
+}
+
+/** Per-call character bound on the other calls of a tool batch, which are context only. */
+const batchCallCharacterLimit = 2_000;
+
+/** The call a Guardian Review judges, with where and by whom it was issued. */
+export interface ReviewedCall extends CallUnderReview {
   cwd: string;
   /** Which agent issued it: the main agent, a Child Agent, or an Advisor. */
   agent: string;
-  /** The tool call that issued this one, such as a codemode script. */
-  parent?: IssuingCall | undefined;
+  /** The other calls of its tool batch, which Pi may run before or alongside it. */
+  batch?: readonly BatchCall[];
   /** Why a built-in default sends this call to review, such as its Sensitive Path. */
   reason?: string | undefined;
 }
@@ -361,6 +376,19 @@ export function renderReviewedCall(call: ReviewedCall): string {
       `Issued by tool call: ${call.parent.toolName}`,
       `Issuing call arguments: ${JSON.stringify(call.parent.input)}`,
     );
+  if (call.batch?.length) {
+    lines.push(
+      "Other calls in the same tool batch (context only; Pi may run them before or alongside this call):",
+    );
+    for (const other of call.batch) {
+      const json = JSON.stringify(other.input);
+      const shown =
+        json.length > batchCallCharacterLimit
+          ? `${json.slice(0, batchCallCharacterLimit)}${omissionMarker(json.length - batchCallCharacterLimit)}`
+          : json;
+      lines.push(`- ${JSON.stringify(other.toolName)} with arguments ${shown}`);
+    }
+  }
   return lines.join("\n");
 }
 

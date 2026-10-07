@@ -42,7 +42,10 @@ export const guardianOptionsSchema = Type.Object(
     tools: Type.Optional(
       Type.Record(Type.String({ minLength: 1 }), Type.Union([toolPolicySchema, Type.Null()])),
     ),
-    /** Extra Safe Command prefixes, such as `npm test`; merged across scopes as a union. */
+    /**
+     * Extra Safe Command prefixes, such as `git log`; merged across scopes as a union. A prefix
+     * that runs workspace code, such as a test runner, is not safe.
+     */
     safeCommands: Type.Optional(
       Type.Array(Type.String({ minLength: 1, pattern: "\\S" }), { uniqueItems: true }),
     ),
@@ -107,6 +110,11 @@ export const guardianDefaults: GuardianConfig = {
 const fallbackWindow = 128_000;
 const autoEvidenceCeiling = 32_000;
 
+/** A model's declared context window, or Pi's fallback when it declares none. */
+export function contextWindowOrFallback(contextWindow: number | undefined): number {
+  return contextWindow || fallbackWindow;
+}
+
 /**
  * Evidence token budget. `auto` is a quarter of the Guardian model's context window, at most 32K:
  * every Reviewed Call blocks the agent until its review ends, so evidence stays small.
@@ -116,7 +124,7 @@ export function evidenceBudget(
   contextWindow: number | undefined,
 ): number {
   if (setting !== "auto") return contextWindow ? Math.min(setting, contextWindow) : setting;
-  return Math.min(Math.floor((contextWindow || fallbackWindow) / 4), autoEvidenceCeiling);
+  return Math.min(Math.floor(contextWindowOrFallback(contextWindow) / 4), autoEvidenceCeiling);
 }
 
 const layered = defineLayeredSettings({

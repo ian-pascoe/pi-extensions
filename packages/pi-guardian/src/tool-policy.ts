@@ -14,12 +14,12 @@ export interface ResolvedToolPolicy {
   detail?: string;
 }
 
+/** Pi's built-in tools that only read; the only calls that run while settings are unreadable. */
+export const readOnlyBuiltIns: readonly string[] = ["read", "grep", "find", "ls"];
+
 /** Tools whose calls run without review by default. */
 export const allowedByDefault: readonly string[] = [
-  "read",
-  "grep",
-  "find",
-  "ls",
+  ...readOnlyBuiltIns,
   "codemode",
   "tool_search",
   "todo",
@@ -35,6 +35,11 @@ export const reviewedByDefault: readonly string[] = [
   "terminal_send",
   "powershell",
 ];
+
+/** Pi's built-in tools that write the file at their `path` argument. */
+export function isFileWrite(toolName: string): boolean {
+  return toolName === "edit" || toolName === "write";
+}
 
 /** Everything Tool Policy resolution reads for one call. */
 export interface ToolPolicyInput {
@@ -55,7 +60,7 @@ function builtInDefault(call: ToolPolicyInput): ResolvedToolPolicy | undefined {
   const { toolName, input } = call;
   if (allowedByDefault.includes(toolName)) return { policy: "allow", source: "default" };
   if (reviewedByDefault.includes(toolName)) return { policy: "review", source: "default" };
-  if (toolName === "edit" || toolName === "write") {
+  if (isFileWrite(toolName)) {
     const path = input["path"];
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; a non-string path cannot be judged and is reviewed.
     if (typeof path !== "string")

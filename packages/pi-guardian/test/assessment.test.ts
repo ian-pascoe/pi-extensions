@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decide,
+  decidedRisk,
   parseAssessment,
   rejectionReason,
   type RiskLevel,
@@ -24,8 +25,44 @@ describe("Decision Table", () => {
   }
 });
 
+describe("Risk Categories", () => {
+  it.each([
+    ["a missing category", '{"risk_level":"critical","user_authorization":"unknown"}'],
+    [
+      "an unknown category",
+      '{"risk_level":"high","user_authorization":"low","risk_category":"core_module"}',
+    ],
+    ["none", '{"risk_level":"high","user_authorization":"low","risk_category":"none"}'],
+  ])("decides high or critical risk with %s as medium", (_case, text) => {
+    const parsed = parseAssessment(text);
+    expect(parsed.category).toBeUndefined();
+    expect(decidedRisk(parsed)).toBe("medium");
+    expect(decide(decidedRisk(parsed), parsed.authorization)).toBe("allowed");
+  });
+
+  it("keeps high or critical risk that names a valid category", () => {
+    const parsed = parseAssessment(
+      '{"risk_level":"critical","user_authorization":"unknown","risk_category":"data_egress","rationale":"Uploads keys."}',
+    );
+    expect(parsed).toEqual({
+      risk: "critical",
+      authorization: "unknown",
+      category: "data_egress",
+      rationale: "Uploads keys.",
+    });
+    expect(decide(decidedRisk(parsed), parsed.authorization)).toBe("rejected");
+  });
+
+  it("leaves low and medium risk unchanged without a category", () => {
+    expect(decidedRisk(parseAssessment('{"risk_level":"low","user_authorization":"low"}'))).toBe(
+      "low",
+    );
+  });
+});
+
 describe("Guardian output parsing", () => {
-  const json = '{"risk_level":"high","user_authorization":"low","rationale":" Deletes data. "}';
+  const json =
+    '{"risk_level":"high","user_authorization":"low","risk_category":"destruction","rationale":" Deletes data. "}';
 
   it.each([
     ["bare JSON", json],
@@ -36,6 +73,7 @@ describe("Guardian output parsing", () => {
     expect(parseAssessment(text)).toEqual({
       risk: "high",
       authorization: "low",
+      category: "destruction",
       rationale: "Deletes data.",
     });
   });
@@ -46,6 +84,7 @@ describe("Guardian output parsing", () => {
     expect(parseAssessment(`${braced}\n\`\`\`json\n${braced}\n\`\`\``)).toEqual({
       risk: "low",
       authorization: "high",
+      category: undefined,
       rationale: 'uses {x} and "}"',
     });
   });
@@ -75,6 +114,7 @@ describe("Guardian output parsing", () => {
     expect(parseAssessment(`{"risk_level":"${risk}","user_authorization":"low"}`)).toEqual({
       risk,
       authorization: "low",
+      category: undefined,
       rationale: "",
     });
   });
@@ -86,12 +126,13 @@ describe("Rejection text", () => {
       rejectionReason({
         risk: "critical",
         authorization: "unknown",
+        category: "data_egress",
         rationale: "Exfiltrates keys.",
       }),
     ).toBe(
       [
         "This action was rejected due to unacceptable risk.",
-        "Risk: critical. Authorization: unknown.",
+        "Risk: critical (data_egress). Authorization: unknown.",
         "Reason: Exfiltrates keys.",
         "Do not attempt to achieve the same outcome through a workaround, indirect execution, or variations of this call, and do not retry it. Explain the risk to the user and ask whether they want to proceed; continue only with a materially safer alternative or after the user explicitly approves this action.",
       ].join("\n"),
@@ -99,8 +140,13 @@ describe("Rejection text", () => {
   });
 
   it("uses a fixed reason when a high-risk assessment omits its rationale", () => {
-    expect(rejectionReason({ risk: "high", authorization: "low", rationale: "" })).toContain(
-      "Reason: The Guardian gave no specific rationale.\n",
-    );
+    expect(
+      rejectionReason({
+        risk: "high",
+        authorization: "low",
+        category: "persistence",
+        rationale: "",
+      }),
+    ).toContain("Reason: The Guardian gave no specific rationale.\n");
   });
 });

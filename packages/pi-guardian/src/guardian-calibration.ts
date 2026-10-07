@@ -3,7 +3,8 @@
  * real tokens (about 1.3× on Claude Haiku and 1.7× on Claude Opus for Guardian's JSON-heavy
  * requests). Each Guardian model's factor starts conservative and follows the prompt tokens its
  * provider reports, in coarse steps with hysteresis so a stable factor keeps the evidence window,
- * and with it the provider's prompt cache, stable from review to review.
+ * and with it the provider's prompt cache, stable from review to review. The samples are recorded
+ * in the branch's review entries, so the factor is a function of the session, not the process.
  */
 
 /** Factor assumed before a model reports usage. */
@@ -29,4 +30,12 @@ export function calibratedFactor(current: number, estimated: number, reported: n
   );
   if (ratio > current + growMargin || ratio < current - shrinkMargin) return stepped;
   return current;
+}
+
+/** A model's factor after its recorded samples, in order. */
+export function tokenFactor(samples: readonly { estimated: number; reported: number }[]): number {
+  return samples.reduce(
+    (factor, sample) => calibratedFactor(factor, sample.estimated, sample.reported),
+    fallbackTokenFactor,
+  );
 }

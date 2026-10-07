@@ -91,7 +91,7 @@ const descriptions = {
   model: "Guardian model; inherit follows the session's current model",
   thinkingLevel: "Guardian thinking level",
   tools: "Tool Policies: allow, review, or deny each tool's calls",
-  safeCommands: "Extra Safe Command prefixes, such as npm test; merged across scopes",
+  safeCommands: "Extra Safe Command prefixes that only read, such as git log; merged across scopes",
   policy: "Security Policy added to the built-in policy",
   reviewTimeoutMs: "Deadline for each Guardian Review, in seconds; a timeout is a Review Failure",
   evidenceBudgetTokens:

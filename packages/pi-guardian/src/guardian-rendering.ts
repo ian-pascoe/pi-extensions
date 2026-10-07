@@ -2,7 +2,8 @@ import { keyHint, type Theme, type ThemeColor } from "@earendil-works/pi-coding-
 import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { reviewEntrySchema, reviewTotalsSchema, type ReviewOutcome } from "./guardian-audit.js";
+import { riskLabel } from "./guardian-assessment.js";
+import { reviewEntrySchema, reviewTotalsSchema, type AuditResult } from "./guardian-audit.js";
 import {
   guardianAppliedChangeSchema,
   guardianOptionKeys,
@@ -43,13 +44,13 @@ const stateBadge = {
   disabled: { symbol: "○", color: "dim" },
   error: { symbol: "●", color: "error" },
 } as const satisfies Record<GuardianState, { symbol: string; color: ThemeColor }>;
-const outcomeStyle = {
+const resultStyle = {
   allowed: { symbol: "✓", color: "success" },
   rejected: { symbol: "✖", color: "error" },
   failed: { symbol: "⚠", color: "warning" },
   aborted: { symbol: "○", color: "dim" },
   unused: { symbol: "○", color: "dim" },
-} as const satisfies Record<ReviewOutcome, { symbol: string; color: ThemeColor }>;
+} as const satisfies Record<AuditResult, { symbol: string; color: ThemeColor }>;
 const previewWidth = 40;
 
 function expandHint(theme: Pick<Theme, "fg">): string {
@@ -101,7 +102,7 @@ export function formatGuardianOption(options: GuardianOptions, key: keyof Guardi
 }
 
 /**
- * One Guardian Review in the transcript: outcome, tool, scores, and rationale. Unless `verbose`
+ * One Guardian Review in the transcript: result, tool, scores, and rationale. Unless `verbose`
  * is on, a review that let its call run unremarkably renders nothing: an allowed or unused review
  * without a User Override or argument drift. Rejections, Review Failures, aborts, and User
  * Overrides always show.
@@ -116,21 +117,22 @@ export function renderReviewEntry(
   if (!Value.Check(reviewEntrySchema, data))
     return new Text(`Guardian Review\n${JSON.stringify(data, null, 2)}`, 0, 0);
   const quiet =
-    (data.outcome === "allowed" || data.outcome === "unused") &&
+    (data.result === "allowed" || data.result === "unused") &&
     !data.userOverride &&
     !data.argumentDrift;
   if (quiet && !verbose) return undefined;
-  const style = outcomeStyle[data.outcome];
+  const style = resultStyle[data.result];
   const scores =
     data.risk && data.authorization
-      ? `risk ${data.risk} · authorization ${data.authorization}`
+      ? `risk ${riskLabel({ risk: data.risk, category: data.riskCategory })} · authorization ${data.authorization}`
       : undefined;
   const heading = [
-    theme.fg(style.color, theme.bold(`${style.symbol} Guardian ${data.outcome}`)),
+    theme.fg(style.color, theme.bold(`${style.symbol} Guardian ${data.result}`)),
     theme.bold(data.toolName),
     scores ? theme.fg("muted", scores) : undefined,
     data.userOverride ? theme.fg("warning", "user override") : undefined,
     data.argumentDrift ? theme.fg("warning", "arguments changed after review") : undefined,
+    data.downgraded ? theme.fg("muted", "decided as medium: no Risk Category") : undefined,
   ]
     .filter((part) => part !== undefined)
     .join("  ");

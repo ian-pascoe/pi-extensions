@@ -1,13 +1,10 @@
 import type { ExtensionContext, ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
-import type { IssuingCall, ToolInput } from "./guardian-evidence.js";
+import type { CallUnderReview } from "./guardian-evidence.js";
 
 /** A call a Rejection or Review Failure would block, offered to the user as a User Override. */
-export interface OverrideRequest {
+export interface OverrideRequest extends CallUnderReview {
   /** Why Guardian would block the call. */
   headline: string;
-  toolName: string;
-  input: ToolInput;
-  parent: IssuingCall | undefined;
 }
 
 /** Calls whose serialized arguments fit this many characters are shown in full in the dialog. */

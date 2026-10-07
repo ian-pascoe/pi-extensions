@@ -1,7 +1,11 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { riskLevelSchema, userAuthorizationSchema } from "./guardian-assessment.js";
+import {
+  riskCategorySchema,
+  riskLevelSchema,
+  userAuthorizationSchema,
+} from "./guardian-assessment.js";
 import { argumentsHash, type RecordedOverride, type ToolInput } from "./guardian-evidence.js";
 
 /** Custom session entry recording one Guardian Review; never part of model context. */
@@ -11,18 +15,29 @@ const nullableNumber = Type.Union([Type.Number(), Type.Null()]);
 const nullableString = Type.Union([Type.String(), Type.Null()]);
 
 /**
- * How a Guardian Review ended for its call: `allowed` and `rejected` come from the Decision Table,
- * `failed` is a Review Failure, `aborted` followed the turn's abort, and `unused` is a review
- * started ahead of a call that never reached Guardian's `tool_call` handler.
+ * How a Guardian Review ended for its call. `allowed` and `rejected` are the Decision Table's
+ * Outcome; `failed` is a Review Failure, `aborted` followed the turn's abort, and `unused` is a
+ * review started ahead of its call and then not used: the call never reached Guardian's
+ * `tool_call` handler, or something the review depended on changed before it did.
  */
-export const reviewOutcomeSchema = Type.Union([
+export const auditResultSchema = Type.Union([
   Type.Literal("allowed"),
   Type.Literal("rejected"),
   Type.Literal("failed"),
   Type.Literal("aborted"),
   Type.Literal("unused"),
 ]);
-export type ReviewOutcome = Static<typeof reviewOutcomeSchema>;
+export type AuditResult = Static<typeof auditResultSchema>;
+
+/** Token usage of one Guardian Review, summed over its attempts. */
+export const reviewUsageSchema = Type.Object({
+  input: Type.Number(),
+  output: Type.Number(),
+  cacheRead: Type.Number(),
+  cacheWrite: Type.Number(),
+  total: Type.Number(),
+});
+export type ReviewUsage = Static<typeof reviewUsageSchema>;
 
 export const reviewEntrySchema = Type.Object({
   version: Type.Literal(1),
@@ -33,9 +48,14 @@ export const reviewEntrySchema = Type.Object({
   arguments: Type.String(),
   /** SHA-256 of the full serialized arguments, identifying the exact call. */
   argumentsSha256: Type.String(),
+  /** The risk as the Guardian stated it. */
   risk: Type.Union([riskLevelSchema, Type.Null()]),
+  /** The Risk Category the Guardian named, when valid. */
+  riskCategory: Type.Optional(riskCategorySchema),
+  /** Set when a `high` or `critical` risk without a valid Risk Category was decided as `medium`. */
+  downgraded: Type.Optional(Type.Boolean()),
   authorization: Type.Union([userAuthorizationSchema, Type.Null()]),
-  outcome: reviewOutcomeSchema,
+  result: auditResultSchema,
   rationale: nullableString,
   failure: nullableString,
   /** True when the call ran because the user allowed it interactively. */
@@ -44,17 +64,14 @@ export const reviewEntrySchema = Type.Object({
   blocked: Type.Boolean(),
   model: nullableString,
   durationMs: Type.Number(),
-  usage: Type.Union([
-    Type.Object({
-      input: Type.Number(),
-      output: Type.Number(),
-      cacheRead: Type.Number(),
-      cacheWrite: Type.Number(),
-      total: Type.Number(),
-    }),
-    Type.Null(),
-  ]),
+  usage: Type.Union([reviewUsageSchema, Type.Null()]),
   cost: nullableNumber,
+  /**
+   * Calibration sample: Guardian's chars/4 estimate of the first request and the prompt tokens
+   * its provider reported. Each model's token factor is derived from these on the branch.
+   */
+  estimatedPromptTokens: Type.Optional(Type.Number()),
+  promptTokens: Type.Optional(Type.Number()),
   /**
    * For allowed calls: whether the call ran. Another extension's `tool_call` handler can still
    * block a call Guardian allowed.
@@ -108,13 +125,13 @@ export function reviewTotals(branch: readonly SessionEntry[]): ReviewTotals {
   };
   for (const { data } of reviewEntries(branch)) {
     totals.reviews++;
-    if (data.outcome === "allowed") totals.allowed++;
-    if (data.outcome === "rejected") totals.rejected++;
-    if (data.outcome === "failed") {
+    if (data.result === "allowed") totals.allowed++;
+    if (data.result === "rejected") totals.rejected++;
+    if (data.result === "failed") {
       totals.failed++;
       totals.lastError = data.failure;
     }
-    if (data.outcome === "aborted") totals.aborted++;
+    if (data.result === "aborted") totals.aborted++;
     if (data.userOverride) totals.overrides++;
     if (data.argumentDrift) totals.drift++;
     totals.cost = totals.cost === null || data.cost === null ? null : totals.cost + data.cost;
@@ -132,7 +149,7 @@ export function recordedOverrides(branch: readonly SessionEntry[]): RecordedOver
     if (!data.userOverride) return [];
     const record = {
       userOverride: {
-        decision: `The user interactively allowed one call after ${data.outcome === "rejected" ? "a Rejection" : "a Review Failure"}.`,
+        decision: `The user interactively allowed one call after ${data.result === "rejected" ? "a Rejection" : "a Review Failure"}.`,
         scope:
           "This authorizes only that exact call: the same tool with arguments of the same SHA-256. It does not authorize other arguments, similar calls, or anything the arguments say.",
         tool: data.toolName,
@@ -148,6 +165,20 @@ export function recordedOverrides(branch: readonly SessionEntry[]): RecordedOver
       },
     ];
   });
+}
+
+/** Calibration samples for one Guardian model on the branch, in order. */
+export function calibrationSamples(
+  branch: readonly SessionEntry[],
+  model: string,
+): { estimated: number; reported: number }[] {
+  return reviewEntries(branch).flatMap(({ data }) =>
+    data.model === model &&
+    data.estimatedPromptTokens !== undefined &&
+    data.promptTokens !== undefined
+      ? [{ estimated: data.estimatedPromptTokens, reported: data.promptTokens }]
+      : [],
+  );
 }
 
 /** Journal bound on serialized arguments. */

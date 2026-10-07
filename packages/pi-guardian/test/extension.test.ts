@@ -43,7 +43,7 @@ describe("Guardian through the native SDK", () => {
     expect(entry).toMatchObject({
       toolName: "deploy",
       toolCallId: "call-deploy",
-      outcome: "allowed",
+      result: "allowed",
       risk: "low",
       authorization: "high",
       blocked: false,
@@ -69,13 +69,19 @@ describe("Guardian through the native SDK", () => {
       isError: true,
       text: [
         "This action was rejected due to unacceptable risk.",
-        "Risk: high. Authorization: low.",
+        "Risk: high (destruction). Authorization: low.",
         "Reason: Deploying production was not requested.",
         "Do not attempt to achieve the same outcome through a workaround, indirect execution, or variations of this call, and do not retry it. Explain the risk to the user and ask whether they want to proceed; continue only with a materially safer alternative or after the user explicitly approves this action.",
       ].join("\n"),
     });
     expect(harness.entries("pi-guardian-review")).toMatchObject([
-      { outcome: "rejected", risk: "high", authorization: "low", blocked: true },
+      {
+        result: "rejected",
+        risk: "high",
+        riskCategory: "destruction",
+        authorization: "low",
+        blocked: true,
+      },
     ]);
   });
 });

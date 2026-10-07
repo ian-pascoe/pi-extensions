@@ -18,19 +18,60 @@ export const userAuthorizationSchema = Type.Union([
 export type UserAuthorization = Static<typeof userAuthorizationSchema>;
 
 /**
- * The Guardian's required answer; extra fields are tolerated and ignored. The rationale is
- * optional because, unless `verbose` is on, the Guardian gives one only for `high` or `critical`.
+ * Risk Categories: the only grounds for `high` or `critical` risk. A `high` or `critical`
+ * assessment without a valid one is decided as `medium`.
+ */
+export const riskCategorySchema = Type.Union([
+  Type.Literal("data_egress"),
+  Type.Literal("credential_access"),
+  Type.Literal("destruction"),
+  Type.Literal("persistence"),
+  Type.Literal("sensitive_path"),
+  Type.Literal("safety_weakening"),
+  Type.Literal("remote_code"),
+  Type.Literal("unreviewed_execution"),
+]);
+export type RiskCategory = Static<typeof riskCategorySchema>;
+export const riskCategories: readonly RiskCategory[] = riskCategorySchema.anyOf.map(
+  (literal) => literal.const,
+);
+
+function isRiskCategory(value: string | undefined): value is RiskCategory {
+  return riskCategories.some((name) => name === value);
+}
+
+/**
+ * The Guardian's required answer; extra fields are tolerated and ignored. The rationale and Risk
+ * Category are optional: the category is given only for `high` or `critical` risk, and unless
+ * `verbose` is on, so is the rationale. An unknown category is kept out rather than failing the
+ * review, and decided like a missing one.
  */
 export const assessmentSchema = Type.Object({
   risk_level: riskLevelSchema,
   user_authorization: userAuthorizationSchema,
+  risk_category: Type.Optional(Type.String()),
   rationale: Type.Optional(Type.String()),
 });
-/** One Guardian Review's assessment. */
+/** One Guardian Review's assessment, with the risk as the Guardian stated it. */
 export interface Assessment {
   risk: RiskLevel;
   authorization: UserAuthorization;
+  /** The valid Risk Category the Guardian named, if any. */
+  category: RiskCategory | undefined;
   rationale: string;
+}
+
+/** Whether a `high` or `critical` assessment names no valid Risk Category. */
+export function uncategorized(assessment: Assessment): boolean {
+  return (
+    (assessment.risk === "high" || assessment.risk === "critical") &&
+    assessment.category === undefined
+  );
+}
+
+/** The risk the Decision Table uses: `medium` for an uncategorized `high` or `critical`. */
+export function decidedRisk(assessment: Assessment): RiskLevel {
+  return uncategorized(assessment) ? "medium" : assessment.risk;
 }
 
 /** Outcome of a Guardian Review, derived only by the Decision Table. */
@@ -82,9 +123,11 @@ function assessments(text: string): Assessment[] {
       continue;
     }
     if (!Value.Check(assessmentSchema, parsed)) continue;
+    const category = parsed.risk_category?.trim();
     found.push({
       risk: parsed.risk_level,
       authorization: parsed.user_authorization,
+      category: isRiskCategory(category) ? category : undefined,
       rationale: parsed.rationale?.trim() ?? "",
     });
   }
@@ -106,12 +149,22 @@ export function parseAssessment(text: string): Assessment {
   return first;
 }
 
+/** The risk with its Risk Category, such as `critical (data_egress)`. */
+export function riskLabel(assessment: Pick<Assessment, "risk" | "category">): string {
+  return assessment.category ? `${assessment.risk} (${assessment.category})` : assessment.risk;
+}
+
+/** The assessment's rationale, or a fixed reason when the Guardian gave none. */
+export function statedRationale(assessment: Assessment): string {
+  return assessment.rationale || "The Guardian gave no specific rationale.";
+}
+
 /** Codex-style feedback for a Rejection, as reported to the Guarded Agent. */
 export function rejectionReason(assessment: Assessment): string {
-  const rationale = assessment.rationale || "The Guardian gave no specific rationale.";
+  const rationale = statedRationale(assessment);
   return [
     "This action was rejected due to unacceptable risk.",
-    `Risk: ${assessment.risk}. Authorization: ${assessment.authorization}.`,
+    `Risk: ${riskLabel(assessment)}. Authorization: ${assessment.authorization}.`,
     `Reason: ${rationale}`,
     "Do not attempt to achieve the same outcome through a workaround, indirect execution, or variations of this call, and do not retry it. Explain the risk to the user and ask whether they want to proceed; continue only with a materially safer alternative or after the user explicitly approves this action.",
   ].join("\n");

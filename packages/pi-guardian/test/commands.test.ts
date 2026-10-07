@@ -163,7 +163,7 @@ describe("Guardian renderers", () => {
       argumentsSha256: "0".repeat(64),
       risk: "high",
       authorization: "low",
-      outcome: "rejected",
+      result: "rejected",
       rationale: "Deletes build output the user did not mention.",
       failure: null,
       userOverride: false,
@@ -198,7 +198,7 @@ describe("Guardian renderers", () => {
       argumentsSha256: "0".repeat(64),
       risk: "low",
       authorization: "high",
-      outcome: "allowed",
+      result: "allowed",
       rationale: null,
       failure: null,
       userOverride: false,
@@ -209,7 +209,7 @@ describe("Guardian renderers", () => {
       cost: null,
     };
     expect(renderReviewEntry(allowed, true, plainTheme)).toBeUndefined();
-    expect(renderReviewEntry({ ...allowed, outcome: "unused" }, true, plainTheme)).toBeUndefined();
+    expect(renderReviewEntry({ ...allowed, result: "unused" }, true, plainTheme)).toBeUndefined();
     expect(renderReviewEntry(allowed, false, plainTheme, true)).toBeDefined();
     expect(renderReviewEntry({ ...allowed, userOverride: true }, false, plainTheme)).toBeDefined();
     expect(renderReviewEntry({ ...allowed, argumentDrift: true }, false, plainTheme)).toBeDefined();

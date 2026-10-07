@@ -13,6 +13,8 @@ import {
   updatedToolEntries,
 } from "./guardian-command.js";
 import { installReviewGate } from "./guardian-gate.js";
+import { errorMessage, notify } from "./guardian-notify.js";
+import { modelName } from "./guardian-review.js";
 import {
   GuardianSettingsMenu,
   type GuardianMenuHost,
@@ -27,10 +29,11 @@ import {
   type GuardianRenderTheme,
   type GuardianStatusEntry,
 } from "./guardian-rendering.js";
+import type { RootUserMessage } from "./guardian-evidence.js";
 import {
   guardedSessionRole,
   publishRootSession,
-  rootSettingsReader,
+  rootSession,
   type GuardedSessionRole,
 } from "./guardian-root-registry.js";
 import {
@@ -52,10 +55,6 @@ type Effective =
   | { ok: true; resolved: ResolvedGuardianSettings; followsRoot: string | null }
   | { ok: false; error: string };
 
-function message(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
 /** Gate the Guarded Agent's tool calls with Guardian Reviews; see the package README. */
 export default function guardian(pi: ExtensionAPI): void {
   let session: AgentSession | undefined;
@@ -68,6 +67,14 @@ export default function guardian(pi: ExtensionAPI): void {
   let generation = 0;
   /** The notice recommending a dedicated Guardian model is shown once per process. */
   let modelNoticeShown = false;
+  /**
+   * What a Child Agent or Advisor last read from its root. Once followed, a root that ended or
+   * was replaced keeps governing: falling back to this session's own, possibly laxer, settings
+   * would let a delegated session outlive its root's policy.
+   */
+  let lastRoot:
+    | { rootSessionId: string; resolved: ResolvedGuardianSettings; userMessages: RootUserMessage[] }
+    | undefined;
 
   // Allowed reviews stay out of the transcript unless `verbose` is on; their entries still count.
   pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) => {
@@ -83,18 +90,32 @@ export default function guardian(pi: ExtensionAPI): void {
     renderStatusEntry(entry.data, expanded, theme),
   );
 
-  /** Effective settings: the root session's for Child Agents and Advisors, else this session's. */
+  /** Refresh what this delegated session follows from its root, if the root is published. */
+  function followRoot(): typeof lastRoot {
+    if (role.kind === "main") return undefined;
+    const root = rootSession(role.rootSessionId);
+    if (root)
+      lastRoot = {
+        rootSessionId: root.rootSessionId(),
+        resolved: root.settings(),
+        userMessages: root.userMessages(),
+      };
+    return lastRoot;
+  }
+
+  /**
+   * Effective settings: the root session's for Child Agents and Advisors (the last known ones
+   * after the root leaves), else this session's.
+   */
   function effective(): Effective {
     try {
-      if (role.kind !== "main") {
-        const read = rootSettingsReader(role.rootSessionId);
-        if (read) return { ok: true, resolved: read(), followsRoot: role.rootSessionId };
-      }
+      const root = followRoot();
+      if (root) return { ok: true, resolved: root.resolved, followsRoot: root.rootSessionId };
       if (!session)
         return { ok: false, error: discoveryError ?? "Guardian session is unavailable" };
       return { ok: true, resolved: readGuardianSettings(session, layers), followsRoot: null };
     } catch (cause) {
-      return { ok: false, error: message(cause) };
+      return { ok: false, error: errorMessage(cause) };
     }
   }
 
@@ -102,6 +123,7 @@ export default function guardian(pi: ExtensionAPI): void {
     session: () => session,
     unavailable: () => discoveryError ?? "Guardian session is unavailable",
     role: () => role,
+    rootUserMessages: () => (role.kind === "main" ? [] : (lastRoot?.userMessages ?? [])),
     settings() {
       const current = effective();
       // On a settings error the gate fails closed; the defaults only shape its dialogs.
@@ -128,15 +150,6 @@ export default function guardian(pi: ExtensionAPI): void {
     }
   }
 
-  function notify(ctx: ExtensionContext, text: string, level: "info" | "warning" | "error"): void {
-    if (!ctx.hasUI) return;
-    try {
-      ctx.ui.notify(text, level);
-    } catch {
-      // A replaced session's UI is stale; the review entry remains the durable record.
-    }
-  }
-
   pi.on("session_start", (_event, ctx) => {
     activeMenu?.close();
     generation++;
@@ -145,6 +158,7 @@ export default function guardian(pi: ExtensionAPI): void {
     unpublish?.();
     unpublish = undefined;
     role = guardedSessionRole(ctx.sessionManager.getBranch());
+    lastRoot = undefined;
     footer = ctx.hasUI ? ctx.ui : undefined;
     const found = discoverPiAgentSession(pi, piSdk.AgentSession);
     if (found.ok) {
@@ -153,17 +167,31 @@ export default function guardian(pi: ExtensionAPI): void {
       try {
         layers = readGuardianLayers(session.settingsManager);
       } catch (cause) {
-        layers = { global: new Error(message(cause)), project: {} };
+        layers = { global: new Error(errorMessage(cause)), project: {} };
       }
     } else {
       session = undefined;
       discoveryError = `Guardian cannot read this session's settings: ${found.warning}`;
     }
+    const sessionId = ctx.sessionManager.getSessionId();
     if (role.kind === "main" && session) {
       const subject = session;
-      unpublish = publishRootSession(ctx.sessionManager.getSessionId(), {
+      unpublish = publishRootSession(sessionId, {
+        rootSessionId: () => sessionId,
         settings: () => readGuardianSettings(subject, layers),
         userMessages: () => gate.typedUserMessages(),
+      });
+    } else if (role.kind !== "main") {
+      // Republish the root, so an Advisor observing this Child Agent follows the real root.
+      const followed = role.rootSessionId;
+      unpublish = publishRootSession(sessionId, {
+        rootSessionId: () => followRoot()?.rootSessionId ?? followed,
+        settings() {
+          const current = effective();
+          if (!current.ok) throw new Error(current.error);
+          return current.resolved;
+        },
+        userMessages: () => followRoot()?.userMessages ?? [],
       });
     }
     const current = effective();
@@ -243,7 +271,7 @@ export default function guardian(pi: ExtensionAPI): void {
     change: GuardianChange,
     isCurrent: () => boolean,
   ): Promise<GuardianAppliedChange | undefined> {
-    if (role.kind !== "main" && rootSettingsReader(role.rootSessionId))
+    if (followRoot())
       throw new Error(
         "This session follows its root session's Guardian settings; change them there",
       );
@@ -288,7 +316,7 @@ export default function guardian(pi: ExtensionAPI): void {
           settings: data.settings ?? {},
           sources: data.sources ?? {},
           authored,
-          models: ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`),
+          models: ctx.modelRegistry.getAvailable().map(modelName),
           tools: pi.getAllTools().map((tool) => tool.name),
         };
       },
@@ -390,7 +418,7 @@ export default function guardian(pi: ExtensionAPI): void {
         applied = await applyChange(subject, command.scope, change, isCurrent);
       } catch (cause) {
         if (!isCurrent()) return;
-        error = message(cause);
+        error = errorMessage(cause);
       }
       if (isCurrent()) status(ctx, applied ? [applied] : [], error);
     },

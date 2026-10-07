@@ -75,14 +75,16 @@ function within(path: string, root: string): string[] | undefined {
 const contextFileNames = new Set(["agents.md", "agents.override.md", "claude.md"]);
 
 /**
- * Locations under the home directory where a change persists beyond the session: shell startup
- * files, credentials, user configuration, and programs on `PATH`. Judged wherever the workspace is.
+ * Names of shell startup files, credentials, and user configuration that persist beyond the
+ * session in the home directory. Inside the workspace they are sensitive at any depth too: a
+ * stow-style dotfiles tree (`dotfiles/bash/.bashrc`) installs them by link or copy.
  */
-const homePersistence = new Set([
+const persistenceNames = new Set([
   ".bashrc",
   ".bash_profile",
   ".bash_login",
   ".bash_logout",
+  ".bash_aliases",
   ".profile",
   ".zshrc",
   ".zprofile",
@@ -104,38 +106,75 @@ const homePersistence = new Set([
   ".kube",
 ]);
 
-/** Why a path below the home directory is a persistence or credential location. */
-function homeLocation(components: readonly string[]): string | undefined {
-  const [first = "", second = ""] = components.map((component) => component.toLowerCase());
-  const persistent =
-    homePersistence.has(first) ||
-    (first === ".local" && second === "bin") ||
-    (first === "library" && second === "launchagents");
-  return persistent
-    ? `a shell startup, credential, or persistence location in the home directory (${components.slice(0, first === ".local" || first === "library" ? 2 : 1).join("/")})`
+/** Two-component persistence locations: programs on `PATH` and macOS login agents. */
+const persistencePairs: readonly (readonly [string, string])[] = [
+  [".local", "bin"],
+  [".cargo", "bin"],
+  ["library", "launchagents"],
+];
+
+/** A component in quotes, so a name with control characters cannot forge evidence lines. */
+function quoted(components: readonly string[]): string {
+  return JSON.stringify(components.join("/"));
+}
+
+/** The persistence location starting at `components[index]`, if any. */
+function persistenceAt(components: readonly string[], index: number): string[] | undefined {
+  const name = components[index]?.toLowerCase();
+  if (name === undefined) return undefined;
+  if (persistenceNames.has(name)) return components.slice(index, index + 1);
+  const next = components[index + 1]?.toLowerCase();
+  return persistencePairs.some(([first, second]) => first === name && second === next)
+    ? components.slice(index, index + 2)
     : undefined;
 }
 
 /**
+ * Why a path below the home directory is a persistence or credential location: a persistence
+ * name or pair at its top, or `~/bin`. Judged wherever the workspace is.
+ */
+function homeLocation(components: readonly string[]): string | undefined {
+  const found =
+    persistenceAt(components, 0) ??
+    (components[0]?.toLowerCase() === "bin" ? components.slice(0, 1) : undefined);
+  return found
+    ? `a shell startup, credential, or persistence location in the home directory (${quoted(found)})`
+    : undefined;
+}
+
+/** Workspace names whose change alters agent, editor, or package-manager behavior. */
+const workspaceConfiguration: ReadonlyMap<string, string> = new Map([
+  [".pi", "Pi configuration"],
+  [".agents", "agent Skills and configuration"],
+  [".claude", "agent configuration"],
+  [".husky", "git hooks"],
+  [".vscode", "editor tasks and settings"],
+  [".idea", "editor run configurations"],
+  [".yarnrc.yml", "package-manager configuration"],
+  [".pnpmfile.cjs", "package-manager install hooks"],
+]);
+
+/**
  * Components inside the workspace whose change can weaken Guardian, expose secrets, alter
- * trusted instructions, or run code later: version control, secrets, Pi and agent
- * configuration, context files, git hooks, CI workflows, and editor tasks.
+ * trusted instructions, or run code later: version control, secrets, persistence dotfiles, Pi,
+ * agent, editor, and package-manager configuration, context files, git hooks, and CI workflows.
  */
 function sensitiveComponent(components: readonly string[]): string | undefined {
   for (const [index, component] of components.entries()) {
     const name = component.toLowerCase();
-    if (name === ".git") return "version-control metadata (.git)";
-    if (name === ".pi") return "Pi configuration (.pi)";
-    if (name === ".agents") return "agent Skills and configuration (.agents)";
-    if (name.startsWith(".env")) return `a secret or environment file (${component})`;
-    if (name === ".husky") return "git hooks (.husky)";
-    if (name === ".vscode") return "editor tasks and settings (.vscode)";
+    if (name === ".git") return `version-control metadata (${quoted([component])})`;
+    if (name.startsWith(".env")) return `a secret or environment file (${quoted([component])})`;
+    const configuration = workspaceConfiguration.get(name);
+    if (configuration) return `${configuration} (${quoted([component])})`;
     if (name === ".github" && components[index + 1]?.toLowerCase() === "workflows")
-      return "CI workflows (.github/workflows)";
+      return `CI workflows (${quoted(components.slice(index, index + 2))})`;
+    const persistent = persistenceAt(components, index);
+    if (persistent)
+      return `a shell startup, credential, or persistence file (${quoted(persistent)}) that takes effect once linked or copied into the home directory`;
   }
-  const last = components.at(-1)?.toLowerCase();
-  if (last && contextFileNames.has(last))
-    return `a context file Pi loads as instructions (${components.at(-1)})`;
+  const last = components.at(-1);
+  if (last && contextFileNames.has(last.toLowerCase()))
+    return `a context file Pi loads as instructions (${quoted([last])})`;
   return undefined;
 }
 
@@ -182,7 +221,8 @@ const windowsPathForm = /\\|^[A-Za-z]:/;
 
 /**
  * Why modifying `input` is sensitive, or `undefined` for an ordinary workspace path. Judged on
- * both the lexical path and the path with symlinks resolved; either being sensitive is enough.
+ * both the lexical path and the path with symlinks resolved; either being sensitive is enough,
+ * and every distinct reason is listed, with where the path resolves when that differs.
  */
 export function sensitivePathReason(
   input: string,
@@ -199,7 +239,12 @@ export function sensitivePathReason(
     homes: spellings(context.home ?? homedir()),
   };
   const targets = spellings(lexical);
+  const reasons = new Set(targets.flatMap((path) => judge(path, where) ?? []));
   if (targets.some(hardLinked))
-    return "a file with more than one hard link, so editing it changes another path too";
-  return targets.map((path) => judge(path, where)).find((reason) => reason !== undefined);
+    reasons.add("a file with more than one hard link, so editing it changes another path too");
+  if (!reasons.size) return undefined;
+  const [path, resolved] = targets;
+  if (resolved !== undefined)
+    reasons.add(`${JSON.stringify(path)} resolves to ${JSON.stringify(resolved)}`);
+  return [...reasons].join("; ");
 }

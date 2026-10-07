@@ -7,19 +7,25 @@ import type { ResolvedGuardianSettings } from "./guardian-settings.js";
 /** Reads a root session's current effective Guardian settings. */
 export type RootSettingsReader = () => ResolvedGuardianSettings;
 
-/** What a root session running Guardian publishes to its Child Agents and Advisors. */
+/**
+ * What a session running Guardian publishes to the sessions that follow it. A main session
+ * publishes its own settings and typed messages; a Child Agent or Advisor republishes its root's,
+ * so an Advisor observing a Child Agent resolves to the real root.
+ */
 export interface RootSession {
+  /** The root session whose settings and user these are. */
+  rootSessionId: () => string;
   settings: RootSettingsReader;
   /** The messages the root's user typed, as Trusted Evidence for delegated sessions' calls. */
   userMessages: () => RootUserMessage[];
 }
 
 /**
- * Process-global registry of root sessions, keyed by root session ID. Child Agents and Advisors
- * run in-process with their own Guardian instance, possibly loaded from a different copy of this
- * package, so the registry lives on a global symbol.
+ * Process-global registry of sessions running Guardian, keyed by session ID. Child Agents and
+ * Advisors run in-process with their own Guardian instance, possibly loaded from a different copy
+ * of this package, so the registry lives on a global symbol.
  */
-const registryKey = Symbol.for("pi-guardian.root-sessions.v2");
+const registryKey = Symbol.for("pi-guardian.root-sessions.v3");
 
 function registry(): Map<string, RootSession> {
   const existing: unknown = Object.getOwnPropertyDescriptor(globalThis, registryKey)?.value;
@@ -30,29 +36,27 @@ function registry(): Map<string, RootSession> {
   return created;
 }
 
-/** Publish a root session; returns the matching unpublish. */
-export function publishRootSession(rootSessionId: string, root: RootSession): () => void {
+/** Publish a session under its ID; returns the matching unpublish. */
+export function publishRootSession(sessionId: string, root: RootSession): () => void {
   const roots = registry();
-  roots.set(rootSessionId, root);
+  roots.set(sessionId, root);
   return () => {
-    if (roots.get(rootSessionId) === root) roots.delete(rootSessionId);
+    if (roots.get(sessionId) === root) roots.delete(sessionId);
   };
 }
 
-/** The published root session, if that root runs Guardian in this process. */
-export function rootSession(rootSessionId: string): RootSession | undefined {
-  return registry().get(rootSessionId);
-}
-
-/** The published settings reader for a root session, if that root runs Guardian in-process. */
-export function rootSettingsReader(rootSessionId: string): RootSettingsReader | undefined {
-  return rootSession(rootSessionId)?.settings;
+/** What the session `sessionId` publishes, if it runs Guardian in this process. */
+export function rootSession(sessionId: string): RootSession | undefined {
+  return registry().get(sessionId);
 }
 
 const childIdentitySchema = Type.Object({ original_root_session_id: Type.String() });
 const advisorRoleSchema = Type.Object({ observedSessionId: Type.String() });
 
-/** Which kind of agent a session belongs to, and the root whose settings it follows. */
+/**
+ * Which kind of agent a session belongs to, and the session it follows: a Child Agent's root, or
+ * the session an Advisor observes, which may itself be a Child Agent that resolves to its root.
+ */
 export type GuardedSessionRole =
   | { kind: "main" }
   | { kind: "child"; rootSessionId: string }

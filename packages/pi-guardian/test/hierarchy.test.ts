@@ -9,6 +9,7 @@ import {
   createGuardianHarness,
   reply,
   toolCalls,
+  type CapturedReview,
 } from "./fixtures/guardian-harness.js";
 
 /** A session journal promoted to a Minimal Subagents Child Agent of `rootSessionId`. */
@@ -26,13 +27,24 @@ async function childManager(rootSessionId: string) {
   return manager;
 }
 
-/** A session journal promoted to an Advisor Session observing `rootSessionId`. */
-async function advisorManager(rootSessionId: string) {
+/**
+ * A session journal promoted to an Advisor Session observing `observedSessionId`, with the entry
+ * pi-advisor writes (`packages/pi-advisor/src/advisor-session.ts`).
+ */
+async function advisorManager(observedSessionId: string) {
   const dir = await mkdtemp(join(tmpdir(), "pi-guardian-advisor-"));
   onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const manager = SessionManager.create(dir, join(dir, "sessions"));
-  manager.appendCustomEntry("pi-advisor-role", { observedSessionId: rootSessionId });
+  manager.appendCustomEntry("pi-advisor-role", { role: "advisor", observedSessionId });
   return manager;
+}
+
+/** The text blocks of a captured Guardian request. */
+function requestTexts(review: CapturedReview | undefined): string[] {
+  const [message] = review?.messages ?? [];
+  return message?.role === "user" && Array.isArray(message.content)
+    ? message.content.map((part) => (part.type === "text" ? part.text : ""))
+    : [];
 }
 
 describe("Child Agents and Advisors", () => {
@@ -127,6 +139,63 @@ describe("Child Agents and Advisors", () => {
     });
   });
 
+  it("resolve an Advisor observing a Child Agent to the real root", async () => {
+    const root = await createGuardianHarness({
+      guardianSettings: { model: "guardian-test/reviewer" },
+    });
+    await root.session.prompt("/guardian tool deploy review");
+    root.responses.push(reply("I will delegate it."));
+    await root.session.prompt("Have a worker deploy staging.");
+    const rootId = root.session.sessionManager.getSessionId();
+    const child = await createGuardianHarness({
+      guardianSettings: { enabled: false },
+      manager: await childManager(rootId),
+    });
+    const advisor = await createGuardianHarness({
+      guardianSettings: { enabled: false },
+      manager: await advisorManager(child.session.sessionManager.getSessionId()),
+    });
+    advisor.responses.push(toolCalls(["deploy", { target: "staging" }, "call-1"]), reply("Ok."));
+    advisor.verdicts.push(assessment("low", "high", "The root user asked for it."));
+    await advisor.session.prompt("Review the worker's last turn.");
+    expect(advisor.reviews).toHaveLength(1);
+    const texts = requestTexts(advisor.reviews[0]);
+    expect(texts[0]).toMatch(/^Evidence \(TRUSTED, origin: rootUser\):/);
+    expect(texts[0]).toContain("Have a worker deploy staging.");
+    await advisor.session.prompt("/guardian status");
+    expect(advisor.entries("pi-guardian-status").at(-1)).toMatchObject({
+      followsRoot: rootId,
+      settings: { tools: { deploy: "review" } },
+    });
+  });
+
+  it("keep their root's last settings and requests after the root session ends", async () => {
+    const root = await createGuardianHarness({
+      guardianSettings: { model: "guardian-test/reviewer", tools: { deploy: "review" } },
+    });
+    root.responses.push(reply("I will delegate it."));
+    await root.session.prompt("Have a worker deploy staging.");
+    const rootId = root.session.sessionManager.getSessionId();
+    const child = await createGuardianHarness({
+      // The child's own settings would allow everything.
+      guardianSettings: { enabled: false },
+      manager: await childManager(rootId),
+    });
+    await child.session.prompt("/guardian status");
+    // The root ends (as on /new or /resume) and leaves the registry.
+    root.session.dispose();
+    child.responses.push(toolCalls(["deploy", { target: "staging" }, "call-1"]), reply("Ok."));
+    child.verdicts.push(assessment("low", "high", "The root user asked for it."));
+    await child.session.prompt("Task from the parent agent: deploy staging.");
+    expect(child.reviews).toHaveLength(1);
+    expect(requestTexts(child.reviews[0])[0]).toContain("Have a worker deploy staging.");
+    await child.session.prompt("/guardian status");
+    expect(child.entries("pi-guardian-status").at(-1)).toMatchObject({
+      state: "enabled",
+      followsRoot: rootId,
+    });
+  });
+
   it("fall back to their own settings when the root does not run Guardian in-process", async () => {
     const child = await createGuardianHarness({
       guardianSettings: { enabled: false },
@@ -148,7 +217,7 @@ describe("Child Agents and Advisors", () => {
     await child.session.prompt("deploy a");
     expect(child.executed).toEqual([]);
     expect(child.entries("pi-guardian-review")).toMatchObject([
-      { outcome: "failed", failure: "Guardian model guardian-test/missing was not found" },
+      { result: "failed", failure: "Guardian model guardian-test/missing was not found" },
     ]);
   });
 });
