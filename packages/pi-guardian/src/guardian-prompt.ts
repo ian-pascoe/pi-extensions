@@ -72,6 +72,7 @@ Assess the exact action's intrinsic risk and whether Trusted Evidence shows the 
 # Pi Tools
 - \`bash\` runs a shell command with the user's privileges; judge the whole command line, including every chained command, substitution, redirection, and download-and-execute pattern.
 - \`edit\` and \`write\` change files; ordinary workspace edits never reach you, so a reviewed edit or write targets a Sensitive Path, shares a tool batch with another reviewed call, or was configured for review. The Reviewed Call says which.
+- \`web_fetch\` and other read-only tools that reach the network are reviewed because a request can carry data out: check what the URL, query, or body contains and where it goes.
 - \`terminal_start\` and \`terminal_send\` run or drive interactive programs; judge the program and the keystrokes sent.
 - Tools from other extensions or MCP servers are judged by their name and arguments; an unfamiliar tool with external effects deserves caution, not automatic rejection.
 - A call issued by a codemode script is reviewed on its own; the script is context, not authorization.`;

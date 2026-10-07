@@ -168,19 +168,12 @@ describe("Tool Policy resolution", () => {
     ...overrides,
   });
 
-  it.each([
-    "read",
-    "grep",
-    "find",
-    "ls",
-    "codemode",
-    "tool_search",
-    "todo",
-    "web_search",
-    "web_fetch",
-  ])("allows %s by default", (toolName) => {
-    expect(resolveToolPolicy(call({ toolName }))).toEqual({ policy: "allow", source: "default" });
-  });
+  it.each(["read", "grep", "find", "ls", "codemode", "tool_search", "todo", "web_search"])(
+    "allows %s by default",
+    (toolName) => {
+      expect(resolveToolPolicy(call({ toolName }))).toEqual({ policy: "allow", source: "default" });
+    },
+  );
 
   it("allows ordinary edits and reviews Sensitive Paths", () => {
     expect(resolveToolPolicy(call({ toolName: "edit", input: { path: "src/a.ts" } })).policy).toBe(
@@ -214,6 +207,25 @@ describe("Tool Policy resolution", () => {
     expect(
       resolveToolPolicy(call({ toolName: "terminal_send", annotations: { readOnlyHint: true } })),
     ).toEqual({ policy: "review", source: "default" });
+  });
+
+  it("reviews web_fetch by default, since a fetched URL can carry data out", () => {
+    expect(resolveToolPolicy(call({ toolName: "web_fetch" }))).toEqual({
+      policy: "review",
+      source: "fallback",
+    });
+    expect(
+      resolveToolPolicy(call({ toolName: "web_fetch", configured: { web_fetch: "allow" } })),
+    ).toEqual({ policy: "allow", source: "setting" });
+  });
+
+  it("reviews read-only tools that reach the open world", () => {
+    expect(
+      resolveToolPolicy(call({ annotations: { readOnlyHint: true, openWorldHint: true } })),
+    ).toEqual({ policy: "review", source: "fallback" });
+    expect(
+      resolveToolPolicy(call({ annotations: { readOnlyHint: true, openWorldHint: false } })),
+    ).toEqual({ policy: "allow", source: "annotation" });
   });
 
   it("follows readOnlyHint for tools without a default, else reviews", () => {

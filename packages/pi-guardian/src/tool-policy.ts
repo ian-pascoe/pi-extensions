@@ -24,7 +24,6 @@ export const allowedByDefault: readonly string[] = [
   "tool_search",
   "todo",
   "web_search",
-  "web_fetch",
 ];
 /** Tools reviewed by default regardless of their annotations. */
 export const reviewedByDefault: readonly string[] = [
@@ -74,8 +73,8 @@ function builtInDefault(call: ToolPolicyInput): ResolvedToolPolicy | undefined {
 
 /**
  * Resolve one call's Tool Policy: the configured `tools` entry, else the built-in default
- * (including Safe Command and Sensitive Path exemptions), else `readOnlyHint` annotations, else
- * review.
+ * (including Safe Command and Sensitive Path exemptions), else a `readOnlyHint` annotation without
+ * `openWorldHint`, else review.
  */
 export function resolveToolPolicy(call: ToolPolicyInput): ResolvedToolPolicy {
   const configured = Object.hasOwn(call.configured, call.toolName)
@@ -84,6 +83,8 @@ export function resolveToolPolicy(call: ToolPolicyInput): ResolvedToolPolicy {
   if (configured) return { policy: configured, source: "setting" };
   const fallback = builtInDefault(call);
   if (fallback) return fallback;
-  if (call.annotations?.readOnlyHint === true) return { policy: "allow", source: "annotation" };
+  // A read-only tool that reaches the open world, such as a URL fetch, can still send data out.
+  if (call.annotations?.readOnlyHint === true && call.annotations.openWorldHint !== true)
+    return { policy: "allow", source: "annotation" };
   return { policy: "review", source: "fallback" };
 }

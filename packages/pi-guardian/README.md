@@ -24,11 +24,11 @@ Every `tool_call`, including calls a tool issues itself (such as a `codemode` sc
 
 1. the configured `tools.<name>` setting, if any;
 2. else the built-in default:
-   - `allow`: `read`, `grep`, `find`, `ls`, `codemode`, `tool_search`, `todo`, `web_search`, `web_fetch`;
+   - `allow`: `read`, `grep`, `find`, `ls`, `codemode`, `tool_search`, `todo`, `web_search`;
    - `edit` and `write`: `allow`, unless the target is a **Sensitive Path** or the call shares its assistant message's tool batch with a call that is not allowed without review (Pi may run them in parallel, and that call could replace the target with a link first); either is reviewed;
    - `bash`: `allow` only for a **Safe Command**, otherwise reviewed;
    - `terminal_start`, `terminal_send`, and `powershell`: reviewed;
-3. else the tool's `readOnlyHint: true` annotation (as reported by `pi.getAllTools()`) allows it;
+3. else the tool's `readOnlyHint: true` annotation (as reported by `pi.getAllTools()`) allows it, unless it also declares `openWorldHint: true`;
 4. else the call is reviewed.
 
 `deny` blocks the call without a model call. `review` sends it to a Guardian Review. A nested call is judged by its own Tool Policy; the issuing call is shown to the Guardian as context only.
@@ -181,7 +181,8 @@ Only these two kinds of delegated session are detected. A child session of any o
 - A Child Agent or Advisor reviews only its own conversation; the root user's messages are not part of its evidence.
 - Reviews cannot inspect files or run read-only checks (ADR-0001), so the policy leans conservative when evidence is missing.
 - `git` read-only subcommands still honor repository configuration such as `core.fsmonitor` or `diff.external`; edits to `.git` are Sensitive Paths and therefore reviewed.
-- Annotations and Safe Commands are trusted as declared; a tool that lies about `readOnlyHint` runs without review unless you configure it.
+- Annotations and Safe Commands are trusted as declared; a tool that lies about `readOnlyHint` or `openWorldHint` runs without review unless you configure it.
+- **Exfiltration through reads**: a read can still send data out when it reaches the network. `web_fetch` is therefore reviewed by default, since its URL can carry workspace contents to any host, and so is any tool annotated both read-only and open-world. `web_search` stays allowed: its query goes only to the configured search provider. Allow `web_fetch` with `tools.web_fetch: "allow"` only if you accept that risk.
 - `safeCommands` cannot remove a lower scope's entries.
 - **Script runners run unreviewed code**: a Safe Command such as `npm test`, `pnpm lint`, or `make` executes whatever the workspace's `package.json` scripts, test files, and tool configuration say, and ordinary workspace edits to those files are not reviewed. Do not add script runners to `safeCommands` unless you accept that an agent can run arbitrary code through them. Likewise, extensions that act after edits, such as pi-formatter running formatters with workspace configuration, can execute code that Guardian never reviews.
 - An ordinary edit that shares a tool batch with a reviewed call is reviewed only for the assistant message's own calls; concurrent nested calls of a `codemode` script are judged one by one.
