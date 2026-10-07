@@ -495,7 +495,7 @@ describe("Background jobs", () => {
 
     const logPath = join(tmpdir(), "pi-termctrl", `${process.pid}-b1.log`);
     expect(existsSync(logPath)).toBe(true);
-    const stop = createTerminalStopTool(registry);
+    const stop = createTerminalStopTool({ registry, scrollback: () => undefined });
     const stopped = await stop.execute("stop", { id: "b1" }, undefined, undefined, context());
     expect(stopped.structuredContent).toMatchObject({
       id: "b1",

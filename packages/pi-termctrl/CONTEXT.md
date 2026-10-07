@@ -17,6 +17,10 @@ _Avoid_: Background shell, detached process, task
 The last lines and bytes of a `bash` result that the model sees, set by `termctrl.bashTail`: the foreground output and the "output so far" of a backgrounding result. The full output stays in a log file the result names.
 _Avoid_: Output limit, truncation
 
+**Scrolled-off lines**:
+The lines that left a Terminal's screen since the agent's previous result, reported with that result. A line the agent already saw on a screen is not reported again unless it changed. The `termctrl.scrollback` setting limits how many a result shows, keeping the first and last; termctrl's own scrollback, the limited log they are read from, is a different thing.
+_Avoid_: Output, history
+
 **Exit notification**:
 A message telling the agent that a Terminal or Background job ended, which it had not already seen through a tool call.
 _Avoid_: Completion event, callback

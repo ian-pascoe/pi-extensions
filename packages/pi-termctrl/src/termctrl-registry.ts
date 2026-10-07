@@ -13,7 +13,7 @@ import type { TerminalViewport } from "./pi-termctrl-settings.js";
 /** The `globalThis` key every registry version shares. Its value always satisfies {@link RegistrySlot}. */
 export const REGISTRY_KEY = Symbol.for("@ian-pascoe/pi-termctrl/registry");
 /** Bump on any change to the state's shape: a reloaded module must not adopt an older shape. */
-export const REGISTRY_VERSION = 5;
+export const REGISTRY_VERSION = 6;
 
 /** Live Terminals plus Background jobs allowed across the whole process. */
 export const LIVE_ENTRY_CAP = 16;
@@ -84,6 +84,11 @@ export interface TerminalEntry extends EntryBase {
    * last lines before the cursor, or, while the cursor is 0, the log's first line.
    */
   logAnchor: readonly string[];
+  /**
+   * The screen rows the agent last received, which start at `logCursor` in the log; `undefined`
+   * marks a row cut from that result. Lines that scroll off unchanged are not reported again.
+   */
+  seenRows: readonly (string | undefined)[];
 }
 
 /** A `bash` command moved to the background. */
@@ -463,6 +468,7 @@ export class TermctrlRegistry {
         lastScreen: undefined,
         logCursor: 0,
         logAnchor: [],
+        seenRows: [],
       };
       this.state.entries.set(id, entry);
       this.syncWatcher();
