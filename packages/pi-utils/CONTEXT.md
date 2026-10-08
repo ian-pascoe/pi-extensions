@@ -11,7 +11,7 @@ The compact default presentation of a tool row or message, showing a header and 
 _Avoid_: Summary view, short mode
 
 **Expanded View**:
-The full presentation of a tool row or message that the user reveals with Pi's tool-expansion key; it carries no extra hint.
+The full presentation of a tool row or message that the user reveals with Pi's tool-expansion key, which sets every item, or by clicking that one item; it carries no extra hint.
 _Avoid_: Detail view, verbose mode
 
 **Expand Hint**:

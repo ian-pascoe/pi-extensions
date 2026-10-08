@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
-import { noticeText } from "@ian-pascoe/pi-utils/ui";
+import { expandEntryOnClick, expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import {
   parseAdvisorOptions,
   readAdvisorLayers,
@@ -87,14 +87,23 @@ export default function advisor(pi: ExtensionAPI): void {
     attachChild,
   );
 
-  pi.registerEntryRenderer("pi-advisor-child", (entry, { expanded }, theme) =>
-    renderAdvisorChildEntry(entry.data, expanded, theme),
+  pi.registerEntryRenderer(
+    "pi-advisor-child",
+    expandEntryOnClick((entry, { expanded }, theme) =>
+      renderAdvisorChildEntry(entry.data, expanded, theme),
+    ),
   );
-  pi.registerEntryRenderer("pi-advisor-status", (entry, { expanded }, theme) =>
-    renderAdvisorStatus(entry.data, expanded, theme),
+  pi.registerEntryRenderer(
+    "pi-advisor-status",
+    expandEntryOnClick((entry, { expanded }, theme) =>
+      renderAdvisorStatus(entry.data, expanded, theme),
+    ),
   );
-  pi.registerMessageRenderer("pi-advisor", (message, options, theme) =>
-    renderAdvisorIntervention(message.details, options, theme),
+  pi.registerMessageRenderer(
+    "pi-advisor",
+    expandMessageOnClick((message, options, theme) =>
+      renderAdvisorIntervention(message.details, options, theme),
+    ),
   );
 
   /** Show the current Advisor state in the open settings menu and the footer. */

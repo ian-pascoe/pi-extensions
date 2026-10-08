@@ -7,7 +7,7 @@ import {
   type ExtensionFactory,
   type SessionShutdownEvent,
 } from "@earendil-works/pi-coding-agent";
-import { noticeText } from "@ian-pascoe/pi-utils/ui";
+import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import { createBashReplacement, RunningBashCalls } from "./bash-replacement.js";
 import {
   EXIT_NOTIFICATION_TYPE,
@@ -85,7 +85,10 @@ class PiTermctrlController {
   }
 
   register(): void {
-    this.pi.registerMessageRenderer(EXIT_NOTIFICATION_TYPE, renderExitNotification);
+    this.pi.registerMessageRenderer(
+      EXIT_NOTIFICATION_TYPE,
+      expandMessageOnClick(renderExitNotification),
+    );
     this.pi.registerCommand("ps", {
       description: "Show and stop Terminals and Background jobs",
       handler: async () => {

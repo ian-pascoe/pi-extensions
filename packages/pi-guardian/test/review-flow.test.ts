@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import { argumentsHash } from "../src/guardian-evidence.js";
 import { correctiveMessage } from "../src/guardian-review.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
@@ -394,6 +395,26 @@ describe("Guardian Review lifecycle", () => {
         .map((entry) => renderer(entry, { expanded: false }, theme) !== undefined);
       // The allowed review shows only when verbose; the Rejection always shows.
       expect(rendered).toEqual([verbose, true]);
+      const rejection = harness.session.sessionManager
+        .getBranch()
+        .findLast((entry) => entry.type === "custom" && entry.customType === "pi-guardian-review");
+      if (rejection?.type !== "custom") throw new Error("Missing the Rejection entry");
+      expectClickToggles(renderer, rejection, { expanded: false }, theme);
+      const status = runner?.getEntryRenderer("pi-guardian-status");
+      if (!status) throw new Error("Missing status renderer");
+      expectClickToggles(
+        status,
+        {
+          type: "custom",
+          customType: "pi-guardian-status",
+          data: { state: "error", error: "Cannot read settings" },
+          id: "status",
+          parentId: null,
+          timestamp: "",
+        },
+        { expanded: false },
+        theme,
+      );
     },
   );
 

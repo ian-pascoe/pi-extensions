@@ -11,7 +11,7 @@ import {
   type ToolResultEvent,
   type ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { noticeText } from "@ian-pascoe/pi-utils/ui";
+import { expandEntryOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -288,10 +288,13 @@ export class PiLspLifecycleController {
         completeLspCommandArguments(prefix, this.session?.manager),
       handler: (args, context) => this.handleCommand(args, context),
     });
-    this.pi.registerEntryRenderer(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, (entry, options, theme) =>
-      Value.Check(PostEditDiagnosticsEntryDataSchema, entry.data)
-        ? renderPostEditDiagnosticsEntry(entry.data, options, theme)
-        : undefined,
+    this.pi.registerEntryRenderer(
+      POST_EDIT_DIAGNOSTICS_ENTRY_TYPE,
+      expandEntryOnClick((entry, options, theme) =>
+        Value.Check(PostEditDiagnosticsEntryDataSchema, entry.data)
+          ? renderPostEditDiagnosticsEntry(entry.data, options, theme)
+          : undefined,
+      ),
     );
     this.pi.on("session_start", (_event, context) => this.startSession(context));
     this.pi.on("session_tree", (_event, context) => {

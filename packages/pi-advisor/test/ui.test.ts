@@ -9,6 +9,7 @@ import {
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Context } from "@earendil-works/pi-ai";
 import { createSdkHarness, reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
+import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import advisor from "../src/index.js";
 import { fixture, response } from "./fixtures/advisor-runtime.js";
 import { createMenuTui, menuDriver } from "./fixtures/menu-ui.js";
@@ -61,6 +62,23 @@ describe("Advisor status entries", () => {
     expect(text).toContain("✓ enabled → true [session]");
     expect(text).toContain("Advisor ● on");
     expect(text).not.toContain('"settings"');
+    if (!renderer) throw new Error("Expected the Advisor status renderer");
+    expectClickToggles(renderer, entry, { expanded: false }, themeFromRunner(session));
+  });
+
+  it("toggle a Child Agent entry on click", async () => {
+    const { session } = await createSdkHarness([advisor]);
+    const renderer = session.extensionRunner?.getEntryRenderer("pi-advisor-child");
+    if (!renderer) throw new Error("Expected the Advisor child renderer");
+    const entry = {
+      type: "custom" as const,
+      customType: "pi-advisor-child",
+      data: { agentId: "worker", severity: "blocker", message: "Stop editing tests" },
+      id: "child",
+      parentId: null,
+      timestamp: "",
+    };
+    expectClickToggles(renderer, entry, { expanded: false }, themeFromRunner(session));
   });
 });
 
@@ -195,6 +213,20 @@ describe("Interventions", () => {
     expect(text).toContain("Advisor concern");
     expect(text).not.toContain("▲");
     expect(text).toContain("Re-run the failing test");
+    if (!renderer) throw new Error("Expected the Advisor Intervention renderer");
+    expectClickToggles(
+      renderer,
+      {
+        role: "custom",
+        customType: entry.customType,
+        content: entry.content,
+        display: true,
+        details: entry.details,
+        timestamp: 0,
+      },
+      { expanded: false, outputPad: 0 },
+      themeFromRunner(session),
+    );
   });
 });
 

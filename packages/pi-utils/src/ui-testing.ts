@@ -1,4 +1,4 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { UiTheme } from "./ui.js";
 
 /**
@@ -134,5 +134,50 @@ export function expectLinesFitWidth(
     const columns = visibleWidth(line.replace(TAG_MARKER, ""));
     if (columns > width)
       throw new Error(`Line is ${columns} columns, wider than ${width}: ${line}`);
+  }
+}
+
+function leftClick(height: number, width: number): TuiMouseEvent {
+  return {
+    type: "click",
+    button: "left",
+    x: 0,
+    y: 0,
+    screenX: 0,
+    screenY: 0,
+    width,
+    height,
+    shift: false,
+    alt: false,
+    ctrl: false,
+    clickCount: 1,
+  };
+}
+
+/**
+ * Throw unless a left click on the item `render` draws is handled and swaps it to the view Pi would
+ * draw with the expanded flag flipped, and a second click swaps it back. Pass a registered message
+ * or entry renderer to prove it was wrapped with `expandMessageOnClick`/`expandEntryOnClick`.
+ */
+export function expectClickToggles<Item, Options extends { expanded: boolean }, RenderTheme>(
+  render: (item: Item, options: Options, theme: RenderTheme) => Component | undefined,
+  item: Item,
+  options: Options,
+  theme: RenderTheme,
+  width = 100,
+): void {
+  const draw = (component: Component | undefined) => component?.render(width) ?? [];
+  const other = draw(render(item, { ...options, expanded: !options.expanded }, theme));
+  const component = render(item, options, theme);
+  const first = draw(component);
+  const swaps: Array<[string, readonly string[]]> = [
+    ["first", other],
+    ["second", first],
+  ];
+  for (const [which, expected] of swaps) {
+    if (!component?.handleMouse?.(leftClick(draw(component).length, width))?.handled)
+      throw new Error(`The ${which} click: the item did not handle a left click`);
+    if (JSON.stringify(draw(component)) !== JSON.stringify(expected))
+      throw new Error(`The ${which} click: the item did not show the other view`);
   }
 }

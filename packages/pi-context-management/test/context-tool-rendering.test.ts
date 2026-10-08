@@ -12,6 +12,7 @@ import {
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
 import { beforeAll, expect, test } from "vitest";
+import { expectClickToggles } from "@ian-pascoe/pi-utils/ui-testing";
 import contextManagement from "../src/context-management-extension.js";
 import type { ContextToolDetails } from "../src/context-tool-rendering.js";
 import { createSdkHarness } from "./sdk-harness.js";
@@ -433,5 +434,6 @@ test.each(["pi-context-prepare", "pi-context-manual-prepare", "pi-context-prepar
     const full = textOf(lines(expanded));
     expect(full).toContain("Instruction 14");
     expect(full).not.toContain("to expand");
+    expectClickToggles(renderer, { ...message }, { expanded: false, outputPad: 1 }, theme);
   },
 );

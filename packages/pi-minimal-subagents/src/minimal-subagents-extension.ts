@@ -20,7 +20,7 @@ import {
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
-import { noticeText } from "@ian-pascoe/pi-utils/ui";
+import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import {
   createSubagentAccessBranchRecord,
   reconcileCoordinatorToolAccess,
@@ -559,8 +559,14 @@ export class MinimalSubagentsLifecycleController {
         this.accessSession?.context.ui.notify(noticeText("Subagents", message), "error"),
     });
     for (const tool of rootTools) this.pi.registerTool(tool);
-    this.pi.registerMessageRenderer("minimal-subagents.message", renderMinimalSubagentsMessage);
-    this.pi.registerMessageRenderer("minimal-subagents.result", renderMinimalSubagentsResult);
+    this.pi.registerMessageRenderer(
+      "minimal-subagents.message",
+      expandMessageOnClick(renderMinimalSubagentsMessage),
+    );
+    this.pi.registerMessageRenderer(
+      "minimal-subagents.result",
+      expandMessageOnClick(renderMinimalSubagentsResult),
+    );
     this.pi.registerCommand("subagents", {
       description: "Control Subagent Access and inspect Child Agents",
       getArgumentCompletions: completeSubagentsCommandArguments,

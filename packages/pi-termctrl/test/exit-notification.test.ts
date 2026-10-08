@@ -2,10 +2,13 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
 import {
   escapeTaggedTheme,
+  expectClickToggles,
   expectLinesFitWidth,
   readableTags,
 } from "@ian-pascoe/pi-utils/ui-testing";
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
+import { FakeDriverFactory } from "./fake-driver.js";
+import { createSdkFixture, disposeSdkFixtures } from "./sdk-fixture.js";
 import {
   EXIT_NOTIFICATION_TYPE,
   formatExitNotification,
@@ -166,4 +169,18 @@ describe("Exit notifications", () => {
     expect(collapsed).not.toContain("<customMessageText>line 11</customMessageText>");
     expect(collapsed.join("\n")).toContain("<muted>... (4 more lines,</muted>");
   });
+
+  test("the registered renderer expands and collapses on click", async () => {
+    const fixture = await createSdkFixture({
+      binary: { kind: "available", path: "/fake/termctrl" },
+      createDriver: new FakeDriverFactory().create,
+    });
+    const renderer = fixture.session.extensionRunner?.getMessageRenderer(EXIT_NOTIFICATION_TYPE);
+    if (!renderer) throw new Error("Missing the Exit notification renderer");
+    expectClickToggles(renderer, messageFor(notices), { expanded: false, outputPad: 1 }, theme);
+  });
+});
+
+afterEach(async () => {
+  await disposeSdkFixtures();
 });

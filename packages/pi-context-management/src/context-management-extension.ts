@@ -31,7 +31,7 @@ import {
 } from "./context-window.js";
 
 import { hasLegacyContextSettings } from "./context-settings.js";
-import { noticeText } from "@ian-pascoe/pi-utils/ui";
+import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -139,8 +139,11 @@ export default function contextManagement(pi: ExtensionAPI): void {
   });
   registerContextTools(pi, fail);
   for (const [customType, label] of Object.entries(CONTEXT_MESSAGE_LABELS))
-    pi.registerMessageRenderer(customType, (message, options, theme) =>
-      renderContextMessage(label, message, options, theme),
+    pi.registerMessageRenderer(
+      customType,
+      expandMessageOnClick((message, options, theme) =>
+        renderContextMessage(label, message, options, theme),
+      ),
     );
   pi.registerCommand("context", {
     description: "Inspect native Context usage, Notes, and recent Context Windows",

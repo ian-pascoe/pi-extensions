@@ -6,7 +6,7 @@ import type {
   ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
-import { footerStatus } from "@ian-pascoe/pi-utils/ui";
+import { expandEntryOnClick, footerStatus } from "@ian-pascoe/pi-utils/ui";
 import { reviewEntryType, reviewTotals } from "./guardian-audit.js";
 import {
   parseGuardianCommand,
@@ -83,17 +83,23 @@ export default function guardian(pi: ExtensionAPI): void {
   let lastDelegations: ApprovedDelegation[] = [];
 
   // Allowed reviews stay out of the transcript unless `verbose` is on; their entries still count.
-  pi.registerEntryRenderer(reviewEntryType, (entry, { expanded }, theme) => {
-    const current = effective();
-    return renderReviewEntry(
-      entry.data,
-      expanded,
-      theme,
-      current.ok && current.resolved.settings.verbose,
-    );
-  });
-  pi.registerEntryRenderer(statusEntryType, (entry, { expanded }, theme) =>
-    renderStatusEntry(entry.data, expanded, theme),
+  pi.registerEntryRenderer(
+    reviewEntryType,
+    expandEntryOnClick((entry, { expanded }, theme) => {
+      const current = effective();
+      return renderReviewEntry(
+        entry.data,
+        expanded,
+        theme,
+        current.ok && current.resolved.settings.verbose,
+      );
+    }),
+  );
+  pi.registerEntryRenderer(
+    statusEntryType,
+    expandEntryOnClick((entry, { expanded }, theme) =>
+      renderStatusEntry(entry.data, expanded, theme),
+    ),
   );
 
   /** Refresh what this delegated session follows from its root, if the root is published. */
