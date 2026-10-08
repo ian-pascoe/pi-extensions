@@ -35,7 +35,7 @@ import { Value } from "typebox/value";
 import { afterEach, expect, test } from "vitest";
 import { createPiLspExtension } from "../src/pi-lsp-extension.js";
 import { LSP_OPERATION_NAMES } from "../src/lsp-tool-contract.js";
-import { lspToolExposure } from "../src/lsp-tool.js";
+import { LSP_TOOL_GUIDELINE, lspToolExposure } from "../src/lsp-tool.js";
 
 const directories: string[] = [];
 const sessions: AgentSession[] = [];
@@ -76,6 +76,8 @@ interface ToolCacheOptions {
   readonly defaultTools?: readonly string[];
   /** Keep Pi's default system prompt, whose "Available tools" list shows prompt snippets. */
   readonly defaultSystemPrompt?: boolean;
+  /** Pi's `codemode.mode`; default "on". */
+  readonly codemodeMode?: "on" | "only";
 }
 
 /** Real Pi collaborators; the only scripted collaborator is the external model stream. */
@@ -91,7 +93,7 @@ async function createToolCacheFixture(
   const defaultTools = options.defaultTools ?? (builtins.length === 0 ? undefined : [...builtins]);
   const settingsData: NonNullable<Parameters<typeof SettingsManager.inMemory>[0]> = {
     retry: { enabled: false },
-    codemode: { mode: "on" },
+    codemode: { mode: options.codemodeMode ?? "on" },
   };
   if (defaultTools !== undefined) settingsData.defaultTools = [...defaultTools];
   const settings = SettingsManager.inMemory(settingsData);
@@ -495,7 +497,34 @@ test("lists the most useful script-callable tools under the default codemode bud
   ]) {
     expect(codemode, name).toContain(`### \`${name}\``);
   }
-  expect(codemode).not.toContain("Use the lsp_* tools for semantic code navigation");
+  // The rules appear once, under the namespace header, not on every declaration.
+  expect(codemode.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
+});
+
+/**
+ * `codemode.mode: "only"` hides the direct declarations, so the shared rules must reach the model
+ * through the codemode listing exactly once, and the direct tools stay listed.
+ */
+test("shows the shared LSP rules exactly once when codemode is the only surface", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], {
+    builtins: ["codemode"],
+    codemodeMode: "only",
+  });
+  const turns = await runTurnsAcrossReload(fixture);
+  expectStablePrefix(turns);
+  const first = turns[0];
+  const everything = [
+    first?.systemPrompt ?? "",
+    ...(first?.tools ?? []).map(({ description }) => description),
+  ].join("\n");
+  expect(everything.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
+  const codemode = first?.tools.find(({ name }) => name === "codemode")?.description ?? "";
+  expect(codemode).toContain(LSP_TOOL_GUIDELINE);
+  // Preview tools (lsp_rename, lsp_apply) have costlier result shapes and stay findable through
+  // searchTools(); the cheap direct reads are listed.
+  for (const name of ["lsp_diagnostics", "lsp_hover", "lsp_goto_definition"]) {
+    expect(codemode, name).toContain(`### \`${name}\``);
+  }
 });
 
 test("keeps the directly declared LSP tool definitions byte-identical", async () => {
@@ -506,6 +535,20 @@ test("keeps the directly declared LSP tool definitions byte-identical", async ()
   expect(direct.map(({ name }) => name)).toEqual(DIRECT_LSP_TOOLS);
   // SHA-256 of the ordered direct definitions as the provider receives them, recorded before the change.
   expect(sha256(JSON.stringify(direct))).toBe(BASELINE_DIRECT_TOOLS_SHA256);
+});
+
+test("keeps the LSP lines of the default system prompt unchanged", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], {
+    builtins: ["codemode"],
+    defaultSystemPrompt: true,
+  });
+  const turns = await runTurnsAcrossReload(fixture);
+  const lines = (turns[0]?.systemPrompt ?? "").split("\n").filter((line) => line.includes("lsp_"));
+  // Every line that mentions an LSP tool, as before the change: one snippet and one guideline.
+  expect(lines).toEqual([
+    "- lsp_diagnostics: Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits",
+    `- ${LSP_TOOL_GUIDELINE}`,
+  ]);
 });
 
 test("lists the lsp_* family once in the default system prompt and keeps it stable", async () => {

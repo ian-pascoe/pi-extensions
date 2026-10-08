@@ -357,14 +357,14 @@ describe("registered LSP tool", () => {
       expect(tool.exposure === "direct" || tool.exposure === "codemode", tool.name).toBe(true);
       expect(tool.namespace, tool.name).toBe(LSP_TOOL_NAMESPACE);
       expect(tool.promptGuidelines, tool.name).toEqual(
-        tool.exposure === "direct" ? [LSP_TOOL_GUIDELINE] : [],
+        tool.name === "lsp_status" ? [LSP_TOOL_GUIDELINE] : [],
       );
       expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
       expect(tool.hasPrepareArguments, tool.name).toBe(tool.name === "lsp_apply");
       // Shared rules live in the namespace instructions and one deduplicated guideline.
       expect(tool.description, tool.name).not.toMatch(/one-based|Result Spill|leading @/u);
     }
-    expect(LSP_TOOL_NAMESPACE.description?.length ?? 0).toBeLessThan(80);
+    expect(LSP_TOOL_NAMESPACE.description).toContain(LSP_TOOL_GUIDELINE);
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("one-based");
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("Result Spill");
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("Paths may start with @");

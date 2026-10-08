@@ -606,9 +606,23 @@ export const LspReadOutputSchema = Type.Object({
       server_id: Type.String(),
       root_path: Type.String(),
       value: Type.Unknown(),
-      prefix: Type.Optional(Type.String()),
-      omitted: Type.Optional(Type.Integer({ minimum: 0 })),
-      omitted_imports: Type.Optional(Type.Integer({ minimum: 0 })),
+      prefix: Type.Optional(
+        Type.String({ description: "The prefix completions were filtered by" }),
+      ),
+      omitted: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          description:
+            "Matching items left out by the limit, or the nested symbols and import bindings left out of a document outline",
+        }),
+      ),
+      omitted_imports: Type.Optional(
+        Type.Integer({
+          minimum: 0,
+          description:
+            "The part of `omitted` that is import bindings, left out of a document outline",
+        }),
+      ),
     }),
   ),
   warnings: Type.Array(Type.String()),
@@ -623,6 +637,7 @@ const PositionOutputProperty = Type.Object(
     token: Type.Optional(Type.String()),
     line_text: Type.String(),
   },
+  // Descriptions stay short: every position tool's script declaration repeats this shape.
   { description: "Requested position" },
 );
 

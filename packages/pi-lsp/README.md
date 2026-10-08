@@ -374,9 +374,11 @@ request. An action whose edit fails Workspace Edit Preview validation (for examp
 missing file) is listed with `applicable: false` and an `error`; the server's other actions and
 their previews are unaffected. Other failures, such as an unreadable file, still fail the server.
 
-The shared rules reach the model as one system-prompt guideline, which Pi adds once while any LSP
-tool is declared. On Pi 1.0.0 and later, scripts can also read them with
-`describeNamespace("lsp")`.
+The shared rules reach the model as one system-prompt guideline (carried by `lsp_status`, so Pi
+does not repeat it in the `codemode` declaration of every listed tool), which Pi adds once while
+that tool is declared. They also head the `## lsp` section of the `codemode` description, so they
+stay visible once with `codemode.mode: "only"`, where declarations are hidden. Where the budget
+cannot list every tool, cheaper declarations come first and registration order breaks ties.
 
 ### Migrating from the single `lsp` tool
 
