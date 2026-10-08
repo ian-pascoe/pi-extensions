@@ -136,4 +136,28 @@ describe("Post-edit Diagnostics Entry rendering", () => {
     expect(expanded).toContain("<warning>Server unavailable</warning>  <muted>oxlint</muted>");
     expect(expanded).toContain("Pi LSP: adapter warning");
   });
+
+  test("marks the file of an error an edit caused in a dependent file", () => {
+    const dependent: PostEditDiagnosticOutcome = {
+      kind: "diagnostic",
+      diagnostic: {
+        serverId: "typescript",
+        path: "/workspace/src/user.ts",
+        line: 1,
+        character: 10,
+        severity: 1,
+        message: "No exported member",
+        dependent: true,
+      },
+    };
+    const expanded = renderLines(
+      renderPostEditDiagnosticsEntry(
+        entryData([...reportableOutcomes, dependent]),
+        { expanded: true, outputPad: 1 },
+        escapeTaggedTheme,
+      ),
+    ).join("\n");
+    expect(expanded).toContain("<accent>src/user.ts</accent>  <muted>dependent file</muted>");
+    expect(expanded).not.toContain("<accent>src/a.ts</accent>  <muted>dependent file");
+  });
 });

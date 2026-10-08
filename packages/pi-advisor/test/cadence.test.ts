@@ -474,7 +474,7 @@ it("keeps the Advisor prompt and tools across compaction, and its history a pref
     { isError: () => false, summaries },
   );
   const { session, observer } = await observe(
-    { reviewEvery: "request", maxSessionTokens: 9_000 },
+    { reviewEvery: "request", maxSessionTokens: 9_000, maxToolResultChars: 1_000_000 },
     { compaction: { enabled: false, keepRecentTokens: 1_000 } },
   );
   for (const request of requests) await session.prompt(request);

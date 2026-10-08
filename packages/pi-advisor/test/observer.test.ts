@@ -15,6 +15,7 @@ import {
 } from "./fixtures/observer-harness.js";
 import { createSdkHarness } from "../../pi-context-management/test/sdk-harness.js";
 import { projectEvidence, toolCallRef } from "../src/advisor-evidence.js";
+import { advisorFallbackTokenFactor } from "../src/advisor-calibration.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 
@@ -1776,6 +1777,8 @@ it.each([
       enabled: true,
       catchUpThreshold: 1,
       seedBudgetTokens,
+      // This test bounds the seed by its budget alone, so tool results stay uncapped.
+      maxToolResultChars: 1_000_000,
     };
     const observer = new AdvisorObserver(session, config, "headless-root");
     globalThis.advisorObserverTest.settled = () => observer.settled();
@@ -1795,8 +1798,10 @@ it.each([
     );
     // Recorded seed sizes: the unbounded seed exceeds the budget; the sent prompt payload fits.
     expect(full).toBeGreaterThan(budget * 1.5);
-    expect(seed.tokens).toBeLessThanOrEqual(budget);
-    expect(seed.tokens).toBeGreaterThan(budget * 0.75);
+    // Before the Advisor model reports usage, the seed is fitted at the fallback factor.
+    const estimated = budget / advisorFallbackTokenFactor;
+    expect(seed.tokens).toBeLessThanOrEqual(estimated);
+    expect(seed.tokens).toBeGreaterThan(estimated * 0.75);
     expect(seed.header).toContain("Current context seed.");
     expect(seed.header).toContain(`seedBudgetTokens (${budget} tokens)`);
     expect(seed.header).toMatch(
@@ -1981,6 +1986,8 @@ it("keeps the newest turn when its tool result alone exceeds the seed budget", a
       enabled: true,
       catchUpThreshold: 1,
       seedBudgetTokens: 3_000,
+      // Only the seed budget shortens this result.
+      maxToolResultChars: 1_000_000,
     },
     "headless-root",
   );

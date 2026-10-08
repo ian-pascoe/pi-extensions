@@ -204,7 +204,12 @@ function outcomeLines(
   }
 
   for (const [path, outcomes] of outcomesByPath) {
-    lines.push(theme.fg("accent", displayPath(data.cwd, path)));
+    const dependent = outcomes.some(
+      (outcome) => outcome.kind === "diagnostic" && outcome.diagnostic.dependent === true,
+    );
+    lines.push(
+      `${theme.fg("accent", displayPath(data.cwd, path))}${dependent ? `  ${theme.fg("muted", "dependent file")}` : ""}`,
+    );
     for (const outcome of outcomes) {
       if (outcome.kind === "warning") continue;
       lines.push(

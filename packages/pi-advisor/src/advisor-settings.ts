@@ -45,6 +45,7 @@ export const advisorOptionsSchema = Type.Object(
       Type.Union([Type.Literal("turn"), Type.Literal("request"), positiveInteger]),
     ),
     maxSessionTokens: Type.Optional(Type.Union([positiveInteger, Type.Literal("auto")])),
+    maxToolResultChars: Type.Optional(positiveInteger),
   },
   { additionalProperties: false },
 );
@@ -85,22 +86,28 @@ const defaults: AdvisorConfig = {
   seedBudgetTokens: "auto" as const,
   reviewEvery: "turn" as const,
   maxSessionTokens: "auto" as const,
+  maxToolResultChars: 4_000,
 };
 
 /**
- * Absolute ceilings for the `auto` sizes. Every Review re-reads the whole Advisor Session, so its
- * size, not the model's window, sets the per-Review floor: a ~500K-token session cost at least
- * $0.12 per empty Review in cache reads alone. Window fractions alone reproduce that on 1M
- * windows; these keep large-window defaults at what a 400K window gets.
+ * Absolute ceilings for the `auto` sizes, in the Advisor model's reported tokens. Every Review
+ * re-reads the whole Advisor Session, and those cache reads were the largest Advisor cost, so the
+ * session's size, not the model's window, sets the per-Review floor. Native compaction is a
+ * separate uncached call that summarizes each Advisor token about once, so its amortized cost per
+ * Review barely depends on the cap while the read cost grows with it: modeled per-Review cost is
+ * about 11K input-token equivalents at a 200K cap and 6–7K at 80–100K. The seed ceiling is half
+ * the session ceiling so a seed always fits within half the session. The price is more frequent
+ * compaction and less verbatim recall of older evidence. Seed and session sizes are measured in
+ * reported tokens (Token calibration), so these ceilings are real tokens.
  */
-const autoSeedCeiling = 100_000;
-const autoSessionCeiling = 200_000;
+const autoSeedCeiling = 50_000;
+const autoSessionCeiling = 100_000;
 /** Pi's branch summarization uses the same fallback for models without a declared window. */
 const fallbackWindow = 128_000;
 
 /**
  * Context Seed token budget. `auto` takes a quarter of the Advisor model's context window, at most
- * 100K: the seed is resent with every inference of the first Review and stays in the Advisor
+ * 50K: the seed is resent with every inference of the first Review and stays in the Advisor
  * Session, so the rest is left for the Advisor Prompt, investigation, and later incremental
  * Reviews, and it stays at most half the `auto` Advisor Session cap.
  */
@@ -115,10 +122,11 @@ export function seedBudget(
 
 /**
  * Advisor Session size above which a completed Review compacts it. `auto` takes half the Advisor
- * model's context window, at most 200K: room for an `auto` Context Seed plus as much again for
- * incremental Reviews, so a full seed alone never forces compaction, while staying far below
- * Pi's own threshold (the window less its reserve), where every Review re-reads almost a full
- * window. Compaction re-sends the history it summarizes, so a much lower cap compacts often.
+ * model's context window, at most 100K: room for an `auto` Context Seed plus as much again for
+ * incremental Reviews, so a full seed alone never forces compaction (the seed budget counts
+ * reported tokens), while staying far below Pi's own threshold (the window less its reserve),
+ * where every Review re-reads almost a full window. Compaction re-sends the history it summarizes, so a much lower cap compacts often (Pi keeps
+ * `compaction.keepRecentTokens` of recent history, so a cap near it compacts almost every Review).
  */
 export function sessionTokenLimit(
   setting: AdvisorConfig["maxSessionTokens"],

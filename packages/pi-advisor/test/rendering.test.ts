@@ -157,6 +157,7 @@ const settings = {
   seedBudgetTokens: "auto",
   reviewEvery: "turn",
   maxSessionTokens: "auto",
+  maxToolResultChars: 4_000,
 };
 const snapshot = {
   state: "reviewing",
@@ -177,6 +178,7 @@ const snapshot = {
     seedBudgetTokens: "default",
     reviewEvery: "default",
     maxSessionTokens: "default",
+    maxToolResultChars: "default",
   },
   backlog: 2,
   effectiveModel: "anthropic/claude-sonnet",
