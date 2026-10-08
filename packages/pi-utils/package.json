@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-utils",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": false,
   "description": "Shared runtime utilities for Ian Pascoe's Pi extensions",
   "keywords": [

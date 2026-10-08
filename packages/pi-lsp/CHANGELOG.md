@@ -1,5 +1,26 @@
 # @ian-pascoe/pi-lsp
 
+## 0.12.0
+
+### Minor Changes
+
+- d0c22c9: Report the new errors a native `edit` or `write` causes in dependent files under a separate "LSP diagnostics in dependent files" heading. Dependents are found with `textDocument/references` for the touched declarations (so pull-only servers such as `tsc --lsp` work), capped at 20 files and error severity, with the number of unchecked files reported.
+- 7e3c064: Omit hint-severity diagnostics from post-edit feedback by default and report an `N hints omitted` count. Set `lsp.includeHintDiagnostics` to `true` to include them; `lsp_diagnostics` stays unfiltered.
+
+### Patch Changes
+
+- bd76212: Stop repeating the shared guideline on every script-callable LSP tool and shorten their result declarations, so Pi's `codemode` description lists the call-hierarchy, implementation, type-definition, and signature-help tools within the default inline budget. The directly declared tool definitions are unchanged.
+
+  The shared rules now head the `## lsp` section of the `codemode` description, so they stay visible once with `codemode.mode: "only"`.
+
+  With `codemode.mode: "only"`, the direct tools (such as `lsp_diagnostics` and `lsp_rename`) now fall out of the `codemode` listing because each carries the shared guideline; they stay findable with `searchTools()`.
+
+- 58a2ce1: Accept `null` for an optional tool parameter as if it were omitted, through the shared `pi-utils` helper; tool schemas the model sees are unchanged.
+- Updated dependencies [7ab488c]
+- Updated dependencies [eed4468]
+- Updated dependencies [58a2ce1]
+  - @ian-pascoe/pi-utils@0.6.0
+
 ## 0.11.0
 
 ### Minor Changes

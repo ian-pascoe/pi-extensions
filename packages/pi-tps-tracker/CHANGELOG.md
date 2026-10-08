@@ -1,5 +1,14 @@
 # @ian-pascoe/pi-tps-tracker
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [7ab488c]
+- Updated dependencies [eed4468]
+- Updated dependencies [58a2ce1]
+  - @ian-pascoe/pi-utils@0.6.0
+
 ## 0.4.0
 
 ### Minor Changes
