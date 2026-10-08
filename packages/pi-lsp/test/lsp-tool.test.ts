@@ -357,7 +357,7 @@ describe("registered LSP tool", () => {
       expect(tool.exposure === "direct" || tool.exposure === "codemode", tool.name).toBe(true);
       expect(tool.namespace, tool.name).toBe(LSP_TOOL_NAMESPACE);
       expect(tool.promptGuidelines, tool.name).toEqual(
-        tool.name === "lsp_status" ? [LSP_TOOL_GUIDELINE] : [],
+        tool.exposure === "direct" ? [LSP_TOOL_GUIDELINE] : [],
       );
       expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
       expect(tool.hasPrepareArguments, tool.name).toBe(tool.name === "lsp_apply");

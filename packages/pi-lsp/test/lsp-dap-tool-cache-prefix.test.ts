@@ -503,7 +503,8 @@ test("lists the most useful script-callable tools under the default codemode bud
 
 /**
  * `codemode.mode: "only"` hides the direct declarations, so the shared rules must reach the model
- * through the codemode listing exactly once, and the direct tools stay listed.
+ * through the codemode listing exactly once. Pi cannot read `codemode.mode` while extensions load,
+ * so the direct tools still carry the guideline and may fall behind in the listing.
  */
 test("shows the shared LSP rules exactly once when codemode is the only surface", async () => {
   const fixture = await createToolCacheFixture(["lsp"], {
@@ -520,11 +521,20 @@ test("shows the shared LSP rules exactly once when codemode is the only surface"
   expect(everything.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
   const codemode = first?.tools.find(({ name }) => name === "codemode")?.description ?? "";
   expect(codemode).toContain(LSP_TOOL_GUIDELINE);
-  // Preview tools (lsp_rename, lsp_apply) have costlier result shapes and stay findable through
-  // searchTools(); the cheap direct reads are listed.
-  for (const name of ["lsp_diagnostics", "lsp_hover", "lsp_goto_definition"]) {
-    expect(codemode, name).toContain(`### \`${name}\``);
-  }
+});
+
+test("keeps the shared guideline once when only a subset of direct tools is active", async () => {
+  const fixture = await createToolCacheFixture(["lsp"], { defaultSystemPrompt: true });
+  fixture.session.setActiveToolsByName(["read", "lsp_diagnostics", "lsp_hover"]);
+  fixture.responses.push(fauxAssistantMessage("Ready."));
+  await fixture.session.prompt("Start");
+  const prompt = fixture.turns[0]?.systemPrompt ?? "";
+  expect(prompt.split(LSP_TOOL_GUIDELINE)).toHaveLength(2);
+  expect(fixture.turns[0]?.tools.map(({ name }) => name)).toEqual([
+    "read",
+    "lsp_diagnostics",
+    "lsp_hover",
+  ]);
 });
 
 test("keeps the directly declared LSP tool definitions byte-identical", async () => {

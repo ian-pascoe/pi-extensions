@@ -2190,16 +2190,13 @@ export const LSP_TOOL_GUIDELINE =
  */
 export const LSP_TOOL_NAMESPACE = {
   name: "lsp",
-  // Pi renders the namespace description once under `## lsp` in both codemode modes, and
-  // `codemode.mode: "only"` hides the direct declarations that carry the guideline, so the shared
-  // rules also live here.
+  // Pi renders the namespace description once under `## lsp` in both codemode modes, so the shared
+  // rules stay visible when `codemode.mode: "only"` hides the direct declarations.
   description: `Language-server navigation, diagnostics, and previewed edits\n${LSP_TOOL_GUIDELINE}`,
   instructions: LSP_TOOL_RULES.map((rule) => `- ${rule}`).join("\n"),
 };
 
 /** One snippet puts a single line naming the lsp_* family in the system prompt's tool list. */
-/** The one tool that carries the shared guideline; Pi lists a tool's guidelines in its codemode declaration. */
-const LSP_GUIDELINE_TOOL: LspOperationName = "status";
 const LSP_PROMPT_SNIPPET_TOOL: LspOperationName = "diagnostics";
 const LSP_PROMPT_SNIPPET =
   "Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits";
@@ -2369,9 +2366,11 @@ function buildLspToolDefinition<TOperation extends LspOperationName>(
     name: lspToolName(operation),
     label: `LSP ${humanizeLspOperation(operation)}`,
     description: LSP_TOOL_DESCRIPTIONS[operation],
-    // Pi appends a listed tool's guidelines to its codemode declaration, so the shared guideline is
-    // declared once through the direct tools and not repeated on every script-callable one.
-    promptGuidelines: operation === LSP_GUIDELINE_TOOL ? [LSP_TOOL_GUIDELINE] : [],
+    // Pi appends a listed tool's guidelines to its codemode declaration, so only direct tools carry
+    // the shared guideline (Pi dedupes it). Any subset of direct tools keeps it in the system prompt.
+    // Pi cannot read `codemode.mode` while extensions load, so in "only" mode the direct tools carry
+    // it too and fall behind in the listing; the namespace description still shows it once.
+    promptGuidelines: lspToolExposure(operation) === "direct" ? [LSP_TOOL_GUIDELINE] : [],
     parameters: LspOperationParametersSchemas[operation],
     outputSchema: lspToolOutputSchema(operation),
     exposure: lspToolExposure(operation),
