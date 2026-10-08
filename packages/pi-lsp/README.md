@@ -25,6 +25,7 @@ Pi LSP reads only the `lsp` key from Pi's global `settings.json` and trusted pro
 ```json
 {
   "lsp": {
+    "includeHintDiagnostics": false,
     "timeouts": {
       "initializeMs": 45000,
       "requestMs": 3000,
@@ -98,12 +99,13 @@ again is named again. The packages are found by the same bounded search as other
 workspace. A server without `rootMarkers` gets no package warning. One server for a whole
 workspace also uses more memory than one per package.
 
-Global and project timeouts merge by field. A project server replaces the complete global server
-with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
+`includeHintDiagnostics` (default `false`) controls whether Post-edit Diagnostics include
+hint-severity findings; a project value overrides the global one. Global and project timeouts
+merge by field. A project server replaces the complete global server with the same ID; set a project server to `null` to remove it. `initializationOptions` is sent only
 during initialization. `settings` is used for `workspace/didChangeConfiguration` and
 `workspace/configuration`. Environment strings override `process.env`; `null` removes a variable.
-Invalid server definitions and timeout fields are quarantined individually and remain visible
-through `status`; unrelated valid settings continue to work. An invalid project server replacement
+Invalid server definitions, timeout fields, and `includeHintDiagnostics` are quarantined
+individually and remain visible through `status`; unrelated valid settings continue to work. An invalid project server replacement
 still shadows the global definition. Untrusted project settings are ignored.
 
 Pi's `/reload` reloads configuration. Servers start lazily on first use and live for one Pi session.
@@ -530,6 +532,11 @@ file that no Server Definition covers, because none handles its language or ever
 fails its Activation Gate, is skipped silently, as is a file whose only matching Server
 Definitions are disabled. When no changed file is covered by an enabled Server Definition, no
 diagnostics section is appended (an `apply_patch` adapter-version warning still is).
+
+Hint-severity findings are omitted from the model-visible section and the transcript entry by
+default and reported as `N hints omitted` (`LSP diagnostics: no diagnostics (N hints omitted)` when
+nothing else is reported); a file left with only hints counts as clean. Set `lsp.includeHintDiagnostics`
+to `true` to include them. `lsp_diagnostics` always returns every severity.
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. It uses Pi's custom-message look under

@@ -10,6 +10,8 @@ import {
   InMemoryModelsStore,
   withoutInitialSystemMessage,
   type AssistantMessage,
+  type Api,
+  type AssistantMessageEventStream,
   type ClassifierAnswer,
   type ClassifierContext,
   type ClassifierOptions,
@@ -29,6 +31,9 @@ import {
   type ExtensionFactory,
   type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
+import { streamSimple as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
+import { streamSimple as streamBedrock } from "@earendil-works/pi-ai/api/bedrock-converse-stream";
+import { streamSimple as streamOpenAICompletions } from "@earendil-works/pi-ai/api/openai-completions";
 import { Type } from "typebox";
 import guardian from "../../src/index.js";
 import type { GuardianOptions } from "../../src/guardian-settings.js";
@@ -59,6 +64,11 @@ export interface CapturedReview {
   options: SimpleStreamOptions | undefined;
   /** Whether this request is an Escalation Pass, which ends with the escalation instruction. */
   escalation: boolean;
+  /**
+   * With `wirePayloads`, the request body Pi's real provider adapter built for this call, before
+   * and after the stream options' `onPayload` hook, as JSON text.
+   */
+  wire?: { built: string; sent: string } | undefined;
 }
 
 export interface HarnessOptions {
@@ -90,6 +100,60 @@ export interface HarnessOptions {
   contextFiles?: (dir: string) => { path: string; content: string }[];
   /** Trust the temporary project. */
   projectTrusted?: boolean;
+  /**
+   * Build each Guardian request with Pi's real provider adapter for the model's API and capture
+   * the body it would send (see `CapturedReview.wire`); the reply is still scripted. Also adds the
+   * reviewer models `guardian-anthropic/claude-haiku-4-5`, `guardian-anthropic/claude-haiku-5-5` (managed effort), and `guardian-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0`.
+   */
+  wirePayloads?: boolean;
+}
+
+type ProviderStreamSimple = (
+  model: Model<Api>,
+  context: Context,
+  options?: SimpleStreamOptions,
+) => AssistantMessageEventStream;
+
+/** Pi's real provider adapter for the APIs a wire-level test builds requests with. */
+function wireAdapter(api: Api): ProviderStreamSimple | undefined {
+  switch (api) {
+    case "anthropic-messages":
+      // SAFETY: the adapter is only called with a model of its own API, which `api` selects.
+      return streamAnthropic as ProviderStreamSimple;
+    case "bedrock-converse-stream":
+      // SAFETY: the adapter is only called with a model of its own API, which `api` selects.
+      return streamBedrock as ProviderStreamSimple;
+    case "openai-completions":
+      // SAFETY: the adapter is only called with a model of its own API, which `api` selects.
+      return streamOpenAICompletions as ProviderStreamSimple;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Build `context` with the real adapter for `model`'s API and record the request body it would
+ * send, before and after the `onPayload` hook, then stop before any network request.
+ */
+async function captureWire(
+  model: Model<Api>,
+  context: Context,
+  options: SimpleStreamOptions | undefined,
+): Promise<CapturedReview["wire"]> {
+  const adapter = wireAdapter(model.api);
+  if (!adapter) throw new Error(`No wire adapter for ${model.api}`);
+  let wire: CapturedReview["wire"];
+  await adapter(model, context, {
+    ...options,
+    apiKey: "offline",
+    onPayload: async (payload, payloadModel) => {
+      const built = JSON.stringify(payload);
+      const next = await options?.onPayload?.(payload, payloadModel);
+      wire = { built, sent: JSON.stringify(next ?? payload) };
+      throw new Error("Wire capture stops before the request is sent");
+    },
+  }).result();
+  return wire;
 }
 
 const offlineCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -184,6 +248,84 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
   const classifications: CapturedClassification[] = [];
   const classifierReplies: ClassifierReply[] = [];
   const executed: string[] = [];
+  const reviewerStream: ProviderStreamSimple = (model, context, requestOptions) => {
+    const messages = structuredClone(withoutInitialSystemMessage(context.messages));
+    const [first] = messages;
+    const lastBlock =
+      first?.role === "user" && Array.isArray(first.content) ? first.content.at(-1) : undefined;
+    const captured: CapturedReview = {
+      model: `${model.provider}/${model.id}`,
+      systemPrompt: getCurrentSystemPrompt(context.messages),
+      messages,
+      options: requestOptions,
+      escalation: lastBlock?.type === "text" && lastBlock.text.startsWith("Escalation:"),
+    };
+    reviews.push(captured);
+    const wired = options.wirePayloads
+      ? captureWire(model, context, requestOptions).then((wire) => {
+          captured.wire = wire;
+        })
+      : undefined;
+    const stream = createAssistantMessageEventStream();
+    const scripted = guardianReplies.shift();
+    const quarter = (text: string) => Math.ceil(text.length / 4);
+    const estimated =
+      quarter(getCurrentSystemPrompt(context.messages) ?? "") +
+      withoutInitialSystemMessage(context.messages).reduce((sum, entry) => {
+        if (entry.role !== "user") return sum;
+        if (!Array.isArray(entry.content)) return sum + quarter(entry.content);
+        return (
+          sum +
+          entry.content.reduce(
+            (total, part) => total + (part.type === "text" ? quarter(part.text) : 0),
+            0,
+          )
+        );
+      }, 0);
+    const reported = options.promptTokens?.(estimated) ?? 1_000;
+    const finish = (text: string) => {
+      const message = {
+        ...fauxAssistantMessage(text),
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+      };
+      message.usage = {
+        ...message.usage,
+        input: reported,
+        output: 50,
+        totalTokens: reported + 50,
+        cost: { ...message.usage.cost, total: 0.0011 },
+      };
+      stream.push({ type: "done", reason: "stop", message });
+    };
+    const fail = (error: string, reason: "error" | "aborted") => {
+      const message = {
+        ...fauxAssistantMessage(""),
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+      };
+      message.stopReason = reason;
+      message.errorMessage = error;
+      stream.push({ type: "error", reason, error: message });
+    };
+    const respond = () => {
+      if (scripted === undefined) fail("No scripted Guardian reply", "error");
+      else if (scripted instanceof Error) fail(scripted.message, "error");
+      else if (scripted instanceof DeferredReply)
+        scripted
+          .run(requestOptions)
+          .then(finish, (cause: unknown) =>
+            fail(cause instanceof Error ? cause.message : String(cause), "aborted"),
+          );
+      else finish(scripted);
+    };
+    if (wired) void wired.then(respond);
+    else queueMicrotask(respond);
+    return stream;
+  };
+
   const loader = new DefaultResourceLoader({
     cwd: dir,
     agentDir: dir,
@@ -198,6 +340,52 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     extensionFactories: [
       ...(options.before ?? []),
       testTools(executed),
+      ...(options.wirePayloads
+        ? [
+            (pi: ExtensionAPI) => {
+              for (const [provider, api, id] of [
+                ["guardian-anthropic", "anthropic-messages", "claude-haiku-4-5"],
+                [
+                  "guardian-bedrock",
+                  "bedrock-converse-stream",
+                  "anthropic.claude-haiku-4-5-20251001-v1:0",
+                ],
+              ] as const)
+                pi.registerProvider(provider, {
+                  api,
+                  apiKey: "offline",
+                  baseUrl: "https://guardian.invalid",
+                  models: [
+                    {
+                      id,
+                      name: "reviewer",
+                      reasoning: false,
+                      input: ["text" as const],
+                      cost: offlineCost,
+                      contextWindow: 200_000,
+                      maxTokens: 2_048,
+                    },
+                    // Managed effort: Pi's adapter appends empty system messages to the request.
+                    ...(api === "anthropic-messages"
+                      ? [
+                          {
+                            id: "claude-haiku-5-5",
+                            name: "managed effort reviewer",
+                            reasoning: false,
+                            input: ["text" as const],
+                            cost: offlineCost,
+                            contextWindow: 200_000,
+                            maxTokens: 2_048,
+                            compat: { supportsMidConvoEffort: true, forceAdaptiveThinking: true },
+                          },
+                        ]
+                      : []),
+                  ],
+                  streamSimple: reviewerStream,
+                });
+            },
+          ]
+        : []),
       (pi) =>
         pi.registerProvider("guardian-test", {
           api: "openai-completions",
@@ -278,77 +466,7 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
               },
             },
           },
-          streamSimple(model, context, requestOptions) {
-            const messages = structuredClone(withoutInitialSystemMessage(context.messages));
-            const [first] = messages;
-            const lastBlock =
-              first?.role === "user" && Array.isArray(first.content)
-                ? first.content.at(-1)
-                : undefined;
-            reviews.push({
-              model: `${model.provider}/${model.id}`,
-              systemPrompt: getCurrentSystemPrompt(context.messages),
-              messages,
-              options: requestOptions,
-              escalation: lastBlock?.type === "text" && lastBlock.text.startsWith("Escalation:"),
-            });
-            const stream = createAssistantMessageEventStream();
-            const scripted = guardianReplies.shift();
-            const quarter = (text: string) => Math.ceil(text.length / 4);
-            const estimated =
-              quarter(getCurrentSystemPrompt(context.messages) ?? "") +
-              withoutInitialSystemMessage(context.messages).reduce((sum, entry) => {
-                if (entry.role !== "user") return sum;
-                if (!Array.isArray(entry.content)) return sum + quarter(entry.content);
-                return (
-                  sum +
-                  entry.content.reduce(
-                    (total, part) => total + (part.type === "text" ? quarter(part.text) : 0),
-                    0,
-                  )
-                );
-              }, 0);
-            const reported = options.promptTokens?.(estimated) ?? 1_000;
-            const finish = (text: string) => {
-              const message = {
-                ...fauxAssistantMessage(text),
-                api: model.api,
-                provider: model.provider,
-                model: model.id,
-              };
-              message.usage = {
-                ...message.usage,
-                input: reported,
-                output: 50,
-                totalTokens: reported + 50,
-                cost: { ...message.usage.cost, total: 0.0011 },
-              };
-              stream.push({ type: "done", reason: "stop", message });
-            };
-            const fail = (error: string, reason: "error" | "aborted") => {
-              const message = {
-                ...fauxAssistantMessage(""),
-                api: model.api,
-                provider: model.provider,
-                model: model.id,
-              };
-              message.stopReason = reason;
-              message.errorMessage = error;
-              stream.push({ type: "error", reason, error: message });
-            };
-            queueMicrotask(() => {
-              if (scripted === undefined) fail("No scripted Guardian reply", "error");
-              else if (scripted instanceof Error) fail(scripted.message, "error");
-              else if (scripted instanceof DeferredReply)
-                scripted
-                  .run(requestOptions)
-                  .then(finish, (cause: unknown) =>
-                    fail(cause instanceof Error ? cause.message : String(cause), "aborted"),
-                  );
-              else finish(scripted);
-            });
-            return stream;
-          },
+          streamSimple: reviewerStream,
         }),
       ...(options.withoutGuardian ? [] : [guardian]),
       ...(options.after ?? []),

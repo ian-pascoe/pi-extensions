@@ -83,7 +83,7 @@ const descriptions = {
   includeSubagents: "Also review Minimal Subagents Child Agents",
   prompt: "Advisor Prompt; replaces the whole prompt",
   model: "Advisor model; inherit follows the observed agent",
-  thinkingLevel: "Advisor thinking level; inherit follows the observed agent",
+  thinkingLevel: "Advisor thinking level; inherit uses the default (high)",
   allowedTools: "Tools the Advisor may call (Tool Grant)",
   catchUpThreshold: "Review Backlog that starts a Catch-up Wait; a positive integer or off",
   reviewTimeoutMs: "Deadline for each Review, in seconds",
