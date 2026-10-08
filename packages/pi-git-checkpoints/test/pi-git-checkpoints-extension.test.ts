@@ -37,6 +37,7 @@ const ZERO_USAGE = {
 interface GitCheckpointsHarness {
   readonly cwd: string;
   readonly notifications: string[];
+  readonly notificationLevels: (string | undefined)[];
   readonly runner: ExtensionRunner;
   readonly sessionManager: SessionManager;
   failNextUndoAppend(): void;
@@ -154,12 +155,14 @@ async function createHarness(
   });
 
   const notifications: string[] = [];
+  const notificationLevels: (string | undefined)[] = [];
   const harness: GitCheckpointsHarness = {
     cwd,
     failNextUndoAppend: () => {
       failNextUndoAppend = true;
     },
     notifications,
+    notificationLevels,
     runner,
     sessionManager,
     selectChoice: undefined,
@@ -169,7 +172,10 @@ async function createHarness(
     runner.setUIContext(
       {
         ...runner.getUIContext(),
-        notify: (message) => notifications.push(message),
+        notify: (message, level) => {
+          notifications.push(message);
+          notificationLevels.push(level);
+        },
         select: async (prompt) => {
           harness.selectPrompts.push(prompt);
           return harness.selectChoice;
@@ -319,6 +325,10 @@ describe("Pi Git Checkpoints lifecycle", () => {
         expect.stringContaining("undo state remains active in memory"),
       ]),
     );
+    const prefixed = harness.notifications.map((message) =>
+      message.startsWith("Git Checkpoints: "),
+    );
+    expect(prefixed).toEqual(harness.notificationLevels.map((level) => level !== "info"));
   });
 
   test("leaves paths that became git-ignored out of the Restore preview and untouched", async () => {

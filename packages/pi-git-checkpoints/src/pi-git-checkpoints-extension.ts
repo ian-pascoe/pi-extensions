@@ -34,6 +34,7 @@ import {
   type GitCheckpointStore,
   type GitCheckpointUndoRecord,
 } from "./git-checkpoint-store.js";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { resolveGitCheckpointsSettings } from "./pi-git-checkpoints-settings.js";
 import { Value } from "typebox/value";
 
@@ -93,7 +94,8 @@ function notify(
   message: string,
   level: "info" | "warning" | "error",
 ): void {
-  if (context.hasUI) context.ui.notify(`${PACKAGE_PREFIX}: ${message}`, level);
+  if (!context.hasUI) return;
+  context.ui.notify(level === "info" ? message : noticeText(PACKAGE_PREFIX, message), level);
 }
 
 function previewText(
@@ -103,7 +105,7 @@ function previewText(
 ): string {
   const preview = createGitCheckpointPreview(differences, skipped);
   const lines = preview.items.map(({ path, status }) => `${status} ${path}`);
-  if (preview.hidden > 0) lines.push(`… ${preview.hidden} more`);
+  if (preview.hidden > 0) lines.push(`... ${preview.hidden} more`);
   if (preview.skipped > 0) lines.push(`${preview.skipped} skipped path(s) remain untouched`);
   if (headWarning) lines.push(headWarning);
   return `${preview.total} path(s) differ\n${lines.join("\n")}`;
