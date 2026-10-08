@@ -1,5 +1,6 @@
 import { onTestFinished, expect, it } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import {
   activeFixture,
   expectPrefix,
@@ -140,4 +141,53 @@ it("keeps adding incremental evidence that fits the budget in reported tokens", 
   expect(second.tokens).toBeGreaterThan(8_000 / 1.25);
   expect(second.tokens).toBeLessThanOrEqual(8_000);
   expectPrefix(privateRequests[1], privateRequests[0]);
+});
+
+it("keeps a long session's Advisor Session under the auto cap on a 1M-token window", async () => {
+  const ratio = 2;
+  const privateRequests: PrivateRequest[] = [];
+  const summaries: Context[] = [];
+  const requests = Array.from({ length: 30 }, (_, index) => `Request ${index + 1}.`);
+  globalThis.advisorObserverTest = longSessionStream(
+    Object.fromEntries(requests.map((request) => [request, 2])),
+    privateRequests,
+    {
+      result: (id) => `result ${id} ${"x".repeat(16_000)}`,
+      isError: () => false,
+      tokenRatio: ratio,
+      summaries,
+    },
+  );
+  const { session, observer } = await observe({
+    reviewEvery: "request",
+    seedBudgetTokens: "auto",
+    maxSessionTokens: "auto",
+  });
+  const wide = session.modelRuntime.getModel("observer-fixture", "wide");
+  if (!wide) throw new Error("Missing wide fixture model");
+  await session.setModel(wide);
+  // The window's own fractions would allow 250k and 500k; the ceilings hold 50k and 100k.
+  expect(seedBudget("auto", wide.contextWindow)).toBe(50_000);
+  const cap = sessionTokenLimit("auto", wide.contextWindow);
+  expect(cap).toBe(100_000);
+
+  for (const request of requests) await session.prompt(request);
+  expect(observer.status.lastError).toBeNull();
+  expect(privateRequests).toHaveLength(requests.length);
+
+  // The Advisor Session's reported size before each Review's prompt: the cached system prompt and
+  // tools at Pi's estimate, the history at the model's ratio to Pi's estimate.
+  const size = (request: PrivateRequest | undefined) =>
+    Math.ceil(JSON.stringify([request?.systemPrompt, request?.tools]).length / 4) +
+    Math.ceil(
+      (request?.messages ?? [])
+        .slice(0, -1)
+        .reduce((sum, message) => sum + estimateTokens(message), 0) * ratio,
+    );
+  const sizes = privateRequests.map(size);
+  // Without compaction the session would pass 200k; instead it compacts and stays under the cap.
+  expect(summaries.length).toBeGreaterThan(0);
+  expect(Math.max(...sizes)).toBeLessThanOrEqual(cap);
+  // The cap, not an earlier trigger, bounds it: it grows well past the seed budget first.
+  expect(Math.max(...sizes)).toBeGreaterThan(cap * 0.6);
 });

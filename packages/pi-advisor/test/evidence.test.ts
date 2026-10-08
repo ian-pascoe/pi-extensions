@@ -493,8 +493,8 @@ it("keeps no original request when compaction cut the turn that held it", () => 
 it("derives the automatic seed budget from the Advisor model's context window", () => {
   expect(seedBudget("auto", 200_000)).toBe(50_000);
   // Large windows are capped absolutely, below the automatic Advisor Session cap.
-  expect(seedBudget("auto", 400_000)).toBe(100_000);
-  expect(seedBudget("auto", 1_000_000)).toBe(100_000);
+  expect(seedBudget("auto", 400_000)).toBe(50_000);
+  expect(seedBudget("auto", 1_000_000)).toBe(50_000);
   // Models without a declared window use Pi's 128k fallback.
   expect(seedBudget("auto", 0)).toBe(32_000);
   expect(seedBudget(12_345, 200_000)).toBe(12_345);
@@ -505,8 +505,10 @@ it("derives the automatic seed budget from the Advisor model's context window", 
 
 it("derives the automatic Advisor Session cap from the window, bounded absolutely", () => {
   expect(sessionTokenLimit("auto", 200_000)).toBe(100_000);
-  expect(sessionTokenLimit("auto", 400_000)).toBe(200_000);
-  expect(sessionTokenLimit("auto", 1_000_000)).toBe(200_000);
+  expect(sessionTokenLimit("auto", 400_000)).toBe(100_000);
+  expect(sessionTokenLimit("auto", 1_000_000)).toBe(100_000);
+  // Smaller windows keep their fractions, below the ceilings.
+  expect(sessionTokenLimit("auto", 128_000)).toBe(64_000);
   // Models without a declared window use Pi's 128k fallback.
   expect(sessionTokenLimit("auto", 0)).toBe(64_000);
   // An automatic Context Seed always fits under the automatic cap.
