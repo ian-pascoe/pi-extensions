@@ -85,7 +85,7 @@ it.each(["none", "blocker"] as const)(
       state: "armed",
       backlog: 0,
       effectiveModel: "observer-fixture/model",
-      effectiveThinkingLevel: "medium",
+      effectiveThinkingLevel: "high",
     });
     expect(reviews).toHaveLength(1);
     expect(main).toHaveLength(1);
@@ -1538,7 +1538,7 @@ it("disabled observation leaves the ordered native tools, prompt and conversatio
     backlog: 0,
     cost: null,
     effectiveModel: "anthropic/claude-sonnet-4-5",
-    effectiveThinkingLevel: "medium",
+    effectiveThinkingLevel: "high",
   });
   observer.configure({
     ...readAdvisorSettings(session).settings,
@@ -1868,78 +1868,45 @@ it("re-seeds with a changed seedBudgetTokens and keeps each Advisor context a st
 });
 
 /**
- * The observation boundary covers an observed model or thinking level only when the Advisor
- * inherits that field; an Advisor's own selection is unaffected by the observed agent's.
+ * The observation boundary covers the observed model only when the Advisor inherits it; an
+ * Advisor's own model is unaffected by the observed agent's. The Advisor's thinking level never
+ * follows the observed agent, so an observed thinking change never discards the session.
  */
 it.each([
+  { name: "own model, observed model changes", own: true, change: "model", kept: true },
+  { name: "own model, observed thinking changes", own: true, change: "thinking", kept: true },
+  { name: "inherited model, observed model changes", own: false, change: "model", kept: false },
   {
-    name: "own model and thinking",
-    own: { model: true, thinking: true },
-    change: "both",
-    kept: true,
-  },
-  {
-    name: "own model, observed thinking changes",
-    own: { model: true, thinking: false },
-    change: "thinking",
-    kept: false,
-  },
-  {
-    name: "own model, observed model changes",
-    own: { model: true, thinking: false },
-    change: "model",
-    kept: true,
-  },
-  {
-    name: "own thinking, observed model changes",
-    own: { model: false, thinking: true },
-    change: "model",
-    kept: false,
-  },
-  {
-    name: "own thinking, observed thinking changes",
-    own: { model: false, thinking: true },
+    name: "inherited model, observed thinking changes",
+    own: false,
     change: "thinking",
     kept: true,
-  },
-  {
-    name: "inherited model and thinking, model changes",
-    own: { model: false, thinking: false },
-    change: "model",
-    kept: false,
-  },
-  {
-    name: "inherited model and thinking, thinking changes",
-    own: { model: false, thinking: false },
-    change: "thinking",
-    kept: false,
   },
 ] as const)(
-  "$name: observed changes keep the Advisor Session only for a field the Advisor owns",
+  "$name: the Advisor Session is kept only when the observed change is not one it follows",
   async ({ own, change, kept }) => {
     const privateRequests: PrivateRequest[] = [];
-    const advisorSelections: string[] = [];
+    const advisorModels: string[] = [];
     const base = longSessionStream({}, privateRequests);
     globalThis.advisorObserverTest = {
       ...base,
       stream(model, context, options) {
         if (context.tools?.some((tool) => tool.name === "advisor_report"))
-          advisorSelections.push(`${model.provider}/${model.id}:${options?.reasoning}`);
+          advisorModels.push(`${model.provider}/${model.id}`);
         return base.stream(model, context, options);
       },
     };
     const session = await activeFixture();
     const config = { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 };
-    if (own.model) config.model = "observer-fixture/priced";
-    if (own.thinking) config.thinkingLevel = "low";
+    if (own) config.model = "observer-fixture/priced";
     const observer = new AdvisorObserver(session, config, "headless-root");
     globalThis.advisorObserverTest.settled = () => observer.settled();
     onTestFinished(() => observer.dispose());
     await session.prompt("First");
     const alternate = session.modelRuntime.getModel("observer-fixture", "alternate");
     if (!alternate) throw new Error("Missing alternate fixture model");
-    if (change !== "thinking") await session.setModel(alternate);
-    if (change !== "model") session.setThinkingLevel("high");
+    if (change === "model") await session.setModel(alternate);
+    else session.setThinkingLevel("low");
     await session.prompt("Second");
     expect(observer.status.lastError).toBeNull();
     expect(privateRequests).toHaveLength(2);
@@ -1954,20 +1921,12 @@ it.each([
       expect(second?.header).not.toContain("Incremental update.");
       expect(privateRequests[1]?.messages).toHaveLength(1);
     }
-    // Whatever the observed agent does, the Advisor keeps its own selection.
-    const [firstSelection, secondSelection] = advisorSelections;
-    if (own.model) {
-      expect(firstSelection?.split(":")[0]).toBe("observer-fixture/priced");
-      expect(secondSelection?.split(":")[0]).toBe("observer-fixture/priced");
-    }
-    if (own.thinking) {
-      expect(firstSelection?.split(":")[1]).toBe("low");
-      expect(secondSelection?.split(":")[1]).toBe("low");
-    }
+    // The Advisor keeps its own model whatever the observed agent does.
+    if (own) expect(advisorModels).toEqual(["observer-fixture/priced", "observer-fixture/priced"]);
   },
 );
 
-it("keeps an in-flight Review current when the observed model and thinking change under an Advisor with its own", async () => {
+it("keeps an in-flight Review current when the observed model changes under an Advisor with its own", async () => {
   const privateRequests: PrivateRequest[] = [];
   const reviewHeld = Promise.withResolvers<void>();
   const releaseReview = Promise.withResolvers<void>();
@@ -1986,7 +1945,6 @@ it("keeps an in-flight Review current when the observed model and thinking chang
       enabled: true,
       catchUpThreshold: "off",
       model: "observer-fixture/priced",
-      thinkingLevel: "low",
     },
     "headless-root",
   );
@@ -1999,7 +1957,6 @@ it("keeps an in-flight Review current when the observed model and thinking chang
   const alternate = session.modelRuntime.getModel("observer-fixture", "alternate");
   if (!alternate) throw new Error("Missing alternate fixture model");
   await session.setModel(alternate);
-  session.setThinkingLevel("high");
   expect(observer.status.state).toBe("reviewing");
   releaseReview.resolve();
   await vi.waitFor(() => expect(observer.status).toMatchObject({ state: "armed", backlog: 0 }));

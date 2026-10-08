@@ -67,7 +67,7 @@ export async function fixture({
   advisor = {},
 }: {
   /** Advisor settings beyond the fixture defaults, such as its own `model`. */
-  advisor?: { model?: string; thinkingLevel?: string };
+  advisor?: { model?: string };
   enabled?: boolean;
   interactive?: boolean;
   /** Host mode for an interactive runtime; `tui` enables full-screen UI paths. */

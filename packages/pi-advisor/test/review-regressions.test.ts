@@ -5,12 +5,16 @@ import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 import { fixture, response } from "./fixtures/advisor-runtime.js";
 
-it("inherits live observed thinking changes for subsequent Reviews", async () => {
+it("keeps the default high thinking level when the observed agent changes its own", async () => {
   const levels: Array<string | undefined> = [];
+  const sizes: number[] = [];
   globalThis.advisorObserverTest = {
     stream(model, context, options) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-      if (privateRole) levels.push(options?.reasoning);
+      if (privateRole) {
+        levels.push(options?.reasoning);
+        sizes.push(context.messages.length);
+      }
       return response(
         model,
         privateRole ? toolCall("advisor_report", { severity: "none" }) : reply("Done"),
@@ -20,9 +24,14 @@ it("inherits live observed thinking changes for subsequent Reviews", async () =>
   };
   const { session } = await fixture();
   await session.prompt("First request");
-  session.setThinkingLevel("high");
+  session.setThinkingLevel("max");
   await session.prompt("Second request");
-  expect(levels).toEqual(["low", "high"]);
+  session.setThinkingLevel("off");
+  await session.prompt("Third request");
+  expect(levels).toEqual(["high", "high", "high"]);
+  // Observed thinking changes do not discard the Advisor Session: it only grows.
+  expect(sizes[1]).toBeGreaterThan(sizes[0] ?? 0);
+  expect(sizes[2]).toBeGreaterThan(sizes[1] ?? 0);
 });
 
 it("invalidates unconsumed Advisor steering on disable without removing unrelated user steering", async () => {

@@ -29,7 +29,7 @@ Every `tool_call`, including calls a tool issues itself (such as a `codemode` sc
 1. for `bash`, `terminal_start`, and `powershell`, `deny` when a segment of the command matches a `deny` **Command Rule** (see below), whatever the tool's Tool Policy;
 2. the configured `tools.<name>` setting, if any;
 3. else the built-in default:
-   - `allow`: `read`, `grep`, `find`, `ls`, `codemode`, `tool_search`, `todo`, `web_search`, and Context Management's `context_notes`, `context_history`, and `context_rollover`, which only touch the session's own notes, journal, and handoff;
+   - `allow`: `read`, `grep`, `find`, `ls`, `codemode`, `tool_search`, `todo`, `web_search`, and Context Management's `context_notes`, `context_history`, and `context_rollover`, which only touch the session's own notes, journal, and handoff, and pi-advisor's `advisor_report`, which only hands an Advisor Review's findings to pi-advisor;
    - `edit` and `write`: `allow`, unless the target is a **Sensitive Path**, which is reviewed;
    - `bash`: `allow` only for a **Safe Command**, otherwise reviewed;
    - `terminal_start`, `terminal_send`, and `powershell`: reviewed, with the user's `deny` and `review` Command Rules named to the Guardian; a `terminal_start` or `powershell` command matching a `deny` rule is denied like `bash`;
