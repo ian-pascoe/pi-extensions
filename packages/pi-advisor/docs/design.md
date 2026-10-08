@@ -52,6 +52,8 @@ Changes affect the current watched hierarchy immediately when its effective conf
 
 Model and thinking overrides are independent. Do not silently select another provider or model when resolution or inference fails.
 
+The observation boundary (session identity plus the observed model and thinking level) includes the observed model only when the Advisor inherits its model, and the observed thinking level only when the Advisor inherits its thinking level. An Advisor with its own selection is unaffected by the observed agent changing that field: its Advisor Session and in-flight Review survive, and the next Review stays incremental. When a field is inherited, a change still discards the Advisor Session and the next Review starts from a Context Seed. Switching the existing Advisor Session's model or thinking level in place was considered and rejected for now: a new model may not reuse the history (provider, cache, or context-window differences), and reseeding is always correct and bounded by the seed budget.
+
 ## Extension inheritance and tool access
 
 Load the observed/main session's extensions in the Advisor Session, using fresh session-bound factory instances rather than copying parent-bound handlers or tools. Inheriting `pi-advisor` must not recursively create another Advisor. This supersedes the earlier Context-Management-only extension allowlist.

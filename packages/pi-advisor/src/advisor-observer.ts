@@ -80,16 +80,26 @@ type PromptExtras =
   | { deferredFindings: { instruction: string; findings: AdvisorFinding[] } | null }
   | { question: string };
 
-function observationBoundary(session: AgentSession) {
+/**
+ * What an Advisor Session is bound to. The observed model and thinking level count only for a
+ * field the Advisor inherits: an Advisor with its own model, or its own thinking level, is not
+ * affected by the observed agent changing that field.
+ */
+interface ObservationBoundary {
+  sessionId: string;
+  model?: AgentSession["model"];
+  thinkingLevel?: AgentSession["thinkingLevel"];
+}
+function observationBoundary(session: AgentSession, config: AdvisorConfig): ObservationBoundary {
   return {
     sessionId: session.sessionManager.getSessionId(),
-    model: session.model,
-    thinkingLevel: session.thinkingLevel,
+    ...(config.model === undefined && { model: session.model }),
+    ...(config.thinkingLevel === undefined && { thinkingLevel: session.thinkingLevel }),
   };
 }
 interface OperationBase {
   epoch: number;
-  boundary: ReturnType<typeof observationBoundary>;
+  boundary: ObservationBoundary;
   leafId: string | null;
   cancellation: AbortController;
   calls: number;
@@ -216,7 +226,7 @@ function declinedCompaction(cause: unknown): boolean {
 export class AdvisorObserver {
   private snapshot: ObservedSnapshot | undefined;
   private supplied: ObservedSnapshot | undefined;
-  private suppliedBoundary: ReturnType<typeof observationBoundary> | undefined;
+  private suppliedBoundary: ObservationBoundary | undefined;
   private readonly pendingFindings = new Map<AdvisorFinding, Review>();
   private completed = 0;
   private reviewed = 0;
@@ -300,7 +310,8 @@ export class AdvisorObserver {
     };
     observed.agent.streamFunction = this.captureStream;
     this.unsubscribeSession = observed.subscribe((event) => {
-      if (event.type === "thinking_level_changed") this.reset();
+      if (event.type === "thinking_level_changed" && this.config.thinkingLevel === undefined)
+        this.reset();
       // Request completion: the run has ended after its steering and follow-ups, and Pi will not
       // retry it. Observed compaction afterwards neither invalidates nor cancels this Review.
       if (
@@ -469,7 +480,7 @@ export class AdvisorObserver {
   }
   private sameObservation(review: AdvisorOperation): boolean {
     return (
-      isDeepStrictEqual(review.boundary, observationBoundary(this.observed)) &&
+      isDeepStrictEqual(review.boundary, observationBoundary(this.observed, this.config)) &&
       (review.leafId === null ||
         this.observed.sessionManager.getBranch().some((entry) => entry.id === review.leafId))
     );
@@ -502,7 +513,7 @@ export class AdvisorObserver {
     const review: Review = {
       kind: "review",
       epoch: this.epoch,
-      boundary: observationBoundary(this.observed),
+      boundary: observationBoundary(this.observed, this.config),
       leafId: this.observed.sessionManager.getLeafId(),
       cancellation: new AbortController(),
       calls: 0,
@@ -933,7 +944,7 @@ export class AdvisorObserver {
     const consultation: Consultation = {
       kind: "consultation",
       epoch: this.epoch,
-      boundary: observationBoundary(this.observed),
+      boundary: observationBoundary(this.observed, this.config),
       leafId: this.observed.sessionManager.getLeafId(),
       cancellation: new AbortController(),
       calls: 0,
