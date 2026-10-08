@@ -13,8 +13,8 @@ import {
   renderStatusEntry,
 } from "../src/guardian-rendering.js";
 
-// Components wrap and truncate at real widths under the escape-encoded theme; the text-tagged
-// theme is for exact strings from functions that never wrap.
+// Line breaks and truncation match a real theme under the escape-encoded theme (its styles are not
+// re-opened after a wrap); the text-tagged theme is for exact strings from functions that never wrap.
 const theme = escapeTaggedTheme;
 const tagged = taggedTheme;
 

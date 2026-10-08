@@ -45,9 +45,13 @@ function tokenAt(index: number): string | undefined {
 
 /**
  * Like `taggedTheme`, but each token is encoded as a non-colour SGR parameter, which pi-tui
- * measures as zero columns, so components wrap and truncate exactly as they would under a real
+ * measures as zero columns, so line breaks and truncation fall where they would under a real
  * theme. Decode a line with `readableTags` to assert on it. Because the encoding is never a real
  * colour, `expectLinesFitWidth` still rejects every hard-coded colour.
+ *
+ * Limit: pi-tui re-opens a real colour or style on each wrapped line, but it does not track these
+ * made-up codes, so a wrapped line's style is NOT carried over (its closing code is also wrong).
+ * Assert on where lines break and how wide they are, not on a styled span that crosses a wrap.
  */
 export const escapeTaggedTheme: UiTheme = {
   fg: (color, text) => `${ESCAPE}[${FOREGROUND_BASE + tokenIndex(color)}m${text}${ESCAPE}[39m`,
