@@ -1,5 +1,12 @@
 import { keyText, type Theme } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import {
+  Box,
+  type Container,
+  Spacer,
+  Text,
+  truncateToWidth,
+  type Component,
+} from "@earendil-works/pi-tui";
 
 /** The theme methods the shared UI helpers draw with; Pi's `Theme` satisfies it. */
 export type UiTheme = Pick<Theme, "fg" | "bg" | "bold" | "strikethrough">;
@@ -111,6 +118,38 @@ export function previewBody(
   return [...styled.slice(0, options.limit), expandHint(theme, hidden)];
 }
 
+/**
+ * Clips an already rendered child to `limit` visual lines (counted after wrapping), adding Pi's
+ * Expand Hint, wrapped to the available width, when lines are hidden. Use it for Markdown or other
+ * component bodies; use `previewBody` for plain lines. The Expanded View shows every line.
+ */
+export class CollapsedPreview implements Component {
+  constructor(
+    private readonly theme: Pick<UiTheme, "fg">,
+    private readonly child: Component,
+    private readonly options: { limit: number; expanded: boolean; keep?: "head" | "end" },
+  ) {}
+
+  render(width: number): string[] {
+    const lines = this.child.render(width);
+    const hidden = lines.length - this.options.limit;
+    if (this.options.expanded || hidden <= 0) return lines;
+    const keepEnd = this.options.keep === "end";
+    const hint = new Text(
+      expandHint(this.theme, hidden, keepEnd ? "earlier" : "more"),
+      0,
+      0,
+    ).render(width);
+    return keepEnd
+      ? [...hint, ...lines.slice(hidden)]
+      : [...lines.slice(0, this.options.limit), ...hint];
+  }
+
+  invalidate(): void {
+    this.child.invalidate();
+  }
+}
+
 function formatDuration(ms: number): string {
   const seconds = ms / 1000;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
@@ -198,6 +237,23 @@ export function durationFooter(
 }
 
 /**
+ * Append the duration footer to a result container, preceded by Pi's blank line as in its bash
+ * renderer. Adds nothing when no duration is known. Every result renderer uses this so the footer
+ * spaces identically in every package.
+ */
+export function appendDurationFooter(
+  container: Container,
+  theme: Pick<UiTheme, "fg">,
+  context: DurationContext,
+  options: { isPartial: boolean },
+): void {
+  const footer = durationFooter(theme, context, options);
+  if (footer === undefined) return;
+  container.addChild(new Spacer(1));
+  container.addChild(new Text(footer, 0, 0));
+}
+
+/**
  * The `Elapsed` footer for a call row. Pi renders a result row only once a result exists, so a tool
  * that sends no partial results shows its running time here. The footer disappears when a result
  * row takes over, checked when drawn so both never show at once.
@@ -250,6 +306,20 @@ export function widgetLines(theme: Pick<UiTheme, "fg" | "bold">, layout: WidgetL
   ];
 }
 
+/**
+ * A footer hint line for a custom overlay, as Pi's selector draws it: each key in `dim` and its
+ * description in `muted`, separated by two spaces. Pass the key text from `keyText(id)` so it
+ * follows the user's keybindings. Built from the injected theme, unlike Pi's own `keyHint`.
+ */
+export function hintLine(
+  theme: Pick<UiTheme, "fg">,
+  hints: readonly { key: string; description: string }[],
+): string {
+  return hints
+    .map((hint) => theme.fg("dim", hint.key) + theme.fg("muted", ` ${hint.description}`))
+    .join("  ");
+}
+
 /** One footer status entry: an optional Status Mark, the name in `dim`, then the value. */
 export function footerStatus(
   theme: Pick<UiTheme, "fg">,
@@ -262,6 +332,35 @@ export function footerStatus(
   ]
     .filter((part): part is string => part !== undefined)
     .join(" ");
+}
+
+/**
+ * Pi's custom-message look for message and entry renderers: a `customMessageBg` box padded by
+ * `outputPad`, with an optional bold `customMessageLabel` header and a spacer above the body.
+ */
+export function customMessageBox(
+  theme: Pick<UiTheme, "fg" | "bg" | "bold">,
+  options: { outputPad: number; label?: string },
+  body: readonly Component[],
+): Box {
+  const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
+  if (options.label !== undefined) {
+    box.addChild(new Text(theme.fg("customMessageLabel", theme.bold(options.label)), 0, 0));
+    box.addChild(new Spacer(1));
+  }
+  for (const child of body) box.addChild(child);
+  return box;
+}
+
+const ESCAPE = String.fromCharCode(27);
+const RESET_SEQUENCE = new RegExp(`${ESCAPE}\\[0m`, "g");
+
+/**
+ * Clip plain text to `width` columns, ending with `...` when it is cut. Unlike pi-tui's
+ * `truncateToWidth` it emits no escape sequence, so the result can be styled afterwards.
+ */
+export function clipPlain(text: string, width: number): string {
+  return truncateToWidth(text, width, "...").replace(RESET_SEQUENCE, "");
 }
 
 /** A warning or error notification: `<Display Name>: message`. Info messages carry no prefix. */

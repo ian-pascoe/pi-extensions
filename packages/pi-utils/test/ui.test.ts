@@ -1,12 +1,23 @@
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
+import {
+  Container,
+  KeybindingsManager,
+  setKeybindings,
+  Text,
+  visibleWidth,
+} from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  appendDurationFooter,
   callDurationFooter,
+  clipPlain,
+  CollapsedPreview,
+  customMessageBox,
   durationFooter,
   type DurationContext,
   expandHint,
   footerStatus,
+  hintLine,
   noticeText,
   previewBody,
   statusMark,
@@ -15,7 +26,12 @@ import {
   treePrefix,
   widgetLines,
 } from "../src/ui.js";
-import { expectLinesFitWidth, taggedTheme } from "../src/ui-testing.js";
+import {
+  escapeTaggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+  taggedTheme,
+} from "../src/ui-testing.js";
 
 beforeAll(() => {
   initTheme("dark");
@@ -230,8 +246,169 @@ describe("expectLinesFitWidth", () => {
     expect(() => expectLinesFitWidth([line], 2)).toThrow(/wider than 2/);
   });
 
-  it("rejects a hard-coded escape sequence", () => {
-    expect(() => expectLinesFitWidth(["\u001b[31mred\u001b[39m"], 40)).toThrow(/escape/);
+  it("rejects hard-coded colour escapes of every kind", () => {
+    for (const colour of ["\u001b[31m", "\u001b[92m", "\u001b[38;5;12m", "\u001b[48;2;1;2;3m"]) {
+      expect(() => expectLinesFitWidth([`${colour}red\u001b[39m`], 40)).toThrow(/colour/);
+    }
+  });
+
+  it("accepts resets and text styles, which carry no colour", () => {
+    // truncateToWidth appends a reset when it clips; bold and strikethrough are theme styles.
+    expect(() =>
+      expectLinesFitWidth(["\u001b[1mab\u001b[22m\u001b[9mc\u001b[29m...\u001b[0m"], 6),
+    ).not.toThrow();
+  });
+
+  it("accepts colour escapes only when the caller opts in for a body styled by Pi's own theme", () => {
+    const markdown = "\u001b[38;2;10;20;30mheading\u001b[39m";
+    expect(() => expectLinesFitWidth([markdown], 40)).toThrow(/colour/);
+    expect(() => expectLinesFitWidth([markdown], 40, { piThemedBody: true })).not.toThrow();
+    expect(() => expectLinesFitWidth([markdown], 4, { piThemedBody: true })).toThrow(/wider/);
+  });
+});
+
+describe("clipPlain", () => {
+  it("leaves text that fits and clips longer text with three dots", () => {
+    expect(clipPlain("hi", 8)).toBe("hi");
+    expect(clipPlain("hello world", 8)).toBe("hello...");
+  });
+
+  it("counts wide characters by columns and never emits an escape", () => {
+    const clipped = clipPlain("\u65e5\u672c\u8a9e\u30c6\u30ad\u30b9\u30c8", 7);
+    expect(visibleWidth(clipped)).toBeLessThanOrEqual(7);
+    expect(clipped.endsWith("...")).toBe(true);
+    expect(clipped).not.toContain(String.fromCharCode(27));
+  });
+});
+
+describe("escapeTaggedTheme", () => {
+  it("measures as zero columns yet decodes back to token tags", () => {
+    const styled = escapeTaggedTheme.fg("accent", escapeTaggedTheme.bold("abc"));
+    expect(visibleWidth(styled)).toBe(3);
+    expect(readableTags(styled)).toBe("<accent><b>abc</b></accent>");
+    expect(readableTags(escapeTaggedTheme.bg("customMessageBg", "x"))).toBe(
+      "<bg:customMessageBg>x</bg:customMessageBg>",
+    );
+  });
+
+  it("passes the colour check for its own tokens but never for a real colour", () => {
+    // Style several tokens first: a registry that hands out palette indexes would now accept them.
+    for (const token of ["accent", "error", "success", "warning", "muted"] as const) {
+      expect(() => expectLinesFitWidth([escapeTaggedTheme.fg(token, "abc")], 3)).not.toThrow();
+    }
+    for (const token of ["selectedBg", "customMessageBg", "toolPendingBg"] as const) {
+      expect(() => expectLinesFitWidth([escapeTaggedTheme.bg(token, "abc")], 3)).not.toThrow();
+    }
+    for (const index of [0, 1, 2, 3, 4]) {
+      for (const base of [38, 48]) {
+        const hardCoded = `\u001b[${base};5;${index}mabc\u001b[0m`;
+        expect(() => expectLinesFitWidth([hardCoded], 3)).toThrow(/colour/);
+      }
+    }
+  });
+});
+
+describe("hintLine", () => {
+  it("joins dim keys with muted descriptions by two spaces, as Pi's selector does", () => {
+    expect(
+      hintLine(taggedTheme, [
+        { key: "\u2191\u2193", description: "navigate" },
+        { key: "esc", description: "close" },
+      ]),
+    ).toBe("<dim>\u2191\u2193</dim><muted> navigate</muted>  <dim>esc</dim><muted> close</muted>");
+  });
+});
+
+describe("appendDurationFooter", () => {
+  const finished: DurationContext = {
+    state: {},
+    executionStarted: false,
+    isPartial: false,
+    durationMs: 1234,
+    invalidate: () => {},
+  };
+  const render = (container: Container) =>
+    container.render(40).map((line) => readableTags(line).trimEnd());
+
+  it("adds Pi's blank line, as bash does, then the duration footer after the body", () => {
+    const container = new Container();
+    container.addChild(new Text("body", 0, 0));
+    appendDurationFooter(container, escapeTaggedTheme, finished, { isPartial: false });
+    expect(render(container)).toEqual(["body", "", "<muted>Took 1.2s</muted>"]);
+  });
+
+  it("adds nothing when no duration is known", () => {
+    const container = new Container();
+    container.addChild(new Text("body", 0, 0));
+    appendDurationFooter(
+      container,
+      escapeTaggedTheme,
+      { ...finished, durationMs: undefined },
+      { isPartial: false },
+    );
+    expect(render(container)).toEqual(["body"]);
+  });
+});
+
+describe("CollapsedPreview", () => {
+  const child = () =>
+    new Text(Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0);
+
+  it("keeps the head of the rendered child and ends with the wrapped Expand Hint", () => {
+    const lines = new CollapsedPreview(escapeTaggedTheme, child(), {
+      limit: 10,
+      expanded: false,
+    }).render(20);
+    expect(lines.slice(0, 10).map(readableTags)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `line ${index + 1}`.padEnd(20)),
+    );
+    const hint = lines.slice(10).map(readableTags).join("").replace(/\s+/g, " ");
+    expect(hint).toContain("<muted>... (2 more lines,");
+    expect(hint).toContain("<dim>ctrl+o</dim>");
+    expectLinesFitWidth(lines, 20);
+  });
+
+  it("keeps the tail and says earlier lines when keep is end", () => {
+    const lines = new CollapsedPreview(escapeTaggedTheme, child(), {
+      limit: 5,
+      expanded: false,
+      keep: "end",
+    }).render(60);
+    expect(readableTags(lines[0] ?? "")).toContain("... (7 earlier lines,");
+    expect(readableTags(lines.at(-1) ?? "").trim()).toBe("line 12");
+    expect(lines).toHaveLength(6);
+  });
+
+  it("shows every line with no hint when expanded or when nothing is hidden", () => {
+    expect(
+      new CollapsedPreview(escapeTaggedTheme, child(), { limit: 10, expanded: true }).render(40),
+    ).toHaveLength(12);
+    expect(
+      new CollapsedPreview(escapeTaggedTheme, child(), { limit: 20, expanded: false }).render(40),
+    ).toHaveLength(12);
+  });
+});
+
+describe("customMessageBox", () => {
+  it("draws Pi's custom-message look: padded customMessageBg box, bold label, spacer, body", () => {
+    const box = customMessageBox(escapeTaggedTheme, { outputPad: 2, label: "termctrl" }, [
+      new Text("body", 0, 0),
+    ]);
+    const lines = box.render(40);
+    expect(lines).toHaveLength(5);
+    expect(lines.map(readableTags).every((line) => line.startsWith("<bg:customMessageBg>"))).toBe(
+      true,
+    );
+    expect(readableTags(lines[1] ?? "")).toContain(
+      "<bg:customMessageBg>  <customMessageLabel><b>termctrl</b></customMessageLabel>",
+    );
+    expect(readableTags(lines[3] ?? "")).toContain("  body");
+    expectLinesFitWidth(lines, 40);
+  });
+
+  it("omits the label and spacer when there is no label", () => {
+    const box = customMessageBox(escapeTaggedTheme, { outputPad: 1 }, [new Text("body", 0, 0)]);
+    expect(box.render(40)).toHaveLength(3);
   });
 });
 
