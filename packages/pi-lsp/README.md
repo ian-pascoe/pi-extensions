@@ -538,6 +538,41 @@ default and reported as `N hints omitted` (`LSP diagnostics: no diagnostics (N h
 nothing else is reported); a file left with only hints counts as clean. Set `lsp.includeHintDiagnostics`
 to `true` to include them. `lsp_diagnostics` always returns every severity.
 
+### Dependent files
+
+An edit can break files other than the ones it changed. For a native `edit` or `write` of a file
+a server covers, Pi LSP also checks the files that depend on the declarations the edit touched,
+and reports the **new errors** it caused in them under a separate heading:
+
+```text
+LSP diagnostics in dependent files (new errors only)
+src/pi-todo-extension.ts:8:10 error [typescript]: '"./todo-list.js"' has no exported member named 'createEmptyTodoState'.
+```
+
+How it works, so a pull-only server such as `tsc --lsp` is covered too (it publishes no workspace
+diagnostics and has opened none of the dependents):
+
+1. Before the tool runs, Pi LSP asks the server for the file's `textDocument/documentSymbol`s,
+   picks the declarations the edit's `oldText` (or, for `write`, the whole file) touches, and asks
+   `textDocument/references` for each. The files those references lie in are the dependents.
+2. It pulls diagnostics for those dependents and records their errors as a baseline.
+3. After the tool runs, it pulls them again and reports only errors that were not in the baseline.
+
+Scope and caps:
+
+- At most 10 touched declarations are searched, and at most **20** dependent files are checked
+  (the first 20 by path). Files past the cap, or whose diagnostics timed out, are reported as
+  `N dependent files not checked`.
+- Only **error**-severity findings are reported; errors a dependent file already had are not.
+- The before-edit scan takes at most 20 seconds, then the edit proceeds without dependent feedback.
+- An edit whose declarations have no dependents adds no output and costs one `documentSymbol` and
+  up to ten `references` requests.
+- Only Server Instances that advertise document symbols, references, and document diagnostics
+  take part. Dependents in `node_modules` are ignored. `apply_patch` and `lsp_apply` results are
+  not scanned for dependents.
+- A language server only finds references in projects it has loaded. The edited file's own project
+  is loaded; a dependent in an unloaded project is not found.
+
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. It uses Pi's custom-message look under
 a `[lsp] edit diagnostics` label followed by the counts; its collapsed rendering shows the
