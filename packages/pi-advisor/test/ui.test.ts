@@ -99,12 +99,12 @@ describe("Advisor footer", () => {
         return response(model, reply("Done"), options);
       },
     };
-    expect(statuses.at(-1)).toBe("● advisor armed");
+    expect(statuses.at(-1)).toBe("● advisor on");
     await session.prompt("Complete a task");
     await reviewStarted.promise;
     expect(statuses).toContain("● advisor reviewing · backlog 1");
     releaseReview.resolve();
-    await expect.poll(() => statuses.at(-1)).toBe("● advisor armed");
+    await expect.poll(() => statuses.at(-1)).toBe("● advisor on");
     await session.prompt("/advisor off");
     expect(statuses.at(-1)).toBeUndefined();
   });

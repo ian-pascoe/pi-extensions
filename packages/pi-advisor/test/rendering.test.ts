@@ -527,9 +527,9 @@ describe("Advisor footer", () => {
     expect(advisorFooterText(undefined, [], tagged)).toBeUndefined();
   });
 
-  it("shows the state while armed and reports review progress", () => {
-    expect(advisorFooterText({ state: "armed", backlog: 0 }, [], tagged)).toBe(`${mark} armed`);
-    expect(advisorFooterText({ state: "armed", backlog: 1 }, [], tagged)).toBe(`${mark} armed`);
+  it("says on while armed, like Guardian, and reports review progress", () => {
+    expect(advisorFooterText({ state: "armed", backlog: 0 }, [], tagged)).toBe(`${mark} on`);
+    expect(advisorFooterText({ state: "armed", backlog: 1 }, [], tagged)).toBe(`${mark} on`);
     expect(advisorFooterText({ state: "reviewing", backlog: 2 }, [], tagged)).toBe(
       `${mark} reviewing<dim> · </dim>backlog 2`,
     );
@@ -555,7 +555,7 @@ describe("Advisor footer", () => {
         ],
         tagged,
       ),
-    ).toBe(`${mark} armed`);
+    ).toBe(`${mark} on`);
     expect(
       advisorFooterText(
         { state: "reviewing", backlog: 1 },

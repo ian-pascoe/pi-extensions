@@ -468,7 +468,8 @@ export function advisorFooterText(
       name: "advisor",
       value: theme.fg("warning", "paused"),
     });
-  const parts: string[] = [root.state];
+  // Guardian's footer says `on` when idle, so an armed Advisor does too; `armed` stays the stored state.
+  const parts: string[] = [root.state === "armed" ? "on" : root.state];
   if ((root.state === "reviewing" || root.state === "consulting") && root.backlog > 0)
     parts.push(`backlog ${root.backlog}`);
   // Consultations come only from the main agent, so a child segment shows Reviews and pauses.
