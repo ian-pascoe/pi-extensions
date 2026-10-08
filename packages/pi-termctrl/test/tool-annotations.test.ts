@@ -32,11 +32,14 @@ function withoutAnnotations(factory: ExtensionFactory): ExtensionFactory {
   };
 }
 
-/** Timestamps and the temporary directory are noise between two otherwise identical runs. */
+/**
+ * Timestamps, Pi 1.1's wall-clock `durationMs` on tool results, and the temporary directory are
+ * noise between two otherwise identical runs.
+ */
 function normalized<T>(value: T, directory: string): T {
   return JSON.parse(
     JSON.stringify(value, (key, item: JsonValue) =>
-      key === "timestamp" ? undefined : item,
+      key === "timestamp" || key === "durationMs" ? undefined : item,
     ).replaceAll(directory, "<dir>"),
   );
 }
