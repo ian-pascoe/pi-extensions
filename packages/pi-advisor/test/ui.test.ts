@@ -99,12 +99,12 @@ describe("Advisor footer", () => {
         return response(model, reply("Done"), options);
       },
     };
-    expect(statuses.at(-1)).toBe("advisor");
+    expect(statuses.at(-1)).toBe("● advisor armed");
     await session.prompt("Complete a task");
     await reviewStarted.promise;
-    expect(statuses).toContain("advisor: reviewing · backlog 1");
+    expect(statuses).toContain("● advisor reviewing · backlog 1");
     releaseReview.resolve();
-    await expect.poll(() => statuses.at(-1)).toBe("advisor");
+    await expect.poll(() => statuses.at(-1)).toBe("● advisor armed");
     await session.prompt("/advisor off");
     expect(statuses.at(-1)).toBeUndefined();
   });
@@ -192,7 +192,8 @@ describe("Interventions", () => {
       themeFromRunner(session),
     );
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
-    expect(text).toContain("▲ Advisor concern");
+    expect(text).toContain("Advisor concern");
+    expect(text).not.toContain("▲");
     expect(text).toContain("Re-run the failing test");
   });
 });

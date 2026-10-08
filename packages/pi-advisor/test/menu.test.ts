@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { expectLinesFitWidth } from "@ian-pascoe/pi-utils/ui-testing";
 import {
   AdvisorSettingsMenu,
   type AdvisorMenuHost,
@@ -458,7 +459,7 @@ describe("Advisor settings menu", () => {
     await settle();
     expect(applied).toEqual([]);
     expect(screen()).toContain("Advisor Prompt");
-    expect(screen()).toMatch(/✖ .*prompt/i);
+    expect(screen()).toMatch(/✗ .*prompt/i);
   });
 
   it("settles only after every started edit has been applied", async () => {
@@ -480,6 +481,14 @@ describe("Advisor settings menu", () => {
     release.resolve();
     await menu.settled();
     expect(applied).toHaveLength(1);
+  });
+
+  it("fits narrow and wide terminals with an accent title between borders", () => {
+    const { menu } = createMenu({ paused: true });
+    for (const width of [40, 120]) {
+      expectLinesFitWidth(menu.render(width), width, { piThemedBody: true });
+    }
+    expect(menu.render(120)[1]).toBe(" Advisor settings");
   });
 
   it("closes on Escape", () => {

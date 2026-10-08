@@ -1,11 +1,26 @@
 import {
   getMarkdownTheme,
-  keyHint,
   type MessageRenderOptions,
   type Theme,
   type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Markdown, Text, type Component } from "@earendil-works/pi-tui";
+import { Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
+import {
+  callDurationFooter,
+  COLLAPSED_LINES,
+  appendDurationFooter,
+  CollapsedPreview,
+  customMessageBox,
+  footerStatus,
+  joinInline,
+  previewBody,
+  statusMark,
+  summaryExpandHint,
+  toolHeader,
+  treePrefix,
+  type DurationContext,
+  type StatusKind,
+} from "@ian-pascoe/pi-utils/ui";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import {
@@ -29,12 +44,15 @@ import {
 /** Theme operations used by Advisor transcript and footer renderers. */
 export type AdvisorRenderTheme = Pick<Theme, "fg" | "bg" | "bold">;
 
-const severityStyle = {
-  nit: { symbol: "·", color: "muted" },
-  concern: { symbol: "▲", color: "warning" },
-  blocker: { symbol: "✖", color: "error" },
-} as const satisfies Record<AdvisorSeverity, { symbol: string; color: ThemeColor }>;
-const collapsedNitLines = 4;
+/** The registered name of the consultation tool. */
+export const advisorAskToolName = "advisor_ask";
+
+/** Severity Labels: a coloured word, never a Status Mark. */
+const severityColor = {
+  nit: "dim",
+  concern: "warning",
+  blocker: "error",
+} as const satisfies Record<AdvisorSeverity, ThemeColor>;
 
 const nullableString = Type.Union([Type.String(), Type.Null()]);
 /** The minimum every historical status entry recorded. */
@@ -74,37 +92,28 @@ const statusSchema = Type.Object({
 });
 /** Data recorded in a `pi-advisor-status` entry. */
 export type AdvisorStatusEntry = Static<typeof statusSchema>;
-const stateBadge = {
-  disabled: { symbol: "○", color: "dim" },
-  private: { symbol: "○", color: "dim" },
-  armed: { symbol: "●", color: "success" },
-  reviewing: { symbol: "●", color: "accent" },
-  consulting: { symbol: "●", color: "accent" },
-  paused: { symbol: "●", color: "error" },
-} as const satisfies Record<AdvisorState, { symbol: string; color: ThemeColor }>;
+const stateMarkKind = {
+  disabled: "idle",
+  private: "idle",
+  armed: "active",
+  reviewing: "active",
+  consulting: "active",
+  paused: "warning",
+} as const satisfies Record<AdvisorState, StatusKind>;
 const promptPreviewWidth = 40;
 
-function expandHint(theme: Pick<Theme, "fg">): string {
-  return theme.fg("dim", `… ${keyHint("app.tools.expand", "to expand")}`);
-}
+/** Styles a plain piece of text; messages use `customMessageText`, menus leave it as is. */
+type Paint = (text: string) => string;
+const unpainted: Paint = (text) => text;
+const messagePaint =
+  (theme: Pick<Theme, "fg">): Paint =>
+  (text) =>
+    theme.fg("customMessageText", text);
 
-/** Render at most `limit` lines of a child, then an expansion hint. */
-class Clipped implements Component {
-  constructor(
-    private readonly child: Component,
-    private readonly limit: number,
-    private readonly hint: string,
-  ) {}
-  render(width: number): string[] {
-    const lines = this.child.render(width);
-    return lines.length <= this.limit ? lines : [...lines.slice(0, this.limit), this.hint];
-  }
-  invalidate(): void {
-    this.child.invalidate();
-  }
-}
+const messageLabel = (theme: Pick<Theme, "fg" | "bold">) =>
+  theme.fg("customMessageLabel", theme.bold("Advisor"));
 
-/** Severity-styled, attributed Intervention; invalid details fall back to Pi's renderer. */
+/** Severity-labelled, attributed Intervention; invalid details fall back to Pi's renderer. */
 export function renderAdvisorIntervention(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled custom-message details are validated by the finding schema below.
   details: unknown,
@@ -113,25 +122,24 @@ export function renderAdvisorIntervention(
   agentId?: string,
 ): Component | undefined {
   if (!Value.Check(advisorFindingSchema, details)) return undefined;
-  const style = severityStyle[details.severity];
-  const heading = joinDefined(
-    [
-      theme.fg(style.color, theme.bold(`${style.symbol} Advisor ${details.severity}`)),
-      agentId ? theme.fg("accent", `↳ ${agentId}`) : undefined,
-    ],
-    "  ",
-  );
-  const body: Component = new Markdown(details.message, 0, 0, getMarkdownTheme());
-  const container = new Container();
-  container.addChild(new Text(heading, 0, 0));
-  container.addChild(
-    details.severity === "nit" && !options.expanded
-      ? new Clipped(body, collapsedNitLines, expandHint(theme))
+  const heading = joinInline(theme, [
+    `${messageLabel(theme)} ${theme.fg(severityColor[details.severity], details.severity)}`,
+    agentId ? theme.fg("accent", agentId) : undefined,
+  ]);
+  const body = new Markdown(details.message, 0, 0, getMarkdownTheme(), {
+    color: messagePaint(theme),
+  });
+  // The heading carries the Severity Label beside Pi's label, so it is not the box's own label.
+  return customMessageBox(theme, { outputPad: options.outputPad }, [
+    new Text(heading, 0, 0),
+    new Spacer(1),
+    details.severity === "nit"
+      ? new CollapsedPreview(theme, body, {
+          limit: COLLAPSED_LINES.fallback,
+          expanded: options.expanded,
+        })
       : body,
-  );
-  const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
-  box.addChild(container);
-  return box;
+  ]);
 }
 
 const childFindingSchema = Type.Object({
@@ -145,52 +153,89 @@ const childStateSchema = Type.Object({
   error: Type.Optional(Type.String()),
 });
 
+/** Pi's entry renderers get no `outputPad`, so entries use Pi's default of one column. */
+const entryOutputPad = 1;
+
 /** A Child Agent's Intervention or pause, attributed to that child. */
 export function renderAdvisorChildEntry(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled entry data is validated below; anything else renders raw.
   data: unknown,
   expanded: boolean,
   theme: AdvisorRenderTheme,
+  outputPad = entryOutputPad,
 ): Component {
   if (Value.Check(childFindingSchema, data)) {
     const finding = { severity: data.severity, message: data.message };
     const rendered = renderAdvisorIntervention(
       finding,
-      { expanded, outputPad: 0 },
+      { expanded, outputPad },
       theme,
       data.agentId,
     );
     if (rendered) return rendered;
   }
   if (Value.Check(childStateSchema, data)) {
-    const line = `Advisor ↳ ${data.agentId} ${data.state}${data.error ? `: ${data.error}` : ""}`;
-    return new Text(data.error ? theme.fg("error", `✖ ${line}`) : theme.fg("dim", line), 0, 0);
+    const heading = joinInline(theme, [
+      messageLabel(theme),
+      theme.fg("accent", data.agentId),
+      badge(data.state, theme, messagePaint(theme)),
+    ]);
+    return customMessageBox(theme, { outputPad }, [
+      new Text(heading, 0, 0),
+      ...(data.error ? [new Text(theme.fg("error", data.error), 0, 0)] : []),
+    ]);
   }
   return new Text(`Advisor for Child Agent\n${JSON.stringify(data, null, 2)}`, 0, 0);
 }
-
-const collapsedAnswerLines = 8;
 
 /** `advisor_ask` call: the question, first line only while collapsed. */
 export function renderAdvisorAskCall(
   args: { message: string },
   expanded: boolean,
   theme: AdvisorRenderTheme,
+  context: DurationContext,
 ): Component {
-  const question = expanded ? args.message : (args.message.split("\n", 1)[0] ?? "");
-  return new Text(`${theme.fg("toolTitle", theme.bold("Ask Advisor"))} ${question}`, 0, 0);
+  const [first = "", ...rest] = args.message.split("\n");
+  const hidden = rest.length > 0 && !expanded;
+  const heading = toolHeader(theme, advisorAskToolName, expanded ? undefined : first);
+  const container = new Container();
+  container.addChild(new Text(hidden ? `${heading}${summaryExpandHint(theme)}` : heading, 0, 0));
+  if (expanded) container.addChild(new Text(theme.fg("muted", `message: ${args.message}`), 0, 0));
+  container.addChild(callDurationFooter(theme, context));
+  return container;
 }
 
-/** `advisor_ask` result: a Markdown answer, previewed while collapsed. */
+/** `advisor_ask` result: a Markdown answer, previewed while collapsed, then Pi's duration footer. */
 export function renderAdvisorAskResult(
   answer: string,
   options: { expanded: boolean; isPartial: boolean; isError: boolean },
   theme: AdvisorRenderTheme,
+  context: DurationContext,
 ): Component {
-  if (options.isPartial) return new Text(theme.fg("dim", "Consulting…"), 0, 0);
-  if (options.isError) return new Text(theme.fg("error", answer), 0, 0);
-  const body = new Markdown(answer, 0, 0, getMarkdownTheme());
-  return options.expanded ? body : new Clipped(body, collapsedAnswerLines, expandHint(theme));
+  const container = new Container();
+  if (answer) {
+    container.addChild(new Spacer(1));
+    if (options.isError) {
+      const lines = previewBody(theme, answer.split("\n"), {
+        limit: COLLAPSED_LINES.fallback,
+        expanded: options.expanded,
+        color: "error",
+      });
+      container.addChild(new Text(lines.join("\n"), 0, 0));
+    } else {
+      const body = new Markdown(answer, 0, 0, getMarkdownTheme(), {
+        color: (text) => theme.fg("toolOutput", text),
+      });
+      container.addChild(
+        new CollapsedPreview(theme, body, {
+          limit: COLLAPSED_LINES.fallback,
+          expanded: options.expanded,
+        }),
+      );
+    }
+  }
+  appendDurationFooter(container, theme, context, { isPartial: options.isPartial });
+  return container;
 }
 
 function formatTokens(total: number): string {
@@ -243,7 +288,7 @@ export function formatAdvisorOption(options: AdvisorOptions, key: keyof AdvisorO
       if (options.prompt === undefined) return "inherit";
       const first = options.prompt.split("\n", 1)[0] ?? "";
       const preview =
-        first.length > promptPreviewWidth ? `${first.slice(0, promptPreviewWidth - 1)}…` : first;
+        first.length > promptPreviewWidth ? `${first.slice(0, promptPreviewWidth - 3)}...` : first;
       return `${preview} (${options.prompt.length} chars)`;
     }
     case "allowedTools":
@@ -261,28 +306,33 @@ export function formatAdvisorOption(options: AdvisorOptions, key: keyof AdvisorO
   }
 }
 
-function badge(state: AdvisorState, theme: AdvisorRenderTheme): string {
-  const style = stateBadge[state];
-  return theme.fg(style.color, `${style.symbol} ${state}`);
+function badge(state: AdvisorState, theme: AdvisorRenderTheme, paint: Paint): string {
+  return `${statusMark(theme, stateMarkKind[state])} ${paint(state)}`;
 }
 
 function joinDefined(parts: ReadonlyArray<string | undefined>, separator: string): string {
   return parts.filter((part) => part !== undefined).join(separator);
 }
 
-function stateLine(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): string {
+function stateLine(
+  entry: AdvisorStatusEntry,
+  theme: AdvisorRenderTheme,
+  label: string,
+  paint: Paint,
+): string {
   const inherited = entry.settings && entry.settings.model === undefined;
-  return joinDefined(
-    [
-      `${theme.bold("Advisor")} ${badge(entry.state, theme)}`,
-      entry.effectiveModel
-        ? `${entry.effectiveModel}${inherited ? theme.fg("dim", " (inherited)") : ""}`
-        : undefined,
-      entry.effectiveThinkingLevel ?? undefined,
-      entry.backlog ? `backlog ${entry.backlog}` : undefined,
-    ],
-    theme.fg("dim", " · "),
-  );
+  return joinInline(theme, [
+    `${label} ${badge(entry.state, theme, paint)}`,
+    entry.effectiveModel
+      ? `${paint(entry.effectiveModel)}${inherited ? theme.fg("dim", " (inherited)") : ""}`
+      : undefined,
+    entry.effectiveThinkingLevel ? paint(entry.effectiveThinkingLevel) : undefined,
+    entry.backlog ? paint(`backlog ${entry.backlog}`) : undefined,
+  ]);
+}
+
+function errorLine(theme: AdvisorRenderTheme, error: string): string {
+  return `${statusMark(theme, "failed")} ${theme.fg("error", error)}`;
 }
 
 /** Live state line plus any error, as shown at the top of the settings menu. */
@@ -291,17 +341,20 @@ export function advisorStatusHeadline(
   theme: AdvisorRenderTheme,
 ): string[] {
   const error = entry.error ?? entry.lastError;
-  return [stateLine(entry, theme), ...(error ? [theme.fg("error", `✖ ${error}`)] : [])];
+  return [
+    stateLine(entry, theme, theme.bold("Advisor"), unpainted),
+    ...(error ? [errorLine(theme, error)] : []),
+  ];
 }
 
 function summaryLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): string[] {
-  const lines: string[] = [];
+  const paint = messagePaint(theme);
+  const lines: string[] = [stateLine(entry, theme, messageLabel(theme), paint)];
   for (const { scope, key, options } of entry.changes ?? []) {
     lines.push(
-      `${theme.fg("success", "✓")} ${key} → ${formatAdvisorOption(options, key)} ${theme.fg("dim", `[${scope}]`)}`,
+      `${statusMark(theme, "done")} ${paint(`${key} → ${formatAdvisorOption(options, key)}`)} ${theme.fg("dim", `[${scope}]`)}`,
     );
   }
-  lines.push(stateLine(entry, theme));
   const children = entry.children?.length ?? 0;
   const activity = joinDefined(
     [
@@ -316,13 +369,16 @@ function summaryLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): str
   const counts = findingCounts(entry);
   if (counts.length) lines.push(theme.fg("muted", counts.join(" · ")));
   if (entry.unavailableTools?.length)
-    lines.push(theme.fg("warning", `⚠ unavailable tools: ${entry.unavailableTools.join(", ")}`));
+    lines.push(
+      `${statusMark(theme, "warning")} ${theme.fg("warning", `unavailable tools: ${entry.unavailableTools.join(", ")}`)}`,
+    );
   const error = entry.error ?? entry.lastError;
-  if (error) lines.push(theme.fg("error", `✖ ${error}`));
+  if (error) lines.push(errorLine(theme, error));
   return lines;
 }
 
 function detailLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): string[] {
+  const paint = messagePaint(theme);
   const lines: string[] = [];
   if (entry.settings) {
     const settings = entry.settings;
@@ -331,22 +387,23 @@ function detailLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): stri
     for (const key of advisorOptionKeys) {
       const source = entry.sources?.[key] ?? "default";
       lines.push(
-        `  ${key.padEnd(width)}  ${formatAdvisorOption(settings, key)}  ${theme.fg(source === "default" ? "dim" : "accent", `[${source}]`)}`,
+        `  ${paint(key.padEnd(width))}  ${paint(formatAdvisorOption(settings, key))}  ${theme.fg(source === "default" ? "dim" : "accent", `[${source}]`)}`,
       );
     }
   }
-  if (entry.children?.length) lines.push("");
-  for (const child of entry.children ?? [])
+  const children = entry.children ?? [];
+  if (children.length) lines.push("");
+  for (const [index, child] of children.entries())
     lines.push(
-      joinDefined(
+      `${theme.fg("dim", treePrefix([], index === children.length - 1))}${joinDefined(
         [
-          `  ${theme.fg("accent", `↳ ${child.agentId}`)}`,
-          child.state ? badge(child.state, theme) : undefined,
-          child.backlog ? `backlog ${child.backlog}` : undefined,
-          child.reviewCost?.reviews ? formatReviewCost(child.reviewCost) : undefined,
+          theme.fg("accent", child.agentId),
+          child.state ? badge(child.state, theme, paint) : undefined,
+          child.backlog ? paint(`backlog ${child.backlog}`) : undefined,
+          child.reviewCost?.reviews ? paint(formatReviewCost(child.reviewCost)) : undefined,
         ],
         "  ",
-      ),
+      )}`,
     );
   return lines;
 }
@@ -364,21 +421,28 @@ function salvageStatus(data: Static<typeof minimalStatusSchema>): AdvisorStatusE
     : { state: data.state, error: data.error ?? null };
 }
 
-/** Status snapshot: a compact summary, with every setting and child when expanded. */
+/**
+ * Status snapshot in Pi's custom-message look: a ten-line summary, with every setting and child
+ * when expanded.
+ */
 export function renderAdvisorStatus(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled entry data is validated below; older shapes keep their state and error, anything else renders raw.
   data: unknown,
   expanded: boolean,
   theme: AdvisorRenderTheme,
+  outputPad = entryOutputPad,
 ): Component {
   if (!Value.Check(minimalStatusSchema, data))
-    return new Text(`Advisor\n${JSON.stringify(data, null, 2)}`, 0, 0);
+    return customMessageBox(theme, { outputPad, label: "Advisor" }, [
+      new Text(JSON.stringify(data, null, 2), 0, 0),
+    ]);
   const entry = salvageStatus(data);
-  const lines = summaryLines(entry, theme);
+  const summary = summaryLines(entry, theme);
   const details = detailLines(entry, theme);
-  if (expanded) lines.push(...details);
-  else if (details.length) lines.push(expandHint(theme));
-  return new Text(lines.join("\n"), 0, 0);
+  const body = new Text([...summary, ...details].join("\n"), 0, 0);
+  return customMessageBox(theme, { outputPad }, [
+    new CollapsedPreview(theme, body, { limit: COLLAPSED_LINES.fallback, expanded }),
+  ]);
 }
 
 /** The live fields the footer summarizes for one watched agent. */
@@ -391,24 +455,26 @@ function count(amount: number, what: string): string {
   return `${amount} ${amount === 1 ? "child" : "children"} ${what}`;
 }
 
-/** Compact footer status; `undefined` clears it. Pause reasons stay in `/advisor status`. */
+/** Footer status entry; `undefined` clears it. Pause reasons stay in `/advisor status`. */
 export function advisorFooterText(
   root: AdvisorActivity | undefined,
   children: readonly AdvisorActivity[],
   theme: Pick<Theme, "fg">,
 ): string | undefined {
   if (!root || root.state === "disabled" || root.state === "private") return undefined;
-  if (root.state === "paused") return theme.fg("error", "advisor: paused");
-  const parts: string[] = [];
-  if (root.state === "reviewing" || root.state === "consulting") {
-    parts.push(root.state);
-    if (root.backlog > 0) parts.push(`backlog ${root.backlog}`);
-  }
+  if (root.state === "paused")
+    return footerStatus(theme, {
+      mark: "warning",
+      name: "advisor",
+      value: theme.fg("warning", "paused"),
+    });
+  const parts: string[] = [root.state];
+  if ((root.state === "reviewing" || root.state === "consulting") && root.backlog > 0)
+    parts.push(`backlog ${root.backlog}`);
   // Consultations come only from the main agent, so a child segment shows Reviews and pauses.
   const busy = children.filter((child) => child.state === "reviewing").length;
   const paused = children.filter((child) => child.state === "paused").length;
   if (busy) parts.push(count(busy, "reviewing"));
-  if (paused) parts.push(theme.fg("error", count(paused, "paused")));
-  if (!parts.length) return theme.fg("dim", "advisor");
-  return theme.fg("accent", `advisor: ${parts.join(" · ")}`);
+  if (paused) parts.push(theme.fg("warning", count(paused, "paused")));
+  return footerStatus(theme, { mark: "active", name: "advisor", value: joinInline(theme, parts) });
 }

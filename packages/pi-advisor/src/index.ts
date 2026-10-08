@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { discoverPiAgentSession } from "@ian-pascoe/pi-utils/pi-agent-session-discovery";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import {
   parseAdvisorOptions,
   readAdvisorLayers,
@@ -27,6 +28,7 @@ import {
   type AdvisorScopedOptions,
 } from "./advisor-menu.js";
 import {
+  advisorAskToolName as askToolName,
   advisorFooterText,
   advisorStatusHeadline,
   renderAdvisorAskCall,
@@ -48,7 +50,6 @@ interface WatchedChild {
   resourceInputs: AdvisorResourceInputs;
   observer: AdvisorObserver | undefined;
 }
-const askToolName = "advisor_ask";
 const askToolParameters = Type.Object(
   { message: Type.String({ minLength: 1 }) },
   { additionalProperties: false },
@@ -127,12 +128,14 @@ export default function advisor(pi: ExtensionAPI): void {
           openWorldHint: false,
         },
         executionMode: "sequential",
-        renderCall: (args, theme, context) => renderAdvisorAskCall(args, context.expanded, theme),
+        renderCall: (args, theme, context) =>
+          renderAdvisorAskCall(args, context.expanded, theme, context),
         renderResult: (result, options, theme, context) =>
           renderAdvisorAskResult(
             result.content.map((item) => (item.type === "text" ? item.text : "")).join(""),
             { expanded: options.expanded, isPartial: options.isPartial, isError: context.isError },
             theme,
+            context,
           ),
         execute: async (_id, { message }, signal) => {
           try {
@@ -254,7 +257,7 @@ export default function advisor(pi: ExtensionAPI): void {
             state: "paused",
             error: message,
           });
-          warn(`Advisor for ${child.agentId} paused: ${message}`);
+          warn(noticeText("Advisor", `${child.agentId} paused: ${message}`));
         },
         onStateChange: publishState,
         onIntervention: (finding) => {
@@ -339,7 +342,7 @@ export default function advisor(pi: ExtensionAPI): void {
           {
             onError: (message) => {
               pi.appendEntry("pi-advisor-status", { state: "paused", error: message });
-              warn(`Advisor paused: ${message}`);
+              warn(noticeText("Advisor", `paused: ${message}`));
             },
             onStateChange: publishState,
           },
@@ -399,7 +402,7 @@ export default function advisor(pi: ExtensionAPI): void {
       error = cause instanceof Error ? cause.message : String(cause);
       pi.appendEntry("pi-advisor-status", { state: "paused", error, usage: null, cost: null });
     }
-    if (error) ctx.ui.notify(`Advisor: ${error}`, "error");
+    if (error) ctx.ui.notify(noticeText("Advisor", error), "error");
   }
 
   /** Persist one validated change at its scope and reconfigure; undefined if superseded. */
