@@ -49,6 +49,8 @@ function renderContext(args: RenderContext["args"], expanded = false): RenderCon
     isPartial: false,
     showImages: false,
     isError: false,
+    durationMs: 0,
+    outputPad: 0,
   };
 }
 

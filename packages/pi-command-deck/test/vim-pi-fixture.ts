@@ -36,6 +36,7 @@ export class RecordingTerminal implements Terminal {
   clearScreen(): void {}
   setTitle(): void {}
   setProgress(): void {}
+  setProgramStatus(): void {}
 }
 
 export const editorTheme: EditorTheme = {

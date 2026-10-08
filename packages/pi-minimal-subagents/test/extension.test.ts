@@ -415,7 +415,7 @@ const sessionTreeEvent = {
   newLeafId: null,
   oldLeafId: null,
 } satisfies SessionTreeEvent;
-const agentSettledEvent = { type: "agent_settled" } satisfies AgentSettledEvent;
+const agentSettledEvent = { type: "agent_settled", aborted: false } satisfies AgentSettledEvent;
 const toolResultMessageEndEvent = {
   type: "message_end",
   message: {

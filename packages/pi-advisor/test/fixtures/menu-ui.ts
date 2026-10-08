@@ -40,6 +40,7 @@ class QuietTerminal implements Terminal {
   clearScreen(): void {}
   setTitle(): void {}
   setProgress(): void {}
+  setProgramStatus(): void {}
 }
 
 /** A real pi-tui screen and Pi's default TUI bindings, without rendering to a terminal. */

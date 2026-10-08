@@ -22,11 +22,11 @@ function withoutAnnotations(factory: ExtensionFactory): ExtensionFactory {
   };
 }
 
-/** Timestamps and the temporary directory are noise between two otherwise identical runs. */
+/** Timestamps, tool durations, and the temporary directory are noise between two otherwise identical runs. */
 function normalized<T>(value: T, directory: string): T {
   return JSON.parse(
     JSON.stringify(value, (key, item: JsonValue) =>
-      key === "timestamp" ? undefined : item,
+      key === "timestamp" || key === "durationMs" ? undefined : item,
     ).replaceAll(directory, "<dir>"),
   );
 }

@@ -29,6 +29,8 @@ function renderContext(parameters: WebToolParameters, expanded: boolean, isError
     expanded,
     showImages: false,
     isError,
+    durationMs: 0,
+    outputPad: 0,
   };
 }
 
