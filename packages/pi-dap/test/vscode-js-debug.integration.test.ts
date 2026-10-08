@@ -309,3 +309,58 @@ test("stopOnEntry leaves js-debug's entry breakpoint inside a function-first pro
     expect(stop.stop?.topFrame).toMatchObject({ line: 3 });
   }
 }, 30_000);
+
+/** Launch a throwaway program to completion through the Supported adapter and return the final result. */
+async function runToTermination(source: string) {
+  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
+    type: "pwa-node",
+    request: "launch",
+    name: "Pi DAP exit code test",
+    console: "internalConsole",
+  });
+  await writeFile(programPath, source);
+  return session.launch({ profile: "node", program: programPath, cwd: projectDirectory });
+}
+
+test.each([
+  ["a clean run", "console.log('done');", 0],
+  ["process.exit(3)", "process.exit(3);", 3],
+  ["an uncaught error", "throw new Error('boom');", 1],
+])(
+  "reports the Debuggee exit code for %s",
+  async (_name, source, exitCode) => {
+    const result = await runToTermination(source);
+    expect(result.snapshot).toMatchObject({ state: "terminated", exitCode });
+  },
+  30_000,
+);
+
+test("a Debuggee that cannot load its program reports a non-zero exit code", async () => {
+  const { projectDirectory, session } = await startFunctionFirstSession({
+    type: "pwa-node",
+    request: "launch",
+    name: "Pi DAP missing program test",
+    console: "internalConsole",
+  });
+  const result = await session.launch({
+    profile: "node",
+    program: resolve(projectDirectory, "does-not-exist.js"),
+    cwd: projectDirectory,
+  });
+  expect(result.snapshot).toMatchObject({ state: "terminated" });
+  expect(result.snapshot).toHaveProperty("exitCode", 1);
+}, 30_000);
+
+test("a Debug Session that Pi stops reports no exit code instead of guessing one", async () => {
+  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
+    type: "pwa-node",
+    request: "launch",
+    name: "Pi DAP stopped exit code test",
+    console: "internalConsole",
+    stopOnEntry: true,
+  });
+  await session.launch({ profile: "node", program: programPath, cwd: projectDirectory });
+  const stopped = await session.stop();
+  expect(stopped.snapshot.state).toBe("terminated");
+  expect(Object.hasOwn(stopped.snapshot, "exitCode")).toBe(false);
+}, 30_000);

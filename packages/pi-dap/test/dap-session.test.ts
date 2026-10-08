@@ -197,6 +197,28 @@ describe("DapSession", () => {
     });
   });
 
+  test("setting a file's breakpoints to [] drops it from Desired Breakpoints, idle or active", async () => {
+    const { cwd, session } = await createSession({ stopOnEntry: true });
+    const first = resolve(cwd, "first.ts");
+    const second = resolve(cwd, "second.ts");
+    await session.setBreakpoints({ filePath: "first.ts", breakpoints: [{ line: 1 }] });
+    await session.setBreakpoints({ filePath: "second.ts", breakpoints: [{ line: 2 }] });
+
+    const idleCleared = await session.setBreakpoints({ filePath: "first.ts", breakpoints: [] });
+    expect(idleCleared.desiredBreakpoints).toEqual([
+      { filePath: second, breakpoints: [{ line: 2 }] },
+    ]);
+
+    await session.launch();
+    await session.setBreakpoints({ filePath: "first.ts", breakpoints: [{ line: 3 }] });
+    const activeCleared = await session.setBreakpoints({ filePath: "second.ts", breakpoints: [] });
+    expect(activeCleared.desiredBreakpoints).toEqual([
+      { filePath: first, breakpoints: [{ line: 3 }] },
+    ]);
+    expect(session.status().desiredBreakpoints).toEqual(activeCleared.desiredBreakpoints);
+    await session.shutdown();
+  });
+
   test("validates the breakpoint column an adapter reports", async () => {
     const valid = await createSession({ stopOnEntry: true, breakpointColumn: 7 });
     await valid.session.launch({ program: "program.ts" });

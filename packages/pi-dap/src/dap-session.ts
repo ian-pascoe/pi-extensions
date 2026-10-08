@@ -315,6 +315,12 @@ interface ActiveDapSession {
   stopSequence: number;
   threadId: number | undefined;
   exitCode: number | undefined;
+  /** Whether the primary target channel has reported `terminated`. */
+  targetTerminated: boolean;
+  /** Whether the root channel has reported `terminated`. */
+  rootTerminated: boolean;
+  /** Wakes waits for the other channel's `terminated`. */
+  readonly settleTermination: Set<() => void>;
   cleanupPromise?: Promise<void>;
   stopping: boolean;
 }
@@ -354,6 +360,13 @@ function parseDapBody<T extends TSchema>(schema: T, value: unknown, operation: s
 
 function protocolTransport(adapter: DapAdapterDefinition): DapProtocolTransport {
   return adapter.transport.type === "stdio" ? "stdio" : adapter.transport;
+}
+
+/** The exit code in vscode-js-debug's `Process exited with code N` stderr output, if that is it. */
+function jsDebugExitCode(body: Static<typeof DapOutputEventBodySchema>): number | undefined {
+  if (body.category !== "stderr") return undefined;
+  const match = /^Process exited with code (\d+)\r?\n?$/u.exec(body.output);
+  return match?.[1] === undefined ? undefined : Number(match[1]);
 }
 
 function supportsJsDebugPrimaryTarget(
@@ -486,13 +499,16 @@ export class DapSession {
         stopSequence: 0,
         threadId: undefined,
         exitCode: undefined,
+        targetTerminated: false,
+        rootTerminated: false,
+        settleTermination: new Set(),
         stopping: false,
       };
       active = startedActive;
       this.state = { kind: "active", active: startedActive };
       this.publishSnapshot();
       startedActive.unsubscribeEvents.add(
-        client.onEvent((event) => this.handleDapEvent(startedActive, event)),
+        client.onEvent((event) => this.handleDapEvent(startedActive, event, "root")),
       );
 
       const initialized: Promise<DapLaunchResponseOutcome> = client
@@ -585,12 +601,18 @@ export class DapSession {
     const breakpoints = input.breakpoints.map((breakpoint) => ({ ...breakpoint }));
     const active = this.currentActive();
     if (active === undefined) {
-      this.desiredBreakpoints.set(filePath, breakpoints);
+      this.retainBreakpoints(filePath, breakpoints);
       return this.result();
     }
     const body = await this.sendBreakpoints(active, filePath, breakpoints, signal);
-    this.desiredBreakpoints.set(filePath, breakpoints);
+    this.retainBreakpoints(filePath, breakpoints);
     return this.result({ breakpoints: body.breakpoints });
+  }
+
+  /** An empty list clears the file, so it drops out of Desired Breakpoints instead of lingering. */
+  private retainBreakpoints(filePath: string, breakpoints: readonly DapDesiredBreakpoint[]): void {
+    if (breakpoints.length === 0) this.desiredBreakpoints.delete(filePath);
+    else this.desiredBreakpoints.set(filePath, breakpoints);
   }
 
   /** Continue a stopped Debuggee and wait for its next stop or termination. */
@@ -904,7 +926,11 @@ export class DapSession {
     return this.state.kind === "active" && this.state.active === active;
   }
 
-  private handleDapEvent(active: ActiveDapSession, event: DebugProtocol.Event): void {
+  private handleDapEvent(
+    active: ActiveDapSession,
+    event: DebugProtocol.Event,
+    channel: "root" | "target",
+  ): void {
     if (!this.isCurrentActive(active)) return;
     try {
       switch (event.event) {
@@ -912,6 +938,11 @@ export class DapSession {
           const body = parseDapBody(DapOutputEventBodySchema, event.body, "output event");
           // Adapters such as vscode-js-debug send diagnostics with category "telemetry".
           if (body.category !== "telemetry") this.output.append(body.output);
+          // vscode-js-debug never sends `exited`; it reports a non-zero exit on the root channel.
+          if (channel === "root" && active.targetClient !== undefined) {
+            const exitCode = jsDebugExitCode(body);
+            if (exitCode !== undefined && active.exitCode === undefined) active.exitCode = exitCode;
+          }
           return;
         }
         case "stopped": {
@@ -942,7 +973,15 @@ export class DapSession {
           if (!active.stopping) void this.finishActiveSession(active, "Debuggee exited");
           return;
         case "terminated":
-          if (!active.stopping) void this.finishActiveSession(active, "Debug Session terminated");
+          if (active.stopping) return;
+          if (channel === "root") active.rootTerminated = true;
+          else active.targetTerminated = true;
+          for (const settle of active.settleTermination) settle();
+          if (active.targetClient === undefined) {
+            void this.finishActiveSession(active, "Debug Session terminated");
+          } else {
+            void this.finishAfterChannelsTerminate(active);
+          }
           return;
         default:
           return;
@@ -953,6 +992,31 @@ export class DapSession {
       this.publishUnexpectedFailure(error);
       void this.finishActiveSession(active, error.message);
     }
+  }
+
+  /**
+   * vscode-js-debug reports `terminated` on both the primary target channel and the root channel,
+   * in either order. The root channel's comes last of its events and follows any `Process exited
+   * with code N` report, which is also where a late root output event would otherwise be lost. Wait
+   * for both. A clean run sends no exit report, so a root `terminated` with none means exit code 0.
+   * A timeout finishes with the exit code unknown unless the root channel already ended.
+   */
+  private async finishAfterChannelsTerminate(active: ActiveDapSession): Promise<void> {
+    if (!active.rootTerminated || !active.targetTerminated) {
+      await new Promise<void>((resolveWait) => {
+        const finish = () => {
+          clearTimeout(timer);
+          active.settleTermination.delete(finish);
+          resolveWait();
+        };
+        const timer = setTimeout(finish, this.options.settings.timeouts.shutdownMs);
+        active.settleTermination.add(finish);
+        if (active.rootTerminated && active.targetTerminated) finish();
+      });
+    }
+    if (!this.isCurrentActive(active) || active.stopping) return;
+    if (active.rootTerminated && active.exitCode === undefined) active.exitCode = 0;
+    await this.finishActiveSession(active, "Debug Session terminated");
   }
 
   private handleAdapterFailure(active: ActiveDapSession, error: DapProtocolClientError): void {
@@ -1003,7 +1067,7 @@ export class DapSession {
     active.targetClient = targetClient;
     active.client = targetClient;
     active.unsubscribeEvents.add(
-      targetClient.onEvent((event) => this.handleDapEvent(active, event)),
+      targetClient.onEvent((event) => this.handleDapEvent(active, event, "target")),
     );
 
     const initialized = targetClient.waitForEvent(
