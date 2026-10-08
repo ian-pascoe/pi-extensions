@@ -1,133 +1,40 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ToolCallEvent,
-  ToolResultEvent,
-  ToolResultEventResult,
-} from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, test } from "vitest";
-import { createPiLspExtension } from "../src/pi-lsp-extension.js";
+import {
+  closeExtensionSessions,
+  startExtensionSession,
+  type ExtensionSession,
+} from "./extension-session.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
-const temporaryDirectories: string[] = [];
-const shutdowns: Array<() => Promise<ToolResultEventResult | undefined>> = [];
 
-/** The lifecycle events this harness delivers to the extension. */
-type HarnessEvent =
-  | ToolCallEvent
-  | ToolResultEvent
-  | { readonly type: "session_start"; readonly reason: "startup" }
-  | { readonly type: "session_shutdown"; readonly reason: "quit" };
-type Handler = (
-  event: HarnessEvent,
-  context: ExtensionContext,
-) => Promise<ToolResultEventResult | undefined> | undefined;
-
-interface RealTypeScriptSession {
-  readonly cwd: string;
-  /** Emit Pi's `tool_call` then, after `mutate` changes the file, its `tool_result`. */
-  edit(options: {
-    readonly toolCallId: string;
-    readonly path: string;
-    readonly oldText: string;
-    readonly newText: string;
-  }): Promise<string>;
-}
-
-/** Drive the extension factory exactly as Pi does, against the real `tsc --lsp` server. */
-async function startRealTypeScriptSession(
+/** Start the extension against the real `tsc --lsp` server in a temporary TypeScript project. */
+function startRealTypeScriptSession(
   files: Readonly<Record<string, string>>,
-): Promise<RealTypeScriptSession> {
-  const cwd = await mkdtemp(resolve(tmpdir(), "pi-lsp-dependents-"));
-  const agentDirectory = await mkdtemp(resolve(tmpdir(), "pi-lsp-dependents-agent-"));
-  temporaryDirectories.push(cwd, agentDirectory);
-  await writeFile(
-    resolve(cwd, "tsconfig.json"),
-    JSON.stringify({
-      compilerOptions: { module: "nodenext", noEmit: true, strict: true },
-      include: ["src"],
-    }),
-  );
-  for (const [name, text] of Object.entries(files)) {
-    await mkdir(resolve(cwd, name, ".."), { recursive: true });
-    await writeFile(resolve(cwd, name), text);
-  }
-  await writeFile(
-    resolve(agentDirectory, "settings.json"),
-    JSON.stringify({
-      lsp: {
-        timeouts: { initializeMs: 45_000, requestMs: 8_000, diagnosticsMs: 15_000 },
-        servers: {
-          typescript: {
-            command: resolve(repositoryRoot, "node_modules/.bin/tsc"),
-            args: ["--lsp", "--stdio"],
-            rootMarkers: ["tsconfig.json"],
-            languages: [{ extensions: [".ts"], languageId: "typescript" }],
-          },
+): Promise<ExtensionSession> {
+  return startExtensionSession({
+    files: {
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: { module: "nodenext", noEmit: true, strict: true },
+        include: ["src"],
+      }),
+      ...files,
+    },
+    lspSettings: {
+      timeouts: { initializeMs: 45_000, requestMs: 8_000, diagnosticsMs: 15_000 },
+      servers: {
+        typescript: {
+          command: resolve(repositoryRoot, "node_modules/.bin/tsc"),
+          args: ["--lsp", "--stdio"],
+          rootMarkers: ["tsconfig.json"],
+          languages: [{ extensions: [".ts"], languageId: "typescript" }],
         },
       },
-    }),
-  );
-
-  const handlers = new Map<string, Handler>();
-  const pi = {
-    registerTool: () => undefined,
-    registerCommand: () => undefined,
-    registerEntryRenderer: () => undefined,
-    appendEntry: () => undefined,
-    on: (name: string, handler: Handler) => void handlers.set(name, handler),
-  };
-  await createPiLspExtension({ getAgentDirectory: () => agentDirectory })(
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The extension registers only the members above on this test double.
-    pi as unknown as ExtensionAPI,
-  );
-  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The extension reads only these members from the context.
-  const context = {
-    cwd,
-    signal: undefined,
-    isProjectTrusted: () => false,
-    ui: { notify: () => undefined },
-    sessionManager: { getSessionDir: () => agentDirectory, getBranch: () => [] },
-  } as unknown as ExtensionContext;
-  const emit = async (event: HarnessEvent): Promise<ToolResultEventResult | undefined> =>
-    await handlers.get(event.type)?.(event, context);
-  await emit({ type: "session_start", reason: "startup" });
-  shutdowns.push(async () => await emit({ type: "session_shutdown", reason: "quit" }));
-
-  return {
-    cwd,
-    async edit({ toolCallId, path, oldText, newText }) {
-      const filePath = resolve(cwd, path);
-      const input = { path: filePath, edits: [{ oldText, newText }] };
-      await emit({ type: "tool_call", toolCallId, toolName: "edit", input });
-      await writeFile(filePath, (await readFile(filePath, "utf8")).replace(oldText, newText));
-      const result = await emit({
-        type: "tool_result",
-        toolCallId,
-        toolName: "edit",
-        input,
-        content: [{ type: "text", text: `Edited ${path}` }],
-        details: undefined,
-        isError: false,
-      });
-      return (result?.content ?? [])
-        .map((part) => (part.type === "text" ? part.text : ""))
-        .join("");
     },
-  };
+  });
 }
 
-afterEach(async () => {
-  await Promise.all(shutdowns.splice(0).map((shutdown) => shutdown()));
-  await Promise.all(
-    temporaryDirectories
-      .splice(0)
-      .map((directory) => rm(directory, { force: true, recursive: true })),
-  );
-});
+afterEach(closeExtensionSessions);
 
 const todoListSource = [
   "export function createEmptyTodoState(): number[] {",
@@ -255,4 +162,30 @@ describe("dependent-file Post-edit Diagnostics with the real tsc --lsp server", 
     expect(reportedFiles).not.toContain("src/dependent-22.ts");
     expect(section).toContain("3 dependent files not checked");
   }, 120_000);
+
+  test("does not report a dependent's existing error as new when a sibling edit in the same batch shifts it", async () => {
+    const session = await startRealTypeScriptSession({
+      "src/x.ts": "export function x(): number {\n  return 1;\n}\n",
+      "src/y.ts": ['import { x } from "./x.js";', "export const broken: string = x();", ""].join(
+        "\n",
+      ),
+    });
+    // Pi 1.1.0 runs a batch's `tool_call`s first, then executes the calls in parallel.
+    const bodyEdit = await session.beginEdit({
+      toolCallId: "body",
+      path: "src/x.ts",
+      oldText: "return 1;",
+      newText: "return 2;",
+    });
+    const shiftEdit = await session.beginEdit({
+      toolCallId: "shift",
+      path: "src/y.ts",
+      oldText: 'import { x } from "./x.js";',
+      newText: '// a new first line\nimport { x } from "./x.js";',
+    });
+    await shiftEdit.finish();
+    const text = await bodyEdit.finish();
+
+    expect(text).toBe("Edited src/x.ts\n\nLSP diagnostics: no diagnostics");
+  }, 90_000);
 });

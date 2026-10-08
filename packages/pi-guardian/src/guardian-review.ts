@@ -18,6 +18,7 @@ import {
   type RiskCategory,
 } from "./guardian-assessment.js";
 import type { Classification, EscalationTrigger, ReviewUsage } from "./guardian-audit.js";
+import { evidenceCacheBreakpoint } from "./guardian-cache.js";
 import { errorMessage } from "./guardian-notify.js";
 import type { GuardianThinkingLevel } from "./guardian-settings.js";
 
@@ -104,6 +105,8 @@ export interface GuardianReviewInput {
   model: Model<Api>;
   thinkingLevel: GuardianThinkingLevel;
   context: Context;
+  /** How many of the request's leading text blocks are evidence, which a cache breakpoint ends. */
+  evidenceBlocks: number;
   timeoutMs: number;
   /** The Guarded Agent's turn signal; aborting it aborts the review. */
   signal: AbortSignal | undefined;
@@ -266,7 +269,11 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
   const level = input.model.reasoning
     ? clampThinkingLevel(input.model, input.thinkingLevel)
     : "off";
-  const options: ModelsSimpleStreamOptions = { signal, sessionId: input.sessionId };
+  const options: ModelsSimpleStreamOptions = {
+    signal,
+    sessionId: input.sessionId,
+    onPayload: evidenceCacheBreakpoint(input.evidenceBlocks),
+  };
   if (level !== "off") options.reasoning = level;
   let context = input.context;
   const assessed = (assessment: Assessment): ReviewResult => ({

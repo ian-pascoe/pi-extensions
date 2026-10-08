@@ -31,6 +31,7 @@ import {
   touchedDeclarationPositions,
   touchedLinesOfEdit,
   type DependentBaseline,
+  type FileTexts,
   type TouchedLines,
 } from "./lsp-dependent-diagnostics.js";
 import {
@@ -80,6 +81,8 @@ import { resolveLspSettings, type LspServerEnablement } from "./pi-lsp-settings.
 export interface PiLspLifecycleEffects {
   /** Return Pi's trust-aware global settings directory. */
   getAgentDirectory(): string;
+  /** Time one edit call's pre-edit dependent scan may take; defaults to 20 seconds. */
+  readonly dependentScanBudgetMs?: number;
 }
 
 interface ActivePiLspSession {
@@ -155,7 +158,8 @@ function branchLspToolResultDetails(
   return [...records.values()];
 }
 
-function normalizedDiagnosticOutcome(
+/** Normalize one protocol Diagnostic; a missing severity is an Error, so default hint filtering keeps it. */
+export function normalizedDiagnosticOutcome(
   diagnostic: Diagnostic,
   serverId: string,
   filePath: string,
@@ -174,7 +178,8 @@ function normalizedDiagnosticOutcome(
       path: filePath,
       line: position.line,
       character: position.character,
-      severity: diagnostic.severity ?? 4,
+      // LSP leaves a missing severity to the client; treat it as an Error, like vscode-languageclient.
+      severity: diagnostic.severity ?? 1,
       message: Value.Check(Type.String(), diagnostic.message)
         ? diagnostic.message
         : Value.Parse(DiagnosticMarkupContentSchema, diagnostic.message).value,
@@ -301,9 +306,12 @@ async function scanDependentFiles(
     undefined,
     {
       method: ReferencesRequest.method,
+      // The dependents' diagnostics are pulled, so a server without document diagnostics (one that
+      // only pushes) would pay for the scan and report nothing.
       isSupportedBy: (client) =>
         client.hasCapability(ReferencesRequest.method) &&
-        client.hasCapability(DocumentSymbolRequest.method),
+        client.hasCapability(DocumentSymbolRequest.method) &&
+        client.hasCapability(DocumentDiagnosticRequest.method),
     },
     async (client, route): Promise<readonly string[]> => {
       const document = await client.synchronizeDocument(target.path, route.language.languageId);
@@ -327,15 +335,49 @@ async function scanDependentFiles(
   const candidates = [...new Set(read.successes.flatMap(({ value }) => value))];
   if (candidates.length === 0) return undefined;
   const { files, omittedFiles } = capDependentFiles(candidates);
-  const outcomes = await new ManagerPostEditDiagnosticsRunner(session, signal).run(
-    files.map((path) => ({ path })),
+  const { outcomes, texts } = await pullDependentFiles(
+    new ManagerPostEditDiagnosticsRunner(session, signal),
+    files,
   );
-  const { keys, unchecked } = groupErrorKeys(files, outcomes);
+  const { keys, unchecked } = groupErrorKeys(files, outcomes, texts);
   return {
     files: files.filter((file) => keys.has(file)),
     omittedFiles: omittedFiles + unchecked,
     errorKeys: keys,
+    scanTimedOut: false,
   };
+}
+
+/** The result of pulling diagnostics for dependent files, with the text each error's line is read from. */
+interface DependentPull {
+  readonly outcomes: readonly PostEditDiagnosticOutcome[];
+  readonly texts: FileTexts;
+}
+
+/** Pull the dependent files' diagnostics concurrently, then read the text of each file with errors. */
+async function pullDependentFiles(
+  runner: ManagerPostEditDiagnosticsRunner,
+  files: readonly string[],
+): Promise<DependentPull> {
+  const outcomes = (await Promise.all(files.map((path) => runner.run([{ path }])))).flat();
+  const withErrors = new Set(
+    outcomes.flatMap((outcome) =>
+      outcome.kind === "diagnostic" && outcome.diagnostic.severity === 1
+        ? [outcome.diagnostic.path]
+        : [],
+    ),
+  );
+  const texts = new Map<string, string>();
+  await Promise.all(
+    [...withErrors].map(async (path) => {
+      try {
+        texts.set(path, await readFile(path, "utf8"));
+      } catch {
+        // An unreadable file keys its errors by message alone.
+      }
+    }),
+  );
+  return { outcomes, texts };
 }
 
 async function appendSessionPostEditDiagnostics(
@@ -355,8 +397,8 @@ async function appendSessionPostEditDiagnostics(
               paths.map(({ path }) => resolve(session.cwd, normalizeLspFilePath(path))),
             );
             const files = baseline.files.filter((file) => !changed.has(file));
-            const outcomes = await runner.run(files.map((path) => ({ path })));
-            return newDependentErrors(baseline, files, outcomes);
+            const { outcomes, texts } = await pullDependentFiles(runner, files);
+            return newDependentErrors(baseline, files, outcomes, texts);
           },
   });
   if (patch === undefined) return undefined;
@@ -583,29 +625,42 @@ export class PiLspLifecycleController {
     return this.session;
   }
 
-  /** Scan for dependent files before a native edit runs. It never blocks the call and gives up at its time budget. */
+  /**
+   * Scan for dependent files before a native edit runs. It never blocks or alters the call, and
+   * gives up at its time budget, which the result then reports.
+   */
   private async handleToolCall(
     event: ToolCallEvent,
     context: ExtensionContext,
   ): Promise<undefined> {
     const session = this.session;
-    if (session === undefined) return undefined;
-    const budget = AbortSignal.timeout(DEPENDENT_SCAN_BUDGET_MS);
-    const signal =
-      context.signal === undefined ? budget : AbortSignal.any([context.signal, budget]);
+    if (session === undefined || (event.toolName !== "edit" && event.toolName !== "write")) {
+      return undefined;
+    }
     try {
       const target = await dependentScanTarget(event, session.cwd);
       if (target === undefined) return undefined;
+      const budget = AbortSignal.timeout(
+        this.effects.dependentScanBudgetMs ?? DEPENDENT_SCAN_BUDGET_MS,
+      );
+      const signal =
+        context.signal === undefined ? budget : AbortSignal.any([context.signal, budget]);
       const scan = scanDependentFiles(session, target, signal);
-      // A scan that outlives its budget keeps running but is forgotten; a late answer is dropped.
-      const baseline = await Promise.race([
-        scan,
-        new Promise<undefined>((resolveTimeout) =>
-          budget.addEventListener("abort", () => resolveTimeout(undefined), { once: true }),
-        ),
-      ]);
+      const timedOut = new Promise<"timed-out">((resolveTimeout) =>
+        budget.addEventListener("abort", () => resolveTimeout("timed-out"), { once: true }),
+      );
+      // A scan that outlives its budget is aborted; whatever it settles with later is dropped.
       scan.catch(() => undefined);
-      if (baseline !== undefined && this.session === session) {
+      const baseline = await Promise.race([scan, timedOut]);
+      if (this.session !== session) return undefined;
+      if (baseline === "timed-out") {
+        this.dependentBaselines.set(event.toolCallId, {
+          files: [],
+          omittedFiles: 0,
+          errorKeys: new Map(),
+          scanTimedOut: true,
+        });
+      } else if (baseline !== undefined) {
         this.dependentBaselines.set(event.toolCallId, baseline);
       }
     } catch {

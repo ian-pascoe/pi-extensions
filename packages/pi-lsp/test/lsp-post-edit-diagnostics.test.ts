@@ -399,3 +399,14 @@ test("leaves hints out of the persisted outcomes by default", async () => {
   );
   expect(result?.outcomes).toEqual([{ kind: "no_diagnostics", path: "/work/a.ts" }]);
 });
+
+test("reports a hint-only file as clean beside another server's timeout", async () => {
+  await expect(
+    appendedText([
+      diagnosticOutcome("/work/a.ts", 4, "hint"),
+      { kind: "timeout", path: "/work/a.ts", serverId: "slow" },
+    ]),
+  ).resolves.toBe(
+    "\n\nLSP diagnostics\na.ts: diagnostics timeout (slow)\nno diagnostics: a.ts\n1 hint omitted",
+  );
+});

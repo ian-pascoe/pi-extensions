@@ -8,7 +8,7 @@ import type { PostEditDiagnosticOutcome } from "./lsp-post-edit-diagnostics.js";
 export const MAX_DEPENDENT_FILES = 20;
 /** Most touched declarations whose references one edit asks for. */
 export const MAX_TOUCHED_DECLARATIONS = 10;
-/** Time the pre-edit dependent scan may delay an edit before it is abandoned. */
+/** Time the pre-edit dependent scan may delay one edit call before it is abandoned. */
 export const DEPENDENT_SCAN_BUDGET_MS = 20_000;
 
 const ERROR_SEVERITY = 1;
@@ -33,12 +33,16 @@ export interface DependentBaseline {
   readonly omittedFiles: number;
   /** Error keys each checked dependent file already had before the edit. */
   readonly errorKeys: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The scan ran out of its time budget, so the dependents are unknown rather than absent. */
+  readonly scanTimedOut: boolean;
 }
 
 /** New errors an edit caused in dependent files, and how many dependent files went unchecked. */
 export interface DependentDiagnosticsReport {
   readonly outcomes: readonly PostEditDiagnosticOutcome[];
   readonly omittedFiles: number;
+  /** The pre-edit scan ran out of its time budget, so dependent files could not be checked. */
+  readonly scanTimedOut: boolean;
 }
 
 const PositionSchema = Type.Object({ line: Type.Number(), character: Type.Number() });
@@ -160,13 +164,30 @@ export function capDependentFiles(paths: readonly string[]): CappedDependentFile
   };
 }
 
-/** Identity of one error finding, stable across the edit because dependent files are not edited. */
-export function errorKey(outcome: PostEditDiagnosticOutcome): string | undefined {
+/** The text of each file a finding lies in, by absolute path, read after the pull that found it. */
+export type FileTexts = ReadonlyMap<string, string>;
+
+/** The trimmed text of a one-based line, or an empty string when the file or line is unknown. */
+function trimmedLineText(texts: FileTexts, path: string, line: number): string {
+  return (
+    texts
+      .get(path)
+      ?.split(/\r\n|\r|\n/u)
+      [line - 1]?.trim() ?? ""
+  );
+}
+
+/**
+ * Identity of one error finding: server, message, and the trimmed text of the line it points at.
+ * It names no position, so it survives edits that shift the line, such as a sibling edit in the
+ * same parallel tool batch adding a line above it.
+ */
+export function errorKey(outcome: PostEditDiagnosticOutcome, texts: FileTexts): string | undefined {
   if (outcome.kind !== "diagnostic" || outcome.diagnostic.severity !== ERROR_SEVERITY) {
     return undefined;
   }
-  const { serverId, line, character, message } = outcome.diagnostic;
-  return `${serverId}\u0000${line}:${character}\u0000${message}`;
+  const { serverId, path, line, message } = outcome.diagnostic;
+  return `${serverId}\u0000${message}\u0000${trimmedLineText(texts, path, line)}`;
 }
 
 /** Error keys per dependent file, and the count of files whose pull failed. */
@@ -182,6 +203,7 @@ export interface GroupedErrorKeys {
 export function groupErrorKeys(
   paths: readonly string[],
   outcomes: readonly PostEditDiagnosticOutcome[],
+  texts: FileTexts,
 ): GroupedErrorKeys {
   const keys = new Map<string, Set<string>>();
   const failed = new Set<string>();
@@ -190,7 +212,7 @@ export function groupErrorKeys(
     if (outcome.kind === "timeout" || outcome.kind === "unavailable_server") {
       failed.add(outcome.path);
     } else if (outcome.kind === "diagnostic") {
-      const key = errorKey(outcome);
+      const key = errorKey(outcome, texts);
       if (key !== undefined) keys.get(outcome.diagnostic.path)?.add(key);
     }
   }
@@ -198,20 +220,29 @@ export function groupErrorKeys(
   return { keys, unchecked: failed.size };
 }
 
-/** The errors in `outcomes` that the baseline did not already have, and the files that went unchecked. */
+/** The errors in `outcomes` that the baseline did not already have, marked as dependent-file findings. */
 export function newDependentErrors(
   baseline: DependentBaseline,
   paths: readonly string[],
   outcomes: readonly PostEditDiagnosticOutcome[],
+  texts: FileTexts,
 ): DependentDiagnosticsReport {
-  const { unchecked } = groupErrorKeys(paths, outcomes);
-  const fresh = outcomes.filter((outcome) => {
-    const key = errorKey(outcome);
-    return (
-      key !== undefined &&
-      outcome.kind === "diagnostic" &&
-      baseline.errorKeys.get(outcome.diagnostic.path)?.has(key) !== true
-    );
-  });
-  return { outcomes: fresh, omittedFiles: baseline.omittedFiles + unchecked };
+  const { unchecked } = groupErrorKeys(paths, outcomes, texts);
+  const fresh: PostEditDiagnosticOutcome[] = [];
+  for (const outcome of outcomes) {
+    const key = errorKey(outcome, texts);
+    if (
+      key === undefined ||
+      outcome.kind !== "diagnostic" ||
+      baseline.errorKeys.get(outcome.diagnostic.path)?.has(key) === true
+    ) {
+      continue;
+    }
+    fresh.push({ kind: "diagnostic", diagnostic: { ...outcome.diagnostic, dependent: true } });
+  }
+  return {
+    outcomes: fresh,
+    omittedFiles: baseline.omittedFiles + unchecked,
+    scanTimedOut: baseline.scanTimedOut,
+  };
 }

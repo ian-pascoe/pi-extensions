@@ -105,6 +105,8 @@ function validatePackedFileList(packageName, files) {
       "dist/layered-settings.js",
       "dist/evidence.d.ts",
       "dist/evidence.js",
+      "dist/token-calibration.d.ts",
+      "dist/token-calibration.js",
       "dist/settings-menu.d.ts",
       "dist/settings-menu.js",
       "dist/settings-command.d.ts",
@@ -191,6 +193,9 @@ function validatePackedManifest(sourceManifest, packedManifest, piUtilsVersion) 
         packedManifest.exports?.["./layered-settings"]?.types === "./dist/layered-settings.d.ts" &&
         packedManifest.exports?.["./evidence"]?.import === "./dist/evidence.js" &&
         packedManifest.exports?.["./evidence"]?.types === "./dist/evidence.d.ts" &&
+        packedManifest.exports?.["./token-calibration"]?.import === "./dist/token-calibration.js" &&
+        packedManifest.exports?.["./token-calibration"]?.types ===
+          "./dist/token-calibration.d.ts" &&
         packedManifest.exports?.["./settings-menu"]?.import === "./dist/settings-menu.js" &&
         packedManifest.exports?.["./settings-menu"]?.types === "./dist/settings-menu.d.ts" &&
         packedManifest.exports?.["./settings-command"]?.import === "./dist/settings-command.js" &&

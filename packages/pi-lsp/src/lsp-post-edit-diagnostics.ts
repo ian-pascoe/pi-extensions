@@ -53,6 +53,8 @@ export const PostEditLspDiagnosticSchema = Type.Object(
     character: Type.Integer({ minimum: 1 }),
     severity: Type.Number(),
     message: Type.String(),
+    /** Set on an error an edit caused in a dependent file rather than in a changed file. */
+    dependent: Type.Optional(Type.Literal(true)),
   },
   { additionalProperties: false },
 );
@@ -322,8 +324,9 @@ export function formatDependentDiagnostics(
     .filter((outcome) => outcome.kind === "diagnostic")
     .toSorted((left, right) => compareOutcomes(left, right, cwd))
     .map((outcome) => formatOutcome(outcome, cwd));
-  const unchecked =
-    report.omittedFiles > 0
+  const unchecked = report.scanTimedOut
+    ? ["dependent files not checked: the scan ran out of time"]
+    : report.omittedFiles > 0
       ? [
           `${report.omittedFiles} dependent ${report.omittedFiles === 1 ? "file" : "files"} not checked`,
         ]

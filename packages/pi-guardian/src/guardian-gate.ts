@@ -29,7 +29,7 @@ import {
   type EscalationRecord,
   type ReviewEntry,
 } from "./guardian-audit.js";
-import { tokenFactor } from "./guardian-calibration.js";
+import { tokenFactor } from "@ian-pascoe/pi-utils/token-calibration";
 import {
   classifierFailure,
   classifierQuestions,
@@ -217,7 +217,10 @@ interface ReviewInputs {
 /** A language model's review request and Guardian's chars/4 estimate of its size. */
 interface ModelRequest {
   systemPrompt: string;
+  /** The evidence blocks, then the Reviewed Call. */
   blocks: string[];
+  /** How many of `blocks` are evidence; the cache breakpoint follows the last. */
+  evidenceBlocks: number;
   estimated: number;
 }
 
@@ -467,6 +470,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         model: resolved.model,
         thinkingLevel: config.thinkingLevel,
         context: reviewRequest(request.systemPrompt, request.blocks),
+        evidenceBlocks: request.evidenceBlocks,
         timeoutMs: config.reviewTimeoutMs,
         signal,
         sessionId: inputs.sessionId,
@@ -524,7 +528,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     );
     const blocks = [...evidence, inputs.reviewed];
     const estimated = textTokens(systemPrompt) + blocks.reduce((sum, b) => sum + textTokens(b), 0);
-    return { systemPrompt, blocks, estimated };
+    return { systemPrompt, blocks, evidenceBlocks: evidence.length, estimated };
   }
 
   /**
@@ -627,6 +631,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       model: resolved.model,
       thinkingLevel: escalationThinkingLevel(config),
       context: reviewRequest(request.systemPrompt, blocks),
+      evidenceBlocks: request.evidenceBlocks,
       timeoutMs: config.reviewTimeoutMs,
       signal,
       sessionId: inputs.sessionId,
