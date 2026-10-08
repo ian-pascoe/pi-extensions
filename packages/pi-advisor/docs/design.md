@@ -33,22 +33,24 @@ Provide commands for on/off/inherit, scoped configuration, and status. In the in
 
 Changes affect the current watched hierarchy immediately when its effective configuration changes. Other Pi processes pick up persisted global/project changes on startup or reload; there is no cross-process remote-control mechanism.
 
-| Option                         | Default                                      |
-| ------------------------------ | -------------------------------------------- |
-| Enabled                        | `false` globally                             |
-| Watched sessions               | Main only                                    |
-| Reviewer instructions          | Supplied default Advisor Prompt; replaceable |
-| Advisor model                  | Inherit the observed agent's model           |
-| Advisor thinking level         | `high`, independent of the observed agent    |
-| Allowed tools (`allowedTools`) | `read`, `grep`, `find`, `ls`                 |
-| Catch-up threshold             | `3`; any positive integer or `off`           |
-| Review Cadence (`reviewEvery`) | `turn`; `request` or any positive integer N  |
-| Advisor Session size cap       | `auto` (½ the Advisor window, at most 100k)  |
-| Per-review deadline            | 120 seconds; configurable                    |
-| Investigative tool-call limit  | 8 per Review; configurable                   |
-| Findings per Review            | 4; configurable from 1 through 32            |
-| Nits per request               | 3; any non-negative integer                  |
-| Automatic Corrective Turns     | 1 per observed request/task; configurable    |
+| Option                                    | Default                                      |
+| ----------------------------------------- | -------------------------------------------- |
+| Enabled                                   | `false` globally                             |
+| Watched sessions                          | Main only                                    |
+| Reviewer instructions                     | Supplied default Advisor Prompt; replaceable |
+| Advisor model                             | Inherit the observed agent's model           |
+| Advisor thinking level                    | `high`, independent of the observed agent    |
+| Allowed tools (`allowedTools`)            | `read`, `grep`, `find`, `ls`                 |
+| Catch-up threshold                        | `3`; any positive integer or `off`           |
+| Review Cadence (`reviewEvery`)            | `turn`; `request` or any positive integer N  |
+| Advisor Session size cap                  | `auto` (½ the Advisor window, at most 100k)  |
+| OpenAI cache retention                    | 24 hours, Advisor requests only              |
+| Anthropic 1h cache (`anthropicLongCache`) | `false`                                      |
+| Per-review deadline                       | 120 seconds; configurable                    |
+| Investigative tool-call limit             | 8 per Review; configurable                   |
+| Findings per Review                       | 4; configurable from 1 through 32            |
+| Nits per request                          | 3; any non-negative integer                  |
+| Automatic Corrective Turns                | 1 per observed request/task; configurable    |
 
 Model and thinking overrides are independent. The model follows the observed agent unless set. The thinking level never does: absent any configured layer it is a fixed `high`, because finding quality on review work justifies it while reasoning tokens bill at the output price, so inheriting `xhigh`/`max` mostly adds cost. The default is a maintainer decision, not the result of a finding-quality evaluation. Independence also keeps the observation boundary to the session identity and observed model: an observed thinking-level change neither discards the Advisor Session nor invalidates an in-flight Review. Explicit `thinkingLevel` values and global/project/session layering are unchanged. Do not silently select another provider or model when resolution or inference fails.
 
@@ -95,6 +97,22 @@ Native compaction preparation may require additional model turns. A saved Handof
 Private context tools, when granted, do not count against the eight-call investigation limit. The overall Review deadline still bounds investigation and context maintenance together.
 
 Persist the native Advisor journal; do not create an additional transcript-dump format, memory database, or temporary-journal deletion policy.
+
+### Prompt cache retention
+
+A Review after an idle gap longer than the provider's cache lifetime (five minutes by default) re-reads the whole Advisor Session uncached; measured full misses of 190–225k tokens followed gaps of 439 s, 1,105 s, and 39,180 s. Advisor therefore asks for longer retention on its own requests, as a `cacheRetention: "long"` stream option set by wrapping the Advisor Session agent's `streamFunction` (the same public seam the observer uses on the observed agent). Pi's adapters then emit the field each API accepts, and `model.promptCache` and Pi's cache warming see the real lifetime. Alternatives rejected: the process-wide `PI_CACHE_RETENTION` changes the observed agent's requests; a `before_provider_request` handler sees only the payload, not the model, so it would duplicate each adapter's field shapes. Pi's native compaction of the Advisor Session reuses that stream function and passes `cacheRetention: "none"` on its summary call, so the wrapper keeps any retention the caller chose and only fills in an unset one; a summary is a one-off request that must not write a long-lived cache entry (up to the whole Advisor Session, ~100k tokens by default, at 2× price on Anthropic).
+
+- `openai` provider: always `long`, which Pi 1.1.0 maps to `prompt_cache_retention: "24h"` (`prompt_cache_options: { ttl: "30m" }` on models with explicit cache modes; models whose compat disables long retention get nothing). OpenAI charges nothing extra.
+- `anthropic` provider: `long` only when `anthropicLongCache` is set (default off), which adds `ttl: "1h"` to every cache breakpoint of Advisor requests. Writes cost 2× instead of 1.25×, a loss for Advisor Sessions reviewed more often than every five minutes.
+- `openai-codex`: no change. Pi 1.1.0's Codex adapter builds its body without a retention field (only `cacheRetention: "none"` is honored) and ChatGPT sign-in rejects `prompt_cache_retention` on the OpenAI adapter, so a field would be guesswork against an undocumented backend.
+
+Other providers keep their default. The setting is read when the Advisor Session is created; a configuration change already rebuilds the Advisor Session.
+
+#### Second-Review cache miss on `openai-codex`
+
+Older Codex Advisor sessions missed the cache on the second request of nearly every new Advisor Session (all 28 sessions with at least three requests; 29 of 37 warm misses in the original count), after gaps as short as 5 seconds, so it is not a lifetime effect. An external `codex-cache-guard` extension's entries in those session files show the input prefix identical (`commonItems` equal `previousItems`) but the request settings (the body minus `input`) differing between the first and second request and identical from the second onward, and a few misses read only the ~10.6k-token system prompt and tools shared with other sessions: the divergence sits at the start of the request, before any input. Every one of those sessions dates from 2026-09-14/15, before Advisor stopped carrying the skills catalogue (#343), before it kept script-only tool grants undeclared (#180), and on Pi 0.85 (no transcript system messages); every Anthropic session since 2026-10-06 shows no second-request miss.
+
+Current code does not reproduce it. `test/cache-retention.test.ts` builds the real `openai-codex-responses` request body through Pi 1.1.0's adapter for each Advisor request of a new Advisor Session, including the `before_provider_request` chain, and requires that every field other than `input` (`instructions`, `tools`, `reasoning`, `include`, `text`, `prompt_cache_key`) be identical across requests and that each request's `input` extend the previous one byte for byte. The first Review's reasoning items, which the real provider adds and a scripted answer does not, are appended after the shared prefix and cannot change it. Conclusion: the evidence points to a request-setting difference on the first request in the code that predates those fixes (our side, not the provider), which current code does not exhibit; the exact field was never captured, and there is no Codex data from after the fixes to confirm it. To confirm, run a new Codex Advisor Session and compare `cacheRead` on its second request (`/advisor status` shows per-Review cost); a miss there with identical settings would be provider-side. The test forces `transport: "sse"`; Pi's WebSocket transport sends only a delta on a reused connection and decides that by the same every-field-but-`input` comparison, so the invariant covers it too.
 
 ## Observed context and lifecycle
 
