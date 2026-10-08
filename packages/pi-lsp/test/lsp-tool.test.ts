@@ -33,6 +33,7 @@ import { formatLspToolValue } from "../src/lsp-tool-output.js";
 import {
   LSP_OPERATION_NAMES,
   LspApplyOutputSchema,
+  LspPlainReadOutputSchema,
   LspPositionReadOutputSchema,
   LspReadOutputSchema,
   LspCodeActionsOutputSchema,
@@ -356,13 +357,15 @@ describe("registered LSP tool", () => {
     for (const tool of registrar.tools) {
       expect(tool.exposure === "direct" || tool.exposure === "codemode", tool.name).toBe(true);
       expect(tool.namespace, tool.name).toBe(LSP_TOOL_NAMESPACE);
-      expect(tool.promptGuidelines, tool.name).toEqual([LSP_TOOL_GUIDELINE]);
+      expect(tool.promptGuidelines, tool.name).toEqual(
+        tool.exposure === "direct" ? [LSP_TOOL_GUIDELINE] : [],
+      );
       expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
       expect(tool.hasPrepareArguments, tool.name).toBe(tool.name === "lsp_apply");
       // Shared rules live in the namespace instructions and one deduplicated guideline.
       expect(tool.description, tool.name).not.toMatch(/one-based|Result Spill|leading @/u);
     }
-    expect(LSP_TOOL_NAMESPACE.description?.length ?? 0).toBeLessThan(80);
+    expect(LSP_TOOL_NAMESPACE.description).toContain(LSP_TOOL_GUIDELINE);
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("one-based");
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("Result Spill");
     expect(LSP_TOOL_NAMESPACE.instructions).toContain("Paths may start with @");
@@ -413,7 +416,7 @@ describe("registered LSP tool", () => {
       LspPositionReadOutputSchema,
     );
     expect(registrar.tools.find(({ name }) => name === "lsp_diagnostics")?.outputSchema).toBe(
-      LspReadOutputSchema,
+      LspPlainReadOutputSchema,
     );
     expect(registrar.tools.find(({ name }) => name === "lsp_apply")?.outputSchema).toBe(
       LspApplyOutputSchema,
