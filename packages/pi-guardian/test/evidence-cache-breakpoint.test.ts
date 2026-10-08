@@ -2,7 +2,11 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { Type, type Static, type TSchema } from "typebox";
 import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
-import { evidenceCacheBreakpoint } from "../src/guardian-cache.js";
+import {
+  composePayloadHooks,
+  evidenceCacheBreakpoint,
+  type PayloadHook,
+} from "../src/guardian-cache.js";
 import {
   assessment,
   confirmedRejection,
@@ -13,6 +17,7 @@ import {
 } from "./fixtures/guardian-harness.js";
 
 const anthropic = "guardian-anthropic/claude-haiku-4-5";
+const managedEffort = "guardian-anthropic/claude-haiku-5-5";
 const bedrock = "guardian-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0";
 
 const CacheMarker = Type.Object({ type: Type.String(), ttl: Type.Optional(Type.String()) });
@@ -116,6 +121,23 @@ describe("Anthropic evidence cache breakpoint", () => {
     expect(prefix(second, firstEvidence)).toBe(prefix(first, firstEvidence));
     // The previous breakpoint carries no marker now; only the new one does.
     expect(second.messages[0]?.content[firstEvidence - 1]?.cache_control).toBeUndefined();
+  });
+
+  it("marks a model whose adapter appends empty system messages after the request", async () => {
+    const harness = await twoReviews(managedEffort);
+    const [first, second] = harness.reviews.map((review) => wire(AnthropicBody, review));
+    if (!first || !second) throw new Error("Missing reviews");
+    // Managed effort ends the request with empty `system` messages, not the Reviewed Call.
+    expect(first.messages.at(-1)).toMatchObject({ role: "system", content: [] });
+    const evidence = (body: AnthropicBody) => (body.messages[0]?.content.length ?? 0) - 1;
+    expect(anthropicBreakpoints(first)).toEqual([evidence(first) - 1, evidence(first)]);
+    expect(anthropicBreakpoints(second)).toEqual([evidence(second) - 1, evidence(second)]);
+    const prefix = (body: AnthropicBody, blocks: number) =>
+      JSON.stringify({
+        system: body.system,
+        content: body.messages[0]?.content.slice(0, blocks).map(withoutMarker),
+      });
+    expect(prefix(second, evidence(first))).toBe(prefix(first, evidence(first)));
   });
 
   it("changes nothing else in the request", async () => {
@@ -264,6 +286,19 @@ describe("evidenceCacheBreakpoint", () => {
     }
   });
 
+  it("does nothing when the request already holds four breakpoints", async () => {
+    const body = payload({ type: "ephemeral" });
+    const marked = { type: "text", text: "s", cache_control: { type: "ephemeral" } };
+    const full = { ...body, system: [marked, marked], tools: [marked] };
+    const before = structuredClone(full);
+    expect(await evidenceCacheBreakpoint(1)(full, modelFor("anthropic-messages"))).toBeUndefined();
+    expect(full).toEqual(before);
+    // One fewer leaves room for it.
+    const room = { ...body, system: [marked, marked] };
+    expect(await evidenceCacheBreakpoint(1)(room, modelFor("anthropic-messages"))).toBe(room);
+    expect(room.messages[0]?.content[0]).toHaveProperty("cache_control");
+  });
+
   it("does nothing to other APIs or a payload shaped otherwise", async () => {
     const hook = evidenceCacheBreakpoint(1);
     for (const api of ["openai-completions", "google-generative-ai", "mistral-conversations"]) {
@@ -274,5 +309,24 @@ describe("evidenceCacheBreakpoint", () => {
     }
     for (const odd of [undefined, null, "text", {}, { messages: "x" }])
       expect(await hook(odd, modelFor("anthropic-messages"))).toBeUndefined();
+  });
+});
+
+describe("composePayloadHooks", () => {
+  // SAFETY: the hooks under test read nothing from the model.
+  const model = { api: "anthropic-messages" } as Model<Api>;
+  const append =
+    (mark: string): PayloadHook =>
+    (payload) =>
+      Array.isArray(payload) ? [...payload, mark] : undefined;
+
+  it("passes each hook the previous replacement", async () => {
+    expect(await composePayloadHooks(append("a"), append("b"))([], model)).toEqual(["a", "b"]);
+  });
+
+  it("returns undefined when no hook replaces the payload", async () => {
+    const keep: PayloadHook = () => undefined;
+    expect(await composePayloadHooks(keep, keep)([], model)).toBeUndefined();
+    expect(await composePayloadHooks()([], model)).toBeUndefined();
   });
 });

@@ -103,7 +103,7 @@ export interface HarnessOptions {
   /**
    * Build each Guardian request with Pi's real provider adapter for the model's API and capture
    * the body it would send (see `CapturedReview.wire`); the reply is still scripted. Also adds the
-   * reviewer models `guardian-anthropic/reviewer` and `guardian-bedrock/reviewer`.
+   * reviewer models `guardian-anthropic/claude-haiku-4-5`, `guardian-anthropic/claude-haiku-5-5` (managed effort), and `guardian-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0`.
    */
   wirePayloads?: boolean;
 }
@@ -365,6 +365,21 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
                       contextWindow: 200_000,
                       maxTokens: 2_048,
                     },
+                    // Managed effort: Pi's adapter appends empty system messages to the request.
+                    ...(api === "anthropic-messages"
+                      ? [
+                          {
+                            id: "claude-haiku-5-5",
+                            name: "managed effort reviewer",
+                            reasoning: false,
+                            input: ["text" as const],
+                            cost: offlineCost,
+                            contextWindow: 200_000,
+                            maxTokens: 2_048,
+                            compat: { supportsMidConvoEffort: true, forceAdaptiveThinking: true },
+                          },
+                        ]
+                      : []),
                   ],
                   streamSimple: reviewerStream,
                 });
