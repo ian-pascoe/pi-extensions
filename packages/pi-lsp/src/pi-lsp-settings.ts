@@ -112,6 +112,8 @@ export interface LspServerEnablement {
 /** Reports resolved trusted configuration, retaining valid entries when other settings are invalid. */
 export interface ResolvedLspSettings {
   readonly enablement: ReadonlyMap<string, LspServerEnablement>;
+  /** Whether Post-edit Diagnostics include hint-severity findings; false by default. */
+  readonly includeHintDiagnostics: boolean;
   readonly servers: ReadonlyMap<string, LspServerDefinition>;
   readonly timeouts: LspTimeouts;
   readonly warnings: readonly string[];
@@ -130,6 +132,7 @@ type PiSettingsDocument = ReturnType<SettingsManager["getGlobalSettings"]>;
 export type LspSettingsDocumentInput = PiSettingsDocument | { readonly lsp?: JsonValue };
 
 interface ParsedLspLayer {
+  readonly includeHintDiagnostics: boolean | undefined;
   readonly enablement: ReadonlyMap<string, LspServerEnablement>;
   readonly servers: ReadonlyMap<string, ParsedLspServerDefinition>;
   readonly timeouts: LspTimeoutsWire;
@@ -268,30 +271,52 @@ function readLspLayer(
   if (!Value.Check(SettingsDocumentSchema, settings)) {
     return {
       enablement: new Map(),
+      includeHintDiagnostics: undefined,
       servers: new Map(),
       timeouts: {},
       warnings: [`${scope} settings: expected a JSON object`],
     };
   }
   if (settings.lsp === undefined) {
-    return { enablement: new Map(), servers: new Map(), timeouts: {}, warnings: [] };
+    return {
+      enablement: new Map(),
+      includeHintDiagnostics: undefined,
+      servers: new Map(),
+      timeouts: {},
+      warnings: [],
+    };
   }
   if (!isJsonObject(settings.lsp)) {
     return {
       enablement: new Map(),
+      includeHintDiagnostics: undefined,
       servers: new Map(),
       timeouts: {},
       warnings: [`${scope} lsp: expected a JSON object`],
     };
   }
   const warnings = Object.keys(settings.lsp)
-    .filter((field) => field !== "servers" && field !== "timeouts" && field !== "enablement")
+    .filter(
+      (field) =>
+        field !== "servers" &&
+        field !== "timeouts" &&
+        field !== "enablement" &&
+        field !== "includeHintDiagnostics",
+    )
     .map((field) => `${scope} lsp.${field}: unknown field`);
+  const rawIncludeHints = settings.lsp.includeHintDiagnostics;
+  const includeHintDiagnostics = Value.Check(Type.Boolean(), rawIncludeHints)
+    ? rawIncludeHints
+    : undefined;
+  if (rawIncludeHints !== undefined && includeHintDiagnostics === undefined) {
+    warnings.push(`${scope} lsp.includeHintDiagnostics: expected a boolean`);
+  }
   const parsedServers = parseLspServerDefinitions(settings.lsp.servers, scope);
   const parsedTimeouts = parseLspTimeouts(settings.lsp.timeouts, scope);
   const parsedEnablement = parseLspEnablement(settings.lsp.enablement, scope);
   return {
     enablement: parsedEnablement.enablement,
+    includeHintDiagnostics,
     servers: parsedServers.servers,
     timeouts: parsedTimeouts.timeouts,
     warnings: [
@@ -389,6 +414,8 @@ export function resolveLspSettings(reader: LspSettingsReader): ResolvedLspSettin
   const projectLayer = readLspLayer(reader.getProjectSettings(), "project");
   return {
     enablement: new Map([...globalLayer.enablement, ...projectLayer.enablement]),
+    includeHintDiagnostics:
+      projectLayer.includeHintDiagnostics ?? globalLayer.includeHintDiagnostics ?? false,
     servers: mergeLspServers(globalLayer, projectLayer),
     timeouts: mergeLspTimeouts(globalLayer, projectLayer),
     warnings: [...globalLayer.warnings, ...projectLayer.warnings],

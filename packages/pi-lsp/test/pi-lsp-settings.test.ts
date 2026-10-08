@@ -132,6 +132,27 @@ describe("resolveLspSettings", () => {
     });
   });
 
+  test("omits hint diagnostics by default and lets project settings override global", async () => {
+    const defaults = await createSettingsReader({}, {}, true);
+    expect(resolveLspSettings(defaults).includeHintDiagnostics).toBe(false);
+    const global = await createSettingsReader({ lsp: { includeHintDiagnostics: true } }, {}, true);
+    expect(resolveLspSettings(global).includeHintDiagnostics).toBe(true);
+    const overridden = await createSettingsReader(
+      { lsp: { includeHintDiagnostics: true } },
+      { lsp: { includeHintDiagnostics: false } },
+      true,
+    );
+    expect(resolveLspSettings(overridden).includeHintDiagnostics).toBe(false);
+  });
+
+  test("quarantines a non-boolean includeHintDiagnostics", async () => {
+    const settings = resolveLspSettings(
+      await createSettingsReader({ lsp: { includeHintDiagnostics: "yes" } }, {}, true),
+    );
+    expect(settings.includeHintDiagnostics).toBe(false);
+    expect(settings.warnings).toEqual(["global lsp.includeHintDiagnostics: expected a boolean"]);
+  });
+
   test("replaces complete server definitions and removes inherited servers", async () => {
     const settingsManager = await createSettingsReader(
       {

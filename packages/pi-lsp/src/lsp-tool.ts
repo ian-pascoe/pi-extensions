@@ -130,6 +130,8 @@ import {
   LspApplyOutputSchema,
   LspCodeActionsOutputSchema,
   LspOperationParametersSchemas,
+  LspPlainReadOutputSchema,
+  LspPositionItemListOutputSchema,
   LspPositionReadOutputSchema,
   LspPreviewOutputSchema,
   LspReadOutputSchema,
@@ -2175,13 +2177,23 @@ const LSP_TOOL_RULES = [
 ];
 
 /**
+ * One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. It is
+ * the only channel through which direct tool callers see the shared rules, so it restates the
+ * coordinate and output rules a call or its result cannot be read correctly without.
+ */
+export const LSP_TOOL_GUIDELINE =
+  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters, in arguments and results, are one-based Unicode code points, and paths may start with @. Location results list one path:line:col line per location, with paths relative to the working directory. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
+
+/**
  * The `lsp` tool namespace: a short listing description and the shared rules for scripts. It is
  * built without a `ToolNamespace` annotation because Pi 0.99's type has no `instructions` field
  * and would reject it as an excess property; Pi 1.0+ reads it, and 0.99 ignores it.
  */
 export const LSP_TOOL_NAMESPACE = {
   name: "lsp",
-  description: "Language-server navigation, diagnostics, and previewed edits",
+  // Pi renders the namespace description once under `## lsp` in both codemode modes, so the shared
+  // rules stay visible when `codemode.mode: "only"` hides the direct declarations.
+  description: `Language-server navigation, diagnostics, and previewed edits\n${LSP_TOOL_GUIDELINE}`,
   instructions: LSP_TOOL_RULES.map((rule) => `- ${rule}`).join("\n"),
 };
 
@@ -2189,14 +2201,6 @@ export const LSP_TOOL_NAMESPACE = {
 const LSP_PROMPT_SNIPPET_TOOL: LspOperationName = "diagnostics";
 const LSP_PROMPT_SNIPPET =
   "Language-server diagnostics; the lsp_* tools also cover navigation and previewed edits";
-
-/**
- * One system-prompt guideline shared by every LSP tool; Pi deduplicates identical guidelines. It is
- * the only channel through which direct tool callers see the shared rules, so it restates the
- * coordinate and output rules a call or its result cannot be read correctly without.
- */
-export const LSP_TOOL_GUIDELINE =
-  "Use the lsp_* tools for semantic code navigation and diagnostics. Their lines and characters, in arguments and results, are one-based Unicode code points, and paths may start with @. Location results list one path:line:col line per location, with paths relative to the working directory. Output over 2,000 lines or 50 KB is cut, and the complete output is saved to the Result Spill file named in the result. lsp_rename, lsp_code_actions, and lsp_format_* only create Workspace Edit Previews; call lsp_apply with a preview_id to change files.";
 
 /** Operations declared to the model by default; every other operation is reachable through codemode (ADR-0003). */
 const DIRECT_LSP_OPERATIONS: ReadonlySet<LspOperationName> = new Set([
@@ -2324,9 +2328,11 @@ function lspToolOutputSchema(operation: LspOperationName): TSchema {
     case "apply":
       return LspApplyOutputSchema;
     default:
-      return isLspPositionReadOperation(operation)
-        ? LspPositionReadOutputSchema
-        : LspReadOutputSchema;
+      if (operation === "completion") return LspPositionItemListOutputSchema;
+      if (isLspPositionReadOperation(operation)) return LspPositionReadOutputSchema;
+      return operation === "document_symbols" || operation === "workspace_symbols"
+        ? LspReadOutputSchema
+        : LspPlainReadOutputSchema;
   }
 }
 
@@ -2361,7 +2367,11 @@ function buildLspToolDefinition<TOperation extends LspOperationName>(
     name: lspToolName(operation),
     label: `LSP ${humanizeLspOperation(operation)}`,
     description: LSP_TOOL_DESCRIPTIONS[operation],
-    promptGuidelines: [LSP_TOOL_GUIDELINE],
+    // Pi appends a listed tool's guidelines to its codemode declaration, so only direct tools carry
+    // the shared guideline (Pi dedupes it). Any subset of direct tools keeps it in the system prompt.
+    // Pi cannot read `codemode.mode` while extensions load, so in "only" mode the direct tools carry
+    // it too and fall behind in the listing; the namespace description still shows it once.
+    promptGuidelines: lspToolExposure(operation) === "direct" ? [LSP_TOOL_GUIDELINE] : [],
     parameters: LspOperationParametersSchemas[operation],
     outputSchema: lspToolOutputSchema(operation),
     exposure: lspToolExposure(operation),

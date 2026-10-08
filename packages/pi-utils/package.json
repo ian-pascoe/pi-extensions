@@ -35,6 +35,7 @@
     "./evidence": "./src/evidence.ts",
     "./null-optional-arguments": "./src/null-optional-arguments.ts",
     "./tool-testing": "./src/tool-testing.ts",
+    "./token-calibration": "./src/token-calibration.ts",
     "./settings-menu": "./src/settings-menu.ts",
     "./settings-command": "./src/settings-command.ts",
     "./ui": "./src/ui.ts",
@@ -71,6 +72,10 @@
       "./tool-testing": {
         "types": "./dist/tool-testing.d.ts",
         "import": "./dist/tool-testing.js"
+      },
+      "./token-calibration": {
+        "types": "./dist/token-calibration.d.ts",
+        "import": "./dist/token-calibration.js"
       },
       "./settings-menu": {
         "types": "./dist/settings-menu.d.ts",

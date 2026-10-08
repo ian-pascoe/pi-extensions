@@ -10,6 +10,7 @@ import {
   commandStarts,
   commandWords,
   looseCommands,
+  safeRedirect,
   splitSegments,
   type Segments,
 } from "./shell-syntax.js";
@@ -20,26 +21,44 @@ import {
 } from "./sensitive-paths.js";
 
 /**
- * Characters that make a command more than one simple command of literal words: pipes,
- * redirection, chaining, background jobs, subshells, grouping, command/process substitution,
- * variable/arithmetic/brace/history expansion, globbing, comments, and escapes.
+ * Characters that make a command more than one simple command of literal words when unquoted:
+ * pipes, redirection, chaining, background jobs, subshells, grouping, command/process
+ * substitution, variable/arithmetic/brace/history expansion, globbing, comments, and escapes.
  */
 const shellSyntax = /[|&;<>()$`\\*?[\]{}!#^]/;
-/** Tilde expansion: `~` starting a word or following `=` or `:` (`HEAD~1` stays literal). */
+/**
+ * Characters the shell still interprets inside double quotes: expansions, command substitution,
+ * escapes, and history expansion. Inside single quotes nothing is special.
+ */
+const doubleQuoteSyntax = /[$`\\!]/;
+/** Where an unquoted `~` is tilde expansion: starting a word or following `=` or `:`. */
+const tildePrefix = /[\s=:]/;
+/** Tilde expansion anywhere, quoted or not: `~` starting a word or following `=` or `:`. */
 const tildeExpansion = /(?:^|[\s=:])~/;
 // oxlint-disable-next-line no-control-regex -- Control characters (including newlines) are exactly what this rejects.
 const controlCharacters = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/;
 
-/** Split a command into literal words; `undefined` when it is not one simple command. */
-export function literalWords(command: string): string[] | undefined {
-  if (controlCharacters.test(command) || shellSyntax.test(command) || tildeExpansion.test(command))
-    return undefined;
+/**
+ * Split a command into literal words, reading quotes as bash and `sh` do: no unquoted shell
+ * syntax, and no `$`, backtick, `\`, or `!` inside double quotes; `undefined` when it is not one
+ * simple command. With `redirects`, the two stderr redirections {@link safeRedirect} names, which
+ * sit as words of their own, are dropped; any other redirection, or one glued to a word or
+ * quoted, is not literal words. Without `posixQuotes` the shell is not known to quote like bash
+ * (fish and PowerShell end a quote early on some characters), so shell syntax is rejected even
+ * inside quotes, and no redirect is accepted.
+ */
+function lexWords(command: string, redirects: boolean, posixQuotes = true): string[] | undefined {
+  if (controlCharacters.test(command)) return undefined;
+  if (!posixQuotes && (shellSyntax.test(command) || tildeExpansion.test(command))) return undefined;
   const words: string[] = [];
   let word: string | undefined;
   let quote: "'" | '"' | undefined;
-  for (const character of command) {
+  // Every structural character is ASCII, so UTF-16 indexes are safe here.
+  for (let index = 0; index < command.length; index++) {
+    const character = command[index] ?? "";
     if (quote) {
       if (character === quote) quote = undefined;
+      else if (quote === '"' && doubleQuoteSyntax.test(character)) return undefined;
       else word = (word ?? "") + character;
       continue;
     }
@@ -53,11 +72,36 @@ export function literalWords(command: string): string[] | undefined {
       word = undefined;
       continue;
     }
+    if (redirects && word === undefined) {
+      const redirect = safeRedirect.exec(command.slice(index));
+      if (redirect) {
+        index += redirect[0].length - 1;
+        continue;
+      }
+    }
+    if (shellSyntax.test(character)) return undefined;
+    if (character === "~" && (index === 0 || tildePrefix.test(command[index - 1] ?? "")))
+      return undefined;
     word = (word ?? "") + character;
   }
   if (quote) return undefined;
   if (word !== undefined) words.push(word);
   return words.length ? words : undefined;
+}
+
+/** Split a command into literal words; `undefined` when it is not one simple command. */
+export function literalWords(command: string): string[] | undefined {
+  return lexWords(command, false);
+}
+
+/**
+ * A Safe Command segment's words: {@link literalWords}, with `2>/dev/null` and `2>&1` dropped
+ * wherever they stand as words of their own, when the shell is bash or `sh` (see
+ * {@link shellKind}); else words without any shell syntax, quoted or not.
+ */
+function segmentWords(segment: string, environment: ShellEnvironment): string[] | undefined {
+  const modeled = shellKind(environment) === "modeled";
+  return lexWords(segment, modeled, modeled);
 }
 
 /** Validates a built-in safe program's arguments; `true` when they cannot cause side effects. */
@@ -108,6 +152,21 @@ const gitSubcommands = new Map<string, ArgumentCheck>([
   ["rev-parse", anyArguments],
 ]);
 
+/** A `sed` line address: a line number, the last line, or a regular expression without escapes. */
+const sedAddress = String.raw`(?:\d+|\$|/[^/\\\n\r]+/)`;
+/** A `sed` script that only prints: an address or range, then `p`, and nothing else. */
+const sedPrintScript = new RegExp(String.raw`^${sedAddress}(?:,${sedAddress})?p$`);
+
+/**
+ * `sed -n '<address>p' file…` only prints lines. Any other option, even after the files (`-i`,
+ * `-f`, `-s`), script (`w`, `e`, `r`, `s///e`, a second command), or `-e` is not accepted.
+ */
+const sedPrintOnly: ArgumentCheck = ([flag, script, ...files]) =>
+  flag === "-n" &&
+  script !== undefined &&
+  sedPrintScript.test(script) &&
+  !files.some((file) => file.startsWith("-"));
+
 /** Built-in safe programs and their argument checks. */
 const builtInPrograms = new Map<string, ArgumentCheck>([
   ["ls", anyArguments],
@@ -127,6 +186,7 @@ const builtInPrograms = new Map<string, ArgumentCheck>([
   ["whoami", anyArguments],
   ["uname", anyArguments],
   ["grep", anyArguments],
+  ["sed", sedPrintOnly],
   // `--pre` and `--hostname-bin` run arbitrary programs.
   ["rg", rejectOptions("--pre", "--pre-glob", "--hostname-bin")],
   ["find", (args) => !args.some((arg) => findActions.has(arg))],
@@ -227,8 +287,28 @@ function exportedFunction(program: string, env: NodeJS.ProcessEnv): boolean {
   return isSet(env[`BASH_FUNC_${program}%%`]) || isSet(env[`BASH_FUNC_${program}()`]);
 }
 
-/** Shells whose `cd` Guardian models: bash, and `sh` where Pi finds no bash. */
+/** Shells whose `cd` and quoting Guardian models: bash, and `sh` where Pi finds no bash. */
 const modeledShells = new Set(["bash", "sh"]);
+/** Shells that read plain literal words as POSIX shells do, but are not modeled further. */
+const posixLikeShells = new Set(["zsh", "dash", "ksh", "mksh"]);
+
+/**
+ * How much Guardian knows about the shell Pi runs `bash` commands with, from `shellPath`:
+ * `modeled` (unset, bash, or `sh`) reads quotes as the lexer does; `posix` (zsh, dash, ksh, mksh)
+ * reads plain literal words alike but may differ with quoting, so only syntax-free commands
+ * qualify; any other shell (PowerShell reads curly quotes as quotes, fish allows `\'` in single
+ * quotes) may split a command's arguments differently, so no built-in program is trusted.
+ */
+function shellKind({ shellPath }: ShellEnvironment): "modeled" | "posix" | "other" {
+  if (shellPath === undefined) return "modeled";
+  // `win32.basename` splits at both `/` and `\`, for a Windows `shellPath` too.
+  const name = win32
+    .basename(shellPath)
+    .replace(/\.exe$/i, "")
+    .toLowerCase();
+  if (modeledShells.has(name)) return "modeled";
+  return posixLikeShells.has(name) ? "posix" : "other";
+}
 
 /**
  * Whether the shell's `cd` behaves as {@link cdTarget} models it: Pi runs bash or `sh` with no
@@ -239,19 +319,9 @@ const modeledShells = new Set(["bash", "sh"]);
  * `GIT_EXEC_PATH` for its hooks, which changes nothing.)
  */
 function cdModeled(environment: ShellEnvironment): boolean {
-  const { env, shellPath, commandPrefix } = environment;
+  const { env, commandPrefix } = environment;
   if (commandPrefix?.trim()) return false;
-  if (
-    shellPath !== undefined &&
-    // `win32.basename` splits at both `/` and `\`, for a Windows `shellPath` too.
-    !modeledShells.has(
-      win32
-        .basename(shellPath)
-        .replace(/\.exe$/i, "")
-        .toLowerCase(),
-    )
-  )
-    return false;
+  if (shellKind(environment) !== "modeled") return false;
   if (["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"].some((name) => isSet(env[name]))) return false;
   return !Object.entries(env).some(
     ([name, value]) =>
@@ -268,7 +338,7 @@ function safeSegment(
   /** An earlier `cd` left the directory unknown: built-in `git` may read another repository. */
   directoryUnknown: boolean,
 ): boolean {
-  const words = literalWords(segment);
+  const words = segmentWords(segment, environment);
   const program = words?.[0];
   if (!words || program === undefined) return false;
   // An environment assignment (`PAGER=x git log`) or a path (`./ls`) is not a known program.
@@ -276,6 +346,10 @@ function safeSegment(
   if (exportedFunction(program, environment.env)) return false;
   // An `allow` Command Rule is the user's choice, even for `git` in an unknown directory.
   if (rule?.policy === "allow") return true;
+  // Another shell may quote differently (PowerShell reads curly quotes as quotes, fish allows
+  // `\'` in single quotes), so the arguments a built-in program's check sees may not be the ones
+  // it gets.
+  if (shellKind(environment) === "other") return false;
   if (
     program === "git" &&
     (directoryUnknown || gitRedirections.some((name) => isSet(environment.env[name])))
@@ -365,7 +439,7 @@ function safeSegments(
   let directories = where ? [where.cwd] : [];
   let directoryUnknown = false;
   for (const [index, segment] of segments.entries()) {
-    const words = literalWords(segment);
+    const words = segmentWords(segment, environment);
     if (words?.[0] === "cd") {
       const piped = operators[index - 1] === "|" || operators[index] === "|";
       const targets =

@@ -223,7 +223,7 @@ it.each([false, true])(
     expect(JSON.stringify(result)).toContain("corrected");
     expect(childCalls).toBe(2);
     expect(childReviews).toBe(2);
-    expect(childThinking).toEqual(["low", "low"]);
+    expect(childThinking).toEqual(["high", "high"]);
     // Each Advisor Session reproduces its observed agent's codemode: children have no model API.
     if (combined) {
       expect(reviewCodemode.get("review-main")).toContain("- `models`:");
@@ -241,7 +241,7 @@ it.each([false, true])(
           {
             agentId: "worker",
             effectiveModel: "hierarchy-fixture/model",
-            effectiveThinkingLevel: "low",
+            effectiveThinkingLevel: "high",
           },
         ],
       },
