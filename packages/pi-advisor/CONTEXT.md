@@ -69,7 +69,7 @@ When Reviews start: after every turn (the default), after every N turns and at r
 _Avoid_: Review frequency, polling interval
 
 **Review Evidence**:
-The observed agent's messages as its model received them, supplied to a Review or Consultation: roles, text, reasoning text, tool calls with arguments, tool-result text with error status, image attachments, and markers for redacted reasoning and responses that ended abnormally. Replay signatures, display-only details, provider metadata, and native IDs are omitted.
+The observed agent's messages as its model received them, supplied to a Review or Consultation: roles, text, reasoning text, tool calls with arguments, tool-result text with error status (capped to its head and tail, with a marker pointing at the observed session file, past a configured length, by default 4,000 characters), image attachments, and markers for redacted reasoning and responses that ended abnormally. Replay signatures, display-only details, provider metadata, and native IDs are omitted.
 _Avoid_: Transcript dump, raw session messages
 
 **Context Seed**:

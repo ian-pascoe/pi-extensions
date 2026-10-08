@@ -261,6 +261,12 @@ function doubleQuoted(text: string, start: number): Scanned {
   return { value, end: index };
 }
 
+/**
+ * The only redirections a Safe Command may have: stderr to `/dev/null` or to stdout, as a word of
+ * its own. Matched at the start of the text, up to a blank or the end.
+ */
+export const safeRedirect = /^2>(?:\/dev\/null|&1)(?=[ \t]|$)/;
+
 /** `NAME=value` words that set the environment of the command after them. */
 export const assignment = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
@@ -279,7 +285,10 @@ export function commandWords(segment: string): string[] {
   for (let index = 0; index < characters.length; index++) {
     const character = characters[index] ?? "";
     const next = characters[index + 1];
-    if (character === "\\" && next !== undefined) {
+    // A Safe Command's stderr redirection is not one of its words, for rule matching either.
+    const redirect = word === undefined ? safeRedirect.exec(characters.slice(index)) : null;
+    if (redirect) index += redirect[0].length - 1;
+    else if (character === "\\" && next !== undefined) {
       if (next !== "\n") word = (word ?? "") + next;
       index++;
     } else if (character === "'") {

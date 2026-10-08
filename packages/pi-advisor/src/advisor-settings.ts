@@ -45,6 +45,7 @@ export const advisorOptionsSchema = Type.Object(
       Type.Union([Type.Literal("turn"), Type.Literal("request"), positiveInteger]),
     ),
     maxSessionTokens: Type.Optional(Type.Union([positiveInteger, Type.Literal("auto")])),
+    maxToolResultChars: Type.Optional(positiveInteger),
     anthropicLongCache: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
@@ -86,6 +87,7 @@ const defaults: AdvisorConfig = {
   seedBudgetTokens: "auto" as const,
   reviewEvery: "turn" as const,
   maxSessionTokens: "auto" as const,
+  maxToolResultChars: 4_000,
   // Anthropic's 1h cache writes cost 2× the input price instead of 1.25×, so it is opt-in.
   anthropicLongCache: false,
 };

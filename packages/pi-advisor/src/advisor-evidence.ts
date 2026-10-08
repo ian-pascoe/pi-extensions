@@ -7,6 +7,7 @@ import {
   shortenEvidence,
   type Evidence,
   type EvidenceItem,
+  type ToolResultCap,
 } from "@ian-pascoe/pi-utils/evidence";
 
 export {
@@ -18,6 +19,7 @@ export {
   type Evidence,
   type EvidenceBlock,
   type EvidenceMessage,
+  type ToolResultCap,
 } from "@ian-pascoe/pi-utils/evidence";
 
 /** Marks text shortened to fit the Context Seed budget. */
@@ -68,16 +70,18 @@ export interface ContextSeed extends Evidence {
  * user request, or after compaction the summary, which carries the earlier goal, and the first
  * request after it); and the newest turn with the request that prompted it, shortened if they
  * alone exceed the budget. The rest takes the newest turns that fit, shortening only the oldest
- * one included. A turn (an assistant message with its tool results) is never split.
+ * one included. A turn (an assistant message with its tool results) is never split. With
+ * `toolResultCap`, each tool result's text is first capped to its head and tail, so the budget
+ * is spent on the capped evidence.
  */
 export function selectContextSeed(
   context: Pick<Context, "systemPrompt" | "tools" | "messages">,
-  options: { budgetTokens: number; origins?: readonly string[] },
+  options: { budgetTokens: number; origins?: readonly string[]; toolResultCap?: ToolResultCap },
 ): ContextSeed {
   const { messages } = context;
   const observedSetup = projectObservedSetup(context);
   const projected = messages.map((message): EvidenceItem[] => {
-    const item = projectEvidenceItem(message);
+    const item = projectEvidenceItem(message, { toolResultCap: options.toolResultCap });
     return item ? [item] : [];
   });
   // Fall back to the converted role only when no converted user message has a known origin.
