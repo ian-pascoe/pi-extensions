@@ -153,6 +153,40 @@ it("withholds a Superseded Finding and has the next Review re-validate it", asyn
   expectStableAdvisorPrefix(privateRequests);
 });
 
+it("re-validates a withheld finding while the agent only reads, instead of at request completion", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  const gate = turnGate();
+  const concern: AdvisorFinding = {
+    severity: "concern",
+    message: "The edit was not verified.",
+    evidence: { quote: "ok 0-0" },
+  };
+  // The first turn has effects; every turn after it only reads.
+  globalThis.advisorObserverTest = longSessionStream({ "Edit then explore": 8 }, privateRequests, {
+    ...ok,
+    call: (id) => (id === "0-0" ? effectful(id) : { name: "read", arguments: { path: "/x" } }),
+    // The Review of the edit answers only after two read-only turns completed.
+    hold: (review) => (review === 1 ? gate.until(3) : undefined),
+    report: () => ({ findings: [concern] }),
+  });
+  const { session, observer } = await observe({ catchUpThreshold: "off" });
+  gate.watch(session);
+  await session.prompt("Edit then explore");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0, deferredFindings: 0 });
+  // The edit's Review, then the re-validation, then the final answer's Review.
+  expect(privateRequests).toHaveLength(3);
+  expect(seedPayload(privateRequests[1]).evidence.deferredFindings).toEqual({
+    instruction: expect.any(String),
+    findings: [concern],
+  });
+  expect(delivered(session)).toEqual(["Advisor concern: The edit was not verified."]);
+  // The Concern steered the run while it was still exploring, before its final answer.
+  const final = session.messages.findLastIndex((message) => message.role === "assistant");
+  const intervention = session.messages.findIndex((message) => message.role === "custom");
+  expect(intervention).toBeGreaterThan(-1);
+  expect(intervention).toBeLessThan(final);
+});
+
 it("defers a Superseded Finding only once, so turns arriving faster than Reviews never starve a Concern", async () => {
   const privateRequests: PrivateRequest[] = [];
   const gate = turnGate();

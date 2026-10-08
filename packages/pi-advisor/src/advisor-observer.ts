@@ -1106,6 +1106,8 @@ export class AdvisorObserver {
       this.deferred.push(finding);
       this.withheld.add(finding);
     }
+    // Turns that only read start no Review, so a withheld finding makes the backlog due itself.
+    if (this.deferred.length) this.dueThrough = Math.max(this.dueThrough, this.completed);
     this.changed();
   }
 
