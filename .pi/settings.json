@@ -1,4 +1,14 @@
 {
+  "defaultProvider": "anthropic",
+  "defaultModel": "claude-sonnet-5-5",
+  "defaultThinkingLevel": "high",
+  "defaultTools": [
+    "+codemode",
+    "+tool_search",
+    "+grep",
+    "+find",
+    "+ls"
+  ],
   "packages": [
     {
       "source": "..",
@@ -84,18 +94,89 @@
     "thinkingLevel": "low"
   },
   "advisor": {
-    "enabled": false,
-    "model": "anthropic/claude-fable-5-1",
+    "enabled": true,
+    "model": "anthropic/claude-opus-5-5",
     "thinkingLevel": "high",
     "allowedTools": [
-      "read",
-      "grep",
-      "find",
-      "ls",
-      "context_notes",
+      "codemode",
       "context_history",
-      "context_rollover"
+      "context_notes",
+      "context_rollover",
+      "find",
+      "grep",
+      "ls",
+      "lsp_call_hierarchy",
+      "lsp_diagnostics",
+      "lsp_document_symbols",
+      "lsp_find_references",
+      "lsp_goto_definition",
+      "lsp_goto_implementation",
+      "lsp_goto_type_definition",
+      "lsp_hover",
+      "lsp_incoming_calls",
+      "lsp_outgoing_calls",
+      "lsp_status",
+      "lsp_workspace_diagnostics",
+      "lsp_workspace_symbols",
+      "read",
+      "tool_search",
+      "web_fetch",
+      "web_search"
     ]
+  },
+  "minimalSubagents": {
+    "enabled": true,
+    "baseToolset": ["codemode", "context_*", "tool_search"],
+    "readToolset": [
+      "find",
+      "grep",
+      "ls",
+      "lsp_call_hierarchy",
+      "lsp_diagnostics",
+      "lsp_document_symbols",
+      "lsp_find_references",
+      "lsp_goto_definition",
+      "lsp_goto_implementation",
+      "lsp_goto_type_definition",
+      "lsp_hover",
+      "lsp_incoming_calls",
+      "lsp_outgoing_calls",
+      "lsp_status",
+      "lsp_workspace_diagnostics",
+      "lsp_workspace_symbols",
+      "read",
+      "web_fetch",
+      "web_search"
+    ],
+    "modifyToolset": [
+      "bash",
+      "edit",
+      "write",
+      "lsp_rename",
+      "lsp_code_actions",
+      "lsp_apply",
+      "lsp_format_document",
+      "dap_*",
+      "terminal_*"
+    ],
+    "modelRoles": {
+      "small": {
+        "model": "anthropic/claude-haiku-5-5",
+        "hint": "Cheap and fast. Use for explore (locating code, tracing behavior, finding reusable patterns), web and docs research, summarizing, and mechanical edits. Medium thinking is usually enough."
+      },
+      "medium": {
+        "model": "anthropic/claude-sonnet-5-5",
+        "hint": "Default workhorse. Use for scoped implementation tasks with a settled approach, tests, refactors, and work that spans several concerns or fits no other tier."
+      },
+      "large": {
+        "model": "anthropic/claude-opus-5-5",
+        "hint": "Use for planning and design, independent correctness or spec review, and diagnosing failures. Use high thinking for plan and review; set xhigh thinking for debugging, regressions, and security audits."
+      },
+      "xlarge": {
+        "model": "anthropic/claude-fable-5-1",
+        "hint": "Most capable and most expensive. Use only when large has failed or the problem is unusually hard."
+      }
+    }
   },
   "formatter": {
     "formatters": {
