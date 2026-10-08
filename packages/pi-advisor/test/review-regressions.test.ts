@@ -1,15 +1,20 @@
 import { onTestFinished, expect, it } from "vitest";
+import type { Context } from "@earendil-works/pi-ai";
 import { reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
 import { fixture, response } from "./fixtures/advisor-runtime.js";
 
-it("inherits live observed thinking changes for subsequent Reviews", async () => {
+it("keeps the default high thinking level when the observed agent changes its own", async () => {
   const levels: Array<string | undefined> = [];
+  const sizes: number[] = [];
   globalThis.advisorObserverTest = {
     stream(model, context, options) {
       const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
-      if (privateRole) levels.push(options?.reasoning);
+      if (privateRole) {
+        levels.push(options?.reasoning);
+        sizes.push(context.messages.length);
+      }
       return response(
         model,
         privateRole ? toolCall("advisor_report", { severity: "none" }) : reply("Done"),
@@ -19,9 +24,14 @@ it("inherits live observed thinking changes for subsequent Reviews", async () =>
   };
   const { session } = await fixture();
   await session.prompt("First request");
-  session.setThinkingLevel("high");
+  session.setThinkingLevel("max");
   await session.prompt("Second request");
-  expect(levels).toEqual(["low", "high"]);
+  session.setThinkingLevel("off");
+  await session.prompt("Third request");
+  expect(levels).toEqual(["high", "high", "high"]);
+  // Observed thinking changes do not discard the Advisor Session: it only grows.
+  expect(sizes[1]).toBeGreaterThan(sizes[0] ?? 0);
+  expect(sizes[2]).toBeGreaterThan(sizes[1] ?? 0);
 });
 
 it("invalidates unconsumed Advisor steering on disable without removing unrelated user steering", async () => {
@@ -327,3 +337,49 @@ it("retracts queued owned-child findings after a model-only change while preserv
   expect(userSteeringObserved).toBe(true);
   expect(mainCalls).toBe(3);
 });
+
+/** The loaded extension, not a hand-built observer: Pi emits `model_select` on `setModel`. */
+it.each([
+  { name: "own model keeps", advisor: { model: "observer-fixture/priced" }, incremental: true },
+  { name: "inherited model reseeds", advisor: {}, incremental: false },
+])(
+  "$name the Advisor Session across an observed model change through the extension",
+  async ({ advisor, incremental }) => {
+    const requests: Context[] = [];
+    const advisorModels: string[] = [];
+    globalThis.advisorObserverTest = {
+      stream(model, context, options) {
+        const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+        if (privateRole) {
+          requests.push(structuredClone(context));
+          advisorModels.push(model.id);
+        }
+        return response(
+          model,
+          privateRole ? toolCall("advisor_report", { findings: [] }) : reply("Done"),
+          options,
+        );
+      },
+    };
+    const { session } = await fixture({ advisor });
+    await session.prompt("First request");
+    const alternate = session.modelRuntime.getModel("observer-fixture", "alternate");
+    if (!alternate) throw new Error("Missing alternate fixture model");
+    await session.setModel(alternate);
+    await session.prompt("Second request");
+    await expect.poll(() => requests.length).toBe(2);
+    const text = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1));
+    if (incremental) {
+      expect(advisorModels).toEqual(["priced", "priced"]);
+      expect(text(requests[1])).toContain("Incremental update.");
+      expect(requests[1]?.systemPrompt).toBe(requests[0]?.systemPrompt);
+      expect(requests[1]?.messages.slice(0, requests[0]?.messages.length)).toEqual(
+        requests[0]?.messages,
+      );
+    } else {
+      expect(advisorModels).toEqual(["model", "alternate"]);
+      expect(text(requests[1])).not.toContain("Incremental update.");
+      expect(requests[1]?.messages).toHaveLength(1);
+    }
+  },
+);

@@ -152,13 +152,13 @@ function snapshotIndexes(messages: readonly Message[]): number[] {
 
 /**
  * The earlier request's ordered messages begin the later request, byte for byte. The one exception
- * is the leading system message when `earlier` is the session's first request: Pi serializes it
- * again afterwards with the same value but a different key order, so that pair is compared
- * structurally.
+ * is the leading system message: Pi re-serializes it with the same value but a different key order
+ * the first time it rebuilds the context after a persisted turn, which can fall on any request
+ * pair, so it is compared structurally.
  */
 function expectByteIdenticalPrefix(earlier: CapturedRequest, later: CapturedRequest): void {
   const first = earlier.messages[0];
-  const comparedFrom = first !== undefined && earlier.isFirstRequest ? 1 : 0;
+  const comparedFrom = first?.role === "system" ? 1 : 0;
   if (comparedFrom === 1) expect(later.messages[0]).toEqual(first);
   expect(JSON.stringify(later.messages.slice(comparedFrom, earlier.messages.length))).toBe(
     JSON.stringify(earlier.messages.slice(comparedFrom)),
@@ -232,7 +232,7 @@ describe("one Todo List snapshot per tool group", () => {
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
   }, 30_000);
 
-  test("a batch add projects one snapshot and leaves the tool definitions and prefix untouched", async () => {
+  test("a batch add already renders the full list, so it projects no snapshot and leaves the tool definitions and prefix untouched", async () => {
     const { session, requests, responses } = await createFixture();
     responses.push(
       toolCalls(
@@ -250,11 +250,7 @@ describe("one Todo List snapshot per tool group", () => {
     expect(requests).toHaveLength(3);
 
     for (const request of requests.slice(1)) {
-      const indexes = snapshotIndexes(request.messages);
-      expect(indexes).toHaveLength(1);
-      expect(messageText(request.messages[indexes[0]!])).toBe(
-        `${SNAPSHOT_HEADER}\n[ ] #1 Design\n[ ] #2 Build\n[ ] #3 Ship`,
-      );
+      expect(snapshotIndexes(request.messages)).toEqual([]);
     }
     // The schema is static for the session: every request carries the same tool definitions,
     // including the `tasks` parameter of `add`.
@@ -263,13 +259,16 @@ describe("one Todo List snapshot per tool group", () => {
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
   }, 30_000);
 
-  test("a batch update projects one snapshot and leaves the tool definitions and prefix untouched", async () => {
+  test("a partial batch update projects one snapshot and leaves the tool definitions and prefix untouched", async () => {
     const { session, requests, responses } = await createFixture();
     responses.push(
       toolCalls(
         fauxToolCall(
           "todo",
-          { action: "add", tasks: [{ title: "Design" }, { title: "Build" }] },
+          {
+            action: "add",
+            tasks: [{ title: "Design" }, { title: "Build" }, { title: "Ship" }],
+          },
           { id: "batch-add" },
         ),
       ),
@@ -293,22 +292,49 @@ describe("one Todo List snapshot per tool group", () => {
     await session.prompt("Anything else?");
     expect(requests).toHaveLength(4);
 
-    // The add group and the update group each project exactly one snapshot, carrying that
-    // group's final state: the batch update does not fan out into one snapshot per Task.
-    expect(snapshotIndexes(requests[1]!.messages)).toHaveLength(1);
+    // The full-list add group projects nothing; the partial update group projects exactly one
+    // snapshot carrying the final state.
+    expect(snapshotIndexes(requests[1]!.messages)).toEqual([]);
     for (const request of requests.slice(2)) {
       const indexes = snapshotIndexes(request.messages);
-      expect(indexes).toHaveLength(2);
+      expect(indexes).toHaveLength(1);
       expect(messageText(request.messages[indexes[0]!])).toBe(
-        `${SNAPSHOT_HEADER}\n[ ] #1 Design\n[ ] #2 Build`,
-      );
-      expect(messageText(request.messages[indexes[1]!])).toBe(
-        `${SNAPSHOT_HEADER}\n[x] #1 Design\n[>] #2 Build`,
+        `${SNAPSHOT_HEADER}\n[x] #1 Design\n[>] #2 Build\n[ ] #3 Ship`,
       );
     }
     // The schema is static for the session: every request carries the same tool definitions,
     // including the `updates` parameter of `update`.
     expect(requests[0]!.tools).toContain('"updates"');
+    for (let index = 1; index < requests.length; index++)
+      expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
+  }, 30_000);
+
+  test("a full-list group, a partial update group and an unchanged turn keep a byte-identical prefix", async () => {
+    const { session, requests, responses } = await createFixture();
+    responses.push(
+      toolCalls(
+        fauxToolCall(
+          "todo",
+          { action: "add", tasks: [{ title: "One" }, { title: "Two" }] },
+          { id: "full" },
+        ),
+      ),
+      fauxAssistantMessage("Planned."),
+      toolCalls(
+        fauxToolCall("todo", { action: "update", id: 1, status: "completed" }, { id: "partial" }),
+      ),
+      fauxAssistantMessage("Advanced."),
+      fauxAssistantMessage("Unchanged."),
+    );
+    await session.prompt("Plan");
+    await session.prompt("Advance");
+    await session.prompt("Anything else?");
+    expect(requests).toHaveLength(5);
+    const counts = requests.map((request) => snapshotIndexes(request.messages).length);
+    expect(counts).toEqual([0, 0, 0, 1, 1]);
+    expect(messageText(requests[4]!.messages[snapshotIndexes(requests[4]!.messages)[0]!])).toBe(
+      `${SNAPSHOT_HEADER}\n[x] #1 One\n[ ] #2 Two`,
+    );
     for (let index = 1; index < requests.length; index++)
       expectByteIdenticalPrefix(requests[index - 1]!, requests[index]!);
   }, 30_000);

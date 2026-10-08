@@ -64,6 +64,7 @@ function createTypeScriptManager(
     homeDirectory: tmpdir(),
     settings: {
       enablement: new Map(),
+      includeHintDiagnostics: false,
       warnings: [],
       timeouts: typescriptTimeouts,
       servers: new Map([[definition.id, definition]]),
@@ -451,6 +452,7 @@ describe("real TypeScript 7 language server client", () => {
       cwd: projectDirectory,
       settings: {
         enablement: new Map(),
+        includeHintDiagnostics: false,
         warnings: [],
         timeouts: {
           initializeMs: 45_000,

@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import process from "node:process";
 
 let input = Buffer.alloc(0);
@@ -41,6 +42,13 @@ function respondError(id, code, message) {
 }
 
 function diagnostics(message = "fake diagnostic") {
+  if (process.env.FAKE_DIAGNOSTICS === "error-and-hint") {
+    const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+    return [
+      { range, severity: 1, message, source: "fake" },
+      { range, severity: 4, message: "fake hint", source: "fake" },
+    ];
+  }
   return process.env.FAKE_DIAGNOSTICS === "one"
     ? [
         {
@@ -91,8 +99,13 @@ async function exerciseClientRequests() {
 }
 
 async function handleRequest(message) {
+  // FAKE_REQUEST_LOG names a file that receives one request method per line.
+  if (process.env.FAKE_REQUEST_LOG) {
+    appendFileSync(process.env.FAKE_REQUEST_LOG, `${message.method}\n`);
+  }
   switch (message.method) {
     case "initialize":
+      state.rootUri = message.params?.rootUri ?? message.params?.workspaceFolders?.[0]?.uri ?? null;
       state.initializationOptions = message.params?.initializationOptions ?? null;
       state.textDocumentCapabilities = message.params?.capabilities?.textDocument ?? null;
       const capabilities = {
@@ -101,6 +114,10 @@ async function handleRequest(message) {
         textDocumentSync: { openClose: true, change: 2, save: { includeText: true } },
         hoverProvider: true,
       };
+      if (process.env.FAKE_SCAN === "1") {
+        capabilities.referencesProvider = true;
+        capabilities.documentSymbolProvider = true;
+      }
       if (process.env.FAKE_NO_PULL !== "1") {
         capabilities.diagnosticProvider = {
           identifier: "fake",
@@ -112,6 +129,36 @@ async function handleRequest(message) {
         serverInfo: { name: "pi-lsp-fake", version: "1.0.0" },
         capabilities,
       });
+      return;
+    case "textDocument/documentSymbol": {
+      // FAKE_SYMBOLS function declarations, one per line.
+      const count = Number(process.env.FAKE_SYMBOLS ?? "1");
+      respond(
+        message.id,
+        Array.from({ length: count }, (_, line) => ({
+          name: `symbol${line}`,
+          kind: 12,
+          range: { start: { line, character: 0 }, end: { line, character: 20 } },
+          selectionRange: { start: { line, character: 16 }, end: { line, character: 23 } },
+        })),
+      );
+      return;
+    }
+    case "textDocument/references":
+      // FAKE_DELAY_REFERENCES never answers, so the caller's budget has to end the wait.
+      if (process.env.FAKE_DELAY_REFERENCES === "1") return;
+      // FAKE_REFERENCE_FILE is a path relative to the workspace root that references the symbol.
+      respond(
+        message.id,
+        process.env.FAKE_REFERENCE_FILE && state.rootUri
+          ? [
+              {
+                uri: new URL(process.env.FAKE_REFERENCE_FILE, `${state.rootUri}/`).href,
+                range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+              },
+            ]
+          : [],
+      );
       return;
     case "textDocument/diagnostic":
       if (process.env.FAKE_DELAY_DIAGNOSTICS === "1") return;

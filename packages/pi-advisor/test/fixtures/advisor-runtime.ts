@@ -64,7 +64,10 @@ export async function fixture({
   interactive = false,
   mode = "rpc",
   ui = {},
+  advisor = {},
 }: {
+  /** Advisor settings beyond the fixture defaults, such as its own `model`. */
+  advisor?: { model?: string };
   enabled?: boolean;
   interactive?: boolean;
   /** Host mode for an interactive runtime; `tui` enables full-screen UI paths. */
@@ -84,7 +87,7 @@ export async function fixture({
   const document = {
     compaction: { enabled: false, keepRecentTokens: 1 },
     retry: { enabled: false },
-    advisor: { enabled, catchUpThreshold: "off" },
+    advisor: { enabled, catchUpThreshold: "off", ...advisor },
   };
   const services = await createAgentSessionServices({
     cwd: directory,
