@@ -15,6 +15,7 @@ import {
   callDurationFooter,
   clipPlain,
   customMessageBox,
+  joinInline,
   previewBody,
   toolHeader,
   type DurationContext,
@@ -53,16 +54,19 @@ export type ContextToolDetails =
 
 type RenderTheme = Pick<Theme, "bold" | "fg">;
 
-/** The custom messages Context Management sends, with their headers. */
-export const CONTEXT_MESSAGE_LABELS = {
-  "pi-context-prepare": "[context rollover]",
-  "pi-context-manual-prepare": "[context rollover: manual]",
-  "pi-context-prepare-cancelled": "[context rollover: cancelled]",
+/** The custom messages Context Management sends, with the qualifier after `rollover`. */
+export const CONTEXT_MESSAGE_QUALIFIERS = {
+  "pi-context-prepare": undefined,
+  "pi-context-manual-prepare": "manual",
+  "pi-context-prepare-cancelled": "cancelled",
 } as const;
 
-/** Pi's custom-message look: a `customMessageBg` box, a bold label, and a 10-line Collapsed View. */
+/**
+ * Pi's custom-message look: a `customMessageBg` box under a bold `[context] rollover` label,
+ * and a 10-line Collapsed View.
+ */
 export function renderContextMessage(
-  label: string,
+  qualifier: string | undefined,
   message: { content: string | Array<{ type: string; text?: string }> },
   options: MessageRenderOptions,
   theme: Pick<Theme, "bg" | "bold" | "fg">,
@@ -70,7 +74,11 @@ export function renderContextMessage(
   const text = Array.isArray(message.content)
     ? message.content.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("\n")
     : String(message.content);
-  return customMessageBox(theme, { outputPad: options.outputPad, label }, [
+  const heading = joinInline(theme, [
+    theme.fg("customMessageText", "rollover"),
+    qualifier ? theme.fg("customMessageText", qualifier) : undefined,
+  ]);
+  return customMessageBox(theme, { outputPad: options.outputPad, source: "context", heading }, [
     lineBlock(
       previewBody(theme, textLines(text), {
         limit: COLLAPSED_LINES.fallback,

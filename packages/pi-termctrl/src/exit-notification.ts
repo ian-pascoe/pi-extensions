@@ -139,9 +139,15 @@ function collapsedRows(theme: MessageTheme, rows: readonly string[]): string[] {
   return rows.map((row, index) => (index === last ? `${row}${summaryExpandHint(theme)}` : row));
 }
 
+/** `exit`, or `N exits` when several Terminals or Background jobs ended together. */
+function exitHeading(details: ExitNotificationDetails | undefined): string {
+  const count = Value.Check(ExitNotificationDetailsSchema, details) ? details.exits.length : 1;
+  return count === 1 ? "exit" : `${count} exits`;
+}
+
 /**
- * Pi's custom-message look: a `customMessageBg` box under a bold label. Collapsed, it shows one
- * Status Mark row per exit; expanded, the full text.
+ * Pi's custom-message look: a `customMessageBg` box under a bold `[termctrl] exit` label.
+ * Collapsed, it shows one Status Mark row per exit; expanded, the full text.
  */
 export const renderExitNotification: ExitNotificationRenderer = (
   message,
@@ -160,7 +166,8 @@ export const renderExitNotification: ExitNotificationRenderer = (
           expanded: options.expanded,
           color: "customMessageText",
         });
-  return customMessageBox(theme, { outputPad: options.outputPad, label: "[termctrl]" }, [
+  const heading = theme.fg("customMessageText", exitHeading(details));
+  return customMessageBox(theme, { outputPad: options.outputPad, source: "termctrl", heading }, [
     new Text(rows.join("\n"), 0, 0),
   ]);
 };

@@ -87,7 +87,7 @@ describe("/guardian command", () => {
       error: null,
     });
     const rendered = renderStatusEntry(status, false, plainTheme).render(120).join("\n");
-    expect(rendered).toContain("Guardian ● on");
+    expect(rendered).toContain("[guardian] ● on");
     expect(rendered).toContain(
       "2 reviews · 1 allowed · 1 rejected · 0 failed · 0 overrides · 1 escalated (1 rejected) · cost $0.0033",
     );

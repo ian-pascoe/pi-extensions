@@ -72,20 +72,18 @@ function entryData(outcomes: readonly PostEditDiagnosticOutcome[]) {
 }
 
 describe("Post-edit Diagnostics Entry rendering", () => {
-  test("is a custom message box with a bold label, severity counts, and diagnostics", () => {
+  test("is a custom message box with a `[lsp] post-edit diagnostics \u00b7 counts` label line, and diagnostics", () => {
     const component = renderPostEditDiagnosticsEntry(
       entryData(reportableOutcomes),
       { expanded: false, outputPad: 1 },
       escapeTaggedTheme,
     );
-    const rendered = renderLines(component).join("\n");
+    const lines = renderLines(component);
+    const rendered = lines.join("\n");
     expect(rendered).toContain("<bg:customMessageBg>");
-    expect(rendered).toContain(
-      "<customMessageLabel><b>Post-edit diagnostics</b></customMessageLabel>",
+    expect(lines[1]).toContain(
+      "<customMessageLabel><b>[lsp]</b></customMessageLabel> <customMessageText>post-edit diagnostics</customMessageText><dim> \u00b7 </dim><error>1 error</error><dim> \u00b7 </dim><warning>2 warnings</warning><dim> \u00b7 </dim><warning>1 timeout</warning><dim> \u00b7 </dim><warning>1 server issue</warning><dim> \u00b7 </dim><muted>3 files</muted>",
     );
-    expect(rendered).toContain("<error>1 error</error>");
-    expect(rendered).toContain("<warning>2 warnings</warning>");
-    expect(rendered).toContain("<muted>3 files</muted>");
     expect(rendered).toContain(
       "<error>4:2</error>  <customMessageText>Type mismatch</customMessageText>",
     );

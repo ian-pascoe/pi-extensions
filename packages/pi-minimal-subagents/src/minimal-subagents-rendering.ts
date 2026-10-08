@@ -1079,7 +1079,7 @@ export function renderMinimalSubagentsMessage(
   options: MessageRenderOptions,
   theme: MinimalSubagentsRenderTheme,
 ): Component {
-  return renderCoordinatorMessage("Agent message", message, options, theme);
+  return renderCoordinatorMessage("message", message, options, theme);
 }
 
 /** Render automatic successful agent results with expandable Markdown output. */
@@ -1088,7 +1088,7 @@ export function renderMinimalSubagentsResult(
   options: MessageRenderOptions,
   theme: MinimalSubagentsRenderTheme,
 ): Component {
-  return renderCoordinatorMessage("Agent result", message, options, theme);
+  return renderCoordinatorMessage("result", message, options, theme);
 }
 
 function messageSource(details: CoordinatorMessageRenderDetails | undefined): string {
@@ -1101,8 +1101,9 @@ function messageSourceTurn(
   return details?.source_turn_id ?? details?.turn_id;
 }
 
+/** `[subagents] result · worker → root · completed · 3s` above the Markdown, like Pi's `[skill] name`. */
 function renderCoordinatorMessage(
-  label: string,
+  kind: "message" | "result",
   message: RenderableCoordinatorMessage,
   options: MessageRenderOptions,
   theme: MinimalSubagentsRenderTheme,
@@ -1113,29 +1114,25 @@ function renderCoordinatorMessage(
   const destination = details?.destination_agent_id ?? "recipient";
   const sourceTurn = messageSourceTurn(details);
   const metrics = [formatSubagentDuration(details?.elapsed_ms), formatSubagentCost(details?.usage)];
-  const meta = new Text(
-    joinInline(theme, [
-      theme.fg("customMessageText", `${source} \u2192 ${destination}`),
-      details?.status ? renderSubagentStatusLabel(theme, details.status) : undefined,
-      ...metrics.map((metric) => (metric ? theme.fg("muted", metric) : undefined)),
-    ]),
-    0,
-    0,
-  );
+  const heading = joinInline(theme, [
+    theme.fg("customMessageText", kind),
+    theme.fg("customMessageText", `${source} \u2192 ${destination}`),
+    details?.status ? renderSubagentStatusLabel(theme, details.status) : undefined,
+    ...metrics.map((metric) => (metric ? theme.fg("muted", metric) : undefined)),
+  ]);
   const markdown = new Markdown(content, 0, 0, getMarkdownTheme(), {
     color: (text) => theme.fg("customMessageText", text),
   });
   const box = (body: Component[]) =>
-    customMessageBox(theme, { outputPad: options.outputPad, label }, body);
+    customMessageBox(theme, { outputPad: options.outputPad, source: "subagents", heading }, body);
   if (!options.expanded) {
     return box([
-      meta,
       new CollapsedPreview(theme, markdown, { limit: COLLAPSED_LINES.fallback, expanded: false }),
     ]);
   }
-  const body: Component[] = [meta];
-  if (sourceTurn) body.push(renderLabelValue(theme, "Source turn", sourceTurn));
-  body.push(new Spacer(1), markdown);
+  const body: Component[] = [];
+  if (sourceTurn) body.push(renderLabelValue(theme, "Source turn", sourceTurn), new Spacer(1));
+  body.push(markdown);
   const usageText = formatSubagentUsage(details?.usage);
   if (usageText) {
     const usage = new Container();

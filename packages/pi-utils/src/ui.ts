@@ -425,20 +425,29 @@ export function footerStatus(
     .join(" ");
 }
 
+/** The label line of a custom message or entry. */
+export interface CustomMessageHeader {
+  outputPad: number;
+  /** Lowercase extension name, drawn as Pi's bold `[source]` label (`[branch]`, `[skill]`). */
+  source: string;
+  /** Pre-styled detail on the label's line, like the skill name in Pi's `[skill] name`. */
+  heading?: string;
+}
+
 /**
  * Pi's custom-message look for message and entry renderers: a `customMessageBg` box padded by
- * `outputPad`, with an optional bold `customMessageLabel` header and a spacer above the body.
+ * `outputPad`, a bold `[source]` label in `customMessageLabel` followed by the heading, and a
+ * spacer above the body when there is one.
  */
 export function customMessageBox(
   theme: Pick<UiTheme, "fg" | "bg" | "bold">,
-  options: { outputPad: number; label?: string },
+  header: CustomMessageHeader,
   body: readonly Component[],
 ): Box {
-  const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
-  if (options.label !== undefined) {
-    box.addChild(new Text(theme.fg("customMessageLabel", theme.bold(options.label)), 0, 0));
-    box.addChild(new Spacer(1));
-  }
+  const box = new Box(header.outputPad, 1, (text) => theme.bg("customMessageBg", text));
+  const label = theme.fg("customMessageLabel", theme.bold(`[${header.source}]`));
+  box.addChild(new Text(header.heading ? `${label} ${header.heading}` : label, 0, 0));
+  if (body.length > 0) box.addChild(new Spacer(1));
   for (const child of body) box.addChild(child);
   return box;
 }

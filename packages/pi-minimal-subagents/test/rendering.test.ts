@@ -519,7 +519,7 @@ describe("minimal subagents custom messages", () => {
     usage,
   };
 
-  it("uses the custom-message box and bold customMessageLabel header", () => {
+  it("uses the custom-message box with a `[subagents] result · route · status` label line", () => {
     const rendered = renderMinimalSubagentsResult(
       { content: "**Done**: updated `a.ts`", details },
       { expanded: false, outputPad: 1 },
@@ -527,12 +527,13 @@ describe("minimal subagents custom messages", () => {
     );
     const lines = plainLines(rendered);
     expect(lines.every((line) => line.startsWith("<bg:customMessageBg>"))).toBe(true);
-    expect(lines.some((line) => line.includes("<customMessageLabel><b>Agent result</b>"))).toBe(
-      true,
+    const label = lines[1] ?? "";
+    expect(label).toContain(
+      "<customMessageLabel><b>[subagents]</b></customMessageLabel> <customMessageText>result</customMessageText><dim> · </dim><customMessageText>worker → root</customMessageText><dim> · </dim>",
     );
+    expect(label).toContain("<muted>completed</muted>");
+    expect(label).toContain("<muted>3s</muted>");
     const body = lines.join("\n");
-    expect(body).toContain("<customMessageText>worker → root</customMessageText>");
-    expect(body).toContain("<muted>completed</muted>");
     expect(body).toContain("Done");
     expect(body).toContain("updated");
     expect(body).not.toContain("**");
@@ -544,7 +545,9 @@ describe("minimal subagents custom messages", () => {
       { expanded: false, outputPad: 0 },
       taggedTheme,
     );
-    expect(text(message)).toContain("<customMessageLabel><b>Agent message</b>");
+    expect(text(message)).toContain(
+      "<customMessageLabel><b>[subagents]</b></customMessageLabel> <customMessageText>message</customMessageText><dim> · </dim><customMessageText>worker → root</customMessageText>",
+    );
     expectFits(message, PI_BODY);
   });
 

@@ -110,9 +110,6 @@ const messagePaint =
   (text) =>
     theme.fg("customMessageText", text);
 
-const messageLabel = (theme: Pick<Theme, "fg" | "bold">) =>
-  theme.fg("customMessageLabel", theme.bold("Advisor"));
-
 /** Severity-labelled, attributed Intervention; invalid details fall back to Pi's renderer. */
 export function renderAdvisorIntervention(
   // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Journaled custom-message details are validated by the finding schema below.
@@ -123,16 +120,13 @@ export function renderAdvisorIntervention(
 ): Component | undefined {
   if (!Value.Check(advisorFindingSchema, details)) return undefined;
   const heading = joinInline(theme, [
-    `${messageLabel(theme)} ${theme.fg(severityColor[details.severity], details.severity)}`,
+    theme.fg(severityColor[details.severity], details.severity),
     agentId ? theme.fg("accent", agentId) : undefined,
   ]);
   const body = new Markdown(details.message, 0, 0, getMarkdownTheme(), {
     color: messagePaint(theme),
   });
-  // The heading carries the Severity Label beside Pi's label, so it is not the box's own label.
-  return customMessageBox(theme, { outputPad: options.outputPad }, [
-    new Text(heading, 0, 0),
-    new Spacer(1),
+  return customMessageBox(theme, { outputPad: options.outputPad, source: "advisor", heading }, [
     details.severity === "nit"
       ? new CollapsedPreview(theme, body, {
           limit: COLLAPSED_LINES.fallback,
@@ -176,14 +170,14 @@ export function renderAdvisorChildEntry(
   }
   if (Value.Check(childStateSchema, data)) {
     const heading = joinInline(theme, [
-      messageLabel(theme),
       theme.fg("accent", data.agentId),
       badge(data.state, theme, messagePaint(theme)),
     ]);
-    return customMessageBox(theme, { outputPad }, [
-      new Text(heading, 0, 0),
-      ...(data.error ? [new Text(theme.fg("error", data.error), 0, 0)] : []),
-    ]);
+    return customMessageBox(
+      theme,
+      { outputPad, source: "advisor", heading },
+      data.error ? [new Text(theme.fg("error", data.error), 0, 0)] : [],
+    );
   }
   return new Text(`Advisor for Child Agent\n${JSON.stringify(data, null, 2)}`, 0, 0);
 }
@@ -322,12 +316,13 @@ function joinDefined(parts: ReadonlyArray<string | undefined>, separator: string
 function stateLine(
   entry: AdvisorStatusEntry,
   theme: AdvisorRenderTheme,
-  label: string,
+  label: string | undefined,
   paint: Paint,
 ): string {
   const inherited = entry.settings && entry.settings.model === undefined;
+  const state = badge(entry.state, theme, paint);
   return joinInline(theme, [
-    `${label} ${badge(entry.state, theme, paint)}`,
+    label ? `${label} ${state}` : state,
     entry.effectiveModel
       ? `${paint(entry.effectiveModel)}${inherited ? theme.fg("dim", " (inherited)") : ""}`
       : undefined,
@@ -352,9 +347,10 @@ export function advisorStatusHeadline(
   ];
 }
 
+/** The status entry's body below its `[advisor] ● on · model` label line. */
 function summaryLines(entry: AdvisorStatusEntry, theme: AdvisorRenderTheme): string[] {
   const paint = messagePaint(theme);
-  const lines: string[] = [stateLine(entry, theme, messageLabel(theme), paint)];
+  const lines: string[] = [];
   for (const { scope, key, options } of entry.changes ?? []) {
     lines.push(
       `${statusMark(theme, "done")} ${paint(`${key} → ${formatAdvisorOption(options, key)}`)} ${theme.fg("dim", `[${scope}]`)}`,
@@ -438,16 +434,22 @@ export function renderAdvisorStatus(
   outputPad = entryOutputPad,
 ): Component {
   if (!Value.Check(minimalStatusSchema, data))
-    return customMessageBox(theme, { outputPad, label: "Advisor" }, [
+    return customMessageBox(theme, { outputPad, source: "advisor" }, [
       new Text(JSON.stringify(data, null, 2), 0, 0),
     ]);
   const entry = salvageStatus(data);
   const summary = summaryLines(entry, theme);
   const details = detailLines(entry, theme);
-  const body = new Text([...summary, ...details].join("\n"), 0, 0);
-  return customMessageBox(theme, { outputPad }, [
-    new CollapsedPreview(theme, body, { limit: COLLAPSED_LINES.fallback, expanded }),
-  ]);
+  const heading = stateLine(entry, theme, undefined, messagePaint(theme));
+  const rows = [...summary, ...details];
+  const body = new Text(rows.join("\n"), 0, 0);
+  return customMessageBox(
+    theme,
+    { outputPad, source: "advisor", heading },
+    rows.length > 0
+      ? [new CollapsedPreview(theme, body, { limit: COLLAPSED_LINES.fallback, expanded })]
+      : [],
+  );
 }
 
 /** The live fields the footer summarizes for one watched agent. */

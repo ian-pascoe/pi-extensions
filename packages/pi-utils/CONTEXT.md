@@ -22,6 +22,10 @@ _Avoid_: More indicator, truncation footer
 The Pi built-in tool whose output most resembles a package tool's output, and whose header shape, preview length, and streaming behaviour that package tool copies.
 _Avoid_: Reference tool, template
 
+**Source Label**:
+The bold, bracketed, lowercase extension name (`[termctrl]`, `[subagents]`, `[lsp]`) that opens a custom message or entry, as Pi opens its own with `[branch]`, `[compaction]`, and `[skill]`; what the message is follows on the same line, like the skill name in Pi's `[skill] name`.
+_Avoid_: Message title, header badge
+
 **Outcome Background**:
 A tool row's background colour as Pi assigns it to show whether the call is pending, succeeded, or failed.
 _Avoid_: Status colour, result box

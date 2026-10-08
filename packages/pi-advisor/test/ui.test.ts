@@ -60,7 +60,7 @@ describe("Advisor status entries", () => {
     const rendered = renderer?.(entry, { expanded: false }, themeFromRunner(session));
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
     expect(text).toContain("✓ enabled → true [session]");
-    expect(text).toContain("Advisor ● on");
+    expect(text).toContain("[advisor] ● on");
     expect(text).not.toContain('"settings"');
     if (!renderer) throw new Error("Expected the Advisor status renderer");
     expectClickToggles(renderer, entry, { expanded: false }, themeFromRunner(session));
@@ -210,7 +210,7 @@ describe("Interventions", () => {
       themeFromRunner(session),
     );
     const text = stripVTControlCharacters(rendered?.render(120).join("\n") ?? "");
-    expect(text).toContain("Advisor concern");
+    expect(text).toContain("[advisor] concern");
     expect(text).not.toContain("▲");
     expect(text).toContain("Re-run the failing test");
     if (!renderer) throw new Error("Expected the Advisor Intervention renderer");

@@ -412,9 +412,16 @@ test("long multiline queries stay compact and terminal-safe without changing res
   expect(found).toEqual(original);
 });
 
-test.each(["pi-context-prepare", "pi-context-manual-prepare", "pi-context-prepare-cancelled"])(
+test.each([
+  ["pi-context-prepare", ""],
+  ["pi-context-manual-prepare", "<dim> \u00b7 </dim><customMessageText>manual</customMessageText>"],
+  [
+    "pi-context-prepare-cancelled",
+    "<dim> \u00b7 </dim><customMessageText>cancelled</customMessageText>",
+  ],
+])(
   "%s renders in Pi's custom-message box with a 10-line Collapsed View",
-  async (customType) => {
+  async (customType, heading) => {
     const { session } = await registeredTool("context_notes");
     const renderer = session.extensionRunner.getMessageRenderer(customType);
     if (!renderer) throw new Error(`Missing message renderer: ${customType}`);
@@ -424,7 +431,9 @@ test.each(["pi-context-prepare", "pi-context-manual-prepare", "pi-context-prepar
     if (!collapsed) throw new Error("Renderer returned nothing");
     const rows = lines(collapsed);
     const text = textOf(rows);
-    expect(text).toContain("<customMessageLabel><b>[context rollover");
+    expect(rows[1]?.replaceAll(/<\/?bg:customMessageBg>/gu, "").trim()).toBe(
+      `<customMessageLabel><b>[context]</b></customMessageLabel> <customMessageText>rollover</customMessageText>${heading}`,
+    );
     expect(text).toContain("<customMessageText>Instruction 10</customMessageText>");
     expect(text).not.toContain("Instruction 11");
     expect(text).toContain("<muted>... (4 more lines,</muted> <dim>ctrl+o</dim>");

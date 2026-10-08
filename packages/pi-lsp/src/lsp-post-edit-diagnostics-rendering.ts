@@ -243,7 +243,7 @@ export interface PostEditDiagnosticsEntryRenderOptions {
 
 /**
  * Render one model-invisible Post-edit Diagnostics Entry as Pi's default custom message: a bold
- * label, the counts, and the outcomes in a 10-line Collapsed View.
+ * `[lsp] post-edit diagnostics` label with the counts, and the outcomes in a 10-line Collapsed View.
  */
 export function renderPostEditDiagnosticsEntry(
   data: PostEditDiagnosticsEntryData,
@@ -251,15 +251,14 @@ export function renderPostEditDiagnosticsEntry(
   theme: PostEditDiagnosticsEntryTheme,
 ): Component {
   const outcomes = new Text(outcomeLines(data, theme).join("\n"), 0, 0);
-  return customMessageBox(
-    theme,
-    { outputPad: options.outputPad ?? 1, label: "Post-edit diagnostics" },
-    [
-      new Text(entrySummary(data, theme), 0, 0),
-      new CollapsedPreview(theme, outcomes, {
-        limit: COLLAPSED_LINES.fallback,
-        expanded: options.expanded,
-      }),
-    ],
-  );
+  const heading = joinInline(theme, [
+    theme.fg("customMessageText", "post-edit diagnostics"),
+    entrySummary(data, theme),
+  ]);
+  return customMessageBox(theme, { outputPad: options.outputPad ?? 1, source: "lsp", heading }, [
+    new CollapsedPreview(theme, outcomes, {
+      limit: COLLAPSED_LINES.fallback,
+      expanded: options.expanded,
+    }),
+  ]);
 }

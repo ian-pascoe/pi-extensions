@@ -390,8 +390,8 @@ describe("CollapsedPreview", () => {
 });
 
 describe("customMessageBox", () => {
-  it("draws Pi's custom-message look: padded customMessageBg box, bold label, spacer, body", () => {
-    const box = customMessageBox(escapeTaggedTheme, { outputPad: 2, label: "termctrl" }, [
+  it("draws Pi's custom-message look: padded customMessageBg box, bold [source] label, spacer, body", () => {
+    const box = customMessageBox(escapeTaggedTheme, { outputPad: 2, source: "termctrl" }, [
       new Text("body", 0, 0),
     ]);
     const lines = box.render(40);
@@ -400,14 +400,29 @@ describe("customMessageBox", () => {
       true,
     );
     expect(readableTags(lines[1] ?? "")).toContain(
-      "<bg:customMessageBg>  <customMessageLabel><b>termctrl</b></customMessageLabel>",
+      "<bg:customMessageBg>  <customMessageLabel><b>[termctrl]</b></customMessageLabel>",
     );
     expect(readableTags(lines[3] ?? "")).toContain("  body");
     expectLinesFitWidth(lines, 40);
   });
 
-  it("omits the label and spacer when there is no label", () => {
-    const box = customMessageBox(escapeTaggedTheme, { outputPad: 1 }, [new Text("body", 0, 0)]);
+  it("puts the heading on the label's line, like Pi's `[skill] name`", () => {
+    const box = customMessageBox(
+      escapeTaggedTheme,
+      { outputPad: 1, source: "subagents", heading: "result" },
+      [new Text("body", 0, 0)],
+    );
+    expect(readableTags(box.render(40)[1] ?? "")).toContain(
+      "<customMessageLabel><b>[subagents]</b></customMessageLabel> result",
+    );
+  });
+
+  it("draws only the label line when there is no body", () => {
+    const box = customMessageBox(
+      escapeTaggedTheme,
+      { outputPad: 1, source: "advisor", heading: "on" },
+      [],
+    );
     expect(box.render(40)).toHaveLength(3);
   });
 });

@@ -85,20 +85,23 @@ const entryOutputPad = 1;
  * A review or status entry in Pi's custom-message look. The lines lead with their own label, so
  * the box has none; the Collapsed View keeps ten visual lines and hints at the rest.
  */
+/** A `[guardian] heading` entry with its lines in a 10-line Collapsed View. */
 function entryBox(
   theme: GuardianRenderTheme,
   outputPad: number,
+  heading: string,
   lines: readonly string[],
   expanded: boolean,
 ): Component {
   const body = new Text(lines.join("\n"), 0, 0);
-  return customMessageBox(theme, { outputPad }, [
-    new CollapsedPreview(theme, body, { limit: COLLAPSED_LINES.fallback, expanded }),
-  ]);
+  return customMessageBox(
+    theme,
+    { outputPad, source: "guardian", heading },
+    lines.length > 0
+      ? [new CollapsedPreview(theme, body, { limit: COLLAPSED_LINES.fallback, expanded })]
+      : [],
+  );
 }
-
-const messageLabel = (theme: Pick<Theme, "fg" | "bold">) =>
-  theme.fg("customMessageLabel", theme.bold("Guardian"));
 
 function preview(text: string): string {
   const first = text.split("\n", 1)[0] ?? "";
@@ -200,7 +203,7 @@ export function renderReviewEntry(
     data.risk && data.authorization
       ? `risk ${riskLabel({ risk: data.risk, category: data.riskCategory })} · authorization ${data.authorization}`
       : undefined;
-  const heading = `${statusMark(theme, resultMark[data.result])} ${messageLabel(theme)} ${paint(data.result)}`;
+  const heading = `${statusMark(theme, resultMark[data.result])} ${paint(data.result)}`;
   const subject = joinInline(theme, [
     theme.bold(paint(data.toolName)),
     scores ? theme.fg("muted", scores) : undefined,
@@ -210,7 +213,7 @@ export function renderReviewEntry(
     data.escalation ? theme.fg("accent", escalationLabel(data.escalation)) : undefined,
   ]);
   const reason = data.rationale ?? data.failure;
-  const summary = [heading, subject, ...(reason ? reason.split("\n").map(paint) : [])];
+  const summary = [subject, ...(reason ? reason.split("\n").map(paint) : [])];
   const details = [theme.fg("dim", `arguments ${data.arguments}`)];
   if (data.escalation) {
     const { escalation } = data;
@@ -238,7 +241,7 @@ export function renderReviewEntry(
     data.parentToolCallId ? `issued by ${data.parentToolCallId}` : undefined,
   ].filter((part) => part !== undefined);
   details.push(theme.fg("dim", meta.join(" · ")));
-  return entryBox(theme, outputPad, [...summary, ...details], expanded);
+  return entryBox(theme, outputPad, heading, [...summary, ...details], expanded);
 }
 
 /** Escalations by trigger, such as ` (2 rejected, 1 uncertain)`; empty without a breakdown. */
@@ -256,10 +259,11 @@ function badge(state: GuardianState, theme: GuardianRenderTheme, paint: Paint): 
 function statusHeadline(
   entry: GuardianStatusEntry,
   theme: GuardianRenderTheme,
-  label: string,
+  label: string | undefined,
   paint: Paint,
 ): string[] {
-  const parts = [`${label} ${badge(entry.state, theme, paint)}`];
+  const state = badge(entry.state, theme, paint);
+  const parts = [label ? `${label} ${state}` : state];
   const classifier = entry.settings ? configuredClassifier(entry.settings) : undefined;
   if (entry.settings && entry.state === "enabled")
     parts.push(
@@ -324,12 +328,12 @@ export function renderStatusEntry(
   outputPad = entryOutputPad,
 ): Component {
   if (!Value.Check(statusEntrySchema, data))
-    return customMessageBox(theme, { outputPad, label: "Guardian" }, [
+    return customMessageBox(theme, { outputPad, source: "guardian" }, [
       new Text(JSON.stringify(data, null, 2), 0, 0),
     ]);
   const paint = messagePaint(theme);
-  const [heading = "", ...rest] = statusHeadline(data, theme, messageLabel(theme), paint);
-  const summary = [heading];
+  const [heading = "", ...rest] = statusHeadline(data, theme, undefined, paint);
+  const summary: string[] = [];
   for (const { scope, key, options } of data.changes ?? [])
     summary.push(
       `${statusMark(theme, "done")} ${paint(`${key} → ${formatGuardianOption(options, key)}`)} ${theme.fg("dim", `[${scope}]`)}`,
@@ -347,7 +351,7 @@ export function renderStatusEntry(
       );
     }
   }
-  return entryBox(theme, outputPad, [...summary, ...details], expanded);
+  return entryBox(theme, outputPad, heading, [...summary, ...details], expanded);
 }
 
 /** Footer status entry: on, or the tools under review; `undefined` clears it. */

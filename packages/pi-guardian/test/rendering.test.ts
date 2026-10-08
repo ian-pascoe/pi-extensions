@@ -35,7 +35,7 @@ function lines(component: { render(width: number): string[] } | undefined): stri
 const withoutTags = (text: string) => text.replace(/<\/?[A-Za-z:]+>/g, "");
 const plain = (rendered: string[]) => withoutTags(rendered.join("\n")).trim();
 
-const label = "<customMessageLabel><b>Guardian</b></customMessageLabel>";
+const label = "<customMessageLabel><b>[guardian]</b></customMessageLabel>";
 const hintPattern =
   /<muted>\.\.\. \((\d+) more lines,<\/muted> <dim>ctrl\+o<\/dim><muted> to expand<\/muted><muted>\)<\/muted>/;
 
@@ -69,12 +69,12 @@ const allowed = {
 };
 
 describe("Guardian review entries", () => {
-  it("draws a rejection in Pi's custom-message box, led by a failure mark", () => {
+  it("draws a rejection in Pi's custom-message box, labelled `[guardian] ✗ rejected`", () => {
     const rendered = lines(renderReviewEntry(review, false, theme));
     expect(rendered.every((line) => line.startsWith("<bg:customMessageBg>"))).toBe(true);
     const text = rendered.join("\n");
     expect(text).toContain(
-      `<error>✗</error> ${label} <customMessageText>rejected</customMessageText>`,
+      `${label} <error>✗</error> <customMessageText>rejected</customMessageText>`,
     );
     expect(text).toContain(
       "<b><customMessageText>bash</customMessageText></b><dim> · </dim><muted>risk high · authorization low</muted>",
@@ -84,7 +84,7 @@ describe("Guardian review entries", () => {
     );
   });
 
-  it("leads each result with its own Status Mark", () => {
+  it("marks each result with its own Status Mark after the label", () => {
     const marks = [
       ["allowed", "<success>✓</success>"],
       ["failed", "<warning>!</warning>"],
@@ -94,7 +94,7 @@ describe("Guardian review entries", () => {
     for (const [result, mark] of marks)
       expect(
         lines(renderReviewEntry({ ...allowed, result }, false, theme, true)).join("\n"),
-      ).toContain(`${mark} ${label} <customMessageText>${result}</customMessageText>`);
+      ).toContain(`${label} ${mark} <customMessageText>${result}</customMessageText>`);
   });
 
   it("shows a short review whole, with no hint in either view", () => {
@@ -110,10 +110,11 @@ describe("Guardian review entries", () => {
     const rationale = Array.from({ length: 14 }, (_, index) => `Reason ${index + 1}`).join("\n");
     const collapsed = lines(renderReviewEntry({ ...review, rationale }, false, theme));
     const text = collapsed.join("\n");
-    expect(text).toContain("Reason 8");
-    expect(text).not.toContain("Reason 9");
-    // Six hidden rationale lines, plus the arguments and statistics lines.
-    expect(Number(hintPattern.exec(text)?.[1])).toBe(8);
+    // The label line holds the result, so the ten body lines are the subject and nine reasons.
+    expect(text).toContain("Reason 9");
+    expect(text).not.toContain("Reason 10");
+    // Five hidden rationale lines, plus the arguments and statistics lines.
+    expect(Number(hintPattern.exec(text)?.[1])).toBe(7);
     expect(lines(renderReviewEntry({ ...review, rationale }, true, theme)).join("\n")).toContain(
       "Reason 14",
     );
@@ -209,7 +210,7 @@ describe("Guardian status entries", () => {
         ),
       ),
     );
-    expect(text).toMatch(/^Guardian ● on.*\n\s*✓ onDeny → block \[session\]/);
+    expect(text).toMatch(/^\[guardian\] ● on.*\n\s*\n\s*✓ onDeny → block \[session\]/);
   });
 
   it("hints at every setting while collapsed and lists them with sources when expanded", () => {
@@ -218,7 +219,8 @@ describe("Guardian status entries", () => {
     const hidden = Number(hintPattern.exec(collapsed.join("\n"))?.[1]);
     expect(hidden).toBeGreaterThan(0);
     expect(expanded).toHaveLength(collapsed.length - 1 + hidden);
-    expect(collapsed).toHaveLength(10 + 1 + 2);
+    // Padding, label line, spacer, ten body lines, the hint, padding.
+    expect(collapsed).toHaveLength(1 + 1 + 1 + 10 + 1 + 1);
     expect(plain(collapsed)).not.toContain("maxConsecutiveRejections");
     expect(plain(expanded)).toMatch(/maxConsecutiveRejections\s+inherit\s+\[default\]/);
     expect(plain(expanded)).toMatch(/thinkingLevel\s+low\s+\[default\]/);

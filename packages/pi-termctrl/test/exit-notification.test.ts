@@ -105,7 +105,7 @@ describe("Exit notifications", () => {
     );
     expect(collapsed).toEqual([
       "",
-      "<customMessageLabel><b>[termctrl]</b></customMessageLabel>",
+      "<customMessageLabel><b>[termctrl]</b></customMessageLabel> <customMessageText>2 exits</customMessageText>",
       "",
       "<muted>■</muted> <customMessageText><b>t1</b></customMessageText> <customMessageText>exited with code 1</customMessageText><dim> · </dim><customMessageText>1m 5s</customMessageText><dim> · </dim><muted>npm run dev</muted>",
       "<muted>■</muted> <customMessageText><b>b2</b></customMessageText> <customMessageText>ended by SIGKILL</customMessageText><dim> · </dim><customMessageText>800ms</customMessageText><dim> · </dim><muted>sleep 100</muted><dim> (ctrl+o to expand)</dim>",
@@ -124,6 +124,9 @@ describe("Exit notifications", () => {
     };
     const collapsed = rendered(
       renderExitNotification(messageFor([clean], 0), { expanded: false, outputPad: 0 }, theme),
+    );
+    expect(collapsed[1]).toBe(
+      "<customMessageLabel><b>[termctrl]</b></customMessageLabel> <customMessageText>exit</customMessageText>",
     );
     expect(collapsed[3]).toContain("<success>✓</success> <customMessageText><b>t1</b>");
   });

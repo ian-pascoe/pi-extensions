@@ -49,7 +49,7 @@ function lines(component: { render(width: number): string[] } | undefined): stri
 const withoutTags = (text: string) => text.replace(/<\/?[A-Za-z:]+>/g, "");
 const plainText = (rendered: string[]) => withoutTags(rendered.join("\n")).trim();
 
-const label = "<customMessageLabel><b>Advisor</b></customMessageLabel>";
+const label = "<customMessageLabel><b>[advisor]</b></customMessageLabel>";
 const hintPattern =
   /<muted>\.\.\. \((\d+) more lines,<\/muted> <dim>ctrl\+o<\/dim><muted> to expand<\/muted><muted>\)<\/muted>/;
 
@@ -207,7 +207,7 @@ describe("Advisor status", () => {
 
   it("summarizes state, model, backlog, usage, children, and problems when collapsed", () => {
     const text = status({ ...snapshot, error: "Model unavailable" });
-    expect(text).toContain("Advisor ● reviewing");
+    expect(text).toContain("[advisor] ● reviewing");
     expect(text).toContain("anthropic/claude-sonnet (inherited) · high");
     expect(text).toContain("backlog 2");
     expect(text).toContain("tokens 41.2k · cost $0.18 · 2 children");
@@ -331,7 +331,7 @@ describe("Advisor status", () => {
         ],
       }),
     ).toMatch(
-      /^Advisor ● reviewing.*\n\s*✓ model → openai\/gpt \[session\]\s*\n\s*✓ enabled → inherit \[project\]\s*\n/,
+      /^\[advisor\] ● reviewing.*\n\s*\n\s*✓ model → openai\/gpt \[session\]\s*\n\s*✓ enabled → inherit \[project\]\s*\n/,
     );
   });
 
@@ -340,7 +340,7 @@ describe("Advisor status", () => {
       state: "private",
       error: "Private Advisor Sessions cannot create another Advisor",
     });
-    expect(text).toContain("Advisor ○ private");
+    expect(text).toContain("[advisor] ○ private");
     expect(text).toContain("✗ Private Advisor Sessions cannot create another Advisor");
     expect(status({ state: "paused", error: "boom", usage: null, cost: null })).toContain("✗ boom");
   });
@@ -354,7 +354,7 @@ describe("Advisor status", () => {
       },
       true,
     );
-    expect(text).toContain("Advisor ● reviewing");
+    expect(text).toContain("[advisor] ● reviewing");
     expect(text).toContain("anthropic/claude-sonnet");
     expect(text).toContain("tokens 41.2k · cost $0.18");
     expect(text).toContain("! unavailable tools: lsp_diagnostics");
@@ -398,7 +398,7 @@ describe("Child Agent Advisor entries", () => {
     expect(rendered.every((line) => line.startsWith("<bg:customMessageBg>"))).toBe(true);
     const text = rendered.join("\n");
     expect(text).toContain(
-      `${label}<dim> · </dim><accent>worker</accent><dim> · </dim><warning>!</warning> <customMessageText>paused</customMessageText>`,
+      `${label} <accent>worker</accent><dim> · </dim><warning>!</warning> <customMessageText>paused</customMessageText>`,
     );
     expect(text).toContain("<error>Deadline exceeded</error>");
   });

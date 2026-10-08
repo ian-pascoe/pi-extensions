@@ -8,7 +8,7 @@ import type {
 import { captureCheckpointAdapter, type CheckpointAdapter } from "./checkpoint-adapter.js";
 import { registerContextTools } from "./context-tools.js";
 import {
-  CONTEXT_MESSAGE_LABELS,
+  CONTEXT_MESSAGE_QUALIFIERS,
   renderContextMessage,
   renderContextToolCall,
   renderContextToolResult,
@@ -138,11 +138,11 @@ export default function contextManagement(pi: ExtensionAPI): void {
     }
   });
   registerContextTools(pi, fail);
-  for (const [customType, label] of Object.entries(CONTEXT_MESSAGE_LABELS))
+  for (const [customType, qualifier] of Object.entries(CONTEXT_MESSAGE_QUALIFIERS))
     pi.registerMessageRenderer(
       customType,
       expandMessageOnClick((message, options, theme) =>
-        renderContextMessage(label, message, options, theme),
+        renderContextMessage(qualifier, message, options, theme),
       ),
     );
   pi.registerCommand("context", {
