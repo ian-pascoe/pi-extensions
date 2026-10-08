@@ -27,6 +27,7 @@ import {
   messageOrigins,
   projectEvidence,
   selectContextSeed,
+  type ToolResultCap,
   type ContextSeed,
 } from "./advisor-evidence.js";
 import { seedBudget, sessionTokenLimit, type AdvisorConfig } from "./advisor-settings.js";
@@ -612,11 +613,33 @@ export class AdvisorObserver {
     );
   }
 
+  /**
+   * The cap on each tool result's text in Review Evidence: the head and tail, with a marker that
+   * points granted tools at the full result in the observed session file. The same cap measures
+   * what fits, fits the seed, and projects incremental updates, so the calibrated estimate is of
+   * the capped evidence the Advisor receives. Pure in the setting and session file, so repeated
+   * projections of the same messages are byte-identical.
+   */
+  private toolResultCap(): ToolResultCap {
+    const file = this.observed.sessionManager.getSessionFile();
+    const where = file
+      ? `the full result is in the observed session file ${file}`
+      : "the full result is not available to this Advisor";
+    return {
+      limit: this.config.maxToolResultChars,
+      marker: (omitted) => `[… ${omitted} characters omitted from this tool result; ${where}]`,
+    };
+  }
+
   /** Whether the evidence not yet supplied fits the Context Seed budget, in reported tokens. */
   private fits(runtime: AgentSessionRuntime, snapshot: Context): boolean {
     const supplied = this.supplied?.messages.length ?? 0;
     return (
-      evidenceTokens(projectEvidence(snapshot.messages.slice(supplied))) *
+      evidenceTokens(
+        projectEvidence(snapshot.messages.slice(supplied), {
+          toolResultCap: this.toolResultCap(),
+        }),
+      ) *
         this.tokenFactor(runtime) <=
       seedBudget(this.config.seedBudgetTokens, runtime.session.model?.contextWindow)
     );
@@ -783,6 +806,7 @@ export class AdvisorObserver {
     if (stable && this.supplied) {
       const { messages, images } = projectEvidence(
         snapshot.messages.slice(this.supplied.messages.length),
+        { toolResultCap: this.toolResultCap() },
       );
       for (const ref of evidenceRefs(messages)) this.suppliedRefs.add(ref);
       return { note: "", images, json: JSON.stringify({ messages, ...extras }) };
@@ -793,6 +817,7 @@ export class AdvisorObserver {
     const seed = selectContextSeed(snapshot, {
       budgetTokens: estimateBudget - Math.ceil(JSON.stringify(extras).length / 4),
       origins: snapshot.origins,
+      toolResultCap: this.toolResultCap(),
     });
     const { observedSetup, messages, images } = seed;
     for (const ref of evidenceRefs(messages)) this.suppliedRefs.add(ref);

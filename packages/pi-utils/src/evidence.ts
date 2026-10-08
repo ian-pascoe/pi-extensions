@@ -201,9 +201,53 @@ export function combineEvidence(items: readonly EvidenceItem[]): Evidence {
   return { messages, images };
 }
 
-/** Project observed messages in order; attachment indexes restart at 1 for each projection. */
-export function projectEvidence(messages: readonly Message[]): Evidence {
+/** Opt-in cap on tool-result text; projection without one never shortens any text. */
+export interface ToolResultCap {
+  /** Longest tool-result text kept whole, in characters; longer text keeps its head and tail. */
+  limit: number;
+  /** Builds the text that replaces the omitted middle, given the number of omitted characters. */
+  marker: OmissionMarker;
+}
+
+/** Options for projecting evidence; every option is opt-in. */
+export interface ProjectionOptions {
+  /** Cap each tool result's text, so oversized results keep a head, a tail, and a marker. */
+  toolResultCap?: ToolResultCap | undefined;
+}
+
+/**
+ * `text` unchanged if it is within `cap.limit` characters or capping would not shorten it, else
+ * its head and tail (about half the limit each) around `cap.marker(omitted)`. Pure, so equal
+ * input always gives equal output; a cut never splits a surrogate pair.
+ */
+export function capText(text: string, cap: ToolResultCap): string {
+  if (text.length <= cap.limit) return text;
+  let head = Math.ceil(cap.limit / 2);
+  let tail = text.length - (cap.limit - head);
+  const high = (index: number) => {
+    const code = text.charCodeAt(index);
+    return code >= 0xd800 && code <= 0xdbff;
+  };
+  const low = (index: number) => {
+    const code = text.charCodeAt(index);
+    return code >= 0xdc00 && code <= 0xdfff;
+  };
+  if (head > 0 && high(head - 1)) head--;
+  if (tail < text.length && low(tail)) tail++;
+  const capped = `${text.slice(0, head)}\n${cap.marker(tail - head)}\n${text.slice(tail)}`;
+  return capped.length >= text.length ? text : capped;
+}
+
+/**
+ * Project observed messages in order; attachment indexes restart at 1 for each projection.
+ * Without `options.toolResultCap`, text is never shortened.
+ */
+export function projectEvidence(
+  messages: readonly Message[],
+  options: ProjectionOptions = {},
+): Evidence {
   const images: ImageContent[] = [];
+  const { toolResultCap } = options;
   /** User and tool-result content; unknown future block types are omitted, not forwarded. */
   const media = (blocks: readonly (TextContent | ImageContent)[]) =>
     blocks.flatMap((block): EvidenceBlock[] => {
@@ -230,7 +274,11 @@ export function projectEvidence(messages: readonly Message[]): Evidence {
             ref: toolCallRef(message.toolCallId),
             toolName: message.toolName,
             isError: message.isError,
-            content: media(message.content),
+            content: media(message.content).map((block) =>
+              toolResultCap && block.type === "text"
+                ? { type: "text", text: capText(block.text, toolResultCap) }
+                : block,
+            ),
           },
         ];
       case "assistant": {
@@ -267,10 +315,13 @@ export function projectEvidence(messages: readonly Message[]): Evidence {
 }
 
 /** Project one observed message; `undefined` when its role is omitted from evidence. */
-export function projectEvidenceItem(message: Message): EvidenceItem | undefined {
+export function projectEvidenceItem(
+  message: Message,
+  options?: ProjectionOptions,
+): EvidenceItem | undefined {
   const {
     messages: [only],
     images,
-  } = projectEvidence([message]);
+  } = projectEvidence([message], options);
   return only ? { message: only, images } : undefined;
 }
