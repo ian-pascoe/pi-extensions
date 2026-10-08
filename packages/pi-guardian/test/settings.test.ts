@@ -48,6 +48,7 @@ describe("Guardian settings", () => {
       settings: {
         enabled: true,
         thinkingLevel: "low",
+        escalationThreshold: 0.2,
         tools: {},
         commands: {},
         policy: "",
@@ -86,6 +87,9 @@ describe("Guardian settings", () => {
       /Invalid global Guardian settings/,
     );
     expect(() => resolveInvalid('{"onDeny":"prompt"}')).toThrow(/Invalid global Guardian settings/);
+    expect(() => resolveInvalid('{"escalationThreshold":1.5}')).toThrow(
+      /Invalid global Guardian settings/,
+    );
   });
 
   it("rejects Command Rules that could never match", () => {
@@ -154,6 +158,13 @@ describe("/guardian command", () => {
     expect(() => parseGuardianCommand("tool bash maybe")).toThrow(/Usage/);
     expect(() => parseGuardianCommand("set nonsense 1")).toThrow(/Unknown Guardian option/);
     expect(() => parseGuardianCommand("set maxConsecutiveRejections -1")).toThrow(/Invalid/);
+    expect(parseGuardianCommand('set classifierModel "typesafe/jev-latest"')).toMatchObject({
+      key: "classifierModel",
+      patch: { classifierModel: "typesafe/jev-latest" },
+    });
+    expect(parseGuardianCommand("set escalationThreshold 0.3")).toMatchObject({
+      patch: { escalationThreshold: 0.3 },
+    });
   });
 
   it("updates one tool entry within a scope", () => {

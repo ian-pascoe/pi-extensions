@@ -47,6 +47,13 @@ export const guardianOptionsSchema = Type.Object(
     enabled: Type.Optional(Type.Boolean()),
     model: Type.Optional(Type.String({ minLength: 1 })),
     thinkingLevel: Type.Optional(thinkingLevelSchema),
+    /**
+     * Classifier model of the First Pass as `provider/id`; absent or `off` makes the First Pass a
+     * language model's. A classifier escalates to the Escalation Pass when unsure.
+     */
+    classifierModel: Type.Optional(Type.String({ minLength: 1 })),
+    /** Rejection Probability at which a classifier's First Pass escalates. */
+    escalationThreshold: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
     /** Model of the Escalation Pass; absent uses the Guardian model. */
     escalationModel: Type.Optional(Type.String({ minLength: 1 })),
     /** Thinking level of the Escalation Pass; absent is `low`, or `thinkingLevel` if higher. */
@@ -80,6 +87,8 @@ export interface GuardianConfig {
   enabled: boolean;
   model?: string;
   thinkingLevel: GuardianThinkingLevel;
+  classifierModel?: string;
+  escalationThreshold: number;
   escalationModel?: string;
   escalationThinkingLevel?: GuardianThinkingLevel;
   /** Effective Tool Policies after merging every scope's entries. */
@@ -109,6 +118,7 @@ export type GuardianSettingSource = Static<typeof guardianSettingSourceSchema>;
 export const guardianDefaults: GuardianConfig = {
   enabled: true,
   thinkingLevel: "low",
+  escalationThreshold: 0.2,
   tools: {},
   commands: {},
   policy: "",
@@ -118,6 +128,15 @@ export const guardianDefaults: GuardianConfig = {
   maxConsecutiveRejections: 3,
   verbose: false,
 };
+
+/** The `classifierModel` value that turns off an inherited classifier. */
+export const classifierOff = "off";
+
+/** The classifier model making the First Pass, if one is configured. */
+export function configuredClassifier(config: Pick<GuardianConfig, "classifierModel">) {
+  const setting = config.classifierModel;
+  return setting === undefined || setting === classifierOff ? undefined : setting;
+}
 
 const thinkingOrder: readonly GuardianThinkingLevel[] = thinkingLevelSchema.anyOf.map(
   (literal) => literal.const,

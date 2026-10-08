@@ -10,7 +10,9 @@ import {
   type EscalationRecord,
 } from "./guardian-audit.js";
 import {
+  configuredClassifier,
   escalationThinkingLevel,
+  guardianDefaults,
   guardianAppliedChangeSchema,
   guardianOptionKeys,
   guardianOptionsSchema,
@@ -106,13 +108,31 @@ export function formatGuardianOption(options: GuardianOptions, key: keyof Guardi
   }
 }
 
-/** What an Escalation Pass did to a review's first assessment. */
+/** What an Escalation Pass did to a review's First Pass. */
 function escalationLabel(escalation: EscalationRecord): string {
   const first = escalation.firstPass;
-  const was = `first pass ${riskLabel({ risk: first.risk, category: first.riskCategory })}/${first.authorization}`;
+  const scores = first
+    ? `${riskLabel({ risk: first.risk, category: first.riskCategory })}/${first.authorization}`
+    : undefined;
+  const was = {
+    rejected: `first pass ${scores ?? "rejected"}`,
+    uncertain: `classifier unsure: ${scores ?? "no assessment"}`,
+    uncategorized: `classifier gave no Risk Category: ${scores ?? "no assessment"}`,
+    failed: "classifier failed",
+  }[escalation.trigger];
   if (escalation.result === "assessed") return `escalated (${was})`;
   if (escalation.result === "aborted") return `escalation aborted (${was})`;
-  return `escalation failed, first pass stands (${was})`;
+  if (escalation.trigger === "rejected") return `escalation failed, first pass stands (${was})`;
+  return `escalation failed (${was})`;
+}
+
+/**
+ * Whether a review's escalation needs attention even when its call was allowed: one that
+ * overturned a would-be Rejection or followed a failed classifier does, while a classifier's
+ * doubt that the Escalation Pass resolved does not.
+ */
+function notableEscalation(escalation: EscalationRecord | undefined): boolean {
+  return escalation?.trigger === "rejected" || escalation?.trigger === "failed";
 }
 
 /**
@@ -130,13 +150,14 @@ export function renderReviewEntry(
 ): Component | undefined {
   if (!Value.Check(reviewEntrySchema, data))
     return new Text(`Guardian Review\n${JSON.stringify(data, null, 2)}`, 0, 0);
-  // Downgraded and escalated reviews always show: both mean the first assessment was doubtful.
+  // Downgraded reviews and escalations that overturned a Rejection or followed a failed
+  // classifier always show: they mean the First Pass was doubtful or missing.
   const quiet =
     (data.result === "allowed" || data.result === "unused") &&
     !data.userOverride &&
     !data.argumentDrift &&
     !data.downgraded &&
-    !data.escalation;
+    !notableEscalation(data.escalation);
   if (quiet && !verbose) return undefined;
   const style = resultStyle[data.result];
   const scores =
@@ -161,8 +182,10 @@ export function renderReviewEntry(
     lines.push(theme.fg("dim", `arguments ${data.arguments}`));
     if (data.escalation) {
       const { escalation } = data;
-      if (escalation.firstPass.rationale)
+      if (escalation.firstPass?.rationale)
         lines.push(theme.fg("dim", `first pass: ${escalation.firstPass.rationale}`));
+      if (data.classification?.failure)
+        lines.push(theme.fg("dim", `classifier: ${data.classification.failure}`));
       if (escalation.failure) lines.push(theme.fg("dim", `escalation: ${escalation.failure}`));
       lines.push(
         theme.fg(
@@ -187,6 +210,12 @@ export function renderReviewEntry(
   return new Text(lines.join("\n"), 0, 0);
 }
 
+/** Escalations by trigger, such as ` (2 rejected, 1 uncertain)`; empty without a breakdown. */
+function escalationBreakdown(by: Record<string, number> | undefined): string {
+  const parts = Object.entries(by ?? {}).map(([trigger, count]) => `${count} ${trigger}`);
+  return parts.length ? ` (${parts.join(", ")})` : "";
+}
+
 function badge(state: GuardianState, theme: GuardianRenderTheme): string {
   const style = stateBadge[state];
   return theme.fg(style.color, `${style.symbol} ${state}`);
@@ -198,16 +227,19 @@ export function guardianStatusHeadline(
   theme: GuardianRenderTheme,
 ): string[] {
   const parts = [`${theme.bold("Guardian")} ${badge(entry.state, theme)}`];
+  const classifier = entry.settings ? configuredClassifier(entry.settings) : undefined;
   if (entry.settings && entry.state === "enabled")
     parts.push(
-      entry.settings.model ??
-        `session model${theme.fg("dim", " (inherited from the session; choose a small, fast model in /guardian)")}`,
+      classifier !== undefined
+        ? `classifier ${classifier}${theme.fg("dim", ` (escalates at Rejection Probability ${entry.settings.escalationThreshold ?? guardianDefaults.escalationThreshold})`)}`
+        : (entry.settings.model ??
+            `session model${theme.fg("dim", " (inherited from the session; choose a small, fast model in /guardian)")}`),
     );
   if (entry.settings && entry.state === "enabled")
     parts.push(
       theme.fg(
         "dim",
-        `escalates to ${entry.settings.escalationModel ?? "the Guardian model"} (${escalationThinkingLevel(entry.settings)} thinking)`,
+        `escalates to ${entry.settings.escalationModel ?? (classifier === undefined ? "the Guardian model" : (entry.settings.model ?? "the session model"))} (${escalationThinkingLevel(entry.settings)} thinking)`,
       ),
     );
   if (entry.followsRoot) parts.push(theme.fg("dim", `follows root ${entry.followsRoot}`));
@@ -224,7 +256,9 @@ export function guardianStatusHeadline(
           `${totals.failed} failed`,
           totals.aborted ? `${totals.aborted} aborted` : undefined,
           `${totals.overrides} ${totals.overrides === 1 ? "override" : "overrides"}`,
-          totals.escalated ? `${totals.escalated} escalated` : undefined,
+          totals.escalated
+            ? `${totals.escalated} escalated${escalationBreakdown(totals.escalatedBy)}`
+            : undefined,
           totals.drift ? `${totals.drift} argument drift` : undefined,
           totals.cost === null ? "cost unknown" : `cost ${formatMoney(totals.cost)}`,
         ]

@@ -347,6 +347,10 @@ export default function guardian(pi: ExtensionAPI): void {
           sources: data.sources ?? {},
           authored,
           models: ctx.modelRegistry.getAvailable().map(modelName),
+          classifiers: ctx.modelRegistry
+            .getModelsOfType("classifier")
+            .filter((model) => ctx.modelRegistry.getProviderAuthStatus(model.provider).configured)
+            .map(modelName),
           tools: pi.getAllTools().map((tool) => tool.name),
         };
       },

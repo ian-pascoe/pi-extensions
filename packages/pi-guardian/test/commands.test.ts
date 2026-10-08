@@ -95,9 +95,32 @@ describe("/guardian command", () => {
     );
     expect(rendered).toContain("Guardian ● enabled");
     expect(rendered).toContain(
-      "2 reviews · 1 allowed · 1 rejected · 0 failed · 0 overrides · 1 escalated · cost $0.0033",
+      "2 reviews · 1 allowed · 1 rejected · 0 failed · 0 overrides · 1 escalated (1 rejected) · cost $0.0033",
     );
     expect(rendered).toContain("escalates to the Guardian model (low thinking)");
+  });
+
+  it("records a classifier First Pass and escalations by trigger", async () => {
+    const harness = await createGuardianHarness({
+      guardianSettings: { classifierModel: "guardian-test/judge", model: "guardian-test/reviewer" },
+    });
+    harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
+    harness.classifierReplies.push(new Error("overloaded"));
+    harness.guardianReplies.push(assessment("low", "high", "Requested."));
+    await harness.session.prompt("Deploy a.");
+    await harness.session.prompt("/guardian status");
+    const status = harness.entries("pi-guardian-status").at(-1);
+    expect(status).toMatchObject({
+      totals: { reviews: 1, allowed: 1, escalated: 1, escalatedBy: { failed: 1 } },
+    });
+    const rendered = stripVTControlCharacters(
+      renderStatusEntry(status, false, plainTheme).render(200).join("\n"),
+    );
+    expect(rendered).toContain(
+      "classifier guardian-test/judge (escalates at Rejection Probability 0.2)",
+    );
+    expect(rendered).toContain("escalates to guardian-test/reviewer (low thinking)");
+    expect(rendered).toContain("1 escalated (1 failed)");
   });
 
   it("changes one Tool Policy entry at the session scope", async () => {
@@ -160,6 +183,39 @@ describe("/guardian settings menu", () => {
     expect(harness.entries("pi-guardian-status")).toMatchObject([
       { changes: [{ scope: "session", key: "onDeny", options: { onDeny: "block" } }] },
     ]);
+  });
+
+  it("picks a classifier model, or off, for the First Pass", async () => {
+    const host = menuUi();
+    const harness = await createGuardianHarness({ ui: host.ui, mode: "tui" });
+    host.shown.theme = harness.session.extensionRunner?.getUIContext().theme;
+    const command = harness.session.prompt("/guardian");
+    await vi.waitFor(() => expect(host.shown.component).toBeDefined());
+    host.goTo("classifierModel");
+    host.press(keys.enter);
+    // Only classifier models are offered, after inherit and off.
+    expect(host.screen()).toContain("guardian-test/judge");
+    expect(host.screen()).not.toContain("guardian-test/reviewer");
+    host.type("tiny-judge");
+    host.press(keys.enter);
+    await vi.waitFor(() =>
+      expect(harness.entries("pi-guardian-settings").at(-1)).toEqual({
+        version: 1,
+        overrides: { classifierModel: "guardian-test/tiny-judge" },
+      }),
+    );
+    host.goTo("classifierModel");
+    host.press(keys.enter);
+    host.type("off");
+    host.press(keys.enter);
+    await vi.waitFor(() =>
+      expect(harness.entries("pi-guardian-settings").at(-1)).toEqual({
+        version: 1,
+        overrides: { classifierModel: "off" },
+      }),
+    );
+    host.press(keys.escape);
+    await command;
   });
 });
 

@@ -29,6 +29,13 @@ import {
   type ReviewEntry,
 } from "./guardian-audit.js";
 import { tokenFactor } from "./guardian-calibration.js";
+import {
+  classifierQuestions,
+  classifierState,
+  classifierTrigger,
+  resolveClassifierModel,
+  runClassifierPass,
+} from "./guardian-classifier.js";
 import { overrideDialogs } from "./guardian-dialog.js";
 import {
   branchMessages,
@@ -61,12 +68,13 @@ import {
 } from "./guardian-review.js";
 import type { GuardedSessionRole } from "./guardian-root-registry.js";
 import {
+  configuredClassifier,
   contextWindowOrFallback,
   escalationThinkingLevel,
   evidenceBudget,
   type GuardianConfig,
 } from "./guardian-settings.js";
-import type { Context } from "@earendil-works/pi-ai";
+import type { Api, Context, Model } from "@earendil-works/pi-ai";
 import { processShellEnvironment, type ShellEnvironment } from "./safe-command.js";
 import type { SensitivePathContext } from "./sensitive-paths.js";
 import {
@@ -191,6 +199,24 @@ function limiter(max: number): <T>(task: () => Promise<T>) => Promise<T> {
       else active--;
     }
   };
+}
+
+/** What one review sees, before its evidence is sized to a model. */
+interface ReviewInputs {
+  /** The rendered Reviewed Call, never shortened. */
+  reviewed: string;
+  categories: readonly RiskCategory[];
+  /** Provider cache-affinity key, stable for the Guarded Agent's session. */
+  sessionId: string;
+  /** Evidence blocks within a budget, in Pi's chars/4 tokens. */
+  evidence(budgetTokens: number, capBudgetTokens: number): string[];
+}
+
+/** A language model's review request and Guardian's chars/4 estimate of its size. */
+interface ModelRequest {
+  systemPrompt: string;
+  blocks: string[];
+  estimated: number;
 }
 
 function failed(failure: string): ReviewResult {
@@ -387,78 +413,73 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     batch: readonly ToolCall[],
     signal: AbortSignal | undefined,
   ): Promise<ReviewResult> {
-    const resolved = resolveGuardianModel(config.model, ctx.modelRegistry, ctx.model);
-    if (!resolved.ok) return { ...failed(resolved.failure), model: resolved.model };
     const session = host.session();
     if (!session) return failed(host.unavailable());
     const role = host.role();
-    const categories = reviewCategories(config);
-    const systemPrompt = guardianSystemPrompt(config.policy, config.verbose, categories);
-    const reviewed = renderReviewedCall({
-      ...underReview(call),
-      cwd: ctx.cwd,
-      agent: agentLabel(role),
-      reason,
-      batch: batchSiblings(call, batch),
-    });
-    const name = modelName(resolved.model);
     const branch = ctx.sessionManager.getBranch();
-    // Pi's chars/4 estimate, scaled by this model's factor as calibrated on the branch.
-    const factor = tokenFactor(calibrationSamples(branch, name));
-    const tokens = (text: string) => Math.ceil(textTokens(text) * factor);
-    // The Reviewed Call is never shortened: it must fit beside the policy and the reply.
-    const capacity =
-      contextWindowOrFallback(resolved.model.contextWindow) -
-      tokens(systemPrompt) -
-      outputReserveTokens;
-    const callTokens = tokens(reviewed);
-    if (callTokens > capacity)
-      return {
-        ...failed(
-          `the call is too large for Guardian model ${name} to review in full (about ${callTokens} tokens; at most ${Math.max(0, capacity)} fit), and Guardian never reviews a shortened call`,
-        ),
-        model: name,
-      };
-    const budget = evidenceBudget(config.evidenceBudgetTokens, resolved.model.contextWindow);
-    const evidence = selectEvidence({
-      sources: branchMessages(branch),
-      trustUserMessages: role.kind === "main",
-      contextFiles: contextFiles(session, getAgentDir()),
-      extensionMessages: extensionMessages(branch),
-      overrides: recordedOverrides(branch),
-      rootUserMessages: host.rootUserMessages(),
-      delegator: host.delegator(),
-      currentCalls: new Set(
-        call.parentToolCallId === undefined
-          ? [call.toolCallId]
-          : [call.toolCallId, call.parentToolCallId],
-      ),
-      // Selection counts chars/4, so the budget in real tokens is scaled down by the factor.
-      budgetTokens: Math.floor(Math.min(budget, capacity - callTokens) / factor),
-      capBudgetTokens: Math.floor(budget / factor),
-    });
-    const blocks = [...evidence.blocks, reviewed];
-    const estimated = textTokens(systemPrompt) + blocks.reduce((sum, b) => sum + textTokens(b), 0);
-    const sessionId = `pi-guardian:${ctx.sessionManager.getSessionId()}`;
+    const inputs: ReviewInputs = {
+      reviewed: renderReviewedCall({
+        ...underReview(call),
+        cwd: ctx.cwd,
+        agent: agentLabel(role),
+        reason,
+        batch: batchSiblings(call, batch),
+      }),
+      categories: reviewCategories(config),
+      sessionId: `pi-guardian:${ctx.sessionManager.getSessionId()}`,
+      evidence: (budgetTokens, capBudgetTokens) =>
+        selectEvidence({
+          sources: branchMessages(branch),
+          trustUserMessages: role.kind === "main",
+          contextFiles: contextFiles(session, getAgentDir()),
+          extensionMessages: extensionMessages(branch),
+          overrides: recordedOverrides(branch),
+          rootUserMessages: host.rootUserMessages(),
+          delegator: host.delegator(),
+          currentCalls: new Set(
+            call.parentToolCallId === undefined
+              ? [call.toolCallId]
+              : [call.toolCallId, call.parentToolCallId],
+          ),
+          budgetTokens,
+          capBudgetTokens,
+        }).blocks,
+    };
     const key = Symbol(call.toolCallId);
     reviewing.set(key, call.toolName);
     host.reviewingChanged();
     try {
+      const classifier = configuredClassifier(config);
+      if (classifier !== undefined) {
+        const first = await classifierPass(ctx, config, classifier, inputs, signal);
+        const trigger = classifierTrigger(first, config.escalationThreshold);
+        if (!trigger) return first;
+        return withEscalation(first, trigger, await escalate(ctx, config, inputs, signal));
+      }
+      const resolved = resolveGuardianModel(config.model, ctx.modelRegistry, ctx.model);
+      if (!resolved.ok) return { ...failed(resolved.failure), model: resolved.model };
+      const request = modelRequest(ctx, config, resolved.model, inputs, 0);
+      if ("failure" in request) return { ...failed(request.failure), model: request.model };
       const first = await runGuardianReview({
         registry: ctx.modelRegistry,
         model: resolved.model,
         thinkingLevel: config.thinkingLevel,
-        context: reviewRequest(systemPrompt, blocks),
+        context: reviewRequest(request.systemPrompt, request.blocks),
         timeoutMs: config.reviewTimeoutMs,
         signal,
-        sessionId,
-        categories,
+        sessionId: inputs.sessionId,
+        categories: inputs.categories,
       });
       const measured =
-        first.promptTokens === undefined ? first : { ...first, estimatedPromptTokens: estimated };
+        first.promptTokens === undefined
+          ? first
+          : { ...first, estimatedPromptTokens: request.estimated };
       if (measured.kind !== "assessed" || measured.outcome === "allowed") return measured;
-      const request = { systemPrompt, blocks, categories, sessionId };
-      return withEscalation(measured, await escalate(ctx, config, request, signal));
+      return withEscalation(
+        measured,
+        "rejected",
+        await escalate(ctx, config, inputs, signal, request),
+      );
     } finally {
       reviewing.delete(key);
       host.reviewingChanged();
@@ -466,22 +487,114 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
   }
 
   /**
-   * The Escalation Pass of a review whose first pass would be rejected: the same request plus a
+   * A language model's review request: system prompt, evidence sized to the model, and the
+   * Reviewed Call, which is never shortened and so must fit beside the policy, `reserved` tokens
+   * of further blocks, and the reply.
+   */
+  function modelRequest(
+    ctx: ExtensionContext,
+    config: GuardianConfig,
+    model: Model<Api>,
+    inputs: ReviewInputs,
+    reserved: number,
+  ): ModelRequest | { failure: string; model: string } {
+    const systemPrompt = guardianSystemPrompt(config.policy, config.verbose, inputs.categories);
+    const name = modelName(model);
+    // Pi's chars/4 estimate, scaled by this model's factor as calibrated on the branch.
+    const factor = tokenFactor(calibrationSamples(ctx.sessionManager.getBranch(), name));
+    const tokens = (text: string) => Math.ceil(textTokens(text) * factor);
+    const capacity =
+      contextWindowOrFallback(model.contextWindow) -
+      tokens(systemPrompt) -
+      outputReserveTokens -
+      Math.ceil(reserved * factor);
+    const callTokens = tokens(inputs.reviewed);
+    if (callTokens > capacity)
+      return {
+        failure: `the call is too large for Guardian model ${name} to review in full (about ${callTokens} tokens; at most ${Math.max(0, capacity)} fit), and Guardian never reviews a shortened call`,
+        model: name,
+      };
+    const budget = evidenceBudget(config.evidenceBudgetTokens, model.contextWindow);
+    // Selection counts chars/4, so the budget in real tokens is scaled down by the factor.
+    const evidence = inputs.evidence(
+      Math.floor(Math.min(budget, capacity - callTokens) / factor),
+      Math.floor(budget / factor),
+    );
+    const blocks = [...evidence, inputs.reviewed];
+    const estimated = textTokens(systemPrompt) + blocks.reduce((sum, b) => sum + textTokens(b), 0);
+    return { systemPrompt, blocks, estimated };
+  }
+
+  /**
+   * A classifier's First Pass: the Security Policy, evidence sized to the classifier, and the
+   * Reviewed Call as its state, judged by three `choice` questions. A classifier that cannot be
+   * used, or a call too large for it, fails the First Pass, which then escalates.
+   */
+  async function classifierPass(
+    ctx: ExtensionContext,
+    config: GuardianConfig,
+    setting: string,
+    inputs: ReviewInputs,
+    signal: AbortSignal | undefined,
+  ): Promise<ReviewResult> {
+    const unusable = (failure: string, model: string): ReviewResult => ({
+      ...failed(failure),
+      model,
+      classification: {
+        rejectionProbability: null,
+        threshold: config.escalationThreshold,
+        failure,
+      },
+    });
+    const resolved = resolveClassifierModel(setting, ctx.modelRegistry);
+    if (!resolved.ok) return unusable(resolved.failure, setting);
+    const name = modelName(resolved.model);
+    const questions = classifierQuestions(inputs.categories);
+    const factor = tokenFactor(calibrationSamples(ctx.sessionManager.getBranch(), name));
+    const tokens = (text: string) => Math.ceil(textTokens(text) * factor);
+    const capacity =
+      contextWindowOrFallback(resolved.model.contextWindow) -
+      tokens(JSON.stringify(questions)) -
+      tokens(JSON.stringify(classifierState(config.policy, [], "")));
+    const callTokens = tokens(JSON.stringify(inputs.reviewed));
+    if (callTokens > capacity)
+      return unusable(
+        `the call is too large for Guardian classifier ${name} (about ${callTokens} tokens; at most ${Math.max(0, capacity)} fit)`,
+        name,
+      );
+    const budget = evidenceBudget(config.evidenceBudgetTokens, resolved.model.contextWindow);
+    const evidence = inputs.evidence(
+      Math.floor(Math.min(budget, capacity - callTokens) / factor),
+      Math.floor(budget / factor),
+    );
+    const state = classifierState(config.policy, evidence, inputs.reviewed);
+    const first = await runClassifierPass({
+      registry: ctx.modelRegistry,
+      model: resolved.model,
+      context: { state, questions: { ...questions } },
+      categories: inputs.categories,
+      threshold: config.escalationThreshold,
+      signal,
+    });
+    if (first.promptTokens === undefined) return first;
+    const estimated = textTokens(JSON.stringify(state)) + textTokens(JSON.stringify(questions));
+    return { ...first, estimatedPromptTokens: estimated };
+  }
+
+  /**
+   * The Escalation Pass of a review whose First Pass escalated: a language model's request plus a
    * final instruction asking for careful reasoning, with the escalation model and thinking level
-   * and its own deadline. Its request extends the first pass's, so the cached system prompt is
-   * reused; the cached messages are reused only with the same model and thinking settings, since
-   * a provider such as Anthropic invalidates cached messages when thinking changes.
+   * and its own deadline. After a language model's First Pass, its request extends that pass's,
+   * so the cached system prompt is reused; the cached messages are reused only with the same
+   * model and thinking settings, since a provider such as Anthropic invalidates cached messages
+   * when thinking changes. After a classifier's, the request is built for the escalation model.
    */
   async function escalate(
     ctx: ExtensionContext,
     config: GuardianConfig,
-    request: {
-      systemPrompt: string;
-      blocks: readonly string[];
-      categories: readonly RiskCategory[];
-      sessionId: string;
-    },
+    inputs: ReviewInputs,
     signal: AbortSignal | undefined,
+    firstRequest?: ModelRequest,
   ): Promise<ReviewResult> {
     const resolved = resolveGuardianModel(
       config.escalationModel ?? config.model,
@@ -490,7 +603,11 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     );
     if (!resolved.ok) return { ...failed(resolved.failure), model: resolved.model };
     const name = modelName(resolved.model);
-    const blocks = [...request.blocks, escalationInstruction(request.categories)];
+    const instruction = escalationInstruction(inputs.categories);
+    const request =
+      firstRequest ?? modelRequest(ctx, config, resolved.model, inputs, textTokens(instruction));
+    if ("failure" in request) return { ...failed(request.failure), model: name };
+    const blocks = [...request.blocks, instruction];
     const factor = tokenFactor(calibrationSamples(ctx.sessionManager.getBranch(), name));
     const size = Math.ceil(
       (textTokens(request.systemPrompt) + blocks.reduce((sum, b) => sum + textTokens(b), 0)) *
@@ -511,8 +628,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       context: reviewRequest(request.systemPrompt, blocks),
       timeoutMs: config.reviewTimeoutMs,
       signal,
-      sessionId: request.sessionId,
-      categories: request.categories,
+      sessionId: inputs.sessionId,
+      categories: inputs.categories,
       reasoned: true,
     });
   }
@@ -520,13 +637,16 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
   /** The audit record of a review's Escalation Pass. */
   function escalationRecord(review: ReviewResult): EscalationRecord | undefined {
     if (!review.escalation) return undefined;
-    const { firstPass, pass } = review.escalation;
+    const { trigger, firstPass, pass } = review.escalation;
     const record: EscalationRecord = {
-      firstPass: {
-        risk: firstPass.risk,
-        authorization: firstPass.authorization,
-        rationale: firstPass.rationale || null,
-      },
+      trigger,
+      firstPass: firstPass
+        ? {
+            risk: firstPass.risk,
+            authorization: firstPass.authorization,
+            rationale: firstPass.rationale || null,
+          }
+        : null,
       result: pass.kind,
       failure: pass.kind === "failed" ? pass.failure : null,
       model: pass.model,
@@ -534,7 +654,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       usage: pass.usage,
       cost: pass.cost,
     };
-    if (firstPass.category) record.firstPass.riskCategory = firstPass.category;
+    if (record.firstPass && firstPass?.category) record.firstPass.riskCategory = firstPass.category;
     if (pass.retried) record.retried = true;
     return record;
   }
@@ -569,6 +689,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     if (review.retried) entry.retried = true;
     const escalation = escalationRecord(review);
     if (escalation) entry.escalation = escalation;
+    if (review.classification) entry.classification = review.classification;
     const delegated = delegatedText(call.toolName, call.input);
     if (delegated !== undefined) entry.delegationSha256 = textSha256(delegated);
     return entry;

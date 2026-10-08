@@ -18,6 +18,7 @@ import {
   type RiskCategory,
 } from "./guardian-assessment.js";
 import type { ReviewUsage } from "./guardian-audit.js";
+import type { Classification } from "./guardian-classifier.js";
 import { errorMessage } from "./guardian-notify.js";
 import type { GuardianThinkingLevel } from "./guardian-settings.js";
 
@@ -38,13 +39,24 @@ export interface ReviewMetrics {
   promptTokens?: number;
   /** Guardian's chars/4 estimate of the first request, paired with `promptTokens`. */
   estimatedPromptTokens?: number;
-  /** Set when the first pass would have been rejected and an Escalation Pass ran. */
+  /** Set when the First Pass escalated and an Escalation Pass ran. */
   escalation?: Escalation;
+  /** Set when a classifier made the First Pass. */
+  classification?: Classification;
 }
 
-/** A review's Escalation Pass: the first pass's assessment and what the second pass produced. */
+/**
+ * Why a First Pass escalated: its assessment would be rejected, or, for a classifier's, its
+ * Rejection Probability reached the threshold, it rated `high` or `critical` risk without a Risk
+ * Category, or it failed.
+ */
+export type EscalationTrigger = "rejected" | "uncertain" | "uncategorized" | "failed";
+
+/** A review's Escalation Pass: why it ran, the First Pass's assessment, and what it produced. */
 export interface Escalation {
-  firstPass: Assessment;
+  trigger: EscalationTrigger;
+  /** The First Pass's assessment; absent when the First Pass failed. */
+  firstPass: Assessment | undefined;
   pass: ReviewResult;
 }
 
@@ -154,27 +166,67 @@ function summedUsage(
   return { usage, cost };
 }
 
+/** The metrics every review result carries, without its kind-specific fields. */
+function metricsOf(result: ReviewResult): ReviewMetrics {
+  const metrics: ReviewMetrics = {
+    model: result.model,
+    durationMs: result.durationMs,
+    usage: result.usage,
+    cost: result.cost,
+  };
+  if (result.retried) metrics.retried = true;
+  if (result.promptTokens !== undefined) metrics.promptTokens = result.promptTokens;
+  if (result.estimatedPromptTokens !== undefined)
+    metrics.estimatedPromptTokens = result.estimatedPromptTokens;
+  if (result.classification) metrics.classification = result.classification;
+  return metrics;
+}
+
+/** Why a failed Escalation Pass leaves the review without an assessment. */
+function escalationFailure(
+  trigger: Exclude<EscalationTrigger, "rejected">,
+  first: ReviewResult,
+  failure: string,
+): string {
+  if (trigger === "failed" && first.kind === "failed")
+    return `${first.failure}, and the Escalation Pass failed: ${failure}`;
+  const doubt =
+    trigger === "uncertain"
+      ? "the Guardian classifier was unsure"
+      : "the Guardian classifier rated the risk high without a Risk Category";
+  return `${doubt}, and the Escalation Pass failed: ${failure}`;
+}
+
 /**
- * A rejected first pass combined with its Escalation Pass. The second pass's assessment decides
- * when it produced one; when it failed, the first pass's Rejection stands, never an allow. An
- * aborted second pass aborts the review. The first pass's model and calibration sample are kept;
- * duration, usage, and cost are summed.
+ * A First Pass combined with its Escalation Pass. The second pass's assessment decides when it
+ * produced one. When it failed, a First Pass that would be rejected keeps its Rejection; any
+ * other escalated First Pass becomes a Review Failure, so an escalation never allows by failing.
+ * An aborted second pass aborts the review. The First Pass's model and calibration sample are
+ * kept; duration, usage, and cost are summed.
  */
 export function withEscalation(
-  first: Extract<ReviewResult, { kind: "assessed" }>,
+  first: ReviewResult,
+  trigger: EscalationTrigger,
   pass: ReviewResult,
 ): ReviewResult {
-  const { kind: _kind, assessment, outcome, ...firstMetrics } = first;
   const metrics: ReviewMetrics = {
-    ...firstMetrics,
+    ...metricsOf(first),
     durationMs: first.durationMs + pass.durationMs,
     ...summedUsage(first, pass),
-    escalation: { firstPass: assessment, pass },
+    escalation: {
+      trigger,
+      firstPass: first.kind === "assessed" ? first.assessment : undefined,
+      pass,
+    },
   };
   if (pass.kind === "aborted") return { kind: "aborted", ...metrics };
   if (pass.kind === "assessed")
     return { kind: "assessed", assessment: pass.assessment, outcome: pass.outcome, ...metrics };
-  return { kind: "assessed", assessment, outcome, ...metrics };
+  if (trigger === "rejected" && first.kind === "assessed")
+    return { kind: "assessed", assessment: first.assessment, outcome: first.outcome, ...metrics };
+  const failure =
+    trigger === "rejected" ? pass.failure : escalationFailure(trigger, first, pass.failure);
+  return { kind: "failed", failure, ...metrics };
 }
 
 /** Follow-up sent once after a malformed reply, restating the output contract. */

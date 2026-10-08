@@ -5,8 +5,8 @@ The Guardian context gates an agent's tool calls by having a separate model judg
 ## Language
 
 **Guardian**:
-A reviewer model that decides whether a Reviewed Call may run, judging its risk against the user's authorization. Unlike an Advisor, it acts before execution and its Rejection is binding on the agent.
-_Avoid_: Advisor, classifier, sandbox
+The reviewer that decides whether a Reviewed Call may run, judging its risk against the user's authorization, through a First Pass and, when needed, an Escalation Pass. Unlike an Advisor, it acts before execution and its Rejection is binding on the agent.
+_Avoid_: Advisor, sandbox
 
 **Guarded Agent**:
 The agent whose tool calls a Guardian reviews: the main Pi agent, a Minimal Subagents Child Agent, or an Advisor in its Advisor Session.
@@ -33,11 +33,19 @@ A file path whose modification is reviewed even though ordinary workspace edits 
 _Avoid_: Protected file
 
 **Guardian Review**:
-One assessment of one Reviewed Call, producing a Risk Level, a User Authorization, a Risk Category when the risk is `high` or `critical`, and a rationale. A first pass whose assessment would be rejected is followed by an Escalation Pass.
+One assessment of one Reviewed Call, producing a Risk Level, a User Authorization, a Risk Category when the risk is `high` or `critical`, and a rationale. It starts with a First Pass, which an Escalation Pass may follow.
 _Avoid_: Review (an Advisor term), approval
 
+**First Pass**:
+The initial assessment of a Guardian Review, made either by a language model or by a classifier. A language model's First Pass is escalated when it would be rejected; a classifier's, which gives no rationale, is escalated when it would be rejected, when its Rejection Probability reaches the threshold, when it rates the risk `high` or `critical` without a Risk Category, or when it fails.
+_Avoid_: Quick check, triage
+
+**Rejection Probability**:
+A classifier First Pass's estimated chance that the Decision Table rejects the Reviewed Call: the probability of `critical` risk plus that of `high` risk times that of `unknown` or `low` User Authorization. It measures uncertainty about the Outcome, not about the answers themselves, so doubt between two allowed Risk Levels does not count.
+_Avoid_: Confidence
+
 **Escalation Pass**:
-A second, careful completion of a Guardian Review whose first pass would be rejected: the same request plus an instruction to reason before answering, with the escalation model and thinking level. Its assessment decides the Outcome; when it fails, the first pass's Rejection stands.
+A second, careful assessment of a Guardian Review by a language model, never a classifier: the review request plus an instruction to reason before answering, without the First Pass's assessment. Its assessment decides the Outcome. When it fails after a First Pass that would be rejected, that Rejection stands; when it fails after a classifier First Pass that was uncertain, lacked a Risk Category, or failed, the review is a Review Failure. An escalation never allows a call by failing.
 _Avoid_: Retry, appeal, second opinion
 
 **Risk Level**:

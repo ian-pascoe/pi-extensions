@@ -24,6 +24,7 @@ import { Value } from "typebox/value";
 import { updatedToolEntries, type ToolEntryValue } from "./guardian-command.js";
 import { formatGuardianOption, type GuardianRenderTheme } from "./guardian-rendering.js";
 import {
+  classifierOff,
   guardianOptionKey,
   guardianOptionKeys,
   guardianSettingScopeSchema,
@@ -49,6 +50,8 @@ export interface GuardianMenuView {
   authored: Readonly<Partial<GuardianScopedOptions>>;
   /** `provider/id` names of selectable models. */
   models: readonly string[];
+  /** `provider/id` names of selectable classifier models. */
+  classifiers: readonly string[];
   /** Tool names known to the Guarded Agent's session. */
   tools: readonly string[];
 }
@@ -103,8 +106,12 @@ const descriptions = {
   enabled: "Review tool calls before they run",
   model: "Guardian model; inherit follows the session's current model",
   thinkingLevel: "Guardian thinking level",
+  classifierModel:
+    "Classifier that makes the First Pass, escalating to a language model when unsure; off or inherit uses the Guardian model",
+  escalationThreshold:
+    "Rejection Probability, from 0 to 1, at which a classifier's First Pass escalates",
   escalationModel:
-    "Model of the Escalation Pass that rechecks a would-be Rejection; inherit uses the Guardian model",
+    "Model of the Escalation Pass that rechecks a would-be Rejection or a classifier's doubt; inherit uses the Guardian model",
   escalationThinkingLevel:
     "Escalation Pass thinking level; inherit is low, or the Guardian thinking level if higher",
   tools: "Tool Policies: allow, review, or deny each tool's calls",
@@ -122,6 +129,7 @@ const descriptions = {
 const inputHints = {
   commands: "prefix=allow|review|deny|default, comma-separated, as JSON, none, or inherit",
   reviewTimeoutMs: "seconds, or inherit",
+  escalationThreshold: "a probability from 0 to 1, or inherit",
   evidenceBudgetTokens: "a token count, auto, or inherit",
   maxConsecutiveRejections: "a number (0 disables), or inherit",
 } as const;
@@ -145,6 +153,8 @@ export function parseGuardianMenuValue(
         return parseCommandRules(value, scope);
       case "reviewTimeoutMs":
         return { reviewTimeoutMs: Math.round(Number(value) * 1_000) };
+      case "escalationThreshold":
+        return { escalationThreshold: value === "" ? Number.NaN : Number(value) };
       case "evidenceBudgetTokens":
         return { evidenceBudgetTokens: value === "auto" ? value : Number(value) };
       case "maxConsecutiveRejections":
@@ -314,6 +324,20 @@ export class GuardianSettingsMenu implements Component {
           submenu: (_value, done) =>
             new ModelPicker(
               this.view.models,
+              (value) => {
+                this.apply(parseGuardianMenuValue(key, value, this.scope));
+                done();
+              },
+              () => done(),
+            ),
+        };
+      case "classifierModel":
+        return {
+          ...row,
+          currentValue: settings[key] ?? "inherit",
+          submenu: (_value, done) =>
+            new ModelPicker(
+              [classifierOff, ...this.view.classifiers],
               (value) => {
                 this.apply(parseGuardianMenuValue(key, value, this.scope));
                 done();

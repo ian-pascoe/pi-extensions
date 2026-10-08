@@ -10,6 +10,9 @@ import {
   InMemoryModelsStore,
   withoutInitialSystemMessage,
   type AssistantMessage,
+  type ClassifierAnswer,
+  type ClassifierContext,
+  type ClassifierOptions,
   type Context,
   type Model,
   type SimpleStreamOptions,
@@ -36,6 +39,16 @@ export type GuardianReply = string | Error | DeferredReply;
 /** A Guardian reply produced later, for example after the review is aborted. */
 export class DeferredReply {
   constructor(readonly run: (options: SimpleStreamOptions | undefined) => Promise<string>) {}
+}
+
+/** A scripted classifier reply: answers by question, or a provider failure. */
+export type ClassifierReply = Record<string, ClassifierAnswer> | Error;
+
+/** A captured classifier request, as the provider received it. */
+export interface CapturedClassification {
+  model: string;
+  context: ClassifierContext;
+  options: ClassifierOptions | undefined;
 }
 
 /** A captured Guardian request, as the provider received it. */
@@ -163,6 +176,8 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     });
   const reviews: CapturedReview[] = [];
   const guardianReplies: GuardianReply[] = [];
+  const classifications: CapturedClassification[] = [];
+  const classifierReplies: ClassifierReply[] = [];
   const executed: string[] = [];
   const loader = new DefaultResourceLoader({
     cwd: dir,
@@ -183,19 +198,81 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
           api: "openai-completions",
           apiKey: "offline",
           baseUrl: "https://guardian.invalid",
-          // `tiny` is a reviewer whose context window cannot hold a review.
-          models: ["agent", "reviewer", "tiny"].map((id) => ({
-            id,
-            name: id,
-            reasoning: id === "reviewer",
-            input: ["text"],
-            cost:
-              id === "reviewer"
-                ? { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }
-                : offlineCost,
-            contextWindow: id === "tiny" ? 9_000 : 200_000,
-            maxTokens: 2_048,
-          })),
+          // `tiny` is a reviewer whose context window cannot hold a review; `judge` and
+          // `tiny-judge` are classifiers, the latter too small to classify a review.
+          models: [
+            ...["agent", "reviewer", "tiny"].map((id) => ({
+              id,
+              name: id,
+              reasoning: id === "reviewer",
+              input: ["text" as const],
+              cost:
+                id === "reviewer"
+                  ? { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }
+                  : offlineCost,
+              contextWindow: id === "tiny" ? 9_000 : 200_000,
+              maxTokens: 2_048,
+            })),
+            ...["judge", "tiny-judge"].map((id) => ({
+              type: "classifier" as const,
+              id,
+              name: id,
+              api: "guardian-test-classify",
+              input: ["text" as const],
+              cost: offlineCost,
+              contextWindow: id === "tiny-judge" ? 3_000 : 64_000,
+            })),
+          ],
+          classifiers: {
+            "guardian-test-classify": {
+              async classify(model, context, requestOptions) {
+                classifications.push({
+                  model: `${model.provider}/${model.id}`,
+                  context: structuredClone(context),
+                  options: requestOptions,
+                });
+                const result = {
+                  api: model.api,
+                  provider: model.provider,
+                  model: model.id,
+                  timestamp: Date.now(),
+                };
+                const scripted = classifierReplies.shift();
+                try {
+                  if (scripted === undefined) throw new Error("No scripted classifier reply");
+                  if (scripted instanceof Error) throw scripted;
+                  return {
+                    ...result,
+                    answers: scripted,
+                    usage: {
+                      input: 400,
+                      output: 0,
+                      cacheRead: 0,
+                      cacheWrite: 0,
+                      totalTokens: 400,
+                      cost: {
+                        input: 0.0001,
+                        output: 0,
+                        cacheRead: 0,
+                        cacheWrite: 0,
+                        total: 0.0001,
+                      },
+                    },
+                    stopReason: "stop" as const,
+                  };
+                } catch (cause) {
+                  return {
+                    ...result,
+                    answers: {},
+                    stopReason: requestOptions?.signal?.aborted
+                      ? ("aborted" as const)
+                      : ("error" as const),
+                    errorMessage: cause instanceof Error ? cause.message : String(cause),
+                  };
+                }
+              },
+            },
+          },
           streamSimple(model, context, requestOptions) {
             const messages = structuredClone(withoutInitialSystemMessage(context.messages));
             const [first] = messages;
@@ -340,6 +417,8 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
     session,
     reviews,
     guardianReplies,
+    classifications,
+    classifierReplies,
     responses,
     executed,
     agentRequests,
@@ -390,4 +469,55 @@ export function assessment(
     risk_category: category,
     rationale,
   });
+}
+
+/** A `choice` answer over the given probabilities: the most likely option, with its confidence. */
+export function choiceAnswer(probabilities: Record<string, number>): ClassifierAnswer {
+  const entries = Object.entries(probabilities);
+  let choice = "";
+  let peak = -1;
+  for (const [option, probability] of entries)
+    if (probability > peak) [choice, peak] = [option, probability];
+  const count = entries.length;
+  return {
+    type: "choice",
+    choice,
+    probabilities,
+    confidence: Math.max(0, Math.min(1, (count * peak - 1) / (count - 1))),
+  };
+}
+
+/** A classifier First Pass's answers by question. */
+export type GuardianAnswers = {
+  risk_level: ClassifierAnswer;
+  user_authorization: ClassifierAnswer;
+  risk_category: ClassifierAnswer;
+};
+
+/**
+ * A classifier First Pass's answers: Risk Level, User Authorization, and Risk Category
+ * distributions, each completed with zeros for the options left out.
+ */
+export function classified(
+  risk: Record<string, number>,
+  authorization: Record<string, number>,
+  category: Record<string, number> = { none: 1 },
+  categories: readonly string[] = [
+    "data_egress",
+    "credential_access",
+    "destruction",
+    "persistence",
+    "sensitive_path",
+    "safety_weakening",
+    "remote_code",
+    "unreviewed_execution",
+  ],
+): GuardianAnswers {
+  const complete = (options: readonly string[], given: Record<string, number>) =>
+    Object.fromEntries(options.map((option) => [option, given[option] ?? 0]));
+  return {
+    risk_level: choiceAnswer(complete(["low", "medium", "high", "critical"], risk)),
+    user_authorization: choiceAnswer(complete(["unknown", "low", "medium", "high"], authorization)),
+    risk_category: choiceAnswer(complete([...categories, "none"], category)),
+  };
 }
