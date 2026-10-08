@@ -115,6 +115,11 @@ export interface GuardianReviewInput {
   /** The Risk Categories this review may name. */
   categories: readonly RiskCategory[];
   /**
+   * Called once, when a request's stream emits its first event: the provider has begun
+   * responding, so the request's prefix is becoming readable by later requests.
+   */
+  onStreamStart?: (() => void) | undefined;
+  /**
    * The reply reasons before ending with its answer, as an Escalation Pass's does: the last
    * assessment object decides, rather than the only one.
    */
@@ -238,6 +243,18 @@ function replyText(reply: AssistantMessage): string {
   return reply.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
 }
 
+/** Call `notify` when `stream` emits its first event; a stream that ends without one never does. */
+async function firstEvent(stream: AsyncIterable<unknown>, notify: () => void): Promise<void> {
+  try {
+    for await (const _event of stream) {
+      notify();
+      return;
+    }
+  } catch {
+    // A failing stream settles through `result()`, which the review reports.
+  }
+}
+
 /**
  * Run one Guardian Review: a completion without tools, bounded by the review timeout. A reply
  * without a valid assessment gets one corrective follow-up within the same deadline; the first
@@ -287,10 +304,9 @@ export async function runGuardianReview(input: GuardianReviewInput): Promise<Rev
       let reply: AssistantMessage | undefined;
       let failure: string | undefined;
       try {
-        reply = await Promise.race([
-          input.registry.streamSimple(input.model, context, options).result(),
-          stopped,
-        ]);
+        const stream = input.registry.streamSimple(input.model, context, options);
+        if (input.onStreamStart) void firstEvent(stream, input.onStreamStart);
+        reply = await Promise.race([stream.result(), stopped]);
       } catch (cause) {
         failure = errorMessage(cause);
       }
