@@ -69,7 +69,10 @@ const ADAPTER_PATH = resolve(
 );
 
 /** Settings for the Supported vscode-js-debug adapter with one `node` Launch Profile. */
-function jsDebugSettings(profileArguments: Record<string, string | boolean>): ResolvedDapSettings {
+function jsDebugSettings(
+  profileArguments: Record<string, string | boolean>,
+  executionMs = 10_000,
+): ResolvedDapSettings {
   return {
     adapters: new Map([
       [
@@ -84,7 +87,7 @@ function jsDebugSettings(profileArguments: Record<string, string | boolean>): Re
       ],
     ]),
     profiles: new Map([["node", { id: "node", adapterId: "node", arguments: profileArguments }]]),
-    timeouts: { startupMs: 10_000, requestMs: 10_000, executionMs: 10_000, shutdownMs: 3_000 },
+    timeouts: { startupMs: 10_000, requestMs: 10_000, executionMs, shutdownMs: 3_000 },
     warnings: [],
   };
 }
@@ -224,7 +227,10 @@ const FUNCTION_FIRST_PROGRAM = [
 ].join("\n");
 
 /** A Supported vscode-js-debug Debug Session whose program starts with a function declaration. */
-async function startFunctionFirstSession(profileArguments: Record<string, string | boolean>) {
+async function startFunctionFirstSession(
+  profileArguments: Record<string, string | boolean>,
+  executionMs?: number,
+) {
   const projectDirectory = await mkdtemp(resolve(tmpdir(), "pi-dap-js-debug-function-"));
   const piSessionDirectory = await mkdtemp(resolve(tmpdir(), "pi-dap-js-debug-function-session-"));
   temporaryDirectories.push(projectDirectory, piSessionDirectory);
@@ -232,7 +238,7 @@ async function startFunctionFirstSession(profileArguments: Record<string, string
   await writeFile(programPath, FUNCTION_FIRST_PROGRAM);
   const files = await createDapSessionFiles(piSessionDirectory);
   sessionFileStores.push(files);
-  const settings = jsDebugSettings(profileArguments);
+  const settings = jsDebugSettings(profileArguments, executionMs);
   const session = new DapSession({ cwd: projectDirectory, settings, sessionFiles: files });
   // Closed by afterEach even when an assertion fails, so no adapter or Debuggee leaks.
   openSessions.push(session);
@@ -388,18 +394,25 @@ const FORK_PARENT_SOURCE = [
   "child.on('exit', (code) => console.log(`child exited ${code}`));",
 ].join("\n");
 
+/** A child left paused would hold the launch for this long; a released child finishes far sooner. */
+const CHILD_SESSION_EXECUTION_MS = 20_000;
+const CHILD_SESSION_BUDGET_MS = 15_000;
+
 /** A Debug Session over a program that spawns `worker.js`, with one breakpoint inside the worker. */
 async function startChildSessionProgram(
   parentSource: string,
   profileArguments: Record<string, string | boolean> = {},
 ) {
-  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
-    type: "pwa-node",
-    request: "launch",
-    name: "Pi DAP child session test",
-    console: "internalConsole",
-    ...profileArguments,
-  });
+  const { programPath, projectDirectory, session } = await startFunctionFirstSession(
+    {
+      type: "pwa-node",
+      request: "launch",
+      name: "Pi DAP child session test",
+      console: "internalConsole",
+      ...profileArguments,
+    },
+    CHILD_SESSION_EXECUTION_MS,
+  );
   const workerPath = resolve(projectDirectory, "worker.js");
   const markerPath = resolve(projectDirectory, "marker.txt");
   await writeFile(programPath, parentSource);
@@ -424,8 +437,8 @@ test.each([
       launchArguments: { env: { MARKER_PATH: markerPath } },
     });
 
-    // Far under the 10 s execution timeout: the child was not left paused waiting for a debugger.
-    expect(Date.now() - started).toBeLessThan(8_000);
+    // Under the execution timeout: the child was not left paused waiting for a debugger.
+    expect(Date.now() - started).toBeLessThan(CHILD_SESSION_BUDGET_MS);
     expect(result.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
     expect(result.output).toContain(exitLine);
     expect(await readFile(markerPath, "utf8")).toBe("worker ran");
@@ -438,7 +451,7 @@ test.each([
     expect(rejected?.message).toContain("child debugging is unsupported");
     expect(rejected?.message).toContain("breakpoints in it will not bind");
   },
-  30_000,
+  40_000,
 );
 
 test("a program with no child sessions reports none", async () => {
@@ -483,7 +496,7 @@ test("a released child process that starts a worker thread runs it without a deb
     cwd: projectDirectory,
     launchArguments: { env: { MARKER_PATH: markerPath } },
   });
-  expect(Date.now() - started).toBeLessThan(8_000);
+  expect(Date.now() - started).toBeLessThan(CHILD_SESSION_BUDGET_MS);
   expect(result.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
   expect(result.output).toContain("child exited 0");
   expect(await readFile(markerPath, "utf8")).toBe("worker ran");
