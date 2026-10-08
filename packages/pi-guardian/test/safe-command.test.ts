@@ -454,7 +454,7 @@ describe("Safe Command", () => {
           false,
         );
         expect(safe("cd src && ls", { ...clean, commandPrefix: "  " })).toBe(true);
-        expect(safe("git status", { ...clean, shellPath: "/bin/zsh" })).toBe(true);
+        expect(safe("git status", { ...clean, shellPath: "/bin/zsh" })).toBe(false);
       });
 
       it("reviews every command while PATH has a relative entry", () => {
@@ -571,6 +571,8 @@ describe("Safe Command", () => {
     const bypasses = [
       "echo 'a’; rm x; echo ‘b'",
       "echo 'a\\' '; rm x; echo \\'",
+      "sed -n '/a’ -i -e 1p ‘/p' f",
+      "find . -name 'x’ -delete -name ‘'",
       `grep -E "a|b" file`,
       `echo 'a;b'`,
       `echo "(x)"`,
@@ -585,16 +587,20 @@ describe("Safe Command", () => {
       "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
       "zsh",
       "nu",
-    ])("reviews quoted syntax and redirects under %s", (shellPath) => {
+    ])("reviews built-in programs and quoted syntax under %s", (shellPath) => {
       for (const command of bypasses) {
         expect(isSafeCommand(command, {}, undefined, shell(shellPath))).toBe(false);
       }
-      // Plain literal words stay safe.
-      expect(isSafeCommand("ls -la src && git status", {}, undefined, shell(shellPath))).toBe(true);
-      expect(isSafeCommand(`grep -rn 'two words' "src dir"`, {}, undefined, shell(shellPath))).toBe(
+      // No built-in program is trusted: the shell may split its arguments differently.
+      for (const command of ["ls -la src", "git status", "sed -n 5p file", "pwd && ls"])
+        expect(isSafeCommand(command, {}, undefined, shell(shellPath))).toBe(false);
+      // An `allow` Command Rule is still the user's choice, for literal words.
+      expect(isSafeCommand("make check", { make: "allow" }, undefined, shell(shellPath))).toBe(
         true,
       );
-      expect(isSafeCommand("sed -n 5p file", {}, undefined, shell(shellPath))).toBe(true);
+      expect(isSafeCommand("make 'a;b'", { make: "allow" }, undefined, shell(shellPath))).toBe(
+        false,
+      );
     });
 
     it.each([

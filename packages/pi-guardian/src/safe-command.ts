@@ -97,10 +97,10 @@ export function literalWords(command: string): string[] | undefined {
 /**
  * A Safe Command segment's words: {@link literalWords}, with `2>/dev/null` and `2>&1` dropped
  * wherever they stand as words of their own, when the shell quotes like bash (see
- * {@link posixQuoting}); else words without any shell syntax, quoted or not.
+ * {@link modeledShell}); else words without any shell syntax, quoted or not.
  */
 function segmentWords(segment: string, environment: ShellEnvironment): string[] | undefined {
-  const posix = posixQuoting(environment);
+  const posix = modeledShell(environment);
   return lexWords(segment, posix, posix);
 }
 
@@ -305,15 +305,6 @@ function modeledShell({ shellPath }: ShellEnvironment): boolean {
 }
 
 /**
- * Whether `-c` commands are quoted as bash and `sh` quote them, so quoted shell syntax is text.
- * Other shells differ: PowerShell reads curly quotes as quotes, and fish allows `\'` inside
- * single quotes.
- */
-function posixQuoting(environment: ShellEnvironment): boolean {
-  return modeledShell(environment);
-}
-
-/**
  * Whether the shell's `cd` behaves as {@link cdTarget} models it: Pi runs bash or `sh` with no
  * command prefix; no startup file is sourced (`BASH_ENV`, `ENV`) and no exported function or
  * shell option (`BASH_FUNC_*`, `BASHOPTS`, `SHELLOPTS`) could redefine `cd` or `CDPATH`; and no
@@ -349,6 +340,9 @@ function safeSegment(
   if (exportedFunction(program, environment.env)) return false;
   // An `allow` Command Rule is the user's choice, even for `git` in an unknown directory.
   if (rule?.policy === "allow") return true;
+  // Other shells quote differently (PowerShell reads curly quotes as quotes, fish allows `\'` in
+  // single quotes), so the arguments a built-in program's check sees may not be the ones it gets.
+  if (!modeledShell(environment)) return false;
   if (
     program === "git" &&
     (directoryUnknown || gitRedirections.some((name) => isSet(environment.env[name])))
