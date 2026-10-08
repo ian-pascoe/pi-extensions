@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  builtInSafePrograms,
+  directorySensitivePrograms,
   isSafeCommand,
   judgeCommand,
   literalWords,
@@ -266,7 +268,10 @@ describe("Safe Command", () => {
         "workspace/caps/.GIT",
         "workspace/lower",
         "outside/inner",
-        "home",
+        "home/.ssh",
+        "home/.config/tool",
+        "home/bin",
+        "home/notes",
         "agent",
       ])
         await mkdir(join(root, directory), { recursive: true });
@@ -274,6 +279,7 @@ describe("Safe Command", () => {
       await writeFile(join(workspace, "lower", "head"), "ref: refs/heads/main\n");
       await writeFile(join(workspace, "file.txt"), "");
       await symlink(join(root, "outside"), join(workspace, "escape"));
+      await symlink(join(root, "home", ".ssh"), join(workspace, "ssh-link"));
       await symlink(join(workspace, "src"), join(workspace, "src-link"));
       await symlink(join(root, "outside", "inner"), join(workspace, "inner-link"));
       await symlink(join(workspace, "vendor", "nested"), join(workspace, "repo-link"));
@@ -317,8 +323,8 @@ describe("Safe Command", () => {
       ["a nested repository", () => "cd vendor/nested && git status"],
       ["inside a nested repository", () => "cd vendor/nested/lib && git status"],
       ["a bare repository", () => "cd bare && git log"],
-      ["a missing directory", () => "cd missing && ls"],
-      ["a file", () => "cd file.txt && ls"],
+      ["a missing directory", () => "cd missing && git status"],
+      ["a file", () => "cd file.txt && git status"],
       ["bare cd", () => "cd && git status"],
       ["cd -", () => "cd - && git status"],
       ["cd ~", () => "cd ~ && git status"],
@@ -328,12 +334,12 @@ describe("Safe Command", () => {
       ["cd --", () => "cd -- src"],
       ["an empty name", () => "cd '' && ls"],
       ["two operands", () => "cd src packages"],
-      ["a sequential escape", () => "cd packages && cd ../.."],
+      ["a sequential escape", () => "cd packages && cd ../.. && git status"],
       ["an escape after a list", () => "cd src; cd ../../outside; git status"],
       // A `cd` may fail and leave the directory as it was, so `..` from `packages/a` is judged
       // from the workspace root too.
-      ["a .. that a failed cd would leave outside", () => "cd packages/a && cd .."],
-      ["a cd relative to an earlier one", () => "cd packages && cd a"],
+      ["a .. that a failed cd would leave outside", () => "cd packages/a && cd .. && git status"],
+      ["a cd relative to an earlier one", () => "cd packages && cd a && git status"],
       ["a cd in a pipeline", () => "cd src | git status"],
       ["a cd at the end of a pipeline", () => "ls | cd src"],
       ["an unsafe later segment", () => "cd src && rm -rf x"],
@@ -370,25 +376,273 @@ describe("Safe Command", () => {
       );
     });
 
-    it("loses track of the directory after a cd only an allow Command Rule permits", () => {
-      for (const rules of [{ "cd /opt": "allow" }, { cd: "allow" }] as const) {
+    it("loses track of the directory after a directory change only an allow Command Rule permits", () => {
+      for (const rules of [{ pushd: "allow" }, { "cd -": "allow" }] as const) {
+        const change = "pushd" in rules ? "pushd /opt" : "cd -";
         // Git there could read another repository's configuration.
-        expect(isSafeCommand("cd /opt && git status", rules, where)).toBe(false);
-        expect(isSafeCommand("cd /opt; git log", rules, where)).toBe(false);
+        expect(isSafeCommand(`${change} && git status`, rules, where)).toBe(false);
+        expect(isSafeCommand(`${change}; git log`, rules, where)).toBe(false);
         // A later cd is no longer proved, so only a rule that covers it allows it.
-        expect(isSafeCommand("cd /opt && cd src", rules, where)).toBe("cd" in rules);
+        expect(isSafeCommand(`${change} && cd src`, rules, where)).toBe(false);
+        expect(isSafeCommand(`${change} && cd /var && ls`, rules, where)).toBe(false);
         // Other built-in programs only read where they are pointed.
-        expect(isSafeCommand("cd /opt && ls && pwd", rules, where)).toBe(true);
-        // Git before the cd still runs in the working directory.
-        expect(isSafeCommand("git status && cd /opt", rules, where)).toBe(true);
+        expect(isSafeCommand(`${change} && ls && pwd`, rules, where)).toBe(true);
+        // Git before the change still runs in the working directory.
+        expect(isSafeCommand(`git status && ${change}`, rules, where)).toBe(true);
       }
+      expect(isSafeCommand("pushd /opt && cd src", { pushd: "allow", cd: "allow" }, where)).toBe(
+        true,
+      );
       // Without `where` no cd is proved, so any allowed one loses track too.
       expect(isSafeCommand("cd src && git status", { cd: "allow" })).toBe(false);
       // A `git` the user allowed by Command Rule stays allowed: that is the user's choice.
       expect(
-        isSafeCommand("cd /opt && git status", { "cd /opt": "allow", git: "allow" }, where),
+        isSafeCommand("pushd /opt && git status", { pushd: "allow", git: "allow" }, where),
       ).toBe(true);
-      expect(isSafeCommand("pushd /opt && git status", { pushd: "allow" }, where)).toBe(false);
+    });
+
+    describe("after a cd that is no Sensitive Path but not provably harmless", () => {
+      const home = () => join(root, "home");
+      const outside = () => join(root, "outside");
+
+      it.each([
+        ["an absolute path outside the workspace", () => `cd /opt && ls`],
+        [
+          "an absolute path outside, then reading there",
+          () => `cd ${outside()} && cat file | head`,
+        ],
+        ["a parent escape", () => "cd .. && ls"],
+        ["a parent escape into a sibling", () => "cd ../outside && rg -n x ."],
+        ["a symlink pointing outside", () => "cd escape && ls"],
+        ["a nested repository", () => "cd vendor/nested && ls"],
+        ["a bare repository", () => "cd bare && cat HEAD"],
+        ["a missing directory", () => "cd missing && ls"],
+        ["a file", () => "cd file.txt && ls"],
+        ["the home directory itself", () => `cd ${home()} && ls`],
+        ["a chain of such cds", () => `cd /opt && cd /var && ls`],
+        ["a relative cd from an earlier one", () => `cd /opt && cd sub && ls`],
+        ["a chain through the workspace", () => "cd packages && cd ../.. && pwd"],
+        ["a failing cd's `||` branch", () => "cd /opt || ls"],
+        ["a list", () => "cd /opt; ls; pwd"],
+        ["print-only sed", () => "cd /opt && sed -n '1,5p' file.txt"],
+        ["grep with a stderr redirect", () => "cd /opt && grep -rn x . 2>/dev/null | head"],
+        ["a quoted operand", () => "cd '/opt' && ls"],
+        ["git before the cd", () => "git status && cd /opt && ls"],
+        ["a path operand that is ordinary", () => "cd /opt && cat notes.txt /etc/hostname"],
+        ["a pattern that is no Sensitive Path", () => `cd ${home()} && grep -rn TODO notes`],
+      ])("allows %s", (_case, command) => {
+        expect(isSafeCommand(command(), {}, where), command()).toBe(true);
+      });
+
+      it.each([
+        ["git", "cd /opt && git status"],
+        ["git after `;`", "cd /opt; git log"],
+        ["git after `||`", "cd /opt || git diff"],
+        ["git after other segments", "cd /opt && ls && git status"],
+        ["git in a pipeline", "cd /opt && ls | git status"],
+        ["git after a parent escape", "cd .. && git status"],
+        ["git after a missing directory", "cd missing && git status"],
+        ["git after a nested repository", "cd vendor/nested && git status"],
+        ["git after a chain", "cd /opt && cd /var && git status"],
+        ["git after a known cd that follows", "cd /opt && cd src && git status"],
+      ])("reviews %s", (_case, command) => {
+        expect(isSafeCommand(command, {}, where), command).toBe(false);
+      });
+
+      it("allows git that precedes the unknown cd", () => {
+        expect(isSafeCommand("git status && cd /opt && ls", {}, where)).toBe(true);
+        expect(isSafeCommand("cd src && git status && cd /opt", {}, where)).toBe(true);
+      });
+
+      it("reviews a git that a Command Rule covers only as the user chose", () => {
+        expect(isSafeCommand("cd /opt && git status", { git: "allow" }, where)).toBe(true);
+        expect(isSafeCommand("cd /opt && git status", { "git status": "review" }, where)).toBe(
+          false,
+        );
+      });
+
+      it.each([
+        ["version-control metadata", () => "cd .git && ls"],
+        ["version-control metadata via ..", () => "cd src/../.git && ls"],
+        ["version-control metadata in another case", () => "cd caps/.GIT && ls"],
+        ["Pi configuration", () => "cd .pi && ls"],
+        ["a shell startup file's directory", () => `cd ${home()}/.ssh && ls`],
+        ["a credential directory", () => `cd ${home()}/.config && ls`],
+        ["inside a credential directory", () => `cd ${home()}/.config/tool && ls`],
+        ["a PATH directory under home", () => `cd ${home()}/bin && ls`],
+        ["Pi's agent directory", () => `cd ${root}/agent && ls`],
+        ["a symlink to a credential directory", () => "cd ssh-link && ls"],
+        ["a Sensitive Path after an ordinary cd", () => `cd /opt && cd ${home()}/.ssh && ls`],
+        ["a relative Sensitive Path after an ordinary cd", () => `cd ${root} && cd home/.ssh`],
+        ["a Sensitive Path via `..`", () => `cd ${outside()} && cd ../home/.ssh`],
+        ["a Sensitive Path the first cd may reach", () => `cd .. && cd workspace/.git && ls`],
+      ])("still reviews a cd into %s", (_case, command) => {
+        expect(isSafeCommand(command(), {}, where), command()).toBe(false);
+      });
+
+      it.each([
+        ["a variable", "cd $X && ls"],
+        ["a command substitution", 'cd "$(pwd)/.." && ls'],
+        ["a backtick substitution", "cd `pwd` && ls"],
+        ["a variable in quotes", 'cd "$HOME" && ls'],
+        ["cd -", "cd - && ls"],
+        ["~user", "cd ~root && ls"],
+        ["~", "cd ~ && ls"],
+        ["~ in the middle of a chain", "cd /opt && cd ~ && ls"],
+        ["bare cd", "cd && ls"],
+        ["cd -P", "cd -P /opt && ls"],
+        ["cd --", "cd -- /opt && ls"],
+        ["an empty name", "cd '' && ls"],
+        ["two operands", "cd /opt /var && ls"],
+        ["a glob", "cd /op* && ls"],
+        ["a brace expansion", "cd /{opt,var} && ls"],
+        ["a cd in a pipeline", "cd /opt | ls"],
+        ["a cd at the end of a pipeline", "ls | cd /opt"],
+        ["an unsafe later segment", "cd /opt && rm -rf x"],
+        ["a later non-literal cd", "cd /opt && cd $X && ls"],
+        ["a later `cd -`", "cd /opt && cd - && ls"],
+      ])("still reviews a cd with %s", (_case, command) => {
+        expect(isSafeCommand(command, {}, where), command).toBe(false);
+      });
+
+      it.each([
+        ["a startup file", () => `cd ${home()} && cat .bashrc`],
+        ["a credential directory", () => `cd ${home()} && ls .ssh`],
+        ["inside a credential directory", () => `cd ${home()} && grep -n x .config/tool/a`],
+        ["a PATH directory", () => `cd ${home()} && ls bin`],
+        ["an option value", () => `cd ${home()} && grep --file=.bashrc x`],
+        ["a path through `..`", () => `cd ${outside()} && cat ../home/.bashrc`],
+        ["a path after a chained cd", () => `cd ${root} && cd home && cat .bashrc`],
+        ["a path from the first directory", () => "cd /opt && cat .git/config"],
+        ["a workspace file's directory", () => "cd .. && cat workspace/.git/config"],
+        ["a workspace environment file", () => "cd .. && head workspace/.env"],
+        ["a sibling segment", () => `cd ${home()} && ls | cat .ssh/id_rsa`],
+        ["a rule-allowed program", () => `cd ${home()} && tee .bashrc`],
+        ["a symlink to one", () => "cd .. && ls workspace/ssh-link"],
+      ])("reviews a relative operand naming %s after an unknown cd", (_case, command) => {
+        expect(isSafeCommand(command(), { tee: "allow" }, where), command()).toBe(false);
+      });
+
+      it("judges a relative operand against every directory a failed cd may leave the shell in", () => {
+        // `cd ..` may fail, leaving the shell in the workspace, where `.git/config` is sensitive.
+        expect(isSafeCommand("cd .. && cat .git/config", {}, where)).toBe(false);
+        // Without an unknown cd, operands are not judged: a read is not a modification.
+        expect(isSafeCommand("cat .git/config", {}, where)).toBe(true);
+        expect(isSafeCommand(`cat ${home()}/.bashrc`, {}, where)).toBe(true);
+        // Absolute operands are judged alike with or without an unknown cd.
+        expect(isSafeCommand(`cd /opt && cat ${home()}/.bashrc`, {}, where)).toBe(true);
+      });
+
+      it("never relaxes without a workspace to judge it from", () => {
+        expect(isSafeCommand("cd /opt && ls")).toBe(false);
+      });
+
+      it("reviews a relative cd while CDPATH is set, but not an absolute one", () => {
+        process.env["CDPATH"] = join(root, "outside");
+        expect(isSafeCommand("cd missing && ls", {}, where)).toBe(false);
+        expect(isSafeCommand("cd /opt && ls", {}, where)).toBe(true);
+      });
+
+      it("reviews every command while the workspace contains the home directory", () => {
+        const wide: SensitivePathContext = { ...where, cwd: root };
+        expect(isSafeCommand("cd /opt && ls", {}, wide)).toBe(false);
+      });
+
+      it.each([
+        ["BASH_ENV", { BASH_ENV: "/tmp/x" }],
+        ["ENV", { ENV: "/tmp/x" }],
+        ["SHELLOPTS", { SHELLOPTS: "xtrace" }],
+        ["an exported cd function", { "BASH_FUNC_cd%%": "() { builtin cd /tmp; }" }],
+        ["a relative GIT_DIR", { GIT_DIR: ".payload" }],
+      ])("reviews the cd while %s could redefine it", (_case, variables) => {
+        const env = { PATH: "/usr/bin:/bin", ...variables };
+        expect(isSafeCommand("cd /opt && ls", {}, where, { env })).toBe(false);
+      });
+
+      it("reviews the cd unless Pi runs bash or sh without a command prefix", () => {
+        const env = { PATH: "/usr/bin:/bin" };
+        expect(isSafeCommand("cd /opt && ls", {}, where, { env, shellPath: "/bin/zsh" })).toBe(
+          false,
+        );
+        expect(
+          isSafeCommand("cd /opt && ls", {}, where, { env, commandPrefix: "alias cd=x" }),
+        ).toBe(false);
+        expect(isSafeCommand("cd /opt && ls", {}, where, { env, shellPath: "/bin/bash" })).toBe(
+          true,
+        );
+      });
+
+      it("reviews every command while PATH has a relative entry", () => {
+        expect(isSafeCommand("cd /opt && ls", {}, where, { env: { PATH: "bin:/usr/bin" } })).toBe(
+          false,
+        );
+      });
+
+      it("still applies Command Rules to the segments after the cd", () => {
+        expect(judgeCommand("cd /opt && rm -rf x", { rm: "deny" }, where)).toMatchObject({
+          verdict: "deny",
+        });
+        expect(judgeCommand("cd /opt && ls", { ls: "review" }, where).verdict).toBe("review");
+        expect(judgeCommand("cd /opt && npm test", { "npm test": "allow" }, where).verdict).toBe(
+          "allow",
+        );
+      });
+
+      // The audit: every built-in program is classified by whether it loads configuration,
+      // plugins, or code from the working directory or its ancestors. Adding a program to the
+      // list fails here until it is audited and given a sample command.
+      interface Audited {
+        sample: string;
+        readsDirectoryConfiguration: boolean;
+      }
+      const audit = {
+        ls: { sample: "ls -la", readsDirectoryConfiguration: false },
+        pwd: { sample: "pwd", readsDirectoryConfiguration: false },
+        cat: { sample: "cat file", readsDirectoryConfiguration: false },
+        head: { sample: "head -n 5 file", readsDirectoryConfiguration: false },
+        tail: { sample: "tail -n 5 file", readsDirectoryConfiguration: false },
+        wc: { sample: "wc -l file", readsDirectoryConfiguration: false },
+        echo: { sample: "echo hi", readsDirectoryConfiguration: false },
+        stat: { sample: "stat file", readsDirectoryConfiguration: false },
+        du: { sample: "du -sh .", readsDirectoryConfiguration: false },
+        df: { sample: "df -h", readsDirectoryConfiguration: false },
+        basename: { sample: "basename file", readsDirectoryConfiguration: false },
+        dirname: { sample: "dirname file", readsDirectoryConfiguration: false },
+        realpath: { sample: "realpath file", readsDirectoryConfiguration: false },
+        which: { sample: "which node", readsDirectoryConfiguration: false },
+        whoami: { sample: "whoami", readsDirectoryConfiguration: false },
+        uname: { sample: "uname -a", readsDirectoryConfiguration: false },
+        grep: { sample: "grep -rn x .", readsDirectoryConfiguration: false },
+        sed: { sample: "sed -n '1,5p' file", readsDirectoryConfiguration: false },
+        // `.ignore`, `.rgignore`, and `.gitignore` files only hide matches.
+        rg: { sample: "rg -n x .", readsDirectoryConfiguration: false },
+        find: { sample: "find . -name x", readsDirectoryConfiguration: false },
+        // `.git/config` (`core.fsmonitor`, `core.pager`), hooks, attributes, and filters.
+        git: { sample: "git status", readsDirectoryConfiguration: true },
+      } satisfies Record<string, Audited>;
+
+      it("audits every built-in program", () => {
+        expect([...builtInSafePrograms].toSorted()).toEqual(Object.keys(audit).toSorted());
+        expect(
+          new Set(
+            Object.entries(audit)
+              .filter(([, { readsDirectoryConfiguration }]) => readsDirectoryConfiguration)
+              .map(([program]) => program),
+          ),
+        ).toEqual(directorySensitivePrograms);
+      });
+
+      it.each(Object.entries(audit))(
+        "treats %s after an unknown cd as its audit says",
+        (_program, { sample, readsDirectoryConfiguration }) => {
+          expect(isSafeCommand(sample, {}, where), sample).toBe(true);
+          expect(isSafeCommand(`cd /opt && ${sample}`, {}, where), sample).toBe(
+            !readsDirectoryConfiguration,
+          );
+          // Where the working directory is known, a program is no less safe than before.
+          expect(isSafeCommand(`cd src && ${sample}`, {}, where), sample).toBe(true);
+        },
+      );
     });
 
     describe("with the environment the shell inherits", () => {

@@ -186,8 +186,8 @@ interface Spelled {
   homes: readonly string[];
 }
 
-/** Why `path` is sensitive. */
-function judge(path: string, where: Spelled): string | undefined {
+/** Why `path` is sensitive; with `outsideIsOrdinary`, being outside the workspace root is not. */
+function judge(path: string, where: Spelled, outsideIsOrdinary: boolean): string | undefined {
   if (where.piDirectories.some((directory) => within(path, directory)))
     return "Pi's agent configuration or session files";
   if (where.resources.some((resource) => within(path, resource)))
@@ -202,7 +202,7 @@ function judge(path: string, where: Spelled): string | undefined {
   const components = where.roots
     .map((root) => within(path, root))
     .find((found) => found !== undefined);
-  if (!components) return "outside the workspace root";
+  if (!components) return outsideIsOrdinary ? undefined : "outside the workspace root";
   return sensitiveComponent(components);
 }
 
@@ -222,11 +222,16 @@ const windowsPathForm = /\\|^[A-Za-z]:/;
 /**
  * Why modifying `input` is sensitive, or `undefined` for an ordinary workspace path. Judged on
  * both the lexical path and the path with symlinks resolved; either being sensitive is enough,
- * and every distinct reason is listed, with where the path resolves when that differs.
+ * and every distinct reason is listed, with where the path resolves when that differs. With
+ * `outsideIsOrdinary`, lying outside the workspace root is no reason on its own: every other
+ * rule (home-directory persistence and credentials, Pi and loaded resources, a workspace that
+ * contains the home directory) still applies. That is how a `cd` target is judged, since reading
+ * a directory elsewhere is not a modification.
  */
 export function sensitivePathReason(
   input: string,
   context: SensitivePathContext,
+  { outsideIsOrdinary = false }: { outsideIsOrdinary?: boolean } = {},
 ): string | undefined {
   if ((context.platform ?? process.platform) === "win32" && windowsPathForm.test(input))
     return "a Windows path form Guardian does not judge";
@@ -239,7 +244,7 @@ export function sensitivePathReason(
     homes: spellings(context.home ?? homedir()),
   };
   const targets = spellings(lexical);
-  const reasons = new Set(targets.flatMap((path) => judge(path, where) ?? []));
+  const reasons = new Set(targets.flatMap((path) => judge(path, where, outsideIsOrdinary) ?? []));
   if (targets.some(hardLinked))
     reasons.add("a file with more than one hard link, so editing it changes another path too");
   if (!reasons.size) return undefined;
