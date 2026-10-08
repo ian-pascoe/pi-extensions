@@ -34,7 +34,9 @@
     "./layered-settings": "./src/layered-settings.ts",
     "./evidence": "./src/evidence.ts",
     "./settings-menu": "./src/settings-menu.ts",
-    "./settings-command": "./src/settings-command.ts"
+    "./settings-command": "./src/settings-command.ts",
+    "./ui": "./src/ui.ts",
+    "./ui-testing": "./src/ui-testing.ts"
   },
   "publishConfig": {
     "main": "./dist/index.js",
@@ -67,6 +69,14 @@
       "./settings-command": {
         "types": "./dist/settings-command.d.ts",
         "import": "./dist/settings-command.js"
+      },
+      "./ui": {
+        "types": "./dist/ui.d.ts",
+        "import": "./dist/ui.js"
+      },
+      "./ui-testing": {
+        "types": "./dist/ui-testing.d.ts",
+        "import": "./dist/ui-testing.js"
       }
     },
     "access": "public",
@@ -85,9 +95,9 @@
     "@types/proper-lockfile": "^4.1.4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.99.0",
-    "@earendil-works/pi-coding-agent": ">=0.99.0",
-    "@earendil-works/pi-tui": ">=0.99.0",
+    "@earendil-works/pi-ai": ">=1.1.0",
+    "@earendil-works/pi-coding-agent": ">=1.1.0",
+    "@earendil-works/pi-tui": ">=1.1.0",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
