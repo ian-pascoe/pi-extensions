@@ -312,6 +312,7 @@ function serverDefinition(id: string): LspServerDefinition {
 function resolvedSettings(serverIds: readonly string[]): ResolvedLspSettings {
   return {
     enablement: new Map(),
+    includeHintDiagnostics: false,
     servers: new Map(serverIds.map((serverId) => [serverId, serverDefinition(serverId)])),
     timeouts: {
       diagnosticsMs: 3000,

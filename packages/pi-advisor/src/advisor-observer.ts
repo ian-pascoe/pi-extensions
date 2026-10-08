@@ -82,20 +82,17 @@ type PromptExtras =
   | { question: string };
 
 /**
- * What an Advisor Session is bound to. The observed model and thinking level count only for a
- * field the Advisor inherits: an Advisor with its own model, or its own thinking level, is not
- * affected by the observed agent changing that field.
+ * What an Advisor Session is bound to. The observed model counts only when the Advisor inherits
+ * its model: an Advisor with its own model is not affected by the observed agent changing it.
  */
 interface ObservationBoundary {
   sessionId: string;
   model?: AgentSession["model"];
-  thinkingLevel?: AgentSession["thinkingLevel"];
 }
 function observationBoundary(session: AgentSession, config: AdvisorConfig): ObservationBoundary {
   return {
     sessionId: session.sessionManager.getSessionId(),
     ...(config.model === undefined && { model: session.model }),
-    ...(config.thinkingLevel === undefined && { thinkingLevel: session.thinkingLevel }),
   };
 }
 interface OperationBase {
@@ -313,8 +310,6 @@ export class AdvisorObserver {
     };
     observed.agent.streamFunction = this.captureStream;
     this.unsubscribeSession = observed.subscribe((event) => {
-      if (event.type === "thinking_level_changed" && this.config.thinkingLevel === undefined)
-        this.reset();
       // Request completion: the run has ended after its steering and follow-ups, and Pi will not
       // retry it. Observed compaction afterwards neither invalidates nor cancels this Review.
       if (
@@ -389,10 +384,7 @@ export class AdvisorObserver {
       state,
       backlog: this.completed - this.reviewed,
       effectiveModel,
-      effectiveThinkingLevel:
-        this.runtime?.session.thinkingLevel ??
-        this.config.thinkingLevel ??
-        this.observed.thinkingLevel,
+      effectiveThinkingLevel: this.runtime?.session.thinkingLevel ?? this.config.thinkingLevel,
       cost:
         runtime && stats && (stats.cost > 0 || (stats.tokens.total > 0 && priced(runtime)))
           ? stats.cost
@@ -1347,6 +1339,10 @@ export class AdvisorObserver {
     const runtime = this.detachRuntime();
     if (runtime) this.closeRuntime(runtime);
     this.changed();
+  }
+  /** The observed agent selected another model; only an Advisor that inherits its model follows. */
+  modelChanged(): void {
+    if (this.config.model === undefined) this.reset();
   }
   /** Owner cancellation invalidates private work without touching observed execution. */
   async abort(): Promise<void> {
