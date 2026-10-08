@@ -87,15 +87,23 @@ type PromptExtras =
   | { deferredFindings: { instruction: string; findings: AdvisorFinding[] } | null }
   | { question: string };
 
-function observationBoundary(session: AgentSession) {
+/**
+ * What an Advisor Session is bound to. The observed model counts only when the Advisor inherits
+ * its model: an Advisor with its own model is not affected by the observed agent changing it.
+ */
+interface ObservationBoundary {
+  sessionId: string;
+  model?: AgentSession["model"];
+}
+function observationBoundary(session: AgentSession, config: AdvisorConfig): ObservationBoundary {
   return {
     sessionId: session.sessionManager.getSessionId(),
-    model: session.model,
+    ...(config.model === undefined && { model: session.model }),
   };
 }
 interface OperationBase {
   epoch: number;
-  boundary: ReturnType<typeof observationBoundary>;
+  boundary: ObservationBoundary;
   leafId: string | null;
   cancellation: AbortController;
   calls: number;
@@ -224,7 +232,7 @@ export class AdvisorObserver {
   private supplied: ObservedSnapshot | undefined;
   /** Each Advisor model's calibrated multiple of Pi's chars/4 estimate, by `provider/id`. */
   private readonly tokenFactors = new Map<string, number>();
-  private suppliedBoundary: ReturnType<typeof observationBoundary> | undefined;
+  private suppliedBoundary: ObservationBoundary | undefined;
   private readonly pendingFindings = new Map<AdvisorFinding, Review>();
   private completed = 0;
   private reviewed = 0;
@@ -473,7 +481,7 @@ export class AdvisorObserver {
   }
   private sameObservation(review: AdvisorOperation): boolean {
     return (
-      isDeepStrictEqual(review.boundary, observationBoundary(this.observed)) &&
+      isDeepStrictEqual(review.boundary, observationBoundary(this.observed, this.config)) &&
       (review.leafId === null ||
         this.observed.sessionManager.getBranch().some((entry) => entry.id === review.leafId))
     );
@@ -506,7 +514,7 @@ export class AdvisorObserver {
     const review: Review = {
       kind: "review",
       epoch: this.epoch,
-      boundary: observationBoundary(this.observed),
+      boundary: observationBoundary(this.observed, this.config),
       leafId: this.observed.sessionManager.getLeafId(),
       cancellation: new AbortController(),
       calls: 0,
@@ -967,7 +975,7 @@ export class AdvisorObserver {
     const consultation: Consultation = {
       kind: "consultation",
       epoch: this.epoch,
-      boundary: observationBoundary(this.observed),
+      boundary: observationBoundary(this.observed, this.config),
       leafId: this.observed.sessionManager.getLeafId(),
       cancellation: new AbortController(),
       calls: 0,
@@ -1346,6 +1354,10 @@ export class AdvisorObserver {
     const runtime = this.detachRuntime();
     if (runtime) this.closeRuntime(runtime);
     this.changed();
+  }
+  /** The observed agent selected another model; only an Advisor that inherits its model follows. */
+  modelChanged(): void {
+    if (this.config.model === undefined) this.reset();
   }
   /** Owner cancellation invalidates private work without touching observed execution. */
   async abort(): Promise<void> {

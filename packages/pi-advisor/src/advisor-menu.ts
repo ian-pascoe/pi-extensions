@@ -98,11 +98,11 @@ const descriptions = {
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
   maxNitsPerRequest: "Nits delivered per request; further Nits are dropped (0 delivers none)",
   seedBudgetTokens:
-    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 100k",
+    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 50k",
   reviewEvery:
     "When Reviews run: every turn, every N turns, or once per request; a tool error reviews at once",
   maxSessionTokens:
-    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 200k",
+    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 100k",
   anthropicLongCache:
     "Ask Anthropic for 1h prompt caching on Advisor requests; cache writes cost 2× instead of 1.25×",
 } satisfies Record<keyof AdvisorOptions, string>;
