@@ -43,6 +43,18 @@ export function todoStateFromEntry(entry: SessionEntry): TodoStateSnapshot | und
   return parseTodoStateSnapshot(entry.data);
 }
 
+/** True when a successful `todo` result's text is exactly the complete resulting list. */
+function resultRendersList(message: Message, list: string): boolean {
+  return (
+    message.role === "toolResult" &&
+    message.toolName === "todo" &&
+    !message.isError &&
+    message.content.length === 1 &&
+    message.content[0]!.type === "text" &&
+    message.content[0]!.text === list
+  );
+}
+
 function snapshotMessage(
   entry: SessionEntry,
   state: TodoStateSnapshot,
@@ -114,9 +126,15 @@ export function projectTodoContext(
   const outstanding = new Map<string, number>();
   // A tool group projects only its final state, once its last result has landed.
   let pending: { entry: SessionEntry; state: TodoStateSnapshot } | undefined;
-  const project = (entry: SessionEntry, state: TodoStateSnapshot): void => {
+  const project = (entry: SessionEntry, state: TodoStateSnapshot, finalResult?: Message): void => {
     const content = formatTodoList(state.tasks);
-    if (content !== previousContent && (previousContent !== undefined || state.tasks.length > 0))
+    // The model already saw this exact list in the group's last result; a Snapshot would repeat it.
+    const rendered = finalResult !== undefined && resultRendersList(finalResult, content);
+    if (
+      !rendered &&
+      content !== previousContent &&
+      (previousContent !== undefined || state.tasks.length > 0)
+    )
       insert(snapshotMessage(entry, state, null));
     previousContent = content;
   };
@@ -144,7 +162,7 @@ export function projectTodoContext(
     }
     anchor = message;
     if (outstanding.size === 0 && pending) {
-      project(pending.entry, pending.state);
+      project(pending.entry, pending.state, message);
       pending = undefined;
     }
   }

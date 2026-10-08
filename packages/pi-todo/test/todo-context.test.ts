@@ -165,13 +165,13 @@ describe("immutable Todo journal projection", () => {
       timestamp: 1,
     });
   }
-  function toolResult(manager: SessionManager, id: string): void {
+  function toolResult(manager: SessionManager, id: string, text?: string, isError = false): void {
     manager.appendMessage({
       role: "toolResult",
       toolCallId: id,
       toolName: "todo",
-      content: [{ type: "text", text: `${id} saved at ${manager.getEntries().length}` }],
-      isError: false,
+      content: [{ type: "text", text: text ?? `${id} saved at ${manager.getEntries().length}` }],
+      isError,
       timestamp: 2,
     });
   }
@@ -236,6 +236,42 @@ describe("immutable Todo journal projection", () => {
     state(manager, "Stable");
     toolResult(manager, "b");
     expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Stable`]);
+  });
+
+  it("skips the Snapshot when the group's final result already rendered the full list", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Add then list");
+    assistantCalls(manager, ["a", "b"]);
+    state(manager, "Task");
+    toolResult(manager, "a", "Added Task #1");
+    toolResult(manager, "b", "[ ] #1 Task");
+    const result = project(manager);
+    expect(snapshots(result)).toEqual([]);
+    expect(project(manager, result)).toEqual(result);
+    // Later changes still diff against the list the model saw.
+    assistantCalls(manager, ["c"]);
+    state(manager, "Task");
+    toolResult(manager, "c", "[ ] #1 Task");
+    expect(snapshots(project(manager))).toEqual([]);
+    assistantCalls(manager, ["d"]);
+    state(manager, "Other");
+    toolResult(manager, "d", "Updated Task #1");
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Other`]);
+  });
+
+  it("keeps the Snapshot when the final result is partial, stale, or an error", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Go");
+    assistantCalls(manager, ["a", "b"]);
+    state(manager, "One");
+    toolResult(manager, "a", "[ ] #1 One");
+    state(manager, "Two");
+    toolResult(manager, "b", "Updated Task #1");
+    assistantCalls(manager, ["c", "d"]);
+    state(manager, "Three");
+    toolResult(manager, "c", "[ ] #1 Three");
+    toolResult(manager, "d", "[ ] #1 Three", true);
+    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Two`, `${HEADER}[ ] #1 Three`]);
   });
 
   it("rejects destroyed or ambiguous anchors rather than relocating old snapshots", () => {
