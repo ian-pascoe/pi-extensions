@@ -71,6 +71,7 @@ export interface PiLspLifecycleEffects {
 interface ActivePiLspSession {
   readonly cwd: string;
   configuredEnablement: ReadonlyMap<string, LspServerEnablement>;
+  readonly includeHintDiagnostics: boolean;
   readonly manager: LspServerManager<LspServerClient>;
   readonly sessionFiles: LspSessionFiles;
   readonly workspaceEdits: LspWorkspaceEditStore;
@@ -250,6 +251,7 @@ async function appendSessionPostEditDiagnostics(
     event,
     (paths) => new ManagerPostEditDiagnosticsRunner(session, context.signal).run(paths),
     session.cwd,
+    { includeHints: session.includeHintDiagnostics },
   );
   if (patch === undefined) return undefined;
   const appendedValue = patch.content.at(-1);
@@ -367,6 +369,7 @@ export class PiLspLifecycleController {
     this.session = {
       cwd: context.cwd,
       configuredEnablement: settings.enablement,
+      includeHintDiagnostics: settings.includeHintDiagnostics,
       manager,
       sessionFiles,
       workspaceEdits,
