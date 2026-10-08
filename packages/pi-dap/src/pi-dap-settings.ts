@@ -12,7 +12,8 @@ const DEFAULT_DAP_TIMEOUTS = {
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
 const PositiveMillisecondsSchema = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const JsonValueSchema = Type.Any();
-const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
+/** A JSON object of opaque adapter arguments, as a Launch Profile holds them. */
+export const JsonObjectSchema = Type.Record(Type.String(), JsonValueSchema);
 const EnvironmentSchema = Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()]));
 const DapAdapterDefinitionSchema = Type.Object(
   {

@@ -18,6 +18,10 @@ _Avoid_: Target, child process
 The temporary relationship among Pi, one debug adapter, and one debuggee. It is not a Pi conversation session.
 _Avoid_: Connection, run
 
+**Child session**:
+A session a debug adapter asks Pi DAP to start for part of the debuggee, such as a worker thread or child process. Pi DAP refuses it and reports the refusal in the next tool result, so breakpoints in it never bind and it runs without a debugger.
+_Avoid_: Child target, child debug session
+
 **Observer UI**:
 Human-facing presentation of Debug Session activity in Pi. It does not change the tool result available to the agent or provide direct debugger controls.
 _Avoid_: Debugger UI, debug panel
