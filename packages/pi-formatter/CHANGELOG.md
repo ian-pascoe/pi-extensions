@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-formatter
 
+## 0.6.0
+
+### Minor Changes
+
+- 4ef1998: The settings warning notification now reads `Formatter: settings: ...`. Requires Pi 1.1.0 or newer.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.5.1
 
 ### Patch Changes

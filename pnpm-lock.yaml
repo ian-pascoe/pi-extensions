@@ -75,7 +75,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -96,7 +96,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
 
   packages/pi-context-management:
@@ -114,7 +114,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -129,7 +129,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -145,7 +145,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -157,7 +157,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -175,7 +175,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -190,7 +190,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       cross-spawn:
         specifier: ^7.0.6
@@ -221,7 +221,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       minimatch:
         specifier: ^10.2.6
@@ -248,7 +248,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       '@kitlangton/terminal-control':
         specifier: ^1.2.1
@@ -269,7 +269,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       typebox:
         specifier: '*'
@@ -281,7 +281,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.84)(@smithy/signature-v4@5.7.4)(ws@8.22.0)
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
     optionalDependencies:
       tiktoken:
@@ -322,7 +322,7 @@ importers:
         specifier: '>=1.1.0'
         version: 1.1.0
       '@ian-pascoe/pi-utils':
-        specifier: ^0.4.0
+        specifier: ^0.5.0
         version: link:../pi-utils
       htmlparser2:
         specifier: 12.0.0

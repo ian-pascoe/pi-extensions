@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-git-checkpoints
 
+## 0.3.0
+
+### Minor Changes
+
+- 4ef1998: Info notifications no longer carry the `Git Checkpoints:` prefix; warnings and errors keep it. Requires Pi 1.1.0 or newer.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.2.5
 
 ### Patch Changes

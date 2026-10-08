@@ -1,6 +1,6 @@
 {
   "name": "@ian-pascoe/pi-todo",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": false,
   "description": "Minimal session-native Todo List for Pi agents.",
   "keywords": [
@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@ian-pascoe/pi-utils": "^0.4.0"
+    "@ian-pascoe/pi-utils": "^0.5.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=1.1.0",

@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-dap
 
+## 0.7.0
+
+### Minor Changes
+
+- 4ef1998: DAP tool rows and the `pi-dap` widget now follow Pi's built-in rendering: `dap_<operation>` headers, ls-length previews for stack and variables, the Expand Hint, an `Elapsed`/`Took` footer, a Status Mark widget row, and `DAP:` notices. Requires Pi `>=1.1.0`.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.6.0
 
 ### Minor Changes

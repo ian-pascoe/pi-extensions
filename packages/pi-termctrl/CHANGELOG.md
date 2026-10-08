@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-termctrl
 
+## 0.7.0
+
+### Minor Changes
+
+- 4ef1998: The `terminal_*` tools now render like Pi's `bash` (header with name and target, last 5 screen lines with the expand hint, `Took`/`Elapsed` footer), Exit notifications use Pi's custom-message look under a `[termctrl] exit` label with a Status Mark per exit and expand or collapse when clicked, and `/ps` and its footer status use Pi's selector frame and shared status layout. Requires Pi 1.1.0 or newer.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.6.0
 
 ### Minor Changes

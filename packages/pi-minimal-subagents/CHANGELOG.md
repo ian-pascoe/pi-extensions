@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.17.0
+
+### Minor Changes
+
+- 4ef1998: Coordinator tool rows, agent messages, the `pi-minimal-subagents` widget, the `/subagents` panel, and notices now follow Pi's built-in rendering: lowercase tool-name headers, the Expand Hint, an `Elapsed`/`Took` footer, Status Marks with Pi's tree prefixes, Pi's selector frame, and `Subagents:` warning and error notices. Agent messages and results open with a `[subagents] result · worker → root · completed` label line and expand or collapse when clicked. Requires Pi `>=1.1.0`.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.16.1
 
 ### Patch Changes

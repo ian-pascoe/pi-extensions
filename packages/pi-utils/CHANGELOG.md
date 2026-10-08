@@ -1,5 +1,18 @@
 # @ian-pascoe/pi-utils
 
+## 0.5.0
+
+### Minor Changes
+
+- 4ef1998: `@ian-pascoe/pi-utils/settings-menu` now exports one shared settings menu frame (`SettingsMenu`, `SettingsMenuUi`) for `/advisor` and `/guardian`, styled like Pi's settings screen, with `EditorChooser`, `scopeRow`, and `cycleDisplay`. Input errors use the `✗` Status Mark instead of `✖`.
+- 4ef1998: Add shared extension UI primitives at `@ian-pascoe/pi-utils/ui`: `toolHeader`, `previewBody`, `CollapsedPreview`, `expandHint`, `summaryExpandHint`, `durationFooter`, `callDurationFooter`, `appendDurationFooter`, `statusMark`, `treePrefix`, `widgetLines`, `footerStatus`, `hintLine`, `joinInline`, `clipPlain`, `customMessageBox` (Pi's custom-message box under a bold `[source]` label with the heading on the same line, as Pi draws `[skill] name`) and `noticeText`, plus `expandMessageOnClick` and `expandEntryOnClick`, which let a click toggle a custom message or entry between its collapsed and expanded view as Pi's tool rows do. Each styles through the theme passed to it, so colours follow the user's theme.
+
+  Add test tooling at `@ian-pascoe/pi-utils/ui-testing`: `taggedTheme` and `escapeTaggedTheme` (token-tagging themes; the second measures as zero columns so line breaks fall at real widths, though pi-tui does not re-open its styles after a wrap), `readableTags` to decode it, `expectLinesFitWidth`, which checks line width and rejects hard-coded colour escapes, and `expectClickToggles`, which proves a registered message or entry renderer swaps views on a click.
+
+  Raise the Pi peer range to `>=1.1.0`.
+
+  **Breaking:** remove `shouldUseNerdFontIcons` from the root export. Every surface now uses the shared Unicode Status Marks, and no package consumes it.
+
 ## 0.4.0
 
 ### Minor Changes
