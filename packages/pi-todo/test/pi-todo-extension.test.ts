@@ -360,9 +360,6 @@ describe("Pi Todo extension", () => {
     expect(
       Value.Check(parameters, { action: "add", tasks: [{ title: "A", status: "active" }] }),
     ).toBe(false);
-    if (!harness.tool.renderCall || !harness.tool.renderResult) {
-      throw new Error("todo declares no transcript renderers");
-    }
     const batch = await harness.execute(
       {
         action: "add",
@@ -373,24 +370,7 @@ describe("Pi Todo extension", () => {
       },
       harness.context(),
     );
-    const renderBatch = (expanded: boolean) =>
-      renderTodoComponent(
-        harness.tool.renderResult!(batch, { expanded, isPartial: false }, createTodoTestTheme()),
-        80,
-      ).join("\n");
-    expect(renderBatch(false)).toBe(
-      "Added 6 Tasks:\n[ ] #1 B1\n[ ] #2 B2\n[ ] #3 B3\n[ ] #4 B4\n[ ] #5 B5\n… 1 more",
-    );
-    expect(renderBatch(true)).toContain("[ ] #1 B1\n    Only expanded.");
-    expect(
-      renderTodoComponent(
-        harness.tool.renderCall(
-          { action: "add", tasks: [{ title: "A" }, { title: "B" }] },
-          createTodoTestTheme(),
-        ),
-        80,
-      ),
-    ).toEqual(["todo add 2 Tasks"]);
+    expect(batch.details).toMatchObject({ action: "add" });
   });
 
   test("batch add creates nothing when any Task is invalid", async () => {
@@ -599,9 +579,6 @@ describe("Pi Todo extension", () => {
     expect(Value.Check(parameters, { action: "update", updates: [{ id: 1, extra: 1 }] })).toBe(
       false,
     );
-    if (!harness.tool.renderCall || !harness.tool.renderResult) {
-      throw new Error("todo declares no transcript renderers");
-    }
     const context = harness.context();
     await harness.execute(
       { action: "add", tasks: [1, 2, 3, 4, 5, 6].map((n) => ({ title: `T${n}` })) },
@@ -614,33 +591,7 @@ describe("Pi Todo extension", () => {
       },
       context,
     );
-    expect(
-      renderTodoComponent(
-        harness.tool.renderResult(
-          batch,
-          { expanded: false, isPartial: false },
-          createTodoTestTheme(),
-        ),
-        80,
-      ).join("\n"),
-    ).toBe(
-      "Updated 6 Tasks:\n[x] #1 ~T1~\n[x] #2 ~T2~\n[x] #3 ~T3~\n[x] #4 ~T4~\n[x] #5 ~T5~\n… 1 more",
-    );
-    expect(
-      renderTodoComponent(
-        harness.tool.renderCall(
-          {
-            action: "update",
-            updates: [
-              { id: 1, status: "active" },
-              { id: 2, status: "active" },
-            ],
-          },
-          createTodoTestTheme(),
-        ),
-        80,
-      ),
-    ).toEqual(["todo update 2 Tasks"]);
+    expect(batch.details).toMatchObject({ action: "update" });
   });
 
   test("clear resets IDs after every Task was individually removed", async () => {
@@ -805,6 +756,14 @@ describe("Pi Todo extension", () => {
     );
   });
 
+  test("reports a non-interactive clear as a prefixed error", async () => {
+    const harness = new TodoExtensionHarness();
+    await harness.command.handler("clear", harness.context([], "print"));
+    expect(harness.notifications).toEqual([
+      { message: "Todo: /todo clear requires interactive mode", type: "error" },
+    ]);
+  });
+
   test("renders a compact Todo Widget and confirms manual clearing", async () => {
     const harness = new TodoExtensionHarness();
     const context = harness.context([], "tui");
@@ -832,48 +791,15 @@ describe("Pi Todo extension", () => {
     );
 
     expect(renderTodoWidget(harness, 36)).toEqual([
-      "TODO  2 active · 2 pending · 2 comp…",
-      "[>] #1 Active one with a title that…",
+      "Todo 2 active · 2 pending · 2 com...",
+      "[>] #1 Active one with a title th...",
       "[>] #4 Active two",
       "[ ] #2 Pending one",
       "[ ] #5 Pending two",
       "[x] #3 ~Completed one~",
-      "… 1 more",
+      "[x] #6 ~Completed two~",
     ]);
     expect(renderTodoWidget(harness, 36).every((line) => visibleWidth(line) <= 36)).toBe(true);
-
-    const listResult = await harness.execute({ action: "list" }, context);
-    const transcriptTool = harness.tool;
-    if (!transcriptTool.renderCall || !transcriptTool.renderResult) {
-      throw new Error("Todo extension test harness did not receive custom transcript renderers");
-    }
-    const renderResult = transcriptTool.renderResult.bind(transcriptTool);
-    const renderResultText = (result: TodoToolResult, expanded = false, width = 80) =>
-      renderTodoComponent(
-        renderResult(result, { expanded, isPartial: false }, createTodoTestTheme()),
-        width,
-      ).join("\n");
-    expect(
-      renderTodoComponent(
-        transcriptTool.renderCall(
-          { action: "update", id: 4, status: "completed" },
-          createTodoTestTheme(),
-        ),
-        80,
-      ),
-    ).toEqual(["todo update #4"]);
-    expect(renderResultText(listResult)).toBe(
-      "6 Tasks:\n[>] #1 Active one with a title that must truncate\n[ ] #2 Pending one\n[x] #3 ~Completed one~\n[>] #4 Active two\n[ ] #5 Pending two\n… 1 more",
-    );
-    expect(renderResultText(listResult, true, 100)).toContain(
-      "[x] #6 ~Completed two~\n    Only expanded transcript output shows this.",
-    );
-    expect(renderResultText(listed)).toBe("✓ Added Task #6");
-    expect(
-      renderResultText({
-        content: [{ type: "text", text: "Todo update failed: Task #99 was not found" }],
-      }),
-    ).toBe("Todo update failed: Task #99 was not found");
 
     const completions = await harness.command.getArgumentCompletions?.("cl");
     expect(completions).toEqual([

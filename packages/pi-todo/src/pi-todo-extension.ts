@@ -1,6 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component } from "@earendil-works/pi-tui";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { Type } from "typebox";
 import { projectTodoContext, todoStateFromEntry } from "./todo-context.js";
 import {
@@ -10,14 +11,13 @@ import {
   TODO_ACTIONS,
   TODO_STATUSES,
   TodoToolOutputSchema,
-  todoStatusMarker,
   type TodoActionInput,
   type TodoStateSnapshot,
-  type TodoStatus,
   type TodoTask,
   TodoOperationError,
   type TodoToolDetails,
 } from "./todo-list.js";
+import { renderTodoCall, renderTodoResult, renderTodoWidget } from "./todo-render.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 const TODO_STATE_ENTRY_TYPE = "pi-todo-state";
@@ -33,8 +33,6 @@ function assertTodoJournalReadable(context: ExtensionContext): void {
   }
 }
 const TODO_WIDGET_ID = "pi-todo";
-const TODO_WIDGET_STATUS_ORDER: readonly TodoStatus[] = ["active", "pending", "completed"];
-const TODO_COLLAPSED_TASK_LIMIT = 5;
 
 const TodoParameters = Type.Object({
   action: StringEnum(TODO_ACTIONS),
@@ -113,19 +111,6 @@ function restoreTodoState(context: ExtensionContext): TodoStateSnapshot {
   return createEmptyTodoState();
 }
 
-function renderTodoTaskLine(task: TodoTask, theme: Theme): string {
-  const markerColor =
-    task.status === "active" ? "accent" : task.status === "completed" ? "success" : "muted";
-  const title =
-    task.status === "active"
-      ? theme.bold(task.title)
-      : task.status === "completed"
-        ? theme.strikethrough(task.title)
-        : task.title;
-  const titleColor = task.status === "completed" ? "dim" : "text";
-  return `${theme.fg(markerColor, todoStatusMarker(task.status))} ${theme.fg("accent", `#${task.id}`)} ${theme.fg(titleColor, title)}`;
-}
-
 class TodoWidget implements Component {
   constructor(
     private readonly tasks: readonly TodoTask[],
@@ -135,25 +120,7 @@ class TodoWidget implements Component {
   invalidate(): void {}
 
   render(width: number): string[] {
-    const active = this.tasks.filter((task) => task.status === "active").length;
-    const pending = this.tasks.filter((task) => task.status === "pending").length;
-    const completed = this.tasks.length - active - pending;
-    const header =
-      this.theme.fg("toolTitle", this.theme.bold("TODO")) +
-      this.theme.fg("muted", `  ${active} active · ${pending} pending · ${completed} completed`);
-    const orderedTasks = this.tasks.toSorted((left, right) => {
-      const statusDifference =
-        TODO_WIDGET_STATUS_ORDER.indexOf(left.status) -
-        TODO_WIDGET_STATUS_ORDER.indexOf(right.status);
-      return statusDifference === 0 ? left.id - right.id : statusDifference;
-    });
-    const lines = [header];
-    for (const task of orderedTasks.slice(0, TODO_COLLAPSED_TASK_LIMIT)) {
-      lines.push(renderTodoTaskLine(task, this.theme));
-    }
-    const remaining = orderedTasks.length - TODO_COLLAPSED_TASK_LIMIT;
-    if (remaining > 0) lines.push(this.theme.fg("dim", `… ${remaining} more`));
-    return lines.map((line) => truncateToWidth(line, width, "…"));
+    return renderTodoWidget(this.tasks, this.theme, width);
   }
 }
 
@@ -240,45 +207,9 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
         structuredContent: structuredClone(result.details),
       };
     },
-    renderCall: (params, theme) => {
-      let text = theme.fg("toolTitle", theme.bold("todo")) + theme.fg("muted", ` ${params.action}`);
-      if (params.id !== undefined) text += theme.fg("accent", ` #${params.id}`);
-      if (params.action === "add" && params.title) text += theme.fg("dim", ` "${params.title}"`);
-      if (params.action === "add" && params.tasks) {
-        const count = params.tasks.length;
-        text += theme.fg("dim", ` ${formatTaskCount(count)}`);
-      }
-      if (params.action === "update" && params.updates) {
-        text += theme.fg("dim", ` ${formatTaskCount(params.updates.length)}`);
-      }
-      return new Text(text, 0, 0);
-    },
-    renderResult: (result, { expanded }, theme) => {
-      const text = result.content.find((item) => item.type === "text");
-      if (!result.details) {
-        return new Text(theme.fg("error", text?.text ?? "Todo operation failed"), 0, 0);
-      }
-      if ("tasks" in result.details) {
-        const { action, tasks } = result.details;
-        if (tasks.length === 0) return new Text(theme.fg("dim", "Todo List is empty"), 0, 0);
-        const visibleTasks = expanded ? tasks : tasks.slice(0, TODO_COLLAPSED_TASK_LIMIT);
-        const verb = action === "add" ? "Added " : action === "update" ? "Updated " : "";
-        const heading = `${verb}${formatTaskCount(tasks.length)}:`;
-        const lines = [theme.fg("muted", heading)];
-        for (const task of visibleTasks) {
-          lines.push(renderTodoTaskLine(task, theme));
-          if (expanded && task.description) {
-            lines.push(
-              ...task.description.split("\n").map((line) => theme.fg("dim", `    ${line}`)),
-            );
-          }
-        }
-        const remaining = tasks.length - visibleTasks.length;
-        if (remaining > 0) lines.push(theme.fg("dim", `… ${remaining} more`));
-        return new Text(lines.join("\n"), 0, 0);
-      }
-      return new Text(theme.fg("success", "✓ ") + theme.fg("muted", text?.text ?? "Done"), 0, 0);
-    },
+    renderCall: (params, theme, context) => renderTodoCall(params, theme, context),
+    renderResult: (result, options, theme, context) =>
+      renderTodoResult(result, options, theme, context),
   });
 
   pi.registerCommand("todo", {
@@ -293,7 +224,7 @@ export default function piTodoExtension(pi: ExtensionAPI): void {
         return;
       }
       if (context.mode !== "tui") {
-        context.ui.notify("/todo clear requires interactive mode", "error");
+        context.ui.notify(noticeText("Todo", "/todo clear requires interactive mode"), "error");
         return;
       }
       await context.waitForIdle();
