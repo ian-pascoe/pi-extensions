@@ -83,7 +83,7 @@ const descriptions = {
   includeSubagents: "Also review Minimal Subagents Child Agents",
   prompt: "Advisor Prompt; replaces the whole prompt",
   model: "Advisor model; inherit follows the observed agent",
-  thinkingLevel: "Advisor thinking level; inherit follows the observed agent",
+  thinkingLevel: "Advisor thinking level; inherit uses the default (high)",
   allowedTools: "Tools the Advisor may call (Tool Grant)",
   catchUpThreshold: "Review Backlog that starts a Catch-up Wait; a positive integer or off",
   reviewTimeoutMs: "Deadline for each Review, in seconds",
@@ -92,11 +92,13 @@ const descriptions = {
   maxFindingsPerReview: "Findings accepted from one Review (1–32)",
   maxNitsPerRequest: "Nits delivered per request; further Nits are dropped (0 delivers none)",
   seedBudgetTokens:
-    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 100k",
+    "Token budget for the Context Seed; auto is a quarter of the Advisor model's context window, at most 50k",
   reviewEvery:
     "When Reviews run: every turn, every N turns, or once per request; a tool error reviews at once",
   maxSessionTokens:
-    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 200k",
+    "Advisor Session size that triggers native compaction; auto is half the Advisor model's context window, at most 100k",
+  maxToolResultChars:
+    "Longest tool-result text kept whole in Review Evidence, in characters; longer results keep their head and tail",
 } satisfies Record<keyof AdvisorOptions, string>;
 const inheritRow = "\u0000inherit";
 const inputHints = {
@@ -109,6 +111,7 @@ const inputHints = {
   seedBudgetTokens: "a token count, auto, or inherit",
   reviewEvery: "turn, request, a number of turns, or inherit",
   maxSessionTokens: "a token count, auto, or inherit",
+  maxToolResultChars: "a number of characters, or inherit",
 } as const;
 
 /** Convert one typed or selected menu value into a validated change. */
@@ -141,6 +144,7 @@ function parseAdvisorMenuValue(
       case "maxCorrectiveTurns":
       case "maxFindingsPerReview":
       case "maxNitsPerRequest":
+      case "maxToolResultChars":
         return { [key]: Number(value) };
       default:
         return { [key]: value };

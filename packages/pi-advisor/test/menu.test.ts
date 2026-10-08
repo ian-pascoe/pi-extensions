@@ -20,6 +20,7 @@ const defaults = {
   enabled: false,
   includeSubagents: false,
   prompt: "Default review prompt.",
+  thinkingLevel: "high",
   allowedTools: ["read", "grep"],
   catchUpThreshold: 3,
   reviewTimeoutMs: 120_000,
@@ -30,6 +31,7 @@ const defaults = {
   seedBudgetTokens: "auto",
   reviewEvery: "turn",
   maxSessionTokens: "auto",
+  maxToolResultChars: 4_000,
 } satisfies AdvisorOptions;
 
 /** In-memory scoped settings with the same precedence as the extension. */
@@ -98,7 +100,7 @@ describe("Advisor settings menu", () => {
     expect(text).toContain("Advisor on");
     expect(text).toMatch(/Scope\s+session/);
     expect(text).toMatch(/enabled\s+inherit \(off · default\)/);
-    expect(text).toMatch(/thinkingLevel\s+inherit \(observed agent\)/);
+    expect(text).toMatch(/thinkingLevel\s+inherit \(high · default\)/);
     expect(text).toMatch(/model\s+inherit/);
     expect(text).toMatch(/allowedTools\s+read, grep/);
     expect(text).toMatch(/reviewTimeoutMs\s+120s/);
@@ -301,6 +303,11 @@ describe("Advisor settings menu", () => {
     type("120000");
     press(keys.enter);
     await settle();
+    goTo("maxToolResultChars");
+    press(keys.enter);
+    type("2000");
+    press(keys.enter);
+    await settle();
     goTo("maxNitsPerRequest");
     press(keys.enter);
     type("0");
@@ -311,6 +318,7 @@ describe("Advisor settings menu", () => {
       { action: "set", key: "reviewEvery", patch: { reviewEvery: 4 } },
       { action: "set", key: "reviewEvery", patch: { reviewEvery: "turn" } },
       { action: "set", key: "maxSessionTokens", patch: { maxSessionTokens: 120_000 } },
+      { action: "set", key: "maxToolResultChars", patch: { maxToolResultChars: 2_000 } },
       { action: "set", key: "maxNitsPerRequest", patch: { maxNitsPerRequest: 0 } },
     ]);
   });

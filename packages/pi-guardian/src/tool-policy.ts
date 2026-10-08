@@ -28,6 +28,8 @@ export const allowedByDefault: readonly string[] = [
   "context_notes",
   "context_history",
   "context_rollover",
+  // pi-advisor: finishes an Advisor Review; no side effects outside Pi.
+  "advisor_report",
 ];
 /** Tools reviewed by default regardless of their annotations. */
 export const reviewedByDefault: readonly string[] = [

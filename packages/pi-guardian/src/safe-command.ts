@@ -97,12 +97,12 @@ export function literalWords(command: string): string[] | undefined {
 
 /**
  * A Safe Command segment's words: {@link literalWords}, with `2>/dev/null` and `2>&1` dropped
- * wherever they stand as words of their own, when the shell quotes like bash (see
- * {@link modeledShell}); else words without any shell syntax, quoted or not.
+ * wherever they stand as words of their own, when the shell is bash or `sh` (see
+ * {@link shellKind}); else words without any shell syntax, quoted or not.
  */
 function segmentWords(segment: string, environment: ShellEnvironment): string[] | undefined {
-  const posix = modeledShell(environment);
-  return lexWords(segment, posix, posix);
+  const modeled = shellKind(environment) === "modeled";
+  return lexWords(segment, modeled, modeled);
 }
 
 /** Validates a built-in safe program's arguments; `true` when they cannot cause side effects. */
@@ -304,19 +304,25 @@ function exportedFunction(program: string, env: NodeJS.ProcessEnv): boolean {
 
 /** Shells whose `cd` and quoting Guardian models: bash, and `sh` where Pi finds no bash. */
 const modeledShells = new Set(["bash", "sh"]);
+/** Shells that read plain literal words as POSIX shells do, but are not modeled further. */
+const posixLikeShells = new Set(["zsh", "dash", "ksh", "mksh"]);
 
-/** Whether Pi runs bash or `sh` (`shellPath` unset, or one of them), whatever its options. */
-function modeledShell({ shellPath }: ShellEnvironment): boolean {
-  return (
-    shellPath === undefined ||
-    // `win32.basename` splits at both `/` and `\`, for a Windows `shellPath` too.
-    modeledShells.has(
-      win32
-        .basename(shellPath)
-        .replace(/\.exe$/i, "")
-        .toLowerCase(),
-    )
-  );
+/**
+ * How much Guardian knows about the shell Pi runs `bash` commands with, from `shellPath`:
+ * `modeled` (unset, bash, or `sh`) reads quotes as the lexer does; `posix` (zsh, dash, ksh, mksh)
+ * reads plain literal words alike but may differ with quoting, so only syntax-free commands
+ * qualify; any other shell (PowerShell reads curly quotes as quotes, fish allows `\'` in single
+ * quotes) may split a command's arguments differently, so no built-in program is trusted.
+ */
+function shellKind({ shellPath }: ShellEnvironment): "modeled" | "posix" | "other" {
+  if (shellPath === undefined) return "modeled";
+  // `win32.basename` splits at both `/` and `\`, for a Windows `shellPath` too.
+  const name = win32
+    .basename(shellPath)
+    .replace(/\.exe$/i, "")
+    .toLowerCase();
+  if (modeledShells.has(name)) return "modeled";
+  return posixLikeShells.has(name) ? "posix" : "other";
 }
 
 /**
@@ -330,7 +336,7 @@ function modeledShell({ shellPath }: ShellEnvironment): boolean {
 function cdModeled(environment: ShellEnvironment): boolean {
   const { env, commandPrefix } = environment;
   if (commandPrefix?.trim()) return false;
-  if (!modeledShell(environment)) return false;
+  if (shellKind(environment) !== "modeled") return false;
   if (["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"].some((name) => isSet(env[name]))) return false;
   return !Object.entries(env).some(
     ([name, value]) =>
@@ -385,9 +391,10 @@ function safeSegment(
   // `eval` run code that may be in that directory, so a rule for them no longer vouches either.)
   if (rule?.policy === "allow" && (!relaxed || ruleVouchedDirectoryChanges.has(program)))
     return true;
-  // Other shells quote differently (PowerShell reads curly quotes as quotes, fish allows `\'` in
-  // single quotes), so the arguments a built-in program's check sees may not be the ones it gets.
-  if (!modeledShell(environment)) return false;
+  // Another shell may quote differently (PowerShell reads curly quotes as quotes, fish allows
+  // `\'` in single quotes), so the arguments a built-in program's check sees may not be the ones
+  // it gets.
+  if (shellKind(environment) === "other") return false;
   if (directoryUnknown && directorySensitivePrograms.has(program)) return false;
   // After a `cd` that is not proved harmless, a recursive read that follows symlinks could leave
   // the directory for a Sensitive Path that a link inside it names.

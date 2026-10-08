@@ -818,7 +818,7 @@ describe("Safe Command", () => {
           false,
         );
         expect(safe("cd src && ls", { ...clean, commandPrefix: "  " })).toBe(true);
-        expect(safe("git status", { ...clean, shellPath: "/bin/zsh" })).toBe(false);
+        expect(safe("git status", { ...clean, shellPath: "/bin/zsh" })).toBe(true);
       });
 
       it("reviews every command while PATH has a relative entry", () => {
@@ -928,9 +928,10 @@ describe("Safe Command", () => {
     });
   });
 
-  describe("shells that quote differently from bash", () => {
-    // pwsh reads curly quotes as quotes, and fish allows `\'` inside single quotes, so quoted
-    // shell syntax may be live there; only bash and `sh` read quotes as the lexer does.
+  describe("shells other than bash and sh", () => {
+    // pwsh reads curly quotes as quotes, and fish allows `\'` inside single quotes, so no
+    // built-in program is trusted there. zsh, dash, ksh, and mksh read plain literal words as bash
+    // does, so built-ins stay safe, but quoted syntax and redirects are reviewed as in main.
     const shell = (shellPath?: string): ShellEnvironment => ({ env: {}, shellPath });
     const bypasses = [
       "echo 'a’; rm x; echo ‘b'",
@@ -949,8 +950,8 @@ describe("Safe Command", () => {
       "/usr/bin/fish",
       "powershell.exe",
       "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-      "zsh",
       "nu",
+      "elvish",
     ])("reviews built-in programs and quoted syntax under %s", (shellPath) => {
       for (const command of bypasses) {
         expect(isSafeCommand(command, {}, undefined, shell(shellPath))).toBe(false);
@@ -966,6 +967,40 @@ describe("Safe Command", () => {
         false,
       );
     });
+
+    it.each(["zsh", "/bin/dash", "/usr/bin/KSH", "mksh", "C:\\tools\\zsh.exe"])(
+      "keeps built-in Safe Commands but rejects quoted syntax under %s",
+      (shellPath) => {
+        for (const command of [
+          "ls -la src",
+          "git status",
+          "git log --oneline -5 | head",
+          "sed -n 5p file",
+          "pwd && ls",
+          `grep -rn 'two words' "src dir"`,
+          "echo 'a’ b‘'",
+          // Curly quotes are plain characters there, so these are one word, not an injected option.
+          "sed -n '/a’ -i -e 1p ‘/p' f",
+          "find . -name 'x’ -delete -name ‘'",
+        ])
+          expect(isSafeCommand(command, {}, undefined, shell(shellPath)), command).toBe(true);
+        for (const command of [
+          ...bypasses.filter((command) => !/^(?:sed|find) /.test(command)),
+          `echo "a;b"`,
+          `echo 'a|b'`,
+          `echo 'a && b'`,
+        ])
+          expect(isSafeCommand(command, {}, undefined, shell(shellPath)), command).toBe(false);
+        for (const command of ["ls 2>/dev/null", "ls 2>&1", "git status 2>&1", "ls >/dev/null"])
+          expect(isSafeCommand(command, {}, undefined, shell(shellPath)), command).toBe(false);
+        expect(isSafeCommand("make check", { make: "allow" }, undefined, shell(shellPath))).toBe(
+          true,
+        );
+        expect(isSafeCommand("make 'a;b'", { make: "allow" }, undefined, shell(shellPath))).toBe(
+          false,
+        );
+      },
+    );
 
     it.each([
       undefined,

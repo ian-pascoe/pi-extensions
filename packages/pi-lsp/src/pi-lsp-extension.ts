@@ -8,6 +8,7 @@ import {
   type ExtensionCommandContext,
   type ExtensionFactory,
   type SessionEntry,
+  type ToolCallEvent,
   type ToolResultEvent,
   type ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
@@ -16,9 +17,23 @@ import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import {
   DocumentDiagnosticRequest,
+  DocumentSymbolRequest,
   PositionEncodingKind,
+  ReferencesRequest,
   type Diagnostic,
 } from "vscode-languageserver-protocol/node";
+import {
+  capDependentFiles,
+  DEPENDENT_SCAN_BUDGET_MS,
+  groupErrorKeys,
+  newDependentErrors,
+  referencedFilePaths,
+  touchedDeclarationPositions,
+  touchedLinesOfEdit,
+  type DependentBaseline,
+  type FileTexts,
+  type TouchedLines,
+} from "./lsp-dependent-diagnostics.js";
 import {
   appendPostEditDiagnostics,
   type PostEditDiagnosticOutcome,
@@ -66,11 +81,14 @@ import { resolveLspSettings, type LspServerEnablement } from "./pi-lsp-settings.
 export interface PiLspLifecycleEffects {
   /** Return Pi's trust-aware global settings directory. */
   getAgentDirectory(): string;
+  /** Time one edit call's pre-edit dependent scan may take; defaults to 20 seconds. */
+  readonly dependentScanBudgetMs?: number;
 }
 
 interface ActivePiLspSession {
   readonly cwd: string;
   configuredEnablement: ReadonlyMap<string, LspServerEnablement>;
+  readonly includeHintDiagnostics: boolean;
   readonly manager: LspServerManager<LspServerClient>;
   readonly sessionFiles: LspSessionFiles;
   readonly workspaceEdits: LspWorkspaceEditStore;
@@ -140,7 +158,8 @@ function branchLspToolResultDetails(
   return [...records.values()];
 }
 
-function normalizedDiagnosticOutcome(
+/** Normalize one protocol Diagnostic; a missing severity is an Error, so default hint filtering keeps it. */
+export function normalizedDiagnosticOutcome(
   diagnostic: Diagnostic,
   serverId: string,
   filePath: string,
@@ -159,7 +178,8 @@ function normalizedDiagnosticOutcome(
       path: filePath,
       line: position.line,
       character: position.character,
-      severity: diagnostic.severity ?? 4,
+      // LSP leaves a missing severity to the client; treat it as an Error, like vscode-languageclient.
+      severity: diagnostic.severity ?? 1,
       message: Value.Check(Type.String(), diagnostic.message)
         ? diagnostic.message
         : Value.Parse(DiagnosticMarkupContentSchema, diagnostic.message).value,
@@ -241,16 +261,146 @@ class ManagerPostEditDiagnosticsRunner {
   }
 }
 
+/** A file a native mutation tool call is about to change, and the lines it touches. */
+interface DependentScanTarget {
+  readonly path: string;
+  readonly touched: TouchedLines;
+}
+
+/** Locate what a native `edit` or `write` call will change before it runs; other tools have no scan. */
+async function dependentScanTarget(
+  event: ToolCallEvent,
+  cwd: string,
+): Promise<DependentScanTarget | undefined> {
+  if (event.toolName !== "edit" && event.toolName !== "write") return undefined;
+  const { input } = event;
+  if (!Value.Check(Type.Object({ path: Type.String() }, { additionalProperties: true }), input)) {
+    return undefined;
+  }
+  const path = resolve(cwd, normalizeLspFilePath(input.path));
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      await readFile(path),
+    );
+    return { path, touched: event.toolName === "edit" ? touchedLinesOfEdit(text, input) : "all" };
+  } catch {
+    // A new file has no dependents, and an unreadable one has no text to locate an edit in.
+    return undefined;
+  }
+}
+
+/**
+ * Before an edit runs, find the files that reference the declarations it touches and record the
+ * errors they already have, so the result reports only what the edit newly breaks. A pull-only
+ * server such as `tsc --lsp` publishes no workspace diagnostics, has opened none of the dependents,
+ * and cannot be asked who imports a file, but it answers `textDocument/references`. The scan is
+ * bounded by declaration, file, and time caps.
+ */
+async function scanDependentFiles(
+  session: ActivePiLspSession,
+  target: DependentScanTarget,
+  signal: AbortSignal,
+): Promise<DependentBaseline | undefined> {
+  const read = await session.manager.runRead(
+    target.path,
+    undefined,
+    {
+      method: ReferencesRequest.method,
+      // The dependents' diagnostics are pulled, so a server without document diagnostics (one that
+      // only pushes) would pay for the scan and report nothing.
+      isSupportedBy: (client) =>
+        client.hasCapability(ReferencesRequest.method) &&
+        client.hasCapability(DocumentSymbolRequest.method) &&
+        client.hasCapability(DocumentDiagnosticRequest.method),
+    },
+    async (client, route): Promise<readonly string[]> => {
+      const document = await client.synchronizeDocument(target.path, route.language.languageId);
+      const symbols = await client.request<unknown>(
+        DocumentSymbolRequest.method,
+        { textDocument: { uri: document.uri } },
+        signal,
+      );
+      const found = new Set<string>();
+      for (const position of touchedDeclarationPositions(symbols, target.touched)) {
+        const references = await client.request<unknown>(
+          ReferencesRequest.method,
+          { textDocument: { uri: document.uri }, position, context: { includeDeclaration: false } },
+          signal,
+        );
+        for (const path of referencedFilePaths(references, new Set([target.path]))) found.add(path);
+      }
+      return [...found];
+    },
+  );
+  const candidates = [...new Set(read.successes.flatMap(({ value }) => value))];
+  if (candidates.length === 0) return undefined;
+  const { files, omittedFiles } = capDependentFiles(candidates);
+  const { outcomes, texts } = await pullDependentFiles(
+    new ManagerPostEditDiagnosticsRunner(session, signal),
+    files,
+  );
+  const { keys, unchecked } = groupErrorKeys(files, outcomes, texts);
+  return {
+    files: files.filter((file) => keys.has(file)),
+    omittedFiles: omittedFiles + unchecked,
+    errorKeys: keys,
+    scanTimedOut: false,
+  };
+}
+
+/** The result of pulling diagnostics for dependent files, with the text each error's line is read from. */
+interface DependentPull {
+  readonly outcomes: readonly PostEditDiagnosticOutcome[];
+  readonly texts: FileTexts;
+}
+
+/** Pull the dependent files' diagnostics concurrently, then read the text of each file with errors. */
+async function pullDependentFiles(
+  runner: ManagerPostEditDiagnosticsRunner,
+  files: readonly string[],
+): Promise<DependentPull> {
+  const outcomes = (await Promise.all(files.map((path) => runner.run([{ path }])))).flat();
+  const withErrors = new Set(
+    outcomes.flatMap((outcome) =>
+      outcome.kind === "diagnostic" && outcome.diagnostic.severity === 1
+        ? [outcome.diagnostic.path]
+        : [],
+    ),
+  );
+  const texts = new Map<string, string>();
+  await Promise.all(
+    [...withErrors].map(async (path) => {
+      try {
+        texts.set(path, await readFile(path, "utf8"));
+      } catch {
+        // An unreadable file keys its errors by message alone.
+      }
+    }),
+  );
+  return { outcomes, texts };
+}
+
 async function appendSessionPostEditDiagnostics(
   event: ToolResultEvent,
   session: ActivePiLspSession,
   context: ExtensionContext,
+  baseline: DependentBaseline | undefined,
 ): Promise<PostEditDiagnosticsResultPatch | undefined> {
-  const patch = await appendPostEditDiagnostics(
-    event,
-    (paths) => new ManagerPostEditDiagnosticsRunner(session, context.signal).run(paths),
-    session.cwd,
-  );
+  const runner = new ManagerPostEditDiagnosticsRunner(session, context.signal);
+  const patch = await appendPostEditDiagnostics(event, (paths) => runner.run(paths), session.cwd, {
+    includeHints: session.includeHintDiagnostics,
+    dependentDiagnostics:
+      baseline === undefined
+        ? undefined
+        : async (paths: readonly PostEditDiagnosticPath[]) => {
+            const changed = new Set(
+              paths.map(({ path }) => resolve(session.cwd, normalizeLspFilePath(path))),
+            );
+            const files = baseline.files.filter((file) => !changed.has(file));
+            const { outcomes, texts } = await pullDependentFiles(runner, files);
+            return newDependentErrors(baseline, files, outcomes, texts);
+          },
+  });
   if (patch === undefined) return undefined;
   const appendedValue = patch.content.at(-1);
   if (!Value.Check(AppendedTextContentSchema, appendedValue)) return undefined;
@@ -269,6 +419,7 @@ async function appendSessionPostEditDiagnostics(
 /** Own settings, tool registration, replay, diagnostics middleware, and resource shutdown for one extension instance. */
 export class PiLspLifecycleController {
   private readonly pendingPostEditDiagnosticOutcomes: PostEditDiagnosticOutcome[] = [];
+  private readonly dependentBaselines = new Map<string, DependentBaseline>();
   private session: ActivePiLspSession | undefined;
   private shutdownPromise: Promise<void> | undefined;
   private historyRevision = 0;
@@ -301,6 +452,7 @@ export class PiLspLifecycleController {
       this.historyRevision += 1;
       return this.restoreEnablement(context);
     });
+    this.pi.on("tool_call", (event, context) => this.handleToolCall(event, context));
     this.pi.on("tool_result", (event, context) => this.handleToolResult(event, context));
     this.pi.on("turn_end", () => this.flushPostEditDiagnosticsEntry());
     this.pi.on("session_shutdown", () => this.shutdownSession());
@@ -367,6 +519,7 @@ export class PiLspLifecycleController {
     this.session = {
       cwd: context.cwd,
       configuredEnablement: settings.enablement,
+      includeHintDiagnostics: settings.includeHintDiagnostics,
       manager,
       sessionFiles,
       workspaceEdits,
@@ -472,13 +625,59 @@ export class PiLspLifecycleController {
     return this.session;
   }
 
+  /**
+   * Scan for dependent files before a native edit runs. It never blocks or alters the call, and
+   * gives up at its time budget, which the result then reports.
+   */
+  private async handleToolCall(
+    event: ToolCallEvent,
+    context: ExtensionContext,
+  ): Promise<undefined> {
+    const session = this.session;
+    if (session === undefined || (event.toolName !== "edit" && event.toolName !== "write")) {
+      return undefined;
+    }
+    try {
+      const target = await dependentScanTarget(event, session.cwd);
+      if (target === undefined) return undefined;
+      const budget = AbortSignal.timeout(
+        this.effects.dependentScanBudgetMs ?? DEPENDENT_SCAN_BUDGET_MS,
+      );
+      const signal =
+        context.signal === undefined ? budget : AbortSignal.any([context.signal, budget]);
+      const scan = scanDependentFiles(session, target, signal);
+      const timedOut = new Promise<"timed-out">((resolveTimeout) =>
+        budget.addEventListener("abort", () => resolveTimeout("timed-out"), { once: true }),
+      );
+      // A scan that outlives its budget is aborted; whatever it settles with later is dropped.
+      scan.catch(() => undefined);
+      const baseline = await Promise.race([scan, timedOut]);
+      if (this.session !== session) return undefined;
+      if (baseline === "timed-out") {
+        this.dependentBaselines.set(event.toolCallId, {
+          files: [],
+          omittedFiles: 0,
+          errorKeys: new Map(),
+          scanTimedOut: true,
+        });
+      } else if (baseline !== undefined) {
+        this.dependentBaselines.set(event.toolCallId, baseline);
+      }
+    } catch {
+      // The edit proceeds without dependent-file feedback.
+    }
+    return undefined;
+  }
+
   private handleToolResult(
     event: ToolResultEvent,
     context: ExtensionContext,
   ): Promise<ToolResultEventResult | undefined> | undefined {
     const session = this.session;
+    const baseline = this.dependentBaselines.get(event.toolCallId);
+    this.dependentBaselines.delete(event.toolCallId);
     if (session === undefined) return undefined;
-    return appendSessionPostEditDiagnostics(event, session, context).then((patch) => {
+    return appendSessionPostEditDiagnostics(event, session, context, baseline).then((patch) => {
       if (patch === undefined) return undefined;
       this.pendingPostEditDiagnosticOutcomes.push(...patch.outcomes);
       const result: ToolResultEventResult = {
@@ -495,6 +694,8 @@ export class PiLspLifecycleController {
   private flushPostEditDiagnosticsEntry(): void {
     const session = this.session;
     const outcomes = this.pendingPostEditDiagnosticOutcomes.splice(0);
+    // A call that never produced a result (blocked or aborted) leaves its scan behind.
+    this.dependentBaselines.clear();
     if (session === undefined) return;
     const entry = createPostEditDiagnosticsEntryData(session.cwd, outcomes);
     if (entry !== undefined) this.pi.appendEntry(POST_EDIT_DIAGNOSTICS_ENTRY_TYPE, entry);
@@ -508,6 +709,7 @@ export class PiLspLifecycleController {
     const session = this.session;
     this.session = undefined;
     this.pendingPostEditDiagnosticOutcomes.length = 0;
+    this.dependentBaselines.clear();
     const shutdown = (async () => {
       try {
         await session.manager.shutdown();
