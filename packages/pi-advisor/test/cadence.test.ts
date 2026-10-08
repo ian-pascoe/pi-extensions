@@ -5,6 +5,7 @@ import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import {
   activeFixture,
   conversation,
+  effectful,
   expectPrefix,
   longSessionStream,
   seedPayload,
@@ -16,6 +17,8 @@ import { readAdvisorSettings, type AdvisorConfig } from "../src/advisor-settings
 
 /** Short, successful observed tool results unless a test marks some as errors. */
 const ok = { result: (id: string) => `ok ${id}`, isError: () => false };
+/** Successful tool calls with effects, which start a Review per turn under the default cadence. */
+const effects = { ...ok, call: effectful };
 
 async function observe(
   config: Partial<AdvisorConfig>,
@@ -230,6 +233,122 @@ it.each(["request", 4] as const)(
     expect(rest?.at(-1)).toBe("assistant:Done");
     expect([...(failed ?? []), ...(rest ?? [])]).toHaveLength(
       conversation(session.messages).length,
+    );
+  },
+);
+
+const annotatedTools = fileURLToPath(
+  new URL("./fixtures/annotated-tools-extension.ts", import.meta.url),
+);
+const readTurn = { name: "read", arguments: { path: "/missing" } };
+
+it("reviews a run of read-only turns once, with the edit that follows them", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  // Three reads, then a command with effects: batches `0-0` to `0-3`.
+  globalThis.advisorObserverTest = longSessionStream({ "Explore then edit": 4 }, privateRequests, {
+    ...ok,
+    call: (id) => (id === "0-3" ? effectful(id) : readTurn),
+  });
+  const { session, observer } = await observe({});
+  // Backlog at each turn's end, before the Advisor counts that turn: reads add to it unreviewed.
+  const backlogs: number[] = [];
+  session.subscribe((event) => {
+    if (event.type === "turn_end") backlogs.push(observer.status.backlog);
+  });
+  await session.prompt("Explore then edit");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+  expect(backlogs).toEqual([0, 1, 2, 3, 0]);
+  // One Review covers the request, all three read turns, and the command; one the answer.
+  expect(privateRequests.map((request) => received(request).length)).toEqual([9, 1]);
+  expect(
+    received(privateRequests[0]).filter((message) => message.startsWith("toolResult:")),
+  ).toHaveLength(4);
+  expect(received(privateRequests[1])).toEqual(["assistant:Done"]);
+  expectPrefix(privateRequests[1], privateRequests[0]);
+});
+
+it("reviews the read-only turns left at request completion", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ "Only explore": 3 }, privateRequests, {
+    ...ok,
+    call: () => readTurn,
+  });
+  const { session, observer } = await observe({});
+  await session.prompt("Only explore");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+  expect(privateRequests).toHaveLength(1);
+  expect(received(privateRequests[0])).toHaveLength(8);
+  expect(received(privateRequests[0]).at(-1)).toBe("assistant:Done");
+});
+
+it("reviews an errored read-only call at once, with the read turns before it", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ "Explore badly": 4 }, privateRequests, {
+    ...ok,
+    call: () => readTurn,
+    isError: (id) => id === "0-1",
+  });
+  const { session, observer } = await observe({});
+  await session.prompt("Explore badly");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+  // The first Review stops at the failed read; the next covers the reads after it.
+  expect(privateRequests.map((request) => received(request).length)).toEqual([5, 5]);
+  expect(received(privateRequests[0]).at(-1)).toBe("toolResult:ok 0-1");
+  expect(received(privateRequests[1]).at(-1)).toBe("assistant:Done");
+});
+
+it.each([
+  ["a built-in read tool", [readTurn], true],
+  [
+    "grep, find and ls together",
+    [
+      { name: "grep", arguments: { pattern: "x" } },
+      { name: "find", arguments: { pattern: "*.ts" } },
+      { name: "ls", arguments: {} },
+    ],
+    true,
+  ],
+  ["a tool annotated readOnlyHint: true", [{ name: "lookup", arguments: {} }], true],
+  ["a read and an annotated read-only tool", [readTurn, { name: "lookup", arguments: {} }], true],
+  ["a tool annotated readOnlyHint: false", [{ name: "mutate", arguments: {} }], false],
+  ["a tool without annotations", [{ name: "unannotated", arguments: {} }], false],
+  ["an unknown tool", [{ name: "missing_tool", arguments: {} }], false],
+  ["bash", [{ name: "bash", arguments: { command: "true" } }], false],
+  ["a read alongside bash", [readTurn, { name: "bash", arguments: { command: "true" } }], false],
+  [
+    "a read alongside an unannotated tool",
+    [readTurn, { name: "unannotated", arguments: {} }],
+    false,
+  ],
+])("classifies a turn that calls %s for its Review", async (_name, calls, readOnly) => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({ "One batch": 1 }, privateRequests, {
+    ...ok,
+    call: () => calls,
+  });
+  const { session, observer } = await observe({}, {}, [annotatedTools]);
+  // Pi activates only some built-in tools by default; an inactive one would fail before the hook.
+  session.setActiveToolsByName([...session.getActiveToolNames(), "grep", "find", "ls"]);
+  await session.prompt("One batch");
+  expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+  const sizes = privateRequests.map((request) => received(request).length);
+  // A read-only batch waits for the answer's Review; any other turn is reviewed at once.
+  expect(sizes).toEqual(readOnly ? [calls.length + 3] : [calls.length + 2, 1]);
+});
+
+it.each(["request", 3] as const)(
+  "leaves reviewEvery %s unchanged for read-only turns",
+  async (reviewEvery) => {
+    const privateRequests: PrivateRequest[] = [];
+    globalThis.advisorObserverTest = longSessionStream({ "Long read": 7 }, privateRequests, {
+      ...ok,
+      call: () => readTurn,
+    });
+    const { session, observer } = await observe({ reviewEvery });
+    await session.prompt("Long read");
+    expect(observer.status).toMatchObject({ lastError: null, backlog: 0 });
+    expect(privateRequests.map((request) => received(request).length)).toEqual(
+      reviewEvery === "request" ? [16] : [7, 6, 3],
     );
   },
 );
@@ -517,7 +636,7 @@ it("keeps the private Advisor history a stable prefix between Reviews without co
   globalThis.advisorObserverTest = longSessionStream(
     { "Step one": 2, "Step two": 2, "Step three": 2 },
     privateRequests,
-    ok,
+    effects,
   );
   const { session, observer } = await observe({});
   for (const prompt of ["Step one", "Step two", "Step three"]) await session.prompt(prompt);

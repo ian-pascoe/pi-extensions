@@ -49,7 +49,7 @@ An urgent Intervention identifying materially unsound work that needs immediate 
 _Avoid_: Execution veto
 
 **Superseded Finding**:
-A finding from a Review whose observed agent completed more turns before the finding could be delivered. It is withheld and re-validated by the next Review against the newer turns rather than delivered, at most once: if that Review is superseded too, its Concerns and Blockers are delivered and its Nits dropped.
+A finding from a Review whose observed agent completed more turns before the finding could be delivered. It is withheld and re-validated by the next Review against the newer turns rather than delivered, at most once (withholding makes that Review due at once, even when the newer turns were read-only): if that Review is superseded too, its Concerns and Blockers are delivered and its Nits dropped.
 _Avoid_: Retracted finding
 
 **Corrective Turn**:
@@ -61,8 +61,12 @@ One assessment by an Advisor of new observed-agent context, optionally supported
 _Avoid_: Observed-agent turn
 
 **Review Cadence**:
-When Reviews start: after every turn (the default), after every N turns and at request completion, or once at request completion. A turn with a failed tool call starts a Review under any cadence. Whatever the cadence, a Review covers the whole Review Backlog.
+When Reviews start: after every turn that is not read-only (the default), after every N turns and at request completion, or once at request completion. A turn with a failed tool call starts a Review under any cadence. Whatever the cadence, a Review covers the whole Review Backlog.
 _Avoid_: Review frequency, polling interval
+
+**Read-only Turn**:
+A turn whose tool calls are all read-only: Pi's built-in read tools (`read`, `grep`, `find`, `ls`) or tools whose definition carries `readOnlyHint: true`. `bash` never qualifies, and a turn without tool calls is not one. Under the `turn` cadence it joins the Review Backlog without starting a Review; the next other turn, an errored tool result, or request completion reviews it.
+_Avoid_: Exploration turn, safe turn
 
 **Review Evidence**:
 The observed agent's messages as its model received them, supplied to a Review or Consultation: roles, text, reasoning text, tool calls with arguments, tool-result text with error status (capped to its head and tail, with a marker pointing at the observed session file, past a configured length, by default 4,000 characters), image attachments, and markers for redacted reasoning and responses that ended abnormally. Replay signatures, display-only details, provider metadata, and native IDs are omitted.
@@ -89,5 +93,5 @@ Completed turns of the observed agent that have not yet received a completed Adv
 _Avoid_: Message count, pending advice
 
 **Catch-up Wait**:
-A bounded pause in the observed agent's progress while the Advisor reduces its Review Backlog. It waits only for a running Review, never for turns that are waiting for their Review Cadence. It is not an approval gate and does not require the Advisor to endorse the work.
+A bounded pause in the observed agent's progress while the Advisor reduces its Review Backlog. It waits only for a running Review, never for turns that are waiting for their Review Cadence, including Read-only Turns. It is not an approval gate and does not require the Advisor to endorse the work.
 _Avoid_: Lockstep review, approval wait
