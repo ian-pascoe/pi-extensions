@@ -1,5 +1,15 @@
 # @ian-pascoe/pi-advisor
 
+## 0.6.1
+
+### Patch Changes
+
+- ac8fb7a: Extract layered extension settings (`@ian-pascoe/pi-utils/layered-settings`) and evidence projection (`@ian-pascoe/pi-utils/evidence`) into pi-utils. Advisor and Minimal Subagents now build on them without changing behavior.
+- 9b5cae5: Add `@ian-pascoe/pi-utils/settings-menu` (`ValueInput`, `ModelPicker`, `nextCycleValue`, `errorText`) and `@ian-pascoe/pi-utils/settings-command` (`parseSettingsCommand`, `completeSettingsCommandArguments`), the settings menu widgets and `/command [on|off|status|inherit|set] [--global|--project]` parsing that Advisor and Guardian shared by copy. `./settings-menu` needs the optional `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` peers. Advisor now uses them internally without changing behavior.
+- Updated dependencies [ac8fb7a]
+- Updated dependencies [9b5cae5]
+  - @ian-pascoe/pi-utils@0.4.0
+
 ## 0.6.0
 
 ### Minor Changes

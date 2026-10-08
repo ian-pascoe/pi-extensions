@@ -1,5 +1,14 @@
 # @ian-pascoe/pi-minimal-subagents
 
+## 0.16.1
+
+### Patch Changes
+
+- ac8fb7a: Extract layered extension settings (`@ian-pascoe/pi-utils/layered-settings`) and evidence projection (`@ian-pascoe/pi-utils/evidence`) into pi-utils. Advisor and Minimal Subagents now build on them without changing behavior.
+- Updated dependencies [ac8fb7a]
+- Updated dependencies [9b5cae5]
+  - @ian-pascoe/pi-utils@0.4.0
+
 ## 0.16.0
 
 ### Minor Changes

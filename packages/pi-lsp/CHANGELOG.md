@@ -1,5 +1,13 @@
 # @ian-pascoe/pi-lsp
 
+## 0.10.1
+
+### Patch Changes
+
+- Updated dependencies [ac8fb7a]
+- Updated dependencies [9b5cae5]
+  - @ian-pascoe/pi-utils@0.4.0
+
 ## 0.10.0
 
 ### Minor Changes
