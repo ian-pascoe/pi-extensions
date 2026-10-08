@@ -39,11 +39,71 @@ import guardian from "../../src/index.js";
 import type { GuardianOptions } from "../../src/guardian-settings.js";
 
 /** A scripted Guardian reply: assessment text, a provider failure, or a reply that waits. */
-export type GuardianReply = string | Error | DeferredReply;
+export type GuardianReply = string | Error | DeferredReply | GatedReply;
 
 /** A Guardian reply produced later, for example after the review is aborted. */
 export class DeferredReply {
   constructor(readonly run: (options: SimpleStreamOptions | undefined) => Promise<string>) {}
+}
+
+/**
+ * A Guardian reply the test paces by hand: the provider is called (`requested`), the stream
+ * starts only on `begin()`, and the reply ends on `complete()` or `fail()`. Aborting the request
+ * ends it as an aborted stream, as a real adapter does.
+ */
+export class GatedReply {
+  /** Resolves when the provider is called with this reply. */
+  readonly requested: Promise<void>;
+  /** Set once the provider is called. */
+  signal: AbortSignal | undefined;
+  private markRequested: () => void = () => {};
+  private startStream: () => void = () => {};
+  private endStream: (error: string | undefined) => void = () => {};
+  private begun = false;
+
+  constructor(private readonly text = "") {
+    this.requested = new Promise<void>((resolve) => {
+      this.markRequested = resolve;
+    });
+  }
+
+  /** Emit the stream's `start` event. */
+  begin(): void {
+    if (this.begun) return;
+    this.begun = true;
+    this.startStream();
+  }
+
+  /** Finish the stream with the scripted assessment. */
+  complete(): void {
+    this.begin();
+    this.endStream(undefined);
+  }
+
+  /** Finish the stream with a provider error; before `begin()` it is the stream's first event. */
+  fail(message: string): void {
+    this.endStream(message);
+  }
+
+  /** @internal Called by the harness's provider. */
+  serve(handlers: {
+    signal: AbortSignal | undefined;
+    start: () => void;
+    finish: (text: string) => void;
+    fail: (error: string, reason: "error" | "aborted") => void;
+  }): void {
+    this.signal = handlers.signal;
+    this.startStream = handlers.start;
+    this.endStream = (error) => {
+      if (error === undefined) handlers.finish(this.text);
+      else handlers.fail(error, "error");
+    };
+    handlers.signal?.addEventListener("abort", () => handlers.fail("aborted", "aborted"), {
+      once: true,
+    });
+    if (this.begun) handlers.start();
+    this.markRequested();
+  }
 }
 
 /** A scripted classifier reply: answers by question, or a provider failure. */
@@ -310,7 +370,24 @@ export async function createGuardianHarness(options: HarnessOptions = {}) {
       message.errorMessage = error;
       stream.push({ type: "error", reason, error: message });
     };
+    const begin = () => {
+      stream.push({
+        type: "start",
+        partial: {
+          ...fauxAssistantMessage(""),
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+        },
+      });
+    };
     const respond = () => {
+      if (scripted instanceof GatedReply) {
+        scripted.serve({ signal: requestOptions?.signal, start: begin, finish, fail });
+        return;
+      }
+      // A provider streams `start` once its response begins; a failure may come before it.
+      if (scripted !== undefined && !(scripted instanceof Error)) begin();
       if (scripted === undefined) fail("No scripted Guardian reply", "error");
       else if (scripted instanceof Error) fail(scripted.message, "error");
       else if (scripted instanceof DeferredReply)
