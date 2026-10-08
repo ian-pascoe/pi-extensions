@@ -328,7 +328,8 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
     if (!batch.some((block) => block.id === call.toolCallId)) return false;
     if (sequentialBatch(batch)) return true;
     return batch.every(
-      (block) => block.id === call.toolCallId || onlyReads(block.name, block.arguments),
+      (block) =>
+        block.id === call.toolCallId || onlyReads(block.name, block.arguments, shellEnvironment()),
     );
   }
 

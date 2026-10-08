@@ -11,6 +11,7 @@ import {
   type ShellEnvironment,
 } from "../src/safe-command.js";
 import { useCleanShellEnvironment } from "./fixtures/shell-environment.js";
+import { onlyReads } from "../src/tool-policy.js";
 import type { SensitivePathContext } from "../src/sensitive-paths.js";
 
 useCleanShellEnvironment();
@@ -481,6 +482,48 @@ describe("Safe Command", () => {
         expect(isSafeCommand("cd /opt && ls", { ls: "allow" }, where)).toBe(true);
       });
 
+      it("reviews a rule-allowed source, `.`, or eval after a relaxed cd", () => {
+        for (const program of ["source", ".", "eval"])
+          expect(
+            isSafeCommand(`cd /opt && ${program} ./x`, { [program]: "allow" }, where),
+            program,
+          ).toBe(false);
+        // Without the relaxed cd the user's rule stands.
+        expect(isSafeCommand("source ./x", { source: "allow" }, where)).toBe(true);
+      });
+
+      it("keeps earlier directories for operands after a rule-allowed directory change", () => {
+        const rules = { pushd: "allow", popd: "allow" } as const;
+        for (const command of [
+          `cd ${home()}/notes && pushd /nonexistent && cat ../.ssh/id_rsa`,
+          `cd ${home()}/notes && popd && cat ../.ssh/id_rsa`,
+          `cd ${home()}/notes; pushd /nonexistent; ls ..`,
+        ])
+          expect(isSafeCommand(command, rules, where), command).toBe(false);
+        expect(isSafeCommand("cd /opt && pushd /nonexistent && ls", rules, where)).toBe(true);
+      });
+
+      it.each([
+        ["grep -R", "grep -R x ."],
+        ["grep -rnR", "grep -rnR x ."],
+        ["grep --dereference-recursive", "grep --dereference-recursive x ."],
+        ["find -L", "find -L . -name x"],
+        ["find -follow", "find . -follow -name x"],
+        ["rg -L", "rg -L x ."],
+        ["rg --follow", "rg --follow x ."],
+        ["rg -nL", "rg -nL x"],
+      ])("reviews %s after an unknown cd, but not before one", (_case, command) => {
+        expect(isSafeCommand(`cd /opt && ${command}`, {}, where), command).toBe(false);
+        expect(
+          isSafeCommand(
+            `cd /opt && ${command.replace(/ -[A-Za-z-]*[RL][A-Za-z-]*| -follow| --follow| --dereference-recursive/, " -r")}`,
+            {},
+            where,
+          ),
+        ).toBe(true);
+        expect(isSafeCommand(command, {}, where), command).toBe(true);
+      });
+
       it("keeps a rule-allowed directory change as the user chose", () => {
         const rules = { "cd /opt": "allow", pushd: "allow", "git describe": "allow" } as const;
         // The user allowed this very `cd`, so the directory is theirs to vouch for.
@@ -775,7 +818,7 @@ describe("Safe Command", () => {
           false,
         );
         expect(safe("cd src && ls", { ...clean, commandPrefix: "  " })).toBe(true);
-        expect(safe("git status", { ...clean, shellPath: "/bin/zsh" })).toBe(true);
+        expect(safe("git status", { ...clean, shellPath: "/bin/zsh" })).toBe(false);
       });
 
       it("reviews every command while PATH has a relative entry", () => {
@@ -882,6 +925,63 @@ describe("Safe Command", () => {
       expect(isSafeCommand(`make "$(rm x)"`, { make: "allow" })).toBe(false);
       expect(judgeCommand(`grep -E "a|b" f`, { "grep -E": "review" }).verdict).toBe("review");
       expect(judgeCommand(`grep -E "a|b" f`, { "grep -E": "deny" }).verdict).toBe("deny");
+    });
+  });
+
+  describe("shells that quote differently from bash", () => {
+    // pwsh reads curly quotes as quotes, and fish allows `\'` inside single quotes, so quoted
+    // shell syntax may be live there; only bash and `sh` read quotes as the lexer does.
+    const shell = (shellPath?: string): ShellEnvironment => ({ env: {}, shellPath });
+    const bypasses = [
+      "echo 'a’; rm x; echo ‘b'",
+      "echo 'a\\' '; rm x; echo \\'",
+      "sed -n '/a’ -i -e 1p ‘/p' f",
+      "find . -name 'x’ -delete -name ‘'",
+      `grep -E "a|b" file`,
+      `echo 'a;b'`,
+      `echo "(x)"`,
+      "ls 2>/dev/null",
+      "ls 2>&1",
+    ];
+
+    it.each([
+      "pwsh",
+      "/usr/bin/fish",
+      "powershell.exe",
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "zsh",
+      "nu",
+    ])("reviews built-in programs and quoted syntax under %s", (shellPath) => {
+      for (const command of bypasses) {
+        expect(isSafeCommand(command, {}, undefined, shell(shellPath))).toBe(false);
+      }
+      // No built-in program is trusted: the shell may split its arguments differently.
+      for (const command of ["ls -la src", "git status", "sed -n 5p file", "pwd && ls"])
+        expect(isSafeCommand(command, {}, undefined, shell(shellPath))).toBe(false);
+      // An `allow` Command Rule is still the user's choice, for literal words.
+      expect(isSafeCommand("make check", { make: "allow" }, undefined, shell(shellPath))).toBe(
+        true,
+      );
+      expect(isSafeCommand("make 'a;b'", { make: "allow" }, undefined, shell(shellPath))).toBe(
+        false,
+      );
+    });
+
+    it.each([
+      undefined,
+      "bash",
+      "/bin/sh",
+      "/usr/bin/bash",
+      "C:\\Program Files\\Git\\bin\\bash.exe",
+    ])("keeps the quote-aware reading under %s", (shellPath) => {
+      expect(isSafeCommand(`grep -E "a|b" file 2>&1`, {}, undefined, shell(shellPath))).toBe(true);
+      expect(isSafeCommand("echo 'a’; rm x; echo ‘b'", {}, undefined, shell(shellPath))).toBe(true);
+      expect(isSafeCommand(`echo "$(rm x)"`, {}, undefined, shell(shellPath))).toBe(false);
+    });
+
+    it("judges the batch's other calls with the shell Pi runs", () => {
+      expect(onlyReads("bash", { command: `grep -E "a|b" f` })).toBe(true);
+      expect(onlyReads("bash", { command: `grep -E "a|b" f` }, shell("pwsh"))).toBe(false);
     });
   });
 
