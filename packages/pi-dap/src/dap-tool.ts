@@ -329,6 +329,7 @@ type DapStopOutput = Pick<
   DapToolOutput<"status">,
   "stop_description" | "hit_breakpoint_ids" | "top_frame"
 >;
+type DapRejectedChildSessionOutput = Pick<DapToolOutput<"status">, "rejected_child_sessions">;
 type DapVariableOutput = NonNullable<DapToolOutput<"variables">["variables"]>[number];
 type DapSourceOutput = Pick<
   DapVariableOutput & { source_name?: string; source_path?: string },
@@ -355,6 +356,21 @@ function variableOutput(
   if (variable.type !== undefined) row.type = variable.type;
   if (variable.evaluateName !== undefined) row.evaluate_name = variable.evaluateName;
   return row;
+}
+
+function rejectedChildSessionOutput(result: DapSessionResult): DapRejectedChildSessionOutput {
+  if (result.rejectedChildSessions === undefined) return {};
+  return {
+    rejected_child_sessions: result.rejectedChildSessions.map((child) => {
+      const row: NonNullable<DapRejectedChildSessionOutput["rejected_child_sessions"]>[number] = {
+        message: child.message,
+      };
+      if (child.type !== undefined) row.type = child.type;
+      if (child.name !== undefined) row.name = child.name;
+      if (child.targetId !== undefined) row.target_id = child.targetId;
+      return row;
+    }),
+  };
 }
 
 /** Why and where the Debuggee stopped, in the script-facing shape; empty unless it is stopped. */
@@ -417,12 +433,17 @@ function toolOutput(
         ...base,
         ...desiredBreakpointsOutput(result),
         ...stopOutput(result),
+        ...rejectedChildSessionOutput(result),
       });
     case "continue":
     case "next":
     case "step_in":
     case "step_out":
-      return withWaitCancelled({ ...base, ...stopOutput(result) });
+      return withWaitCancelled({
+        ...base,
+        ...stopOutput(result),
+        ...rejectedChildSessionOutput(result),
+      });
     case "set_breakpoints": {
       const output: DapToolOutput<"set_breakpoints"> = {
         ...base,
@@ -486,9 +507,14 @@ function toolOutput(
       return { ...base, evaluation };
     }
     case "pause":
-      return { ...base, ...stopOutput(result) };
+      return { ...base, ...stopOutput(result), ...rejectedChildSessionOutput(result) };
     case "status":
-      return { ...base, ...desiredBreakpointsOutput(result), ...stopOutput(result) };
+      return {
+        ...base,
+        ...desiredBreakpointsOutput(result),
+        ...stopOutput(result),
+        ...rejectedChildSessionOutput(result),
+      };
     case "stop":
       return base;
   }
@@ -591,6 +617,9 @@ async function dispatchSessionOperation(
       if (parameters.program !== undefined) input.program = resolve(cwd, parameters.program);
       if (parameters.args !== undefined) input.args = parameters.args;
       if (parameters.cwd !== undefined) input.cwd = resolve(cwd, parameters.cwd);
+      if (parameters.launch_arguments !== undefined) {
+        input.launchArguments = parameters.launch_arguments;
+      }
       return session.launch(input, signal);
     }
     case "continue":
@@ -783,7 +812,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
   return [
     defineTool<typeof DapLaunchParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("launch", "DAP launch"),
-      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments. Fails while a Debug Session is active. ${STATE_FAILURE}`,
+      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments, and launch_arguments merges adapter launch arguments over them for this launch. Child sessions (worker threads, child processes) are not debugged: breakpoints in them do not bind, and the result lists them. Fails while a Debug Session is active. ${STATE_FAILURE}`,
       promptSnippet: "Debug a program through one configured Debug Session",
       exposure: "direct",
       annotations: RUNS_DEBUGGEE_CODE,

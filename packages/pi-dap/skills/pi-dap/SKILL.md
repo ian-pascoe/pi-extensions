@@ -16,4 +16,6 @@ disable-model-invocation: true
 
 For `vscode-js-debug`, a stop with reason `entry` that repeats inside the program's first function, with no `hit breakpoint ids`, means the profile sets `stopOnEntry` and js-debug's entry breakpoint moved into that function. Remove `stopOnEntry` from the Launch Profile; your own breakpoint stops list `hit breakpoint ids`; an entry stop lists none.
 
+For `vscode-js-debug`, a result that lists a refused child session (`rejected_child_sessions`) means the Debuggee started a worker thread or child process; breakpoints in it never bind. Debug the child's own file as the `program`, or pass `launch_arguments: { autoAttachChildProcesses: false }` to `dap_launch` to skip attaching child processes.
+
 Ask before starting, pausing, stopping, or otherwise changing a Debuggee. An execution timeout may leave it running, so inspect `dap_status` first.

@@ -100,20 +100,20 @@ your breakpoint lists `hit breakpoint ids` (`hit_breakpoint_ids` in
 Pi DAP registers one tool per operation, all acting on the same single Debug
 Session and grouped under the `dap` namespace:
 
-| Tool                  | Arguments                                                      |
-| --------------------- | -------------------------------------------------------------- |
-| `dap_launch`          | optional `profile`, `program`, `args`, `cwd`                   |
-| `dap_set_breakpoints` | `file_path`, `breakpoints`                                     |
-| `dap_continue`        | none                                                           |
-| `dap_next`            | none                                                           |
-| `dap_step_in`         | none                                                           |
-| `dap_step_out`        | none                                                           |
-| `dap_pause`           | none                                                           |
-| `dap_stack`           | optional `thread_id`, `start`, `count`                         |
-| `dap_variables`       | `frame_id` or `variables_reference`; optional `start`, `count` |
-| `dap_evaluate`        | `expression`; optional `frame_id`                              |
-| `dap_status`          | none                                                           |
-| `dap_stop`            | none                                                           |
+| Tool                  | Arguments                                                        |
+| --------------------- | ---------------------------------------------------------------- |
+| `dap_launch`          | optional `profile`, `program`, `args`, `cwd`, `launch_arguments` |
+| `dap_set_breakpoints` | `file_path`, `breakpoints`                                       |
+| `dap_continue`        | none                                                             |
+| `dap_next`            | none                                                             |
+| `dap_step_in`         | none                                                             |
+| `dap_step_out`        | none                                                             |
+| `dap_pause`           | none                                                             |
+| `dap_stack`           | optional `thread_id`, `start`, `count`                           |
+| `dap_variables`       | `frame_id` or `variables_reference`; optional `start`, `count`   |
+| `dap_evaluate`        | `expression`; optional `frame_id`                                |
+| `dap_status`          | none                                                             |
+| `dap_stop`            | none                                                             |
 
 Every tool is declared to the model (`direct` exposure). Use `dap_stop` to end
 a runaway Debuggee and `dap_pause` to interrupt one whose execution wait timed
@@ -122,7 +122,12 @@ out.
 `dap_launch` selects a profile (it may be omitted only when exactly one valid
 profile exists). `program`, `args`, and `cwd` replace the same profile
 arguments; relative `program` and `cwd` paths resolve from Pi's project working
-directory. A Debug Session is single-active: launching while one is active
+directory. `launch_arguments` is an object of adapter launch arguments for this
+launch only, merged (shallow) over the profile's `arguments`, so one launch can
+set `autoAttachChildProcesses: false` without editing settings; `program`,
+`args`, and `cwd` still win over it. It is named `launch_arguments`, after the
+profile's `arguments`, because `args` already means the Debuggee's command-line
+arguments. A Debug Session is single-active: launching while one is active
 fails. Desired Breakpoints are complete per-file lists and survive `dap_stop`
 and later launches in the same Pi conversation session; `[]` clears a file and
 drops it from `desired_breakpoints`.
@@ -182,7 +187,9 @@ Each tool declares an output schema. Codemode scripts receive a structured
 result: the Debug Session state, all drained Debuggee output, and the
 operation's complete data (`breakpoints`, `stack_frames` and `total_frames`,
 `scopes` or `variables`, or `evaluation`). `dap_set_breakpoints`, `dap_launch`,
-and `dap_status` also carry `desired_breakpoints`; no other tool does. These
+and `dap_status` also carry `desired_breakpoints`; no other tool does. The
+execution tools, `dap_pause`, and `dap_status` carry `rejected_child_sessions`
+when child sessions were refused (see Child sessions). These
 results are not truncated to the transcript limits; the one exception is that `dap_variables`
 with `frame_id` leaves expensive scopes unexpanded. A state failure resolves to the
 current state with an `error` field instead of rejecting.
@@ -254,13 +261,35 @@ Result Spill notice described above. Only the human-visible copy
 of Debuggee output is stripped of terminal sequences and unsafe controls; the raw
 tool result and Result Spill retain the original bytes.
 
+## Child sessions
+
+When the Debuggee starts a worker thread or a child process (a test runner's
+forks, for example), `vscode-js-debug` asks Pi DAP for a child session with
+`startDebugging`. Pi DAP does not debug child sessions, so breakpoints in them
+never bind. It refuses the request, and the next `dap_launch`, `dap_continue`,
+`dap_next`, `dap_step_in`, `dap_step_out`, `dap_pause`, or `dap_status` result
+names it once, in text and in `rejected_child_sessions` (`type`, `name`,
+`target_id`, `message`):
+
+```text
+Warning: Pi DAP refused child session pwa-node "forks.js [1383853]" (target 563c…): child debugging is unsupported, so breakpoints in it will not bind. The child runs without a debugger.
+```
+
+The adapter holds a new child paused until a session starts it, so Pi DAP
+briefly attaches to the child with no breakpoints and detaches it again, which
+lets the child run, undebugged, instead of hanging until the execution timeout.
+To debug code that runs in a child, launch that file directly as the `program`.
+For child processes, `launch_arguments: { autoAttachChildProcesses: false }`
+stops the adapter attaching them at all; worker threads have no such switch.
+
 ## V1 boundary
 
 V1 supports configured stdio and TCP adapters on Linux, one active Debug
 Session, source breakpoints, core execution control, stack/variables/evaluation,
 and headless `runInTerminal`. The Supported `vscode-js-debug` workflow uses one
 adapter-owned primary target channel; it is not a second model-facing Debug
-Session, and unrelated, second, or nested `startDebugging` requests are rejected.
+Session, and unrelated, second, or nested `startDebugging` requests are rejected
+(see Child sessions).
 V1 excludes attach, restart, function/data/instruction breakpoints, hit counts,
 logpoints, memory, disassembly, modules, user-requested child Debug Sessions, raw
 DAP requests, `launch.json`, WebSocket, persistence, and a directly operated

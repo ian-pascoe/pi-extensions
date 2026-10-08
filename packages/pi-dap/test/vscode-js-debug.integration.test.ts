@@ -364,3 +364,131 @@ test("a Debug Session that Pi stops reports no exit code instead of guessing one
   expect(stopped.snapshot.state).toBe("terminated");
   expect(Object.hasOwn(stopped.snapshot, "exitCode")).toBe(false);
 }, 30_000);
+
+const WORKER_SOURCE = [
+  "const { writeFileSync } = require('node:fs');",
+  "writeFileSync(process.env.MARKER_PATH, 'worker ran');",
+  "const value = 1;",
+  "console.log('worker value', value);",
+].join("\n");
+
+/** Debuggee that starts a worker thread and prints once the worker exits. */
+const WORKER_PARENT_SOURCE = [
+  "const { Worker } = require('node:worker_threads');",
+  "const path = require('node:path');",
+  "const worker = new Worker(path.join(__dirname, 'worker.js'));",
+  "worker.on('exit', (code) => console.log(`worker exited ${code}`));",
+].join("\n");
+
+/** Debuggee that forks a child process and prints once the child exits, as vitest's forks pool does. */
+const FORK_PARENT_SOURCE = [
+  "const { fork } = require('node:child_process');",
+  "const path = require('node:path');",
+  "const child = fork(path.join(__dirname, 'worker.js'), { env: process.env });",
+  "child.on('exit', (code) => console.log(`child exited ${code}`));",
+].join("\n");
+
+/** A Debug Session over a program that spawns `worker.js`, with one breakpoint inside the worker. */
+async function startChildSessionProgram(
+  parentSource: string,
+  profileArguments: Record<string, string | boolean> = {},
+) {
+  const { programPath, projectDirectory, session } = await startFunctionFirstSession({
+    type: "pwa-node",
+    request: "launch",
+    name: "Pi DAP child session test",
+    console: "internalConsole",
+    ...profileArguments,
+  });
+  const workerPath = resolve(projectDirectory, "worker.js");
+  const markerPath = resolve(projectDirectory, "marker.txt");
+  await writeFile(programPath, parentSource);
+  await writeFile(workerPath, WORKER_SOURCE);
+  await session.setBreakpoints({ filePath: workerPath, breakpoints: [{ line: 3 }] });
+  return { programPath, projectDirectory, markerPath, session };
+}
+
+test.each([
+  ["a worker thread", WORKER_PARENT_SOURCE, /^pwa-node "\[worker 1\]"/u, "worker exited 0"],
+  ["a child process", FORK_PARENT_SOURCE, /^pwa-node "worker\.js \[\d+\]"/u, "child exited 0"],
+])(
+  "refuses %s as a child session, releases it, and says so within the execution timeout",
+  async (_name, parentSource, nameMatcher, exitLine) => {
+    const { programPath, projectDirectory, markerPath, session } =
+      await startChildSessionProgram(parentSource);
+    const started = Date.now();
+    const result = await session.launch({
+      profile: "node",
+      program: programPath,
+      cwd: projectDirectory,
+      launchArguments: { env: { MARKER_PATH: markerPath } },
+    });
+
+    // Far under the 10 s execution timeout: the child was not left paused waiting for a debugger.
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(result.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
+    expect(result.output).toContain(exitLine);
+    expect(await readFile(markerPath, "utf8")).toBe("worker ran");
+    expect(result.rejectedChildSessions).toHaveLength(1);
+    const [rejected] = result.rejectedChildSessions ?? [];
+    expect(rejected?.type).toBe("pwa-node");
+    expect(`${rejected?.type} ${JSON.stringify(rejected?.name)}`).toMatch(nameMatcher);
+    expect(rejected?.targetId).toEqual(expect.any(String));
+    expect(rejected?.message).toContain(rejected?.name);
+    expect(rejected?.message).toContain("child debugging is unsupported");
+    expect(rejected?.message).toContain("breakpoints in it will not bind");
+  },
+  30_000,
+);
+
+test("a program with no child sessions reports none", async () => {
+  const result = await runToTermination("console.log('alone');");
+  expect(result.rejectedChildSessions).toBeUndefined();
+}, 30_000);
+
+test("launch arguments merged over the profile turn off child process attach, so no child session is refused", async () => {
+  const { programPath, projectDirectory, markerPath, session } =
+    await startChildSessionProgram(FORK_PARENT_SOURCE);
+  const result = await session.launch({
+    profile: "node",
+    program: programPath,
+    cwd: projectDirectory,
+    launchArguments: { autoAttachChildProcesses: false, env: { MARKER_PATH: markerPath } },
+  });
+  expect(result.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
+  expect(result.output).toContain("child exited 0");
+  expect(result.rejectedChildSessions).toBeUndefined();
+  expect(await readFile(markerPath, "utf8")).toBe("worker ran");
+}, 30_000);
+
+test("a released child process that starts a worker thread runs it without a debugger", async () => {
+  const { programPath, projectDirectory, markerPath, session } =
+    await startChildSessionProgram(FORK_PARENT_SOURCE);
+  await writeFile(
+    resolve(projectDirectory, "worker.js"),
+    [
+      "const { Worker } = require('node:worker_threads');",
+      "const path = require('node:path');",
+      "new Worker(path.join(__dirname, 'inner.js'));",
+    ].join("\n"),
+  );
+  await writeFile(
+    resolve(projectDirectory, "inner.js"),
+    "require('node:fs').writeFileSync(process.env.MARKER_PATH, 'worker ran');",
+  );
+  const started = Date.now();
+  const result = await session.launch({
+    profile: "node",
+    program: programPath,
+    cwd: projectDirectory,
+    launchArguments: { env: { MARKER_PATH: markerPath } },
+  });
+  expect(Date.now() - started).toBeLessThan(8_000);
+  expect(result.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
+  expect(result.output).toContain("child exited 0");
+  expect(await readFile(markerPath, "utf8")).toBe("worker ran");
+  // The child was released and detached, so the adapter no longer holds its worker for a debugger.
+  expect(result.rejectedChildSessions?.map(({ name }) => name)).toEqual([
+    expect.stringMatching(/^worker\.js \[\d+\]$/u),
+  ]);
+}, 30_000);

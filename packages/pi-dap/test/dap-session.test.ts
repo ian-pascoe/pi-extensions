@@ -441,7 +441,58 @@ describe("DapSession", () => {
 
     const childSession = await createSession({ requestStartDebugging: true });
     await expect(childSession.session.launch()).rejects.toThrow("startDebugging rejected");
-    expect(childSession.session.status().snapshot.state).toBe("terminated");
+    // The refusal outlives the failed launch and is reported once, like unread Debuggee output.
+    const terminated = childSession.session.status();
+    expect(terminated.snapshot.state).toBe("terminated");
+    expect(terminated.rejectedChildSessions).toEqual([
+      {
+        type: "pwa-node",
+        name: "child [1]",
+        targetId: "child-1",
+        message: expect.stringContaining('child session pwa-node "child [1]" (target child-1)'),
+      },
+    ]);
+    expect(childSession.session.status().rejectedChildSessions).toBeUndefined();
+  });
+
+  test("names a refused child session in the launch result and keeps the Debug Session usable", async () => {
+    const { session } = await createSession({ startDebuggingChild: true, stopOnEntry: true });
+
+    const launched = await session.launch();
+    expect(launched.snapshot).toMatchObject({ state: "stopped", stopReason: "entry" });
+    expect(launched.rejectedChildSessions).toEqual([
+      {
+        type: "pwa-node",
+        name: "[worker 1]",
+        targetId: "w-1",
+        message: expect.stringMatching(
+          /child session pwa-node "\[worker 1\]" \(target w-1\).*child debugging is unsupported.*breakpoints in it will not bind/u,
+        ),
+      },
+    ]);
+    expect(session.status().rejectedChildSessions).toBeUndefined();
+    expect((await session.continue()).rejectedChildSessions).toBeUndefined();
+  });
+
+  test("merges launch arguments over the Launch Profile's, with program, args, and cwd winning", async () => {
+    const { cwd, session } = await createSession({ stopOnEntry: true }, 100);
+
+    const launched = await session.launch({
+      program: "program.ts",
+      launchArguments: { stopOnEntry: false, neverStop: true, program: "ignored.ts" },
+    });
+    // stopOnEntry: false from launch_arguments replaced the profile's true, so nothing stops.
+    expect(launched.snapshot.state).toBe("running");
+    await session.stop();
+
+    const second = await session.launch({ launchArguments: { program: "other.ts" } });
+    expect(second.stop?.topFrame?.source?.path).toBe("other.ts");
+    await session.stop();
+    const third = await session.launch({
+      program: "program.ts",
+      launchArguments: { program: "other.ts" },
+    });
+    expect(third.stop?.topFrame?.source?.path).toBe(resolve(cwd, "program.ts"));
   });
 
   test("cleans up launch cancellation and an unexpected Debug Adapter exit", async () => {

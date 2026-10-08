@@ -675,6 +675,72 @@ describe("DAP tools", () => {
       );
     });
 
+    test("refused child sessions are named in the text, with what to do, and in structuredContent", async () => {
+      const rejectedChildSessions = [
+        {
+          type: "pwa-node",
+          name: "forks.js [42]",
+          targetId: "t-1",
+          message:
+            'Pi DAP refused child session pwa-node "forks.js [42]" (target t-1): child debugging is unsupported, so breakpoints in it will not bind. The child runs without a debugger.',
+        },
+      ];
+      const running = { snapshot: { state: "running", adapterId: "n", profileId: "p" } } as const;
+      const text = await textOf("launch", {}, { ...running, rejectedChildSessions });
+      expect(text).toBe(
+        [
+          "running (wait timed out)",
+          `Warning: ${rejectedChildSessions[0]?.message}`,
+          "To debug that code, launch it directly as the program; for child processes, launch_arguments { autoAttachChildProcesses: false } stops the adapter attaching them.",
+        ].join("\n"),
+      );
+      await expect(textOf("status", {}, { ...running })).resolves.toBe("running");
+
+      const fixture = await createToolFixture();
+      fixture.session.result = {
+        ...running,
+        output: "",
+        discardedOutputBytes: 0,
+        desiredBreakpoints: [],
+        rejectedChildSessions,
+      };
+      for (const operation of [
+        "launch",
+        "continue",
+        "next",
+        "step_in",
+        "step_out",
+        "pause",
+        "status",
+      ] as const) {
+        const result = await dapTool(() => fixture.runtime, operation).execute(
+          operation,
+          {},
+          undefined,
+          undefined,
+          fixture.context,
+        );
+        expectDapToolOutput(operation, result);
+        expect(result.structuredContent).toMatchObject({
+          rejected_child_sessions: [
+            {
+              type: "pwa-node",
+              name: "forks.js [42]",
+              target_id: "t-1",
+              message: rejectedChildSessions[0]?.message,
+            },
+          ],
+        });
+      }
+      const many = Array.from({ length: 7 }, (_, index) => ({
+        message: `refused ${index}`,
+      }));
+      const manyText = await textOf("status", {}, { ...running, rejectedChildSessions: many });
+      expect(manyText).toContain("Warning: refused 4\n");
+      expect(manyText).not.toContain("refused 5");
+      expect(manyText).toContain("Warning: 2 more child sessions refused");
+    });
+
     test("stack, variables, and evaluate are one line per row and never raw JSON", async () => {
       const stack = await textOf(
         "stack",
@@ -1106,7 +1172,16 @@ describe("DAP tools", () => {
     };
     const runtime = { ...fixture.runtime, observer };
     const inputs: readonly [DapOperation, DapToolInput][] = [
-      ["launch", { profile: "node", program: "src/app.ts", args: ["one"], cwd: "runtime" }],
+      [
+        "launch",
+        {
+          profile: "node",
+          program: "src/app.ts",
+          args: ["one"],
+          cwd: "runtime",
+          launch_arguments: { autoAttachChildProcesses: false, env: { A: "1" } },
+        },
+      ],
       [
         "set_breakpoints",
         { file_path: "src/app.ts", breakpoints: [{ line: 2, condition: "ready" }] },
@@ -1151,6 +1226,7 @@ describe("DAP tools", () => {
           program: resolve(fixture.cwd, "src/app.ts"),
           args: ["one"],
           cwd: resolve(fixture.cwd, "runtime"),
+          launchArguments: { autoAttachChildProcesses: false, env: { A: "1" } },
         },
       },
       {
@@ -1182,8 +1258,14 @@ describe("DAP tools", () => {
   test("omits absent dispatch fields without dropping zero IDs, offsets, or empty arguments", async () => {
     const fixture = await createToolFixture();
     const cases: [DapOperation, DapToolInput, RecordedDapInput, string[]][] = [
-      ["launch", {}, {}, ["profile", "program", "args", "cwd"]],
-      ["launch", { args: [] }, { args: [] }, ["profile", "program", "cwd"]],
+      ["launch", {}, {}, ["profile", "program", "args", "cwd", "launchArguments"]],
+      ["launch", { args: [] }, { args: [] }, ["profile", "program", "cwd", "launchArguments"]],
+      [
+        "launch",
+        { launch_arguments: {} },
+        { launchArguments: {} },
+        ["profile", "program", "args", "cwd"],
+      ],
       ["stack", {}, {}, ["threadId", "start", "count"]],
       ["stack", { thread_id: 0, start: 0 }, { threadId: 0, start: 0 }, ["count"]],
       [

@@ -94,6 +94,28 @@ function stateHeadline(context: DapTextContext): string {
   }
 }
 
+/** The most refused child sessions shown in text; `structuredContent` lists them all. */
+const MAX_REJECTED_CHILD_SESSION_LINES = 5;
+
+/** One line per refused child session, so the model learns that breakpoints in it will not bind. */
+function rejectedChildSessionLines({ result }: DapTextContext): readonly string[] {
+  const rejected = result.rejectedChildSessions ?? [];
+  const lines = rejected
+    .slice(0, MAX_REJECTED_CHILD_SESSION_LINES)
+    .map((child) => `Warning: ${oneLine(child.message)}`);
+  if (rejected.length > MAX_REJECTED_CHILD_SESSION_LINES) {
+    lines.push(
+      `Warning: ${rejected.length - MAX_REJECTED_CHILD_SESSION_LINES} more child sessions refused`,
+    );
+  }
+  if (rejected.length > 0) {
+    lines.push(
+      "To debug that code, launch it directly as the program; for child processes, launch_arguments { autoAttachChildProcesses: false } stops the adapter attaching them.",
+    );
+  }
+  return lines;
+}
+
 /** Lifecycle summary shared by every operation that reports where the Debug Session stands. */
 const stateLines: DapTextFormatter = (context) => {
   const { stop } = context.result;
@@ -102,6 +124,7 @@ const stateLines: DapTextFormatter = (context) => {
   if (stop?.hitBreakpointIds !== undefined && stop.hitBreakpointIds.length > 0) {
     lines.push(`hit breakpoint ids: ${stop.hitBreakpointIds.join(", ")}`);
   }
+  lines.push(...rejectedChildSessionLines(context));
   return lines;
 };
 

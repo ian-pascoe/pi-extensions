@@ -33,6 +33,12 @@ export const DapLaunchParametersSchema = Type.Object(
     program: Type.Optional(NonEmptyStringSchema),
     args: Type.Optional(Type.Array(Type.String())),
     cwd: Type.Optional(NonEmptyStringSchema),
+    launch_arguments: Type.Optional(
+      Type.Record(Type.String(), Type.Any(), {
+        description:
+          "Debug adapter launch arguments for this launch only, merged over the Launch Profile's arguments (for vscode-js-debug, for example autoAttachChildProcesses: false). program, args, and cwd still win.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -125,6 +131,7 @@ export interface DapToolCallArguments {
   readonly program?: string;
   readonly args?: readonly string[];
   readonly cwd?: string;
+  readonly launch_arguments?: Static<typeof DapLaunchParametersSchema>["launch_arguments"];
   readonly file_path?: string;
   readonly breakpoints?: readonly { readonly line: number; readonly condition?: string }[];
   readonly thread_id?: number;
@@ -432,8 +439,29 @@ const DapStopOutputFields = {
   ),
   top_frame: Type.Optional(DapStackFrameSchema),
 };
+/** Child sessions (worker threads, child processes) Pi DAP refused since the last result. */
+const DapRejectedChildSessionOutputFields = {
+  rejected_child_sessions: Type.Optional(
+    Type.Array(
+      Type.Object(
+        {
+          type: Type.Optional(Type.String()),
+          name: Type.Optional(Type.String()),
+          target_id: Type.Optional(Type.String()),
+          message: Type.String(),
+        },
+        { additionalProperties: false },
+      ),
+      {
+        description:
+          "Child sessions the adapter asked Pi DAP to debug, which it refuses: breakpoints in them do not bind. They run without a debugger.",
+      },
+    ),
+  ),
+};
 const DapExecutionOutputFields = {
   ...DapStopOutputFields,
+  ...DapRejectedChildSessionOutputFields,
   execution_wait_cancelled: Type.Optional(Type.Boolean()),
 };
 const DapLaunchOutputSchema = Type.Object(
@@ -441,7 +469,12 @@ const DapLaunchOutputSchema = Type.Object(
   { additionalProperties: false },
 );
 const DapStatusOutputSchema = Type.Object(
-  { ...DapOutputBaseFields, ...DapDesiredBreakpointsOutputFields, ...DapStopOutputFields },
+  {
+    ...DapOutputBaseFields,
+    ...DapDesiredBreakpointsOutputFields,
+    ...DapStopOutputFields,
+    ...DapRejectedChildSessionOutputFields,
+  },
   { additionalProperties: false },
 );
 
@@ -450,7 +483,7 @@ const DapBaseOutputSchema = Type.Object(DapOutputBaseFields, { additionalPropert
 /** Fields every script-facing result carries; see {@link DapToolOutputSchemas}. */
 export type DapBaseOutput = Static<typeof DapBaseOutputSchema>;
 const DapStoppedOutputSchema = Type.Object(
-  { ...DapOutputBaseFields, ...DapStopOutputFields },
+  { ...DapOutputBaseFields, ...DapStopOutputFields, ...DapRejectedChildSessionOutputFields },
   { additionalProperties: false },
 );
 const DapExecutionOutputSchema = Type.Object(
