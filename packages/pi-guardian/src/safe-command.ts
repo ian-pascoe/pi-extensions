@@ -33,18 +33,23 @@ const shellSyntax = /[|&;<>()$`\\*?[\]{}!#^]/;
 const doubleQuoteSyntax = /[$`\\!]/;
 /** Where an unquoted `~` is tilde expansion: starting a word or following `=` or `:`. */
 const tildePrefix = /[\s=:]/;
+/** Tilde expansion anywhere, quoted or not: `~` starting a word or following `=` or `:`. */
+const tildeExpansion = /(?:^|[\s=:])~/;
 // oxlint-disable-next-line no-control-regex -- Control characters (including newlines) are exactly what this rejects.
 const controlCharacters = /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/;
 
 /**
- * Split a command into literal words, reading quotes as the shell does: no unquoted shell syntax,
- * and no `$`, backtick, `\`, or `!` inside double quotes; `undefined` when it is not one simple
- * command. With `redirects`, the two stderr redirections {@link safeRedirect} names, which sit as
- * words of their own, are dropped; any other redirection, or one glued to a word or quoted, is not
- * literal words.
+ * Split a command into literal words, reading quotes as bash and `sh` do: no unquoted shell
+ * syntax, and no `$`, backtick, `\`, or `!` inside double quotes; `undefined` when it is not one
+ * simple command. With `redirects`, the two stderr redirections {@link safeRedirect} names, which
+ * sit as words of their own, are dropped; any other redirection, or one glued to a word or
+ * quoted, is not literal words. Without `posixQuotes` the shell is not known to quote like bash
+ * (fish and PowerShell end a quote early on some characters), so shell syntax is rejected even
+ * inside quotes, and no redirect is accepted.
  */
-function lexWords(command: string, redirects: boolean): string[] | undefined {
+function lexWords(command: string, redirects: boolean, posixQuotes = true): string[] | undefined {
   if (controlCharacters.test(command)) return undefined;
+  if (!posixQuotes && (shellSyntax.test(command) || tildeExpansion.test(command))) return undefined;
   const words: string[] = [];
   let word: string | undefined;
   let quote: "'" | '"' | undefined;
@@ -91,10 +96,12 @@ export function literalWords(command: string): string[] | undefined {
 
 /**
  * A Safe Command segment's words: {@link literalWords}, with `2>/dev/null` and `2>&1` dropped
- * wherever they stand as words of their own.
+ * wherever they stand as words of their own, when the shell quotes like bash (see
+ * {@link posixQuoting}); else words without any shell syntax, quoted or not.
  */
-function segmentWords(segment: string): string[] | undefined {
-  return lexWords(segment, true);
+function segmentWords(segment: string, environment: ShellEnvironment): string[] | undefined {
+  const posix = posixQuoting(environment);
+  return lexWords(segment, posix, posix);
 }
 
 /** Validates a built-in safe program's arguments; `true` when they cannot cause side effects. */
@@ -280,8 +287,31 @@ function exportedFunction(program: string, env: NodeJS.ProcessEnv): boolean {
   return isSet(env[`BASH_FUNC_${program}%%`]) || isSet(env[`BASH_FUNC_${program}()`]);
 }
 
-/** Shells whose `cd` Guardian models: bash, and `sh` where Pi finds no bash. */
+/** Shells whose `cd` and quoting Guardian models: bash, and `sh` where Pi finds no bash. */
 const modeledShells = new Set(["bash", "sh"]);
+
+/** Whether Pi runs bash or `sh` (`shellPath` unset, or one of them), whatever its options. */
+function modeledShell({ shellPath }: ShellEnvironment): boolean {
+  return (
+    shellPath === undefined ||
+    // `win32.basename` splits at both `/` and `\`, for a Windows `shellPath` too.
+    modeledShells.has(
+      win32
+        .basename(shellPath)
+        .replace(/\.exe$/i, "")
+        .toLowerCase(),
+    )
+  );
+}
+
+/**
+ * Whether `-c` commands are quoted as bash and `sh` quote them, so quoted shell syntax is text.
+ * Other shells differ: PowerShell reads curly quotes as quotes, and fish allows `\'` inside
+ * single quotes.
+ */
+function posixQuoting(environment: ShellEnvironment): boolean {
+  return modeledShell(environment);
+}
 
 /**
  * Whether the shell's `cd` behaves as {@link cdTarget} models it: Pi runs bash or `sh` with no
@@ -292,19 +322,9 @@ const modeledShells = new Set(["bash", "sh"]);
  * `GIT_EXEC_PATH` for its hooks, which changes nothing.)
  */
 function cdModeled(environment: ShellEnvironment): boolean {
-  const { env, shellPath, commandPrefix } = environment;
+  const { env, commandPrefix } = environment;
   if (commandPrefix?.trim()) return false;
-  if (
-    shellPath !== undefined &&
-    // `win32.basename` splits at both `/` and `\`, for a Windows `shellPath` too.
-    !modeledShells.has(
-      win32
-        .basename(shellPath)
-        .replace(/\.exe$/i, "")
-        .toLowerCase(),
-    )
-  )
-    return false;
+  if (!modeledShell(environment)) return false;
   if (["BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS"].some((name) => isSet(env[name]))) return false;
   return !Object.entries(env).some(
     ([name, value]) =>
@@ -321,7 +341,7 @@ function safeSegment(
   /** An earlier `cd` left the directory unknown: built-in `git` may read another repository. */
   directoryUnknown: boolean,
 ): boolean {
-  const words = segmentWords(segment);
+  const words = segmentWords(segment, environment);
   const program = words?.[0];
   if (!words || program === undefined) return false;
   // An environment assignment (`PAGER=x git log`) or a path (`./ls`) is not a known program.
@@ -418,7 +438,7 @@ function safeSegments(
   let directories = where ? [where.cwd] : [];
   let directoryUnknown = false;
   for (const [index, segment] of segments.entries()) {
-    const words = segmentWords(segment);
+    const words = segmentWords(segment, environment);
     if (words?.[0] === "cd") {
       const piped = operators[index - 1] === "|" || operators[index] === "|";
       const targets =

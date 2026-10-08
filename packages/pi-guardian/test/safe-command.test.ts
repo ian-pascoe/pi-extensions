@@ -9,6 +9,7 @@ import {
   type ShellEnvironment,
 } from "../src/safe-command.js";
 import { useCleanShellEnvironment } from "./fixtures/shell-environment.js";
+import { onlyReads } from "../src/tool-policy.js";
 import type { SensitivePathContext } from "../src/sensitive-paths.js";
 
 useCleanShellEnvironment();
@@ -560,6 +561,57 @@ describe("Safe Command", () => {
       expect(isSafeCommand(`make "$(rm x)"`, { make: "allow" })).toBe(false);
       expect(judgeCommand(`grep -E "a|b" f`, { "grep -E": "review" }).verdict).toBe("review");
       expect(judgeCommand(`grep -E "a|b" f`, { "grep -E": "deny" }).verdict).toBe("deny");
+    });
+  });
+
+  describe("shells that quote differently from bash", () => {
+    // pwsh reads curly quotes as quotes, and fish allows `\'` inside single quotes, so quoted
+    // shell syntax may be live there; only bash and `sh` read quotes as the lexer does.
+    const shell = (shellPath?: string): ShellEnvironment => ({ env: {}, shellPath });
+    const bypasses = [
+      "echo 'a’; rm x; echo ‘b'",
+      "echo 'a\\' '; rm x; echo \\'",
+      `grep -E "a|b" file`,
+      `echo 'a;b'`,
+      `echo "(x)"`,
+      "ls 2>/dev/null",
+      "ls 2>&1",
+    ];
+
+    it.each([
+      "pwsh",
+      "/usr/bin/fish",
+      "powershell.exe",
+      "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      "zsh",
+      "nu",
+    ])("reviews quoted syntax and redirects under %s", (shellPath) => {
+      for (const command of bypasses) {
+        expect(isSafeCommand(command, {}, undefined, shell(shellPath))).toBe(false);
+      }
+      // Plain literal words stay safe.
+      expect(isSafeCommand("ls -la src && git status", {}, undefined, shell(shellPath))).toBe(true);
+      expect(isSafeCommand(`grep -rn 'two words' "src dir"`, {}, undefined, shell(shellPath))).toBe(
+        true,
+      );
+      expect(isSafeCommand("sed -n 5p file", {}, undefined, shell(shellPath))).toBe(true);
+    });
+
+    it.each([
+      undefined,
+      "bash",
+      "/bin/sh",
+      "/usr/bin/bash",
+      "C:\\Program Files\\Git\\bin\\bash.exe",
+    ])("keeps the quote-aware reading under %s", (shellPath) => {
+      expect(isSafeCommand(`grep -E "a|b" file 2>&1`, {}, undefined, shell(shellPath))).toBe(true);
+      expect(isSafeCommand("echo 'a’; rm x; echo ‘b'", {}, undefined, shell(shellPath))).toBe(true);
+      expect(isSafeCommand(`echo "$(rm x)"`, {}, undefined, shell(shellPath))).toBe(false);
+    });
+
+    it("judges the batch's other calls with the shell Pi runs", () => {
+      expect(onlyReads("bash", { command: `grep -E "a|b" f` })).toBe(true);
+      expect(onlyReads("bash", { command: `grep -E "a|b" f` }, shell("pwsh"))).toBe(false);
     });
   });
 

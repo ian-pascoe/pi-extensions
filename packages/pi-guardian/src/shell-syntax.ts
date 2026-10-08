@@ -285,7 +285,10 @@ export function commandWords(segment: string): string[] {
   for (let index = 0; index < characters.length; index++) {
     const character = characters[index] ?? "";
     const next = characters[index + 1];
-    if (character === "\\" && next !== undefined) {
+    // A Safe Command's stderr redirection is not one of its words, for rule matching either.
+    const redirect = word === undefined ? safeRedirect.exec(characters.slice(index)) : null;
+    if (redirect) index += redirect[0].length - 1;
+    else if (character === "\\" && next !== undefined) {
       if (next !== "\n") word = (word ?? "") + next;
       index++;
     } else if (character === "'") {
@@ -302,10 +305,7 @@ export function commandWords(segment: string): string[] {
       word = (word ?? "") + value;
       index = end;
     } else if (character === "#" && word === undefined) break;
-    else if (word === undefined && safeRedirect.test(characters.slice(index))) {
-      // A Safe Command's stderr redirection is not one of its words, for rule matching either.
-      index += (safeRedirect.exec(characters.slice(index))?.[0].length ?? 1) - 1;
-    } else if (/\s/.test(character)) {
+    else if (/\s/.test(character)) {
       if (word !== undefined) words.push(word);
       word = undefined;
     } else word = (word ?? "") + character;

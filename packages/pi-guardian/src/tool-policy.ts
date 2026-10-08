@@ -66,11 +66,15 @@ export interface ToolPolicyInput {
  * Whether a call only reads, so it cannot change what a `cd` target is while another call of its
  * batch runs: a read-only built-in, or a `bash` Safe Command of built-in programs only.
  */
-export function onlyReads(toolName: string, input: CustomToolCallEvent["input"]): boolean {
+export function onlyReads(
+  toolName: string,
+  input: CustomToolCallEvent["input"],
+  environment?: ShellEnvironment,
+): boolean {
   if (readOnlyBuiltIns.includes(toolName)) return true;
   const command = toolName === "bash" ? input["command"] : undefined;
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- SAFETY: tool arguments are model-supplied JSON; only a string command can be a Safe Command.
-  return typeof command === "string" && isSafeCommand(command);
+  return typeof command === "string" && isSafeCommand(command, {}, undefined, environment);
 }
 
 /** Built-in default Tool Policy for one call, or `undefined` when the tool has none. */
