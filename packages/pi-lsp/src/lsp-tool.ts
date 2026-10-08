@@ -2367,9 +2367,9 @@ function buildLspToolDefinition<TOperation extends LspOperationName>(
     namespace: LSP_TOOL_NAMESPACE,
     annotations: lspToolAnnotations(operation),
     renderCall: (argumentsValue, theme, context) =>
-      renderLspToolCall(operation, argumentsValue, theme, context.expanded, context.cwd),
+      renderLspToolCall(operation, argumentsValue, theme, context),
     renderResult: (result, options, theme, context) =>
-      renderLspToolResult(result, options, theme, context.isError),
+      renderLspToolResult(operation, result, options, theme, context),
     async execute(_toolCallId, input, signal, _onUpdate, context) {
       const parameters = lspOperationCall(operation, parseLspOperationParameters(operation, input));
       return executeLspOperation(getDependencies(), parameters, context, signal);

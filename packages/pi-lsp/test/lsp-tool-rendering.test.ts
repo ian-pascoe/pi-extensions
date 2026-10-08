@@ -1,264 +1,241 @@
-import { describe, expect, test } from "vitest";
+import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
+import {
+  escapeTaggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+} from "@ian-pascoe/pi-utils/ui-testing";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   renderLspToolCall,
   renderLspToolResult,
-  type LspRenderTheme,
+  type LspCallRenderContext,
+  type LspResultRenderContext,
 } from "../src/lsp-tool-rendering.js";
 
-const plainTheme = {
-  bold: (text) => text,
-  fg: (_color, text) => text,
-} satisfies LspRenderTheme;
+beforeAll(() => {
+  setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
+});
 
-function renderLines(component: { render(width: number): string[] }): string {
-  return component
-    .render(120)
-    .map((line) => line.trimEnd())
-    .join("\n");
+afterEach(() => vi.useRealTimers());
+
+function callContext(overrides: Partial<LspCallRenderContext> = {}): LspCallRenderContext {
+  return {
+    state: {},
+    executionStarted: false,
+    isPartial: true,
+    durationMs: undefined,
+    invalidate: () => {},
+    expanded: false,
+    cwd: "/workspace",
+    ...overrides,
+  };
 }
 
-describe("Pi LSP tool rendering", () => {
-  test.each([
-    {
-      operation: "code_actions" as const,
-      text: '{"actions":[{"server_id":"a"},{"server_id":"b"}],"warnings":[]}',
-      metric: "2 actions",
-    },
-    // Results from before code actions listed several servers.
-    { operation: "code_actions" as const, text: '[{"title":"a"}]', metric: "1 action" },
-    {
-      operation: "workspace_diagnostics" as const,
-      text: '{"results":[{"value":{"diagnosticsByUri":[{"uri":"/a.ts","value":[{},{}]},{"uri":"/b.ts","value":[{}]}]}}]}',
-      metric: "3 diagnostics",
-    },
-    {
-      operation: "workspace_diagnostics" as const,
-      text: '{"results":[{"value":{"status":"unsupported","message":"use lsp_diagnostics"}}]}',
-      metric: "0 diagnostics",
-    },
-    {
-      operation: "workspace_diagnostics" as const,
-      text: '{"results":[{"value":{"status":"fresh","source":"push_cache","diagnosticsByUri":[{"uri":"/a.ts","value":[{},{}]},{"uri":"/b.ts","value":[]}],"message":"Server a publishes no workspace diagnostics; these are the diagnostics it pushed for 2 files opened in this session. Use lsp_diagnostics for other files."}}]}',
-      metric: "2 diagnostics",
-    },
-  ])("counts $operation output as $metric", ({ operation, text, metric }) => {
-    const collapsed = renderLines(
-      renderLspToolResult(
-        {
-          content: [{ type: "text", text }],
-          details: {
-            kind: "operation",
-            operation,
-            server_outcomes: [{ server_id: "a", outcome: "success" }],
-          },
-        },
-        { expanded: false, isPartial: false },
-        plainTheme,
-        false,
-      ),
+function resultContext(overrides: Partial<LspResultRenderContext> = {}): LspResultRenderContext {
+  return {
+    state: {},
+    executionStarted: true,
+    isPartial: false,
+    durationMs: 1200,
+    invalidate: () => {},
+    isError: false,
+    ...overrides,
+  };
+}
+
+function lines(component: { render(width: number): string[] }, width = 120): string[] {
+  const rendered = component.render(width);
+  expectLinesFitWidth(rendered, width);
+  return rendered.map((line) => readableTags(line).trimEnd());
+}
+
+function textResult(text: string) {
+  return { content: [{ type: "text" as const, text }], details: undefined };
+}
+
+function numbered(count: number): string {
+  return Array.from({ length: count }, (_, index) => `src/a.ts:${index + 1}:1  line`).join("\n");
+}
+
+describe("lsp tool call", () => {
+  const parameters = { file_path: "/workspace/src/lsp-tool.ts", line: 12, character: 4 };
+
+  test("leads with the registered tool name, then the accent position", () => {
+    const rendered = lines(
+      renderLspToolCall("goto_definition", parameters, escapeTaggedTheme, callContext()),
     );
-    expect(collapsed).toContain(metric);
+    expect(rendered[0]).toBe(
+      "<toolTitle><b>lsp_goto_definition</b></toolTitle> <accent>src/lsp-tool.ts:12:4</accent>",
+    );
   });
 
-  test("labels a result whose every server is unsupported as Unsupported, not Failed", () => {
-    const colorTheme = {
-      bold: (text) => text,
-      fg: (color, text) => `[${color}:${text}]`,
-    } satisfies LspRenderTheme;
-    const collapsed = renderLines(
-      renderLspToolResult(
-        {
-          content: [
-            {
-              type: "text",
-              text: '{"results":[{"server_id":"typescript","value":{"status":"unsupported","message":"use lsp_diagnostics"}}]}',
-            },
-          ],
-          details: {
-            kind: "operation",
-            operation: "workspace_diagnostics",
-            server_outcomes: [
-              { server_id: "typescript", outcome: "unsupported", message: "use lsp_diagnostics" },
-            ],
-          },
-        },
-        { expanded: false, isPartial: false },
-        colorTheme,
-        false,
+  test("accepts a leading @ and puts a rename or search argument in muted", () => {
+    const rendered = lines(
+      renderLspToolCall(
+        "rename",
+        { ...parameters, file_path: "@/workspace/src/lsp-tool.ts", new_name: "renamed" },
+        escapeTaggedTheme,
+        callContext(),
       ),
     );
-    expect(collapsed).toContain("[warning:Unsupported]");
-    expect(collapsed).toContain("[muted:typescript]");
-    expect(collapsed).not.toContain("Failed");
-    // No diagnostics were retrieved, so a count of zero would read as a clean workspace.
-    expect(collapsed).not.toContain("0 diagnostics");
+    expect(rendered[0]).toBe(
+      "<toolTitle><b>lsp_rename</b></toolTitle> <accent>src/lsp-tool.ts:12:4</accent> <muted>renamed</muted>",
+    );
   });
 
-  test("uses a compact call and reveals complete operation output only when expanded", () => {
-    const parameters = {
-      file_path: "packages/pi-lsp/src/lsp-tool.ts",
-      line: 12,
-      character: 4,
-    };
-    const result = {
-      content: [{ type: "text" as const, text: '{"results":[{"value":"hover text"}]}' }],
-      details: {
-        kind: "operation" as const,
-        operation: "hover" as const,
-        server_outcomes: [{ server_id: "typescript", outcome: "success" as const }],
-      },
-    };
-
+  test("names apply by its preview and tolerates non-object arguments", () => {
     expect(
-      renderLines(renderLspToolCall("hover", parameters, plainTheme, false, "/workspace")),
-    ).toBe("LSP  Hover  packages/pi-lsp/src/lsp-tool.ts:12:4");
+      lines(
+        renderLspToolCall("apply", { preview_id: "preview-1" }, escapeTaggedTheme, callContext()),
+      )[0],
+    ).toBe("<toolTitle><b>lsp_apply</b></toolTitle> <accent>preview-1</accent>");
     expect(
-      renderLines(
-        renderLspToolCall(
-          "hover",
-          { ...parameters, file_path: "@/workspace/packages/pi-lsp/src/lsp-tool.ts" },
-          plainTheme,
-          false,
-          "/workspace",
-        ),
-      ),
-    ).toBe("LSP  Hover  packages/pi-lsp/src/lsp-tool.ts:12:4");
-
-    const collapsed = renderLines(
-      renderLspToolResult(result, { expanded: false, isPartial: false }, plainTheme, false),
-    );
-    expect(collapsed).toContain("Completed");
-    expect(collapsed).toContain("1 result");
-    expect(collapsed).toContain("typescript");
-    expect(collapsed).not.toContain("hover text");
-
-    const expanded = renderLines(
-      renderLspToolResult(result, { expanded: true, isPartial: false }, plainTheme, false),
-    );
-    expect(expanded).toContain("Server outcomes");
-    expect(expanded).toContain('{"results":[{"value":"hover text"}]}');
+      lines(renderLspToolCall("status", "not an object", escapeTaggedTheme, callContext()))[0],
+    ).toBe("<toolTitle><b>lsp_status</b></toolTitle>");
   });
 
-  test("counts readable location results from their details", () => {
-    const result = {
-      content: [{ type: "text" as const, text: "src/a.ts:1:7  const a = 1;\nsrc/b.ts:2:3  a;" }],
-      details: {
-        kind: "operation" as const,
-        operation: "find_references" as const,
-        server_outcomes: [{ server_id: "typescript", outcome: "success" as const }],
-        result_count: 2,
-      },
-    };
-    const collapsed = renderLines(
-      renderLspToolResult(result, { expanded: false, isPartial: false }, plainTheme, false),
+  test("lists every argument in muted, one per line, only when expanded", () => {
+    const collapsed = lines(
+      renderLspToolCall("hover", parameters, escapeTaggedTheme, callContext({ expanded: false })),
     );
-    expect(collapsed).toContain("2 references");
-    const expanded = renderLines(
-      renderLspToolResult(result, { expanded: true, isPartial: false }, plainTheme, false),
+    expect(collapsed).toHaveLength(1);
+    const expanded = lines(
+      renderLspToolCall("hover", parameters, escapeTaggedTheme, callContext({ expanded: true })),
     );
-    expect(expanded).toContain("src/b.ts:2:3  a;");
+    expect(expanded.slice(1)).toEqual([
+      "<muted>file_path: /workspace/src/lsp-tool.ts</muted>",
+      "<muted>line: 12</muted>",
+      "<muted>character: 4</muted>",
+    ]);
+    expectLinesFitWidth(
+      renderLspToolCall(
+        "hover",
+        parameters,
+        escapeTaggedTheme,
+        callContext({ expanded: true }),
+      ).render(40),
+      40,
+    );
   });
 
-  test("surfaces preview, apply, partial, and error states without hardcoded styling", () => {
-    const preview = renderLines(
+  test("shows live Elapsed beneath the call while the tool runs, since LSP sends no partial results", () => {
+    vi.useFakeTimers({ now: 0 });
+    const context = callContext({ executionStarted: true });
+    const component = renderLspToolCall("hover", parameters, escapeTaggedTheme, context);
+    vi.advanceTimersByTime(2500);
+    expect(lines(component).at(-1)).toBe("<muted>Elapsed 2.5s</muted>");
+  });
+});
+
+describe("lsp tool result", () => {
+  test("previews a location list to grep's 15 lines with Pi's expand hint", () => {
+    const rendered = lines(
       renderLspToolResult(
-        {
-          content: [{ type: "text", text: "diff --git a/source.ts b/source.ts" }],
-          details: {
-            kind: "workspace_edit_preview",
-            preview_id: "preview-1",
-            operation: "rename",
-            summary: "Rename symbol in source.ts",
-            mutation_manifest: [{ operation: "modify", path: "/workspace/source.ts" }],
-            preview_record: {
-              kind: "workspace_edit_preview",
-              preview_id: "preview-1",
-              server_id: "typescript",
-              summary: "Rename symbol in source.ts",
-              state: "available",
-              operations: [],
-            },
-            state: "available",
-          },
-        },
+        "find_references",
+        textResult(numbered(20)),
         { expanded: false, isPartial: false },
-        plainTheme,
-        false,
+        escapeTaggedTheme,
+        resultContext(),
       ),
     );
-    expect(preview).toContain("Preview ready");
-    expect(preview).toContain("1 file");
-    expect(preview).not.toContain("diff --git");
+    expect(rendered).toContain("<toolOutput>src/a.ts:15:1  line</toolOutput>");
+    expect(rendered).not.toContain("<toolOutput>src/a.ts:16:1  line</toolOutput>");
+    expect(rendered).toContain(
+      "<muted>... (5 more lines,</muted> <dim>ctrl+o</dim><muted> to expand</muted><muted>)</muted>",
+    );
+    expect(rendered.at(-1)).toBe("<muted>Took 1.2s</muted>");
+  });
 
-    const applied = renderLines(
+  test("previews other output to the 10-line fallback", () => {
+    const rendered = lines(
       renderLspToolResult(
-        {
-          content: [{ type: "text", text: '{"state":"applied"}' }],
-          details: {
-            kind: "workspace_edit_apply",
-            preview_id: "preview-1",
-            mutation_manifest: [{ operation: "modify", path: "/workspace/source.ts" }],
-            changed_paths: ["/workspace/source.ts"],
-            state: "applied",
-          },
-        },
+        "hover",
+        textResult(numbered(12)),
         { expanded: false, isPartial: false },
-        plainTheme,
-        false,
+        escapeTaggedTheme,
+        resultContext(),
       ),
     );
-    expect(applied).toContain("Applied");
-    expect(
-      renderLines(renderLspToolCall("apply", { preview_id: "preview-1" }, plainTheme, false, "/")),
-    ).toBe("LSP  Apply  preview-1");
-    expect(renderLines(renderLspToolCall("status", "not an object", plainTheme, false, "/"))).toBe(
-      "LSP  Status",
-    );
+    expect(rendered).toContain("<toolOutput>src/a.ts:10:1  line</toolOutput>");
+    expect(rendered).not.toContain("<toolOutput>src/a.ts:11:1  line</toolOutput>");
+    expect(rendered.some((line) => line.includes("2 more lines"))).toBe(true);
+  });
 
-    // An apply partial failure is an error result that still summarizes the changed files.
-    const partial = renderLines(
+  test("shows every line and no hint when expanded", () => {
+    const rendered = lines(
       renderLspToolResult(
-        {
-          content: [{ type: "text", text: "Workspace Edit rollback failed for: /workspace/a.ts" }],
-          details: {
-            kind: "workspace_edit_apply",
-            preview_id: "preview-1",
-            mutation_manifest: [{ operation: "modify", path: "/workspace/a.ts" }],
-            changed_paths: ["/workspace/a.ts"],
-            state: "partial_failure",
-          },
-        },
-        { expanded: false, isPartial: false },
-        plainTheme,
-        true,
+        "find_references",
+        textResult(numbered(20)),
+        { expanded: true, isPartial: false },
+        escapeTaggedTheme,
+        resultContext(),
       ),
     );
-    expect(partial).toContain("Partial failure");
-    expect(partial).toContain("1 file");
+    expect(rendered).toContain("<toolOutput>src/a.ts:20:1  line</toolOutput>");
+    expect(rendered.some((line) => line.includes("to expand"))).toBe(false);
+  });
 
-    expect(
-      renderLines(
-        renderLspToolResult(
-          { content: [{ type: "text", text: "waiting" }], details: undefined },
-          { expanded: false, isPartial: true },
-          plainTheme,
-          false,
-        ),
-      ),
-    ).toBe("Running…");
+  test("fits narrow terminals", () => {
+    const component = renderLspToolResult(
+      "find_references",
+      textResult(numbered(20)),
+      { expanded: false, isPartial: false },
+      escapeTaggedTheme,
+      resultContext(),
+    );
+    lines(component, 40);
+  });
 
-    expect(
-      renderLines(
-        renderLspToolResult(
-          {
-            content: [{ type: "text", text: "LSP request failed\nstack" }],
-            details: undefined,
-          },
-          { expanded: false, isPartial: false },
-          plainTheme,
-          true,
-        ),
+  test("streams Elapsed while partial, with no placeholder text", () => {
+    vi.useFakeTimers({ now: 0 });
+    const context = resultContext({ isPartial: true, durationMs: undefined });
+    // The first render starts the row's clock, as Pi's first partial draw does.
+    renderLspToolResult(
+      "hover",
+      textResult(""),
+      { expanded: false, isPartial: true },
+      escapeTaggedTheme,
+      context,
+    );
+    vi.advanceTimersByTime(1500);
+    const rendered = lines(
+      renderLspToolResult(
+        "hover",
+        textResult(""),
+        { expanded: false, isPartial: true },
+        escapeTaggedTheme,
+        context,
       ),
-    ).toContain("LSP request failed");
+    );
+    expect(rendered.join("\n")).not.toContain("Running");
+    expect(rendered.at(-1)).toBe("<muted>Elapsed 1.5s</muted>");
+  });
+
+  test("shows an error's text in the error role", () => {
+    const rendered = lines(
+      renderLspToolResult(
+        "hover",
+        textResult("Pi LSP: server typescript request failed"),
+        { expanded: false, isPartial: false },
+        escapeTaggedTheme,
+        resultContext({ isError: true }),
+      ),
+    );
+    expect(rendered).toContain("<error>Pi LSP: server typescript request failed</error>");
+  });
+
+  test("renders an apply partial failure as its error text", () => {
+    const rendered = lines(
+      renderLspToolResult(
+        "apply",
+        textResult("Workspace Edit rollback failed for: /workspace/a.ts"),
+        { expanded: false, isPartial: false },
+        escapeTaggedTheme,
+        resultContext({ isError: true }),
+      ),
+    );
+    expect(rendered).toContain(
+      "<error>Workspace Edit rollback failed for: /workspace/a.ts</error>",
+    );
   });
 });

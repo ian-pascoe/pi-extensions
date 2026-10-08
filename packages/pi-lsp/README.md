@@ -455,10 +455,12 @@ Workspace diagnostics use protocol workspace pull when available and cached push
 otherwise. They never crawl the project to open files. Non-file result URIs such as `jar:` remain
 readable.
 
-In Pi's interactive transcript, each LSP call stays compact until tool output is expanded. The
-collapsed row shows the operation, target, and outcome; the expanded row adds structured server or
-mutation details followed by the exact tool output. Rendering uses Pi's active theme and native
-tool-output expansion controls.
+In Pi's interactive transcript, each LSP call follows Pi's built-in tool rendering. The header is
+the tool name (`lsp_hover`), the target position or preview, and any rename or search argument;
+expanding the row lists every argument. The result previews the tool output: location lists show
+15 lines like `grep`, everything else 10, each followed by Pi's `... (N more lines, ctrl+o to
+expand)` hint. A running call shows Pi's `Elapsed` footer and a finished one `Took`. Rendering uses
+Pi's active theme and native tool-output expansion controls.
 
 ## Workspace Edit Preview and apply
 
@@ -530,8 +532,9 @@ Definitions are disabled. When no changed file is covered by an enabled Server D
 diagnostics section is appended (an `apply_patch` adapter-version warning still is).
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
-Post-edit Diagnostics Entry after the current tool batch. Its collapsed rendering shows the summary
-and a prefix of the same details, capped at eight rendered rows; expanding it shows every detail.
+Post-edit Diagnostics Entry after the current tool batch. It uses Pi's custom-message look; its
+collapsed rendering shows the summary and the first 10 detail lines with Pi's expand hint, and
+expanding it shows every detail.
 Clean results stay silent in the transcript. This entry is
 excluded from model context; the model sees diagnostics only in the original mutation result.
 

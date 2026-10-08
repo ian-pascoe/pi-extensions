@@ -343,6 +343,8 @@ describe("Pi LSP extension lifecycle", () => {
     const command = harness.runner.getCommand("lsp");
     if (command === undefined) throw new Error("Expected /lsp command");
     await command.handler("enable typescript", harness.runner.createCommandContext());
+    // Info notices carry no prefix; warnings and errors read `LSP: ...`.
+    expect(harness.notifications.at(-1)).toMatch(/^typescript enabled at session scope/);
     const sessionLeaf = harness.sessionManager.getLeafId();
     await command.handler("disable typescript --project", harness.runner.createCommandContext());
     expect(
@@ -353,6 +355,7 @@ describe("Pi LSP extension lifecycle", () => {
       lsp: { unknownField: true, enablement: { typescript: false } },
     });
     expect(harness.sessionManager.getLeafId()).toBe(sessionLeaf);
+    expect(harness.notifications.at(-1)).toMatch(/^LSP: typescript disabled at project scope/);
     expect(harness.notifications.at(-1)).toContain("masked by session");
     expect(harness.notifications.at(-1)).toContain("enabled");
     await command.handler("disable typescript --global", harness.runner.createCommandContext());
