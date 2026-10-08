@@ -1,5 +1,5 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import {
   formatCacheHit,
@@ -93,13 +93,23 @@ describe("withEmptyPromptPlaceholder", () => {
 });
 
 describe("formatStatusFooter", () => {
-  it("sorts statuses by key, flattens whitespace, and drops empty statuses", () => {
+  it("joins statuses sorted by key with a single space, like Pi's footer", () => {
     const statuses = new Map([
       ["zeta", "last"],
       ["alpha", " first\n  line\t"],
       ["empty", "  "],
     ]);
-    expect(formatStatusFooter(statuses, " | ", "…", 80)).toEqual(["first line | last"]);
-    expect(formatStatusFooter(new Map(), " | ", "…", 80)).toEqual([]);
+    expect(formatStatusFooter(statuses, "...", 80)).toEqual(["first line last"]);
+    expect(formatStatusFooter(new Map(), "...", 80)).toEqual([]);
+  });
+
+  it("truncates to the width with the given ellipsis", () => {
+    const statuses = new Map([
+      ["advisor", "alpha beta"],
+      ["tps", "gamma delta"],
+    ]);
+    const [line] = formatStatusFooter(statuses, "...", 12);
+    expect(stripTerminalSequences(line ?? "")).toBe("alpha bet...");
+    expect(visibleWidth(line ?? "")).toBe(12);
   });
 });

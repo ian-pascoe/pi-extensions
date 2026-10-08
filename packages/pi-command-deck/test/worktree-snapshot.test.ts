@@ -25,18 +25,15 @@ describe("Worktree Snapshot", () => {
     });
   });
 
-  it("formats Nerd Font and plain icons", () => {
+  it("formats every count with plain Unicode symbols", () => {
     const snapshot = { ahead: 1, behind: 2, conflicted: 3, untracked: 4, modified: 5 };
-    expect(formatWorktreeSnapshot(snapshot, theme, false)).toBe(
+    expect(formatWorktreeSnapshot(snapshot, theme)).toBe(
       "<accent>⇡1<dim> · <warning>⇣2<dim> · <error>!3<dim> · <mdLink>?4<dim> · <warning>~5",
     );
-    expect(formatWorktreeSnapshot(snapshot, theme, true)).toContain("<error>\uebab3");
-    expect(formatWorktreeSnapshot(snapshot, theme, true)).toContain("<warning>\uea715");
   });
 
   it("marks a clean worktree", () => {
     const clean = parseWorktreeSnapshot("# branch.head main\n# branch.ab +0 -0\n");
-    expect(formatWorktreeSnapshot(clean, theme, false)).toBe("<success>✓");
-    expect(formatWorktreeSnapshot(clean, theme, true)).toBe("<success>\uf00c");
+    expect(formatWorktreeSnapshot(clean, theme)).toBe("<success>✓");
   });
 });

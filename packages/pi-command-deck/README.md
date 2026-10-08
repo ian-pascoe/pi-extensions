@@ -18,7 +18,7 @@ pi -e ./src/index.ts
 - **Mode Rail** (bottom border): the current **Vim Mode** with pending keys on the left; the latest cache hit rate and context usage on the right.
 - **Status Footer**: Pi's footer reduced to extension statuses, sorted by status key.
 
-The Worktree Snapshot refreshes when a session starts, after each tool finishes, and when you submit input. It uses Nerd Font icons in terminals known to ship them and plain symbols elsewhere. Outside a Git worktree, or when `git` fails, the Deck Header omits it.
+The Worktree Snapshot refreshes when a session starts, after each tool finishes, and when you submit input. It uses plain Unicode symbols. Outside a Git worktree, or when `git` fails, the Deck Header omits it.
 
 ## Vim
 

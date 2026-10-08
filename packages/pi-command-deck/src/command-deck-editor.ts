@@ -3,7 +3,7 @@ import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { renderDeckBorder, withEmptyPromptPlaceholder } from "./deck-chrome.js";
 import { VimEditor, type VimEditorHost } from "./vim-editor.js";
 
-const EMPTY_PROMPT = " Type your prompt…";
+const EMPTY_PROMPT = " Type your prompt...";
 
 /** Live, already-colored labels for the Deck Header and Mode Rail. */
 export interface CommandDeckLabels {

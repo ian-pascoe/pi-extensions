@@ -34,23 +34,20 @@ export function parseWorktreeSnapshot(porcelain: string): WorktreeSnapshot {
   return snapshot;
 }
 
-const NERD_FONT_ICONS = { conflicted: "\uebab", modified: "\uea71", clean: "\uf00c" };
-const PLAIN_ICONS = { conflicted: "!", modified: "~", clean: "✓" };
+const ICONS = { conflicted: "!", modified: "~", clean: "✓" };
 
 /** Format a Worktree Snapshot as colored Deck Header tokens. */
 export function formatWorktreeSnapshot(
   snapshot: WorktreeSnapshot,
   theme: Pick<Theme, "fg">,
-  useNerdFontIcons: boolean,
 ): string {
-  const icons = useNerdFontIcons ? NERD_FONT_ICONS : PLAIN_ICONS;
   const tokens: string[] = [];
   if (snapshot.ahead) tokens.push(theme.fg("accent", `⇡${snapshot.ahead}`));
   if (snapshot.behind) tokens.push(theme.fg("warning", `⇣${snapshot.behind}`));
   if (snapshot.conflicted)
-    tokens.push(theme.fg("error", `${icons.conflicted}${snapshot.conflicted}`));
+    tokens.push(theme.fg("error", `${ICONS.conflicted}${snapshot.conflicted}`));
   if (snapshot.untracked) tokens.push(theme.fg("mdLink", `?${snapshot.untracked}`));
-  if (snapshot.modified) tokens.push(theme.fg("warning", `${icons.modified}${snapshot.modified}`));
-  if (tokens.length === 0) tokens.push(theme.fg("success", icons.clean));
+  if (snapshot.modified) tokens.push(theme.fg("warning", `${ICONS.modified}${snapshot.modified}`));
+  if (tokens.length === 0) tokens.push(theme.fg("success", ICONS.clean));
   return tokens.join(theme.fg("dim", " · "));
 }
