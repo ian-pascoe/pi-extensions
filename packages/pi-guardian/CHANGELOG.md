@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-guardian
 
+## 0.2.0
+
+### Minor Changes
+
+- 4ef1998: Guardian review and status entries now use Pi's custom-message box under a `[guardian]` label (`[guardian] ✗ rejected`) with Status Marks (`✓` allowed, `✗` rejected, `!` failed, `■` aborted, `○` off, `●` on), a ten-line Collapsed View with Pi's expand hint, expand or collapse when clicked, and the footer reads `● guardian on`. Warnings and errors are prefixed `Guardian:`, and the `/guardian` menu uses the shared settings menu. Requires Pi 1.1.0 or newer.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.1.0
 
 ### Minor Changes

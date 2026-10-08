@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-lsp
 
+## 0.11.0
+
+### Minor Changes
+
+- 4ef1998: LSP tool rows, Post-edit Diagnostics entries, and `/lsp` notifications now follow Pi's built-in rendering: `lsp_<operation>` headers, grep-length previews for location lists, the Expand Hint, an `Elapsed`/`Took` footer, and `LSP:` warning notices. Post-edit Diagnostics entries open with a `[lsp] edit diagnostics` label and their counts, and expand or collapse when clicked. Requires Pi `>=1.1.0`.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.10.1
 
 ### Patch Changes

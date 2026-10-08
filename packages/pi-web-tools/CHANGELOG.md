@@ -1,5 +1,17 @@
 # @ian-pascoe/pi-web-tools
 
+## 0.6.0
+
+### Minor Changes
+
+- 4ef1998: Web Search and Web Fetch rows now follow Pi's built-in rendering: lowercase tool-name headers, no status marks, grep-style 15-line search previews, read-style header-only fetch results, and Pi's Elapsed/Took footer. Requires Pi 1.1.0 or later.
+
+### Patch Changes
+
+- Updated dependencies [4ef1998]
+- Updated dependencies [4ef1998]
+  - @ian-pascoe/pi-utils@0.5.0
+
 ## 0.5.1
 
 ### Patch Changes

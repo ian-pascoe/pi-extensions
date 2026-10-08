@@ -1,5 +1,11 @@
 # @ian-pascoe/pi-bible-verses
 
+## 0.6.0
+
+### Minor Changes
+
+- 4ef1998: Raise the Pi peer range to `>=1.1.0`; no UI change.
+
 ## 0.5.0
 
 ### Minor Changes
