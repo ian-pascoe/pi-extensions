@@ -85,7 +85,7 @@ it.each(["none", "blocker"] as const)(
       state: "armed",
       backlog: 0,
       effectiveModel: "observer-fixture/model",
-      effectiveThinkingLevel: "medium",
+      effectiveThinkingLevel: "high",
     });
     expect(reviews).toHaveLength(1);
     expect(main).toHaveLength(1);
@@ -1538,7 +1538,7 @@ it("disabled observation leaves the ordered native tools, prompt and conversatio
     backlog: 0,
     cost: null,
     effectiveModel: "anthropic/claude-sonnet-4-5",
-    effectiveThinkingLevel: "medium",
+    effectiveThinkingLevel: "high",
   });
   observer.configure({
     ...readAdvisorSettings(session).settings,

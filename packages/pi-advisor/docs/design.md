@@ -39,7 +39,7 @@ Changes affect the current watched hierarchy immediately when its effective conf
 | Watched sessions               | Main only                                    |
 | Reviewer instructions          | Supplied default Advisor Prompt; replaceable |
 | Advisor model                  | Inherit the observed agent's model           |
-| Advisor thinking level         | Inherit the observed agent's thinking level  |
+| Advisor thinking level         | `high`, independent of the observed agent    |
 | Allowed tools (`allowedTools`) | `read`, `grep`, `find`, `ls`                 |
 | Catch-up threshold             | `3`; any positive integer or `off`           |
 | Review Cadence (`reviewEvery`) | `turn`; `request` or any positive integer N  |
@@ -50,7 +50,7 @@ Changes affect the current watched hierarchy immediately when its effective conf
 | Nits per request               | 3; any non-negative integer                  |
 | Automatic Corrective Turns     | 1 per observed request/task; configurable    |
 
-Model and thinking overrides are independent. Do not silently select another provider or model when resolution or inference fails.
+Model and thinking overrides are independent. The model follows the observed agent unless set. The thinking level never does: absent any configured layer it is a fixed `high`, because finding quality on review work justifies it while reasoning tokens bill at the output price, so inheriting `xhigh`/`max` mostly adds cost. The default is a maintainer decision, not the result of a finding-quality evaluation. Independence also keeps the observation boundary to the session identity and observed model: an observed thinking-level change neither discards the Advisor Session nor invalidates an in-flight Review. Explicit `thinkingLevel` values and global/project/session layering are unchanged. Do not silently select another provider or model when resolution or inference fails.
 
 ## Extension inheritance and tool access
 
@@ -165,7 +165,7 @@ This final drain is distinct from ordinary threshold catch-up. Do not wait indef
 
 When `pi-minimal-subagents` is present, coverage is main-only or main plus all its descendants. The sibling package is optional; without it, Advisor still works for the main session. There is no per-child Advisor roster initially and no generic third-party child detection promise.
 
-One root Advisor policy governs the watched hierarchy and applies to existing and future children. Unspecified model/thinking follows each observed child's own selections. Policy transfer is independent of transcript context inheritance.
+One root Advisor policy governs the watched hierarchy and applies to existing and future children. An unspecified model follows each observed child's own model; an unspecified thinking level is the fixed default for every child. Policy transfer is independent of transcript context inheritance.
 
 Implement explicit integration with the Minimal Subagents owner for:
 
