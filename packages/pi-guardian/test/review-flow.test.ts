@@ -468,7 +468,7 @@ describe("Guardian Review lifecycle", () => {
     await harness.session.prompt("Deploy.");
     expect(harness.executed).toEqual([]);
     expect(notices).toContain(
-      "Guardian rejected deploy (critical (data_egress) risk): The Guardian gave no specific rationale.",
+      "Guardian: rejected deploy (critical (data_egress) risk): The Guardian gave no specific rationale.",
     );
     expect(titles[0]).toMatch(
       /^Guardian rejected deploy \u2014 risk critical \(data_egress\), authorization unknown\nThe Guardian gave no specific rationale\./,
@@ -505,8 +505,8 @@ describe("Guardian Review lifecycle", () => {
     harness.responses.push(toolCalls(["deploy", { target: "a" }, "call-1"]), reply("Ok."));
     harness.guardianReplies.push(assessment("low", "high", "Requested."));
     await harness.session.prompt("Deploy a.");
-    expect(statuses).toContain("guardian");
-    expect(statuses).toContain("guardian: reviewing deploy");
-    expect(statuses.at(-1)).toBe("guardian");
+    expect(statuses).toContain("\u25cf guardian on");
+    expect(statuses).toContain("\u25cf guardian reviewing deploy");
+    expect(statuses.at(-1)).toBe("\u25cf guardian on");
   });
 });

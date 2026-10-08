@@ -735,7 +735,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
       const { authorization } = review.assessment;
       const risk = riskLabel(review.assessment);
       const rationale = statedRationale(review.assessment);
-      notify(ctx, `Guardian rejected ${call.toolName} (${risk} risk): ${rationale}`, "warning");
+      notify(ctx, `rejected ${call.toolName} (${risk} risk): ${rationale}`, "warning");
       const entry = auditEntry(call, review, "rejected");
       if (
         config.onDeny === "ask" &&
@@ -747,7 +747,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         return allow(call, { ...entry, userOverride: true, blocked: false });
       return blocked(config, entry, rejectionReason(review.assessment));
     }
-    notify(ctx, `Guardian could not review ${call.toolName}: ${review.failure}`, "warning");
+    notify(ctx, `could not review ${call.toolName}: ${review.failure}`, "warning");
     const entry = auditEntry(call, review, "failed");
     if (
       await askOverride(ctx, {
@@ -942,7 +942,7 @@ export function installReviewGate(pi: ExtensionAPI, host: ReviewGateHost): Revie
         pending.entry.argumentDrift = true;
         notify(
           ctx,
-          `Guardian: ${pending.entry.toolName} ran with arguments that changed after its review. An extension loaded after Guardian modified them; load Guardian last.`,
+          `${pending.entry.toolName} ran with arguments that changed after its review. An extension loaded after Guardian modified them; load Guardian last.`,
           "warning",
         );
       }
