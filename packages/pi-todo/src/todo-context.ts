@@ -16,6 +16,7 @@ import {
 type Message = ContextEvent["messages"][number];
 /** Marks a snapshot as extension state so the model does not read it as user-authored. */
 const SNAPSHOT_HEADER = "Todo List state from the pi-todo extension (not a user message):";
+const ListDetails = Type.Object({ tasks: Type.Array(Type.Unknown()) });
 const ProjectionDetails = Type.Object(
   {
     version: Type.Literal(1),
@@ -43,15 +44,12 @@ export function todoStateFromEntry(entry: SessionEntry): TodoStateSnapshot | und
   return parseTodoStateSnapshot(entry.data);
 }
 
-/** True when a successful `todo` result's text is exactly the complete resulting list. */
-function resultRendersList(message: Message, list: string): boolean {
+/** True when a successful `todo` result's details carry exactly the complete resulting list. */
+function resultRendersList(message: Message | undefined, tasks: TodoStateSnapshot["tasks"]) {
+  if (message?.role !== "toolResult" || message.toolName !== "todo" || message.isError)
+    return false;
   return (
-    message.role === "toolResult" &&
-    message.toolName === "todo" &&
-    !message.isError &&
-    message.content.length === 1 &&
-    message.content[0]!.type === "text" &&
-    message.content[0]!.text === list
+    Value.Check(ListDetails, message.details) && isDeepStrictEqual(message.details.tasks, tasks)
   );
 }
 
@@ -125,11 +123,12 @@ export function projectTodoContext(
   }
   const outstanding = new Map<string, number>();
   // A tool group projects only its final state, once its last result has landed.
+  let lastTodoResult: Message | undefined;
   let pending: { entry: SessionEntry; state: TodoStateSnapshot } | undefined;
   const project = (entry: SessionEntry, state: TodoStateSnapshot, finalResult?: Message): void => {
     const content = formatTodoList(state.tasks);
     // The model already saw this exact list in the group's last result; a Snapshot would repeat it.
-    const rendered = finalResult !== undefined && resultRendersList(finalResult, content);
+    const rendered = resultRendersList(finalResult, state.tasks);
     if (
       !rendered &&
       content !== previousContent &&
@@ -152,17 +151,19 @@ export function projectTodoContext(
       if (outstanding.size > 0 && pending)
         throw new Error("Todo mutation has an incomplete tool group");
       outstanding.clear();
+      lastTodoResult = undefined;
       for (const block of message.content)
         if (block.type === "toolCall")
           outstanding.set(block.id, (outstanding.get(block.id) ?? 0) + 1);
     } else if (message.role === "toolResult") {
+      if (message.toolName === "todo") lastTodoResult = message;
       const remaining = (outstanding.get(message.toolCallId) ?? 0) - 1;
       if (remaining > 0) outstanding.set(message.toolCallId, remaining);
       else outstanding.delete(message.toolCallId);
     }
     anchor = message;
     if (outstanding.size === 0 && pending) {
-      project(pending.entry, pending.state, message);
+      project(pending.entry, pending.state, lastTodoResult);
       pending = undefined;
     }
   }

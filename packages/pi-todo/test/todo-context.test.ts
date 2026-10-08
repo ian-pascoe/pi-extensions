@@ -1,3 +1,4 @@
+import type { JsonObject, JsonValue } from "@earendil-works/pi-ai";
 import { SessionManager, type ContextEvent } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { projectTodoContext } from "../src/todo-context.js";
@@ -165,13 +166,20 @@ describe("immutable Todo journal projection", () => {
       timestamp: 1,
     });
   }
-  function toolResult(manager: SessionManager, id: string, text?: string, isError = false): void {
+  function toolResult(
+    manager: SessionManager,
+    id: string,
+    text?: string,
+    isError = false,
+    details: JsonObject = {},
+  ): void {
     manager.appendMessage({
       role: "toolResult",
       toolCallId: id,
       toolName: "todo",
       content: [{ type: "text", text: text ?? `${id} saved at ${manager.getEntries().length}` }],
       isError,
+      details,
       timestamp: 2,
     });
   }
@@ -238,40 +246,73 @@ describe("immutable Todo journal projection", () => {
     expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Stable`]);
   });
 
-  it("skips the Snapshot when the group's final result already rendered the full list", () => {
+  const fullList = (tasks: JsonValue) => ({ action: "list", tasks });
+  const task = (title: string): JsonObject[] => [{ id: 1, title, status: "pending" }];
+
+  it("skips the Snapshot when the group's last todo result carries the complete resulting list", () => {
     const manager = SessionManager.inMemory();
-    user(manager, "Add then list");
-    assistantCalls(manager, ["a", "b"]);
+    user(manager, "Batch add");
+    assistantCalls(manager, ["a"]);
     state(manager, "Task");
-    toolResult(manager, "a", "Added Task #1");
-    toolResult(manager, "b", "[ ] #1 Task");
-    const result = project(manager);
-    expect(snapshots(result)).toEqual([]);
-    expect(project(manager, result)).toEqual(result);
-    // Later changes still diff against the list the model saw.
-    assistantCalls(manager, ["c"]);
+    toolResult(manager, "a", "Added 1 Task\n[ ] #1 Task", false, {
+      action: "add",
+      tasks: task("Task"),
+    });
+    const first = project(manager);
+    expect(snapshots(first)).toEqual([]);
+    expect(project(manager, first)).toEqual(first);
+    assistantCalls(manager, ["b"]);
     state(manager, "Task");
-    toolResult(manager, "c", "[ ] #1 Task");
+    toolResult(manager, "b", "[ ] #1 Task", false, fullList(task("Task")));
     expect(snapshots(project(manager))).toEqual([]);
-    assistantCalls(manager, ["d"]);
+    assistantCalls(manager, ["c"]);
     state(manager, "Other");
-    toolResult(manager, "d", "Updated Task #1");
-    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Other`]);
+    toolResult(manager, "c", "Updated Task #1", false, {
+      action: "update",
+      task: task("Other")[0]!,
+    });
+    const second = project(manager);
+    expect(snapshots(second)).toEqual([`${HEADER}[ ] #1 Other`]);
+    expect(second.slice(0, first.length)).toEqual(first);
   });
 
-  it("keeps the Snapshot when the final result is partial, stale, or an error", () => {
+  it("checks the group's last todo result, not its last message", () => {
+    const manager = SessionManager.inMemory();
+    user(manager, "Go");
+    assistantCalls(manager, ["a", "b"]);
+    state(manager, "Task");
+    toolResult(manager, "a", "list", false, fullList(task("Task")));
+    manager.appendMessage({
+      role: "toolResult",
+      toolCallId: "b",
+      toolName: "bash",
+      content: [{ type: "text", text: "other tool" }],
+      isError: false,
+      timestamp: 3,
+    });
+    expect(snapshots(project(manager))).toEqual([]);
+  });
+
+  it("keeps the Snapshot when the last todo result is partial, stale, or an error", () => {
     const manager = SessionManager.inMemory();
     user(manager, "Go");
     assistantCalls(manager, ["a", "b"]);
     state(manager, "One");
-    toolResult(manager, "a", "[ ] #1 One");
+    toolResult(manager, "a", "x", false, fullList(task("One")));
     state(manager, "Two");
-    toolResult(manager, "b", "Updated Task #1");
+    toolResult(manager, "b", "x", false, { action: "update", tasks: task("Two").slice(1) });
     assistantCalls(manager, ["c", "d"]);
     state(manager, "Three");
-    toolResult(manager, "c", "[ ] #1 Three");
-    toolResult(manager, "d", "[ ] #1 Three", true);
-    expect(snapshots(project(manager))).toEqual([`${HEADER}[ ] #1 Two`, `${HEADER}[ ] #1 Three`]);
+    toolResult(manager, "c", "x", false, fullList(task("Three")));
+    toolResult(manager, "d", "x", true, fullList(task("Three")));
+    assistantCalls(manager, ["e"]);
+    state(manager, "Four");
+    toolResult(manager, "e", "x", false, fullList(task("Stale")));
+    expect(snapshots(project(manager))).toEqual([
+      `${HEADER}[ ] #1 Two`,
+      `${HEADER}[ ] #1 Three`,
+      `${HEADER}[ ] #1 Four`,
+    ]);
   });
 
   it("rejects destroyed or ambiguous anchors rather than relocating old snapshots", () => {

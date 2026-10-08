@@ -2,4 +2,4 @@
 "@ian-pascoe/pi-todo": patch
 ---
 
-Skip the Todo List Snapshot when a tool group's final `todo` result already rendered the complete resulting list.
+Skip the Todo List Snapshot when a tool group's last successful `todo` result (`list`, batch `add`, or batch `update`) already carries the complete resulting list.
