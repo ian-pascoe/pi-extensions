@@ -16,6 +16,10 @@ _Avoid_: Advisor
 The private, durable session in which an Advisor conducts Reviews and manages its own context. Past a configured size (by default at most 100k reported tokens, kept low because every Review re-reads the whole session, trading more frequent compaction and less verbatim recall for cheaper Reviews), Pi's native compaction summarizes its older history; when Context Management is available, its Notes, History, and Context Checkpoints belong to the Advisor, not to the observed agent.
 _Avoid_: Observed session, shared memory
 
+**Advisor thinking level**:
+The reasoning level of an Advisor Session. Unless configured it is a fixed `high`, independent of the Observed Agent's thinking level.
+_Avoid_: Inherited thinking level
+
 **Paused Advisor**:
 An enabled Advisor that has stopped reviewing after a failure and requires recovery before it can resume. Pausing does not disable its configuration or stop the observed agent.
 _Avoid_: Disabled Advisor

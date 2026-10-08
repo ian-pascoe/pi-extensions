@@ -32,7 +32,10 @@ export function calibratedFactor(current: number, estimated: number, reported: n
   return current;
 }
 
-/** One measurement: Pi's chars/4 estimate of a request or its added evidence, and the real tokens reported. */
+/**
+ * One measurement: Pi's chars/4 estimate of a request or its added evidence, and the real tokens
+ * reported for it.
+ */
 export interface TokenSample {
   estimated: number;
   reported: number;

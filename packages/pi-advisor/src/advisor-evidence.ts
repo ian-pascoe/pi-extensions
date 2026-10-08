@@ -63,8 +63,8 @@ export interface ContextSeed extends Evidence {
 }
 
 /**
- * Fit a Context Seed to a token budget in Pi's estimate (the caller scales a budget in reported tokens), measured as Pi's chars/4 estimate of the seed JSON with
- * Pi's per-image estimate. Always kept: the Observed Setup; the original request (the first
+ * Fit a Context Seed to a token budget, measured as Pi's chars/4 estimate of the seed JSON with
+ * Pi's per-image estimate. The caller scales a budget in reported tokens down to that estimate. Always kept: the Observed Setup; the original request (the first
  * user request, or after compaction the summary, which carries the earlier goal, and the first
  * request after it); and the newest turn with the request that prompted it, shortened if they
  * alone exceed the budget. The rest takes the newest turns that fit, shortening only the oldest
