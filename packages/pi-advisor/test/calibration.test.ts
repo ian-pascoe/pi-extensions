@@ -59,6 +59,11 @@ it.each([1.8, 3])(
     // The later seed fits the budget in reported tokens, within tolerance, without wasting it.
     expect(reported(privateRequests[1], ratio)).toBeLessThanOrEqual(budget * 1.05);
     expect(reported(privateRequests[1], ratio)).toBeGreaterThan(budget * 0.6);
+    // The learned factor is the ratio rounded up to a quarter, with no setup bias: the second
+    // seed's estimate is the budget over 2 at 1.8× and over 3 at 3×.
+    const factor = Math.ceil(ratio / 0.25) * 0.25;
+    expect(second?.tokens).toBeLessThanOrEqual(budget / factor);
+    expect(second?.tokens).toBeGreaterThan((budget / factor) * 0.9);
   },
 );
 
@@ -81,6 +86,7 @@ it("keeps its factor, and so the Advisor context prefix, steady while the ratio 
 });
 
 it("keeps an auto seed and its first Review under the auto maxSessionTokens", async () => {
+  // The first Review runs at the fallback factor, 2, so the model reports exactly that ratio.
   const ratio = 2;
   const privateRequests: PrivateRequest[] = [];
   const summaries: Context[] = [];
@@ -114,9 +120,9 @@ it("keeps an auto seed and its first Review under the auto maxSessionTokens", as
 it("keeps adding incremental evidence that fits the budget in reported tokens", async () => {
   const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream(
-    { "First request": 2, "Second request": 2 },
+    { "First request": 2, "Second request": 3 },
     privateRequests,
-    { result: bulky, isError: () => false, tokenRatio: 1 },
+    { result: (id) => `result ${id} ${"x".repeat(9_500)}`, isError: () => false, tokenRatio: 0.95 },
   );
   const { session, observer } = await observe({ reviewEvery: "request", seedBudgetTokens: 8_000 });
   await session.prompt("First request: refactor the parser.");
@@ -125,11 +131,13 @@ it("keeps adding incremental evidence that fits the budget in reported tokens", 
   expect(first.tokens).toBeLessThanOrEqual(4_000);
   await session.prompt("Second request: add tests.");
   expect(observer.status.lastError).toBeNull();
-  // The model reported about 1× Pi's estimate, so about 5k estimated tokens of new evidence
-  // fit 8k reported tokens, though they would not at the fallback factor.
+  // The model reports slightly under Pi's estimate (0.95×, so the factor floors at 1 despite the
+  // JSON framing around each message). The new evidence's estimate lies between the budget over
+  // 1.25 and the budget, so it fits only if the factor fell to 1, which a bias from the cached
+  // system prompt and tools would prevent (the factor would stay at 1.25 or more).
   const second = seedPayload(privateRequests[1]);
   expect(second.header).toContain("Incremental update.");
-  expect(second.tokens).toBeGreaterThan(4_000);
+  expect(second.tokens).toBeGreaterThan(8_000 / 1.25);
   expect(second.tokens).toBeLessThanOrEqual(8_000);
   expectPrefix(privateRequests[1], privateRequests[0]);
 });

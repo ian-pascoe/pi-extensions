@@ -116,9 +116,9 @@ export function seedBudget(
 /**
  * Advisor Session size above which a completed Review compacts it. `auto` takes half the Advisor
  * model's context window, at most 200K: room for an `auto` Context Seed plus as much again for
- * incremental Reviews, so a full seed alone never forces compaction (the seed budget counts reported tokens), while staying far below
- * Pi's own threshold (the window less its reserve), where every Review re-reads almost a full
- * window. Compaction re-sends the history it summarizes, so a much lower cap compacts often.
+ * incremental Reviews, so a full seed alone never forces compaction (the seed budget counts
+ * reported tokens), while staying far below Pi's own threshold (the window less its reserve),
+ * where every Review re-reads almost a full window. Compaction re-sends the history it summarizes, so a much lower cap compacts often.
  */
 export function sessionTokenLimit(
   setting: AdvisorConfig["maxSessionTokens"],
