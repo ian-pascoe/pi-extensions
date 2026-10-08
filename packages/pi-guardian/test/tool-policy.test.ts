@@ -223,6 +223,7 @@ describe("Tool Policy resolution", () => {
     "context_notes",
     "context_history",
     "context_rollover",
+    "advisor_report",
   ])("allows %s by default", (toolName) => {
     expect(resolveToolPolicy(call({ toolName }))).toEqual({ policy: "allow", source: "default" });
   });
@@ -399,6 +400,18 @@ describe("Tool Policy resolution", () => {
       source: "fallback",
     });
     expect(resolveToolPolicy(call({}))).toEqual({ policy: "review", source: "fallback" });
+  });
+
+  it("lets an explicit review Tool Policy review advisor_report", () => {
+    expect(
+      resolveToolPolicy(
+        call({
+          toolName: "advisor_report",
+          configured: { advisor_report: "review" },
+          annotations: { readOnlyHint: false },
+        }),
+      ),
+    ).toEqual({ policy: "review", source: "setting" });
   });
 
   it("lets configured Tool Policies override defaults and annotations", () => {
