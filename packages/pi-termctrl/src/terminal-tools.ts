@@ -20,6 +20,17 @@ import { describeExitStatus, formatExitNotice, lastLines } from "./exit-notifica
 import { termctrlTemporaryDirectory } from "./termctrl-driver.js";
 import type { LineByteLimits, TerminalViewport } from "./pi-termctrl-settings.js";
 import type { TerminalExit, TerminalSnapshot } from "./terminal-driver.js";
+import {
+  renderListCall,
+  renderListResult,
+  renderSendCall,
+  renderStartCall,
+  renderStopCall,
+  renderStopResult,
+  renderTerminalResult,
+  renderWaitCall,
+  renderWaitResult,
+} from "./terminal-render.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
 /** Screen quiet period that settles a Terminal. */
@@ -112,7 +123,7 @@ const TerminalResultSchema = Type.Object({
     }),
   ),
 });
-type TerminalResult = Static<typeof TerminalResultSchema>;
+export type TerminalResult = Static<typeof TerminalResultSchema>;
 
 const ListEntrySchema = Type.Object({
   id: Type.String(),
@@ -128,7 +139,7 @@ const ListResultSchema = Type.Object({
     Type.Object({ ...ListEntrySchema.properties, log_path: Type.String() }),
   ),
 });
-type ListResult = Static<typeof ListResultSchema>;
+export type ListResult = Static<typeof ListResultSchema>;
 
 const StopResultSchema = Type.Object({
   id: Type.String(),
@@ -166,7 +177,7 @@ const StopResultSchema = Type.Object({
   ),
   output: Type.Optional(Type.String({ description: "Background job only: its recent output" })),
 });
-type StopResult = Static<typeof StopResultSchema>;
+export type StopResult = Static<typeof StopResultSchema>;
 
 const WaitMsSchema = Type.Optional(
   Type.Integer({ minimum: 0, description: "Maximum milliseconds to wait (clamped to 300000)" }),
@@ -268,7 +279,7 @@ const WaitResultSchema = Type.Object({
     }),
   ),
 });
-type WaitResult = Static<typeof WaitResultSchema>;
+export type WaitResult = Static<typeof WaitResultSchema>;
 type WaitReason = WaitResult["reason"];
 
 /** Clamp a requested wait to the fixed 0 to 5 minute range. */
@@ -837,6 +848,8 @@ export function createTerminalStartTool(runtime: TerminalToolRuntime) {
       openWorldHint: true,
     },
     outputSchema: TerminalResultSchema,
+    renderCall: renderStartCall,
+    renderResult: renderTerminalResult,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       const cwd = await resolveWorkingDirectory(context.cwd, params.cwd);
       const entry = await runtime.registry.startTerminal(ownerOf(context), {
@@ -894,6 +907,8 @@ export function createTerminalSendTool(runtime: TerminalToolRuntime) {
       openWorldHint: true,
     },
     outputSchema: TerminalResultSchema,
+    renderCall: renderSendCall,
+    renderResult: renderTerminalResult,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       const entry = runtime.registry.find(ownerOf(context), params.id);
       if (entry === undefined) throw unknownId(params.id);
@@ -1004,6 +1019,8 @@ export function createTerminalStopTool({ registry, scrollback }: TerminalResultR
       openWorldHint: false,
     },
     outputSchema: StopResultSchema,
+    renderCall: renderStopCall,
+    renderResult: renderStopResult,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       const owner = ownerOf(context);
       const known = registry.find(owner, params.id);
@@ -1166,6 +1183,8 @@ export function createTerminalWaitTool(runtime: TerminalWaitRuntime) {
       openWorldHint: false,
     },
     outputSchema: WaitResultSchema,
+    renderCall: renderWaitCall,
+    renderResult: renderWaitResult,
     async execute(_toolCallId, params, signal, _onUpdate, context) {
       const owner = ownerOf(context);
       const targets = waitTargets(registry, owner, params.ids);
@@ -1238,6 +1257,8 @@ export function createTerminalListTool(registry: TermctrlRegistry) {
       openWorldHint: false,
     },
     outputSchema: ListResultSchema,
+    renderCall: renderListCall,
+    renderResult: renderListResult,
     async execute(_toolCallId, _params, _signal, _onUpdate, context) {
       const now = Date.now();
       const entries = registry.ownedEntries(ownerOf(context));

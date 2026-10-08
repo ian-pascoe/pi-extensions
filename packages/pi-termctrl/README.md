@@ -189,9 +189,16 @@ the session that started the entry, and wait across `/reload`.
 `/ps` opens an overlay listing every entry in the Pi process, including those of
 in-process child agents, with kind, id, owner (`root` or `child`), state and
 age, plus a live preview of the selected Terminal's screen or Background job's
-log tail. Keys: `↑`/`↓` select, `k` stops without confirmation (the agent gets an
-Exit notification), `x` removes an exited entry, `Esc` closes. The footer shows
-`N running` while anything is live. In RPC mode `/ps` sends a one-line summary;
+log tail. It uses Pi's selector frame, with a Status Mark before each entry
+(`●` running, `✓` exited cleanly, `✗` failed, `■` ended by a signal). Keys:
+`↑`/`↓` select, `k` stops without confirmation (the agent gets an Exit
+notification), `x` removes an exited entry, `Esc` closes. The footer shows
+`● termctrl N running` while anything is live.
+
+The `terminal_*` tools render like `bash` in the transcript: a header with the
+tool name and target, the last 5 screen lines (`ctrl+o` expands), and a `Took`
+footer. Exit notifications show one row per exit, marked `✓` for a clean exit and
+`■` otherwise. In RPC mode `/ps` sends a one-line summary;
 print mode has no UI but keeps the tools and notifications.
 
 ## Lifecycle

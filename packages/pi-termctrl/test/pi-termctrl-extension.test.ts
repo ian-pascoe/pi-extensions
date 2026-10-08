@@ -1,7 +1,12 @@
 import { fauxAssistantMessage, fauxToolCall, type Message } from "@earendil-works/pi-ai";
-import { createBashToolDefinition, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import {
+  createBashToolDefinition,
+  initTheme,
+  type ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { EXIT_NOTIFICATION_TYPE } from "../src/exit-notification.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";
@@ -13,6 +18,10 @@ function toolNames(fixture: Awaited<ReturnType<typeof createSdkFixture>>): strin
   return fixture.session.getActiveToolNames();
 }
 
+function plain(text: string | undefined): string | undefined {
+  return text === undefined ? undefined : stripVTControlCharacters(text);
+}
+
 function toolResultText(messages: readonly Message[], toolName: string): string {
   const result = messages.find(
     (message) => message.role === "toolResult" && message.toolName === toolName,
@@ -20,6 +29,11 @@ function toolResultText(messages: readonly Message[], toolName: string): string 
   if (result?.role !== "toolResult") return "";
   return result.content.map((part) => (part.type === "text" ? part.text : "")).join("");
 }
+
+beforeAll(() => {
+  // The footer status draws with Pi's global theme.
+  initTheme("dark");
+});
 
 afterEach(async () => {
   await disposeSdkFixtures();
@@ -80,7 +94,7 @@ describe("tool registration", () => {
       "terminal_wait",
     ]);
     expect(fixture.notifications).toEqual([
-      "Pi Termctrl: Terminal tools are unavailable: test has no binary\nRun /skill:pi-termctrl to diagnose.",
+      "Termctrl: Terminal tools are unavailable: test has no binary\nRun /skill:pi-termctrl to diagnose.",
     ]);
   });
 
@@ -266,7 +280,7 @@ describe("lifecycle", () => {
     await settle(fixture.session);
     const registry = TermctrlRegistry.current();
     expect(registry?.entries().map(({ id, state }) => [id, state])).toEqual([["t1", "running"]]);
-    expect(fixture.statuses.at(-1)).toBe("1 running");
+    expect(plain(fixture.statuses.at(-1))).toBe("\u25cf termctrl 1 running");
 
     await fixture.session.reload();
     expect(
@@ -275,7 +289,7 @@ describe("lifecycle", () => {
         .map(({ id, state }) => [id, state]),
     ).toEqual([["t1", "running"]]);
     expect(toolNames(fixture)).toContain("terminal_send");
-    expect(fixture.statuses.at(-1)).toBe("1 running");
+    expect(plain(fixture.statuses.at(-1))).toBe("\u25cf termctrl 1 running");
 
     await fixture.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     expect(drivers.terminal(0).stopCalls).toBe(1);

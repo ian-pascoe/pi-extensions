@@ -1,6 +1,16 @@
 import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import {
+  KeybindingsManager as TuiKeybindings,
+  setKeybindings,
+  type TUI,
+} from "@earendil-works/pi-tui";
+import {
+  escapeTaggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+  taggedTheme,
+} from "@ian-pascoe/pi-utils/ui-testing";
+import { afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { TermctrlPsController, TermctrlPsPanel } from "../src/ps-panel.js";
 import { TermctrlRegistry } from "../src/termctrl-registry.js";
 import { FakeDriverFactory } from "./fake-driver.js";
@@ -44,10 +54,6 @@ function panelFixture(registry: TermctrlRegistry, rows = 30) {
     terminal: { rows, columns: 120 } satisfies Pick<TUI["terminal"], "rows" | "columns">,
     requestRender: vi.fn<TUI["requestRender"]>(),
   };
-  const theme = {
-    fg: (_color, text) => text,
-    bold: (text) => text,
-  } satisfies Pick<Theme, "fg" | "bold">;
   const bindings = new Map([
     ["up", "tui.select.up"],
     ["down", "tui.select.down"],
@@ -64,8 +70,8 @@ function panelFixture(registry: TermctrlRegistry, rows = 30) {
     "root",
     // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel uses only checked terminal rows and the typed requestRender mock.
     tui as unknown as TUI,
-    // SAFETY: The panel renders only through the checked fg and bold theme methods.
-    theme as Theme,
+    // SAFETY: The panel renders only through the fg and bold methods the escape-tagged theme provides.
+    escapeTaggedTheme as Theme,
     // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: The panel reads only the checked input matcher.
     keybindings as unknown as KeybindingsManager,
     onClose,
@@ -75,6 +81,21 @@ function panelFixture(registry: TermctrlRegistry, rows = 30) {
     },
   );
   return { panel, tui, onClose, stopRefresh, refresh: () => refresh?.() };
+}
+
+beforeAll(() => {
+  setKeybindings(new TuiKeybindings({ "tui.select.cancel": { defaultKeys: "escape" } }));
+});
+
+/** Check the panel fits at 40 and 120 columns, as every rendered line must. */
+function expectFits(panel: TermctrlPsPanel) {
+  expectLinesFitWidth(panel.render(40), 40);
+  expectLinesFitWidth(panel.render(120), 120);
+}
+
+/** The panel's lines at a real width, with theme tokens decoded to readable tags. */
+function view(panel: TermctrlPsPanel, width: number): string[] {
+  return panel.render(width).map((line) => readableTags(line).trimEnd());
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -87,33 +108,53 @@ describe("TermctrlPsPanel", () => {
   test("shows an empty state", () => {
     const registry = TermctrlRegistry.acquire({ createDriver: new FakeDriverFactory().create });
     const { panel } = panelFixture(registry);
-    const lines = panel.render(80);
-    expect(lines.join("\n")).toContain("Terminals and Background jobs · 0 running");
-    expect(lines.join("\n")).toContain("Nothing is running.");
-    expect(lines.join("\n")).toContain("↑↓ select · k stop · x remove exited · esc close");
+    expectFits(panel);
+    const lines = view(panel, 120);
+    const text = lines.join("\n");
+    expect(text).toContain(
+      "<accent><b>Terminals and Background jobs</b></accent><dim> · </dim><muted>0 running</muted>",
+    );
+    expect(text).toContain("<muted>Nothing is running.</muted>");
+    expect(text).toContain(
+      "<dim>↑↓</dim><muted> navigate</muted>  <dim>k</dim><muted> stop</muted>  <dim>x</dim><muted> remove exited</muted>  <dim>escape</dim><muted> close</muted>",
+    );
+  });
+
+  test("is framed by Pi's selector borders, not a drawn box", () => {
+    const registry = TermctrlRegistry.acquire({ createDriver: new FakeDriverFactory().create });
+    const { panel } = panelFixture(registry);
+    const lines = view(panel, 30);
+    const border = `<border>${"─".repeat(30)}</border>`;
+    expect(lines[0]).toBe(border);
+    expect(lines.at(-1)).toBe(border);
+    expect(lines.join("")).not.toMatch(/[╭╮╰╯│]/u);
   });
 
   test("renders every entry with kind, owner, state and age, and previews the Terminal screen", async () => {
     const { registry } = await populatedRegistry();
     const { panel } = panelFixture(registry);
     await flush();
-    const lines = panel.render(100);
-    expect(lines.every((line) => visibleWidth(line) === 100)).toBe(true);
+    expectFits(panel);
+    const lines = view(panel, 120);
     const text = lines.join("\n");
-    expect(text).toMatch(/> term {2}t1 {4}root {3}running {2}\s+\d+ms {2}python3/u);
-    expect(text).toMatch(/ {3}job {3}b1 {4}child {2}running {2}\s+\d+ms {2}npm run build/u);
-    expect(text).toContain("t1 screen");
-    expect(text).toContain(">>> 1 + 1\n".split("\n")[0] ?? "");
-    expect(text).toContain("│ 2 ");
+    expect(text).toMatch(
+      /<accent>→ <\/accent><accent>●<\/accent> <accent>term {2}t1 {4}root {3}running {2}\s+\d+ms {2}python3<\/accent>/u,
+    );
+    expect(text).toMatch(
+      /  <accent>●<\/accent> <text>job {3}b1 {4}child {2}running {2}\s+\d+ms {2}npm run build<\/text>/u,
+    );
+    expect(text).toContain("<dim>t1 screen</dim>");
+    expect(text).toContain("<text>>>> 1 + 1</text>");
+    expect(text).toContain("<text>2</text>");
   });
 
   test("drops the owner and age columns at narrow widths and stays within the width", async () => {
     const { registry } = await populatedRegistry();
     const { panel } = panelFixture(registry);
-    const lines = panel.render(40);
-    expect(lines.every((line) => visibleWidth(line) === 40)).toBe(true);
+    const lines = view(panel, 40);
+    expectFits(panel);
     const text = lines.join("\n");
-    expect(text).toContain("> t1    running    python3");
+    expect(text).toContain("t1    running    python3");
     expect(text).not.toContain("root");
   });
 
@@ -122,9 +163,10 @@ describe("TermctrlPsPanel", () => {
     const { panel, tui } = panelFixture(registry);
     panel.handleInput("down");
     expect(tui.requestRender).toHaveBeenCalled();
-    const text = panel.render(100).join("\n");
-    expect(text).toContain("> job   b1");
-    expect(text).toContain("b1 log tail");
+    const text = view(panel, 100).join("\n");
+    expect(text).toContain("<accent>→ </accent>");
+    expect(text).toMatch(/<accent>job {3}b1/u);
+    expect(text).toContain("<dim>b1 log tail</dim>");
     expect(text).toContain("compiling");
     expect(text).toContain("linking");
   });
@@ -134,19 +176,24 @@ describe("TermctrlPsPanel", () => {
     const { panel } = panelFixture(registry);
     panel.handleInput("down");
     panel.handleInput("x");
-    expect(panel.render(100).join("\n")).toContain("b1 is running; press k to stop it first.");
+    expect(view(panel, 100).join("\n")).toContain(
+      "<warning>b1 is running; press k to stop it first.</warning>",
+    );
 
     panel.handleInput("k");
     await vi.waitFor(() => expect(registry.get("b1")?.state).toBe("exited"));
     await flush();
-    expect(panel.render(100).join("\n")).toContain("Stopped b1.");
-    expect(panel.render(100).join("\n")).toMatch(/b1 {4}child {2}SIGKILL/u);
+    expect(view(panel, 100).join("\n")).toContain("<warning>Stopped b1.</warning>");
+    // An entry a signal ended carries the stopped mark, shown by the selected row.
+    expect(view(panel, 100).join("\n")).toMatch(
+      /<muted>■<\/muted> <accent>job {3}b1 {4}child {2}SIGKILL/u,
+    );
 
     panel.handleInput("x");
     await vi.waitFor(() => expect(registry.get("b1")).toBeUndefined());
     expect(job.removeLog).toHaveBeenCalledOnce();
     await flush();
-    expect(panel.render(100).join("\n")).toContain("Removed b1.");
+    expect(view(panel, 100).join("\n")).toContain("Removed b1.");
   });
 
   test("esc closes the panel and clears its refresh timer once", async () => {
@@ -165,7 +212,7 @@ describe("TermctrlPsPanel", () => {
     registry.createJob("root", "sleep 5", (id) => jobChild(id, "", () => {}));
     refresh();
     expect(tui.requestRender).toHaveBeenCalled();
-    expect(panel.render(80).join("\n")).toContain("b1");
+    expect(view(panel, 80).join("\n")).toContain("b1");
   });
 });
 
@@ -177,7 +224,7 @@ describe("TermctrlPsController", () => {
     const context = {
       mode,
       hasUI: true,
-      ui: { setStatus, notify, custom },
+      ui: { setStatus, notify, custom, theme: taggedTheme },
       sessionManager: { getSessionId: () => "root" },
     };
     return {
@@ -193,9 +240,15 @@ describe("TermctrlPsController", () => {
     const { registry } = await populatedRegistry();
     const { context, setStatus } = controllerContext("tui");
     const controller = new TermctrlPsController(registry, context);
-    expect(setStatus).toHaveBeenLastCalledWith("termctrl", "2 running");
+    expect(setStatus).toHaveBeenLastCalledWith(
+      "termctrl",
+      "<accent>●</accent> <dim>termctrl</dim> 2 running",
+    );
     registry.jobExited("b1", { code: 0, signal: null });
-    expect(setStatus).toHaveBeenLastCalledWith("termctrl", "1 running");
+    expect(setStatus).toHaveBeenLastCalledWith(
+      "termctrl",
+      "<accent>●</accent> <dim>termctrl</dim> 1 running",
+    );
 
     controller.dispose(false);
     setStatus.mockClear();

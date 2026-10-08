@@ -7,6 +7,7 @@ import {
   type ExtensionFactory,
   type SessionShutdownEvent,
 } from "@earendil-works/pi-coding-agent";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { createBashReplacement, RunningBashCalls } from "./bash-replacement.js";
 import {
   EXIT_NOTIFICATION_TYPE,
@@ -154,7 +155,10 @@ class PiTermctrlController {
     );
     const settings = resolveTermctrlSettings(settingsManager);
     if (settings.warnings.length > 0) {
-      context.ui.notify(`Pi Termctrl settings:\n- ${settings.warnings.join("\n- ")}`, "warning");
+      context.ui.notify(
+        noticeText("Termctrl", `Settings:\n- ${settings.warnings.join("\n- ")}`),
+        "warning",
+      );
     }
     const registry = this.registry;
     const owner = context.sessionManager.getSessionId();
@@ -178,7 +182,10 @@ class PiTermctrlController {
     const commandPrefix = settingsManager.getShellCommandPrefix();
     if (this.binary.kind === "missing") {
       context.ui.notify(
-        `Pi Termctrl: Terminal tools are unavailable: ${this.binary.reason}\nRun /skill:pi-termctrl to diagnose.`,
+        noticeText(
+          "Termctrl",
+          `Terminal tools are unavailable: ${this.binary.reason}\nRun /skill:pi-termctrl to diagnose.`,
+        ),
         "warning",
       );
       if (settings.replaceBash) this.registerManagementTools();

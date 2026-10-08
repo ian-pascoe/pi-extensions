@@ -19,6 +19,7 @@ import {
   type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { Type, type TSchema } from "typebox";
 import { KILLED_EXIT, TermctrlRegistry } from "./termctrl-registry.js";
 import type { LineByteLimits } from "./pi-termctrl-settings.js";
@@ -264,7 +265,10 @@ export class RunningBashCalls {
       try {
         call.background(this.registry());
       } catch (error) {
-        ui.notify(error instanceof Error ? error.message : String(error), "warning");
+        ui.notify(
+          noticeText("Termctrl", error instanceof Error ? error.message : String(error)),
+          "warning",
+        );
       }
     }
   }
