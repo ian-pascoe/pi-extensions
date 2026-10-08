@@ -12,6 +12,7 @@ import type {
   Api,
   SimpleStreamOptions,
   AssistantMessageEventStream,
+  TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { endpointContext } from "./endpoint-context.js";
 
@@ -22,6 +23,12 @@ declare global {
       context: Context,
       options?: SimpleStreamOptions,
     ) => AssistantMessageEventStream;
+    /** Sees every request exactly as the provider adapter would, before the scripted answer. */
+    request?: (
+      model: Model<Api>,
+      context: TranscriptContext,
+      options?: SimpleStreamOptions,
+    ) => void;
     beforeTask?: () => void;
     turnEnd?: (event: TurnEndEvent) => Promise<void>;
     /** Observed tool-result rewrite, such as display-only `details`. */
@@ -55,8 +62,10 @@ export default function observerFixture(pi: ExtensionAPI): void {
       contextWindow: 200000,
       maxTokens: 2048,
     })),
-    streamSimple: (model, context, options) =>
-      globalThis.advisorObserverTest.stream(model, endpointContext(context), options),
+    streamSimple: (model, context, options) => {
+      globalThis.advisorObserverTest.request?.(model, context, options);
+      return globalThis.advisorObserverTest.stream(model, endpointContext(context), options);
+    },
   });
   let privateRole = false;
   pi.on("session_start", (_event, ctx) => {

@@ -20,6 +20,10 @@ _Avoid_: Observed session, shared memory
 The reasoning level of an Advisor Session. Unless configured it is a fixed `high`, independent of the Observed Agent's thinking level.
 _Avoid_: Inherited thinking level
 
+**Advisor cache retention**:
+The prompt-cache lifetime an Advisor requests for its own Advisor Session, as a per-request option rather than a process-wide setting, so the Observed Agent's requests are unchanged. OpenAI's 24h retention is always requested; Anthropic's 1h cache TTL is opt-in (`anthropicLongCache`) because its writes cost 2× instead of 1.25×.
+_Avoid_: `PI_CACHE_RETENTION`, cache warming
+
 **Paused Advisor**:
 An enabled Advisor that has stopped reviewing after a failure and requires recovery before it can resume. Pausing does not disable its configuration or stop the observed agent.
 _Avoid_: Disabled Advisor
