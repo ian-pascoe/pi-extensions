@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import * as piAi from "@earendil-works/pi-ai";
 import type { Context } from "@earendil-works/pi-ai";
 import * as piSdk from "@earendil-works/pi-coding-agent";
@@ -125,6 +126,8 @@ interface Consultation extends OperationBase {
   kind: "consultation";
 }
 type AdvisorOperation = Review | Consultation;
+/** Pi's built-in read tools; `bash` is deliberately absent. */
+const builtInReadTools: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 const maintenanceTools = new Set(["advisor_report", ...contextManagementTools]);
 /** Native compaction guidance for the Advisor's summary of its own private history. */
 const compactionInstructions =
@@ -351,11 +354,13 @@ export class AdvisorObserver {
         this.unsafeEnding = true;
       this.completed++;
       // `request` waits for agent_end; a failed tool call is reviewed at once under any cadence.
+      // Under `turn`, a turn that only read joins the backlog for the next Review to cover.
       const cadence = this.config.reviewEvery;
       const every = cadence === "turn" ? 1 : cadence === "request" ? Infinity : cadence;
       if (
         event.toolResults.some((result) => result.isError) ||
-        this.completed - Math.max(this.dueThrough, this.reviewed) >= every
+        (!(cadence === "turn" && this.onlyRead(event)) &&
+          this.completed - Math.max(this.dueThrough, this.reviewed) >= every)
       )
         this.markDue();
       this.changed();
@@ -496,6 +501,25 @@ export class AdvisorObserver {
       this.sameObservation(review)
     );
   }
+  /**
+   * Whether a completed turn called tools and every call was read-only: one of Pi's built-in read
+   * tools, or a tool whose definition carries `readOnlyHint: true`. `bash` never qualifies, and
+   * neither does a turn that ended abnormally or called a tool that is not registered.
+   */
+  private onlyRead(event: Extract<AgentEvent, { type: "turn_end" }>): boolean {
+    if (event.message.role !== "assistant" || event.message.stopReason !== "toolUse") return false;
+    const calls = event.message.content.filter((block) => block.type === "toolCall");
+    return (
+      calls.length > 0 &&
+      calls.every(({ name }) => {
+        const annotations = this.observed.getToolDefinition(name)?.annotations;
+        return builtInReadTools.has(name)
+          ? annotations?.readOnlyHint !== false
+          : annotations?.readOnlyHint === true;
+      })
+    );
+  }
+
   /** A Review is due for every turn completed so far; it covers all unreviewed turns. */
   private markDue(): void {
     this.dueThrough = this.completed;
@@ -1140,6 +1164,8 @@ export class AdvisorObserver {
       this.deferred.push(finding);
       this.withheld.add(finding);
     }
+    // Turns that only read start no Review, so a withheld finding makes the backlog due itself.
+    if (this.deferred.length) this.dueThrough = Math.max(this.dueThrough, this.completed);
     this.changed();
   }
 

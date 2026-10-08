@@ -122,8 +122,9 @@ it.each([
       expect(output.match(/^ADVISOR_CLI_CONSULTATION=Inspect the native path\.$/gm)).toHaveLength(
         1,
       );
-      // Under `codemode.mode: "only"`, each Review reports through a script and then answers its result.
-      const reviewInferences = withCodeMode ? 8 : 4;
+      // Under `codemode.mode: "only"`, each Review reports through a script and then answers its
+      // result. Directly, the read-only `advisor_ask` turn joins the backlog of the next Review.
+      const reviewInferences = withCodeMode ? 8 : 3;
       expect(output.match(/^ADVISOR_CLI_INFERENCE=review$/gm)).toHaveLength(reviewInferences);
       expect(output.match(/^ADVISOR_CLI_INFERENCE=consultation$/gm)).toHaveLength(1);
       expect(output.match(/^ADVISOR_CLI_INFERENCE=observed$/gm)).toHaveLength(4);
