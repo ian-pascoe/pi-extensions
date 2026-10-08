@@ -46,6 +46,7 @@ export const advisorOptionsSchema = Type.Object(
     ),
     maxSessionTokens: Type.Optional(Type.Union([positiveInteger, Type.Literal("auto")])),
     maxToolResultChars: Type.Optional(positiveInteger),
+    anthropicLongCache: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -87,6 +88,8 @@ const defaults: AdvisorConfig = {
   reviewEvery: "turn" as const,
   maxSessionTokens: "auto" as const,
   maxToolResultChars: 4_000,
+  // Anthropic's 1h cache writes cost 2× the input price instead of 1.25×, so it is opt-in.
+  anthropicLongCache: false,
 };
 
 /**
