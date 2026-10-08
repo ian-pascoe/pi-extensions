@@ -4,7 +4,8 @@
  * a Safe Command and goes to the Guardian.
  */
 import { readdirSync, realpathSync, statSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, resolve, win32 } from "node:path";
+import { homedir } from "node:os";
+import { delimiter, dirname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
 import type { PolicyEntries, ToolPolicy } from "./guardian-settings.js";
 import {
   commandStarts,
@@ -203,6 +204,20 @@ const builtInPrograms = new Map<string, ArgumentCheck>([
 /** The built-in safe program names, for documentation and status. */
 export const builtInSafePrograms: readonly string[] = [...builtInPrograms.keys()];
 
+/**
+ * Audit of the built-in programs for configuration, plugins, or code loaded from the working
+ * directory or its ancestors. Such a program is reviewed after a `cd` Guardian could not prove
+ * harmless, since it would run what another directory says. Only `git` does: `.git/config`
+ * (`core.fsmonitor`, `core.pager`, `diff.external`), hooks, attributes, and filter drivers, and,
+ * in a bare repository, `config` and `HEAD` themselves. Every other program takes its settings
+ * from its arguments, the environment, or files under the home directory, and only reads where
+ * it is pointed: `rg` also honors `.ignore`, `.rgignore`, and `.gitignore` files in the working
+ * directory and its parents, which only change which files it lists or searches (`!` can un-hide
+ * one, never run code); its `--pre` is rejected, and a relative `RIPGREP_CONFIG_PATH`, which would
+ * read a config from the working directory, makes `rg` unsafe. Adding a built-in program requires adding it here, deliberately.
+ */
+export const directorySensitivePrograms: ReadonlySet<string> = new Set(["git"]);
+
 /** Operators that may join the segments of a Safe Command. */
 const safeOperators = new Set(["|", "&&", "||", ";"]);
 
@@ -330,13 +345,43 @@ function cdModeled(environment: ShellEnvironment): boolean {
   );
 }
 
+/**
+ * Whether `program` with `args` recurses through symlinks: `grep -R`, `find -L` or `-follow`, and
+ * `rg -L` or `--follow`. Short flags are matched inside clusters (`-rnR`), so a pattern spelled
+ * that way is reviewed too, which errs toward review.
+ */
+function followsSymlinks(program: string, args: readonly string[]): boolean {
+  const cluster = (arg: string, flag: string) =>
+    arg.startsWith("-") && !arg.startsWith("--") && arg.includes(flag);
+  switch (program) {
+    case "grep":
+      return args.some(
+        // GNU grep accepts any unambiguous prefix of a long option (`--deref`).
+        (arg) =>
+          (arg.length >= 5 && "--dereference-recursive".startsWith(arg)) || cluster(arg, "R"),
+      );
+    case "find":
+      return args.some((arg) => arg === "-L" || arg === "-follow");
+    case "rg":
+      return args.some((arg) => arg === "--follow" || cluster(arg, "L"));
+    default:
+      return false;
+  }
+}
+
 /** Whether one segment is a Safe Command, given the Command Rule it matched, if any. */
 function safeSegment(
   segment: string,
   rule: MatchedCommandRule | undefined,
   environment: ShellEnvironment,
-  /** An earlier `cd` left the directory unknown: built-in `git` may read another repository. */
+  /** An earlier `cd` left the directory unknown: a program that reads the directory's own configuration (`git`) may run another's. */
   directoryUnknown: boolean,
+  /**
+   * The directory is unknown because Guardian let a literal `cd` through, not because the user
+   * allowed a directory change: the user's `allow` rule was not written with that directory in
+   * mind, so it no longer vouches for the segment (`git describe` would run `evil/.git/config`).
+   */
+  relaxed: boolean,
 ): boolean {
   const words = segmentWords(segment, environment);
   const program = words?.[0];
@@ -344,17 +389,26 @@ function safeSegment(
   // An environment assignment (`PAGER=x git log`) or a path (`./ls`) is not a known program.
   if (program.includes("=") || program.includes("/") || program === "") return false;
   if (exportedFunction(program, environment.env)) return false;
-  // An `allow` Command Rule is the user's choice, even for `git` in an unknown directory.
-  if (rule?.policy === "allow") return true;
+  // An `allow` Command Rule is the user's choice, even for `git` in a directory the user's own
+  // allowed directory change left unknown; after a `cd` Guardian relaxed it vouches only for
+  // further `cd`, `pushd`, and `popd`, which keep the directory unknown. (`source`, `.`, and
+  // `eval` run code that may be in that directory, so a rule for them no longer vouches either.)
+  if (rule?.policy === "allow" && (!relaxed || ruleVouchedDirectoryChanges.has(program)))
+    return true;
   // Another shell may quote differently (PowerShell reads curly quotes as quotes, fish allows
   // `\'` in single quotes), so the arguments a built-in program's check sees may not be the ones
   // it gets.
   if (shellKind(environment) === "other") return false;
-  if (
-    program === "git" &&
-    (directoryUnknown || gitRedirections.some((name) => isSet(environment.env[name])))
-  )
+  if (directoryUnknown && directorySensitivePrograms.has(program)) return false;
+  // After a `cd` that is not proved harmless, a recursive read that follows symlinks could leave
+  // the directory for a Sensitive Path that a link inside it names.
+  if (directoryUnknown && followsSymlinks(program, words.slice(1))) return false;
+  if (program === "git" && gitRedirections.some((name) => isSet(environment.env[name])))
     return false;
+  // A relative `RIPGREP_CONFIG_PATH` is read from the working directory, where a `--pre=` line
+  // in a file the agent wrote would run a program.
+  const ripgrepConfig = environment.env["RIPGREP_CONFIG_PATH"];
+  if (program === "rg" && isSet(ripgrepConfig) && !isAbsolute(ripgrepConfig ?? "")) return false;
   const check = builtInPrograms.get(program);
   return check ? check(words.slice(1)) : false;
 }
@@ -418,6 +472,122 @@ function cdTarget(
   return logical;
 }
 
+/** `directory` with symlinks resolved, as the kernel sees it; `directory` itself if it is not. */
+function physicalDirectory(directory: string): string {
+  try {
+    return realpathSync.native(directory);
+  } catch {
+    return directory;
+  }
+}
+
+/**
+ * Where `path` may lead from `directory`: lexically (bash's logical `cd`, which removes `..`
+ * before the lookup), from the directory's resolved path, and as the kernel resolves the path
+ * unnormalized (`cd -P`, or the physical lookup bash falls back to when the logical one fails:
+ * `link/../.ssh` follows `link` first, then goes up from where it points).
+ */
+function spellings(directory: string, path: string): string[] {
+  const found = [resolve(directory, path), resolve(physicalDirectory(directory), path)];
+  try {
+    found.push(
+      realpathSync.native(isAbsolute(path) ? path : `${physicalDirectory(directory)}/${path}`),
+    );
+  } catch {
+    // Not an existing path: the lexical spellings stand.
+  }
+  return [...new Set(found)];
+}
+
+/** Whether `path` is the home directory or one of its ancestors, so it holds home's files. */
+function holdsHome(path: string, where: SensitivePathContext): boolean {
+  const home = where.home ?? homedir();
+  return [home, physicalDirectory(home)].some((candidate) => {
+    const relation = relative(path, candidate);
+    return (
+      relation === "" ||
+      (relation !== ".." && !relation.startsWith(`..${sep}`) && !isAbsolute(relation))
+    );
+  });
+}
+
+/**
+ * Whether `path` is a Sensitive Path other than by lying outside the workspace root, or is the
+ * home directory or an ancestor of it: a program reading it (`grep -r .`) reaches the persistence
+ * and credential locations below, which the path itself does not name.
+ */
+function sensitiveBeyondWorkspace(path: string, where: SensitivePathContext): boolean {
+  // Pi's file tools rewrite some spellings (`@`, odd spaces), so such a path is judged elsewhere.
+  return (
+    resolveToolPath(path, where.cwd) !== path ||
+    holdsHome(path, where) ||
+    sensitivePathReason(path, where, { outsideIsOrdinary: true }) !== undefined
+  );
+}
+
+/**
+ * Where a literal `cd` that {@link cdTarget} could not prove harmless may land, when it is still
+ * no Sensitive Path (one other than merely lying outside the workspace), else `undefined`: one
+ * literal operand (no options, `-`, `~`, variable, or empty name), nothing redefining `cd`, and
+ * not looked up through `CDPATH`. A relative operand is resolved from every directory the shell
+ * may be in, so it needs `from`; each place it could land, lexically or after symlinks, must be
+ * ordinary. The directory is then unknown to Guardian: it may hold git repositories or anything
+ * else, so programs that read the directory's configuration are reviewed from here on.
+ */
+function unknownCdTargets(
+  args: readonly string[],
+  from: readonly string[],
+  where: SensitivePathContext,
+  environment: ShellEnvironment,
+): string[] | undefined {
+  const [target] = args;
+  if (args.length !== 1 || !target || target.startsWith("-")) return undefined;
+  if ((where.platform ?? process.platform) === "win32") return undefined;
+  if (!cdModeled(environment)) return undefined;
+  if (isSet(environment.env["CDPATH"]) && !isAbsolute(target)) return undefined;
+  if (!isAbsolute(target) && from.length === 0) return undefined;
+  const found = (isAbsolute(target) ? [where.cwd] : from).flatMap((directory) =>
+    spellings(directory, target),
+  );
+  return found.some((path) => sensitiveBeyondWorkspace(path, where)) ? undefined : found;
+}
+
+/**
+ * What a word may name as a path: the word itself, the value after its `=` (`--file=.bashrc`),
+ * and, for a short option, any tail that may be a value attached to it (`-f.ssh/id_rsa`, or
+ * `-rnf.ssh/id_rsa` among combined flags).
+ */
+function pathCandidates(word: string): string[] {
+  if (!word.startsWith("-")) return [word];
+  const found = word.includes("=") ? [word.slice(word.indexOf("=") + 1)] : [];
+  if (!word.startsWith("--"))
+    for (let index = 2; index < word.length; index++) found.push(word.slice(index));
+  return found;
+}
+
+/**
+ * Whether a relative operand of `words` (after the program) could name a Sensitive Path from any
+ * of `directories`, the places an unknown `cd` may have left the shell. Absolute words are not
+ * judged against the directory. Conservative: a search pattern that spells such a path counts too.
+ */
+function operandsReachSensitive(
+  words: readonly string[],
+  directories: readonly string[],
+  where: SensitivePathContext,
+): boolean {
+  return words
+    .slice(1)
+    .flatMap(pathCandidates)
+    .some(
+      (operand) =>
+        operand !== "" &&
+        !isAbsolute(operand) &&
+        directories.some((directory) =>
+          spellings(directory, operand).some((path) => sensitiveBeyondWorkspace(path, where)),
+        ),
+    );
+}
+
 /**
  * Whether every segment is a Safe Command. A `cd` segment is one when {@link cdTarget} proves its
  * target harmless from every directory the shell may be in: the working directory at first, then
@@ -436,25 +606,52 @@ function safeSegments(
   environment: ShellEnvironment,
 ): boolean {
   if (relativePath(environment.env)) return false;
+  // Where the shell may be: the working directory and each earlier `cd` target.
   let directories = where ? [where.cwd] : [];
+  // A `cd` Guardian could not prove harmless was seen: `directories` may then lie anywhere, and
+  // programs that read the directory's own configuration are reviewed.
   let directoryUnknown = false;
+  // A directory change that only an `allow` Command Rule permits: nothing is known any more.
+  let lost = false;
+  // Guardian let a literal `cd` through: an `allow` Command Rule no longer vouches for the rest.
+  let relaxed = false;
   for (const [index, segment] of segments.entries()) {
     const words = segmentWords(segment, environment);
-    if (words?.[0] === "cd") {
+    if (words?.[0] === "cd" && where) {
       const piped = operators[index - 1] === "|" || operators[index] === "|";
-      const targets =
-        where && !piped && !directoryUnknown
-          ? directories.map((from) => cdTarget(words.slice(1), from, where, environment))
-          : [];
-      if (targets.length && targets.every((target) => target !== undefined)) {
-        directories = [...new Set([...directories, ...targets])];
+      if (!piped && !directoryUnknown) {
+        const targets = directories.map((from) =>
+          cdTarget(words.slice(1), from, where, environment),
+        );
+        if (targets.every((target) => target !== undefined)) {
+          directories = [...new Set([...directories, ...targets])];
+          continue;
+        }
+      }
+      const found =
+        piped || lost || matched[index]?.policy === "allow"
+          ? undefined
+          : unknownCdTargets(words.slice(1), directories, where, environment);
+      if (found) {
+        directories = [...new Set([...directories, ...found])];
+        directoryUnknown = true;
+        relaxed = true;
         continue;
       }
+    } else if (
+      words &&
+      where &&
+      directoryUnknown &&
+      operandsReachSensitive(words, directories, where)
+    ) {
+      return false;
     }
-    if (!safeSegment(segment, matched[index], environment, directoryUnknown)) return false;
+    if (!safeSegment(segment, matched[index], environment, directoryUnknown, relaxed)) return false;
     if (directoryChanges.has(words?.[0] ?? "")) {
-      directories = [];
+      // The new directory is anything, but the places the shell was in stay possible (a
+      // directory change may fail), so `directories` keeps judging later operands.
       directoryUnknown = true;
+      lost = true;
     }
   }
   return true;
@@ -462,6 +659,8 @@ function safeSegments(
 
 /** Builtins that change the directory, or run shell code that may; see {@link safeSegments}. */
 const directoryChanges = new Set(["cd", "pushd", "popd", "source", ".", "eval"]);
+/** The directory changes an `allow` rule still vouches for after a `cd` Guardian relaxed. */
+const ruleVouchedDirectoryChanges = new Set(["cd", "pushd", "popd"]);
 
 /** How a `bash` command is treated: run, sent to the Guardian, or blocked by a Command Rule. */
 export type CommandJudgment =
