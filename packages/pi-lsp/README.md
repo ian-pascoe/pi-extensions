@@ -533,7 +533,7 @@ diagnostics section is appended (an `apply_patch` adapter-version warning still 
 
 Findings, matched-server failures, timeouts, and adapter warnings also appear in one expandable
 Post-edit Diagnostics Entry after the current tool batch. It uses Pi's custom-message look under
-a `[lsp] post-edit diagnostics` label followed by the counts; its collapsed rendering shows the
+a `[lsp] edit diagnostics` label followed by the counts; its collapsed rendering shows the
 first 10 detail lines with Pi's expand hint, and expanding it shows every detail.
 Clean results stay silent in the transcript. This entry is
 excluded from model context; the model sees diagnostics only in the original mutation result.
