@@ -1870,6 +1870,103 @@ it("re-seeds with a changed seedBudgetTokens and keeps each Advisor context a st
   expect(privateRequests[2]?.messages).toHaveLength(1);
 });
 
+/**
+ * The observation boundary covers the observed model only when the Advisor inherits it; an
+ * Advisor's own model is unaffected by the observed agent's. The Advisor's thinking level never
+ * follows the observed agent, so an observed thinking change never discards the session.
+ */
+it.each([
+  { name: "own model, observed model changes", own: true, change: "model", kept: true },
+  { name: "own model, observed thinking changes", own: true, change: "thinking", kept: true },
+  { name: "inherited model, observed model changes", own: false, change: "model", kept: false },
+  {
+    name: "inherited model, observed thinking changes",
+    own: false,
+    change: "thinking",
+    kept: true,
+  },
+] as const)(
+  "$name: the Advisor Session is kept only when the observed change is not one it follows",
+  async ({ own, change, kept }) => {
+    const privateRequests: PrivateRequest[] = [];
+    const advisorModels: string[] = [];
+    const base = longSessionStream({}, privateRequests);
+    globalThis.advisorObserverTest = {
+      ...base,
+      stream(model, context, options) {
+        if (context.tools?.some((tool) => tool.name === "advisor_report"))
+          advisorModels.push(`${model.provider}/${model.id}`);
+        return base.stream(model, context, options);
+      },
+    };
+    const session = await activeFixture();
+    const config = { ...readAdvisorSettings(session).settings, enabled: true, catchUpThreshold: 1 };
+    if (own) config.model = "observer-fixture/priced";
+    const observer = new AdvisorObserver(session, config, "headless-root");
+    globalThis.advisorObserverTest.settled = () => observer.settled();
+    onTestFinished(() => observer.dispose());
+    await session.prompt("First");
+    const alternate = session.modelRuntime.getModel("observer-fixture", "alternate");
+    if (!alternate) throw new Error("Missing alternate fixture model");
+    if (change === "model") await session.setModel(alternate);
+    else session.setThinkingLevel("low");
+    await session.prompt("Second");
+    expect(observer.status.lastError).toBeNull();
+    expect(privateRequests).toHaveLength(2);
+    const [first, second] = privateRequests.map(seedPayload);
+    if (kept) {
+      expect(second?.header).toContain("Incremental update.");
+      expectPrefix(privateRequests[1], privateRequests[0]);
+      expect(privateRequests[1]?.systemPrompt).toBe(privateRequests[0]?.systemPrompt);
+      expect(privateRequests[1]?.tools).toEqual(privateRequests[0]?.tools);
+    } else {
+      expect(first?.header).not.toContain("Incremental update.");
+      expect(second?.header).not.toContain("Incremental update.");
+      expect(privateRequests[1]?.messages).toHaveLength(1);
+    }
+    // The Advisor keeps its own model whatever the observed agent does.
+    if (own) expect(advisorModels).toEqual(["observer-fixture/priced", "observer-fixture/priced"]);
+  },
+);
+
+it("keeps an in-flight Review current when the observed model changes under an Advisor with its own", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  const reviewHeld = Promise.withResolvers<void>();
+  const releaseReview = Promise.withResolvers<void>();
+  globalThis.advisorObserverTest = longSessionStream({}, privateRequests, {
+    hold: (review) => {
+      if (review !== 1) return undefined;
+      reviewHeld.resolve();
+      return releaseReview.promise;
+    },
+  });
+  const session = await activeFixture();
+  const observer = new AdvisorObserver(
+    session,
+    {
+      ...readAdvisorSettings(session).settings,
+      enabled: true,
+      catchUpThreshold: "off",
+      model: "observer-fixture/priced",
+    },
+    "headless-root",
+  );
+  onTestFinished(async () => {
+    releaseReview.resolve();
+    await observer.dispose();
+  });
+  await session.prompt("First");
+  await reviewHeld.promise;
+  const alternate = session.modelRuntime.getModel("observer-fixture", "alternate");
+  if (!alternate) throw new Error("Missing alternate fixture model");
+  await session.setModel(alternate);
+  expect(observer.status.state).toBe("reviewing");
+  releaseReview.resolve();
+  await vi.waitFor(() => expect(observer.status).toMatchObject({ state: "armed", backlog: 0 }));
+  expect(observer.status.lastError).toBeNull();
+  expect(privateRequests).toHaveLength(1);
+});
+
 it("keeps the newest turn when its tool result alone exceeds the seed budget", async () => {
   const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream(
