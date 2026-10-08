@@ -507,6 +507,8 @@ describe("Safe Command", () => {
         ["grep -R", "grep -R x ."],
         ["grep -rnR", "grep -rnR x ."],
         ["grep --dereference-recursive", "grep --dereference-recursive x ."],
+        ["grep --deref (an unambiguous prefix)", "grep --deref x ."],
+        ["grep --dereference-r", "grep --dereference-r x ."],
         ["find -L", "find -L . -name x"],
         ["find -follow", "find . -follow -name x"],
         ["rg -L", "rg -L x ."],

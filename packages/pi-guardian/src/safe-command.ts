@@ -355,7 +355,11 @@ function followsSymlinks(program: string, args: readonly string[]): boolean {
     arg.startsWith("-") && !arg.startsWith("--") && arg.includes(flag);
   switch (program) {
     case "grep":
-      return args.some((arg) => arg === "--dereference-recursive" || cluster(arg, "R"));
+      return args.some(
+        // GNU grep accepts any unambiguous prefix of a long option (`--deref`).
+        (arg) =>
+          (arg.length >= 5 && "--dereference-recursive".startsWith(arg)) || cluster(arg, "R"),
+      );
     case "find":
       return args.some((arg) => arg === "-L" || arg === "-follow");
     case "rg":
