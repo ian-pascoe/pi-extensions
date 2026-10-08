@@ -1,9 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import {
+  escapeTaggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+} from "@ian-pascoe/pi-utils/ui-testing";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   DapObserverUiController,
-  renderDapObserverWidgetLine,
+  renderDapObserverWidgetLines,
   type DapObserverWidgetTheme,
   type DapObserverWidgetView,
 } from "../src/dap-observer-ui.js";
@@ -43,43 +48,69 @@ function createContext(mode: "tui" | "rpc") {
   };
 }
 
+function widgetText(fixture: ReturnType<typeof createContext>, width = 80): string {
+  return fixture.component()?.render(width).join("\n") ?? "";
+}
+
 afterEach(() => vi.useRealTimers());
 
 describe("Pi DAP Observer UI", () => {
-  test("renders the wide hierarchy and degrades right-to-left within terminal width", () => {
-    const view: DapObserverWidgetView = {
-      state: "stopped",
-      adapterId: "node",
-      profileId: "node",
-      stopReason: "breakpoint",
-      path: "a.ts:4",
-      elapsedMs: 18_000,
-    };
-    expect(renderDapObserverWidgetLine(view, 80, plainTheme)).toBe(
-      "DAP  ● stopped · breakpoint  node/node  a.ts:4  18s",
-    );
-    const widths = [55, 39, 20];
-    const lines = widths.map((width) => renderDapObserverWidgetLine(view, width, plainTheme));
-    expect(lines[0]).toContain("18s");
-    expect(lines[1]).not.toContain("a.ts:4");
-    expect(lines[1]).toContain("node/node");
-    expect(lines[2]).toContain("DAP");
-    expect(lines[2]).toContain("stopped");
-    expect(
-      lines.every((line, index) => {
-        const width = widths[index];
-        return width !== undefined && visibleWidth(line) <= width;
-      }),
-    ).toBe(true);
+  const stopped: DapObserverWidgetView = {
+    state: "stopped",
+    adapterId: "node",
+    profileId: "node",
+    stopReason: "breakpoint",
+    path: "a.ts:4",
+    elapsedMs: 18_000,
+  };
 
-    const withoutDuration = renderDapObserverWidgetLine(view, 48, plainTheme);
-    expect(withoutDuration).not.toContain("18s");
-    expect(withoutDuration).toContain("a.ts:4");
-    const withoutPath = renderDapObserverWidgetLine(view, 39, plainTheme);
-    expect(withoutPath).toContain("node/node");
-    const withoutProfile = renderDapObserverWidgetLine(view, 32, plainTheme);
-    expect(withoutProfile).toContain("breakpoint");
-    expect(withoutProfile).not.toContain("node/node");
+  test("lays out a bold title with muted counts, then a Status Mark row", () => {
+    const rendered = renderDapObserverWidgetLines(stopped, 120, escapeTaggedTheme);
+    expectLinesFitWidth(rendered, 120);
+    expect(rendered.map(readableTags)).toEqual([
+      "<toolTitle><b>DAP</b></toolTitle> <muted>node/node · 18s</muted>",
+      "<muted>■</muted> stopped<dim> · </dim><dim>breakpoint</dim><dim> · </dim><muted>a.ts:4</muted>",
+    ]);
+  });
+
+  test("marks each state from the shared Status Mark set", () => {
+    const mark = (view: DapObserverWidgetView) =>
+      readableTags(renderDapObserverWidgetLines(view, 120, escapeTaggedTheme)[1] ?? "");
+    expect(mark({ state: "running" })).toContain("<accent>●</accent>");
+    expect(mark({ state: "launching" })).toContain("<accent>●</accent>");
+    expect(mark({ state: "terminated", exitCode: 0 })).toContain("<success>✓</success>");
+    expect(mark({ state: "terminated", exitCode: 2 })).toContain("<error>✗</error>");
+    expect(mark(stopped)).toContain("<muted>■</muted>");
+  });
+
+  test("degrades right-to-left within terminal width", () => {
+    const widths = [40, 30, 18, 12, 6];
+    const rendered = widths.map((width) =>
+      renderDapObserverWidgetLines(stopped, width, plainTheme),
+    );
+    const text = rendered.map((lines) => lines.join("\n"));
+    expect(text[0]).toContain("18s");
+    expect(text[0]).toContain("a.ts:4");
+    // The path goes first, while the header still fits.
+    expect(text[1]).toContain("18s");
+    expect(text[1]).not.toContain("a.ts:4");
+    expect(text[1]).toContain("breakpoint");
+    // Then the duration and the reason.
+    expect(text[2]).not.toContain("18s");
+    expect(text[2]).toContain("node/node");
+    expect(text[2]).not.toContain("breakpoint");
+    expect(text[2]).toContain("stopped");
+    // Then the profile.
+    expect(text[3]).not.toContain("node/node");
+    expect(text[3]).toContain("DAP");
+    expect(
+      rendered.every((lines, index) =>
+        lines.every((line) => visibleWidth(line) <= (widths[index] ?? 0)),
+      ),
+    ).toBe(true);
+    for (const width of [40, 120]) {
+      expectLinesFitWidth(renderDapObserverWidgetLines(stopped, width, escapeTaggedTheme), width);
+    }
   });
 
   test("mounts on launch, updates in place, clears stopped location on resume, and refreshes duration", async () => {
@@ -90,7 +121,8 @@ describe("Pi DAP Observer UI", () => {
 
     controller.onToolStart({ operation: "launch", profile: "node", program: "src/app.ts" });
     expect(fixture.ui.setWidget).toHaveBeenCalledOnce();
-    expect(fixture.component()?.render(80)[0]).toContain("launching");
+    expect(fixture.ui.setWidget.mock.calls[0]?.[0]).toBe("pi-dap");
+    expect(widgetText(fixture)).toContain("launching");
 
     controller.onSessionSnapshot({
       state: "stopped",
@@ -123,12 +155,12 @@ describe("Pi DAP Observer UI", () => {
         ],
       },
     );
-    expect(fixture.component()?.render(80)[0]).toContain("src/app.ts:42");
+    expect(widgetText(fixture)).toContain("src/app.ts:42");
     expect(fixture.ui.setWidget).toHaveBeenCalledOnce();
 
     controller.onSessionSnapshot({ state: "running", adapterId: "node", profileId: "node" });
-    expect(fixture.component()?.render(80)[0]).toContain("src/app.ts");
-    expect(fixture.component()?.render(80)[0]).not.toContain(":42");
+    expect(widgetText(fixture)).toContain("src/app.ts");
+    expect(widgetText(fixture)).not.toContain(":42");
     await vi.advanceTimersByTimeAsync(1_000);
     expect(fixture.requestRender).toHaveBeenCalled();
     controller.dispose();
@@ -166,7 +198,7 @@ describe("Pi DAP Observer UI", () => {
       },
     );
 
-    expect(fixture.component()?.render(80)[0]).toContain("src/app.ts:3");
+    expect(widgetText(fixture)).toContain("src/app.ts:3");
     controller.dispose();
   });
 
@@ -196,7 +228,7 @@ describe("Pi DAP Observer UI", () => {
     await vi.advanceTimersByTimeAsync(9_999);
     controller.onToolStart({ operation: "launch", program: "next.ts" });
     await vi.advanceTimersByTimeAsync(1);
-    expect(fixture.component()?.render(80)[0]).toContain("next.ts");
+    expect(widgetText(fixture)).toContain("next.ts");
     await vi.advanceTimersByTimeAsync(10_000);
     expect(fixture.component()).toBeDefined();
     controller.dispose();
@@ -219,6 +251,8 @@ describe("Pi DAP Observer UI", () => {
     expect(tui.ui.notify).not.toHaveBeenCalled();
     controller.onToolFailure({ operation: "continue" }, new Error("represented"));
     controller.onUnexpectedFailure(new Error("asynchronous"));
-    expect(tui.ui.notify).toHaveBeenCalledWith("Pi DAP: asynchronous", "error");
+    expect(tui.ui.notify).toHaveBeenCalledWith("DAP: asynchronous", "error");
+    controller.onUnexpectedFailure(new Error("Pi DAP: prefixed"));
+    expect(tui.ui.notify).toHaveBeenLastCalledWith("DAP: prefixed", "error");
   });
 });

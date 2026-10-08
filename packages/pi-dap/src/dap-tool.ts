@@ -42,7 +42,11 @@ import {
   type DapToolRenderDetails,
   type DapToolResultDetails,
 } from "./dap-tool-contract.js";
-import { renderDapToolCall, renderDapToolResult } from "./dap-tool-rendering.js";
+import {
+  renderDapToolCall,
+  renderDapToolResult,
+  type DapResultRenderContext,
+} from "./dap-tool-rendering.js";
 import { formatDapToolText, visibleDapText } from "./dap-tool-text.js";
 import { TROUBLESHOOTING_HINT } from "./troubleshooting-skill.js";
 
@@ -710,8 +714,8 @@ function dapToolCommon(operation: DapOperation, label: string) {
       result: DapToolResult,
       options: ToolRenderResultOptions,
       theme: Theme,
-      context: { readonly isError: boolean; readonly cwd: string },
-    ) => renderDapToolResult(result, options, theme, context.isError, context.cwd),
+      context: DapResultRenderContext,
+    ) => renderDapToolResult(operation, result, options, theme, context),
   };
 }
 
@@ -759,8 +763,7 @@ function createNoParametersTool(
     annotations,
     parameters: DapNoParametersSchema,
     prepareArguments: parseNoParameters,
-    renderCall: (_arguments, theme, context) =>
-      renderDapToolCall({ operation }, theme, context.expanded, context.cwd),
+    renderCall: (_arguments, theme, context) => renderDapToolCall({ operation }, theme, context),
     execute: async (_toolCallId, input, signal, onUpdate, context) =>
       executeDapOperation(
         { operation, ...parseNoParameters(input) },
@@ -787,7 +790,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
       parameters: DapLaunchParametersSchema,
       prepareArguments: parseLaunchParameters,
       renderCall: (input, theme, context) =>
-        renderDapToolCall({ ...input, operation: "launch" }, theme, context.expanded, context.cwd),
+        renderDapToolCall({ ...input, operation: "launch" }, theme, context),
       execute: async (_toolCallId, input, signal, onUpdate, context) =>
         executeDapOperation(
           { operation: "launch", ...parseLaunchParameters(input) },
@@ -806,12 +809,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
       parameters: DapSetBreakpointsParametersSchema,
       prepareArguments: parseSetBreakpointsParameters,
       renderCall: (input, theme, context) =>
-        renderDapToolCall(
-          { ...input, operation: "set_breakpoints" },
-          theme,
-          context.expanded,
-          context.cwd,
-        ),
+        renderDapToolCall({ ...input, operation: "set_breakpoints" }, theme, context),
       execute: async (_toolCallId, input, signal, onUpdate, context) =>
         executeDapOperation(
           { operation: "set_breakpoints", ...parseSetBreakpointsParameters(input) },
@@ -864,7 +862,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
       parameters: DapStackParametersSchema,
       prepareArguments: parseStackParameters,
       renderCall: (input, theme, context) =>
-        renderDapToolCall({ ...input, operation: "stack" }, theme, context.expanded, context.cwd),
+        renderDapToolCall({ ...input, operation: "stack" }, theme, context),
       execute: async (_toolCallId, input, signal, onUpdate, context) =>
         executeDapOperation(
           { operation: "stack", ...parseStackParameters(input) },
@@ -882,12 +880,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
       parameters: DapVariablesParametersSchema,
       prepareArguments: parseVariablesParameters,
       renderCall: (input, theme, context) =>
-        renderDapToolCall(
-          { ...input, operation: "variables" },
-          theme,
-          context.expanded,
-          context.cwd,
-        ),
+        renderDapToolCall({ ...input, operation: "variables" }, theme, context),
       execute: async (_toolCallId, input, signal, onUpdate, context) =>
         executeDapOperation(
           { operation: "variables", ...parseVariablesParameters(input) },
@@ -905,12 +898,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
       parameters: DapEvaluateParametersSchema,
       prepareArguments: parseEvaluateParameters,
       renderCall: (input, theme, context) =>
-        renderDapToolCall(
-          { ...input, operation: "evaluate" },
-          theme,
-          context.expanded,
-          context.cwd,
-        ),
+        renderDapToolCall({ ...input, operation: "evaluate" }, theme, context),
       execute: async (_toolCallId, input, signal, onUpdate, context) =>
         executeDapOperation(
           { operation: "evaluate", ...parseEvaluateParameters(input) },

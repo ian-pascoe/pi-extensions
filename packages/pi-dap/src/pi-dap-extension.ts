@@ -5,6 +5,7 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { DapSession } from "./dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "./dap-session-files.js";
 import { DapObserverUiController } from "./dap-observer-ui.js";
@@ -44,7 +45,10 @@ export class PiDapLifecycleController {
     });
     const settings = resolveDapSettings(settingsManager);
     if (settings.warnings.length > 0) {
-      context.ui.notify(`Pi DAP settings:\n- ${settings.warnings.join("\n- ")}`, "warning");
+      context.ui.notify(
+        noticeText("DAP", `settings:\n- ${settings.warnings.join("\n- ")}`),
+        "warning",
+      );
     }
 
     const sessionFiles = await createDapSessionFiles(context.sessionManager.getSessionDir());

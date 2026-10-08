@@ -1,10 +1,8 @@
 import { isAbsolute, relative } from "node:path";
-import {
-  keyText,
-  type AgentToolResult,
-  type Theme,
-  type ThemeColor,
-  type ToolRenderResultOptions,
+import type {
+  AgentToolResult,
+  Theme,
+  ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -15,60 +13,33 @@ import {
   visibleWidth,
   type Component,
 } from "@earendil-works/pi-tui";
+import {
+  callDurationFooter,
+  COLLAPSED_LINES,
+  appendDurationFooter,
+  previewBody,
+  toolHeader,
+  type DurationContext,
+} from "@ian-pascoe/pi-utils/ui";
 import { Value } from "typebox/value";
 import {
   DapToolProgressDetailsSchema,
-  DapToolResultDetailsSchema,
-  type DapPresentationDetails,
   type DapOperation,
   type DapToolCallArguments,
-  type DapToolProgressDetails,
   type DapToolRenderDetails,
-  type DapToolResultDetails,
 } from "./dap-tool-contract.js";
 
 /** Theme operations used by Pi DAP transcript rendering. */
 export type DapRenderTheme = Pick<Theme, "bold" | "fg">;
 
-interface DapResultSummary {
-  readonly color: ThemeColor;
-  readonly text: string;
-}
+/** What the call row reads from Pi's render context. */
+export type DapCallRenderContext = DurationContext & { expanded: boolean; cwd: string };
 
-function humanizeDapOperation(operation: DapOperation): string {
-  const labels = {
-    launch: "Launch",
-    set_breakpoints: "Set breakpoints",
-    continue: "Continue",
-    next: "Step over",
-    step_in: "Step in",
-    step_out: "Step out",
-    pause: "Pause",
-    stack: "Stack",
-    variables: "Variables",
-    evaluate: "Evaluate",
-    status: "Status",
-    stop: "Stop",
-  } as const;
-  return labels[operation];
-}
+/** What the result row reads from Pi's render context. */
+export type DapResultRenderContext = DurationContext & { isError: boolean };
 
-function progressingDapOperation(operation: DapOperation): string {
-  switch (operation) {
-    case "launch":
-      return "Launching";
-    case "continue":
-      return "Continuing";
-    case "next":
-      return "Stepping over";
-    case "step_in":
-      return "Stepping in";
-    case "step_out":
-      return "Stepping out";
-    default:
-      return humanizeDapOperation(operation);
-  }
-}
+/** Most breakpoints listed in an expanded call row. */
+const EXPANDED_BREAKPOINT_LIMIT = 20;
 
 /** Render an absolute workspace path as relative while retaining paths outside the workspace. */
 export function workspaceRelativeDapPath(cwd: string, filePath: string): string {
@@ -98,149 +69,131 @@ export function sanitizeDapObserverText(text: string): string {
 function boundedDapPreview(text: string, width = 160): string {
   const singleLine = sanitizeDapObserverText(text).replace(/\s+/g, " ").trim();
   if (visibleWidth(singleLine) <= width) return singleLine;
-  return `${sliceByColumn(singleLine, 0, width - 1, true).trimEnd()}…`;
+  return `${sliceByColumn(singleLine, 0, width - 3, true).trimEnd()}...`;
 }
 
-function dapCallTarget(parameters: DapToolCallArguments, cwd: string): string | undefined {
+function pluralizedCount(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** The accent target and muted arguments that follow the tool name in a call header. */
+interface DapCallHeaderParts {
+  target: string | undefined;
+  args: string | undefined;
+}
+
+function dapCallHeaderParts(parameters: DapToolCallArguments, cwd: string): DapCallHeaderParts {
+  const parts: DapCallHeaderParts = { target: undefined, args: undefined };
   switch (parameters.operation) {
     case "launch":
-      return [
-        parameters.profile,
-        parameters.program === undefined
-          ? undefined
-          : workspaceRelativeDapPath(cwd, parameters.program),
-      ]
-        .filter((value): value is string => value !== undefined)
-        .join(" · ");
-    case "set_breakpoints":
-      return [
-        parameters.file_path === undefined
-          ? undefined
-          : workspaceRelativeDapPath(cwd, parameters.file_path),
-        parameters.breakpoints?.length,
-      ]
-        .filter((value) => value !== undefined)
-        .join(" · ");
-    case "stack":
-      return parameters.thread_id === undefined ? undefined : `thread #${parameters.thread_id}`;
-    case "variables":
-      return parameters.frame_id !== undefined
-        ? `frame #${parameters.frame_id}`
-        : parameters.variables_reference === undefined
-          ? undefined
-          : `reference #${parameters.variables_reference}`;
-    case "evaluate":
-      return parameters.expression === undefined
-        ? undefined
-        : boundedDapPreview(parameters.expression, 72);
-    default:
-      return undefined;
-  }
-}
-
-function appendField(
-  container: Container,
-  theme: DapRenderTheme,
-  label: string,
-  value: string | number,
-): void {
-  container.addChild(new Text(`${theme.fg("muted", `${label}:`)} ${String(value)}`, 0, 0));
-}
-
-function appendExpandedCall(
-  container: Container,
-  parameters: DapToolCallArguments,
-  theme: DapRenderTheme,
-  cwd: string,
-): void {
-  switch (parameters.operation) {
-    case "launch":
-      if (parameters.profile !== undefined)
-        appendField(container, theme, "Profile", parameters.profile);
-      if (parameters.program !== undefined)
-        appendField(container, theme, "Program", workspaceRelativeDapPath(cwd, parameters.program));
-      if (parameters.args !== undefined)
-        appendField(
-          container,
-          theme,
-          "Arguments",
-          parameters.args.map((argument) => boundedDapPreview(argument)).join(" · ") || "(none)",
-        );
-      if (parameters.cwd !== undefined)
-        appendField(
-          container,
-          theme,
-          "Working directory",
-          workspaceRelativeDapPath(cwd, parameters.cwd),
-        );
-      return;
-    case "set_breakpoints":
-      if (parameters.file_path !== undefined)
-        appendField(container, theme, "File", workspaceRelativeDapPath(cwd, parameters.file_path));
-      if (parameters.breakpoints === undefined) return;
-      appendField(container, theme, "Breakpoints", parameters.breakpoints.length);
-      for (const breakpoint of parameters.breakpoints.slice(0, 20)) {
-        container.addChild(
-          new Text(
-            `  ${breakpoint.line}${breakpoint.condition === undefined ? "" : `  ${boundedDapPreview(breakpoint.condition)}`}`,
-            0,
-            0,
-          ),
-        );
+      if (parameters.program !== undefined) {
+        parts.target = workspaceRelativeDapPath(cwd, parameters.program);
       }
-      if (parameters.breakpoints.length > 20)
-        appendField(container, theme, "Omitted", parameters.breakpoints.length - 20);
-      return;
+      parts.args = parameters.profile;
+      break;
+    case "set_breakpoints":
+      if (parameters.file_path !== undefined) {
+        parts.target = workspaceRelativeDapPath(cwd, parameters.file_path);
+      }
+      if (parameters.breakpoints !== undefined) {
+        parts.args = pluralizedCount(parameters.breakpoints.length, "breakpoint");
+      }
+      break;
     case "stack":
-      if (parameters.thread_id !== undefined)
-        appendField(container, theme, "Thread", `#${parameters.thread_id}`);
-      if (parameters.start !== undefined) appendField(container, theme, "Start", parameters.start);
-      if (parameters.count !== undefined) appendField(container, theme, "Count", parameters.count);
-      return;
-    case "variables": {
-      const target = dapCallTarget(parameters, cwd);
-      if (target !== undefined) appendField(container, theme, "Source", target);
-      if (parameters.start !== undefined) appendField(container, theme, "Start", parameters.start);
-      if (parameters.count !== undefined) appendField(container, theme, "Count", parameters.count);
-      return;
-    }
+      if (parameters.thread_id !== undefined) parts.args = `thread #${parameters.thread_id}`;
+      break;
+    case "variables":
+      if (parameters.frame_id !== undefined) parts.target = `frame #${parameters.frame_id}`;
+      else if (parameters.variables_reference !== undefined) {
+        parts.target = `reference #${parameters.variables_reference}`;
+      }
+      break;
     case "evaluate":
-      if (parameters.expression !== undefined)
-        appendField(container, theme, "Expression", boundedDapPreview(parameters.expression));
-      if (parameters.frame_id !== undefined)
-        appendField(container, theme, "Frame", `#${parameters.frame_id}`);
-      return;
+      if (parameters.expression !== undefined) {
+        parts.target = boundedDapPreview(parameters.expression, 72);
+      }
+      break;
     default:
-      return;
+      break;
   }
+  return parts;
 }
 
-/** Render one DAP call with only the arguments explicitly supplied to the tool. */
+/** The supplied arguments of one call as `key: value` rows, mirroring Pi's generic header. */
+function dapCallArgumentRows(parameters: DapToolCallArguments, cwd: string): string[] {
+  const rows: string[] = [];
+  const add = (key: string, value: string | number | undefined) => {
+    if (value !== undefined) rows.push(`${key}: ${value}`);
+  };
+  add("profile", parameters.profile);
+  add(
+    "program",
+    parameters.program === undefined
+      ? undefined
+      : workspaceRelativeDapPath(cwd, parameters.program),
+  );
+  add(
+    "args",
+    parameters.args === undefined
+      ? undefined
+      : parameters.args.map((argument) => boundedDapPreview(argument)).join(" ") || "(none)",
+  );
+  add(
+    "cwd",
+    parameters.cwd === undefined ? undefined : workspaceRelativeDapPath(cwd, parameters.cwd),
+  );
+  add(
+    "file_path",
+    parameters.file_path === undefined
+      ? undefined
+      : workspaceRelativeDapPath(cwd, parameters.file_path),
+  );
+  if (parameters.breakpoints !== undefined) {
+    const shown = parameters.breakpoints
+      .slice(0, EXPANDED_BREAKPOINT_LIMIT)
+      .map(
+        ({ line, condition }) =>
+          `${line}${condition === undefined ? "" : ` if ${boundedDapPreview(condition)}`}`,
+      );
+    const omitted = parameters.breakpoints.length - shown.length;
+    add(
+      "breakpoints",
+      `${shown.join(", ") || "(none)"}${omitted > 0 ? ` (+${omitted} more)` : ""}`,
+    );
+  }
+  add("thread_id", parameters.thread_id);
+  add("start", parameters.start);
+  add("count", parameters.count);
+  add("frame_id", parameters.frame_id);
+  add("variables_reference", parameters.variables_reference);
+  add(
+    "expression",
+    parameters.expression === undefined ? undefined : boundedDapPreview(parameters.expression),
+  );
+  return rows;
+}
+
+/**
+ * Render one `dap_<operation>` call in Pi's header shape with only the arguments supplied so far.
+ * While the call runs, the row carries Pi's `Elapsed` footer until a result row takes over.
+ */
 export function renderDapToolCall(
   parameters: DapToolCallArguments,
   theme: DapRenderTheme,
-  expanded: boolean,
-  cwd: string,
+  context: DapCallRenderContext,
 ): Component {
   const container = new Container();
-  const target = dapCallTarget(parameters, cwd);
+  const { target, args } = dapCallHeaderParts(parameters, context.cwd);
   container.addChild(
-    new Text(
-      [
-        theme.fg("toolTitle", theme.bold("DAP")),
-        theme.fg("accent", humanizeDapOperation(parameters.operation)),
-        target ? theme.fg("muted", target) : undefined,
-      ]
-        .filter((part): part is string => part !== undefined)
-        .join("  "),
-      0,
-      0,
-    ),
+    new Text(toolHeader(theme, `dap_${parameters.operation}`, target, args), 0, 0),
   );
-  if (expanded) {
-    container.addChild(new Spacer(1));
-    appendExpandedCall(container, parameters, theme, cwd);
+  if (context.expanded) {
+    const rows = dapCallArgumentRows(parameters, context.cwd);
+    if (rows.length > 0) {
+      container.addChild(new Text(rows.map((row) => theme.fg("muted", row)).join("\n"), 0, 0));
+    }
   }
+  container.addChild(callDurationFooter(theme, context));
   return container;
 }
 
@@ -251,272 +204,36 @@ function toolResultText(result: AgentToolResult<unknown>): string {
     .join("");
 }
 
-function pluralizedCount(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+function previewLimit(operation: DapOperation): number {
+  return operation === "stack" || operation === "variables"
+    ? COLLAPSED_LINES.list
+    : COLLAPSED_LINES.fallback;
 }
 
-function stateSummary(details: DapToolResultDetails): DapResultSummary {
-  switch (details.state) {
-    case "launching":
-    case "running":
-      return { color: "accent", text: `▶ ${details.state}` };
-    case "stopped":
-      return {
-        color: "accent",
-        text: `● stopped${details.stop_reason === undefined ? "" : ` · ${details.stop_reason}`}`,
-      };
-    case "terminated":
-      return {
-        color: "success",
-        text: `■ terminated${details.exit_code === undefined ? "" : ` · exit ${details.exit_code}`}`,
-      };
-    case "idle":
-      return { color: "success", text: "✓ idle" };
-  }
-}
-
-function collapsedSummary(details: DapToolResultDetails, cwd: string): DapResultSummary {
-  const presentation = details.presentation;
-  if (presentation?.kind === "execution_wait") {
-    return {
-      color: "warning",
-      text: `! ${presentation.operation.replaceAll("_", " ")} wait cancelled · Debug Session still ${details.state}`,
-    };
-  }
-  if (presentation?.kind === "breakpoints") {
-    const verified = presentation.rows.filter((row) => row.verified).length;
-    const unverified = presentation.rows.length - verified;
-    return unverified === 0
-      ? { color: "success", text: `✓ ${pluralizedCount(verified, "breakpoint")} verified` }
-      : { color: "warning", text: `! ${verified} verified · ${unverified} unverified` };
-  }
-  if (presentation?.kind === "stack_frames") {
-    const first = presentation.rows[0];
-    const source = first?.source_path ?? first?.source_name;
-    const location =
-      source === undefined || first === undefined
-        ? undefined
-        : `${workspaceRelativeDapPath(cwd, source)}:${first.line}`;
-    return {
-      color: "toolOutput",
-      text: `${pluralizedCount(presentation.total_count, "stack frame")}${location === undefined ? "" : ` · ${location}`}`,
-    };
-  }
-  if (presentation?.kind === "variables") {
-    const visible = presentation.rows.filter((row) => row.kind === "variable").length;
-    return {
-      color: "toolOutput",
-      text: pluralizedCount(visible + presentation.omitted_count, "variable"),
-    };
-  }
-  if (presentation?.kind === "evaluation") {
-    return {
-      color: "toolOutput",
-      text: `result = ${boundedDapPreview(presentation.value, 80)}${presentation.type === undefined ? "" : ` · ${presentation.type}`}`,
-    };
-  }
-  return stateSummary(details);
-}
-
-function appendHeading(container: Container, theme: DapRenderTheme, label: string): void {
-  container.addChild(new Spacer(1));
-  container.addChild(new Text(theme.fg("muted", theme.bold(label)), 0, 0));
-}
-
-function rowLocation(
-  row: { readonly line?: number; readonly source_name?: string; readonly source_path?: string },
-  cwd: string,
-): string {
-  const source = row.source_path ?? row.source_name;
-  const path = source === undefined ? "(unknown source)" : workspaceRelativeDapPath(cwd, source);
-  return row.line === undefined ? path : `${path}:${row.line}`;
-}
-
-function appendPresentation(
-  container: Container,
-  presentation: DapPresentationDetails,
-  theme: DapRenderTheme,
-  cwd: string,
-): void {
-  switch (presentation.kind) {
-    case "breakpoints":
-      appendHeading(container, theme, "Breakpoints");
-      for (const row of presentation.rows.slice(0, 20)) {
-        const symbol = row.verified ? theme.fg("success", "✓") : theme.fg("warning", "!");
-        const id = row.id === undefined ? "" : theme.fg("dim", ` #${row.id}`);
-        const message =
-          row.message === undefined
-            ? ""
-            : theme.fg("warning", ` — ${sanitizeDapObserverText(row.message)}`);
-        container.addChild(new Text(`${symbol} ${rowLocation(row, cwd)}${id}${message}`, 0, 0));
-      }
-      break;
-    case "stack_frames":
-      appendHeading(container, theme, "Stack Frames");
-      for (const row of presentation.rows.slice(0, 20)) {
-        container.addChild(
-          new Text(
-            `${theme.fg("dim", `#${row.id}`)} ${sanitizeDapObserverText(row.name)}  ${rowLocation(row, cwd)}:${row.column}`,
-            0,
-            0,
-          ),
-        );
-      }
-      break;
-    case "variables":
-      appendHeading(container, theme, "Variables");
-      for (const row of presentation.rows.slice(0, 20)) {
-        if (row.kind === "group") {
-          container.addChild(
-            new Text(
-              `${theme.bold(sanitizeDapObserverText(row.name))}  ${theme.fg("dim", `#${row.variables_reference}`)}${row.expensive ? theme.fg("muted", "  expensive, not expanded") : ""}`,
-              0,
-              0,
-            ),
-          );
-        } else {
-          const type = row.type === undefined ? "" : ` · ${sanitizeDapObserverText(row.type)}`;
-          const reference =
-            row.variables_reference === 0 ? "" : theme.fg("dim", `  #${row.variables_reference}`);
-          container.addChild(
-            new Text(
-              `${sanitizeDapObserverText(row.name)} = ${sanitizeDapObserverText(row.value)}${type}${reference}`,
-              0,
-              0,
-            ),
-          );
-        }
-      }
-      break;
-    case "evaluation":
-      appendHeading(container, theme, "Evaluation");
-      appendField(container, theme, "Value", sanitizeDapObserverText(presentation.value));
-      if (presentation.type !== undefined)
-        appendField(container, theme, "Type", sanitizeDapObserverText(presentation.type));
-      appendField(container, theme, "Variables reference", `#${presentation.variables_reference}`);
-      return;
-    case "execution_wait":
-      return;
-  }
-  if (presentation.omitted_count > 0) {
-    container.addChild(
-      new Text(theme.fg("muted", `${presentation.omitted_count} more rows omitted`), 0, 0),
-    );
-  }
-}
-
-function visibleDebuggeeOutput(output: string): string | undefined {
-  const heading = output.indexOf("\n\nDebuggee output");
-  if (heading < 0) return undefined;
-  const content = output.indexOf(":\n", heading);
-  return content < 0 ? undefined : sanitizeDapObserverText(output.slice(content + 2));
-}
-
-function appendExpandedResult(
-  container: Container,
-  details: DapToolResultDetails,
-  theme: DapRenderTheme,
-  output: string,
-  cwd: string,
-): void {
-  appendField(container, theme, "State", details.state);
-  if (details.adapter_id !== undefined)
-    appendField(container, theme, "Adapter", details.adapter_id);
-  if (details.profile_id !== undefined)
-    appendField(container, theme, "Profile", details.profile_id);
-  if (details.stop_reason !== undefined)
-    appendField(container, theme, "Stop reason", sanitizeDapObserverText(details.stop_reason));
-  if (details.thread_id !== undefined)
-    appendField(container, theme, "Thread", `#${details.thread_id}`);
-  if (details.exit_code !== undefined)
-    appendField(container, theme, "Exit code", details.exit_code);
-  if (details.termination_reason !== undefined)
-    appendField(
-      container,
-      theme,
-      "Termination",
-      sanitizeDapObserverText(details.termination_reason),
-    );
-  if (details.presentation !== undefined)
-    appendPresentation(container, details.presentation, theme, cwd);
-  if (
-    details.output_discarded_bytes > 0 ||
-    details.output_truncated ||
-    details.spill_path !== undefined
-  ) {
-    appendHeading(container, theme, "Output");
-    if (details.output_discarded_bytes > 0)
-      container.addChild(
-        new Text(
-          theme.fg(
-            "warning",
-            `${details.output_discarded_bytes} older Debuggee output bytes discarded`,
-          ),
-          0,
-          0,
-        ),
-      );
-    if (details.output_truncated)
-      container.addChild(new Text(theme.fg("warning", "Visible output truncated"), 0, 0));
-    if (details.spill_path !== undefined)
-      appendField(container, theme, "Result Spill", details.spill_path);
-  }
-  const debuggeeOutput = visibleDebuggeeOutput(output);
-  if (debuggeeOutput !== undefined) {
-    appendHeading(container, theme, "Debuggee output");
-    container.addChild(new Text(theme.fg("toolOutput", debuggeeOutput || "(no output)"), 0, 0));
-  }
-}
-
-function expansionHint(theme: DapRenderTheme): string {
-  return `${theme.fg("dim", `  ·  ${keyText("app.tools.expand")}`)}${theme.fg("muted", " to expand")}`;
-}
-
-function renderProgress(details: DapToolProgressDetails, theme: DapRenderTheme): Component {
-  return new Text(
-    theme.fg(
-      "accent",
-      `${progressingDapOperation(details.operation)}… ${Math.floor(details.elapsed_ms / 1_000)}s`,
-    ),
-    0,
-    0,
-  );
-}
-
-/** Render a semantic DAP result while preserving raw agent-facing content outside the Observer UI. */
+/**
+ * Render one DAP result as a sanitized preview of its text with Pi's Expand Hint and duration
+ * footer. Stack Frames and variables keep `ls`'s 20 lines; everything else keeps the 10-line
+ * fallback. A running execution wait sends only progress details, so it shows the footer alone.
+ */
 export function renderDapToolResult(
+  operation: DapOperation,
   result: AgentToolResult<DapToolRenderDetails | undefined>,
   options: ToolRenderResultOptions,
   theme: DapRenderTheme,
-  isError: boolean,
-  cwd: string,
+  context: DapResultRenderContext,
 ): Component {
-  const output = toolResultText(result);
-  if (options.isPartial && Value.Check(DapToolProgressDetailsSchema, result.details)) {
-    return renderProgress(result.details, theme);
-  }
-  if (isError || !Value.Check(DapToolResultDetailsSchema, result.details)) {
-    const safeOutput = sanitizeDapObserverText(output);
-    const visibleOutput = options.expanded
-      ? safeOutput
-      : (safeOutput.split("\n").find((line) => line.trim().length > 0) ?? "DAP failed");
-    const failurePrefix = isError ? "× " : "";
-    return new Text(
-      theme.fg(
-        isError ? "error" : "toolOutput",
-        `${failurePrefix}${visibleOutput}${!options.expanded && safeOutput.includes("\n") ? expansionHint(theme) : ""}`,
-      ),
-      0,
-      0,
-    );
-  }
-  const summary = collapsedSummary(result.details, cwd);
-  if (!options.expanded) {
-    return new Text(`${theme.fg(summary.color, summary.text)}${expansionHint(theme)}`, 0, 0);
-  }
   const container = new Container();
-  container.addChild(new Text(theme.fg(summary.color, summary.text), 0, 0));
-  container.addChild(new Spacer(1));
-  appendExpandedResult(container, result.details, theme, output, cwd);
+  const isProgress = options.isPartial && Value.Check(DapToolProgressDetailsSchema, result.details);
+  const output = isProgress ? "" : sanitizeDapObserverText(toolResultText(result)).trim();
+  if (output !== "") {
+    const body = previewBody(theme, output.split("\n"), {
+      limit: previewLimit(operation),
+      expanded: options.expanded,
+      color: context.isError ? "error" : "toolOutput",
+    });
+    container.addChild(new Spacer(1));
+    container.addChild(new Text(body.join("\n"), 0, 0));
+  }
+  appendDurationFooter(container, theme, context, { isPartial: options.isPartial });
   return container;
 }

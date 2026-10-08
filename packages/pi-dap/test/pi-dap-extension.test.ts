@@ -235,7 +235,7 @@ describe("Pi DAP extension lifecycle", () => {
       DAP_TOOL_NAMES,
     );
     expect(harness.notifications).toEqual([
-      expect.stringContaining("global dap.unknownGlobalField"),
+      expect.stringMatching(/^DAP: settings:\n- .*global dap\.unknownGlobalField/su),
     ]);
     expect(harness.notifications[0]).not.toContain("unknownProjectField");
     const firstDirectories = await piDapSessionDirectories(harness.sessionDirectory);
