@@ -362,6 +362,19 @@ function protocolTransport(adapter: DapAdapterDefinition): DapProtocolTransport 
   return adapter.transport.type === "stdio" ? "stdio" : adapter.transport;
 }
 
+/**
+ * Whether vscode-js-debug reports a non-zero Debuggee exit as `Process exited with code N` on its
+ * root channel. It does only when it owns the Debuggee's stdio: with a terminal `console`, which
+ * Pi runs through `runInTerminal`, or `outputCapture: "std"`, it sends no such report, and the
+ * Debuggee's own stderr arrives on the root channel where it could spoof one.
+ */
+function jsDebugReportsExitOnRoot(profile: DapLaunchProfile): boolean {
+  const { console: consoleKind, outputCapture } = profile.arguments;
+  return (
+    (consoleKind === undefined || consoleKind === "internalConsole") && outputCapture !== "std"
+  );
+}
+
 /** The exit code in vscode-js-debug's `Process exited with code N` stderr output, if that is it. */
 function jsDebugExitCode(body: Static<typeof DapOutputEventBodySchema>): number | undefined {
   if (body.category !== "stderr") return undefined;
@@ -939,9 +952,14 @@ export class DapSession {
           // Adapters such as vscode-js-debug send diagnostics with category "telemetry".
           if (body.category !== "telemetry") this.output.append(body.output);
           // vscode-js-debug never sends `exited`; it reports a non-zero exit on the root channel.
-          if (channel === "root" && active.targetClient !== undefined) {
+          // The last report wins, as the adapter's own report follows any earlier look-alike.
+          if (
+            channel === "root" &&
+            active.targetClient !== undefined &&
+            jsDebugReportsExitOnRoot(active.profile)
+          ) {
             const exitCode = jsDebugExitCode(body);
-            if (exitCode !== undefined && active.exitCode === undefined) active.exitCode = exitCode;
+            if (exitCode !== undefined) active.exitCode = exitCode;
           }
           return;
         }
@@ -998,8 +1016,12 @@ export class DapSession {
    * vscode-js-debug reports `terminated` on both the primary target channel and the root channel,
    * in either order. The root channel's comes last of its events and follows any `Process exited
    * with code N` report, which is also where a late root output event would otherwise be lost. Wait
-   * for both. A clean run sends no exit report, so a root `terminated` with none means exit code 0.
-   * A timeout finishes with the exit code unknown unless the root channel already ended.
+   * for both. Where the adapter reports exits on the root channel, a clean run sends no report, so
+   * a root `terminated` with none means exit code 0 (a signal kill also reads 0, as js-debug
+   * reports it). Otherwise the exit code stays whatever the Debuggee's `runInTerminal` child
+   * recorded, or unknown. A timeout finishes with the exit code unknown unless the root ended.
+   *
+   * This assumes one primary target channel, as the V1 boundary allows; more would need a count.
    */
   private async finishAfterChannelsTerminate(active: ActiveDapSession): Promise<void> {
     if (!active.rootTerminated || !active.targetTerminated) {
@@ -1015,7 +1037,13 @@ export class DapSession {
       });
     }
     if (!this.isCurrentActive(active) || active.stopping) return;
-    if (active.rootTerminated && active.exitCode === undefined) active.exitCode = 0;
+    if (
+      active.rootTerminated &&
+      active.exitCode === undefined &&
+      jsDebugReportsExitOnRoot(active.profile)
+    ) {
+      active.exitCode = 0;
+    }
     await this.finishActiveSession(active, "Debug Session terminated");
   }
 
@@ -1049,7 +1077,7 @@ export class DapSession {
     if (!Value.Check(RunInTerminalArgumentsSchema, request.arguments)) {
       return { success: false, message: "Pi DAP: runInTerminal arguments are invalid" };
     }
-    return this.spawnRunInTerminal(request.arguments, debuggeeProcesses);
+    return this.spawnRunInTerminal(request.arguments, debuggeeProcesses, getActive);
   }
 
   private async startJsDebugPrimaryTarget(
@@ -1111,6 +1139,7 @@ export class DapSession {
   private async spawnRunInTerminal(
     argumentsValue: Static<typeof RunInTerminalArgumentsSchema>,
     debuggeeProcesses: Set<ChildProcessWithoutNullStreams>,
+    getActive: () => ActiveDapSession | undefined,
   ): Promise<DapReverseRequestResult> {
     const environment = resolvedAdapterEnvironment(argumentsValue.env ?? {});
     const interpretedByShell = argumentsValue.argsCanBeInterpretedByShell === true;
@@ -1139,6 +1168,12 @@ export class DapSession {
       };
     }
     debuggeeProcesses.add(child);
+    // Pi owns this child, so its real exit status is the Debuggee's. A kill by Pi or by a signal
+    // has no code to report; a stop that Pi requested must not look like a Debuggee exit.
+    child.once("exit", (code) => {
+      const active = getActive();
+      if (code !== null && active !== undefined && !active.stopping) active.exitCode = code;
+    });
     child.once("close", () => debuggeeProcesses.delete(child));
     return {
       success: true,
@@ -1179,6 +1214,8 @@ export class DapSession {
   ): Promise<void> {
     if (active.cleanupPromise !== undefined) return active.cleanupPromise;
     active.stopping = true;
+    // Wake any wait for the other channel's `terminated` so its grace timer is cleared.
+    for (const settle of active.settleTermination) settle();
     const cleanup = (async () => {
       for (const unsubscribe of active.unsubscribeEvents) unsubscribe();
       active.unsubscribeEvents.clear();

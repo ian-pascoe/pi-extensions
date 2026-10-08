@@ -97,6 +97,109 @@ afterEach(async () => {
   );
 });
 
+const fakeJsDebugPath = resolve(import.meta.dirname, "fixtures/fake-js-debug-adapter.mjs");
+
+/** A DapSession over TCP against the fake two-channel vscode-js-debug adapter. */
+async function createJsDebugSession(
+  script: string,
+  profileArguments: Readonly<Record<string, string>> = {},
+  shutdownMs = 500,
+): Promise<DapSession> {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-dap-session-js-debug-"));
+  temporaryDirectories.push(cwd);
+  const files = await createDapSessionFiles(cwd);
+  openSessionFiles.push(files);
+  const settings: ResolvedDapSettings = {
+    adapters: new Map([
+      [
+        "node",
+        {
+          id: "node",
+          command: process.execPath,
+          args: [fakeJsDebugPath, "$PORT"],
+          environment: { FAKE_JS_DEBUG_SCRIPT: script },
+          transport: { type: "tcp", host: "127.0.0.1", port: 0 },
+        },
+      ],
+    ]),
+    profiles: new Map([
+      [
+        "node",
+        { id: "node", adapterId: "node", arguments: { type: "pwa-node", ...profileArguments } },
+      ],
+    ]),
+    timeouts: { executionMs: 5_000, requestMs: 2_000, shutdownMs, startupMs: 5_000 },
+    warnings: [],
+  };
+  return new DapSession({ cwd, settings, sessionFiles: files });
+}
+
+describe("DapSession exit code from vscode-js-debug's two channels", () => {
+  test.each([
+    ["target channel ends first", "target-first", 3],
+    ["root channel ends first", "root-first", 3],
+    ["a clean run with no exit report", "clean", 0],
+    ["Debuggee output on the target channel is not an exit report", "spoof", 0],
+  ])("%s", async (_name, script, exitCode) => {
+    const session = await createJsDebugSession(script);
+
+    const result = await session.launch();
+
+    expect(result.snapshot).toMatchObject({ state: "terminated", exitCode });
+    await session.shutdown();
+  });
+
+  test("a root channel that never ends leaves the exit code unknown after shutdownMs", async () => {
+    const session = await createJsDebugSession("target-only", {}, 200);
+    const startedAt = Date.now();
+
+    const result = await session.launch();
+
+    expect(result.snapshot.state).toBe("terminated");
+    expect(Object.hasOwn(result.snapshot, "exitCode")).toBe(false);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+    await session.shutdown();
+  });
+
+  test.each([
+    ["integratedTerminal", { console: "integratedTerminal" }],
+    ["externalTerminal", { console: "externalTerminal" }],
+    ["outputCapture std", { outputCapture: "std" }],
+  ])("%s never guesses exit code 0 for a clean-looking end", async (_name, profile) => {
+    const session = await createJsDebugSession("clean", profile);
+
+    const result = await session.launch();
+
+    expect(result.snapshot.state).toBe("terminated");
+    expect(Object.hasOwn(result.snapshot, "exitCode")).toBe(false);
+    await session.shutdown();
+  });
+
+  test("outputCapture std does not let Debuggee stderr set the exit code", async () => {
+    const session = await createJsDebugSession("root-first", { outputCapture: "std" });
+
+    const result = await session.launch();
+
+    expect(Object.hasOwn(result.snapshot, "exitCode")).toBe(false);
+    await session.shutdown();
+  });
+
+  test("a stop during the wait for the second channel wins and leaves the exit code unknown", async () => {
+    const session = await createJsDebugSession("target-only", {}, 5_000);
+    const launched = session.launch();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 600));
+
+    await session.stop();
+    const result = await launched;
+
+    expect(result.snapshot).toMatchObject({
+      state: "terminated",
+      terminationReason: "stopped by request",
+    });
+    expect(Object.hasOwn(result.snapshot, "exitCode")).toBe(false);
+  });
+});
+
 describe("DapSession", () => {
   test("applies Desired Breakpoints before configuration and supports the stopped inspection workflow", async () => {
     const { cwd, session } = await createSession({ requireBreakpoint: true, stopOnEntry: true });

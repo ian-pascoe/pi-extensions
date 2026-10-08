@@ -311,12 +311,15 @@ test("stopOnEntry leaves js-debug's entry breakpoint inside a function-first pro
 }, 30_000);
 
 /** Launch a throwaway program to completion through the Supported adapter and return the final result. */
-async function runToTermination(source: string) {
+async function runToTermination(
+  source: string,
+  profile: Record<string, string> = { console: "internalConsole" },
+) {
   const { programPath, projectDirectory, session } = await startFunctionFirstSession({
     type: "pwa-node",
     request: "launch",
     name: "Pi DAP exit code test",
-    console: "internalConsole",
+    ...profile,
   });
   await writeFile(programPath, source);
   return session.launch({ profile: "node", program: programPath, cwd: projectDirectory });
@@ -331,6 +334,39 @@ test.each([
   async (_name, source, exitCode) => {
     const result = await runToTermination(source);
     expect(result.snapshot).toMatchObject({ state: "terminated", exitCode });
+  },
+  30_000,
+);
+
+test.each([
+  ["a clean run", "console.log('done');", 0],
+  ["process.exit(3)", "process.exit(3);", 3],
+  ["an uncaught error", "throw new Error('boom');", 1],
+])(
+  "with console integratedTerminal, reports the exit code of the Debuggee Pi ran for %s",
+  async (_name, source, exitCode) => {
+    const result = await runToTermination(source, { console: "integratedTerminal" });
+    expect(result.snapshot).toMatchObject({ state: "terminated", exitCode });
+  },
+  30_000,
+);
+
+test.each([
+  ["a clean run", "console.log('done');"],
+  ["process.exit(3)", "process.exit(3);"],
+  [
+    "Debuggee stderr that imitates the adapter's report",
+    "process.stderr.write('Process exited with code 7\\n'); process.exit(3);",
+  ],
+])(
+  "with outputCapture std, never guesses or takes an exit code from output for %s",
+  async (_name, source) => {
+    const result = await runToTermination(source, {
+      console: "internalConsole",
+      outputCapture: "std",
+    });
+    expect(result.snapshot.state).toBe("terminated");
+    expect(Object.hasOwn(result.snapshot, "exitCode")).toBe(false);
   },
   30_000,
 );

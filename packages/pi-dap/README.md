@@ -146,11 +146,21 @@ use one call to interrupt another's execution wait: a `dap_pause` started with
 Execution waits end on a stop, exit, cancellation, or `executionMs`; an
 execution timeout reports `running`. Request, startup, and shutdown timeouts
 are errors. A natural exit leaves a terminal snapshot available from
-`dap_status` until the next launch, with `exit_code` when it is known: from the
-adapter's `exited` event, or for the Supported `vscode-js-debug` adapter (which
-never sends one) from its `Process exited with code N` report, or `0` when the
-primary target ends without one. A Debug Session that `dap_stop` ends, or whose
-adapter fails, reports no `exit_code`. A call rejected because of the Debug
+`dap_status` until the next launch, with `exit_code` when it is known:
+
+- from the adapter's `exited` event;
+- with the Supported `vscode-js-debug` adapter, which sends none, from the
+  `Process exited with code N` report it makes while it owns the Debuggee's
+  output (profile `console` absent or `internalConsole`, and `outputCapture`
+  not `std`). Pi DAP infers `0` only there, when the Debug Session ends without
+  that report. A Debuggee killed by a signal also reads `0`, because that is
+  what `vscode-js-debug` reports;
+- with a terminal `console` (`integratedTerminal`, `externalTerminal`), from the
+  exit status of the process Pi DAP ran for the adapter. A signal kill has none.
+
+Otherwise `exit_code` is omitted, never guessed: this covers `outputCapture:
+"std"`, a Debug Session that `dap_stop` ends, and an adapter failure.
+A call rejected because of the Debug
 Session state, such as `dap_stack` after the Debuggee exited, is an error
 result that still reports the current state.
 
