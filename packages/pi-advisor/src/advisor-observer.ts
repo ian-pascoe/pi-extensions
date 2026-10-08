@@ -1322,6 +1322,10 @@ export class AdvisorObserver {
     if (runtime) this.closeRuntime(runtime);
     this.changed();
   }
+  /** The observed agent selected another model; only an Advisor that inherits its model follows. */
+  modelChanged(): void {
+    if (this.config.model === undefined) this.reset();
+  }
   /** Owner cancellation invalidates private work without touching observed execution. */
   async abort(): Promise<void> {
     this.unsafeEnding = true;

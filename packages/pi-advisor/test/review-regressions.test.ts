@@ -1,4 +1,5 @@
 import { onTestFinished, expect, it } from "vitest";
+import type { Context } from "@earendil-works/pi-ai";
 import { reply, toolCall } from "../../pi-context-management/test/sdk-harness.js";
 import { AdvisorObserver } from "../src/advisor-observer.js";
 import { readAdvisorSettings } from "../src/advisor-settings.js";
@@ -327,3 +328,49 @@ it("retracts queued owned-child findings after a model-only change while preserv
   expect(userSteeringObserved).toBe(true);
   expect(mainCalls).toBe(3);
 });
+
+/** The loaded extension, not a hand-built observer: Pi emits `model_select` on `setModel`. */
+it.each([
+  { name: "own model keeps", advisor: { model: "observer-fixture/priced" }, incremental: true },
+  { name: "inherited model reseeds", advisor: {}, incremental: false },
+])(
+  "$name the Advisor Session across an observed model change through the extension",
+  async ({ advisor, incremental }) => {
+    const requests: Context[] = [];
+    const advisorModels: string[] = [];
+    globalThis.advisorObserverTest = {
+      stream(model, context, options) {
+        const privateRole = context.tools?.some((tool) => tool.name === "advisor_report");
+        if (privateRole) {
+          requests.push(structuredClone(context));
+          advisorModels.push(model.id);
+        }
+        return response(
+          model,
+          privateRole ? toolCall("advisor_report", { findings: [] }) : reply("Done"),
+          options,
+        );
+      },
+    };
+    const { session } = await fixture({ advisor });
+    await session.prompt("First request");
+    const alternate = session.modelRuntime.getModel("observer-fixture", "alternate");
+    if (!alternate) throw new Error("Missing alternate fixture model");
+    await session.setModel(alternate);
+    await session.prompt("Second request");
+    await expect.poll(() => requests.length).toBe(2);
+    const text = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1));
+    if (incremental) {
+      expect(advisorModels).toEqual(["priced", "priced"]);
+      expect(text(requests[1])).toContain("Incremental update.");
+      expect(requests[1]?.systemPrompt).toBe(requests[0]?.systemPrompt);
+      expect(requests[1]?.messages.slice(0, requests[0]?.messages.length)).toEqual(
+        requests[0]?.messages,
+      );
+    } else {
+      expect(advisorModels).toEqual(["model", "alternate"]);
+      expect(text(requests[1])).not.toContain("Incremental update.");
+      expect(requests[1]?.messages).toHaveLength(1);
+    }
+  },
+);

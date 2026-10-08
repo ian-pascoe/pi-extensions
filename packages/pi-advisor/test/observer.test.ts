@@ -1957,12 +1957,12 @@ it.each([
     // Whatever the observed agent does, the Advisor keeps its own selection.
     const [firstSelection, secondSelection] = advisorSelections;
     if (own.model) {
-      expect(firstSelection).toMatch(/^observer-fixture\/priced:/);
-      expect(secondSelection).toMatch(/^observer-fixture\/priced:/);
+      expect(firstSelection?.split(":")[0]).toBe("observer-fixture/priced");
+      expect(secondSelection?.split(":")[0]).toBe("observer-fixture/priced");
     }
     if (own.thinking) {
-      expect(firstSelection).toMatch(/:low$/);
-      expect(secondSelection).toMatch(/:low$/);
+      expect(firstSelection?.split(":")[1]).toBe("low");
+      expect(secondSelection?.split(":")[1]).toBe("low");
     }
   },
 );
