@@ -110,7 +110,7 @@ function rejectedChildSessionLines({ result }: DapTextContext): readonly string[
   }
   if (rejected.length > 0) {
     lines.push(
-      "To debug that code, launch it directly as the program; for child processes, launch_arguments { autoAttachChildProcesses: false } stops the adapter attaching them.",
+      "To debug that code, launch it directly as the program; for child processes, launch_arguments { autoAttachChildProcesses: false } stops the adapter attaching them. Test runners such as vitest run tests in children; debugging those is tracked in #421.",
     );
   }
   return lines;

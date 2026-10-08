@@ -1159,26 +1159,49 @@ export class DapSession {
     return { success: false, message };
   }
 
-  /** Best effort: a child that could not be released is still reported as refused. */
+  /**
+   * Best effort: a child that could not be released is still reported as refused. The release
+   * channel stays attached, with no breakpoints, until the child terminates or the Debug Session
+   * ends: a worker the child starts later is held by js-debug until a session claims it, and that
+   * session's `startDebugging` arrives on this channel, to be refused and released the same way.
+   */
   private async releaseChildSession(
     active: ActiveDapSession,
     request: string,
     configuration: Static<typeof StartDebuggingChildArgumentsSchema>["configuration"],
   ): Promise<void> {
     let channel: DapProtocolClient | undefined;
+    const close = () => {
+      if (channel === undefined) return;
+      const closing = channel;
+      active.childReleaseChannels.delete(closing);
+      void closing.detach().catch(() => undefined);
+    };
     try {
       channel = await active.rootClient.connectTargetChannel({
-        // A child's own children are refused and released the same way.
         onReverseRequest: (nested) =>
           this.handleReverseRequest(nested, active.debuggeeProcesses, () => active, undefined),
-        onFailure: () => undefined,
+        onFailure: () => {
+          if (channel !== undefined) active.childReleaseChannels.delete(channel);
+        },
       });
-      active.childReleaseChannels.add(channel);
+      const releaseChannel = channel;
+      active.childReleaseChannels.add(releaseChannel);
+      releaseChannel.onEvent((event) => {
+        if (event.event === "terminated") close();
+        // A `debugger;` statement or exception must not park a child nobody is debugging.
+        if (event.event !== "stopped") return;
+        const body: unknown = event.body;
+        const threadId = Value.Check(DapStoppedEventBodySchema, body) ? body.threadId : undefined;
+        void releaseChannel
+          .request("continue", { threadId: threadId ?? 0 }, { timeoutMs: requestMs })
+          .catch(() => undefined);
+      });
       const { startupMs, requestMs } = this.options.settings.timeouts;
-      const initialized = channel.waitForEvent("initialized", { timeoutMs: startupMs });
+      const initialized = releaseChannel.waitForEvent("initialized", { timeoutMs: startupMs });
       const capabilities = parseDapBody(
         DapCapabilitiesSchema,
-        await channel.request(
+        await releaseChannel.request(
           "initialize",
           {
             adapterID: "pwa-node",
@@ -1189,13 +1212,13 @@ export class DapSession {
             locale: "en-US",
             pathFormat: "path",
             supportsRunInTerminalRequest: false,
-            supportsStartDebuggingRequest: false,
+            supportsStartDebuggingRequest: true,
           },
           { timeoutMs: startupMs },
         ),
         "initialize child js-debug target",
       );
-      const launchResponse = channel.request(
+      const launchResponse = releaseChannel.request(
         request,
         { ...configuration },
         { timeoutMs: requestMs },
@@ -1203,20 +1226,12 @@ export class DapSession {
       launchResponse.catch(() => undefined);
       await initialized;
       if (capabilities.supportsConfigurationDoneRequest === true) {
-        await channel.request("configurationDone", {}, { timeoutMs: requestMs });
+        await releaseChannel.request("configurationDone", {}, { timeoutMs: requestMs });
       }
       await launchResponse;
     } catch {
       // The refusal is already recorded; an unreleased child shows up as an execution timeout.
-    } finally {
-      if (channel !== undefined) {
-        try {
-          await channel.detach();
-        } catch {
-          // The adapter may already have closed the channel.
-        }
-        active.childReleaseChannels.delete(channel);
-      }
+      close();
     }
   }
 

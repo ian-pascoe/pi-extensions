@@ -1,4 +1,5 @@
 import { type Static, Type } from "typebox";
+import { JsonObjectSchema } from "./pi-dap-settings.js";
 
 const NonEmptyStringSchema = Type.String({ minLength: 1 });
 const DapIdSchema = Type.Integer({ minimum: 0 });
@@ -33,12 +34,11 @@ export const DapLaunchParametersSchema = Type.Object(
     program: Type.Optional(NonEmptyStringSchema),
     args: Type.Optional(Type.Array(Type.String())),
     cwd: Type.Optional(NonEmptyStringSchema),
-    launch_arguments: Type.Optional(
-      Type.Record(Type.String(), Type.Any(), {
-        description:
-          "Debug adapter launch arguments for this launch only, merged over the Launch Profile's arguments (for vscode-js-debug, for example autoAttachChildProcesses: false). program, args, and cwd still win.",
-      }),
-    ),
+    launch_arguments: Type.Optional({
+      ...JsonObjectSchema,
+      description:
+        "Adapter launch arguments for this launch only, merged over the Launch Profile's arguments (for vscode-js-debug, for example autoAttachChildProcesses: false). program, args, and cwd still win. Paths inside are passed as written, not resolved.",
+    }),
   },
   { additionalProperties: false },
 );

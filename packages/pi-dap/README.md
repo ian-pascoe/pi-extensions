@@ -276,11 +276,18 @@ Warning: Pi DAP refused child session pwa-node "forks.js [1383853]" (target 563c
 ```
 
 The adapter holds a new child paused until a session starts it, so Pi DAP
-briefly attaches to the child with no breakpoints and detaches it again, which
-lets the child run, undebugged, instead of hanging until the execution timeout.
+attaches a release channel to the child with no breakpoints, which lets the
+child run, undebugged, instead of hanging until the execution timeout. The
+channel stays attached until the child terminates or the Debug Session ends, so
+a worker the child starts later is refused and released the same way; a `stopped`
+event on it (for example a `debugger;` statement) is continued at once. No
+events, output, state, or breakpoints from a release channel reach the model.
 To debug code that runs in a child, launch that file directly as the `program`.
 For child processes, `launch_arguments: { autoAttachChildProcesses: false }`
 stops the adapter attaching them at all; worker threads have no such switch.
+Test runners such as vitest run tests in children, so their test code cannot
+be debugged yet (#421). Paths inside `launch_arguments` are passed to the
+adapter as written; only the top-level `program` and `cwd` are resolved.
 
 ## V1 boundary
 
@@ -288,8 +295,9 @@ V1 supports configured stdio and TCP adapters on Linux, one active Debug
 Session, source breakpoints, core execution control, stack/variables/evaluation,
 and headless `runInTerminal`. The Supported `vscode-js-debug` workflow uses one
 adapter-owned primary target channel; it is not a second model-facing Debug
-Session, and unrelated, second, or nested `startDebugging` requests are rejected
-(see Child sessions).
+Session. Unrelated, second, or nested `startDebugging` requests are refused with
+a failure reply; Pi DAP may open a non-model-facing release channel for each
+refused child session only to start it without breakpoints (see Child sessions).
 V1 excludes attach, restart, function/data/instruction breakpoints, hit counts,
 logpoints, memory, disassembly, modules, user-requested child Debug Sessions, raw
 DAP requests, `launch.json`, WebSocket, persistence, and a directly operated

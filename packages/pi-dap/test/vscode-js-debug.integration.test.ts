@@ -474,20 +474,27 @@ test("launch arguments merged over the profile turn off child process attach, so
   expect(await readFile(markerPath, "utf8")).toBe("worker ran");
 }, 30_000);
 
-test("a released child process that starts a worker thread runs it without a debugger", async () => {
+test("a released child process that starts worker threads, early and late, runs them without a debugger", async () => {
   const { programPath, projectDirectory, markerPath, session } =
     await startChildSessionProgram(FORK_PARENT_SOURCE);
+  // The late worker starts after the child's own release finished: its session must still be
+  // refused and released, or js-debug holds it for a debugger and the launch hangs.
   await writeFile(
     resolve(projectDirectory, "worker.js"),
     [
       "const { Worker } = require('node:worker_threads');",
       "const path = require('node:path');",
       "new Worker(path.join(__dirname, 'inner.js'));",
+      "setTimeout(() => new Worker(path.join(__dirname, 'inner.js')), 1500);",
     ].join("\n"),
   );
   await writeFile(
     resolve(projectDirectory, "inner.js"),
-    "require('node:fs').writeFileSync(process.env.MARKER_PATH, 'worker ran');",
+    [
+      "const fs = require('node:fs');",
+      "fs.appendFileSync(process.env.MARKER_PATH + '.inner', 'x');",
+      "debugger;",
+    ].join("\n"),
   );
   const started = Date.now();
   const result = await session.launch({
@@ -499,9 +506,9 @@ test("a released child process that starts a worker thread runs it without a deb
   expect(Date.now() - started).toBeLessThan(CHILD_SESSION_BUDGET_MS);
   expect(result.snapshot).toMatchObject({ state: "terminated", exitCode: 0 });
   expect(result.output).toContain("child exited 0");
-  expect(await readFile(markerPath, "utf8")).toBe("worker ran");
-  // The child was released and detached, so the adapter no longer holds its worker for a debugger.
-  expect(result.rejectedChildSessions?.map(({ name }) => name)).toEqual([
-    expect.stringMatching(/^worker\.js \[\d+\]$/u),
-  ]);
-}, 30_000);
+  expect(await readFile(`${markerPath}.inner`, "utf8")).toBe("xx");
+  const names = (result.rejectedChildSessions ?? []).map(({ name }) => name ?? "").sort();
+  expect(names).toHaveLength(3);
+  expect(names.filter((name) => /^worker\.js \[\d+\]$/u.test(name))).toHaveLength(1);
+  expect(names.filter((name) => /^\[worker \d+\]$/u.test(name))).toHaveLength(2);
+}, 40_000);

@@ -812,7 +812,7 @@ export function createDapToolDefinitions(getRuntime: () => DapToolRuntime | unde
   return [
     defineTool<typeof DapLaunchParametersSchema, DapToolRenderDetails | undefined>({
       ...dapToolCommon("launch", "DAP launch"),
-      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments, and launch_arguments merges adapter launch arguments over them for this launch. Child sessions (worker threads, child processes) are not debugged: breakpoints in them do not bind, and the result lists them. Fails while a Debug Session is active. ${STATE_FAILURE}`,
+      description: `Start a Debug Session from a Launch Profile ${EXECUTION_WAIT} The profile may be omitted only when exactly one valid Launch Profile exists; program, args, and cwd replace the profile's arguments, and launch_arguments merges adapter launch arguments over the profile's arguments for this launch (program, args, and cwd still win). Child sessions (worker threads, child processes) are not debugged: breakpoints in them do not bind, and the result lists them. Fails while a Debug Session is active. ${STATE_FAILURE}`,
       promptSnippet: "Debug a program through one configured Debug Session",
       exposure: "direct",
       annotations: RUNS_DEBUGGEE_CODE,
