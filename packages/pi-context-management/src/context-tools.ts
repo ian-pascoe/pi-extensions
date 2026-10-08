@@ -265,16 +265,9 @@ export function registerContextTools(
     outputSchema: HistoryOutputSchema,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
-      renderContextToolCall(
-        "History",
-        args,
-        theme,
-        context.isPartial,
-        context.executionStarted,
-        context.expanded,
-      ),
+      renderContextToolCall("context_history", args, theme, context),
     renderResult: (result, options, theme, context) =>
-      renderContextToolResult(result, options, theme, "History", context.args, context.isError),
+      renderContextToolResult(result, options, theme, "context_history", context),
     async execute(toolCallId, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       assertContextJournalReadableForModel(ctx.sessionManager);
@@ -384,16 +377,9 @@ export function registerContextTools(
     outputSchema: NotesOutputSchema,
     executionMode: "sequential",
     renderCall: (args, theme, context) =>
-      renderContextToolCall(
-        "Notes",
-        args,
-        theme,
-        context.isPartial,
-        context.executionStarted,
-        context.expanded,
-      ),
+      renderContextToolCall("context_notes", args, theme, context),
     renderResult: (result, options, theme, context) =>
-      renderContextToolResult(result, options, theme, "Notes", context.args, context.isError),
+      renderContextToolResult(result, options, theme, "context_notes", context),
     async execute(_id, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       assertContextJournalReadableForModel(ctx.sessionManager);
