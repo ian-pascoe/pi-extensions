@@ -184,7 +184,7 @@ Explicit re-enablement, corrected configuration, or the settings menu's Resume r
 
 ## Verification and compatibility
 
-The package manifest declares the supported Pi range (`>=0.99.0`); do not re-probe SDK exports, class statics, or methods that range already guarantees. Verify native behavior where it is observable, such as the tool ceiling after binding, and pause with the exact diagnostic when it is not met, keeping the observed session running. Develop against the installed Pi; source checkouts newer than the installed runtime are not API authority.
+The package manifest declares the supported Pi range (`>=1.1.0`); do not re-probe SDK exports, class statics, or methods that range already guarantees. Verify native behavior where it is observable, such as the tool ceiling after binding, and pause with the exact diagnostic when it is not met, keeping the observed session running. Develop against the installed Pi; source checkouts newer than the installed runtime are not API authority.
 
 Use the native SDK `tools` option as the ongoing tool-name ceiling. It filters executable and descriptive registries on refresh, including dynamic registrations; extensions cannot expand the model-callable set merely by calling `setActiveTools`. Verify after binding that no ungranted tool is registered; otherwise pause as unsupported. There is no public ceiling-update setter, so changing the grant requires recreating the private SDK session, not modifying private fields or adding another authorization framework.
 

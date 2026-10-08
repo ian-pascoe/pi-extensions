@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-guardian` gates a Pi agent's tool calls before they run. Routine calls run at once; calls a Tool Policy sends to review go to a separate reviewer model, the Guardian, which judges the call's risk against the user's authorization. A fixed Decision Table turns that judgment into an allowed call or a binding Rejection.
 
-Requires Node `>=22.19.0` and Pi `>=0.99.0`.
+Requires Node `>=22.19.0` and Pi `>=1.1.0`.
 
 > **Guardian is a safety net, not a sandbox.** An allowed call runs with your full privileges, a reviewer model can be wrong or manipulated, and other extensions can still act on their own. Keep backups and review what agents do.
 

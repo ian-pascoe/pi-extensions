@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-advisor` reviews a Pi agent's completed work and surfaces concise, attributed findings for material problems and worthwhile low-risk cleanup.
 
-Requires Node `>=22.19.0` and Pi `>=0.99.0`.
+Requires Node `>=22.19.0` and Pi `>=1.1.0`.
 
 ## Install
 

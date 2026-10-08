@@ -9,7 +9,7 @@ several Skills.
 pi install npm:@ian-pascoe/pi-skills-selector
 ```
 
-Requires Pi `>=0.99.0` and Node `>=22.19.0`. There are no settings or extra tools.
+Requires Pi `>=1.1.0` and Node `>=22.19.0`. There are no settings or extra tools.
 
 ## Submission
 

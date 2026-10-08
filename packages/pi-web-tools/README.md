@@ -16,7 +16,7 @@ Select `packages/pi-web-tools/src/index.ts` for a filtered Git installation. Aft
 pi install npm:@ian-pascoe/pi-web-tools
 ```
 
-Requires Node.js 22.19 or newer and Pi `>=0.99.0`.
+Requires Node.js 22.19 or newer and Pi `>=1.1.0`.
 
 ## Tools
 

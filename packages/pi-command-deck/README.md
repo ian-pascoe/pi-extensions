@@ -2,7 +2,7 @@
 
 `@ian-pascoe/pi-command-deck` replaces Pi's prompt editor and footer with a compact **Command Deck** that edits text with Vim keys and follows the active theme.
 
-Requires Node `>=22.19.0` and Pi `>=0.99.0` (see [Compatibility](#compatibility)).
+Requires Node `>=22.19.0` and Pi `>=1.1.0` (see [Compatibility](#compatibility)).
 
 ## Install
 

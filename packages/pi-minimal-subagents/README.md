@@ -29,7 +29,7 @@ filter in `~/.pi/agent/settings.json` using the repository-relative path:
 ```
 
 From this package checkout, load the source directly with
-`pi -e ./src/index.ts`. Requires Node `>=22.19.0` and Pi `>=0.99.0`.
+`pi -e ./src/index.ts`. Requires Node `>=22.19.0` and Pi `>=1.1.0`.
 
 ## Typical workflow
 
