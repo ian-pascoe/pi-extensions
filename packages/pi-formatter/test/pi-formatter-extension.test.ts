@@ -1421,6 +1421,7 @@ describe("Pi Formatter extension lifecycle", () => {
     expect(harness.notifications).toEqual([
       expect.stringContaining("global formatter.unknownField"),
     ]);
+    expect(harness.notifications[0]).toMatch(/^Formatter: settings:\n- /);
     expect(harness.notifications[0]).toContain("Run /skill:pi-formatter to diagnose.");
   });
 });
