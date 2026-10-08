@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { createWebFetchTool } from "./web-fetch.js";
 import { createWebSearchTool, redactWebSearchApiKey } from "./web-search.js";
 
@@ -33,8 +34,8 @@ export function createPiWebToolsExtension(
   const fetch = createWebFetchTool({ fetch: options.fetch });
 
   return (pi) => {
-    pi.registerTool(search);
-    pi.registerTool(fetch);
+    pi.registerTool(acceptNullForOptionalArguments(search));
+    pi.registerTool(acceptNullForOptionalArguments(fetch));
   };
 }
 

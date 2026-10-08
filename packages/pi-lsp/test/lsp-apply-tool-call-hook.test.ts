@@ -50,6 +50,7 @@ interface ApplyFixture {
  */
 async function createApplyFixture(
   onToolCall: (event: ToolCallEvent) => { block: true; reason: string } | undefined,
+  extraArguments: Record<string, null> = {},
 ): Promise<ApplyFixture> {
   const cwd = await mkdtemp(join(tmpdir(), "pi-lsp-apply-hook-"));
   directories.push(cwd);
@@ -144,9 +145,12 @@ async function createApplyFixture(
   sessions.push(session);
 
   const responses: AssistantMessage[] = [
-    fauxAssistantMessage(fauxToolCall("lsp_apply", { preview_id: preview.preview_id }), {
-      stopReason: "toolUse",
-    }),
+    fauxAssistantMessage(
+      fauxToolCall("lsp_apply", { preview_id: preview.preview_id, ...extraArguments }),
+      {
+        stopReason: "toolUse",
+      },
+    ),
     fauxAssistantMessage("Done."),
   ];
   const toolResults: ApplyFixture["toolResults"][number][] = [];
@@ -183,6 +187,20 @@ test("a tool_call hook observes the canonical Mutation Manifest of a model lsp_a
   const applyCalls = fixture.seen.filter((event) => event.toolName === "lsp_apply");
   expect(applyCalls).toHaveLength(1);
   // The model supplied only preview_id; Pi ran prepareArguments before the hook.
+  expect(applyCalls[0]?.input).toEqual({
+    preview_id: fixture.previewId,
+    mutation_manifest: [{ operation: "modify", path: fixture.filePath }],
+  });
+  expect(await readFile(fixture.filePath, "utf8")).toBe("after\n");
+  expect(fixture.toolResults.at(-1)).toEqual({ toolName: "lsp_apply", isError: false });
+});
+
+test("a null mutation_manifest is treated as omitted, so the hook still sees the canonical one", async () => {
+  const fixture = await createApplyFixture(() => undefined, { mutation_manifest: null });
+  await fixture.session.prompt("Apply it");
+
+  const applyCalls = fixture.seen.filter((event) => event.toolName === "lsp_apply");
+  expect(applyCalls).toHaveLength(1);
   expect(applyCalls[0]?.input).toEqual({
     preview_id: fixture.previewId,
     mutation_manifest: [{ operation: "modify", path: fixture.filePath }],

@@ -694,6 +694,33 @@ it("accepts a corrected advisor_report after one invalid call without pausing", 
   expect(delivered(session)).toEqual(["Advisor concern: Corrected."]);
 });
 
+it("accepts null for an optional field of an advisor_report finding's evidence like omitting it", async () => {
+  const privateRequests: PrivateRequest[] = [];
+  globalThis.advisorObserverTest = longSessionStream({}, privateRequests, {
+    ...ok,
+    // Models trained on `T | null` schemas send null for the evidence they do not cite; the
+    // arguments are untyped JSON as the model emits them, not the schema's `Static` type.
+    report: () => ({
+      findings: [
+        {
+          severity: "concern",
+          message: "Cited.",
+          evidence: JSON.parse('{ "quote": "Answer", "refs": null }'),
+        },
+      ],
+    }),
+  });
+  const { session, observer } = await observe({});
+  await session.prompt("Answer");
+  expect(observer.status).toMatchObject({
+    lastError: null,
+    droppedFindings: { invalidReviews: 0, unsupported: 0 },
+  });
+  // No report was rejected with a request to retry.
+  expect(JSON.stringify(privateRequests)).not.toContain("Call advisor_report again");
+  expect(delivered(session)).toEqual(["Advisor concern: Cited."]);
+});
+
 it("drops a legacy single-finding report, which cites no evidence", async () => {
   const privateRequests: PrivateRequest[] = [];
   globalThis.advisorObserverTest = longSessionStream({}, privateRequests, {

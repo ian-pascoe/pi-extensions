@@ -5,6 +5,7 @@ import {
   type ExtensionContext,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import { DapSession } from "./dap-session.js";
 import { createDapSessionFiles, type DapSessionFiles } from "./dap-session-files.js";
@@ -32,7 +33,7 @@ export class PiDapLifecycleController {
   /** Register the stable tool definitions and Pi conversation session lifecycle handlers. */
   register(): void {
     for (const tool of createDapToolDefinitions(() => this.activeSession)) {
-      this.pi.registerTool(tool);
+      this.pi.registerTool(acceptNullForOptionalArguments(tool));
     }
     this.pi.on("session_start", (_event, context) => this.startSession(context));
     this.pi.on("session_shutdown", () => this.shutdownSession());

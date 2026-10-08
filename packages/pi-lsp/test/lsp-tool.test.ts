@@ -361,7 +361,8 @@ describe("registered LSP tool", () => {
         tool.exposure === "direct" ? [LSP_TOOL_GUIDELINE] : [],
       );
       expect(tool.outputSchema, tool.name).toMatchObject({ type: "object" });
-      expect(tool.hasPrepareArguments, tool.name).toBe(tool.name === "lsp_apply");
+      // Every tool accepts null for an optional parameter through `prepareArguments`.
+      expect(tool.hasPrepareArguments, tool.name).toBe(true);
       // Shared rules live in the namespace instructions and one deduplicated guideline.
       expect(tool.description, tool.name).not.toMatch(/one-based|Result Spill|leading @/u);
     }

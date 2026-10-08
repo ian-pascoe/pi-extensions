@@ -7,6 +7,7 @@ import {
   type ExtensionFactory,
   type SessionShutdownEvent,
 } from "@earendil-works/pi-coding-agent";
+import { acceptNullForOptionalArguments } from "@ian-pascoe/pi-utils/null-optional-arguments";
 import { expandMessageOnClick, noticeText } from "@ian-pascoe/pi-utils/ui";
 import { createBashReplacement, RunningBashCalls } from "./bash-replacement.js";
 import {
@@ -102,8 +103,8 @@ class PiTermctrlController {
         viewport: () => this.session().viewport,
         scrollback: () => this.session().scrollback,
       };
-      this.pi.registerTool(createTerminalStartTool(runtime));
-      this.pi.registerTool(createTerminalSendTool(runtime));
+      this.pi.registerTool(acceptNullForOptionalArguments(createTerminalStartTool(runtime)));
+      this.pi.registerTool(acceptNullForOptionalArguments(createTerminalSendTool(runtime)));
       this.registerManagementTools();
     }
     this.pi.on("session_start", (_event, context) => this.start(context));
@@ -131,17 +132,21 @@ class PiTermctrlController {
 
   private registerManagementTools(): void {
     this.pi.registerTool(
-      createTerminalStopTool({
-        registry: this.registry,
-        scrollback: () => this.session().scrollback,
-      }),
+      acceptNullForOptionalArguments(
+        createTerminalStopTool({
+          registry: this.registry,
+          scrollback: () => this.session().scrollback,
+        }),
+      ),
     );
-    this.pi.registerTool(createTerminalListTool(this.registry));
+    this.pi.registerTool(acceptNullForOptionalArguments(createTerminalListTool(this.registry)));
     this.pi.registerTool(
-      createTerminalWaitTool({
-        registry: this.registry,
-        exitTailLines: () => this.session().exitTailLines,
-      }),
+      acceptNullForOptionalArguments(
+        createTerminalWaitTool({
+          registry: this.registry,
+          exitTailLines: () => this.session().exitTailLines,
+        }),
+      ),
     );
   }
 
@@ -197,14 +202,16 @@ class PiTermctrlController {
     const calls = new RunningBashCalls(currentRegistry);
     if (settings.replaceBash) {
       this.pi.registerTool(
-        createBashReplacement({
-          cwd: context.cwd,
-          commandPrefix,
-          shellPath,
-          registry: currentRegistry,
-          calls,
-          bashTail: settings.bashTail,
-        }),
+        acceptNullForOptionalArguments(
+          createBashReplacement({
+            cwd: context.cwd,
+            commandPrefix,
+            shellPath,
+            registry: currentRegistry,
+            calls,
+            bashTail: settings.bashTail,
+          }),
+        ),
       );
     }
     this.active = {
