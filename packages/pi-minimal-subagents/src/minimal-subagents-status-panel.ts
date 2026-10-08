@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import {
+  DynamicBorder,
   type ExtensionContext,
   type KeybindingsManager,
   type Theme,
@@ -8,16 +9,20 @@ import {
   Text,
   matchesKey,
   truncateToWidth,
-  visibleWidth,
+  wrapTextWithAnsi,
   type Component,
   type OverlayHandle,
   type TUI,
 } from "@earendil-works/pi-tui";
+import { hintLine, joinInline, noticeText } from "@ian-pascoe/pi-utils/ui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import {
   formatSubagentDuration,
   orderActiveAgentSubtrees,
+  renderSubagentStatusLabel,
+  renderSubagentStatusMark,
   subagentStatusLadder,
+  treeRowPrefixes,
 } from "./minimal-subagents-rendering.js";
 import { COORDINATOR_TOOL_NAMES } from "./minimal-subagents-capabilities.js";
 import {
@@ -82,21 +87,11 @@ function statusAccessSourceLabel(source: SubagentAccessSnapshot["source"]): stri
   }
 }
 
-const BACKGROUND_CLEARING_SEQUENCES = ["\u001b[0m", "\u001b[m", "\u001b[49m"] as const;
+/** The panel's ellipsis, in Pi's three-dot form. */
+const ELLIPSIS = "...";
 
-/**
- * Re-open the panel background after each sequence that clears it. Truncation ends its cut text
- * and ellipsis with full resets, and embedded native components may reset or close their own
- * backgrounds; without this the rest of the row (ellipsis, padding, border) loses the panel fill.
- */
-function keepBackgroundThroughResets(text: string, backgroundOpen: string): string {
-  if (!backgroundOpen) return text;
-  let result = text;
-  for (const sequence of BACKGROUND_CLEARING_SEQUENCES) {
-    result = result.replaceAll(sequence, `${sequence}${backgroundOpen}`);
-  }
-  return result;
-}
+/** The theme operations the panel draws with; Pi's `Theme` satisfies it. */
+type StatusPanelTheme = Pick<Theme, "fg" | "bold">;
 
 function transcriptText(line: string): string {
   return stripVTControlCharacters(line).replace(/\s/g, "");
@@ -152,14 +147,15 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
   private toolOutputExpanded = false;
   private disposed = false;
   private readonly stopRefresh: () => void;
+  private readonly border = new DynamicBorder((text) => this.theme.fg("border", text));
 
   /** Bind one live status component to its coordinator, terminal, and explicit refresh owner. */
   constructor(
     private readonly coordinator: MinimalSubagentsCoordinator,
     private readonly getAccess: () => MinimalSubagentsStatusAccess,
     private readonly tui: TUI,
-    private readonly theme: Theme,
-    private readonly keybindings: KeybindingsManager,
+    private readonly theme: StatusPanelTheme,
+    private readonly keybindings: Pick<KeybindingsManager, "matches" | "getKeys">,
     private readonly cwd: string,
     private readonly onClose: () => void,
     startRefresh: StartStatusPanelRefresh = startStatusPanelRefresh,
@@ -208,7 +204,7 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     this.tui.requestRender();
   }
 
-  /** Render one framed, terminal-bounded tree or Child Session Transcript. */
+  /** Render the tree or Child Session Transcript in Pi's selector frame, within the terminal. */
   render(width: number): string[] {
     if (width <= 0) return [];
     const height = Math.max(
@@ -219,24 +215,24 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
       ),
     );
     if (width < 6 || height < 5) {
-      return new Text("Esc back · Enlarge terminal", 0, 0).render(width).slice(0, height);
+      const cancelKey = this.keybindings.getKeys("tui.select.cancel").join("/");
+      return new Text(this.theme.fg("muted", `${cancelKey} back · Enlarge terminal`), 0, 0)
+        .render(width)
+        .slice(0, height);
     }
-    const innerWidth = width - 4;
+    const innerWidth = width - 2;
     const selected = this.flattened.find(({ agent }) => agent.agent_id === this.selectedAgentId);
     const transcriptView = this.view === "transcript" && this.transcript;
     const header = transcriptView
       ? [
-          this.theme.bold(`Transcript · ${this.selectedAgentId}`),
-          selected ? this.renderAgentRow(selected.agent, 0, innerWidth) : "",
+          this.theme.fg("accent", this.theme.bold(`Transcript · ${this.selectedAgentId}`)),
+          selected ? this.renderAgentRow(selected.agent, "", false) : "",
         ]
-      : this.renderHeader(innerWidth);
-    const toolKey = this.keybindings.getKeys("app.tools.expand").join("/");
-    const helpText = transcriptView
-      ? `Esc tree · End live · ${toolKey} tools · ↑↓/PgUp/PgDn scroll · ${this.following ? "Following" : "Paused"}`
-      : "Esc close · Enter transcript · ↑↓ select · PgUp/PgDn page";
-    const help = new Text(this.theme.fg("text", helpText), 0, 0)
-      .render(innerWidth)
-      .slice(0, Math.min(2, height - 4));
+      : this.renderHeader();
+    const help = [
+      "",
+      ...wrapTextWithAnsi(this.renderHints(Boolean(transcriptView)), innerWidth),
+    ].slice(0, Math.min(3, height - 4));
     const visibleHeader = header.slice(0, Math.max(1, height - help.length - 3));
     this.bodyHeight = Math.max(1, height - 2 - visibleHeader.length - help.length);
     let body: string[];
@@ -262,10 +258,11 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
       const maximum = Math.max(0, body.length - this.bodyHeight);
       this.scrollOffset = this.following ? maximum : Math.min(this.scrollOffset, maximum);
     } else {
-      body = this.flattened.map(({ agent, depth }) =>
-        this.renderAgentRow(agent, depth, innerWidth),
+      const prefixes = treeRowPrefixes(this.flattened.map(({ depth }) => depth));
+      body = this.flattened.map(({ agent }, index) =>
+        this.renderAgentRow(agent, prefixes[index] ?? "", agent.agent_id === this.selectedAgentId),
       );
-      if (body.length === 0) body.push("No Child Agents yet.");
+      if (body.length === 0) body.push(this.theme.fg("muted", "No Child Agents yet."));
       const selectedLine = this.flattened.findIndex(
         ({ agent }) => agent.agent_id === this.selectedAgentId,
       );
@@ -279,19 +276,12 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     }
     const visibleBody = body.slice(this.scrollOffset, this.scrollOffset + this.bodyHeight);
     while (visibleBody.length < this.bodyHeight) visibleBody.push("");
-    const border = (text: string) => this.theme.fg("border", text);
-    const backgroundOpen = this.theme.getBgAnsi("customMessageBg");
-    const rows = [...visibleHeader, ...visibleBody, ...help].map((line) => {
-      const content = keepBackgroundThroughResets(
-        truncateToWidth(line, innerWidth, "…"),
-        backgroundOpen,
-      );
-      return this.theme.bg(
-        "customMessageBg",
-        `${border("│")} ${content}${" ".repeat(innerWidth - visibleWidth(content))} ${border("│")}`,
-      );
-    });
-    return [border(`╭${"─".repeat(width - 2)}╮`), ...rows, border(`╰${"─".repeat(width - 2)}╯`)];
+    // Each row keeps Pi's one-column margin and fills the pane so the overlay covers what is under it.
+    const rows = [...visibleHeader, ...visibleBody, ...help].map((line) =>
+      truncateToWidth(` ${line}`, width, ELLIPSIS, true),
+    );
+    const [border = ""] = this.border.render(width);
+    return [border, ...rows, border];
   }
 
   /** Rebuild native transcript components when their theme changes. */
@@ -326,7 +316,34 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     }
   }
 
-  private renderHeader(width: number): string[] {
+  private keyLabel(binding: Parameters<KeybindingsManager["getKeys"]>[0]): string {
+    return this.keybindings.getKeys(binding).join("/");
+  }
+
+  private renderHints(transcript: boolean): string {
+    const page = `${this.keyLabel("tui.select.pageUp")}/${this.keyLabel("tui.select.pageDown")}`;
+    const hints = transcript
+      ? hintLine(this.theme, [
+          { key: this.keyLabel("tui.select.cancel"), description: "tree" },
+          { key: "end", description: "live" },
+          { key: this.keyLabel("app.tools.expand"), description: "tools" },
+          { key: "\u2191\u2193", description: "scroll" },
+          { key: page, description: "page" },
+        ])
+      : hintLine(this.theme, [
+          { key: "\u2191\u2193", description: "select" },
+          { key: this.keyLabel("tui.select.confirm"), description: "transcript" },
+          { key: page, description: "page" },
+          { key: this.keyLabel("tui.select.cancel"), description: "close" },
+        ]);
+    if (!transcript) return hints;
+    const following = this.following
+      ? this.theme.fg("muted", "following")
+      : this.theme.fg("warning", "paused");
+    return `${hints}  ${following}`;
+  }
+
+  private renderHeader(): string[] {
     const direct = "agents" in this.status ? this.status.agents : [this.status.agent];
     const running = direct.filter((agent) => agent.state === "running").length;
     const idle = direct.length - running;
@@ -340,34 +357,41 @@ export class MinimalSubagentsStatusPanelComponent implements Component {
     const projectValue = this.access.projectTrusted
       ? authoredAccessValue(this.access.projectEnabled)
       : "unavailable (untrusted)";
+    const field = (label: string, ...values: string[]) =>
+      `${this.theme.fg("muted", `${label}:`)} ${joinInline(this.theme, values)}`;
     return [
-      truncateToWidth(this.theme.bold("Subagents status"), width, "…"),
-      truncateToWidth(
-        `Access: ${accessState} · ${statusAccessSourceLabel(this.access.source)}`,
-        width,
-        "…",
+      this.theme.fg("accent", this.theme.bold("Subagents status")),
+      field("Access", accessState, statusAccessSourceLabel(this.access.source)),
+      field(
+        "Defaults",
+        `branch ${this.access.branchOverride}`,
+        `project ${projectValue}`,
+        `global ${authoredAccessValue(this.access.globalEnabled)}`,
       ),
-      truncateToWidth(
-        `Defaults: branch ${this.access.branchOverride} · project ${projectValue} · global ${authoredAccessValue(this.access.globalEnabled)}`,
-        width,
-        "…",
-      ),
-      truncateToWidth(`Coordinator Tools: ${toolState}`, width, "…"),
-      truncateToWidth(`Direct Children: ${running} running · ${idle} idle`, width, "…"),
-      this.theme.fg("warning", this.notice),
+      field("Coordinator Tools", toolState),
+      field("Direct Children", `${running} running`, `${idle} idle`),
+      ...(this.notice ? [this.theme.fg("warning", this.notice)] : []),
     ];
   }
 
-  private renderAgentRow(agent: AgentSummary, depth: number, width: number): string {
-    const selected = agent.agent_id === this.selectedAgentId;
-    const disclosure = "▸";
+  /** One row of the hierarchy: selection marker, tree prefix, Status Mark, id, status, profile, task. */
+  private renderAgentRow(agent: AgentSummary, prefix: string, selected: boolean): string {
     const status = subagentStatusLadder(agent);
     const elapsed = formatSubagentDuration(agent.elapsed_ms);
     const task = agent.task?.replace(/\s+/g, " ").trim();
-    const line = `${selected ? ">" : " "} ${"  ".repeat(depth)}${disclosure} ${agent.agent_id} · ${status}${
-      elapsed ? ` ${elapsed}` : ""
-    } · ${agent.model}:${agent.thinking_level}${task ? ` · ${task}` : ""}`;
-    return truncateToWidth(selected ? this.theme.fg("accent", line) : line, width, "…");
+    const identity = `${renderSubagentStatusMark(this.theme, status)} ${
+      selected ? this.theme.fg("accent", agent.agent_id) : agent.agent_id
+    }`;
+    const details = joinInline(this.theme, [
+      identity,
+      `${renderSubagentStatusLabel(this.theme, status)}${
+        elapsed ? ` ${this.theme.fg("muted", elapsed)}` : ""
+      }`,
+      this.theme.fg("muted", `${agent.model}:${agent.thinking_level}`),
+      task ? this.theme.fg("muted", task) : undefined,
+    ]);
+    const marker = selected ? this.theme.fg("accent", "→ ") : "  ";
+    return `${marker}${prefix ? this.theme.fg("dim", prefix) : ""}${details}`;
   }
 
   private scroll(delta: number): void {
@@ -491,7 +515,7 @@ export class MinimalSubagentsStatusPanelController {
         },
       )
       .catch(() => {
-        this.context.ui.notify("Subagents status view failed.", "error");
+        this.context.ui.notify(noticeText("Subagents", "Status view failed."), "error");
       })
       .finally(() => {
         this.activePanel?.dispose();

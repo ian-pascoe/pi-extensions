@@ -7,9 +7,12 @@ import {
   ModelRegistry,
   ModelRuntime,
   SessionManager,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
+import { KeybindingsManager, setKeybindings } from "@earendil-works/pi-tui";
+import { taggedTheme } from "@ian-pascoe/pi-utils/ui-testing";
 import { Value } from "typebox/value";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { MinimalSubagentsModelRole } from "../src/minimal-subagents-config.js";
 import { CoordinatorToolOutputSchemas } from "../src/minimal-subagents-render-contract.js";
 import { TROUBLESHOOTING_HINT } from "../src/troubleshooting-skill.js";
@@ -492,9 +495,7 @@ describe("minimal subagents coordinator tools", () => {
     // The model-facing text points at the troubleshooting Skill; structured data stays clean.
     expect(text).toContain(TROUBLESHOOTING_HINT);
     expect(JSON.stringify(result.structuredContent)).not.toContain(TROUBLESHOOTING_HINT);
-    expect(onAttention).toHaveBeenCalledWith(
-      "Minimal subagents deletion partially failed for child",
-    );
+    expect(onAttention).toHaveBeenCalledWith("Deletion partially failed for child");
   });
 
   it("returns complete deletion as a successful result", async () => {
@@ -553,5 +554,108 @@ describe("minimal subagents coordinator tools", () => {
       await createToolExecutionContext(),
     );
     expect(queued.isError).toBeUndefined();
+  });
+});
+
+describe("minimal subagents tool row footers", () => {
+  type RenderContext = Parameters<NonNullable<ReturnType<typeof requireTool>["renderResult"]>>[3];
+
+  function fakeContext(
+    state: RenderContext["state"],
+    overrides: Partial<RenderContext> & { args: RenderContext["args"] },
+  ): RenderContext {
+    return {
+      toolCallId: "call",
+      invalidate: vi.fn(),
+      lastComponent: undefined,
+      state,
+      cwd: "/project",
+      executionStarted: true,
+      argsComplete: true,
+      isPartial: false,
+      expanded: false,
+      showImages: false,
+      isError: false,
+      durationMs: undefined,
+      outputPad: 1,
+      ...overrides,
+    };
+  }
+
+  // SAFETY: The renderers read only fg, bg, and bold, which the tagged test theme provides.
+  const theme = taggedTheme as Theme;
+  const cancelResult = {
+    content: [],
+    details: {
+      agent_id: "child",
+      recursive: true,
+      affected_agent_ids: ["child"],
+      cancelled_turn_ids: ["child:turn-1"],
+    },
+  };
+
+  beforeAll(() => {
+    setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } }));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("shows a live Elapsed footer on the call row, then Took on the result row", () => {
+    vi.useFakeTimers();
+    const tool = requireTool(toolOptions("root", true), "subagent_cancel");
+    const state = {};
+    const args = { agent_id: "child" };
+
+    const call = tool.renderCall?.(args, theme, fakeContext(state, { args, isPartial: true }));
+    expect(call?.render(120).join("\n")).toContain("subagent_cancel");
+    vi.advanceTimersByTime(2_000);
+    expect(call?.render(120).join("\n")).toContain("<muted>Elapsed 2.0s</muted>");
+
+    const result = tool.renderResult?.(
+      cancelResult,
+      { expanded: false, isPartial: false },
+      theme,
+      fakeContext(state, { args, durationMs: 2_100 }),
+    );
+    const lines = result?.render(120).map((line) => line.trimEnd());
+    expect(lines?.at(-1)).toBe("<muted>Took 2.1s</muted>");
+    // Pi's blank line separates the footer from the body, as in its bash renderer.
+    expect(lines?.at(-2)).toBe("");
+    expect(call?.render(120).join("\n")).not.toContain("Elapsed");
+  });
+
+  it("shows Elapsed under a streaming wait's progress", () => {
+    vi.useFakeTimers();
+    const tool = requireTool(toolOptions("root", true), "subagent_wait");
+    const state = {};
+    const args = { agent_id: "child" };
+    const call = tool.renderCall?.(args, theme, fakeContext(state, { args, isPartial: true }));
+    expect(call?.render(120).join("\n")).not.toContain("Elapsed");
+
+    const progress = {
+      content: [{ type: "text" as const, text: "Waiting for child" }],
+      details: { agent_id: "child", status: "waiting", elapsed_ms: 1_000 },
+    };
+    const render = () =>
+      tool.renderResult?.(
+        progress,
+        { expanded: false, isPartial: true },
+        theme,
+        fakeContext(state, { args, isPartial: true }),
+      );
+    render();
+    vi.advanceTimersByTime(3_000);
+    expect(
+      render()
+        ?.render(120)
+        .map((line) => line.trimEnd())
+        .at(-1),
+    ).toBe("<muted>Elapsed 3.0s</muted>");
+    // Finish the row so its once-a-second redraw timer stops.
+    tool.renderResult?.(
+      { content: [], details: { ...cancelResult.details } },
+      { expanded: false, isPartial: false },
+      theme,
+      fakeContext(state, { args, durationMs: 3_000 }),
+    );
   });
 });

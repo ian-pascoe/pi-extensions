@@ -1,12 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import {
+  escapeTaggedTheme as taggedTheme,
+  expectLinesFitWidth,
+  readableTags,
+} from "@ian-pascoe/pi-utils/ui-testing";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { MinimalSubagentsCoordinator } from "../src/minimal-subagents-coordinator.js";
 import {
   buildMinimalSubagentsWidgetView,
   MinimalSubagentsUiController,
   renderMinimalSubagentsWidgetLines,
+  type MinimalSubagentsWidgetRow,
   type MinimalSubagentsWidgetTheme,
+  type MinimalSubagentsWidgetView,
 } from "../src/minimal-subagents-ui.js";
 import type { AgentSummary } from "../src/minimal-subagents-types.js";
 
@@ -214,12 +221,81 @@ describe("minimal subagents UI", () => {
         passthroughTheme,
       )[1]!;
 
-    expect(baseView(80)).toBe("  ╰─ ◉ worker  ·  running 12s  ·  provider/model:variant:high");
-    expect(baseView(55)).toBe("  ╰─ ◉ worker  ·  running 12s  ·  provider/model:…:high");
-    expect(baseView(39)).toBe("  ╰─ ◉ worker  ·  running  ·  pro…:high");
+    expect(baseView(80)).toBe(
+      "└─ ● worker · running 12s · provider/model:variant:high · inspect the runtime",
+    );
+    expect(baseView(60)).toBe("└─ ● worker · running 12s · provider/model:variant:high");
+    expect(baseView(46)).toBe("└─ ● worker · running 12s · provider/m...:high");
+    expect(baseView(35)).toBe("└─ ● worker · running · pro...:high");
     const lastResort = baseView(20);
     expect(visibleWidth(lastResort)).toBeLessThanOrEqual(20);
     expect(lastResort).not.toContain("inspect");
+  });
+
+  it("lays out a titled counts header, Status Mark rows, tree prefixes, and a more line", () => {
+    const row = (
+      agentId: string,
+      depth: number,
+      status: MinimalSubagentsWidgetRow["status"],
+    ): MinimalSubagentsWidgetRow => ({
+      agentId,
+      depth,
+      status,
+      runtimeProfile: { model: "m", thinking_level: "low" },
+      structural: false,
+    });
+    const view = {
+      runningCount: 1,
+      recentCount: 3,
+      overflowCount: 4,
+      rows: [
+        row("parent", 0, "running"),
+        row("parent.a", 1, "completed"),
+        row("parent.b", 1, "failed"),
+        row("parent.c", 1, "cancelled"),
+        row("parent.c.d", 2, "interrupted"),
+        row("sleeper", 0, "idle"),
+        row("lost", 0, "unavailable"),
+      ],
+    } satisfies MinimalSubagentsWidgetView;
+    const lines = renderMinimalSubagentsWidgetLines(view, 120, taggedTheme).map((line) =>
+      readableTags(line).trimEnd(),
+    );
+
+    expect(lines[0]).toBe(
+      "<toolTitle><b>Subagents</b></toolTitle> <muted>1 running \u00b7 3 recent</muted>",
+    );
+    expect(lines[1]).toContain("<accent>\u25cf</accent> <b>parent</b>");
+    expect(lines[2]).toContain("<dim>\u251c\u2500 </dim><success>\u2713</success> <b>parent.a</b>");
+    expect(lines[3]).toContain("<dim>\u251c\u2500 </dim><error>\u2717</error> <b>parent.b</b>");
+    expect(lines[4]).toContain("<dim>\u2514\u2500 </dim><muted>\u25a0</muted> <b>parent.c</b>");
+    expect(lines[5]).toContain("<dim>   \u2514\u2500 </dim><warning>!</warning> <b>parent.c.d</b>");
+    expect(lines[6]).toContain("<dim>\u25cb</dim> <b>sleeper</b>");
+    expect(lines[7]).toContain("<warning>!</warning> <b>lost</b>");
+    expect(lines[8]).toBe("<muted>... 4 more</muted>");
+    expect(lines).toHaveLength(9);
+    expect(lines.join("\n")).not.toMatch(/[\u25c9\u2570\u2026\u00d7]/);
+    for (const width of [40, 120]) {
+      expectLinesFitWidth(renderMinimalSubagentsWidgetLines(view, width, taggedTheme), width);
+    }
+  });
+
+  it("keeps an idle widget within Pi's ten widget lines", () => {
+    const rows = Array.from({ length: 8 }, (_, index) => ({
+      agentId: `worker-${index}`,
+      depth: 0,
+      status: "completed" as const,
+      runtimeProfile: { model: "m", thinking_level: "low" as const },
+      structural: false,
+    }));
+    const lines = renderMinimalSubagentsWidgetLines(
+      { runningCount: 0, recentCount: 3, overflowCount: 2, rows },
+      120,
+      taggedTheme,
+    ).map((line) => readableTags(line).trimEnd());
+    expect(lines).toHaveLength(10);
+    expect(lines[0]).toContain("<muted>idle \u00b7 3 recent</muted>");
+    expect(lines.at(-1)).toBe("<muted>... 2 more</muted>");
   });
 
   it("mounts during activity, cools down after completion, and disposes timers and UI", async () => {
@@ -242,9 +318,11 @@ describe("minimal subagents UI", () => {
     controller.refresh();
     controller.refresh();
     expect(setIntervalSpy).toHaveBeenCalledOnce();
-    expect(context.ui.setWidget).toHaveBeenCalledWith("minimal-subagents", expect.any(Function), {
-      placement: "aboveEditor",
-    });
+    expect(context.ui.setWidget).toHaveBeenCalledWith(
+      "pi-minimal-subagents",
+      expect.any(Function),
+      { placement: "aboveEditor" },
+    );
     status = createHierarchyStatus([
       summary("worker", {
         latest_turn: { turn_id: "turn", status: "completed" },
@@ -256,7 +334,7 @@ describe("minimal subagents UI", () => {
     expect(setTimeoutSpy).toHaveBeenCalledOnce();
     controller.dispose();
     expect(clearTimeoutSpy).toHaveBeenCalledOnce();
-    expect(context.ui.setWidget).toHaveBeenLastCalledWith("minimal-subagents", undefined);
+    expect(context.ui.setWidget).toHaveBeenLastCalledWith("pi-minimal-subagents", undefined);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(context.ui.setWidget).toHaveBeenCalledTimes(2);
   });
@@ -283,9 +361,9 @@ describe("minimal subagents UI", () => {
     ]);
     controller.refresh();
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(context.ui.setWidget).not.toHaveBeenLastCalledWith("minimal-subagents", undefined);
+    expect(context.ui.setWidget).not.toHaveBeenLastCalledWith("pi-minimal-subagents", undefined);
     await vi.advanceTimersByTimeAsync(1);
-    expect(context.ui.setWidget).toHaveBeenLastCalledWith("minimal-subagents", undefined);
+    expect(context.ui.setWidget).toHaveBeenLastCalledWith("pi-minimal-subagents", undefined);
   });
 
   it("is inert outside TUI mode", () => {

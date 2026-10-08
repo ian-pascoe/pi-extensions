@@ -11,7 +11,14 @@ import {
   UserMessageComponent,
   type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import {
+  Container,
+  Text,
+  wrapTextWithAnsi,
+  type Component,
+  type TUI,
+} from "@earendil-works/pi-tui";
+import { COLLAPSED_LINES, expandHint } from "@ian-pascoe/pi-utils/ui";
 import {
   ACTIVITY_RAIL_WIDTH,
   drawActivityRail,
@@ -224,7 +231,7 @@ export function createTranscriptRenderCache(): TranscriptRenderCache {
 }
 
 /** Collapsed live views keep at most this many lines of the child's recent work. */
-const COLLAPSED_TRANSCRIPT_RAIL_LINES = 20;
+const COLLAPSED_TRANSCRIPT_RAIL_LINES = COLLAPSED_LINES.fallback;
 
 function isSpacerLine(line: string): boolean {
   // Includes a tool box's coloured padding rows, so each rail connector meets visible content.
@@ -277,16 +284,14 @@ export class TranscriptRail implements Component {
     const kept = items
       .slice(items.length - shown)
       .map((lines) => lines.slice(0, COLLAPSED_TRANSCRIPT_RAIL_LINES));
-    const earlier = items.length - shown;
-    return drawActivityRail(
-      earlier > 0
-        ? [
-            [this.theme.fg("dim", `… ${earlier} earlier ${earlier === 1 ? "step" : "steps"}`)],
-            ...kept,
-          ]
-        : kept,
-      this.theme,
+    const hidden =
+      items.reduce((total, lines) => total + lines.length, 0) -
+      kept.reduce((total, lines) => total + lines.length, 0);
+    const hint = wrapTextWithAnsi(
+      expandHint(this.theme, hidden, "earlier"),
+      Math.max(1, width - ACTIVITY_RAIL_WIDTH),
     );
+    return drawActivityRail(hidden > 0 ? [hint, ...kept] : kept, this.theme);
   }
 
   invalidate(): void {

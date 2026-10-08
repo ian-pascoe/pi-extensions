@@ -20,6 +20,7 @@ import {
   type TurnEndEvent,
 } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey } from "@earendil-works/pi-tui";
+import { noticeText } from "@ian-pascoe/pi-utils/ui";
 import {
   createSubagentAccessBranchRecord,
   reconcileCoordinatorToolAccess,
@@ -247,7 +248,10 @@ function reportInvalidRegistryRecords(
       .map(({ entry_index: entryIndex, code }) => `entry ${entryIndex}: ${code}`)
       .join(", ");
     context.ui.notify(
-      `Minimal subagents Registry ignored ${diagnostics.length} invalid active-branch record${diagnostics.length === 1 ? "" : "s"} (${summaries}${diagnostics.length > 3 ? ", …" : ""}).`,
+      noticeText(
+        "Subagents",
+        `Registry ignored ${diagnostics.length} invalid active-branch record${diagnostics.length === 1 ? "" : "s"} (${summaries}${diagnostics.length > 3 ? ", ..." : ""}).`,
+      ),
       "warning",
     );
   };
@@ -342,7 +346,10 @@ async function rebindForkAgents(
       const message = error instanceof Error ? error.message : String(error);
       failedSubtrees.add(agent.agent_id);
       agents.push(unavailableForkAgent(agent, message));
-      context.ui.notify(`${options.notifyLabel} for ${agent.agent_id}: ${message}`, "error");
+      context.ui.notify(
+        noticeText("Subagents", `${options.notifyLabel} for ${agent.agent_id}: ${message}`),
+        "error",
+      );
     }
   }
   return agents;
@@ -410,7 +417,10 @@ function reportInvalidSubagentAccessRecords(
 ): (diagnostics: SubagentAccessReplayDiagnostic[]) => void {
   return (diagnostics) => {
     context.ui.notify(
-      `Minimal subagents ignored ${diagnostics.length} invalid Subagent Access branch record${diagnostics.length === 1 ? "" : "s"}.`,
+      noticeText(
+        "Subagents",
+        `Ignored ${diagnostics.length} invalid Subagent Access branch record${diagnostics.length === 1 ? "" : "s"}.`,
+      ),
       "warning",
     );
   };
@@ -545,7 +555,8 @@ export class MinimalSubagentsLifecycleController {
       schemas: createCoordinatorToolSchemas([]),
       captureCaller: (context) => rootCallerSnapshot(this.pi, context),
       onActivity: () => this.uiController?.refresh(),
-      onAttention: (message) => this.accessSession?.context.ui.notify(message, "error"),
+      onAttention: (message) =>
+        this.accessSession?.context.ui.notify(noticeText("Subagents", message), "error"),
     });
     for (const tool of rootTools) this.pi.registerTool(tool);
     this.pi.registerMessageRenderer("minimal-subagents.message", renderMinimalSubagentsMessage);
@@ -587,7 +598,10 @@ export class MinimalSubagentsLifecycleController {
     ).override;
     if (minimalSubagentsConfig.warnings.length > 0) {
       context.ui.notify(
-        `Minimal subagents configuration warnings:\n- ${minimalSubagentsConfig.warnings.join("\n- ")}`,
+        noticeText(
+          "Subagents",
+          `Configuration warnings:\n- ${minimalSubagentsConfig.warnings.join("\n- ")}`,
+        ),
         "warning",
       );
     }
@@ -648,7 +662,7 @@ export class MinimalSubagentsLifecycleController {
               callerId,
               childContext.sessionManager.getLeafId() ?? callerId,
             ),
-          onAttention: (message) => context.ui.notify(message, "error"),
+          onAttention: (message) => context.ui.notify(noticeText("Subagents", message), "error"),
         });
       },
     });
@@ -665,7 +679,11 @@ export class MinimalSubagentsLifecycleController {
       notify: (notification) => {
         this.uiController?.refresh();
         if (shouldSurfaceNotification(notification)) {
-          context.ui.notify(notification.message, notificationLevel(notification));
+          const level = notificationLevel(notification);
+          context.ui.notify(
+            level === "info" ? notification.message : noticeText("Subagents", notification.message),
+            level,
+          );
         }
       },
     });
@@ -679,7 +697,10 @@ export class MinimalSubagentsLifecycleController {
       if (forkSnapshot?.source_root_session_id !== sourceRootSessionId) {
         if (forkSnapshot) {
           context.ui.notify(
-            "Minimal subagents fork handoff rejected because its source root identity did not match.",
+            noticeText(
+              "Subagents",
+              "Fork handoff rejected because its source root identity did not match.",
+            ),
             "error",
           );
         }
@@ -705,7 +726,10 @@ export class MinimalSubagentsLifecycleController {
           );
         } else {
           context.ui.notify(
-            "Minimal subagents fork recovery skipped because the destination selected branch could not be proven from parentSession provenance.",
+            noticeText(
+              "Subagents",
+              "Fork recovery skipped because the destination selected branch could not be proven from parentSession provenance.",
+            ),
             "warning",
           );
         }
@@ -733,7 +757,7 @@ export class MinimalSubagentsLifecycleController {
       schemas,
       captureCaller: (toolContext) => rootCallerSnapshot(this.pi, toolContext),
       onActivity: () => this.uiController?.refresh(),
-      onAttention: (message) => context.ui.notify(message, "error"),
+      onAttention: (message) => context.ui.notify(noticeText("Subagents", message), "error"),
     });
     for (const tool of rootTools) this.pi.registerTool(tool);
     this.accessSession = {
@@ -760,7 +784,10 @@ export class MinimalSubagentsLifecycleController {
 
     if (hasHistoricalChildIdentity(context.sessionManager.getBranch())) {
       context.ui.notify(
-        "Opened a former subagent session directly. It is now an independent root; former descendants and parent messaging were not restored. Concurrent ownership by its original root is unsupported.",
+        noticeText(
+          "Subagents",
+          "Opened a former subagent session directly. It is now an independent root; former descendants and parent messaging were not restored. Concurrent ownership by its original root is unsupported.",
+        ),
         "warning",
       );
     }
@@ -828,11 +855,11 @@ export class MinimalSubagentsLifecycleController {
   private async runSubagentsCommand(args: string, context: ExtensionCommandContext): Promise<void> {
     const parsed = parseSubagentsCommandArguments(args);
     if (!parsed.ok) {
-      context.ui.notify(parsed.message, "error");
+      context.ui.notify(noticeText("Subagents", parsed.message), "error");
       return;
     }
     if (!this.accessSession || !this.coordinator) {
-      context.ui.notify("Minimal subagents is not active for this session.", "error");
+      context.ui.notify(noticeText("Subagents", "Not active for this session."), "error");
       return;
     }
     if (parsed.command.action === "status") {
@@ -861,7 +888,10 @@ export class MinimalSubagentsLifecycleController {
           command.action === "reset" ? undefined : command.action === "enable",
         );
       } catch (error) {
-        context.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        context.ui.notify(
+          noticeText("Subagents", error instanceof Error ? error.message : String(error)),
+          "error",
+        );
         return;
       }
       persistedScope = command.scope;
@@ -885,9 +915,12 @@ export class MinimalSubagentsLifecycleController {
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       context.ui.notify(
-        persistedScope
-          ? `Minimal subagents ${persistedScope} default changed, but the current session did not: ${detail}`
-          : `Minimal subagents could not change the current session: ${detail}`,
+        noticeText(
+          "Subagents",
+          persistedScope
+            ? `${persistedScope} default changed, but the current session did not: ${detail}`
+            : `Could not change the current session: ${detail}`,
+        ),
         "error",
       );
       return;

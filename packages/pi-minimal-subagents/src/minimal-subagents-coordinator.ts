@@ -370,7 +370,7 @@ export class MinimalSubagentsCoordinator {
       this.dependencies.notify?.({
         type: "tool-warning",
         agentId,
-        message: `Minimal subagents tool warnings for ${agentId}:\n- ${warnings.join("\n- ")}`,
+        message: `Tool warnings for ${agentId}:\n- ${warnings.join("\n- ")}`,
       });
     }
     this.dependencies.notify?.({

@@ -10,13 +10,15 @@ import {
   type Component,
   type TUI,
 } from "@earendil-works/pi-tui";
+import { joinInline, widgetLines } from "@ian-pascoe/pi-utils/ui";
 import type { MinimalSubagentsCoordinator } from "./minimal-subagents-coordinator.js";
 import {
   formatSubagentDuration,
   orderActiveAgentSubtrees,
   renderSubagentStatusLabel,
-  renderSubagentStatusSymbol,
+  renderSubagentStatusMark,
   subagentStatusLadder,
+  treeRowPrefixes,
 } from "./minimal-subagents-rendering.js";
 import type {
   AgentSummary,
@@ -25,7 +27,7 @@ import type {
   TurnStatus,
 } from "./minimal-subagents-types.js";
 
-const MINIMAL_SUBAGENTS_UI_KEY = "minimal-subagents";
+const MINIMAL_SUBAGENTS_UI_KEY = "pi-minimal-subagents";
 const MINIMAL_SUBAGENTS_RECENT_LIMIT = 3;
 const MINIMAL_SUBAGENTS_WIDGET_ROW_LIMIT = 8;
 const MINIMAL_SUBAGENTS_REFRESH_MS = 1_000;
@@ -154,24 +156,7 @@ export function buildMinimalSubagentsWidgetView(
   };
 }
 
-const MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT = "  ·  ";
-const MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS = "…";
-
-interface MinimalSubagentsWidgetRowParts {
-  identity: string;
-  status: string;
-  profile: string;
-  task?: string;
-}
-
-function joinMinimalSubagentsWidgetRow(
-  parts: MinimalSubagentsWidgetRowParts,
-  separator: string,
-): string {
-  return [parts.identity, parts.status, parts.profile, parts.task]
-    .filter((part): part is string => part !== undefined)
-    .join(separator);
-}
+const MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS = "...";
 
 function formatMinimalSubagentsRuntimeProfile(
   profile: RuntimeProfile,
@@ -193,143 +178,72 @@ function formatMinimalSubagentsRuntimeProfile(
   return `${prefix}${MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS}${suffix}`;
 }
 
-function renderMinimalSubagentsWidgetRowParts(
+/** One widget row: tree prefix, Status Mark, id, status word and duration, model, then task. */
+function renderMinimalSubagentsWidgetRowText(
   row: MinimalSubagentsWidgetRow,
-  task: string | undefined,
-  duration: string | undefined,
-  profile: string,
+  prefix: string,
+  parts: { task?: string; duration?: string; profile: string },
   theme: MinimalSubagentsWidgetTheme,
-): MinimalSubagentsWidgetRowParts {
-  const branch = row.depth > 0 ? `${"  ".repeat(row.depth)}╰─ ` : "  ";
-  const styledBranch = theme.fg("borderMuted", branch);
+): string {
   const agentId = row.structural ? theme.fg("muted", row.agentId) : theme.bold(row.agentId);
-  const identity = `${styledBranch}${renderSubagentStatusSymbol(theme, row.status)} ${agentId}`;
+  const identity = `${prefix ? theme.fg("dim", prefix) : ""}${renderSubagentStatusMark(theme, row.status)} ${agentId}`;
   const status = `${renderSubagentStatusLabel(theme, row.status)}${
-    duration ? ` ${theme.fg("muted", duration)}` : ""
+    parts.duration ? ` ${theme.fg("muted", parts.duration)}` : ""
   }`;
-  return {
+  return joinInline(theme, [
     identity,
     status,
-    profile: theme.fg("muted", profile),
-    task: task ? theme.fg("muted", task) : undefined,
-  };
-}
-
-function minimalSubagentsWidgetRowFits(
-  parts: MinimalSubagentsWidgetRowParts,
-  separator: string,
-  width: number,
-): boolean {
-  return visibleWidth(joinMinimalSubagentsWidgetRow(parts, separator)) <= width;
-}
-
-function minimalSubagentsWidgetProfileBudget(
-  row: MinimalSubagentsWidgetRow,
-  task: string | undefined,
-  duration: string | undefined,
-  separator: string,
-  theme: MinimalSubagentsWidgetTheme,
-  width: number,
-): number {
-  const fixedParts = renderMinimalSubagentsWidgetRowParts(row, task, duration, "", theme);
-  return width - visibleWidth(joinMinimalSubagentsWidgetRow(fixedParts, separator));
+    theme.fg("muted", parts.profile),
+    parts.task ? theme.fg("muted", parts.task) : undefined,
+  ]);
 }
 
 function renderMinimalSubagentsWidgetRow(
   row: MinimalSubagentsWidgetRow,
+  prefix: string,
   width: number,
   theme: MinimalSubagentsWidgetTheme,
 ): string {
-  const separator = theme.fg("dim", MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT);
   const task = row.task?.replace(/\s+/g, " ").trim() || undefined;
   const duration = row.status === "unavailable" ? undefined : formatSubagentDuration(row.elapsedMs);
   const fullProfile = formatMinimalSubagentsRuntimeProfile(row.runtimeProfile);
   if (!fullProfile) return "";
+  const build = (parts: { task?: string; duration?: string; profile: string }) =>
+    renderMinimalSubagentsWidgetRowText(row, prefix, parts, theme);
+  const fits = (text: string) => visibleWidth(text) <= width;
+  // Width left for the profile once everything else is placed; a one-column stand-in keeps its separator.
+  const profileBudget = (parts: { duration?: string }) =>
+    width - visibleWidth(build({ ...parts, profile: "x" })) + 1;
 
-  const completeParts = renderMinimalSubagentsWidgetRowParts(
-    row,
-    task,
-    duration,
-    fullProfile,
-    theme,
-  );
-  if (minimalSubagentsWidgetRowFits(completeParts, separator, width)) {
-    return joinMinimalSubagentsWidgetRow(completeParts, separator);
-  }
+  const complete = build({ task, duration, profile: fullProfile });
+  if (fits(complete)) return complete;
 
-  const partsWithoutTask = renderMinimalSubagentsWidgetRowParts(
-    row,
-    undefined,
-    duration,
-    fullProfile,
-    theme,
-  );
-  if (minimalSubagentsWidgetRowFits(partsWithoutTask, separator, width)) {
-    return joinMinimalSubagentsWidgetRow(partsWithoutTask, separator);
-  }
+  const withoutTask = build({ duration, profile: fullProfile });
+  if (fits(withoutTask)) return withoutTask;
 
-  const profileBudget = minimalSubagentsWidgetProfileBudget(
-    row,
-    undefined,
-    duration,
-    separator,
-    theme,
-    width,
+  const shortenedProfile = formatMinimalSubagentsRuntimeProfile(
+    row.runtimeProfile,
+    profileBudget({ duration }),
   );
-  const shortenedProfile = formatMinimalSubagentsRuntimeProfile(row.runtimeProfile, profileBudget);
   if (shortenedProfile) {
-    const shortenedParts = renderMinimalSubagentsWidgetRowParts(
-      row,
-      undefined,
-      duration,
-      shortenedProfile,
-      theme,
-    );
-    if (minimalSubagentsWidgetRowFits(shortenedParts, separator, width)) {
-      return joinMinimalSubagentsWidgetRow(shortenedParts, separator);
-    }
+    const shortened = build({ duration, profile: shortenedProfile });
+    if (fits(shortened)) return shortened;
   }
 
   if (duration) {
-    const noDurationBudget = minimalSubagentsWidgetProfileBudget(
-      row,
-      undefined,
-      undefined,
-      separator,
-      theme,
-      width,
-    );
     const noDurationProfile = formatMinimalSubagentsRuntimeProfile(
       row.runtimeProfile,
-      noDurationBudget,
+      profileBudget({}),
     );
     if (noDurationProfile) {
-      const noDurationParts = renderMinimalSubagentsWidgetRowParts(
-        row,
-        undefined,
-        undefined,
-        noDurationProfile,
-        theme,
-      );
-      if (minimalSubagentsWidgetRowFits(noDurationParts, separator, width)) {
-        return joinMinimalSubagentsWidgetRow(noDurationParts, separator);
-      }
+      const noDuration = build({ profile: noDurationProfile });
+      if (fits(noDuration)) return noDuration;
     }
   }
 
-  const shortestProfile = formatMinimalSubagentsRuntimeProfile(
-    row.runtimeProfile,
-    visibleWidth(`${MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS}:${row.runtimeProfile.thinking_level}`),
-  )!;
-  const lastResortParts = renderMinimalSubagentsWidgetRowParts(
-    row,
-    undefined,
-    undefined,
-    shortestProfile,
-    theme,
-  );
+  const shortestProfile = `${MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS}:${row.runtimeProfile.thinking_level}`;
   return truncateToWidth(
-    joinMinimalSubagentsWidgetRow(lastResortParts, separator),
+    build({ profile: shortestProfile }),
     width,
     MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS,
   );
@@ -342,37 +256,20 @@ export function renderMinimalSubagentsWidgetLines(
   theme: MinimalSubagentsWidgetTheme,
 ): string[] {
   if (width <= 0) return [];
-  const separator = theme.fg("dim", MINIMAL_SUBAGENTS_WIDGET_SEPARATOR_TEXT);
-  const activity =
-    view.runningCount > 0
-      ? theme.fg("accent", `${view.runningCount} running`)
-      : theme.fg("dim", "idle");
-  const lines = [
-    truncateToWidth(
-      [
-        theme.fg("toolTitle", theme.bold("Subagents")),
-        activity,
-        width >= 44 && view.recentCount > 0
-          ? theme.fg("muted", `${view.recentCount} recent`)
-          : undefined,
-      ]
-        .filter((part): part is string => Boolean(part))
-        .join(separator),
-      width,
-      MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS,
-    ),
-  ];
-  for (const row of view.rows) lines.push(renderMinimalSubagentsWidgetRow(row, width, theme));
-  if (view.overflowCount > 0) {
-    lines.push(
-      truncateToWidth(
-        theme.fg("dim", `  …  +${view.overflowCount} more`),
-        width,
-        MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS,
-      ),
-    );
-  }
-  return lines;
+  const counts = [
+    view.runningCount > 0 ? `${view.runningCount} running` : "idle",
+    width >= 44 && view.recentCount > 0 ? `${view.recentCount} recent` : undefined,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(" · ");
+  const prefixes = treeRowPrefixes(view.rows.map((row) => row.depth));
+  const rows = view.rows.map((row, index) =>
+    renderMinimalSubagentsWidgetRow(row, prefixes[index] ?? "", width, theme),
+  );
+  if (view.overflowCount > 0) rows.push(theme.fg("muted", `... ${view.overflowCount} more`));
+  return widgetLines(theme, { title: "Subagents", counts, rows }).map((line) =>
+    truncateToWidth(line, width, MINIMAL_SUBAGENTS_WIDGET_ELLIPSIS),
+  );
 }
 
 class MinimalSubagentsWidgetComponent implements Component {

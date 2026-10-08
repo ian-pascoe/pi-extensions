@@ -437,7 +437,7 @@ with Pi's tool-expansion hint (normally Ctrl+O), which reveals the rest and the
 full detail. Automatic agent results and messages preview the same way.
 
 In TUI mode, `/subagents` or `/subagents status` opens a large, centered,
-framed overlay. Up/Down selects a Child Agent; Enter opens its Child Session
+overlay in Pi's selector frame. Up/Down selects a Child Agent; Enter opens its Child Session
 Transcript. Escape returns to the tree, then Escape closes the overlay. The
 viewer is read-only: Root Agent input and ongoing agent work remain intact.
 

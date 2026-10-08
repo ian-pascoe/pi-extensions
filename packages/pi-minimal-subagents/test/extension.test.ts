@@ -1535,7 +1535,7 @@ describe("minimal subagents extension lifecycle", () => {
     expect(harness.sessionFactory.adoptedAgentIds).toEqual([]);
     expect(harness.notifications).toContainEqual({
       message:
-        "Minimal subagents fork recovery skipped because the destination selected branch could not be proven from parentSession provenance.",
+        "Subagents: Fork recovery skipped because the destination selected branch could not be proven from parentSession provenance.",
       level: "warning",
     });
     expect(
