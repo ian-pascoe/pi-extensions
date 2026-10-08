@@ -42,7 +42,7 @@ export default function observerFixture(pi: ExtensionAPI): void {
     api: "openai-completions",
     apiKey: "offline",
     baseUrl: "https://observer.invalid",
-    models: ["model", "alternate", "priced"].map((id) => ({
+    models: ["model", "alternate", "priced", "wide"].map((id) => ({
       id,
       name: "Offline",
       reasoning: true,
@@ -52,7 +52,8 @@ export default function observerFixture(pi: ExtensionAPI): void {
         id === "priced"
           ? { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
           : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200000,
+      // `wide` declares a 1M window, where the absolute `auto` ceilings bind.
+      contextWindow: id === "wide" ? 1_000_000 : 200000,
       maxTokens: 2048,
     })),
     streamSimple: (model, context, options) =>
